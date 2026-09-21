@@ -1,7 +1,9 @@
 #!/bin/bash
-# Cuts a release the substrate depends on by tag: merges main into the
-# `release` branch, builds the library, commits dist/, tags v0.2.14-volter.<n>
-# and pushes. dist/ is ignored on main and tracked on release only.
+# Cuts a release: merges main into the `release` branch, builds the library,
+# commits dist/, tags v0.2.14-volter.<n>, pushes, and publishes
+# @volter/tabnode at that version to npm from the same commit. dist/ is
+# ignored on main and tracked on release only. Publishing needs an npm token
+# with publish rights on @volter in ~/.npmrc.
 #
 #   bash scripts/release-volter.sh <n>
 set -e
@@ -31,6 +33,9 @@ git tag -a "$tag" -m "$tag"
 # goes first, and a rejected branch stops the release before a tag exists.
 git push -q origin release
 git push -q origin "$tag"
+# The package, from the commit the tag names: what npm serves is what the tag
+# holds, and a consumer by tag and a consumer by version get the same build.
+npm publish > /tmp/tabnode-release-publish.log 2>&1 || { tail -20 /tmp/tabnode-release-publish.log; exit 1; }
 # Back to wherever this started. A plain `git checkout main` fails when another
 # worktree holds main, and the release is already pushed by then.
 git checkout -q - 2>/dev/null || true

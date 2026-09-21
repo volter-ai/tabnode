@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Volter's fork patches the engine toward Node as source: each release below is a tag `v0.2.14-volter.N`, consumed by tag from `browser-substrate`, whose changelog records what each version changed in the tab. Upstream's history follows.
 
+## v0.2.14-volter.88 — 2026-09-21
+
+The package is `@volter/tabnode` on npm, published from the release commit at the release's version; `npm install @volter/tabnode` is the way in, and the `release` branch still carries the same build for an install by git tag. The release script publishes after it pushes the tag.
+
 ## v0.2.14-volter.87 — 2026-09-21
 
 The engine names no package. `src/tailwind-vite-stand-in.ts` carried a table, `@tailwindcss/vite` to a file of the tab's, that the loader and the bundler's resolver read; both now read the host's table (`globalThis.__browserRuntimeStandInPaths`, package name to file), which the module resolver already read, and the file is gone. What a guest gets is unchanged where the host names the same table, which the substrate does.
