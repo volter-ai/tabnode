@@ -68,6 +68,8 @@ export interface RunOptions {
   env?: Record<string, string>;
   /** What the shell reads on stdin, so a builtin reads what was piped to it. */
   stdin?: string;
+  stdinStream?: AsyncIterable<Uint8Array>;
+  terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
   /** Callback for streaming stdout chunks as they arrive (for long-running commands like vitest watch) */
   onStdout?: (data: string) => void;
   /** Callback for streaming stderr chunks as they arrive */
@@ -168,6 +170,9 @@ export function createContainer(options?: ContainerOptions): {
         onStderr: runOptions?.onStderr,
         signal: runOptions?.signal,
         held: runOptions?.held === true,
+        stdinStream: runOptions?.stdinStream,
+        stdinOpen: runOptions?.stdinStream !== undefined,
+        terminal: runOptions?.terminal,
       });
 
       return new Promise((resolve) => {
@@ -180,7 +185,7 @@ export function createContainer(options?: ContainerOptions): {
           resolve({
             stdout: String(stdout),
             stderr: String(stderr),
-            exitCode: error ? (error.code ?? 1) : 0,
+            exitCode: runOptions?.signal?.aborted ? 143 : error ? (error.code ?? 1) : 0,
           });
         });
       });

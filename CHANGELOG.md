@@ -2,7 +2,24 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## Unreleased
+## v0.4.0 — 2026-09-21
+
+The host run options add streamed input and terminal control; virtual filesystem
+metadata methods become part of the exported filesystem surface.
+
+- Pass a run's streamed stdin and terminal dimensions through to its guest,
+  deliver resize events, release producer/subscription resources on exit and
+  report interrupted runs as 143. Substrate `verify:process-contract` measures
+  the host-facing behavior; `verify:node-adapters` covers dormant input cleanup.
+- Count filesystem watches as active handles, retain unreferenced handles for
+  exit cleanup, and execute watch notifications in their owning run. Substrate
+  `verify:node-filesystem-policy` exercises holder edits and unreferenced watches.
+- Delegate writable-open checks and metadata mutations to the filesystem view.
+  Modes belong to nodes rather than a global path table; zero modes, rename,
+  timestamps and existing-directory mkdir follow Node's behavior. Unsupported
+  ownership changes report ENOTSUP instead of pretending to mutate ownership.
+  Substrate `verify:node-adapters` and `verify:node-filesystem-policy` are the
+  reproductions; these are host measurements, not browser acceptance.
 
 - Release a guest server's bridge registration when its listener closes, including
   process cancellation. Guest entries now carry request adapters instead of null;

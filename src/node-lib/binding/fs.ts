@@ -28,6 +28,8 @@
  * own tree.
  */
 import { createNodeError as vfsError } from '../../virtual-fs';
+import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner } from './handles';
+import { enterRun } from '../../process-tokens';
 
 /**
  * An errno error, as the filesystem makes one. The tree's own maker knows the
@@ -51,8 +53,10 @@ function refuseLinks(syscall: string, path: string): never {
   );
 }
 
-/** Modes `chmod` has set, keyed by the path Node handed the binding. */
-const pathModes = new Map<string, number>();
+function unsupportedMetadata(syscall: string): never {
+  throw Object.assign(new Error(`ENOTSUP: filesystem does not support ${syscall}`), { code: 'ENOTSUP', syscall });
+}
+
 
 function treeHoldsLinks(): boolean {
   return (vfs() as VirtualFS & { holdsLinks?: boolean }).holdsLinks === true;
@@ -173,11 +177,10 @@ function statArray(stats: VfsStats, bigint: boolean, path?: string): Float64Arra
   // The tree keeps permissions but not the type bits; `Stats.isFile()` is
   // `mode & S_IFMT`, so the type the tree does know is put where Node looks.
   // `chmod` stores what it set; a path it has not touched keeps the tree's.
-  const stored = path !== undefined ? pathModes.get(path) : undefined;
-  const permissions = (stored !== undefined ? stored : Number(stats.mode ?? 0)) & 0o7777;
+  const permissions = Number(stats.mode ?? (stats.isDirectory?.() ? 0o755 : 0o644)) & 0o7777;
   const type = stats.isDirectory?.() ? S_IFDIR : stats.isSymbolicLink?.() ? S_IFLNK : S_IFREG;
   const values = [
-    Number(stats.dev ?? 0), type | (permissions || (type === S_IFDIR ? 0o755 : 0o644)), Number(stats.nlink ?? 1),
+    Number(stats.dev ?? 0), type | permissions, Number(stats.nlink ?? 1),
     Number(stats.uid ?? 0), Number(stats.gid ?? 0), Number(stats.rdev ?? 0),
     Number(stats.blksize ?? 4096), Number(stats.ino ?? 0), Number(stats.size ?? 0),
     Number(stats.blocks ?? Math.ceil(Number(stats.size ?? 0) / 512)),
@@ -366,16 +369,23 @@ export class FSEvent {
   #watcher: { close(): void } | null = null;
   initialized = false;
 
-  start(path: unknown, _persistent?: boolean, recursive?: boolean, _encoding?: string): number {
+  start(path: unknown, persistent?: boolean, recursive?: boolean, _encoding?: string): number {
     const name = asPath(path);
     const tree = vfs();
+    const cwd = callingCwd();
+    const owner = currentOwner();
     try {
       this.#watcher = tree.watch(name, { recursive: Boolean(recursive) }, ((event: string, filename: string | null) => {
         // libuv names a change `change` and a create or a remove `rename`,
         // which is what Node's `FSWatcher` turns into its own two events.
-        this.onchange?.(0, event === 'rename' ? 'rename' : 'change', filename ?? '');
+        const notify = () => withFilesystem(tree, () => withCwd(cwd, () =>
+          this.onchange?.(0, event === 'rename' ? 'rename' : 'change', filename ?? '')));
+        if (owner === null) notify();
+        else enterRun(owner, notify);
       }) as never) as unknown as { close(): void };
       this.initialized = true;
+      registerHandle(this);
+      if (persistent === false) unrefHandle(this);
       return 0;
     } catch (error) {
       const code = (error as { code?: string }).code;
@@ -384,15 +394,16 @@ export class FSEvent {
   }
 
   close(): void {
+    releaseHandle(this);
     this.initialized = false;
     try { this.#watcher?.close(); } catch { /* a watcher already closed is closed */ }
     this.#watcher = null;
   }
 
-  ref(): void {}
-  unref(): void {}
+  ref(): void { if (this.initialized) refHandle(this); }
+  unref(): void { unrefHandle(this); }
   getAsyncId(): number { return 0; }
-  hasRef(): boolean { return this.initialized; }
+  hasRef(): boolean { return this.initialized && handleHasRef(this); }
 }
 
 /**
@@ -466,6 +477,9 @@ export const fsBinding = {
       const tree = vfs();
       const bits = flagBits();
       const exists = tree.existsSync(name);
+      if (exists && ((flags & 3) !== 0 || (flags & (bits.create | bits.truncate | bits.append)) !== 0)) {
+        tree.accessSync(name, 2);
+      }
       if ((flags & bits.excl) !== 0 && (flags & bits.create) !== 0 && exists) throw createNodeError('EEXIST', 'open', name);
       if (!exists) {
         if ((flags & bits.create) === 0) throw createNodeError('ENOENT', 'open', name);
@@ -623,10 +637,10 @@ export const fsBinding = {
     });
   },
 
-  access(path: unknown, _mode: number, req?: FSReq): undefined {
+  access(path: unknown, mode: number, req?: FSReq): undefined {
     return answer(req, () => {
       const name = asPath(path);
-      if (!vfs().existsSync(name)) throw createNodeError('ENOENT', 'access', name);
+      vfs().accessSync(name, mode);
       return undefined;
     });
   },
@@ -737,13 +751,10 @@ export const fsBinding = {
       if (tree.existsSync(name)) {
         const stats = tree.statSync(name);
         if (!recursive || !stats.isDirectory()) throw createNodeError('EEXIST', 'mkdir', name);
-        const stored = pathModes.get(name);
-        if (stored !== undefined && (stored & 0o777) !== wanted) throw createNodeError('EEXIST', 'mkdir', name);
-        pathModes.set(name, wanted);
         return undefined;
       }
       tree.mkdirSync(name, { recursive });
-      pathModes.set(name, wanted);
+      tree.chmodSync(name, wanted);
       return undefined;
     });
   },
@@ -817,37 +828,32 @@ export const fsBinding = {
     });
   },
 
-  // ---- the calls a page's filesystem has nothing to do -------------------
-  // Ownership and times are a kernel's bookkeeping. Permissions `chmod` sets
-  // are kept here, because a program that sets a mode and stats it back must
-  // see what it set, and a missing path is ENOENT as Node's is.
+  // Metadata belongs to the filesystem, including a host's permission view.
+  // Never keep a realm-global mode table or bypass that view for descriptors.
   chmod(path: unknown, mode: number, req?: FSReq): undefined {
     return answer(req, () => {
       const name = asPath(path);
-      if (!vfs().existsSync(name)) throw createNodeError('ENOENT', 'chmod', name);
-      pathModes.set(name, mode & 0o7777);
+      vfs().chmodSync(name, mode);
       return undefined;
     });
   },
   fchmod(fd: number, mode: number, req?: FSReq): undefined {
     return answer(req, () => {
       const file = fileFor(fd);
-      pathModes.set(file.path, mode & 0o7777);
+      file.tree.chmodSync(file.path, mode);
       return undefined;
     });
   },
-  chown(path: unknown, _uid: number, _gid: number, req?: FSReq): undefined {
-    return answer(req, () => {
-      const name = asPath(path);
-      if (!vfs().existsSync(name)) throw createNodeError('ENOENT', 'chown', name);
-      return undefined;
-    });
-  },
-  fchown(_fd: number, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => undefined); },
-  lchown(_path: unknown, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => undefined); },
-  utimes(_path: unknown, _atime: number, _mtime: number, req?: FSReq): undefined { return answer(req, () => undefined); },
-  futimes(_fd: number, _atime: number, _mtime: number, req?: FSReq): undefined { return answer(req, () => undefined); },
-  lutimes(_path: unknown, _atime: number, _mtime: number, req?: FSReq): undefined { return answer(req, () => undefined); },
+  chown(_path: unknown, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => unsupportedMetadata('chown')); },
+  fchown(_fd: number, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => unsupportedMetadata('fchown')); },
+  lchown(_path: unknown, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => unsupportedMetadata('lchown')); },
+  utimes(path: unknown, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => { vfs().utimesSync(asPath(path), new Date(atime * 1000), new Date(mtime * 1000)); return undefined; }); },
+  futimes(fd: number, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => { const file = fileFor(fd); file.tree.utimesSync(file.path, new Date(atime * 1000), new Date(mtime * 1000)); return undefined; }); },
+  lutimes(path: unknown, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => {
+    if (treeHoldsLinks()) return unsupportedMetadata('lutimes');
+    vfs().utimesSync(asPath(path), new Date(atime * 1000), new Date(mtime * 1000));
+    return undefined;
+  }); },
   fsync(_fd: number, req?: FSReq): undefined { return answer(req, () => undefined); },
   fdatasync(_fd: number, req?: FSReq): undefined { return answer(req, () => undefined); },
 

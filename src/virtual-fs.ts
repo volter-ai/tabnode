@@ -35,6 +35,7 @@ export interface FSNode {
   target?: string;
   children?: Map<string, FSNode>;
   mtime: number;
+  mode?: number;
   /**
    * When the file was last read. Node reports it apart from the write time
    * and `utimes` sets the two separately; this filesystem reported the write
@@ -470,6 +471,19 @@ export class VirtualFS {
   /**
    * Get stats for path
    */
+  chmodSync(path: string, mode: number): void {
+    const node = this.getNode(path);
+    if (!node) throw createNodeError('ENOENT', 'chmod', path);
+    node.mode = mode & 0o7777;
+  }
+
+  utimesSync(path: string, atime: number | Date, mtime: number | Date): void {
+    const node = this.getNode(path);
+    if (!node) throw createNodeError('ENOENT', 'utimes', path);
+    node.atime = atime instanceof Date ? atime.getTime() : atime * 1000;
+    node.mtime = mtime instanceof Date ? mtime.getTime() : mtime * 1000;
+  }
+
   statSync(path: string): Stats {
     const node = this.getNode(path);
     if (!node) {
@@ -489,7 +503,7 @@ export class VirtualFS {
       isFIFO: () => false,
       isSocket: () => false,
       size,
-      mode: node.type === 'directory' ? 0o755 : 0o644,
+      mode: node.mode ?? (node.type === 'directory' ? 0o755 : 0o644),
       mtime: new Date(mtime),
       atime: new Date(atime),
       ctime: new Date(mtime),

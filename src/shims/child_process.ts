@@ -127,6 +127,8 @@ type RunStdin = { emit: (event: string, ...args: unknown[]) => void; push: (chun
  * output went down the child's channel.
  */
 export interface RunStreams {
+  stdinStream?: AsyncIterable<Uint8Array>;
+  terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
   signal?: AbortSignal;
@@ -470,7 +472,7 @@ export function initChildProcess(vfs: VirtualFS): void {
       // open, as a pipe whose writer has not closed.
       stdin: typeof ctx.stdin === 'string' ? ctx.stdin : '',
       ...(streams?.held || streams?.stdinOpen ? { stdinHeld: true } : {}),
-      ...(streams?.held ? { tty: true } : {}),
+      ...(streams?.held || streams?.terminal ? { tty: true } : {}),
       // The numbers this run was started with, so the guest's `process.pid`
       // is the one its parent's handle carries.
       ...(runPid(runToken) ? { pid: runPid(runToken)!.pid, ppid: runPid(runToken)!.ppid } : {}),
@@ -541,12 +543,26 @@ export function initChildProcess(vfs: VirtualFS): void {
     // For long-running commands (watch mode), report as TTY so tools like
     // vitest set up interactive features (file watching, stdin commands). A
     // spawned child's stdio is a pipe, as Node's is, and gets none of this.
-    if (streams?.held) {
+    if (streams?.held || streams?.terminal) {
       proc.stdout.isTTY = true;
       proc.stderr.isTTY = true;
       proc.stdin.isTTY = true;
       proc.stdin.setRawMode = () => proc.stdin;
     }
+    const terminal = streams?.terminal;
+    const resize = (columns: number, rows: number): void => {
+      for (const stream of [proc.stdout, proc.stderr]) {
+        stream.columns = columns;
+        stream.rows = rows;
+        stream.emit('resize');
+      }
+    };
+    let stopResize: (() => void) | undefined;
+    let inputActive = true;
+    let inputIterator: AsyncIterator<Uint8Array> | undefined;
+    const readableInput = proc.stdin as unknown as { listenerCount(event: string): number; readableLength: number; readableHighWaterMark: number; readableFlowing: boolean | null; _readableState?: { reading?: boolean; needReadable?: boolean } };
+    const inputReading = () => readableInput.readableFlowing === true || readableInput._readableState?.reading === true
+      || readableInput._readableState?.needReadable === true || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0;
 
     // A child started with a channel wires its own end of it before its
     // module runs, which is what `lib/internal/process/pre_execution.js` does
@@ -606,6 +622,41 @@ export function initChildProcess(vfs: VirtualFS): void {
     };
     const detachUncaught = __onUncaughtException(proc, onUncaughtException);
     try {
+    // The host's pipe delivers bytes after the entry has attached its reader.
+    // EOF closes that same run's stream, never the most recently started run.
+    if (streams?.stdinStream) {
+      inputIterator = streams.stdinStream[Symbol.asyncIterator]();
+      const input = inputIterator;
+      void (async () => {
+        const push = (chunk: Uint8Array | null) => {
+          if (runToken === null) proc.stdin.push(chunk);
+          else enterRun(runToken, () => proc.stdin.push(chunk));
+        };
+        try {
+          while (inputActive && !streams.signal?.aborted) {
+            // A pipe is read on demand. Bound queued bytes by the Readable's
+            // high-water mark and do not pull a producer nobody consumes.
+            while (inputActive && !streams.signal?.aborted && (!inputReading()
+              || readableInput.readableLength >= readableInput.readableHighWaterMark)) {
+              await new Promise(resolve => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, resolve, 10));
+            }
+            if (!inputActive || streams.signal?.aborted) break;
+            const next = await input.next();
+            if (next.done) break;
+            if (!inputActive || streams.signal?.aborted) break;
+            push(next.value);
+          }
+          if (inputActive && !streams.signal?.aborted) push(null);
+        } catch (error) {
+          if (inputActive) onUncaughtException(error);
+        } finally { streams.stdinOpen = false; }
+      })();
+    }
+    if (terminal) resize(terminal.columns, terminal.rows);
+    stopResize = terminal?.onResize?.((columns, rows) => {
+      if (runToken === null) resize(columns, rows);
+      else enterRun(runToken, () => resize(columns, rows));
+    });
 
     let entrySettling: Promise<unknown> | undefined;
     try {
@@ -676,7 +727,7 @@ export function initChildProcess(vfs: VirtualFS): void {
     // handle is one socket back to the server that forked it and which sets no
     // timer — as idle, with exit 0, three times over.
     const __ownsHandles = () => runToken !== null && (__ownedServerPorts(runToken).length > 0 || __ownedHandleCount(runToken) > 0);
-    const __printedThenWorking = () => pendingGuestTimers(proc) > 0 || heldWork().count > 0 || __ownsHandles();
+    const __printedThenWorking = () => (streams?.stdinOpen === true && inputReading()) || pendingGuestTimers(proc) > 0 || heldWork().count > 0 || __ownsHandles();
     if ((stdout.length > 0 || stderr.length > 0) && !__printedThenWorking()) {
       // Settling the command is host work. Killing guest timers must not
       // cancel this continuation and leave the command's promise unresolved.
@@ -725,7 +776,7 @@ export function initChildProcess(vfs: VirtualFS): void {
       let idleMs = 0;
       // A timer the guest still holds is work in Node's loop, whether or not
       // the program has printed; so is a handle it has open.
-      const stillWorking = (): boolean => pendingGuestTimers(proc) > 0 || __ownsHandles();
+      const stillWorking = (): boolean => (streams?.stdinOpen === true && inputReading()) || pendingGuestTimers(proc) > 0 || __ownsHandles();
 
       // When an abort signal is present (e.g. watch mode), don't apply idle timeout —
       // only exit when aborted or process.exit is called.
@@ -787,6 +838,9 @@ export function initChildProcess(vfs: VirtualFS): void {
     } finally {
       detachRejections();
       detachUncaught();
+      inputActive = false;
+      try { void Promise.resolve(inputIterator?.return?.()).catch(() => {}); } catch { /* producer cleanup cannot prevent process cleanup */ }
+      try { stopResize?.(); } catch { /* host cleanup cannot prevent handle release */ }
       // A process that ends releases its listening sockets, whatever ended it:
       // a return from the entry, a throw, an exit. Only `process.exit` released
       // them here, so `vite --host` — which opened 5173 and then died at startup

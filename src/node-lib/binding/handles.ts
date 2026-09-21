@@ -23,6 +23,8 @@ export interface OwnedHandle {
 }
 
 const owners = new Map<ProcessToken, Set<OwnedHandle>>();
+// Unref affects liveness, not ownership: exit must close unreferenced handles too.
+const allOwned = new Map<ProcessToken, Set<OwnedHandle>>();
 const heldBy = new WeakMap<OwnedHandle, ProcessToken | null>();
 const refHeld = new WeakSet<OwnedHandle>();
 /**
@@ -68,6 +70,12 @@ export function ownerOf(handle: OwnedHandle): ProcessToken | null {
 /** A new handle is the current run's, ref'd and active, as libuv's start. */
 export function registerHandle(handle: OwnedHandle): void {
   heldBy.set(handle, currentOwner());
+  const token = heldBy.get(handle);
+  if (token != null) {
+    let owned = allOwned.get(token);
+    if (!owned) { owned = new Set(); allOwned.set(token, owned); }
+    owned.add(handle);
+  }
   refHeld.add(handle);
   activeHandles.add(handle);
   hold(handle);
@@ -103,6 +111,12 @@ export function handleHasRef(handle: OwnedHandle): boolean {
 /** A closed handle holds nothing. */
 export function releaseHandle(handle: OwnedHandle): void {
   drop(handle);
+  const token = heldBy.get(handle);
+  if (token != null) {
+    const owned = allOwned.get(token);
+    owned?.delete(handle);
+    if (owned?.size === 0) allOwned.delete(token);
+  }
   heldBy.delete(handle);
   refHeld.delete(handle);
   activeHandles.delete(handle);
@@ -161,8 +175,9 @@ export function __releaseOwnedServers(token: ProcessToken, stopTimers = true, st
  * Called where the run's servers and timers are released.
  */
 export function __releaseOwnedHandles(token: ProcessToken): void {
-  const held = owners.get(token);
+  const held = allOwned.get(token);
   if (!held) return;
+  allOwned.delete(token);
   owners.delete(token);
   for (const handle of [...held]) {
     try { handle.close(); } catch { /* a handle already closed is already released */ }
@@ -182,6 +197,17 @@ export function __releaseOwnedHandles(token: ProcessToken): void {
 export function __adoptHandle(handle: OwnedHandle | null | undefined, token: ProcessToken | null): void {
   if (!handle) return;
   drop(handle);
+  const previous = heldBy.get(handle);
+  if (previous != null) {
+    const owned = allOwned.get(previous);
+    owned?.delete(handle);
+    if (owned?.size === 0) allOwned.delete(previous);
+  }
   heldBy.set(handle, token);
+  if (token !== null) {
+    let owned = allOwned.get(token);
+    if (!owned) { owned = new Set(); allOwned.set(token, owned); }
+    owned.add(handle);
+  }
   hold(handle);
 }
