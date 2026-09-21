@@ -33779,7 +33779,7 @@ class WorkerRuntime {
     this.worker = new Worker(
       new URL(
         /* @vite-ignore */
-        "/assets/runtime-worker-DIy0sEwX.js",
+        "/assets/runtime-worker-4MKaHFVb.js",
         import.meta.url
       ),
       { type: "module" }

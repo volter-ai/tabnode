@@ -33782,7 +33782,7 @@ class WorkerRuntime {
     this.worker = new Worker(
       new URL(
         /* @vite-ignore */
-        "/assets/runtime-worker-DIy0sEwX.js",
+        "/assets/runtime-worker-4MKaHFVb.js",
         typeof document === "undefined" ? require("url").pathToFileURL(__filename).href : _documentCurrentScript && _documentCurrentScript.tagName.toUpperCase() === "SCRIPT" && _documentCurrentScript.src || new URL("index.cjs", document.baseURI).href
       ),
       { type: "module" }
