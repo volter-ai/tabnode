@@ -25,7 +25,7 @@
  * `http`, and there is none to vendor: no zlib wasm exists anywhere on this
  * box, npm's `zlib-wasm` is one maintainer, two versions, and depends on pako
  * itself, and compiling `deps/zlib` here would mean running a C toolchain,
- * which this product does not do. The row in FORK.md says the same.
+ * which this product does not do. The row in BUILTINS.md says the same.
  */
 import { zstream, inflateModule, deflateModule, zlibConstants } from './zlib-pako';
 

@@ -101,7 +101,7 @@ import INTERNAL_UTIL_COLORS from './internal/util/colors.js?raw';
 import INTERNAL_FIXED_QUEUE from './internal/fixed_queue.js?raw';
 import INTERNAL_EVENTS_SYMBOLS from './internal/events/symbols.js?raw';
 
-/** The Node the vendored files come from, reported in `FORK.md`'s table. */
+/** The Node the vendored files come from, reported in `BUILTINS.md`. */
 export const NODE_LIB_VERSION = 'v22.18.0';
 
 export const NODE_LIB_SOURCES: Record<string, string> = {

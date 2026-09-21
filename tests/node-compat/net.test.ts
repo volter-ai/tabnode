@@ -12,7 +12,7 @@
  *
  * The engine's whole `net` fidelity number is Node's own `test-net-*` suite,
  * run by `scripts/node-tests.mjs` and
- * recorded in FORK.md. This file is the engine's own shape check: that the
+ * recorded in BUILTINS.md. This file is the engine's own shape check: that the
  * loopback pairing behind Node's file carries bytes, ports, paths and
  * refusals the way Node's kernel does.
  */

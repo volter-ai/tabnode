@@ -1,0 +1,46 @@
+# The measurement, on every push to main: the build, the type-check, the
+# engine's own checks, and Node's own suite module by module. It blocks
+# nothing; the numbers are read in the job summary, not passed.
+name: measure
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:lib
+      - run: npm run type-check
+      - name: The engine's own checks
+        run: npm test
+        continue-on-error: true
+      - name: Node's test tree at v22.18.0
+        run: |
+          git clone -q --filter=blob:none --no-checkout https://github.com/nodejs/node.git ../node-tests
+          git -C ../node-tests sparse-checkout set test/common test/parallel test/fixtures test/wasi test/module-hooks test/es-module
+          git -C ../node-tests checkout -q v22.18.0
+      - name: Node's own tests, module by module
+        run: |
+          {
+            echo "## Node's own tests on ${GITHUB_SHA::7}"
+            echo
+            echo "| Suite | Passed |"
+            echo "|---|---|"
+            for m in path net child_process stream buffer events util assert querystring diagnostics_channel readline os tty http fs zlib; do
+              line=$(node scripts/node-tests.mjs --tests ../node-tests --match "test-$m-" | grep ' tests pass under ' || true)
+              echo "| \`test-$m-*\` | ${line%% tests pass*} |"
+            done
+            for d in wasi module-hooks; do
+              line=$(node scripts/node-tests.mjs --tests ../node-tests --dir "test/$d" --match test- | grep ' tests pass under ' || true)
+              echo "| \`test/$d\` | ${line%% tests pass*} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

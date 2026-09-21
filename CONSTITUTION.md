@@ -5,7 +5,7 @@ written once that answers what libuv and V8's C++ would, inside a loader with an
 npm installation, esbuild-wasm transformation and a service worker that answers a guest server's port. Where
 Node's own module is native and the tab has no twin, the module is the engine's, with its reason in `BUILTINS.md`.
 This repository is Volter's fork of `macaly/almostnode`, patched toward Node as source and measured by Node's own
-suites through `volter-ai/browser-substrate`, which consumes it by version; the fork's rules are `FORK.md`.
+suites through `volter-ai/browser-substrate`, which consumes it by version; the fork's rules are `CONTRIBUTING.md` and `RELEASING.md`.
 `ROADMAP.md` holds what is intended and `CHANGELOG.md` what landed: together they are this project's record.
 Changing this file is the owner's act.
 

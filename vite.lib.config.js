@@ -56,8 +56,8 @@ export default defineConfig({
         'vite-plugin': resolve(__dirname, 'src/vite-plugin.ts'),
       },
       name: 'Tabnode',
-      formats: ['es', 'cjs'],
-      fileName: (format, entryName) => `${entryName}.${format === 'es' ? 'mjs' : 'cjs'}`,
+      formats: ['es'],
+      fileName: (format, entryName) => `${entryName}.mjs`,
     },
     rollupOptions: {
       external: [
@@ -83,7 +83,7 @@ export default defineConfig({
         },
       },
     },
-    sourcemap: true,
+    sourcemap: false,
     minify: false,
   },
   assetsInclude: ['**/*.wasm'],

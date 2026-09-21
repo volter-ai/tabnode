@@ -1,6 +1,6 @@
 # Node's own `net` and `child_process`, on a binding written once
 
-The rule this applies is in `FORK.md`: a hand-written module that has grown
+The rule this applies is `CONTRIBUTING.md`'s: a hand-written module that has grown
 a patch group is replaced with Node's own file from `nodejs/node/lib` on a
 binding written once, and Node's tests are the measure. `src/shims/path.ts`
 over `src/node-lib/path.js` is the precedent: the vendored file binds, it
@@ -152,6 +152,6 @@ shell become what `Process.spawn` runs. Measure: `--match
 test-child-process-` before and after, and every fork test that forks or
 spawns.
 
-The numbers before and after each lane go into `FORK.md`'s table. The
+The numbers before and after each lane go into `BUILTINS.md`. The
 substrate measures the whole in the tab: VS Code's extension host activates
 the git extension and Source Control lists the repository.

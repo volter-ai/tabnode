@@ -2,13 +2,13 @@
 
 ## What this is
 
-tabnode runs Node in the browser: Node's own library files on bindings written once, an in-memory virtual filesystem, npm installation, and a service worker answering a guest server's port. It is a library; the host it is built for is `volter-ai/browser-substrate`, which installs it from npm by version. `CONSTITUTION.md` is what it must remain, `FORK.md` holds the rules for changing and releasing it, and `BUILTINS.md` names every builtin's kind and number.
+tabnode runs Node in the browser: Node's own library files on bindings written once, an in-memory virtual filesystem, npm installation, and a service worker answering a guest server's port. It is a library; the host it is built for is `volter-ai/browser-substrate`, which installs it from npm by version. `CONSTITUTION.md` is what it must remain, `CONTRIBUTING.md` and `RELEASING.md` hold the rules for changing and releasing it, and `BUILTINS.md` names every builtin's kind, number and remainder.
 
 ## Core principle
 
 **Never write library-specific shim code. Fix the platform instead.**
 
-When a package does not work, the fix goes toward Node: a builtin that is Node's own file is fixed in its binding, and a module of the engine's own that has grown a patch group is replaced with Node's own file (`FORK.md`), never a package-specific adapter. The engine never imitates an npm package: a package that sits on a builtin is installed by the project and runs unchanged.
+When a package does not work, the fix goes toward Node: a builtin that is Node's own file is fixed in its binding, and a module of the engine's own that has grown a patch group is replaced with Node's own file, never a package-specific adapter. The engine never imitates an npm package: a package that sits on a builtin is installed by the project and runs unchanged.
 
 ## Architecture
 
@@ -26,17 +26,18 @@ When a package does not work, the fix goes toward Node: a builtin that is Node's
 ```bash
 npm run build:lib    # the bundle and its declarations, into dist/
 npm run type-check   # tsc over src and tests
+npm run docs:api     # docs/api/ from the declarations; the release script runs it
 ```
 
 There is no dev server, no demo page and no end-to-end suite here: this repository is the engine, and what drives it is the substrate's tab.
 
 ## Measurement
 
-Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`), is what measures a module. `BUILTINS.md` carries each module's number and `FORK.md` carries what each remainder is made of. The `tests/` directory holds the engine's own checks; they are not run from here while building.
+Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`), is what measures a module. `BUILTINS.md` carries each module's number and what each remainder is made of; the `measure` workflow prints the same numbers on every push to `main`, and blocks nothing. The `tests/` directory holds the engine's own checks; they are not run from here while building.
 
 ## Where to find more
 
-- **`FORK.md`** — the upstream, the release procedure, the module table
+- **`RELEASING.md`** — the release procedure; **`CONTRIBUTING.md`** — what a change is
 - **`BUILTINS.md`** — every builtin, its kind, its number and the binding under it
 - **`NET-AND-CHILD-PROCESS.md`** — how sockets and children are answered
 - **`ROADMAP.md`** — what is intended; **`CHANGELOG.md`** — what landed

@@ -1,0 +1,34 @@
+name: A program behaves differently than under Node
+description: Which program died, what Node does, what the engine did.
+labels: []
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Engine version
+      description: The `@volter/tabnode` version installed.
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: textarea
+    id: program
+    attributes:
+      label: The program
+      description: The smallest program that shows it, and how it was run (a `node` command line, a package's script).
+      render: js
+    validations:
+      required: true
+  - type: textarea
+    id: node
+    attributes:
+      label: What Node does
+      description: The output under Node 22, or the line of Node's documentation that says.
+    validations:
+      required: true
+  - type: textarea
+    id: engine
+    attributes:
+      label: What the engine did
+      description: The output, error or hang under the engine.
+    validations:
+      required: true

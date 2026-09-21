@@ -10,39 +10,44 @@ the engine runs that file and writes only what libuv or V8 would have
 answered. Kind 2, the engine's own: Node's is native and the tab has no twin,
 or the module is the engine itself.
 
-A number is not a score. What each row's remainder is made of is in FORK.md's
-table, row by row; a third of it across the estate is the harness's own
-(`--expose-internals`, `node:test`, `process.getuid`) rather than the engine's.
+A number is not a score. Each row says what its remainder is made of; a third
+of it across the estate is the harness's own (`--expose-internals`, `node:test`,
+`process.getuid`) rather than the engine's. The `measure` workflow prints every
+row's number on each push to `main`.
+
+A number measured before `v0.2.14-volter.49` counted some tests that were
+failing: the hand-written `EventEmitter` caught every listener's throw and
+printed it, so a test whose assertion failed inside a listener exited 0. A row
+measured before .49 is an upper bound, not a measurement; the rows below are
+from .58.
 
 ## Kind 1 -- Node's own file
 
-| Module | Number on .58 | The binding under it |
-|---|---|---|
-| `path` | no tests of its own here | none; it is pure |
-| `net` | 109 of 151 | `tcp_wrap`, `pipe_wrap`, `stream_wrap`: the engine's loopback pairing and its port registry |
-| `child_process` | 63 of 109 | `process_wrap`, `spawn_sync`, `tty_wrap`, the IPC flavour of `pipe_wrap` |
-| `stream` | 158 of 171 | none; eighteen `internal/streams/*` files over `events`, `buffer` and `string_decoder` |
-| `buffer` | 50 of 64 | `buffer`: encode, decode, compare, search, fill, copy, swap over `TextEncoder` and `TextDecoder` |
-| `events` | 2 of 9 | none; `internal/event_target`'s two questions are answered over the realm's `EventTarget` |
-| `util` | 11 of 27 | `util`: an object's non-index properties, a constructor's name, a Map's entries, the call stack, a `.env` file |
-| `assert` | 4 of 16 | none; `internal/assert/*` is pure |
-| `querystring` | 3 of 3 | none |
-| `punycode` | no tests of its own here | `util` |
-| `constants` | no tests of its own here | `constants`: the engine's own table |
-| `diagnostics_channel` | 39 of 46 | `errors`: the run's uncaught door |
-| `readline` | 10 of 20 | none; `internal/readline/*` over the engine's stdio |
-| `os` | 0 of 6 | `os` and `credentials` over the engine's host answers |
-| `tty` | 2 of 3 | `tty_wrap` |
-| `http`, `https` | 315 of 377 | `http_parser`: llhttp's own WebAssembly build, undici's, vendored with its sha256 |
-| `fs`, `fs/promises` | 127 of 246 | `fs`, `fs_dir`, `fs_event_wrap`: forty operations over the run's virtual filesystem; link and symlink answer EPERM |
-| `zlib` | 23 of 59 | `zlib`: zlib's own inflate and deflate, as pako ports them, driven through `z_stream`. Brotli and Zstandard are codecs of their own and are refused by name, with what the engine does carry in the message. |
-| `module`'s hooks | 34 of 38 | none; `internal/modules/customization_hooks.js`, one instance per run |
-| `wasi` | not measured here | the engine's own preview-1 host |
+| Module | Number on .58 | The binding under it | What still fails |
+|---|---|---|---|
+| `path` | no tests of its own here | none; it is pure | |
+| `net` | 109 of 151 | `tcp_wrap`, `pipe_wrap`, `stream_wrap`: the engine's loopback pairing and its port registry | a third are the harness's (`internal/test/binding`, `node:test`, `process.send`, `process.getuid`, `--expose-internals`); the rest are the binding's synchronous writes, which queue nothing, so `bufferSize`, `bytesWritten` mid-write, `drain` and cork batching read 0, and the `autoSelectFamily` timing tests, which need a second address family to race |
+| `child_process` | 63 of 109 | `process_wrap`, `spawn_sync`, `tty_wrap`, the IPC flavour of `pipe_wrap` | signals, timeouts and buffer limits on synchronous children, which run on a thread with no process to kill (`ROADMAP.md`); the harness's `node:test` and `--expose-internals` |
+| `stream` | 158 of 171 | none; eighteen `internal/streams/*` files over `events`, `buffer` and `string_decoder` | the harness's `node:test` |
+| `buffer` | 50 of 64 | `buffer`: encode, decode, compare, search, fill, copy, swap over `TextEncoder` and `TextDecoder` | the harness's `--expose-internals`; a few `inspect` details |
+| `events` | 2 of 9 | none; `internal/event_target`'s two questions are answered over the realm's `EventTarget` | four are the harness's (`--expose-internals` for `internal/event_target`, `node:test`); two need an `EventTarget` whose listeners can be enumerated, which the DOM does not allow; one reads a stack shape |
+| `util` | 11 of 27 | `util`: an object's non-index properties, a constructor's name, a Map's entries, the call stack, a `.env` file | six are the harness's (`internal/util`, `internal/test/binding`, `node:test`); three are a proxy's target, a promise's state and a severed prototype's constructor, which V8's C++ answers and the realm does not; one wants an ES module namespace object, which the engine's lowering does not make; the rest are `inspect` details |
+| `assert` | 4 of 16 | none; `internal/assert/*` is pure | the harness's `node:test`, and the stack and source reading of a failed assertion |
+| `querystring` | 3 of 3 | none | |
+| `punycode` | no tests of its own here | `util` | |
+| `constants` | no tests of its own here | `constants`: the engine's own table | |
+| `diagnostics_channel` | 39 of 46 | `errors`: the run's uncaught door | the harness's `node:test` |
+| `readline` | 10 of 20 | none; `internal/readline/*` over the engine's stdio | a TTY the tests can write escape sequences at; `node:test` |
+| `os` | 0 of 6 | `os` and `credentials` over the engine's host answers | all six turn on the harness reading its own stack frames (`call.getFileName`), not on `os` |
+| `tty` | 2 of 3 | `tty_wrap` | a real terminal's window size |
+| `http`, `https` | 315 of 377 | `http_parser`: llhttp's own WebAssembly build, undici's, vendored with its sha256 | the `--expose-internals` harness tests; llhttp's own version differs from the one Node 22.18 links, so two error codes read as that build names them; `http2` is not ported |
+| `fs`, `fs/promises` | 127 of 246 | `fs`, `fs_dir`, `fs_event_wrap`: forty operations over the run's virtual filesystem; link and symlink answer EPERM | a third are the harness's (`--expose-internals`, `node:test`, `process.getuid`); the rest are a tree with no kernel behind it, no uid or gid, no permission bits to refuse a read, and link and symlink answering EPERM, and the tests that measure exactly those |
+| `zlib` | 23 of 59 | `zlib`: zlib's own inflate and deflate, as pako ports them, driven through `z_stream`. Brotli and Zstandard are codecs of their own and are refused by name, with what the engine does carry in the message. | 11 are Brotli and Zstd, separate codecs with their own bindings, not ported; 8 are the harness's `node:test`. Not a wasm build, and measured rather than assumed: pako's public `Inflate`/`Deflate` replace the caller's output buffer the instant it fills, so they cannot answer Node's contract; `pako/lib/zlib/*` is zlib's `inflate.c` and `deflate.c` ported line for line, honouring `next_out`/`avail_out` as the C does, which is the interface Node's own binding sits on. No zlib wasm build exists to vendor, and compiling `deps/zlib` would mean running a C toolchain, which this project does not do |
+| `module`'s hooks | 34 of 38 | none; `internal/modules/customization_hooks.js`, one instance per run | two require builtins the engine does not have (`node:sea`, `node:sqlite`, `node:test`); one has a load hook answer with a WebAssembly module, which the loader does not compile; one spawns `node --require <hooks> <file.cts>` with `--experimental-strip-types`, a command line the engine's `node` does not take. Where the evidence stops: the row measures `module.registerHooks`; Node's suite has no in-process test of `module.register` (its six spawn a Node with `--loader`), so the asynchronous half is measured on the shape that asked for it, openvscode-server 1.109.5's extension host hook, run through the engine |
+| `wasi` | not measured here | the engine's own preview-1 host | 7 of 12 in `test/wasi` (`ROADMAP.md`) |
 
-`os` reads 0 because its six tests turn on the harness reading its own stack
-frames (`call.getFileName`), not on `os`: the file is Node's own and its two
-real defects -- `tmpdir()` ignoring `TMPDIR`, `setPriority` not round-tripping
--- are fixed.
+`os`'s file is Node's own, and its two real defects, `tmpdir()` ignoring
+`TMPDIR` and `setPriority` not round-tripping, are fixed.
 
 ## Kind 2 -- the engine's own, with the reason
 

@@ -3,11 +3,11 @@
 Open work on tabnode, Volter's fork of `macaly/almostnode`, Node in the browser patched toward Node as source. One
 `## <id>: <title>` section each, with `Status:` and the `Completion:` lines that define done. The
 measure is Node's own suites run against `dist/index.mjs` by `scripts/node-tests.mjs`
-(`scripts/NODE-TESTS.md`); `BUILTINS.md` carries each module's number and `FORK.md` what each remainder
+(`scripts/NODE-TESTS.md`); `BUILTINS.md` carries each module's number and what each remainder
 is made of. The consumer is `volter-ai/browser-substrate`, which pins the engine by version and whose
 changelog records what each version changed in the tab. What shipped is in
-[`CHANGELOG.md`](CHANGELOG.md), one section per `v0.2.14-volter.N` tag; the fork's rules are
-[`FORK.md`](FORK.md).
+[`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
+[`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
 ## launch: The repository goes public from its own first commit
 

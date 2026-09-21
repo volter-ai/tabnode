@@ -3,8 +3,9 @@
 `node-tests.mjs` runs files of Node's test suite as programs of the engine, in
 Node, and counts the ones that exit 0. Each file runs in a process of its own
 over a filesystem that mounts the checkout at `/workspace/app`, with a timeout.
-The number is the module's row in `BUILTINS.md`; what the remainder is made of
-is written up in `FORK.md`. A number is stated with the build it came from.
+The number and what the remainder is made of are the module's row in
+`BUILTINS.md`. A number is stated with the build it came from; the `measure`
+workflow prints every module's on each push to `main`.
 
 ## The test tree
 

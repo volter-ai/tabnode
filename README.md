@@ -4,7 +4,7 @@
 
 tabnode runs Node programs in the browser. Its builtins are Node's own files, vendored unmodified from Node v22.18.0, on a binding layer that answers what libuv and V8's C++ would have answered: sockets, children, files, TTYs, the HTTP parser, zlib. Node's own test suite measures each module, and the numbers are in [`BUILTINS.md`](BUILTINS.md). Where Node's own module is native and the tab has no twin, the module is the engine's, with the reason at its site.
 
-It is the Node engine of [`volter-ai/browser-substrate`](https://github.com/volter-ai/browser-substrate), the host it is built for, which installs it from npm by version. This repository is a fork of `macaly/almostnode`; [`FORK.md`](FORK.md) names the upstream and holds the rules for changing, releasing and measuring it.
+It is the Node engine of [`volter-ai/browser-substrate`](https://github.com/volter-ai/browser-substrate), the host it is built for, which installs it from npm by version.
 
 [![npm](https://img.shields.io/npm/v/%40volter%2Ftabnode?label=%40volter%2Ftabnode)](https://www.npmjs.com/package/@volter/tabnode)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -37,7 +37,7 @@ What the engine does not answer: a package it does not ship. `ws`, `chokidar`, `
 npm install @volter/tabnode
 ```
 
-The `release` branch carries the same build for an install by git tag, `github:volter-ai/tabnode#v0.2.14-volter.<n>`.
+Node 20.19 or later; the package is ES modules only. Every export is described in [`docs/api/`](docs/api/README.md), generated from the declarations at each release.
 
 ```typescript
 import { createContainer } from '@volter/tabnode';
@@ -70,7 +70,13 @@ npm run type-check    # tsc over src and tests
 npm test              # the engine's own checks, vitest over tests/; some spawn a real node over dist/, so build first
 ```
 
-A fix is a source commit on `main` that states which Node behaviour it restores, general to every program, never a fix that recognises a package or a framework. What measures it is Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`); `FORK.md` holds the release procedure and the module-by-module table of what still fails. [`CONTRIBUTING.md`](CONTRIBUTING.md) is the short form; what each release changed is in [`CHANGELOG.md`](CHANGELOG.md), and a vulnerability is reported the way [`SECURITY.md`](SECURITY.md) says.
+A fix is a source commit on `main` that states which Node behaviour it restores, general to every program, never a fix that recognises a package or a framework. What measures it is Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`) and, on every push to `main`, by the `measure` workflow, whose job summary carries the numbers; [`BUILTINS.md`](BUILTINS.md) holds each module's number and what its remainder is made of. [`CONTRIBUTING.md`](CONTRIBUTING.md) says how a change is made and [`RELEASING.md`](RELEASING.md) how a release is cut; what each release changed is in [`CHANGELOG.md`](CHANGELOG.md), and a vulnerability is reported the way [`SECURITY.md`](SECURITY.md) says.
+
+---
+
+## About this fork
+
+This repository began as `macaly/almostnode` at its version 0.2.14, a Node-in-the-browser engine whose builtins were hand-written imitations. The fork replaced them, module by module, with Node's own library files on a binding layer, deleted upstream's demos, sites and hand-written framework servers, and kept only the engine. Its history is its own from the first commit; upstream's copyright notice stays in [`LICENSE`](LICENSE) beside this project's. Releases through `v0.2.14-volter.88` counted up from upstream's version; from `v0.3.0` the version is the fork's own semver line.
 
 ---
 

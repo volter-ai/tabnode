@@ -1,6 +1,17 @@
 # Changelog
 
-What each release changed, newest first. A release is a tag `v0.2.14-volter.N` on the `release` branch and the npm package `@volter/tabnode` at the same version; the counter after `volter.` is the release number, over the upstream version the fork began from. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
+What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
+
+## v0.3.0 — 2026-09-21
+
+The version is the fork's own: `0.3.0`, semver from here, in place of a counter over upstream's `0.2.14`. A release is a tag on `main`; the `release` branch and the committed `dist/` are gone, and the `publish` workflow builds the tag, publishes `@volter/tabnode` with npm provenance under trusted publishing, and makes the GitHub release. No publish token exists anywhere.
+
+The package is ES modules only, with no CommonJS build and no source maps: 11 MB unpacked where `.88` was 29. `src/` still ships, since a host that bundles the engine from source reaches `src/shims/*.ts` through it. `engines.node` is 20.19, the first Node whose `require()` loads an ES module.
+
+The `measure` workflow runs the build, the type-check, the engine's own checks and Node's own suite module by module on every push to `main`, and prints the numbers in its job summary. It blocks nothing.
+
+`docs/api/` is the exported surface, generated from the declarations by TypeDoc at each release. `FORK.md`, which held the rules until now, is dissolved: provenance is the README's "About this fork", the release procedure is `RELEASING.md`, and what each module's remainder is made of is in its row of `BUILTINS.md`. `CODE_OF_CONDUCT.md` is the Contributor Covenant 2.1. Issue and pull request templates ask for the triple a change is stated in: which program died, what Node does, what the engine did.
+
 
 ## v0.2.14-volter.88 — 2026-09-21
 

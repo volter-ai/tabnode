@@ -1,6 +1,6 @@
 {
   "name": "@volter/tabnode",
-  "version": "0.2.14-volter.0",
+  "version": "0.3.0",
   "description": "Node's own library, in a browser tab.",
   "type": "module",
   "license": "MIT",
@@ -22,31 +22,17 @@
   },
   "author": "Aaron <aaron@volter.ai>",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.19.0"
   },
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.mjs"
-      },
-      "require": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.cjs"
-      }
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
     },
     "./vite": {
-      "import": {
-        "types": "./dist/vite-plugin.d.ts",
-        "default": "./dist/vite-plugin.mjs"
-      },
-      "require": {
-        "types": "./dist/vite-plugin.d.ts",
-        "default": "./dist/vite-plugin.cjs"
-      }
+      "types": "./dist/vite-plugin.d.ts",
+      "default": "./dist/vite-plugin.mjs"
     }
   },
   "files": [
@@ -60,7 +46,7 @@
   },
   "scripts": {
     "build:lib": "vite build --config vite.lib.config.js && tsc -p tsconfig.build.json",
-    "build:types": "tsc --project tsconfig.build.json",
+    "docs:api": "typedoc",
     "test": "vitest run",
     "type-check": "tsc --noEmit"
   },
@@ -80,6 +66,8 @@
   "devDependencies": {
     "@types/node": "^25.0.10",
     "@types/pako": "^2.0.4",
+    "typedoc": "^0.28.20",
+    "typedoc-plugin-markdown": "^4.13.1",
     "typescript": "^5.9.3",
     "vite": "^5.4.0",
     "vitest": "^4.0.18"
