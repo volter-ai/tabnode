@@ -1,8 +1,6 @@
 import type { VirtualFS } from '../virtual-fs';
-/** Node's `fs`, as a caller of `createFsShim` reads it. */
-export type FsShim = Record<string, unknown> & {
-    promises: Record<string, unknown>;
-};
+/** Node's `fs`, as a caller of `createFsShim` reads it: the module is Node's own file, so its shape is Node's. */
+export type FsShim = typeof import('node:fs');
 /**
  * Node's `fs` is an ordinary module object, and a program may define on it:
  * `graceful-fs` -- which half of npm loads, openvscode-server through
