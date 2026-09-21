@@ -1,0 +1,25 @@
+# What is published is `dist/` and `src/`: the bundle, its declarations, and
+# the sources a consumer's source maps and its bundler's aliases point at.
+
+.git
+.github
+.vscode
+.idea
+
+tests/
+*.test.ts
+
+tsconfig.json
+tsconfig.build.json
+vite.lib.config.js
+
+.DS_Store
+*.log
+npm-debug.log*
+.env*
+coverage/
+
+# Lock files (consumers use their own)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
