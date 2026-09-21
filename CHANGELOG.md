@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Volter's fork patches the engine toward Node as source: each release below is a tag `v0.2.14-volter.N`, consumed by tag from `browser-substrate`, whose changelog records what each version changed in the tab. Upstream's history follows.
 
+## v0.2.14-volter.87 — 2026-09-21
+
+The engine names no package. `src/tailwind-vite-stand-in.ts` carried a table, `@tailwindcss/vite` to a file of the tab's, that the loader and the bundler's resolver read; both now read the host's table (`globalThis.__browserRuntimeStandInPaths`, package name to file), which the module resolver already read, and the file is gone. What a guest gets is unchanged where the host names the same table, which the substrate does.
+
+Node's own suite is run from here: `scripts/node-tests.mjs` runs files of Node's test tree as programs of a build and counts the ones that exit 0, `dist/index.mjs` unless `--engine` names another; `scripts/NODE-TESTS.md` says where the tree comes from and what `scripts/diagnostic-prelude.cjs` is for.
+
+`npm run type-check` is clean over `tests/`, which had 190 errors: `createFsShim` is typed as Node's `fs`, which is what it returns; the test of the deleted hand-written `Dirent` class is gone; the rest were casts.
+
 ## v0.2.14-volter.86 — 2026-09-21
 
 The repository's history begins here: `main` is one commit holding the tree, and `release` and this tag are cut from it.

@@ -20,10 +20,8 @@ import { fsModule } from '../node-lib/fs-module';
 import { withFilesystem } from '../node-lib/binding/fs';
 import type { VirtualFS } from '../virtual-fs';
 
-/** Node's `fs`, as a caller of `createFsShim` reads it. */
-export type FsShim = Record<string, unknown> & {
-  promises: Record<string, unknown>;
-};
+/** Node's `fs`, as a caller of `createFsShim` reads it: the module is Node's own file, so its shape is Node's. */
+export type FsShim = typeof import('node:fs');
 
 /** One function, or one nested object of them, bound to a tree. */
 function boundTo(tree: VirtualFS, value: unknown): unknown {

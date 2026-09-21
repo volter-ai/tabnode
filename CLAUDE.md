@@ -32,7 +32,7 @@ There is no dev server, no demo page and no end-to-end suite here: this reposito
 
 ## Measurement
 
-Node's own suite, run against a build by `scripts/engine-fork/node-tests.mjs` in the substrate, is what measures a module. `BUILTINS.md` carries each module's number and `FORK.md` carries what each remainder is made of. The `tests/` directory holds the engine's own checks; they are not run from here while building.
+Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`), is what measures a module. `BUILTINS.md` carries each module's number and `FORK.md` carries what each remainder is made of. The `tests/` directory holds the engine's own checks; they are not run from here while building.
 
 ## Where to find more
 

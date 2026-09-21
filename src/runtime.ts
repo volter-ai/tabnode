@@ -42,7 +42,6 @@ import {
   diagnosticsChannelModule, osModule, ttyModule, readlineModule, readlinePromisesModule, zlibModule,
 } from './node-lib/small-modules';
 import { recordedProxies } from './node-lib/internals/util';
-import { STAND_IN_PATHS } from './tailwind-vite-stand-in';
 import { __nodeResolverFor } from './node-resolver';
 import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
 import { PUNYCODE_SOURCE } from './punycode-source';
@@ -1770,11 +1769,17 @@ function createRequire(
    */
   type ResolvedAs = { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null };
   const loadModule = (resolvedPath: string, resolvedAs?: ResolvedAs): Module => {
-    // A path into a stood-in package loads the stand-in too: Vite's bundled
-    // config imports its plugins by the file paths its own resolver found,
-    // `node_modules/@tailwindcss/vite/dist/index.mjs`, never by name.
-    for (const [__name, __file] of Object.entries(STAND_IN_PATHS)) {
-      if (resolvedPath.includes('/node_modules/' + __name + '/') && vfs.existsSync(__file)) { resolvedPath = __file; break; }
+    // A path into a package the host stands in for loads the host's file
+    // too, from the same table the resolver reads by name
+    // (`globalThis.__browserRuntimeStandInPaths`, package name -> file): Vite's
+    // bundled config imports its plugins by the file paths its own resolver
+    // found, `node_modules/<package>/dist/index.mjs`, never by name. The
+    // engine names no package here; the table is the host's.
+    const __hostStandIns = (globalThis as Record<string, unknown>).__browserRuntimeStandInPaths as Record<string, string> | undefined;
+    if (__hostStandIns) {
+      for (const [__name, __file] of Object.entries(__hostStandIns)) {
+        if (resolvedPath.includes('/node_modules/' + __name + '/') && vfs.existsSync(__file)) { resolvedPath = __file; break; }
+      }
     }
     // Return cached module
     // A native addon cannot load in a tab. Node answers a `require` of a `.node`

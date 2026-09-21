@@ -99,7 +99,7 @@ describe('Buffer writes respect shared-memory views, UTF-16 encoding, and byte l
   it('refuses an offset past the end and an encoding it does not know', () => {
     const GuestBuffer = guestBuffer().imported;
     expect(() => GuestBuffer.alloc(4).write('a', 5)).toThrow(RangeError);
-    expect(() => GuestBuffer.alloc(4).write('a', 0, 1, 'klingon')).toThrow(TypeError);
+    expect(() => GuestBuffer.alloc(4).write('a', 0, 1, 'klingon' as BufferEncoding)).toThrow(TypeError);
   });
 
   it('shares memory with the view it was made from', () => {

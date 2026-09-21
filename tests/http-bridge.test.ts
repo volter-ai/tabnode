@@ -100,7 +100,7 @@ describe('the page bridge over a real connection', () => {
     expect(answer.statusCode).toBe(201);
     expect(answer.headers['content-type']).toBe('application/json');
     expect(answer.headers['x-seen']).toBe('yes');
-    expect(JSON.parse(answer.body.toString())).toEqual({ method: 'POST', url: '/page?q=1', body: 'from the page' });
+    expect(JSON.parse(answer.body!.toString())).toEqual({ method: 'POST', url: '/page?q=1', body: 'from the page' });
     bridge.close();
   });
 

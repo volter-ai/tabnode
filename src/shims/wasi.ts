@@ -35,8 +35,8 @@
  * by moving the vendored file to a newer Node. The binding is corrected only
  * toward what uvwasi answers.
  *
- * Measured by Node's own `test/wasi/*` through the substrate's
- * `scripts/engine-fork/node-tests.mjs`, and by `tests/wasi.test.ts`, a
+ * Measured by Node's own `test/wasi/*` through `scripts/node-tests.mjs`
+ * (`--dir test/wasi`), and by `tests/wasi.test.ts`, a
  * differential against the host's `node:wasi`.
  *
  * What the engine cannot serve, and answers as uvwasi answers a host that

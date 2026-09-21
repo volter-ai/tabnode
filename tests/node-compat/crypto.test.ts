@@ -426,7 +426,7 @@ describe('crypto module (Node.js compat)', () => {
       const derivedKey = await new Promise<Buffer>((resolve, reject) => {
         pbkdf2(password, salt, iterations, keylen, digest, (err, key) => {
           if (err) reject(err);
-          else resolve(key);
+          else resolve(key as Buffer);
         });
       });
 
@@ -446,14 +446,14 @@ describe('crypto module (Node.js compat)', () => {
       const key1 = await new Promise<Buffer>((resolve, reject) => {
         pbkdf2(params.password, params.salt, params.iterations, params.keylen, params.digest, (err, key) => {
           if (err) reject(err);
-          else resolve(key);
+          else resolve(key as Buffer);
         });
       });
 
       const key2 = await new Promise<Buffer>((resolve, reject) => {
         pbkdf2(params.password, params.salt, params.iterations, params.keylen, params.digest, (err, key) => {
           if (err) reject(err);
-          else resolve(key);
+          else resolve(key as Buffer);
         });
       });
 
@@ -471,14 +471,14 @@ describe('crypto module (Node.js compat)', () => {
       const key1 = await new Promise<Buffer>((resolve, reject) => {
         pbkdf2('password1', params.salt, params.iterations, params.keylen, params.digest, (err, key) => {
           if (err) reject(err);
-          else resolve(key);
+          else resolve(key as Buffer);
         });
       });
 
       const key2 = await new Promise<Buffer>((resolve, reject) => {
         pbkdf2('password2', params.salt, params.iterations, params.keylen, params.digest, (err, key) => {
           if (err) reject(err);
-          else resolve(key);
+          else resolve(key as Buffer);
         });
       });
 
@@ -496,14 +496,14 @@ describe('crypto module (Node.js compat)', () => {
       const key1 = await new Promise<Buffer>((resolve, reject) => {
         pbkdf2(params.password, 'salt1', params.iterations, params.keylen, params.digest, (err, key) => {
           if (err) reject(err);
-          else resolve(key);
+          else resolve(key as Buffer);
         });
       });
 
       const key2 = await new Promise<Buffer>((resolve, reject) => {
         pbkdf2(params.password, 'salt2', params.iterations, params.keylen, params.digest, (err, key) => {
           if (err) reject(err);
-          else resolve(key);
+          else resolve(key as Buffer);
         });
       });
 
@@ -517,7 +517,7 @@ describe('crypto module (Node.js compat)', () => {
       const derivedKey = await new Promise<Buffer>((resolve, reject) => {
         pbkdf2(password, salt, 100, 32, 'sha256', (err, key) => {
           if (err) reject(err);
-          else resolve(key);
+          else resolve(key as Buffer);
         });
       });
 
@@ -532,7 +532,7 @@ describe('crypto module (Node.js compat)', () => {
         const derivedKey = await new Promise<Buffer>((resolve, reject) => {
           pbkdf2('password', 'salt', 100, keylen, 'sha256', (err, key) => {
             if (err) reject(err);
-            else resolve(key);
+            else resolve(key as Buffer);
           });
         });
 
@@ -547,7 +547,7 @@ describe('crypto module (Node.js compat)', () => {
         const derivedKey = await new Promise<Buffer>((resolve, reject) => {
           pbkdf2('password', 'salt', 100, 32, digest, (err, key) => {
             if (err) reject(err);
-            else resolve(key);
+            else resolve(key as Buffer);
           });
         });
 

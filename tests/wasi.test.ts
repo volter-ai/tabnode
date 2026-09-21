@@ -84,7 +84,7 @@ const RIGHT_FD_READ = 2n;
  * A module importing five syscalls and exporting `memory` and `_start`, whose
  * `_start` records what each syscall answered.
  */
-function buildModule(): Uint8Array {
+function buildModule(): Uint8Array<ArrayBuffer> {
   // Function indices: imports first, in order; then _start.
   const [PATH_OPEN, FD_WRITE, FD_PRESTAT_GET, FD_READ, PROC_EXIT, START] = [0, 1, 2, 3, 4, 5];
   const types = [
@@ -183,7 +183,7 @@ function outcomeOf(memory: WebAssembly.Memory, exitCode: number, stdout: string)
 // The two sides.
 // ---------------------------------------------------------------------------
 
-type AnyWASI = new (options?: unknown) => { wasiImport: Record<string, unknown>; start(instance: unknown): number; initialize(instance: unknown): void; getImportObject(): Record<string, Record<string, unknown>> };
+type AnyWASI = new (options?: unknown) => { wasiImport: Record<string, unknown>; start(instance: unknown): number; initialize(instance: unknown): void; getImportObject(): WebAssembly.Imports };
 
 function engineSide() {
   const vfs = new VirtualFS();

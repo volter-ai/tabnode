@@ -61,9 +61,9 @@ describe('the loopback client keeps one response per request', () => {
         bridge.handleRequest(port, 'GET', '/big', {}),
       ]);
 
-      expect([ok.statusCode, ok.body.toString()]).toEqual([200, 'BODY200']);
-      expect([bad.statusCode, bad.body.toString()]).toEqual([400, 'BODY400']);
-      expect([big.statusCode, big.body.toString()]).toEqual([413, 'BODY413']);
+      expect([ok.statusCode, ok.body!.toString()]).toEqual([200, 'BODY200']);
+      expect([bad.statusCode, bad.body!.toString()]).toEqual([400, 'BODY400']);
+      expect([big.statusCode, big.body!.toString()]).toEqual([413, 'BODY413']);
 
       const tags = ['BODY200', 'BODY400', 'BODY413'] as const;
       expect(received).toHaveLength(3);
@@ -97,7 +97,7 @@ describe('the loopback client keeps one response per request', () => {
     const port = await listeningPort(bridge);
     const answer = await bridge.handleRequest(port, 'GET', '/ok', {});
     expect(answer.statusCode).toBe(200);
-    expect(answer.body.toString()).toBe('BODY200');
+    expect(answer.body!.toString()).toBe('BODY200');
     bridge.close();
   }, 20_000);
 });

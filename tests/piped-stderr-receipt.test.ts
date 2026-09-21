@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { VirtualFS, createContainer } from '../src/index';
 
-function receiptsOf(spy: ReturnType<typeof vi.spyOn>): string[] {
+function receiptsOf(spy: { mock: { calls: unknown[][] } }): string[] {
   return spy.mock.calls
     .map((args) => args.map((arg) => String(arg)).join(' '))
     .filter((line) => /^\[run \d+\] /.test(line));
