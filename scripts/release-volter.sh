@@ -35,7 +35,9 @@ git push -q origin release
 git push -q origin "$tag"
 # The package, from the commit the tag names: what npm serves is what the tag
 # holds, and a consumer by tag and a consumer by version get the same build.
-npm publish > /tmp/tabnode-release-publish.log 2>&1 || { tail -20 /tmp/tabnode-release-publish.log; exit 1; }
+# The version is a prerelease by semver's reading, so npm wants the dist-tag
+# said; `latest` is the only line there is.
+npm publish --tag latest > /tmp/tabnode-release-publish.log 2>&1 || { tail -20 /tmp/tabnode-release-publish.log; exit 1; }
 # Back to wherever this started. A plain `git checkout main` fails when another
 # worktree holds main, and the release is already pushed by then.
 git checkout -q - 2>/dev/null || true
