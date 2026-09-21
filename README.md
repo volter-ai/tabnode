@@ -4,7 +4,7 @@
 
 tabnode runs Node programs in the browser. Its builtins are Node's own files, vendored unmodified from Node v22.18.0, on a binding layer that answers what libuv and V8's C++ would have answered: sockets, children, files, TTYs, the HTTP parser, zlib. Node's own test suite measures each module, and the numbers are in [`BUILTINS.md`](BUILTINS.md). Where Node's own module is native and the tab has no twin, the module is the engine's, with the reason at its site.
 
-It is the Node engine of [`volter-ai/browser-substrate`](https://github.com/volter-ai/browser-substrate), which consumes it by tag. This repository is a fork of `macaly/almostnode`; [`FORK.md`](FORK.md) names the upstream and holds the rules for changing, releasing and measuring it.
+It is the Node engine of [`volter-ai/browser-substrate`](https://github.com/volter-ai/browser-substrate), which consumes it from npm by version. This repository is a fork of `macaly/almostnode`; [`FORK.md`](FORK.md) names the upstream and holds the rules for changing, releasing and measuring it.
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -33,11 +33,13 @@ What the engine does not answer: a package it does not ship. `ws`, `chokidar`, `
 ## Using it
 
 ```bash
-npm install github:volter-ai/tabnode#v0.2.14-volter.<n>
+npm install @volter/tabnode
 ```
 
+The `release` branch carries the same build for an install by git tag, `github:volter-ai/tabnode#v0.2.14-volter.<n>`.
+
 ```typescript
-import { createContainer } from 'tabnode';
+import { createContainer } from '@volter/tabnode';
 
 const container = createContainer();
 container.vfs.writeFileSync('/hello.js', `
@@ -52,7 +54,7 @@ A guest server is reached through the bridge, at `/__virtual__/{port}/`, once th
 
 ```typescript
 // vite.config.ts
-import { tabnodePlugin } from 'tabnode/vite';
+import { tabnodePlugin } from '@volter/tabnode/vite';
 export default { plugins: [tabnodePlugin()] };
 ```
 
