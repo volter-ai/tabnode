@@ -4,7 +4,7 @@ Open work on tabnode, Volter's fork of `macaly/almostnode`, Node in the browser 
 `## <id>: <title>` section each, with `Status:` and the `Completion:` lines that define done. The
 measure is Node's own suites run against `dist/index.mjs` by `scripts/node-tests.mjs`
 (`scripts/NODE-TESTS.md`); `BUILTINS.md` carries each module's number and `FORK.md` what each remainder
-is made of. The consumer is `volter-ai/browser-substrate`, which pins the engine by tag and whose
+is made of. The consumer is `volter-ai/browser-substrate`, which pins the engine by version and whose
 changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per `v0.2.14-volter.N` tag; the fork's rules are
 [`FORK.md`](FORK.md).
@@ -15,7 +15,7 @@ Status: done 2026-09-21
 The repository's history is its own: `main` began on 2026-09-21 at one commit holding the tree as it
 stood, and `release` and its tags are cut from it. What the tree carries of its provenance is the
 licence's, not the history's: `LICENSE` keeps upstream's notice, `src/node-lib/LICENSE` is Node's, and
-`THIRD-PARTY-NOTICES.md` names the rest. The substrate pins the engine by tag, and its pin is a tag of
+`THIRD-PARTY-NOTICES.md` names the rest. The substrate pins the engine by version, and each version is a tag of
 this history.
 
 Completion:

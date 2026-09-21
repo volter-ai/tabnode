@@ -19,14 +19,16 @@ the engine's build.
 - Upstream's history is not this repository's. A change taken from upstream
   arrives as a patch with the reason at the site, like any other change.
 - `dist/` is not tracked on `main`. The `release` branch carries built
-  `dist/` for the substrate to depend on by tag, `v0.2.14-volter.<n>`;
-  `npm run build:lib` writes it. A release is a merge of `main` into
-  `release`, the version in `package.json` and `package-lock.json` set to
-  the release's own number, a build, a commit of `dist/`, and a tag. The
-  version is not optional: the substrate reads the installed engine's
-  version against its pin and refuses a mismatch, and releases .76 through
-  .82 were cut still declaring .75, so every one of them was refused on a
-  fresh install until .83 carried its number.
+  `dist/`, tagged `v0.2.14-volter.<n>`, and the package `@volter/tabnode` is
+  published to npm from that commit at the same version; `npm run build:lib`
+  writes the build. A release is a merge of `main` into `release`, the
+  version in `package.json` and `package-lock.json` set to the release's
+  own number, a build, a commit of `dist/`, a tag, and `npm publish`
+  (`scripts/release-volter.sh <n>` does all of it). The version is not
+  optional: the substrate reads the installed engine's version against its
+  pin and refuses a mismatch, and releases .76 through .82 were cut still
+  declaring .75, so every one of them was refused on a fresh install until
+  .83 carried its number.
 - **Stage a release's `dist/` with `git add -A -f dist`.** `dist/` is ignored
   on `main` and tracked on `release`, so a file the build NAMES BY CONTENT
   HASH -- `dist/assets/runtime-worker-<hash>.js` -- is a new, ignored path

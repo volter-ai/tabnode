@@ -1,6 +1,6 @@
 {
-  "name": "tabnode",
-  "version": "0.2.14-volter.87",
+  "name": "@volter/tabnode",
+  "version": "0.2.14-volter.0",
   "description": "Node's own library, in a browser tab.",
   "type": "module",
   "license": "MIT",
@@ -55,6 +55,9 @@
     "THIRD-PARTY-NOTICES.md"
   ],
   "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build:lib": "vite build --config vite.lib.config.js && (tsc -p tsconfig.build.json || true)",
     "build:types": "tsc --project tsconfig.build.json",
