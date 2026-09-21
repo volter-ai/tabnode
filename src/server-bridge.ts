@@ -417,16 +417,26 @@ export class ServerBridge extends EventEmitter {
    * news comes from the net binding, because that is where a port is taken;
    * the engine's `http` is Node's own file and knows nothing of a page.
    */
+  private readonly guestServers = new WeakSet<IVirtualServer>();
+
   private watchGuestPorts(): void {
     setPortWatchers(
       (port, address) => {
         if (this.servers.has(port)) return;
         const hostname = address || '0.0.0.0';
-        this.registerServer(guestListeningServer(port, hostname), port, hostname);
+        const server = guestListeningServer(port, hostname);
+        this.guestServers.add(server);
+        this.registerServer(server, port, hostname);
       },
       (port) => {
         const entry = this.servers.get(port);
-        if (entry && entry.server === null) this.unregisterServer(port);
+        // Closing a guest's listener releases its bridge port too. Guest
+        // registrations carry a request adapter now, not the old null sentinel;
+        // a host replacement on that port must still be left alone.
+        if (entry && (entry.server === null || this.guestServers.has(entry.server))) {
+          if (entry.server) entry.server.listening = false;
+          this.unregisterServer(port);
+        }
       },
     );
   }
