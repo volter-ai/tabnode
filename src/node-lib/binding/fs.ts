@@ -469,6 +469,9 @@ export const fsBinding = {
       if ((flags & bits.excl) !== 0 && (flags & bits.create) !== 0 && exists) throw createNodeError('EEXIST', 'open', name);
       if (!exists) {
         if ((flags & bits.create) === 0) throw createNodeError('ENOENT', 'open', name);
+        // VirtualFS writes create parents for image loading; open(2) does not.
+        const parent = name.slice(0, name.lastIndexOf('/')) || '/';
+        if (!tree.statSync(parent).isDirectory()) throw createNodeError('ENOTDIR', 'open', name);
         tree.writeFileSync(name, '');
       } else if ((flags & bits.truncate) !== 0) {
         tree.writeFileSync(name, '');
@@ -481,13 +484,14 @@ export const fsBinding = {
   },
 
   close(fd: number, req?: FSReq): undefined {
-    return answer(req, () => { openFiles.delete(fd); return undefined; });
+    return answer(req, () => { fileFor(fd); openFiles.delete(fd); return undefined; });
   },
 
   // ---- reading ------------------------------------------------------------
   read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number, req?: FSReq): number | undefined {
     return answer(req, () => {
       const file = fileFor(fd);
+      if ((file.flags & 3) === 1) throw createNodeError('EBADF', 'read', file.path);
       if (file.cached === undefined) file.cached = file.tree.readFileSync(file.path) as Uint8Array;
       const bytes = file.cached;
       const from = position === null || position === undefined || position < 0 ? file.position : position;
@@ -512,18 +516,27 @@ export const fsBinding = {
   },
 
   /** Node's fast path for `readFile` with an encoding it can decode itself. */
-  readFileUtf8(path: unknown, _flags: number): string {
-    return vfs().readFileSync(asPath(path), 'utf8') as string;
+  readFileUtf8(path: unknown, flags: number): string {
+    const owned = typeof path !== 'number';
+    const fd = owned ? fsBinding.open(path, flags, 0o666) as number : path as number;
+    try {
+      const file = fileFor(fd);
+      const bytes = new Uint8Array(file.tree.statSync(file.path).size);
+      const length = fsBinding.read(fd, bytes, 0, bytes.length, -1) as number;
+      return new TextDecoder().decode(bytes.subarray(0, length));
+    } finally { if (owned) fsBinding.close(fd); }
   },
 
   // ---- writing ------------------------------------------------------------
   writeBuffer(fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, req?: FSReq): number | undefined {
     return answer(req, () => {
       const file = fileFor(fd);
+      if ((file.flags & 3) === 0) throw createNodeError('EBADF', 'write', file.path);
       const tree = file.tree;
       const slice = buffer.subarray(offset, offset + length);
       const existing = file.cached ?? (tree.existsSync(file.path) ? tree.readFileSync(file.path) as Uint8Array : new Uint8Array(0));
-      const at = position === null || position === undefined || position < 0 ? file.position : position;
+      const at = (file.flags & flagBits().append) !== 0 ? existing.length
+        : position === null || position === undefined || position < 0 ? file.position : position;
       const size = Math.max(existing.length, at + slice.length);
       const next = new Uint8Array(size);
       next.set(existing, 0);
@@ -553,15 +566,13 @@ export const fsBinding = {
     return fsBinding.writeBuffer(fd, bytes, 0, bytes.length, position ?? null, req);
   },
 
-  writeFileUtf8(path: unknown, data: string, flags: number, _mode: number): undefined {
-    const tree = vfs();
-    const name = asPath(path);
-    if ((flags & flagBits().append) !== 0 && tree.existsSync(name)) {
-      const existing = tree.readFileSync(name, 'utf8') as string;
-      tree.writeFileSync(name, existing + data);
-      return undefined;
-    }
-    tree.writeFileSync(name, data);
+  writeFileUtf8(path: unknown, data: string, flags: number, mode: number): undefined {
+    // Node's UTF-8 fast path accepts a path OR an already-open descriptor.
+    // Reuse open/write so flags, offsets and errors match the buffer path.
+    const owned = typeof path !== 'number';
+    const fd = owned ? fsBinding.open(path, flags, mode) as number : path as number;
+    try { fsBinding.writeString(fd, data, null, 'utf8'); }
+    finally { if (owned) fsBinding.close(fd); }
     return undefined;
   },
 
@@ -843,6 +854,7 @@ export const fsBinding = {
   ftruncate(fd: number, length: number, req?: FSReq): undefined {
     return answer(req, () => {
       const file = fileFor(fd);
+      if ((file.flags & 3) === 0) throw createNodeError('EBADF', 'ftruncate', file.path);
       const tree = file.tree;
       const bytes = file.cached ?? (tree.readFileSync(file.path) as Uint8Array);
       const next = new Uint8Array(length);

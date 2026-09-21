@@ -2,6 +2,15 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## Unreleased
+
+- Restore filesystem descriptor semantics used by the substrate's lock-file gate:
+  UTF-8 reads and writes accept an open descriptor and honor its position and access
+  mode; path writes use the same open flags as buffer writes, refuse missing parents,
+  and close rejects an invalid descriptor. In-memory nodes have distinct inode numbers
+  that survive writes and renames. The substrate's 79 adapter checks pass against this
+  source-built candidate; this is a host measurement, not browser acceptance.
+
 ## v0.3.0 — 2026-09-21
 
 The version is the fork's own: `0.3.0`, semver from here, in place of a counter over upstream's `0.2.14`. A release is a tag on `main`; the `release` branch and the committed `dist/` are gone, and the `publish` workflow builds the tag, publishes `@volter/tabnode` with npm provenance, and makes the GitHub release. The workflow holds the one publish token, as the repository's secret, until npm's trusted publisher for it is confirmed (`RELEASING.md`); then none exists anywhere.

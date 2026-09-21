@@ -45,6 +45,17 @@ export interface FSNode {
   atime?: number;
 }
 
+// Identity belongs to the node, so writes and renames preserve it while an
+// unlink followed by recreation receives a different inode. Weak keys do not
+// retain deleted trees, and snapshots receive new identities when restored.
+const nodeInodes = new WeakMap<FSNode, number>();
+let nextInode = 1;
+function inodeFor(node: FSNode): number {
+  let inode = nodeInodes.get(node);
+  if (inode === undefined) { inode = nextInode++; nodeInodes.set(node, inode); }
+  return inode;
+}
+
 // Simple EventEmitter for VFS change notifications
 type VFSChangeListener = (path: string, content: string) => void;
 type VFSDeleteListener = (path: string) => void;
@@ -491,7 +502,7 @@ export class VirtualFS {
       uid: 1000,
       gid: 1000,
       dev: 0,
-      ino: 0,
+      ino: inodeFor(node),
       rdev: 0,
       blksize: 4096,
       blocks: Math.ceil(size / 512),
@@ -531,7 +542,7 @@ export class VirtualFS {
       uid: 1000,
       gid: 1000,
       dev: 0,
-      ino: 0,
+      ino: inodeFor(node),
       rdev: 0,
       blksize: 4096,
       blocks: 0
