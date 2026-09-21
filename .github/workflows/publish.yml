@@ -1,7 +1,9 @@
 # The release, from a tag: the tag's tree is built and published to npm as
-# @volter/tabnode with provenance (npm trusts this workflow in this
-# repository; no token), and the GitHub release is made with the changelog's
-# section for the version as its notes. scripts/release.sh cuts the tag.
+# @volter/tabnode with provenance, and the GitHub release is made with the
+# changelog's section for the version as its notes. scripts/release.sh cuts
+# the tag. The publish authenticates with the repository secret NPM_TOKEN
+# until npm's trusted publisher for this workflow is confirmed
+# (RELEASING.md); then the secret and the NODE_AUTH_TOKEN line go.
 name: publish
 on:
   push:
@@ -26,6 +28,8 @@ jobs:
       - name: The version is the tag
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
       - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: The GitHub release, with the changelog's section as its notes
         env:
           GH_TOKEN: ${{ github.token }}

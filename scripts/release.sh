@@ -13,9 +13,9 @@ git diff --quiet && git diff --cached --quiet || { echo "working tree not clean"
 grep -q "^## v$v " CHANGELOG.md || { echo "CHANGELOG.md has no '## v$v' section"; exit 1; }
 npm run docs:api > /tmp/tabnode-release-docs.log 2>&1 || { tail -20 /tmp/tabnode-release-docs.log; exit 1; }
 git add docs/api
-npm version --no-git-tag-version "$v" > /dev/null
+[ "$(node -p "require('./package.json').version")" = "$v" ] || npm version --no-git-tag-version "$v" > /dev/null
 git add package.json package-lock.json
-git commit -q -m "release v$v"
+git commit -q -m "release v$v" || true
 git tag -a "v$v" -m "v$v"
 # Two pushes: one push of both refs reports one result, and a rejected
 # branch would otherwise leave a tag whose commit is not on main.

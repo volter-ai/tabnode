@@ -4,7 +4,7 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## v0.3.0 — 2026-09-21
 
-The version is the fork's own: `0.3.0`, semver from here, in place of a counter over upstream's `0.2.14`. A release is a tag on `main`; the `release` branch and the committed `dist/` are gone, and the `publish` workflow builds the tag, publishes `@volter/tabnode` with npm provenance under trusted publishing, and makes the GitHub release. No publish token exists anywhere.
+The version is the fork's own: `0.3.0`, semver from here, in place of a counter over upstream's `0.2.14`. A release is a tag on `main`; the `release` branch and the committed `dist/` are gone, and the `publish` workflow builds the tag, publishes `@volter/tabnode` with npm provenance, and makes the GitHub release. The workflow holds the one publish token, as the repository's secret, until npm's trusted publisher for it is confirmed (`RELEASING.md`); then none exists anywhere.
 
 The package is ES modules only, with no CommonJS build and no source maps: 11 MB unpacked where `.88` was 29. `src/` still ships, since a host that bundles the engine from source reaches `src/shims/*.ts` through it. `engines.node` is 20.19, the first Node whose `require()` loads an ES module.
 
