@@ -1322,10 +1322,12 @@ function createVFSPlugin(externals?: string[]): unknown {
         // browser can't resolve. An empty stub is safe because these builtins
         // are typically only used in server-only code paths (e.g., @vercel/oidc).
         const bareModule = importPath.replace(/^node:/, '');
-        // A name the tab stands in for resolves to the tab's own file here as
-        // it does for require, so a config the bundler inlines gets the stand-in.
-        const __standInPaths: Record<string, string> = {"@tailwindcss/vite":"/tmp/browser-runtime-tailwind/vite.cjs"};
-        if (Object.prototype.hasOwnProperty.call(__standInPaths, bareModule) && vfs.existsSync(__standInPaths[bareModule])) {
+        // A name the host stands in for resolves to the host's file here as
+        // it does for require, so a config the bundler inlines gets the
+        // stand-in. The table is the host's (`globalThis.__browserRuntimeStandInPaths`,
+        // package name -> file); the engine names no package.
+        const __standInPaths = (globalThis as Record<string, unknown>).__browserRuntimeStandInPaths as Record<string, string> | undefined;
+        if (__standInPaths && Object.prototype.hasOwnProperty.call(__standInPaths, bareModule) && vfs.existsSync(__standInPaths[bareModule])) {
           return vfsResolved(__standInPaths[bareModule]);
         }
         if (NODE_BUILTINS.has(bareModule)) {

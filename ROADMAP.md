@@ -2,15 +2,16 @@
 
 Open work on tabnode, Volter's fork of `macaly/almostnode`, Node in the browser patched toward Node as source. One
 `## <id>: <title>` section each, with `Status:` and the `Completion:` lines that define done. The
-consumer that measures the fork is `volter-ai/browser-substrate`: its `scripts/engine-fork/node-tests.mjs`
-runs Node's own suites against `dist/index.mjs`, its `scripts/engine-fork/PORT-GAPS.md` and changelog
-carry the numbers, and its work item W31 (the engine is the fork by tag) owns the node-adapters gate.
-What shipped is in [`CHANGELOG.md`](CHANGELOG.md), one section per `v0.2.14-volter.N` tag; the fork's
-rules are [`FORK.md`](FORK.md).
+measure is Node's own suites run against `dist/index.mjs` by `scripts/node-tests.mjs`
+(`scripts/NODE-TESTS.md`); `BUILTINS.md` carries each module's number and `FORK.md` what each remainder
+is made of. The consumer is `volter-ai/browser-substrate`, which pins the engine by tag and whose
+changelog records what each version changed in the tab. What shipped is in
+[`CHANGELOG.md`](CHANGELOG.md), one section per `v0.2.14-volter.N` tag; the fork's rules are
+[`FORK.md`](FORK.md).
 
 ## launch: The repository goes public from its own first commit
 
-Status: active
+Status: done 2026-09-21
 The repository's history is its own: `main` began on 2026-09-21 at one commit holding the tree as it
 stood, and `release` and its tags are cut from it. What the tree carries of its provenance is the
 licence's, not the history's: `LICENSE` keeps upstream's notice, `src/node-lib/LICENSE` is Node's, and
@@ -18,10 +19,10 @@ licence's, not the history's: `LICENSE` keeps upstream's notice, `src/node-lib/L
 this history.
 
 Completion:
-- The tailwind stand-in (`src/tailwind-vite-stand-in.ts`, a file the runtime resolves under a package's name) either leaves the engine or is an exception the constitution states at its site; as it stands the tree contradicts its own first invariant.
-- `npm run type-check` is clean over `tests/` as well as `src/`: the test files that measure shapes Node's own files replaced are deleted or rewritten against what a guest gets now.
-- The measurement a reader is pointed at is reachable: Node's suite is run by a harness in this repository, or the substrate is public beside it.
-- The repository is public.
+- Done in `v0.2.14-volter.87`. The one file that named a package (`src/tailwind-vite-stand-in.ts`) left the
+  engine: the loader and the bundler read the host's table of stand-ins, as the resolver already did.
+  `npm run type-check` is clean over `tests/` as well as `src/`. Node's suite is run by
+  `scripts/node-tests.mjs` in this repository. The repository is public.
 
 ## the-tree-is-the-engine: The repository is the engine and nothing else
 
@@ -49,7 +50,7 @@ Completion:
 ## node-as-source: The engine behaves as Node, measured by Node's own suites
 
 Status: active
-Node's own fixtures drive the measurement (`browser-substrate/scripts/engine-fork/PORT-GAPS.md`):
+Node's own fixtures drive the measurement (`scripts/node-tests.mjs`):
 `test/wasi` stands at 7 of 12 and `test/child-process` at 45 of 109 after synchronous children landed;
 `test-path-` is 16 of 16. Each fix closes a class (what Node answers, deprecated or not), never a
 fixture. The shell's text-patch layer is already deleted; the gate measures the fork alone.

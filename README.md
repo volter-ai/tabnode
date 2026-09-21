@@ -67,7 +67,7 @@ npm run type-check    # tsc over src and tests
 npm test              # the engine's own checks, vitest over tests/
 ```
 
-A fix is a source commit on `main` that states which Node behaviour it restores, general to every program, never a fix that recognises a package or a framework. What measures it is Node's own suite, run against a build by `scripts/engine-fork/node-tests.mjs` in the substrate; `FORK.md` holds the release procedure and the module-by-module table of what still fails.
+A fix is a source commit on `main` that states which Node behaviour it restores, general to every program, never a fix that recognises a package or a framework. What measures it is Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`); `FORK.md` holds the release procedure and the module-by-module table of what still fails.
 
 ---
 

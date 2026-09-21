@@ -3,7 +3,7 @@
 The rule is the substrate's ADR-0021: a builtin is Node's own file unless
 Node's own is native. Each module below is one of two kinds, with its reason
 and, for kind 1, its number on v0.2.14-volter.58 -- Node's own
-`test-<module>-*` through `scripts/engine-fork/node-tests.mjs`.
+`test-<module>-*` through `scripts/node-tests.mjs`.
 
 Kind 1, Node's own file on a binding: Node's implementation is JavaScript, so
 the engine runs that file and writes only what libuv or V8 would have

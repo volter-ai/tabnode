@@ -11,8 +11,8 @@ the engine's build.
 - A change is a commit with the reason at the site: which program died,
   what Node does, what the engine did. The commit body carries the same.
 - A change goes toward Node. Node's behavior is the reference, Node's own
-  tests are the measure (`scripts/engine-fork/node-tests.mjs` in the
-  substrate repo runs them against `dist/index.mjs`). A hand-written module
+  tests are the measure (`scripts/node-tests.mjs` runs them against
+  `dist/index.mjs`; `scripts/NODE-TESTS.md`). A hand-written module
   that has grown a patch group is replaced with Node's own file from
   `nodejs/node/lib` on a binding written once; the measure goes up and the
   patches go away.

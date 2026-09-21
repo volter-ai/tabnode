@@ -3,13 +3,13 @@
  *
  * Adapted from: https://github.com/nodejs/node/blob/main/test/parallel/test-fs-*.js
  *
- * These tests verify that our fs shim behaves consistently with Node.js
- * for common file system operations. Tests use VirtualFS as the backend.
+ * `createFsShim` is Node's own `fs` bound to a tree of the engine's; these
+ * check the binding under it answers what the file expects, over VirtualFS.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { VirtualFS } from '../../src/virtual-fs';
-import { createFsShim, Dirent } from '../../src/shims/fs';
+import { createFsShim } from '../../src/shims/fs';
 import type { FsShim } from '../../src/shims/fs';
 import { assert } from './common';
 
@@ -154,7 +154,7 @@ describe('fs module (Node.js compat)', () => {
     });
 
     it('should return Dirent objects with withFileTypes', () => {
-      const entries = fs.readdirSync('/dir', { withFileTypes: true }) as Dirent[];
+      const entries = fs.readdirSync('/dir', { withFileTypes: true }) as import('node:fs').Dirent[];
       expect(entries.length).toBe(3);
 
       const file1 = entries.find(e => e.name === 'file1.txt');
@@ -523,32 +523,6 @@ describe('fs module (Node.js compat)', () => {
         await fs.promises.copyFile('/src.txt', '/dest.txt');
         assert.strictEqual(vfs.readFileSync('/dest.txt', 'utf8'), 'content');
       });
-    });
-  });
-
-  describe('Dirent class', () => {
-    it('should have name property', () => {
-      const dirent = new Dirent('file.txt', false, true);
-      assert.strictEqual(dirent.name, 'file.txt');
-    });
-
-    it('should report isFile correctly', () => {
-      const fileDirent = new Dirent('file.txt', false, true);
-      const dirDirent = new Dirent('dir', true, false);
-
-      assert.strictEqual(fileDirent.isFile(), true);
-      assert.strictEqual(fileDirent.isDirectory(), false);
-      assert.strictEqual(dirDirent.isFile(), false);
-      assert.strictEqual(dirDirent.isDirectory(), true);
-    });
-
-    it('should return false for special types', () => {
-      const dirent = new Dirent('file.txt', false, true);
-      assert.strictEqual(dirent.isBlockDevice(), false);
-      assert.strictEqual(dirent.isCharacterDevice(), false);
-      assert.strictEqual(dirent.isFIFO(), false);
-      assert.strictEqual(dirent.isSocket(), false);
-      assert.strictEqual(dirent.isSymbolicLink(), false);
     });
   });
 

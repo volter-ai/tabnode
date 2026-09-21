@@ -14,7 +14,7 @@ import {
 } from 'node:crypto';
 import { VirtualFS } from '../src/virtual-fs';
 import { Runtime } from '../src/runtime';
-import type { Buffer as GuestBufferType } from '../src/node-lib/stream-module';
+import type { Buffer as GuestBufferType } from 'node:buffer';
 
 interface GuestCrypto {
   hash(algorithm: string, data: unknown, outputEncoding?: string): GuestBufferType | string;
