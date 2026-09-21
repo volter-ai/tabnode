@@ -1,6 +1,6 @@
 {
   "name": "tabnode",
-  "version": "0.2.14-volter.0",
+  "version": "0.2.14-volter.86",
   "description": "Node's own library, in a browser tab.",
   "type": "module",
   "license": "MIT",

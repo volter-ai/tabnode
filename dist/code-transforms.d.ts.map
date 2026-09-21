@@ -1,0 +1,1 @@
+{"version":3,"file":"code-transforms.d.ts","sourceRoot":"","sources":["../src/code-transforms.ts"],"names":[],"mappings":"AAAA;;;;GAIG;AAoBH,QAAA,MAAM,YAAY,8BAAgD,CAAC;AAUnE,eAAO,MAAM,eAAe,GAAI,OAAO,OAAO,KAAG,IAAmC,CAAC;AACrF,OAAO,EAAE,YAAY,EAAE,CAAC;AAExB;;;;;;;;;GASG;AACH,wBAAgB,uBAAuB,CAAC,IAAI,EAAE,MAAM,GAAG,OAAO,CAa7D;AAED,wBAAgB,uBAAuB,CAAC,IAAI,EAAE,MAAM,GAAG,MAAM,CAM5D"}

@@ -1,0 +1,1 @@
+{"version":3,"file":"require-hook.d.ts","sourceRoot":"","sources":["../../src/node-lib/require-hook.ts"],"names":[],"mappings":"AAAA;;;;;;;;GAQG;AACH,MAAM,MAAM,UAAU,GAAG,CAAC,SAAS,EAAE,MAAM,KAAK,OAAO,CAAC;AAMxD,sEAAsE;AACtE,wBAAgB,aAAa,CAAC,GAAG,EAAE,UAAU,GAAG,IAAI,CAEnD;AAED,uEAAuE;AACvE,wBAAgB,UAAU,CAAC,SAAS,EAAE,MAAM,GAAG,OAAO,CAKrD"}
