@@ -32,6 +32,12 @@ apart). Absent until something sets it, which is the write time.
 
 ***
 
+### mode?
+
+> `optional` **mode?**: `number`
+
+***
+
 ### mtime
 
 > **mtime**: `number`

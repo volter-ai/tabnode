@@ -91,3 +91,37 @@ AbortSignal to cancel long-running commands
 > `optional` **stdin?**: `string`
 
 What the shell reads on stdin, so a builtin reads what was piped to it.
+
+***
+
+### stdinStream?
+
+> `optional` **stdinStream?**: `AsyncIterable`\<`Uint8Array`\<`ArrayBufferLike`\>, `any`, `any`\>
+
+***
+
+### terminal?
+
+> `optional` **terminal?**: `object`
+
+#### columns
+
+> **columns**: `number`
+
+#### onResize?
+
+> `optional` **onResize?**: (`listener`) => () => `void`
+
+##### Parameters
+
+###### listener
+
+(`columns`, `rows`) => `void`
+
+##### Returns
+
+() => `void`
+
+#### rows
+
+> **rows**: `number`

@@ -114,6 +114,28 @@ Access check - in our VFS, always succeeds if file exists
 
 ***
 
+### chmodSync()
+
+> **chmodSync**(`path`, `mode`): `void`
+
+Get stats for path
+
+#### Parameters
+
+##### path
+
+`string`
+
+##### mode
+
+`number`
+
+#### Returns
+
+`void`
+
+***
+
 ### copyFileSync()
 
 > **copyFileSync**(`src`, `dest`): `void`
@@ -642,8 +664,6 @@ Async stat
 
 > **statSync**(`path`): [`Stats`](../interfaces/Stats.md)
 
-Get stats for path
-
 #### Parameters
 
 ##### path
@@ -699,6 +719,30 @@ Remove file
 ##### path
 
 `string`
+
+#### Returns
+
+`void`
+
+***
+
+### utimesSync()
+
+> **utimesSync**(`path`, `atime`, `mtime`): `void`
+
+#### Parameters
+
+##### path
+
+`string`
+
+##### atime
+
+`number` \| `Date`
+
+##### mtime
+
+`number` \| `Date`
 
 #### Returns
 
