@@ -4,15 +4,16 @@
 
 tabnode runs Node programs in the browser. Its builtins are Node's own files, vendored unmodified from Node v22.18.0, on a binding layer that answers what libuv and V8's C++ would have answered: sockets, children, files, TTYs, the HTTP parser, zlib. Node's own test suite measures each module, and the numbers are in [`BUILTINS.md`](BUILTINS.md). Where Node's own module is native and the tab has no twin, the module is the engine's, with the reason at its site.
 
-It is the Node engine of [`volter-ai/browser-substrate`](https://github.com/volter-ai/browser-substrate), which consumes it from npm by version. This repository is a fork of `macaly/almostnode`; [`FORK.md`](FORK.md) names the upstream and holds the rules for changing, releasing and measuring it.
+It is the Node engine of [`volter-ai/browser-substrate`](https://github.com/volter-ai/browser-substrate), the host it is built for, which installs it from npm by version. This repository is a fork of `macaly/almostnode`; [`FORK.md`](FORK.md) names the upstream and holds the rules for changing, releasing and measuring it.
 
+[![npm](https://img.shields.io/npm/v/%40volter%2Ftabnode?label=%40volter%2Ftabnode)](https://www.npmjs.com/package/@volter/tabnode)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ---
 
 ## What is here
 
-The engine is a library, not an application. It has one consumer, the substrate, and its surface is what that consumer embeds:
+The engine is a library, not an application, and its surface is what a host embeds:
 
 | Door | What it is |
 |---|---|
@@ -66,10 +67,10 @@ export default { plugins: [tabnodePlugin()] };
 npm install
 npm run build:lib     # the bundle and its declarations, into dist/
 npm run type-check    # tsc over src and tests
-npm test              # the engine's own checks, vitest over tests/
+npm test              # the engine's own checks, vitest over tests/; some spawn a real node over dist/, so build first
 ```
 
-A fix is a source commit on `main` that states which Node behaviour it restores, general to every program, never a fix that recognises a package or a framework. What measures it is Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`); `FORK.md` holds the release procedure and the module-by-module table of what still fails.
+A fix is a source commit on `main` that states which Node behaviour it restores, general to every program, never a fix that recognises a package or a framework. What measures it is Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`); `FORK.md` holds the release procedure and the module-by-module table of what still fails. [`CONTRIBUTING.md`](CONTRIBUTING.md) is the short form; what each release changed is in [`CHANGELOG.md`](CHANGELOG.md), and a vulnerability is reported the way [`SECURITY.md`](SECURITY.md) says.
 
 ---
 

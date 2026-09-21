@@ -2,7 +2,7 @@
 
 ## What this is
 
-tabnode runs Node in the browser: Node's own library files on bindings written once, an in-memory virtual filesystem, npm installation, and a service worker answering a guest server's port. It is a library with one consumer, `volter-ai/browser-substrate`, which consumes it by tag. `CONSTITUTION.md` is what it must remain, `FORK.md` holds the rules for changing and releasing it, and `BUILTINS.md` names every builtin's kind and number.
+tabnode runs Node in the browser: Node's own library files on bindings written once, an in-memory virtual filesystem, npm installation, and a service worker answering a guest server's port. It is a library; the host it is built for is `volter-ai/browser-substrate`, which installs it from npm by version. `CONSTITUTION.md` is what it must remain, `FORK.md` holds the rules for changing and releasing it, and `BUILTINS.md` names every builtin's kind and number.
 
 ## Core principle
 

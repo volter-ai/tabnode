@@ -59,9 +59,8 @@
     "access": "public"
   },
   "scripts": {
-    "build:lib": "vite build --config vite.lib.config.js && (tsc -p tsconfig.build.json || true)",
+    "build:lib": "vite build --config vite.lib.config.js && tsc -p tsconfig.build.json",
     "build:types": "tsc --project tsconfig.build.json",
-    "build:publish": "npm run build:lib && npm run build:types",
     "test": "vitest run",
     "type-check": "tsc --noEmit"
   },

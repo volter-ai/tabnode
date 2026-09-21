@@ -23,7 +23,8 @@ the engine's build.
   published to npm from that commit at the same version; `npm run build:lib`
   writes the build. A release is a merge of `main` into `release`, the
   version in `package.json` and `package-lock.json` set to the release's
-  own number, a build, a commit of `dist/`, a tag, and `npm publish`
+  own number, a build, a commit of `dist/`, a tag, `npm publish`, and the
+  GitHub release with the changelog's section as its notes
   (`scripts/release-volter.sh <n>` does all of it). The version is not
   optional: the substrate reads the installed engine's version against its
   pin and refuses a mismatch, and releases .76 through .82 were cut still

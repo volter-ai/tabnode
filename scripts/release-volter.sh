@@ -1,9 +1,10 @@
 #!/bin/bash
 # Cuts a release: merges main into the `release` branch, builds the library,
 # commits dist/, tags v0.2.14-volter.<n>, pushes, and publishes
-# @volter/tabnode at that version to npm from the same commit. dist/ is
-# ignored on main and tracked on release only. Publishing needs an npm token
-# with publish rights on @volter in ~/.npmrc.
+# @volter/tabnode at that version to npm from the same commit, and makes the
+# GitHub release. dist/ is ignored on main and tracked on release only.
+# Publishing needs an npm token with publish rights on @volter in ~/.npmrc,
+# and `gh` signed in to an account that can write volter-ai/tabnode.
 #
 #   bash scripts/release-volter.sh <n>
 set -e
@@ -38,6 +39,10 @@ git push -q origin "$tag"
 # The version is a prerelease by semver's reading, so npm wants the dist-tag
 # said; `latest` is the only line there is.
 npm publish --tag latest > /tmp/tabnode-release-publish.log 2>&1 || { tail -20 /tmp/tabnode-release-publish.log; exit 1; }
+# The GitHub release for the tag, with the changelog's section for it as the
+# notes: what a reader of the releases page sees is what CHANGELOG.md says.
+notes=$(awk -v h="## $tag " 'index($0, h) == 1 { p = 1; next } p && /^## / { exit } p' CHANGELOG.md)
+gh release create "$tag" --title "$tag" --notes "${notes:-$tag}" > /dev/null
 # Back to wherever this started. A plain `git checkout main` fails when another
 # worktree holds main, and the release is already pushed by then.
 git checkout -q - 2>/dev/null || true

@@ -1,13 +1,6 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## Volter fork
-
-Volter's fork patches the engine toward Node as source: each release below is a tag `v0.2.14-volter.N`, consumed by tag from `browser-substrate`, whose changelog records what each version changed in the tab. Upstream's history follows.
+What each release changed, newest first. A release is a tag `v0.2.14-volter.N` on the `release` branch and the npm package `@volter/tabnode` at the same version; the counter after `volter.` is the release number, over the upstream version the fork began from. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
 ## v0.2.14-volter.88 — 2026-09-21
 
@@ -42,6 +35,231 @@ One of those was not inert. `watchChildren` subscribed to the `child_process` di
 `createRuntime` no longer takes `sandbox` or `dangerouslyAllowSameOrigin`: it puts a guest on the caller's thread or on a worker, and origin isolation is the embedder's to place, which in the tab is the substrate's isolation worker. The package publishes `.` and `./vite`; `./next`, which served a service worker from a Next route, is gone. The dependencies only the demos used (`ai`, `@ai-sdk/*`, `zod`, `xterm`, playwright, jsdom) are gone with them.
 
 The bundle is 3,090,499 bytes, down from 3,318,662.
+
+## v0.2.14-volter.84 — 2026-09-21
+
+The engine is tabnode: the package and the repository carry the name that says what the tree is. `FORK.md` records that a release sets its own version, since .76 through .82 declared .75 and the substrate refused them.
+
+## v0.2.14-volter.83 — 2026-09-21
+
+The version the release declares is its own. Same source as .82.
+
+## v0.2.14-volter.82 — 2026-09-21
+
+- `buffer.toString(encoding)` takes the encoding as a string the binding has already checked.
+
+## v0.2.14-volter.81 — 2026-09-21
+
+- The container answers a process's pid and its parent's.
+- A handled uncaught exception that calls `process.exit(1)` still prints its receipt.
+- `readdir` with `encoding: 'buffer'` answers Buffer names.
+- A builtin's ESM namespace is the module's own keys.
+
+## v0.2.14-volter.80 — 2026-09-21
+
+- A second process's `fs` is compiled from the fs module, not from the runtime, so two runtimes in one realm keep their own trees.
+
+## v0.2.14-volter.79 — 2026-09-21
+
+- The `node` command reads the run's tree without importing the fs binding.
+
+## v0.2.14-volter.78 — 2026-09-21
+
+- Two runtimes in one realm keep their own trees.
+
+## v0.2.14-volter.77 — 2026-09-21
+
+- A spawn's piped stdin reaches a host-registered program.
+
+## v0.2.14-volter.76 — 2026-09-21
+
+- A probe left in `process.cwd()` is removed.
+
+## v0.2.14-volter.75 — 2026-09-21
+
+- A child's `process.send` on a closed channel is `ERR_IPC_CHANNEL_CLOSED`.
+- The extension host, forked as the server forks it, sends `ready`.
+
+## v0.2.14-volter.74 — 2026-09-21
+
+- A descriptor opened for reading holds the file from its first read.
+
+## v0.2.14-volter.73 — 2026-09-21
+
+Same source as .72, rebuilt.
+
+## v0.2.14-volter.72 — 2026-09-21
+
+- The constants binding builds its crypto and zlib groups from literals, read at use rather than at load.
+- `util.inspect` of an Error answers `BuiltinModule.exists`, and a pipe is not a TTY.
+
+## v0.2.14-volter.71 — 2026-09-21
+
+- A piped run that dies names itself on the host console.
+
+## v0.2.14-volter.70 — 2026-09-21
+
+- A write takes a Buffer's named bytes, not its pool.
+- The callback flavour of an fs answer invokes `oncomplete` as a method of the request.
+
+## v0.2.14-volter.69 — 2026-09-20
+
+- The loopback client ends a response at the message, not the socket.
+- The fs binding resolves a relative path against the calling run's cwd.
+
+## v0.2.14-volter.68 — 2026-09-20
+
+- Vendored files reach the engine's shims; `fs` answers `chmod`, links and blobs.
+- The callback flavour of an fs answer captures `oncomplete` on the calling stack.
+
+## v0.2.14-volter.67 — 2026-09-20
+
+- A guest `listen` registers a server the page can observe.
+- The fs binding carries the run's tree from the call into the tick.
+
+## v0.2.14-volter.66 — 2026-09-20
+
+- A release's version is its tag: `package.json` carries `0.2.14-volter.N` from here, so an installed engine can be told from another.
+- A socket handed from a guest server to its forked child holds for the page, and again after a reconnect.
+
+## v0.2.14-volter.65 — 2026-09-20
+
+- A `require` goes through `Module._load`, so a program that replaces it is asked.
+- Every process has its own number, and a number nobody runs is `ESRCH`.
+
+## v0.2.14-volter.64 — 2026-09-20
+
+- Every process has its own number, and a number nobody runs is `ESRCH`.
+
+## v0.2.14-volter.63 — 2026-09-20
+
+- A module object is a program's to write on: `require('fs')` takes a `defineProperty`.
+
+## v0.2.14-volter.62 — 2026-09-20
+
+- The fs binding answers Node's promise flavour, so `fs.promises` works.
+
+## v0.2.14-volter.61 — 2026-09-20
+
+- `require('timers')` answers Node's `Timeout`, and is called on the realm.
+
+## v0.2.14-volter.60 — 2026-09-20
+
+- A vendored file compiled where the realm has no `process` reads Node's own facts.
+
+## v0.2.14-volter.59 — 2026-09-20
+
+- Brotli and Zstandard refuse by name, rather than by a missing constructor.
+
+## v0.2.14-volter.58 — 2026-09-20
+
+- `zlib` is Node's own `zlib.js` on zlib's own inflate and deflate, as pako ports them: 23 of 59 of Node's tests, where the imitation's number was 7.
+
+## v0.2.14-volter.57 — 2026-09-20
+
+- `assert`, `querystring`, `readline`, `diagnostics_channel`, `os`, `tty`, `punycode` and `constants` are Node's own files, and the fs imitation is gone.
+
+## v0.2.14-volter.56 — 2026-09-20
+
+- `fs` is Node's own `fs.js` on a binding over the virtual filesystem: 126 of 246 of Node's tests, where the imitation's number was 52.
+
+## v0.2.14-volter.55 — 2026-09-20
+
+- A bridge answer's body is bytes, and may be absent.
+
+## v0.2.14-volter.54 — 2026-09-20
+
+- A bridge answer's header may carry several values, as Node's `getHeaders()` answers; the fetch answer's headers are their own, beside the request's.
+
+## v0.2.14-volter.53 — 2026-09-20
+
+- A bridge answer's status message is optional, as Node's `res.statusMessage` is.
+
+## v0.2.14-volter.52 — 2026-09-20
+
+- The bridge streams a guest server's answer to a host caller, and a server's address may be a path.
+
+## v0.2.14-volter.51 — 2026-09-20
+
+- `http` and `https` are Node's own files on llhttp's wasm build: 308 of 377 of Node's tests, where the imitation's number was 28.
+- The page's requests are bytes on a socket, and `ws` is the real package, installed by the project.
+
+## v0.2.14-volter.50 — 2026-09-20
+
+- `util`'s lazy exports reach the loader, not a realm that has no `require`.
+
+## v0.2.14-volter.49 — 2026-09-20
+
+- `events` and `util` are Node's own `events.js` and `util.js`. The hand-written `EventEmitter` had caught every listener's throw and printed it, so a test that failed inside a listener exited 0; the measure counted those, and now it does not. Every number measured before this release is an upper bound.
+- A run with a module resolution outstanding is not idle.
+- A name that stands for a class is a class a program can extend.
+- A release stages its `dist/` with `git add -A -f dist`, or the tag ships no worker.
+
+## v0.2.14-volter.48 — 2026-09-20
+
+- `module.registerHooks` is Node's own file, one instance per run: 34 of 38 of Node's tests, where there was no `register` at all. A require and a load ask the chain where Node asks it, and Node names every builtin a process has loaded.
+
+## v0.2.14-volter.47 — 2026-09-20
+
+- The engine's index exports `buffer`, where Node keeps `Buffer`.
+
+## v0.2.14-volter.46 — 2026-09-20
+
+- `buffer` and `stream` are Node's own `buffer.js` and `stream.js`: 47 of 64 and 146 of 171 of Node's tests, where the imitations' numbers were 15 and 70.
+- A stream the engine fills still answers Node's `_read`; a copy's length and the base64 alphabet are Node's; a child that exits with its channel open is reported.
+- A `defineProperty` the host refuses lands on the guest global.
+
+## v0.2.14-volter.45 — 2026-09-20
+
+- `net` and `child_process` are Node's own `net.js` and `child_process.js` on a libuv-shaped binding written once, with the internals they name vendored or bound: 99 of 151 and 75 of 109 of Node's tests, where the hand-written modules' numbers were 63 and 52. A vendored file loads as Node's `BuiltinModule` loads it.
+- A sent descriptor crosses as a duplicate, beside the bytes of its message; a write is read before the end that followed it, and a stream at EOF is done.
+- `BUILTINS.md` names every builtin's kind and reason, and its number against Node's own tests.
+
+## v0.2.14-volter.44 — 2026-09-20
+
+- A module evaluates under its own name and line numbers, as Node's wrapper keeps them.
+
+## v0.2.14-volter.43 — 2026-09-20
+
+- The socket an upgrade listener is handed is a `net.Socket`, framed or not.
+- `net.Socket` reports `bufferSize` and `writableLength`, as Node's does.
+
+## v0.2.14-volter.42 — 2026-09-20
+
+- An IPC send carries its handle, and the process that receives a socket owns it.
+
+## v0.2.14-volter.41 — 2026-09-20
+
+- `fork` resolves its module path as `require` does.
+- `kill` on a child that has exited does nothing, and `exit` fires once.
+
+## v0.2.14-volter.40 — 2026-09-20
+
+- A program that has ended holds no timers, as an ended Node process holds none.
+- An open socket keeps its run alive, as a handle keeps Node's loop alive.
+- An exception a timer callback throws is its process's uncaught exception, never the host's.
+- `unhandledRejection` is emitted with its promise, as Node emits it.
+
+## v0.2.14-volter.39 — 2026-09-20
+
+- A byte-pipe upgrade is asked for by the connect message's own field, not by a flag of one program.
+
+## v0.2.14-volter.38 — 2026-09-20
+
+- `http`'s upgrade hands the listener a real socket, and a server that answers the handshake itself is heard.
+
+## v0.2.14-volter.37 — 2026-09-20
+
+- A chunked decode says what a whole-buffer decode says, and `Readable.setEncoding` decodes over a `StringDecoder` that is Node's.
+- `util.getCallSites` reports the frames above its caller.
+- `crypto.randomBytes` calls back, and `randomFill` exists.
+- `net` listens on and connects to a unix-socket path.
+- The release script pushes the branch before the tag, and each push can fail on its own.
+
+## v0.2.14-volter.36 — 2026-09-20
+
+- `Buffer.isBuffer` is true for a Buffer and for nothing else.
+- A run that owns a listening server is not idle, as an open handle keeps Node's loop alive.
 
 ## v0.2.14-volter.35 — 2026-09-18
 
