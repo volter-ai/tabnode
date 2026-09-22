@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.4.1 — 2026-09-21
+
 - Child-process inherited stdout/stderr and default cwd come from the spawning
   run, not the last guest placed on the shared realm. Inherited descriptors
   retain their original sinks when guest JavaScript replaces stream.write.
