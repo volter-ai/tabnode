@@ -25,9 +25,9 @@ import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { UV_ENOENT, UV_ESRCH } from './uv';
 import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
-  type OwnedHandle,
+  ownerOf, type OwnedHandle,
 } from './handles';
-import type { ProcessToken } from '../../process-tokens';
+import { __runFor, type ProcessToken } from '../../process-tokens';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio` builds it. */
 export interface StdioEntry {
@@ -154,18 +154,31 @@ function signalNameOf(signal: number | string): string {
  * `/work` means `/work/child.js`, and resolved against the engine's shell's
  * own root it meant `/child.js` and a child that exited 1.
  */
-function spawningDirectory(): string | undefined {
-  const realm = (globalThis as unknown as { process?: { cwd?: () => string } }).process;
+// A shared realm's process global is whichever guest ran last. The spawning
+// handle belongs to the parent: inherited stdio and cwd must come from that
+// parent's process, even while a sibling starts or exits. A failed fork was
+// replaying stderr into its own closed IPC-backed stream (write EBADF).
+function parentProcess(token: ProcessToken | null) {
+  return token !== null ? __runFor(token)?.process
+    : (globalThis as unknown as { process?: { cwd?: () => string; stdout?: { write(text: string): unknown }; stderr?: { write(text: string): unknown } } }).process;
+}
+
+function spawningDirectory(token: ProcessToken | null): string | undefined {
+  const realm = parentProcess(token);
   if (typeof realm?.cwd !== 'function') return undefined;
   try { return realm.cwd(); } catch { return undefined; }
 }
 
 /** Where an `inherit` entry's bytes go: the spawning program's own stream. */
-function inheritedWriter(fd: number): ((text: string) => void) | null {
+function inheritedWriter(fd: number, token: ProcessToken | null): ((text: string) => void) | null {
   if (fd !== 1 && fd !== 2) return null;
-  const realm = (globalThis as unknown as {
-    process?: { stdout?: { write(text: string): unknown }; stderr?: { write(text: string): unknown } };
-  }).process;
+  // Inherit the descriptor's original sink, not a guest replacement of
+  // process.stderr.write (a child commonly redirects its console over IPC).
+  if (token !== null) {
+    const parent = __runFor(token);
+    return (fd === 1 ? parent?.stdout : parent?.stderr) ?? null;
+  }
+  const realm = parentProcess(token);
   const stream = fd === 1 ? realm?.stdout : realm?.stderr;
   if (!stream || typeof stream.write !== 'function') return null;
   return (text: string) => {
@@ -230,7 +243,7 @@ export class Process implements OwnedHandle {
     const request: RunRequest = {
       file: options.file,
       args: options.args ?? [options.file],
-      cwd: options.cwd ?? spawningDirectory(),
+      cwd: options.cwd ?? spawningDirectory(ownerOf(this)),
       env,
       detached: options.detached === true,
       stdout: null,
@@ -270,7 +283,7 @@ export class Process implements OwnedHandle {
           request.stderrIsPipe = true;
         }
       } else if (entry.type === 'inherit' || entry.type === 'fd') {
-        const inherited = inheritedWriter(entry.fd ?? index);
+        const inherited = inheritedWriter(entry.fd ?? index, ownerOf(this));
         if (index === 1) request.stdout = inherited;
         else request.stderr = inherited;
       }
