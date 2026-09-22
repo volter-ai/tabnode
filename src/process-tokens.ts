@@ -43,6 +43,7 @@ export interface OwnedRun {
 }
 
 const runs = new Map<ProcessToken, OwnedRun>();
+const tokensByProcess = new WeakMap<Process, ProcessToken>();
 
 /**
  * The run whose guest code is executing, as an async-local value rather than a
@@ -65,12 +66,20 @@ export function enterRun<T>(token: ProcessToken, fn: () => T): T {
  */
 export function __recordRun(token: ProcessToken, run: OwnedRun): () => void {
   runs.set(token, run);
+  tokensByProcess.set(run.process, token);
   let released = false;
   return () => {
     if (released) return;
     released = true;
     if (runs.get(token) === run) runs.delete(token);
+    // Retain the weak association so delayed callbacks cannot turn an ended
+    // process into an unowned host request. The Process itself remains weak.
   };
+}
+
+/** Bound guest globals retain their actual process across native await turns. */
+export function __tokenForProcess(process: Process): ProcessToken | null {
+  return tokensByProcess.get(process) ?? null;
 }
 
 /** The run recorded under this name, while it lasts. */

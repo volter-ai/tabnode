@@ -118,26 +118,62 @@ export const internalFile = {
  */
 type AnyStream = Record<string, (...args: never[]) => unknown> & Record<string, unknown>;
 
+/** Capture the owning graph; callbacks must not fall back to the host loader. */
+export function createWebStreamsAdapters(require: (name: string) => unknown = libRequire) {
 function streamModule(): Record<string, new (options?: unknown) => AnyStream> {
-  return libRequire('stream') as Record<string, new (options?: unknown) => AnyStream>;
+  return require('stream') as Record<string, new (options?: unknown) => AnyStream>;
 }
 
-function newReadableStreamFromStreamReadable(readable: AnyStream): ReadableStream {
+function newReadableStreamFromStreamReadable(readable: AnyStream, options?: { strategy?: QueuingStrategy }): ReadableStream {
+  // Node v22.18's webstreams/adapters owns this boundary's semantics: pause
+  // at the Web queue's high-water mark, resume on pull, and let Node's own
+  // finished()/destroy() handle premature close and cancellation. The old
+  // adapter attached a flowing data listener with no pressure, buffering an
+  // entire HTTP upload while the host was still deciding whether to admit it.
+  const streams = require('stream') as {
+    finished(stream: AnyStream, callback: (error?: Error | null) => void): () => void;
+    destroy(stream: AnyStream, error?: unknown): void;
+  };
+  if (typeof readable?._readableState !== 'object') {
+    throw Object.assign(new TypeError('streamReadable must be a stream.Readable'), { code: 'ERR_INVALID_ARG_TYPE' });
+  }
+  if (readable.destroyed || (readable as Record<string, unknown>).readable === false) return new ReadableStream({ start(controller) { controller.close(); } });
+  const objectMode = Boolean(readable.readableObjectMode);
+  const highWaterMark = Number(readable.readableHighWaterMark);
+  const strategy = options?.strategy ?? (objectMode
+    ? new CountQueuingStrategy({ highWaterMark }) : new ByteLengthQueuingStrategy({ highWaterMark }));
+  let canceled = false;
+  let complete = false;
+  let controller: ReadableStreamDefaultController;
+  const on = readable.on as (event: string, listener: (...args: any[]) => void) => void;
+  const onData = (chunk: unknown): void => {
+    if (complete || canceled) return;
+    // Detach binary chunks from Node's reusable Buffer pool; retain objects.
+    controller.enqueue(!objectMode && chunk instanceof Uint8Array ? new Uint8Array(chunk) : chunk);
+    if ((controller.desiredSize ?? 0) <= 0) (readable.pause as () => void)();
+  };
+  (readable.pause as () => void)();
   return new ReadableStream({
-    start(controller) {
-      (readable.on as (e: string, l: (v: unknown) => void) => void)('data', (chunk) => {
-        controller.enqueue(chunk instanceof Uint8Array ? chunk : new Uint8Array(Buffer_from(chunk)));
+    start(output) {
+      controller = output;
+      const cleanup = streams.finished(readable, (error) => {
+        complete = true;
+        cleanup();
+        (readable.removeListener as (event: string, listener: (...args: any[]) => void) => void)('data', onData);
+        on.call(readable, 'error', () => {});
+        if (canceled) return;
+        if (error) controller.error(error); else controller.close();
       });
-      (readable.on as (e: string, l: () => void) => void)('end', () => { try { controller.close(); } catch { /* a stream closed twice is closed */ } });
-      (readable.on as (e: string, l: (v: unknown) => void) => void)('error', (error) => { try { controller.error(error); } catch { /* likewise */ } });
+      on.call(readable, 'data', onData);
     },
-    cancel() { (readable.destroy as () => void)(); },
-  });
+    pull() { if (!complete && !canceled) (readable.resume as () => void)(); },
+    cancel(reason) { canceled = true; streams.destroy(readable, reason); },
+  }, strategy);
 }
 
 /** The bytes of a chunk that is not already one, without importing `buffer` at load. */
 function Buffer_from(chunk: unknown): Uint8Array {
-  const { Buffer } = libRequire('buffer') as { Buffer: { from(value: unknown): Uint8Array } };
+  const { Buffer } = require('buffer') as { Buffer: { from(value: unknown): Uint8Array } };
   return Buffer.from(chunk);
 }
 
@@ -214,7 +250,7 @@ function newStreamDuplexFromReadableWritablePair(pair: { readable: ReadableStrea
   return duplex;
 }
 
-export const internalWebStreamsAdapters = {
+return {
   newReadableStreamFromStreamReadable,
   newStreamReadableFromReadableStream,
   newWritableStreamFromStreamWritable,
@@ -222,3 +258,6 @@ export const internalWebStreamsAdapters = {
   newReadableWritablePairFromDuplex,
   newStreamDuplexFromReadableWritablePair,
 };
+
+}
+export const internalWebStreamsAdapters = createWebStreamsAdapters();

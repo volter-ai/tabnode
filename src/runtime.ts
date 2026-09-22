@@ -6,6 +6,8 @@
  */
 
 import { VirtualFS } from './virtual-fs';
+import { guestPromise, intrinsicPromise } from './promise-ownership';
+import { guestFetch } from './fetch-transport';
 import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork } from './host-globals';
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
@@ -35,7 +37,7 @@ import { getServerBridge } from './server-bridge';
 import * as moduleShim from './shims/module';
 import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
 import { kRunFilesystem } from './node-lib/binding/fs';
-import { esmNamespaceOf, syncBuiltinESMExports } from './node-lib/load';
+import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor } from './node-lib/load';
 import { fsModule, fsModuleFor } from './node-lib/fs-module';
 import {
   assertModule, querystringModule, punycodeModule, constantsModule,
@@ -187,6 +189,7 @@ function __substrateTimerFunctions(process: Process, host: Record<string, unknow
 const __substrateAsyncFunction = (async function() {}).constructor;
 const __substrateFunctionScope = Function("__substrateFunctionGlobals", "__substrateFunctionSource", "with (__substrateFunctionGlobals) { return eval('(' + __substrateFunctionSource + ')'); }");
 function __substrateGuestConstructor(Constructor: unknown, process: Process): unknown {
+  if (Constructor === intrinsicPromise) return guestPromise(process);
   if (Constructor !== Function && Constructor !== __substrateAsyncFunction) return Constructor;
   return new Proxy(Constructor as object, { construct(target, args) {
     const compiled = Reflect.construct(target as new (...args: unknown[]) => unknown, args);
@@ -214,16 +217,21 @@ function __substrateSourceURL(resolvedPath: string): string {
   }
   return /[\n\r]/u.test(name) ? '' : `\n//# sourceURL=${name}`;
 }
-function __substrateScopeConstructors(code: string): string {
-  if (!/\bnew\s/u.test(code)) return code;
+function __substrateScopeGlobalCalls(code: string): string {
+  if (!/\b(?:new|fetch|Promise)\b/u.test(code)) return code;
   let ast;
   try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true }); }
   catch { return code; }
-  const positions: Array<[number, number]> = [];
+  const positions: Array<[number, number, string, string]> = [];
   walkAst(ast, node => {
-    if (node.type === "NewExpression" && node.callee.type === "Identifier") positions.push([node.callee.start, node.callee.end]);
+    if (node.type === "NewExpression" && node.callee.type === "Identifier") positions.push([node.callee.start, node.callee.end, "(__substrateGuestConstructor(", ",$process))"]);
+    // The narrow with-scope below keeps global replacements dynamic.
+    // Remove its object receiver for ordinary calls (including local
+    // bindings, whose bare-call receiver was already undefined).
+    const called = node.type === "CallExpression" ? node.callee : node.type === "TaggedTemplateExpression" ? node.tag : undefined;
+    if (called?.type === "Identifier" && (called.name === "fetch" || called.name === "Promise")) positions.push([called.start, called.end, "(0,", ")"]);
   });
-  for (const [start, end] of positions.sort((a,b) => b[0] - a[0])) code = code.slice(0,start) + "(__substrateGuestConstructor(" + code.slice(start,end) + ",$process))" + code.slice(end);
+  for (const [start, end, before, after] of positions.sort((a,b) => b[0] - a[0])) code = code.slice(0,start) + before + code.slice(start,end) + after + code.slice(end);
   return code;
 }
 /**
@@ -262,7 +270,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   let guest = __substrateGuestGlobals.get(process);
   if (guest) return guest;
   const host = globalThis as unknown as Record<string, unknown>;
-  let fetch = host.fetch;
+  let fetch = typeof host.fetch === 'function' ? guestFetch(process, host.fetch as typeof globalThis.fetch) : host.fetch;
   // The guest's `Buffer` is the one `require('buffer')` answers with, read
   // when the guest asks rather than when this closure is made: the name in
   // this file stands for the class until the loader has built it, and a guest
@@ -273,12 +281,15 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   // holds non-configurable, `navigator` under a worker's authority) lives on
   // the proxy's own target, and is this guest's from then on.
   const shadowed = (target: object, key: string | symbol): boolean => Reflect.getOwnPropertyDescriptor(target, key) !== undefined;
-  guest = new Proxy(Object.create(null), {
+  const localGlobals = Object.create(null);
+  Object.defineProperty(localGlobals, "Promise", { value: intrinsicPromise, writable: true, configurable: true, enumerable: false });
+  guest = new Proxy(localGlobals, {
     get(target, key) {
       if (["document", "window", "location", "self"].includes(key as string)) return undefined;
       if (key === "fetch") return fetch;
-      if (key === "Buffer") return buffer ?? bufferShim.Buffer;
+      if (key === "Buffer") return buffer ?? loadNodeLibFor(process, 'buffer').Buffer;
       if (key === "process") return process;
+      if (key === "Promise") return Reflect.get(target, key, guest);
       if (key === "globalThis" || key === "global") return guest;
       if (shadowed(target, key)) return Reflect.get(target, key, guest);
       const value = Reflect.get(host, key, host);
@@ -314,20 +325,22 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       return value;
     },
     set(target, key, value) {
+      if (key === "Promise") return Reflect.set(target, key, value, target);
       if (key === "fetch") { fetch = value; return true; }
       if (key === "Buffer") { buffer = value; return true; }
       if (shadowed(target, key)) return Reflect.set(target, key, value, target);
       return Reflect.set(host, key, value, host);
     },
-    has(target, key) { return key === "global" || shadowed(target, key) || key in host; },
+    has(target, key) { return key === "Promise" ? Reflect.has(target, key) : key === "global" || shadowed(target, key) || key in host; },
     ownKeys(target) {
       const keys = Reflect.ownKeys(target);
-      for (const key of Reflect.ownKeys(host)) if (!keys.includes(key)) keys.push(key);
+      for (const key of Reflect.ownKeys(host)) if (key !== "Promise" && !keys.includes(key)) keys.push(key);
       return keys;
     },
     getOwnPropertyDescriptor(target, key) {
+      if (key === "Promise") return Reflect.getOwnPropertyDescriptor(target, key);
       if (key === "fetch") return { value: fetch, writable: true, configurable: true, enumerable: true };
-      if (key === "Buffer") return { value: buffer ?? bufferShim.Buffer, writable: true, configurable: true, enumerable: true };
+      if (key === "Buffer") return { value: buffer ?? loadNodeLibFor(process, 'buffer').Buffer, writable: true, configurable: true, enumerable: true };
       // A key the guest defined non-configurable lives on the proxy's own
       // target as well, and is reported from there, as the proxy's
       // invariants require.
@@ -337,6 +350,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       return descriptor ? { ...descriptor, configurable: true } : undefined;
     },
     defineProperty(target, key, descriptor) {
+      if (key === "Promise") return Reflect.defineProperty(target, key, descriptor);
       if (key === "fetch") { if (!("value" in descriptor)) return false; fetch = descriptor.value; return true; }
       if (key === "Buffer") { if (!("value" in descriptor)) return false; buffer = descriptor.value; return true; }
       // A non-configurable define, undici's of its global dispatcher symbol,
@@ -662,7 +676,7 @@ async function __substrateImportChain(
   return doors.__loadFromURL(resolved.url, loaded.format ?? resolved.format, loaded.source ?? void 0);
 }
 
-function createDynamicImport(moduleRequire: RequireFunction, parentURL?: string): (specifier: unknown) => Promise<unknown> {
+function createDynamicImport(moduleRequire: RequireFunction, process: Process, parentURL?: string): (specifier: unknown) => Promise<unknown> {
   return async (specifier: unknown): Promise<unknown> => {
     try {
       // The specifier of `import()` undergoes ToString, as Node's does. ESLint's
@@ -693,7 +707,7 @@ function createDynamicImport(moduleRequire: RequireFunction, parentURL?: string)
       if (mod && typeof mod === 'object' && '__esModule' in (mod as object)) {
         return mod;
       }
-      return esmNamespaceOf(mod);
+      return esmNamespaceOf(mod, process);
     } catch (error) {
       // Re-throw as a rejected promise (which is what dynamic import does)
       throw error;
@@ -1362,8 +1376,7 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
  * async iterator on a Readable, `duplexPair`, `isDisturbed`, the high-water
  * marks) is Node's own file's now and is gone.
  */
-function __browserRuntimeFillStreams(table: Record<string, any>) {
-  const Bytes = BufferPolyfill;
+function __browserRuntimeFillStreams(table: Record<string, any>, Bytes = BufferPolyfill) {
   const collect = async (source: any) => {
     const chunks: any[] = [];
     if (source && typeof source.getReader === "function") {
@@ -1585,7 +1598,7 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module._pathCache = Object.create(null);
   Module.builtinModules = moduleShim.builtinModules;
   Module.isBuiltin = moduleShim.isBuiltin;
-  Module.syncBuiltinESMExports = syncBuiltinESMExports;
+  Module.syncBuiltinESMExports = () => syncBuiltinESMExports(process);
   Module.globalPaths = ["/node_modules"];
   Module._nodeModulePaths = (directory: string) => {
     const result = [];
@@ -1613,7 +1626,7 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   // the fast path Node keeps too. They hang off the Module class because that
   // class is this run's -- one per module cache -- and Node's are per process.
   Module.__substrateHooks = void 0;
-  const __substrateHooksOf = (): RunModuleHooks => (Module.__substrateHooks ??= new RunModuleHooks());
+  const __substrateHooksOf = (): RunModuleHooks => (Module.__substrateHooks ??= new RunModuleHooks(process));
   Module.registerHooks = (hooks: { resolve?: unknown; load?: unknown }) => __substrateHooksOf().sync.registerHooks(hooks);
   Module.register = (specifier: unknown, parentURL?: unknown, options?: { parentURL?: unknown; data?: unknown; transferList?: unknown }) =>
     __substrateHooksOf().register(specifier, parentURL, options, (url: string, from: string) => Module.createRequire(from)(url));
@@ -1971,7 +1984,7 @@ function createRequire(
     try {
       const importMetaUrl = resolvedPath.startsWith('data:') ? resolvedPath : 'file://' + resolvedPath;
       const strictBody = code.startsWith(__substrateModuleMarker);
-      code = __substrateScopeConstructors(code);
+      code = __substrateScopeGlobalCalls(code);
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
@@ -1979,8 +1992,8 @@ function createRequire(
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0, self = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; return (function() {${code}
-}).call(${strictBody ? 'void 0' : '$module.exports'});
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0, self = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
+}).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${__substrateSourceURL(resolvedPath)}`;
 
       // A lowered ES module body is a generator that yields at each import
@@ -2004,7 +2017,7 @@ function createRequire(
         catch { throw new SyntaxError(`${msg} (in ${resolvedPath})`); }
       }
       // Create dynamic import function for this module context
-      const dynamicImport = createDynamicImport(moduleRequire, importMetaUrl);
+      const dynamicImport = createDynamicImport(moduleRequire, process, importMetaUrl);
 
       const body = fn(
         module.exports,
@@ -2185,8 +2198,14 @@ function createRequire(
     if (id === 'wasi') {
       return __substrateGuestWasi(fsShim, process);
     }
+    if (id === 'stream/consumers') return nativeModuleFor(process, id, () => {
+      const table: Record<string, any> = {};
+      __browserRuntimeFillStreams(table, loadNodeLibFor(process, 'buffer').Buffer);
+      return table[id];
+    });
+    if (hasNodeLibModule(id)) return loadNodeLibFor(process, id);
     if (builtinModules[id] && !__substrateInstalledWins(id) && !(id === 'fsevents' || id === 'chokidar' || id === 'readdirp')) {
-      return id === 'esbuild' ? __substrateGuestEsbuild(process) : id === 'rollup' ? __substrateGuestRollup(process) : builtinModules[id];
+      return id === 'esbuild' ? __substrateGuestEsbuild(process) : id === 'rollup' ? __substrateGuestRollup(process) : nativeModuleFor(process, id, () => builtinModules[id]);
     }
 
     if (!__substrateInstalledWins(id)) {
@@ -2209,7 +2228,7 @@ function createRequire(
 
     // If resolved to a built-in name (shouldn't happen but safety check)
     if (builtinModules[resolved] && !(resolved === 'fsevents' || resolved === 'chokidar' || resolved === 'readdirp')) {
-      return resolved === 'esbuild' ? __substrateGuestEsbuild(process) : resolved === 'rollup' ? __substrateGuestRollup(process) : builtinModules[resolved];
+      return requirePlain(resolved);
     }
 
     // Also check if resolved path is to rollup, esbuild, or prettier in node_modules
@@ -2486,7 +2505,7 @@ export class Runtime {
     try {
       const importMetaUrl = 'file://' + filename;
       const strictBody = code.startsWith(__substrateModuleMarker);
-      code = __substrateScopeConstructors(code);
+      code = __substrateScopeGlobalCalls(code);
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
@@ -2494,12 +2513,12 @@ export class Runtime {
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0, self = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; return (function() {${code}
-}).call(${strictBody ? 'void 0' : '$module.exports'});
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0, self = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
+}).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${__substrateSourceURL(filename)}`;
 
       // Create dynamic import function for this module context
-      const dynamicImport = createDynamicImport(require, filename.startsWith('data:') ? filename : `file://${filename}`);
+      const dynamicImport = createDynamicImport(require, this.process, filename.startsWith('data:') ? filename : `file://${filename}`);
 
       // A module with top-level await runs. Node runs a `.js` file of a package
       // with `"type": "module"` as a module, where `await` is valid at the top;

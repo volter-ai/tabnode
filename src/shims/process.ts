@@ -7,7 +7,9 @@
 import { EventEmitter } from '../node-lib/events-module';
 import type { EventListener } from '../node-lib/events-module';
 import { Readable } from '../node-lib/stream-module';
+import { loadNodeLibFor } from '../node-lib/load';
 import { constantsBinding } from './constants';
+import ttyWrapBinding from '../node-lib/binding/tty_wrap';
 import { mintPid, pidIsLive } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeVersions } from '../node-lib/node-versions';
 import { freemem as osFreemem } from './os';
@@ -98,9 +100,12 @@ export interface ProcessStdin extends Readable {
 }
 
 // eslint-disable-next-line no-var, vars-on-top
-var StdinClass: (new () => ProcessStdin) | undefined;
-function processStdinClass(): new () => ProcessStdin {
-  return StdinClass ??= class ProcessStdin extends (Readable as unknown as new () => Readable) {
+var StdinClasses: WeakMap<object, new () => ProcessStdin> | undefined;
+function processStdinClass(ReadableClass: typeof Readable): new () => ProcessStdin {
+  StdinClasses ??= new WeakMap();
+  const cached = StdinClasses.get(ReadableClass);
+  if (cached) return cached;
+  const StdinClass = class ProcessStdin extends (ReadableClass as unknown as new () => Readable) {
     /** Node's fd for standard input. */
     readonly fd = 0;
 
@@ -125,12 +130,15 @@ function processStdinClass(): new () => ProcessStdin {
       this.push(null);
     }
   } as unknown as new () => ProcessStdin;
+  StdinClasses.set(ReadableClass, StdinClass);
+  return StdinClass;
 }
 
 type ProcessReadableStream = ProcessStdin;
 
 export interface Process {
   env: ProcessEnv;
+  title: string;
   cwd: () => string;
   chdir: (directory: string) => void;
   platform: string;
@@ -469,12 +477,13 @@ export function createProcess(options?: {
   const startTime = Date.now();
   // The guest's fd 0: the bytes the runner put there, then the end of them.
   // Nothing more can arrive unless the runner says it holds the input open.
-  const stdinStream = new (processStdinClass())();
-  if (typeof options?.stdin === 'string') stdinStream.__substrateStdinWrite(options.stdin);
-  if (!options?.stdinHeld) stdinStream.__substrateStdinEnd();
+  let stdinStream: ProcessStdin | undefined;
 
   const proc: Process = {
     env,
+    // Node exposes a writable title even before application code sets it.
+    // Packages use its presence when distinguishing Node from a browser.
+    title: 'node',
 
     cwd() {
       return currentDir;
@@ -593,6 +602,7 @@ export function createProcess(options?: {
         proc.emitWarning("process.binding() is deprecated. Please use public APIs instead.", "DeprecationWarning", "DEP0111");
       }
       if (name === "constants") return constantsBinding();
+      if (name === "tty_wrap") return ttyWrapBinding;
       throw new Error("No such module: " + name);
     },
 
@@ -655,7 +665,14 @@ export function createProcess(options?: {
       return true;
     }) as ProcessWritableStream,
 
-    stdin: stdinStream,
+    get stdin() {
+      if (!stdinStream) {
+        stdinStream = new (processStdinClass(loadNodeLibFor(proc, 'stream').Readable))();
+        if (typeof options?.stdin === 'string') stdinStream.__substrateStdinWrite(options.stdin);
+        if (!options?.stdinHeld) stdinStream.__substrateStdinEnd();
+      }
+      return stdinStream;
+    },
 
     hrtime: Object.assign(
       function hrtime(time?: [number, number]): [number, number] {

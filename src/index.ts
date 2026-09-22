@@ -24,6 +24,8 @@ export { createProcess } from './shims/process';
 export type { Process, ProcessEnv } from './shims/process';
 export * as path from './shims/path';
 export { httpModule as http, httpsModule as https } from './node-lib/http-module';
+export { installHttpClientTransport } from './http-client-transport';
+export type { HttpClientExchange, HttpClientExchangeRequest, HttpClientExchangeResponse, HttpClientTransportFactory } from './http-client-transport';
 import { __releaseOwnedServers, __ownedServerPorts } from './node-lib/net-module';
 export { netModule as net } from './node-lib/net-module';
 export { eventsModule as events } from './node-lib/events-module';
@@ -233,6 +235,9 @@ export function createContainer(options?: ContainerOptions): {
 }
 
 export default createContainer;
+
+export { installFetchTransport } from './fetch-transport';
+export type { FetchActivity, FetchTransport, FetchTransportContext } from './fetch-transport';
 
 // Node's module resolution as a function over any filesystem, for a host
 // that resolves the way the engine does (the substrate's stand-ins do).

@@ -152,21 +152,7 @@ export const utilBinding = {
    * the module the first time it is read, so a builtin that exposes another
    * builtin's class does not load it to say so.
    */
-  defineLazyProperties: (target: object, id: string, keys: string[], writable = true): void => {
-    for (const key of keys) {
-      let built: unknown;
-      let ready = false;
-      Object.defineProperty(target, key, {
-        configurable: true,
-        enumerable: true,
-        get() {
-          if (!ready) { ready = true; built = (nodeLibInternalRequire(id) as Record<string, unknown>)[key]; }
-          return built;
-        },
-        set: writable ? (value: unknown) => { built = value; ready = true; } : void 0,
-      });
-    }
-  },
+  defineLazyProperties: lazyProperties(nodeLibInternalRequire),
 
   /**
    * The stack, as `util.getCallSites()` reports it: one entry per frame with
@@ -272,3 +258,26 @@ export const utilBinding = {
 };
 
 export default utilBinding;
+
+function lazyProperties(require: (name: string) => unknown) {
+  return (target: object, id: string, keys: string[], writable = true): void => {
+    for (const key of keys) {
+      let built: unknown;
+      let ready = false;
+      Object.defineProperty(target, key, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          if (!ready) { ready = true; built = (require(id) as Record<string, unknown>)[key]; }
+          return built;
+        },
+        set: writable ? (value: unknown) => { built = value; ready = true; } : void 0,
+      });
+    }
+  };
+}
+
+/** Lazy builtin exports must resolve inside the requesting process. */
+export function createUtilBinding(require: (name: string) => unknown) {
+  return { ...utilBinding, defineLazyProperties: lazyProperties(require) };
+}

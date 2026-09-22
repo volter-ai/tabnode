@@ -11,10 +11,11 @@ import { md5 } from '@noble/hashes/legacy.js';
 // The `buffer` package, not the guest polyfill: the byte-level encodings
 // (utf16le, latin1, offset views) crypto inputs arrive in are its own.
 import { Buffer as HostBuffer } from 'buffer/index.js';
-import { Buffer } from '../node-lib/buffer-module';
+import { Buffer as HostGuestBuffer } from '../node-lib/buffer-module';
+import type { Buffer } from '../node-lib/buffer-module';
 /** Node's own `buffer` limit, read at use rather than at load: see `node-lib/lazy.ts`. */
-import { bufferModule } from '../node-lib/buffer-module';
-import { EventEmitter } from '../node-lib/events-module';
+import { bufferModule as hostBufferModule } from '../node-lib/buffer-module';
+import { EventEmitter as HostEventEmitter } from '../node-lib/events-module';
 import {
   ERR_INVALID_ARG_TYPE,
   ERR_OUT_OF_RANGE,
@@ -24,6 +25,18 @@ import {
 import { cryptoConstants as constants } from './crypto-constants';
 export { constants };
 
+interface DigestState {
+  update(data: Uint8Array): DigestState;
+  digest(): Uint8Array;
+  clone?(): DigestState;
+  [field: string]: unknown;
+}
+
+/** Native crypto allocates guest results and classes in the caller's graph. */
+export function createCryptoModule(require?: (name: string) => any) {
+  const bufferModule = require ? require('buffer') : hostBufferModule;
+  const Buffer: typeof HostGuestBuffer = require ? bufferModule.Buffer : HostGuestBuffer;
+  const EventEmitter: typeof HostEventEmitter = require ? require('events').EventEmitter : HostEventEmitter;
 // ============================================================================
 // Random functions
 // ============================================================================
@@ -92,14 +105,14 @@ function __assertSize(size: unknown, elementSize: number, offset: number, length
   return bytes >>> 0;
 }
 
-export function randomBytes(size: number): Buffer;
-export function randomBytes(size: number, callback: (error: Error | null, buffer: Buffer) => void): void;
+function randomBytes(size: number): Buffer;
+function randomBytes(size: number, callback: (error: Error | null, buffer: Buffer) => void): void;
 /**
  * Node: with a callback, `randomBytes` answers through it and returns nothing;
  * without one it returns the buffer. The engine always returned the buffer and
  * dropped the callback, so a program that only waits on the callback hung.
  */
-export function randomBytes(
+function randomBytes(
   size: number,
   callback?: (error: Error | null, buffer: Buffer) => void
 ): Buffer | void {
@@ -117,7 +130,7 @@ export function randomBytes(
   });
 }
 
-export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
+function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
   buffer: T,
   offset?: number,
   size?: number
@@ -137,22 +150,22 @@ export function randomFillSync<T extends ArrayBufferView | ArrayBufferLike>(
  * `(buf, offset, cb)`, `(buf, offset, size, cb)`, with the same argument
  * checks `randomFillSync` makes.
  */
-export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
   buffer: T,
   callback: (error: Error | null, buffer: T) => void
 ): void;
-export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
   buffer: T,
   offset: number,
   callback: (error: Error | null, buffer: T) => void
 ): void;
-export function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
+function randomFill<T extends ArrayBufferView | ArrayBufferLike>(
   buffer: T,
   offset: number,
   size: number,
   callback: (error: Error | null, buffer: T) => void
 ): void;
-export function randomFill(
+function randomFill(
   buffer: unknown,
   offsetOrCallback?: unknown,
   sizeOrCallback?: unknown,
@@ -191,24 +204,24 @@ export function randomFill(
   });
 }
 
-export function randomUUID(): string {
+function randomUUID(): string {
   return crypto.randomUUID();
 }
 
 /** Node's `randomInt` draws from six bytes, so this is its largest range. */
 const kRandMax = 281474976710655;
 
-export function randomInt(max: number): number;
-export function randomInt(min: number, max: number): number;
-export function randomInt(max: number, callback: (error: undefined, value: number) => void): void;
-export function randomInt(min: number, max: number, callback: (error: undefined, value: number) => void): void;
+function randomInt(max: number): number;
+function randomInt(min: number, max: number): number;
+function randomInt(max: number, callback: (error: undefined, value: number) => void): void;
+function randomInt(min: number, max: number, callback: (error: undefined, value: number) => void): void;
 /**
  * Node's `randomInt`, transcribed: an unbiased draw by rejection, Node's
  * argument checks, and the callback form. The engine had neither the callback
  * form nor the checks, so `randomInt(3, cb)` read the callback as the maximum
  * and answered NaN, and `randomInt(1, 1)` divided by a zero range.
  */
-export function randomInt(
+function randomInt(
   min: number,
   max?: number | ((error: undefined, value: number) => void),
   callback?: (error: undefined, value: number) => void
@@ -250,7 +263,7 @@ export function randomInt(
   }
 }
 
-export function getRandomValues<T extends ArrayBufferView>(array: T): T {
+function getRandomValues<T extends ArrayBufferView>(array: T): T {
   return crypto.getRandomValues(array);
 }
 
@@ -269,12 +282,7 @@ export function getRandomValues<T extends ArrayBufferView>(array: T): T {
 // MD5; both are pure JS and byte-for-byte Node's.
 
 /** A hash engine: sha.js's Hash, or @noble/hashes' MD5. */
-interface DigestState {
-  update(data: Uint8Array): DigestState;
-  digest(): Uint8Array;
-  clone?(): DigestState;
-  [field: string]: unknown;
-}
+
 
 const HASH_ALGORITHMS = ['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512'];
 
@@ -290,7 +298,7 @@ function finalized(): Error {
  * Node throws ERR_CRYPTO_UNSUPPORTED_OPERATION rather than returning
  * something that only looks like a result; so does this shim.
  */
-export function unsupported(operation: string): never {
+function unsupported(operation: string): never {
   throw cryptoError(
     'ERR_CRYPTO_UNSUPPORTED_OPERATION',
     `${operation} is not supported by the browser crypto adapter.`
@@ -355,27 +363,27 @@ function digestResult(value: Uint8Array, encoding?: string): Buffer | string {
 }
 
 class Hash {
-  private state: DigestState;
-  private done = false;
+  #state: DigestState;
+  #done = false;
   readonly algorithm: string;
 
   constructor(algorithm: string) {
     this.algorithm = algorithm;
-    this.state = digestEngine(algorithm);
+    this.#state = digestEngine(algorithm);
   }
 
   update(data: unknown, inputEncoding?: string): this {
-    if (this.done) throw finalized();
+    if (this.#done) throw finalized();
     // Consume the bytes now: Node's update copies, and a caller may reuse
     // the array it handed us before digest().
-    this.state.update(cryptoBytes(data, inputEncoding));
+    this.#state.update(cryptoBytes(data, inputEncoding));
     return this;
   }
 
   digest(outputEncoding?: string): Buffer | string {
-    if (this.done) throw finalized();
-    this.done = true;
-    return digestResult(this.state.digest(), outputEncoding);
+    if (this.#done) throw finalized();
+    this.#done = true;
+    return digestResult(this.#state.digest(), outputEncoding);
   }
 
   async digestAsync(outputEncoding?: string): Promise<Buffer | string> {
@@ -383,17 +391,17 @@ class Hash {
   }
 
   copy(): Hash {
-    if (this.done) throw finalized();
+    if (this.#done) throw finalized();
     const copy = new Hash(this.algorithm);
-    if (this.state.clone) {
-      copy.state = this.state.clone();
+    if (this.#state.clone) {
+      copy.#state = this.#state.clone();
       return copy;
     }
     // sha.js 2.4.12 keeps its chaining words, length and current block in own
     // fields and offers no clone. Copy buffers and scratch arrays by value;
     // everything else is a number.
-    for (const [field, value] of Object.entries(this.state)) {
-      copy.state[field] = ArrayBuffer.isView(value)
+    for (const [field, value] of Object.entries(this.#state)) {
+      copy.#state[field] = ArrayBuffer.isView(value)
         ? HostBuffer.from(cryptoBytes(value))
         : Array.isArray(value)
           ? value.slice()
@@ -404,9 +412,9 @@ class Hash {
 }
 
 class Hmac {
-  private inner: DigestState;
-  private outer: DigestState;
-  private done = false;
+  #inner: DigestState;
+  #outer: DigestState;
+  #done = false;
 
   constructor(algorithm: string, key: HostBytes) {
     const blockSize = algorithm === 'sha384' || algorithm === 'sha512' ? 128 : 64;
@@ -420,23 +428,23 @@ class Hmac {
       innerPad[index] = byte ^ 0x36;
       outerPad[index] = byte ^ 0x5c;
     }
-    this.inner = digestEngine(algorithm).update(innerPad);
-    this.outer = digestEngine(algorithm).update(outerPad);
+    this.#inner = digestEngine(algorithm).update(innerPad);
+    this.#outer = digestEngine(algorithm).update(outerPad);
     innerPad.fill(0);
     outerPad.fill(0);
   }
 
   update(data: unknown, inputEncoding?: string): this {
-    if (this.done) throw finalized();
-    this.inner.update(cryptoBytes(data, inputEncoding));
+    if (this.#done) throw finalized();
+    this.#inner.update(cryptoBytes(data, inputEncoding));
     return this;
   }
 
   digest(outputEncoding?: string): Buffer | string {
     // Node's Hmac yields an empty result from a second digest(), not an error.
-    if (this.done) return digestResult(HostBuffer.alloc(0), outputEncoding);
-    this.done = true;
-    return digestResult(this.outer.update(this.inner.digest()).digest(), outputEncoding);
+    if (this.#done) return digestResult(HostBuffer.alloc(0), outputEncoding);
+    this.#done = true;
+    return digestResult(this.#outer.update(this.#inner.digest()).digest(), outputEncoding);
   }
 
   async digestAsync(outputEncoding?: string): Promise<Buffer | string> {
@@ -444,12 +452,12 @@ class Hmac {
   }
 }
 
-export function createHash(algorithm: string, options?: { outputLength?: number }): Hash {
+function createHash(algorithm: string, options?: { outputLength?: number }): Hash {
   if (options?.outputLength !== undefined) unsupported('Variable-length digests');
   return new Hash(hashAlgorithm(algorithm));
 }
 
-export function createHmac(
+function createHmac(
   algorithm: string,
   key: unknown,
   options?: { encoding?: string }
@@ -467,7 +475,7 @@ export function createHmac(
 }
 
 /** The one-shot digest, `crypto.hash`, added in Node 21. */
-export function hash(algorithm: string, data: unknown, outputEncoding = 'hex'): Buffer | string {
+function hash(algorithm: string, data: unknown, outputEncoding = 'hex'): Buffer | string {
   return createHash(algorithm).update(data).digest(outputEncoding);
 }
 
@@ -541,7 +549,7 @@ function derive(parameters: Pbkdf2Parameters): Buffer {
   }
 }
 
-export function pbkdf2Sync(
+function pbkdf2Sync(
   password: BinaryLike,
   salt: BinaryLike,
   iterations: number,
@@ -551,7 +559,7 @@ export function pbkdf2Sync(
   return derive(pbkdf2Parameters(password, salt, iterations, keylen, digest));
 }
 
-export function pbkdf2(
+function pbkdf2(
   password: BinaryLike,
   salt: BinaryLike,
   iterations: number,
@@ -583,7 +591,7 @@ export function pbkdf2(
  * Calculates and returns a signature for data using the given private key
  * This is the one-shot API that jose uses
  */
-export function sign(
+function sign(
   algorithm: string | null | undefined,
   data: Buffer | Uint8Array,
   key: KeyLike,
@@ -619,7 +627,7 @@ export function sign(
 /**
  * Verifies the given signature for data using the given key
  */
-export function verify(
+function verify(
   algorithm: string | null | undefined,
   data: Buffer | Uint8Array,
   key: KeyLike,
@@ -652,33 +660,33 @@ export function verify(
 // createSign / createVerify (streaming API)
 // ============================================================================
 
-export function createSign(algorithm: string): Sign {
+function createSign(algorithm: string): Sign {
   return new Sign(algorithm);
 }
 
-export function createVerify(algorithm: string): Verify {
+function createVerify(algorithm: string): Verify {
   return new Verify(algorithm);
 }
 
 class Sign extends EventEmitter {
-  private algorithm: string;
-  private data: Uint8Array[] = [];
+  #algorithm: string;
+  #data: Uint8Array[] = [];
 
   constructor(algorithm: string) {
     super();
-    this.algorithm = algorithm;
+    this.#algorithm = algorithm;
   }
 
   update(data: string | Buffer | Uint8Array, encoding?: string): this {
     const buffer = typeof data === 'string' ? Buffer.from(data) : data;
-    this.data.push(buffer);
+    this.#data.push(buffer);
     return this;
   }
 
   sign(privateKey: KeyLike, outputEncoding?: string): Buffer | string {
-    const combined = concatBuffers(this.data);
+    const combined = concatBuffers(this.#data);
     const keyInfo = extractKeyInfo(privateKey);
-    const signature = signSync(this.algorithm, combined, keyInfo);
+    const signature = signSync(this.#algorithm, combined, keyInfo);
 
     if (outputEncoding === 'base64') {
       return btoa(String.fromCharCode(...signature));
@@ -691,22 +699,22 @@ class Sign extends EventEmitter {
 }
 
 class Verify extends EventEmitter {
-  private algorithm: string;
-  private data: Uint8Array[] = [];
+  #algorithm: string;
+  #data: Uint8Array[] = [];
 
   constructor(algorithm: string) {
     super();
-    this.algorithm = algorithm;
+    this.#algorithm = algorithm;
   }
 
   update(data: string | Buffer | Uint8Array, encoding?: string): this {
     const buffer = typeof data === 'string' ? Buffer.from(data) : data;
-    this.data.push(buffer);
+    this.#data.push(buffer);
     return this;
   }
 
   verify(publicKey: KeyLike, signature: Buffer | string, signatureEncoding?: string): boolean {
-    const combined = concatBuffers(this.data);
+    const combined = concatBuffers(this.#data);
     const keyInfo = extractKeyInfo(publicKey);
 
     let sig: Buffer;
@@ -722,7 +730,7 @@ class Verify extends EventEmitter {
       sig = signature;
     }
 
-    return verifySync(this.algorithm, combined, keyInfo, sig);
+    return verifySync(this.#algorithm, combined, keyInfo, sig);
   }
 }
 
@@ -730,59 +738,63 @@ class Verify extends EventEmitter {
 // KeyObject class (for key management)
 // ============================================================================
 
-export class KeyObject {
-  private _keyData: CryptoKey | Uint8Array;
-  private _type: 'public' | 'private' | 'secret';
-  private _algorithm?: string;
+let keyInfoOf: (key: KeyObject) => KeyInfo;
+class KeyObject {
+  static {
+    keyInfoOf = (key) => ({ keyData: key.#_keyData, algorithm: key.#_algorithm, type: key.#_type, format: 'raw' });
+  }
+  #_keyData: CryptoKey | Uint8Array;
+  #_type: 'public' | 'private' | 'secret';
+  #_algorithm?: string;
 
   constructor(type: 'public' | 'private' | 'secret', keyData: CryptoKey | Uint8Array, algorithm?: string) {
-    this._type = type;
-    this._keyData = keyData;
-    this._algorithm = algorithm;
+    this.#_type = type;
+    this.#_keyData = keyData;
+    this.#_algorithm = algorithm;
   }
 
   get type(): string {
-    return this._type;
+    return this.#_type;
   }
 
   get asymmetricKeyType(): string | undefined {
-    if (this._type === 'secret') return undefined;
+    if (this.#_type === 'secret') return undefined;
     // Infer from algorithm
-    if (this._algorithm?.includes('RSA')) return 'rsa';
-    if (this._algorithm?.includes('EC') || this._algorithm?.includes('ES')) return 'ec';
-    if (this._algorithm?.includes('Ed')) return 'ed25519';
+    if (this.#_algorithm?.includes('RSA')) return 'rsa';
+    if (this.#_algorithm?.includes('EC') || this.#_algorithm?.includes('ES')) return 'ec';
+    if (this.#_algorithm?.includes('Ed')) return 'ed25519';
     return undefined;
   }
 
   get symmetricKeySize(): number | undefined {
-    if (this._type !== 'secret') return undefined;
-    if (this._keyData instanceof Uint8Array) {
-      return this._keyData.length * 8;
+    if (this.#_type !== 'secret') return undefined;
+    if (this.#_keyData instanceof Uint8Array) {
+      return this.#_keyData.length * 8;
     }
     return undefined;
   }
 
   export(options?: { type?: string; format?: string }): Buffer | string {
     // Simplified export - returns the key data
-    if (this._keyData instanceof Uint8Array) {
-      return Buffer.from(this._keyData);
+    if (this.#_keyData instanceof Uint8Array) {
+      return Buffer.from(this.#_keyData);
     }
     throw new Error('Cannot export CryptoKey synchronously');
   }
 }
 
-export function createSecretKey(key: BinaryLike | ArrayBufferView, encoding?: string): KeyObject {
+function createSecretKey(key: BinaryLike | ArrayBufferView, encoding?: string): KeyObject {
   // Node copies the key material, so a caller that reuses or zeroes its array
   // does not change the key this object holds.
   return new KeyObject('secret', Buffer.from(cryptoBytes(key, encoding, true)));
 }
 
-export function createPublicKey(key: KeyLike): KeyObject {
+function createPublicKey(key: KeyLike): KeyObject {
   const keyInfo = extractKeyInfo(key);
   return new KeyObject('public', keyInfo.keyData as Uint8Array, keyInfo.algorithm);
 }
 
-export function createPrivateKey(key: KeyLike): KeyObject {
+function createPrivateKey(key: KeyLike): KeyObject {
   const keyInfo = extractKeyInfo(key);
   return new KeyObject('private', keyInfo.keyData as Uint8Array, keyInfo.algorithm);
 }
@@ -791,7 +803,7 @@ export function createPrivateKey(key: KeyLike): KeyObject {
 // Utility functions
 // ============================================================================
 
-export function timingSafeEqual(a: Buffer | Uint8Array, b: Buffer | Uint8Array): boolean {
+function timingSafeEqual(a: Buffer | Uint8Array, b: Buffer | Uint8Array): boolean {
   if (a.length !== b.length) {
     return false;
   }
@@ -802,11 +814,11 @@ export function timingSafeEqual(a: Buffer | Uint8Array, b: Buffer | Uint8Array):
   return result === 0;
 }
 
-export function getCiphers(): string[] {
+function getCiphers(): string[] {
   return ['aes-128-cbc', 'aes-256-cbc', 'aes-128-gcm', 'aes-256-gcm'];
 }
 
-export function getHashes(): string[] {
+function getHashes(): string[] {
   // What createHash accepts, no more: a name here that createHash rejects
   // sends a guest down a branch that then throws.
   return HASH_ALGORITHMS.slice();
@@ -862,12 +874,7 @@ function getWebCryptoAlgorithm(nodeAlgorithm: string): { name: string; hash?: st
 
 function extractKeyInfo(key: KeyLike): KeyInfo {
   if (key instanceof KeyObject) {
-    return {
-      keyData: (key as any)._keyData,
-      algorithm: (key as any)._algorithm,
-      type: (key as any)._type,
-      format: 'raw',
-    };
+    return keyInfoOf(key);
   }
 
   if (typeof key === 'object' && 'key' in key) {
@@ -1034,7 +1041,8 @@ async function importKey(
 // Exports
 // ============================================================================
 
-export default {
+return {
+  unsupported,
   randomBytes,
   randomFill,
   randomFillSync,
@@ -1059,3 +1067,9 @@ export default {
   createPublicKey,
   createPrivateKey,
 };
+
+}
+const cryptoModule = createCryptoModule();
+export const { randomBytes, randomFillSync, randomFill, randomUUID, randomInt, getRandomValues, unsupported, createHash, createHmac, hash, pbkdf2Sync, pbkdf2, sign, verify, createSign, createVerify, KeyObject, createSecretKey, createPublicKey, createPrivateKey, timingSafeEqual, getCiphers, getHashes } = cryptoModule;
+export type KeyObject = InstanceType<typeof KeyObject>;
+export default cryptoModule;

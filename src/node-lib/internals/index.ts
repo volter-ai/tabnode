@@ -23,14 +23,21 @@ import {
 import { internalSocketAddress, internalBlockList } from './addresses';
 import { internalFsUtils, internalDgram } from './child-process';
 import {
-  internalAbortController, internalBlob, internalFile, internalWebStreamsAdapters,
+  internalAbortController, internalBlob, internalFile, internalWebStreamsAdapters, createWebStreamsAdapters,
 } from './buffer-and-streams';
 import { internalBootstrapRealm, internalUrl, internalEncoding } from './modules';
 
 /** Built on the first ask, for the reason `./binding/index.ts` gives. */
 // eslint-disable-next-line no-var, vars-on-top
 var __table: Record<string, () => unknown> | undefined;
-export function nodeLibInternal(name: string): (() => unknown) | undefined {
+export function nodeLibInternal(name: string, require?: (name: string) => any, process?: any): (() => unknown) | undefined {
+  if (require && name === 'internal/webstreams/adapters') return () => createWebStreamsAdapters(require);
+  if (process && name === 'internal/process/execution') return () => ({
+    tryGetCwd() { try { return process.cwd(); } catch { return ''; } },
+  });
+  if (process && name === 'internal/process/warning') return () => ({
+    emitWarningSync: (...args: unknown[]) => process.emitWarning(...args),
+  });
   __table ??= {
   'internal/util/types': () => internalUtilTypes,
   'internal/async_hooks': () => internalAsyncHooks,

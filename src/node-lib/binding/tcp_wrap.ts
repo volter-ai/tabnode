@@ -165,7 +165,7 @@ export class TCP extends LibuvStreamWrap {
         req.oncomplete?.(UV_ECONNREFUSED, this, req, true, true);
         return;
       }
-      const accepted = new TCP(constants.SOCKET);
+      const accepted = new (server.constructor as typeof TCP)(constants.SOCKET);
       accepted.local = { ...(server.local as SockName), port: target };
       accepted.remote = { ...(this.local as SockName) };
       // An accepted connection is a handle of the loop that is serving, not of
@@ -193,7 +193,7 @@ export class TCP extends LibuvStreamWrap {
 
   /** libuv's `dup()`: the same connection, under both its names. */
   override duplicate(): TCP {
-    const copy = new TCP(constants.SOCKET);
+    const copy = new (this.constructor as typeof TCP)(constants.SOCKET);
     if (this.local && this.remote) copy.adoptNames(this.local, this.remote);
     copy.takeOverFrom(this);
     return copy;

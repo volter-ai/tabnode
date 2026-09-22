@@ -19,25 +19,9 @@ import { loadNodeLibFor } from './load';
 export const fsModule = lazyModule<Record<string, unknown>>('fs');
 export const fsPromisesModule = lazyModule<Record<string, unknown>>('internal/fs/promises');
 
-/**
- * `require('fs')` for one guest process. The first process in the realm is
- * handed the already-built module; a later process gets a file compiled for
- * it, so a tag on the module object is that process's.
- */
-const byProcess = new WeakMap<object, unknown>();
-let firstProcess: object | null = null;
+/** Every guest, including the first, owns its builtin graph. */
 export function fsModuleFor(process: object): unknown {
-  const held = byProcess.get(process);
-  if (held !== undefined) return held;
-  let module: unknown;
-  if (firstProcess === null || firstProcess === process) {
-    firstProcess = process;
-    module = fsModule;
-  } else {
-    module = loadNodeLibFor(process, 'fs');
-  }
-  byProcess.set(process, module);
-  return module;
+  return loadNodeLibFor(process, 'fs');
 }
 
 export default fsModule;

@@ -1,16 +1,40 @@
 /**
  * tls shim - TLS/SSL is not available in browser
- * Provides stubs that allow code to load without crashing
+ * No TLS transport is installed. A connection must fail asynchronously rather
+ * than pretending to connect and leaving Node's HTTPS client waiting forever.
  */
 
 import { EventEmitter } from '../node-lib/events-module';
+import { lazyExport } from '../node-lib/lazy';
+import type { Socket } from '../node-lib/net-module';
 
-export class TLSSocket extends EventEmitter {
+// Keep the ordinary stream lifecycle (error, close, destroy) from Node's own
+// Socket. Resolve it lazily, like the other builtin classes, to avoid a loader
+// cycle while the engine is being imported.
+/** Native TLS refusal keeps the requesting graph's Socket identity. */
+export function createTlsModule(require?: (name: string) => any) {
+const NetSocket = require ? require('net').Socket as new (options?: object) => Socket
+    : lazyExport<new (options?: object) => Socket>('net', 'Socket');
+const Events = require ? require('events').EventEmitter as typeof EventEmitter : EventEmitter;
+
+class TLSSocket extends NetSocket {
   authorized = false;
   encrypted = true;
 
   constructor(_socket?: unknown, _options?: unknown) {
-    super();
+    super({ allowHalfOpen: false });
+  }
+
+  connect(..._args: unknown[]): this {
+    this.connecting = true;
+    // Never inherit a plain TCP connect while advertising an encrypted socket.
+    // Agent assigns its socket on nextTick after connect returns, so failure
+    // follows that assignment and reaches ClientRequest's error listener.
+    queueMicrotask(() => queueMicrotask(() => this.destroy(Object.assign(
+      new Error('TLS transport is unavailable in this runtime; HTTPS requires an admitted HTTP transport.'),
+      { code: 'ERR_TLS_UNAVAILABLE' },
+    ))));
+    return this;
   }
 
   getPeerCertificate(_detailed?: boolean): object {
@@ -32,7 +56,7 @@ export class TLSSocket extends EventEmitter {
   }
 }
 
-export class Server extends EventEmitter {
+class Server extends Events {
   constructor(_options?: unknown, _connectionListener?: (socket: TLSSocket) => void) {
     super();
   }
@@ -50,7 +74,7 @@ export class Server extends EventEmitter {
   }
 
   getTicketKeys(): Buffer {
-    return Buffer.from('');
+    return (require ? require('buffer').Buffer : Buffer).from('');
   }
 
   setTicketKeys(_keys: Buffer): void {}
@@ -58,29 +82,27 @@ export class Server extends EventEmitter {
   setSecureContext(_options: unknown): void {}
 }
 
-export function createServer(_options?: unknown, _connectionListener?: (socket: TLSSocket) => void): Server {
+function createServer(_options?: unknown, _connectionListener?: (socket: TLSSocket) => void): Server {
   return new Server(_options, _connectionListener);
 }
 
-export function connect(_options: unknown, _callback?: () => void): TLSSocket {
+function connect(_options: unknown, _callback?: () => void): TLSSocket {
   const socket = new TLSSocket();
-  if (_callback) {
-    setTimeout(_callback, 0);
-  }
-  return socket;
+  if (_callback) socket.once('secureConnect', _callback);
+  return socket.connect();
 }
 
-export const createSecureContext = (_options?: unknown) => ({});
+const createSecureContext = (_options?: unknown) => ({});
 
-export const getCiphers = () => ['TLS_AES_256_GCM_SHA384', 'TLS_AES_128_GCM_SHA256'];
+const getCiphers = () => ['TLS_AES_256_GCM_SHA384', 'TLS_AES_128_GCM_SHA256'];
 
-export const DEFAULT_ECDH_CURVE = 'auto';
-export const DEFAULT_MAX_VERSION = 'TLSv1.3';
-export const DEFAULT_MIN_VERSION = 'TLSv1.2';
+const DEFAULT_ECDH_CURVE = 'auto';
+const DEFAULT_MAX_VERSION = 'TLSv1.3';
+const DEFAULT_MIN_VERSION = 'TLSv1.2';
 
-export const rootCertificates: string[] = [];
+const rootCertificates: string[] = [];
 
-export default {
+return {
   TLSSocket,
   Server,
   createServer,
@@ -92,3 +114,11 @@ export default {
   DEFAULT_MIN_VERSION,
   rootCertificates,
 };
+
+}
+const tls = createTlsModule();
+export const { TLSSocket, Server, createServer, connect, createSecureContext, getCiphers,
+  DEFAULT_ECDH_CURVE, DEFAULT_MAX_VERSION, DEFAULT_MIN_VERSION, rootCertificates } = tls;
+export type TLSSocket = InstanceType<typeof TLSSocket>;
+export type Server = InstanceType<typeof Server>;
+export default tls;

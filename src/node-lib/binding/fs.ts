@@ -30,6 +30,9 @@
 import { createNodeError as vfsError } from '../../virtual-fs';
 import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner } from './handles';
 import { enterRun } from '../../process-tokens';
+import { allocateFd, handleForFd } from './fds';
+import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
+import { errname } from './uv';
 
 /**
  * An errno error, as the filesystem makes one. The tree's own maker knows the
@@ -158,7 +161,6 @@ interface OpenFile {
 
 /** Every descriptor this engine has open, and the next number to hand out. */
 const openFiles = new Map<number, OpenFile>();
-let nextFd = 20;
 
 function fileFor(fd: number): OpenFile {
   const file = openFiles.get(fd);
@@ -259,14 +261,15 @@ function answer<T>(req: FSReq | undefined, work: () => T): T | undefined {
  * onto the path; a string child threw `list[1]`/`list[2]` must be a Buffer,
  * received `'exthost1'`.
  */
+export function createFsBindings(Bytes: () => typeof NodeBuffer = () => NodeBuffer) {
 function encodeFsName(name: string, encoding: unknown): string | Uint8Array {
   if (encoding !== 'buffer' && encoding !== 6) {
     if (typeof encoding === 'string' && encoding.length > 0 && encoding !== 'utf8' && encoding !== 'utf-8') {
-      return (NodeBuffer.from(name) as { toString(enc: string): string }).toString(encoding);
+      return (Bytes().from(name) as { toString(enc: string): string }).toString(encoding);
     }
     return name;
   }
-  return NodeBuffer.from(name);
+  return Bytes().from(name);
 }
 
 /** The path as Node handed it, with a Buffer decoded. A symlink's target is this, not resolved. */
@@ -303,21 +306,21 @@ function asPath(path: unknown): string {
  * the callback and nothing else, because `answer` above is the whole of what
  * makes a call asynchronous in a realm with one thread.
  */
-export class FSReqCallback {
+class FSReqCallback {
   oncomplete: ((error: Error | null, ...rest: unknown[]) => void) | undefined;
   context: unknown;
   constructor(public bigint = false) {}
 }
 
 /** The symbol `fs.promises` passes where a callback would go. */
-export const kUsePromises = Symbol('kUsePromises');
+
 
 /**
  * `internalBinding('fs_dir')`'s handle: an open directory, read a batch at a
  * time. Node's own `Dir` and `Dirent` are built on it; what a handle owes is
  * a flat list of name and type, and `null` when there is nothing left.
  */
-export class DirHandle {
+class DirHandle {
   #entries: Array<[string, number]>;
   #at = 0;
   #encoding: unknown;
@@ -351,7 +354,7 @@ export class DirHandle {
   }
 }
 
-export const fsDirBinding = {
+const fsDirBinding = {
   opendirSync(path: unknown, encoding?: unknown): DirHandle { return new DirHandle(asPath(path), encoding); },
   opendir(path: unknown, encoding: string, req?: FSReq): DirHandle | undefined {
     return answer(req, () => new DirHandle(asPath(path), encoding));
@@ -364,12 +367,12 @@ export const fsDirBinding = {
  * `FSWatcher` expects around them -- a start that takes a path and answers
  * an errno, a close, and `onchange(status, event, filename)`.
  */
-export class FSEvent {
-  onchange: ((status: number, event: string, filename: string) => void) | null = null;
+class FSEvent {
+  onchange: ((status: number, event: string, filename: string | Uint8Array) => void) | null = null;
   #watcher: { close(): void } | null = null;
   initialized = false;
 
-  start(path: unknown, persistent?: boolean, recursive?: boolean, _encoding?: string): number {
+  start(path: unknown, persistent?: boolean, recursive?: boolean, encoding?: string): number {
     const name = asPath(path);
     const tree = vfs();
     const cwd = callingCwd();
@@ -379,7 +382,9 @@ export class FSEvent {
         // libuv names a change `change` and a create or a remove `rename`,
         // which is what Node's `FSWatcher` turns into its own two events.
         const notify = () => withFilesystem(tree, () => withCwd(cwd, () =>
-          this.onchange?.(0, event === 'rename' ? 'rename' : 'change', filename ?? '')));
+          // libuv encodes the filename at this binding, including Buffer
+          // when requested. Node's FSWatcher forwards it without conversion.
+          this.onchange?.(0, event === 'rename' ? 'rename' : 'change', encodeFsName(filename ?? '', encoding))));
         if (owner === null) notify();
         else enterRun(owner, notify);
       }) as never) as unknown as { close(): void };
@@ -410,7 +415,7 @@ export class FSEvent {
  * `StatWatcher`: what `fs.watchFile` is. It polls, as libuv's does, and the
  * interval is the one the program asked for.
  */
-export class StatWatcher {
+class StatWatcher {
   onchange: ((current: Float64Array | BigInt64Array, previous: Float64Array | BigInt64Array) => void) | null = null;
   #timer: ReturnType<typeof setInterval> | null = null;
   #previous: Float64Array | BigInt64Array | null = null;
@@ -445,21 +450,21 @@ export class StatWatcher {
   hasRef(): boolean { return this.#timer !== null; }
 }
 
-export const fsEventWrapBinding = { FSEvent };
+const fsEventWrapBinding = { FSEvent };
 
 /**
  * What `fs.promises.open` is handed: a descriptor with a close of its own.
  * Node's is a C++ handle whose destructor closes the file; here it is the
  * same number this file's table keeps, with the same close.
  */
-export class FileHandle {
+class FileHandle {
   constructor(public fd: number) {}
   close(): Promise<void> { openFiles.delete(this.fd); return Promise.resolve(); }
   release(): void { openFiles.delete(this.fd); }
   getAsyncId(): number { return this.fd; }
 }
 
-export const fsBinding = {
+const fsBinding = {
   FSReqCallback,
   kUsePromises,
   StatWatcher,
@@ -490,7 +495,7 @@ export const fsBinding = {
       } else if ((flags & bits.truncate) !== 0) {
         tree.writeFileSync(name, '');
       }
-      const fd = nextFd++;
+      const fd = allocateFd();
       const position = (flags & bits.append) !== 0 && exists ? (tree.readFileSync(name) as Uint8Array).length : 0;
       openFiles.set(fd, { path: name, flags, position, directory: false, tree });
       return fd;
@@ -498,7 +503,11 @@ export const fsBinding = {
   },
 
   close(fd: number, req?: FSReq): undefined {
-    return answer(req, () => { fileFor(fd); openFiles.delete(fd); return undefined; });
+    return answer(req, () => {
+      const stream = handleForFd(fd);
+      if (stream instanceof LibuvStreamWrap) { stream.close(); return undefined; }
+      fileFor(fd); openFiles.delete(fd); return undefined;
+    });
   },
 
   // ---- reading ------------------------------------------------------------
@@ -544,6 +553,14 @@ export const fsBinding = {
   // ---- writing ------------------------------------------------------------
   writeBuffer(fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, req?: FSReq): number | undefined {
     return answer(req, () => {
+      const stream = handleForFd(fd);
+      if (stream instanceof LibuvStreamWrap) {
+        if (position !== null && position !== undefined && position >= 0) throw createNodeError('ESPIPE', 'write', String(fd));
+        const bytes = buffer.subarray(offset, offset + length);
+        const status = stream.writeBuffer(new WriteWrap(), bytes);
+        if (status !== 0) throw createNodeError(errname(status), 'write', String(fd));
+        return bytes.length;
+      }
       const file = fileFor(fd);
       if ((file.flags & 3) === 0) throw createNodeError('EBADF', 'write', file.path);
       const tree = file.tree;
@@ -872,4 +889,15 @@ export const fsBinding = {
   },
 };
 
+return { fsBinding, fsDirBinding, fsEventWrapBinding, FSReqCallback, DirHandle, FSEvent, StatWatcher, FileHandle };
+}
+
+export const kUsePromises = Symbol('kUsePromises');
+const hostBindings = createFsBindings();
+export const { fsBinding, fsDirBinding, fsEventWrapBinding, FSReqCallback, DirHandle, FSEvent, StatWatcher, FileHandle } = hostBindings;
+export type FSReqCallback = InstanceType<typeof FSReqCallback>;
+export type DirHandle = InstanceType<typeof DirHandle>;
+export type FSEvent = InstanceType<typeof FSEvent>;
+export type StatWatcher = InstanceType<typeof StatWatcher>;
+export type FileHandle = InstanceType<typeof FileHandle>;
 export default fsBinding;

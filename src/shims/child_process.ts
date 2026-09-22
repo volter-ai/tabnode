@@ -33,6 +33,7 @@ if (typeof globalThis.process === 'undefined') {
 }
 
 import { forGuestRealm, heldWork } from '../host-globals';
+import { promiseOwner } from '../promise-ownership';
 import { Bash, defineCommand } from 'just-bash';
 import type { CommandContext, ExecResult as JustBashExecResult } from 'just-bash';
 import { EventEmitter } from '../node-lib/events-module';
@@ -43,12 +44,11 @@ import { VirtualFSAdapter } from './vfs-adapter';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
 import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
-import { Pipe, constants as pipeConstants } from '../node-lib/binding/pipe_wrap';
 import { registerRunFd, releaseRunFds } from '../node-lib/binding/fds';
 import { UV_ESRCH } from '../node-lib/binding/uv';
-import { setupChannel } from '../node-lib/child-process-module';
+import { loadNodeLibFor } from '../node-lib/load';
+import type { ChildProcessModule } from '../node-lib/child-process-module';
 import { getCommandNames } from 'just-bash';
-import { diagnosticsChannelModule } from '../node-lib/small-modules';
 import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateShellLine, setProgramResolver } from './command-line';
 
 import { __substrateChildren, __onUncaughtException, __reportUncaughtException } from './process';
@@ -333,16 +333,25 @@ export function initChildProcess(vfs: VirtualFS): void {
    * of the server's became `TypeError: Cannot read properties of undefined
    * (reading 'catch')` inside a timer, 59 of them in one boot.
    */
-  const __listenForUnhandledRejections = (report: (reason: unknown, promise?: Promise<unknown>) => void): (() => void) => {
+  const __listenForUnhandledRejections = (owner: object, report: (reason: unknown, promise?: Promise<unknown>) => void): (() => void) => {
     if (typeof globalThis.addEventListener === 'function') {
       const target = globalThis as unknown as EventTarget;
-      const listener = (event: Event) => { event.preventDefault(); report((event as PromiseRejectionEvent).reason, (event as PromiseRejectionEvent).promise); };
+      const listener = (event: Event) => {
+        const rejection = event as PromiseRejectionEvent;
+        // Unknown provenance remains a realm diagnostic. Never guess its
+        // process or broadcast it to unrelated guests (including exited IPC).
+        if (promiseOwner(rejection.promise) !== owner) return;
+        event.preventDefault();
+        report(rejection.reason, rejection.promise);
+      };
       target.addEventListener('unhandledrejection', listener);
       return () => target.removeEventListener('unhandledrejection', listener);
     }
     const host = __hostProcess;
     if (host) {
-      const listener = (reason: unknown, promise?: Promise<unknown>) => report(reason, promise);
+      const listener = (reason: unknown, promise?: Promise<unknown>) => {
+        if (promiseOwner(promise) === owner) report(reason, promise);
+      };
       host.on('unhandledRejection', listener);
       return () => host.off('unhandledRejection', listener);
     }
@@ -599,7 +608,7 @@ export function initChildProcess(vfs: VirtualFS): void {
       syncExecution = false;
       try { proc.exit(1); } finally { syncExecution = wasSync; }
     };
-    const detachRejections = __listenForUnhandledRejections(onUnhandledRejection);
+    const detachRejections = __listenForUnhandledRejections(proc, onUnhandledRejection);
 
     // An exception nobody caught ends the program it was thrown in, as it ends
     // one in Node: a guest listener for `uncaughtException` on its process
@@ -950,7 +959,6 @@ export function initChildProcess(vfs: VirtualFS): void {
     },
     start: startChildRun,
   });
-  watchChildren();
 }
 
 /**
@@ -961,19 +969,10 @@ export function initChildProcess(vfs: VirtualFS): void {
  * a realm here holds many programs and the channel belongs to one of them.
  */
 function attachChannel(proc: ReturnType<Runtime['getProcess']>, fd: number, serialization: string): void {
-  const channel = new Pipe(pipeConstants.IPC);
-  if (channel.open(fd) !== 0) { channel.close(); return; }
-  // Node unrefs a child's channel: the channel alone does not hold a program
-  // open, and `Control.refCounted` puts it back the moment the program
-  // listens for a message.
-  channel.unref();
-  const control = setupChannel(proc, channel, serialization);
-  proc.on('newListener', (name: unknown) => {
-    if (name === 'message' || name === 'disconnect') control.refCounted();
-  });
-  proc.on('removeListener', (name: unknown) => {
-    if (name === 'message' || name === 'disconnect') control.unrefCounted();
-  });
+  // With a process-bound loader, Node's own bootstrap now owns this too.
+  // The host setupChannel built received sockets from the host net graph;
+  // process.send and every received socket must use the child's graph.
+  (loadNodeLibFor(proc, 'child_process') as ChildProcessModule)._forkChild(fd, serialization);
 }
 
 /** The shell's environment as a record: just-bash hands a command a Map. */
@@ -1258,6 +1257,7 @@ interface ChildProcessHostRequest {
   /** Bytes already on fd 0 when the command begins, as Node delivers them. */
   stdin?: string;
   stdinStream: AsyncIterable<Uint8Array>;
+  terminal?: RunStreams['terminal'];
   signal: AbortSignal;
   hold: { value: boolean };
   onStdout: (data: string) => void;
@@ -1308,6 +1308,7 @@ interface CommandRun {
   stdin?: string;
   /** Bytes a writer still holds the run's fd 0 open with, as they arrive. */
   stdinStream?: AsyncIterable<Uint8Array>;
+  terminal?: RunStreams['terminal'];
   signal?: AbortSignal;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
@@ -1349,12 +1350,19 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     let streamedErr = '';
     const onStdout = (data: string): void => { streamedOut += String(data); run.onStdout?.(String(data)); };
     const onStderr = (data: string): void => { streamedErr += String(data); run.onStderr?.(String(data)); };
+    // This token routes the engine's own shell, not a program's environment.
+    // If a host shell inherits it, a later Node launch can override its new
+    // stream identity with the ancestor's and deliver output to both runs.
+    // Host ancestry is already carried by the current process context.
+    const hostEnv = run.env === undefined ? undefined : { ...run.env };
+    if (hostEnv) delete hostEnv[PROCESS_TOKEN_ENV];
     try {
       const result = await bridge.run(run.command, {
         cwd: run.cwd,
-        env: run.env,
+        env: hostEnv,
         ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
         stdinStream: run.stdinStream ?? emptyStdinStream(),
+        ...(run.terminal ? { terminal: run.terminal } : {}),
         signal: controller.signal,
         hold: { value: true },
         onStdout,
@@ -1494,6 +1502,22 @@ function startChildRun(request: RunRequest): StartedRun {
   setRunPid(token, pid, runPid(__currentProcessToken() ?? __lastLaunchedToken)?.pid ?? 0);
   const controller = new AbortController();
   const pendingStdin: Array<Uint8Array | null> = [];
+  // A host terminal consumes input incrementally. The old string-only
+  // route dropped every keystroke that arrived after a child was launched.
+  const hostTerminal = request.terminal !== undefined && hostExecutor() !== null;
+  let wakeInput: (() => void) | undefined;
+  const hostInput: AsyncIterable<Uint8Array> = {
+    async *[Symbol.asyncIterator]() {
+      while (!finished && !controller.signal.aborted) {
+        if (pendingStdin.length) {
+          const bytes = pendingStdin.shift();
+          if (bytes === null) return;
+          if (bytes) yield bytes;
+        } else await new Promise<void>((resolve) => { wakeInput = resolve; });
+      }
+    },
+  };
+  controller.signal.addEventListener('abort', () => { wakeInput?.(); }, { once: true });
   let stdinSink: RunStdin | null = null;
   let finished = false;
   let started = false;
@@ -1515,6 +1539,7 @@ function startChildRun(request: RunRequest): StartedRun {
     held: false,
     stdinOpen: request.stdinIsPipe,
     stderrIsPipe: request.stderrIsPipe,
+    terminal: request.terminal,
     get stdin(): RunStdin | null | undefined { return stdinSink; },
     set stdin(sink: RunStdin | null | undefined) { stdinSink = sink ?? null; if (stdinSink) flushStdin(); },
   };
@@ -1527,11 +1552,14 @@ function startChildRun(request: RunRequest): StartedRun {
   const end = (code: number, signal: string | null): void => {
     if (finished) return;
     finished = true;
+    wakeInput?.();
+    wakeInput = undefined;
     _activeForkedChildren -= 1;
     releaseRunStreams(token);
     releaseRunFds(token);
     // A run that has ended is no longer a process: its number answers ESRCH.
     forgetRunPid(token);
+    __substrateChildren.delete(pid);
     _onForkedChildExit?.();
     request.exit(code, signal);
   };
@@ -1554,16 +1582,17 @@ function startChildRun(request: RunRequest): StartedRun {
     void (async () => {
       let outcome: CommandOutcome;
       try {
-        outcome = await routeCommand({
+        outcome = await enterRun(token, () => routeCommand({
           command: __substrateLineFor(request.file, request.args, request.cwd),
-          engineFirst: programExists(request.file, request.cwd, request.env),
+          engineFirst: !hostTerminal && programExists(request.file, request.cwd, request.env),
           cwd: request.cwd,
           env: { ...request.env, [PROCESS_TOKEN_ENV]: token },
           stdin,
+          ...(hostTerminal ? { stdinStream: hostInput, terminal: request.terminal } : {}),
           signal: controller.signal,
           onStdout: streams.onStdout,
           onStderr: streams.onStderr,
-        });
+        }));
       } catch (error) {
         outcome = { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
       }
@@ -1580,7 +1609,7 @@ function startChildRun(request: RunRequest): StartedRun {
   if (request.stdinIsPipe) (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, begin, 0);
   else begin();
 
-  return {
+  const control: StartedRun = {
     token,
     pid,
     kill(signal: string): number {
@@ -1594,11 +1623,13 @@ function startChildRun(request: RunRequest): StartedRun {
       return 0;
     },
     writeStdin(bytes: Uint8Array): void {
+      if (hostTerminal) { pendingStdin.push(bytes); wakeInput?.(); wakeInput = undefined; return; }
       if (!started) { initialStdin.push(bytes); return; }
       pendingStdin.push(bytes);
       flushStdin();
     },
     endStdin(): void {
+      if (hostTerminal) { pendingStdin.push(null); wakeInput?.(); wakeInput = undefined; return; }
       if (!started) {
         // The writer closed before the command began: the run's fd 0 is the
         // string already collected and nothing more, so it is not held open.
@@ -1610,34 +1641,15 @@ function startChildRun(request: RunRequest): StartedRun {
       flushStdin();
     },
   };
+  // A pid is signalable before spawn returns, including cancellation in
+  // the same turn. A diagnostics-channel microtask registered it too late.
+  __substrateChildren.set(pid, {
+    exitCode: null, signalCode: null,
+    kill: (signal = 'SIGTERM') => control.kill(signal) === 0,
+  });
+  return control;
 }
 
-/**
- * The guest's children are processes it can see, so `process.kill(pid, 0)`
- * answers about a live child rather than ESRCH for every pid but its own.
- * Node publishes each `ChildProcess` on the `child_process` diagnostics
- * channel as it is constructed, which is the door this reads: the pid is
- * filled by `spawn` a moment later, so the child is recorded on the next tick.
- */
-function watchChildren(): void {
-  // Node's own `diagnostics_channel`, the same module the vendored
-  // `child_process.js` publishes on. A channel is a name in one registry, and
-  // the engine's own imitation of the module was a second registry: a
-  // subscriber there heard nothing a vendored file published.
-  const diagnosticsChannel = diagnosticsChannelModule as unknown as {
-    channel(name: string): { subscribe(listener: (message: unknown) => void): void };
-  };
-  diagnosticsChannel.channel('child_process').subscribe((message: unknown) => {
-    const child = (message as { process?: { pid?: number; exitCode: number | null; signalCode: string | null; kill(signal?: string): boolean; once(event: string, listener: () => void): unknown } }).process;
-    if (!child) return;
-    queueMicrotask(() => {
-      const pid = child.pid;
-      if (typeof pid !== 'number' || pid === 0) return;
-      __substrateChildren.set(pid, child);
-      child.once('exit', () => { __substrateChildren.delete(pid); });
-    });
-  });
-}
 
 export default {
   initChildProcess,

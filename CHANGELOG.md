@@ -4,6 +4,44 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.0 — 2026-09-22
+
+The host API adds explicit HTTP-client and Fetch transport adapters. The host
+retains authorization, transport selection and cancellation; guest applications
+continue to use Node's own HTTP library and native browser Response objects.
+
+- Give each guest process its own builtin module graph, including lazy loads,
+  child bootstrap, native class facades and Buffer/stream constructors. An
+  application's HTTP patches no longer leak into independent terminal commands.
+  Native implementation objects outside those facades remain shared; this is
+  not complete realm or prototype isolation.
+- Connect Node's HTTP Agent at its existing connection seam to the host exchange.
+  Node parses and frames the local wire; the adapter returns status, headers and
+  streamed bodies without retrying. Unsupported custom socket/TLS options fail
+  explicitly. Raw TLS remains unavailable and now emits an error instead of
+  leaving a client pending.
+- Account for Fetch headers and active body pulls in the requesting process's
+  lifetime, release on completion/cancellation, and cancel unread bodies on exit.
+  Guest replacement of fetch remains local to its process. Embedders supply the
+  lifecycle adapter; the fallback host-fetch path is unchanged.
+- Restore descriptor-backed terminal input/output, inheritance and resizing,
+  using one file/stream descriptor namespace. Strip the private process-routing
+  token when passing an environment to the host shell.
+- Preserve requested fs.watch filename encoding and forward a preview request's
+  Host authority. Attribute blob workers to their creating preview while that
+  document is available; nested and orphaned worker cases remain unverified.
+- Stop broadcasting a browser promise rejection to every guest process. Record
+  ownership for intercepted constructor calls while retaining native Promise
+  identity and process-local global replacement. Async, static and chained
+  promise provenance remains unknown rather than assigned to another process.
+
+Validation: library build, typecheck and independent source review; bounded
+normal-Chrome readings through the substrate's editor and terminal cover
+extension activation, file notifications, terminal output/resize, GET/HEAD/POST,
+Fetch body completion/cancellation/cloning, and native Promise identity. No
+automated tests were run under the owner's instruction. Production relay
+accounting and deployment acceptance belong to the substrate release.
+
 ## v0.4.1 — 2026-09-21
 
 - Child-process inherited stdout/stderr and default cwd come from the spawning

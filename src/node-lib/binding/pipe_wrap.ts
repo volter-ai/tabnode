@@ -76,7 +76,7 @@ export class Pipe extends LibuvStreamWrap {
         req.oncomplete?.(UV_ENOENT, this, req, true, true);
         return;
       }
-      const accepted = new Pipe(server.type === constants.IPC ? constants.IPC : constants.SOCKET);
+      const accepted = new (server.constructor as typeof Pipe)(server.type === constants.IPC ? constants.IPC : constants.SOCKET);
       accepted.path = path;
       // The serving run owns what it accepted, not the connecting one.
       __adoptHandle(accepted, ownerOf(server));
@@ -111,7 +111,7 @@ export class Pipe extends LibuvStreamWrap {
 
   /** libuv's `dup()`: the same pairing, under the same flavour. */
   override duplicate(): Pipe {
-    const copy = new Pipe(this.type);
+    const copy = new (this.constructor as typeof Pipe)(this.type);
     copy.takeOverFrom(this);
     return copy;
   }

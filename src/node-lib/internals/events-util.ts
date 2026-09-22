@@ -13,6 +13,11 @@ import { readlineModule as nodeLibPublicReadline } from './readline-access';
 /** `internal/console/global`: the realm's console, which `util.debuglog` logs through. */
 export const internalConsoleGlobal = new Proxy({} as Record<string, unknown>, {
   get: (_target, key) => Reflect.get(globalThis.console as unknown as object, key),
+  ownKeys: () => Reflect.ownKeys(globalThis.console),
+  getOwnPropertyDescriptor: (_target, key) => ({
+    configurable: true, enumerable: true,
+    get: () => Reflect.get(globalThis.console as unknown as object, key),
+  }),
 });
 
 /**

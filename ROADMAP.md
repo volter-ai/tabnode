@@ -9,6 +9,268 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## terminal-descriptors: Allocated TTYs through the existing process host
+
+Status: local candidate, bounded browser reading complete; release pending
+
+Article 6: the substrate's unchanged terminal addon needs descriptor-backed
+TTY streams and child stdio. Restore TTY descriptor attachment, fs.write on
+stream descriptors, one allocation namespace for files and streams, and carry
+terminal input and resize through the existing process runner. The embedding
+addon owns its own ABI; the engine recognizes no package. The substrate's W53
+records the observed integrated-terminal failure and owns the real UI reading.
+No vendored Node files or automated tests are changed or run.
+
+The first UI reading reaches command output, terminal dimensions, resize,
+filesystem updates and independent terminal termination. It also exposes the
+engine's internal process token in the host shell environment. Crossing the
+host boundary must strip that private routing value: a later Node launch
+otherwise inherits an explicit env assignment overriding its own stream token,
+so raw output reaches the ancestor and the returned output is delivered again.
+Ancestry stays in the existing process context. The substrate owns the rereading.
+After stripping that token only from the host-bound environment copy, the
+engine build and substrate package builds pass. In the substrate's integrated
+terminal Node prints once without an internal marker, the shell no longer
+inherits the token, and another terminal remains usable after the first exits.
+Independent source review found no blocker. Node's suite remains unmeasured
+under the owner's no-tests instruction; this is not a full TTY compatibility claim.
+
+## process-owned-builtins: Guest builtin modules belong to their process
+
+Status: local candidate; bounded browser reading complete, release pending
+
+Article 6: the substrate's W61 reading finds VS Code's HTTP patches in an
+independent terminal Node command. `runtime.ts` hands every process the same
+HTTP/HTTPS exports; `load.ts` caches the underlying files at realm scope.
+The request subsequently creates its socket without a live process owner and
+returns no callback to the terminal, despite a completed host exchange.
+
+The correction is a process-owned module cache with recursively bound require
+and process, preserving dependency and constructor identity. Keep the default
+host/bootstrap graph private to the host. `fsModuleFor` is partial precedent:
+its first guest still shares the host module and its internal requires still
+reach the global cache. Lazy getters, hand-bound internals, native shim module
+surfaces and `libRequire` paths must not escape to another process's graph.
+Initialize the existing host HTTP adapter for each process's Agents using that
+graph's http/net/stream classes; retain shared OS binding registries.
+Independent review supports this ownership boundary. Copying HTTP exports,
+resetting a vendor patch or adding a keepalive does not restore the contract.
+
+Completion: independent Node commands see their own unpatched builtins while
+the unchanged VS Code process retains its patches; the permitted HTTPS request
+delivers a response or error through the existing World broker. The bounded
+success reading below meets this reproduction; it does not establish complete
+native-prototype isolation or all request-lifetime cases. No automated tests
+are authorized.
+
+Candidate implementation: all vendored files resolve recursively inside a
+process scope, including lazy util exports, customization hooks and ESM
+namespaces. The first guest no longer shares the host fs graph. The native
+TLS, decoder and crypto factories, filesystem encoded-name results, stdin and
+web-stream adapters use the requesting graph's constructors. OS descriptor,
+listener and run-ownership registries remain shared. Host HTTP transport is
+installed on each graph's Agent before guest code, with weak restoration
+tracking. Native module data records are copied per scope; native/platform
+function objects outside those factories are still shared implementations, so
+this is not a claim of complete realm or native-prototype isolation.
+
+Independent review found and corrected host Buffer results from crypto,
+console-proxy property loss and unbounded per-process symbols on the shared
+EventTarget prototype. The crypto factory's private key metadata accessor was
+also corrected before building. Engine declarations, engine build and substrate
+package builds pass. No automated tests were added or run.
+The first rebuilt boot then failed before port publication: Node's `net.js`
+tried to redefine `TCP.prototype.owner` on a shared native class. The owning
+boundary is the same process graph: native class facades need per-process JS
+prototypes over shared OS implementations, and accepted/duplicated handles
+must use the relevant listener/handle constructor. This correction is now in
+the candidate. Native facade `instanceof` deliberately recognizes the shared
+OS implementation brand, so IPC-transferred handles remain valid in the
+receiver without sharing guest JS builtin constructors. Independent source
+review accepted this correction. In the next boot, the independent integrated
+terminal command prints `request request get get`, crypto Buffer and stdin
+Readable identity checks print true, and the unchanged GitHub HTTPS GET prints
+`status 200`, `end` and returns to the prompt. `git status --short` preserves
+`A core-workflow.txt` and `?? README.md`.
+
+That candidate also left the remote extension host uninitialized: Markdown
+preview stayed empty and the Git output channel had not registered. Source
+tracing found another graph escape in child bootstrap: attachChannel invoked
+the host graph's setupChannel, constructing received sockets in the host net
+graph. It now uses the child's own unmodified child_process._forkChild, within
+the existing run context. Independent review accepted this ownership correction;
+engine and substrate package builds pass.
+
+The subsequent normal-Chrome reading completes remote extension activation,
+registers Git/GitLens/Markdown output channels, and renders the README preview.
+With those extensions active, an independent integrated-terminal Node command
+again prints `request request get get`, `status 200`, `end`, and the shell prompt.
+The broker records one selected/completed GitHub relay attempt. Excluded Open
+VSX and GitKraken destinations remain denied. Git still reports the preserved
+staged sample and untracked README. Temporary debugger instrumentation was
+removed. This resolves the observed cross-process patch leak and child bootstrap
+graph escape; broader W61 transport acceptance remains separate and open.
+
+
+
+## fetch-request-lifetime: Host fetch I/O belongs to its requesting process
+
+Status: local candidate; bounded browser reading complete, release pending
+
+Article 6: a terminal Node command's ordinary `fetch(...).then(...)` returns to
+the prompt without output, while the broker records a completed direct GitHub
+exchange. The same command with a five-second application timer prints its 200
+response and clears that timer. This distinguishes premature run completion
+from a transport or permission failure. The runtime exposes host fetch without
+an owned request, and both module wrappers leave bare `fetch` outside the guest
+global view. A transport failure with a live run would disprove this diagnosis;
+the successful timed reading instead supports it.
+
+Use the existing owned-handle registry and an explicit host fetch lifecycle
+seam. Bind the process before entering the host transport; count pending headers
+and actual body pulls, retaining cancellation ownership while idle. Release on
+EOF/error/cancel and cancel on process exit. The existing broker stream source
+observes all native Response consumption paths, so no Response imitation or
+eager body draining is needed. Hold-through-EOF alone is incorrect: an unread
+body has no pulls and would hang. Independent source review supports this shape.
+No arbitrary promises, guest keepalive, network grant, or vendor patch is added.
+Completion is the original direct-fetch command printing its result without a
+timer, plus cancellation and unread-body exit through the terminal. No automated
+tests are authorized.
+
+The candidate adds a host-installed Fetch adapter with an explicitly bound
+process context. Its request activities use the existing owned-handle registry;
+the substrate worker accounts for headers and stream pulls through that seam.
+Bare and qualified global fetch share dynamic process-local replacement;
+normal direct-call receiver semantics are retained by the existing AST pass.
+Review found and corrected failed pull-send cleanup and late requests from ended
+processes. The weak process/token association distinguishes an ended run from
+an unregistered library consumer. No native Response/stream object is replaced.
+Other embedders must install the lifecycle adapter to supply this accounting;
+the ordinary host-fetch fallback is unchanged. Engine and substrate package
+builds pass. In the rebuilt existing normal-Chrome tab, the original command
+prints `direct 200 5566` without an application timer and returns the prompt.
+Headers-only fetch prints 200 and exits; the broker cancels its unread body.
+Cancelling a native reader after a first chunk prints `cancelled true` and
+returns the prompt. Native Response cloning returns equal bodies; a strict
+process-local fetch replacement observes the original bare-call receiver and
+matching global function identity. These are bounded worker-lane observations,
+not a complete Fetch, relay-cost, or cross-embedder compatibility claim.
+
+## http-client-host-transport: Node HTTP clients over an admitted host exchange
+
+Status: local implementation in progress
+
+Articles 5 and 6: connect Node's unchanged HTTP clients at Agent.createConnection
+to a host exchange. Node's own HTTP server reads the internal request wire and
+frames its answer; a bounded Duplex stream binding carries the bytes. The host
+captures process attribution at connection creation and owns transport policy,
+authorization, cost and cancellation. No application names or TLS certificates
+are fabricated. Raw TLS remains unsupported. W61 in the substrate owns relay
+capabilities, policy defaults and browser acceptance.
+
+Completion: unchanged HTTP/HTTPS clients receive real status, ordered headers
+and streamed bodies through the admitted broker; errors and cancellation settle.
+No automated tests are added or run under the owner's instruction.
+
+First substrate reading: the gallery GET returns bytes through the local native
+relay. A broker denial exposed close-before-error ordering in LibuvStreamWrap:
+its close callback ran before Node's queued error and ClientRequest reported
+"socket hang up". Deferring completion behind that tick preserves the actual
+error; the next live gallery POST reports "Failed to fetch". POST relay delivery
+remains open in the substrate. The existing Readable.toWeb adapter ignores
+backpressure and its strategy option, so bounded upload memory remains unproven.
+
+## unavailable-tls-settles: Report unsupported TLS connections
+
+Status: local candidate, not released
+
+Article 6: a failed connection emits an error and closes instead of hanging a
+Node HTTP client. In the substrate terminal, an unchanged `https.get()` gets
+neither a response nor an error before its three-second application deadline.
+The TLS stub was an EventEmitter that never connected or failed. The candidate
+uses Node's Socket lifecycle and destroys it asynchronously with
+`ERR_TLS_UNAVAILABLE`; its secure-connect callback never reports false success.
+This is failure settlement, not the missing HTTP egress adapter. The substrate's
+W61 owns that adapter and its transport-policy, header and streaming contract.
+
+Measured in the existing substrate tab: the same request reaches its error
+handler with `ERR_TLS_UNAVAILABLE`, clears its deadline and exits 0; the
+workbench also reports its gallery HTTPS failures instead of hanging. The engine
+build passes. No automated tests were added or run.
+
+Completion: source review and release; the relay adapter remains separate.
+
+## preview-workers-and-watch-encoding: Core editor runtime follow-up
+
+Status: local candidate, not released
+
+Article 6: preserve the creating virtual server for blob-worker requests and
+restore Node's requested filename encoding at the fs.watch binding. The service
+worker asks preview documents which created the object URL and derives the port
+from the document, retaining attribution by worker client id. This covers blob
+workers whose creating preview document remains available; nested blob creation
+inside workers and shared workers outliving their creator remain unverified.
+
+The browser-substrate UI run on 2026-09-22 reports no worker-module import errors
+and its web extension-host output reports startup and eager extension activation.
+The Parcel WASM watcher gets past addon resolution, but watcher IPC cancellation
+and a subsequent renderer crash prevent claiming file notifications work. The
+renderer crash cause is unknown; its guarded reload failed. Library build passes;
+no automated tests were added or run, following the owner's instruction.
+
+The owner-authorized Chrome reload recovered the existing tab. Its next reading
+exposed unfiltered global unhandled-rejection listeners on every guest process.
+The candidate filters rejection delivery by recorded ownership rather than
+broadcasting to every process. Unknown provenance stays in realm diagnostics.
+The build passes and the observed startup no longer reports the
+watcher cancellation cascade. File notifications and the renderer crash cause
+remain unverified; the automation library retains stale crashed-page state.
+
+Release review correction (Article 6): the first ownership implementation
+substituted a Promise subclass, making native async promises fail ordinary
+`instanceof Promise` and `Promise.resolve(p) === p` checks. Assigning the guest
+global Promise also reached the shared host while reads ignored the assignment.
+The required behavior is native Promise identity plus process-local global
+replacement. Keep the intrinsic constructor visible; tag only construction
+through the existing identifier-constructor seam, using the original newTarget.
+The global property and bare identifier must read the same local descriptor.
+No handlers or species overrides are added. Identifier construction is covered;
+member-expression construction, static/chained promises and native async
+promises retain unknown provenance. No required VS Code reading established
+species-chain attribution; the original non-broadcasting fix is retained.
+An intrinsic identity mismatch or a replacement visible in a sibling process
+would disprove this correction. Browser reading and build remain required;
+no automated tests are authorized.
+
+The corrected library build and typecheck pass. In normal Chrome's substrate
+terminal, native async promises pass `instanceof Promise`, resolve identity
+and constructor identity; assigning a callable Promise replacement is visible
+through the bare name and receives `undefined` as its strict call receiver.
+Restoring through `Object.defineProperty` is visible through the bare name.
+That command then completes three Node HTTPS requests and exits 0; the VS Code
+workbench and Markdown webview remain usable. This does not extend rejection
+ownership coverage beyond the identifier-constructor seam described above.
+
+The next live reading traced a terminal write through Parcel (39 ms to its
+added event, 108 ms to normalization) and into Explorer (435 ms). The event
+named authority `127.0.0.1:4189`, while the workspace named the guest listening
+port `127.0.0.1:49152`. The service worker omitted Fetch's implicit Host header,
+so the server substituted its listening address when generating the workspace
+configuration. Article 6: the source candidate now forwards the browser
+request URL's authority, restoring the Host an HTTP server receives. Explicit
+virtual-host routing still overrides it. Engine and substrate package builds
+pass. On the rebuilt document, a file created in the outer terminal appears in
+Explorer without changing focus or pressing Refresh; deleting it likewise
+removes it from Explorer while terminal focus remains. Source Control counts
+the added file when the workbench regains focus, consistent with the Git
+extension's own focus gating. No automated tests were added or run.
+
+Completion:
+- Read automatic Explorer and Source Control updates through the existing tab.
+- Establish the watcher process's first failure and recover the crashed renderer.
+- Verify blob-worker attribution across worker and service-worker lifetimes.
+
 ## launch: The repository goes public from its own first commit
 
 Status: done 2026-09-21

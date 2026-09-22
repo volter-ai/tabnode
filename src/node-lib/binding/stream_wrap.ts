@@ -218,7 +218,11 @@ export class LibuvStreamWrap implements OwnedHandle {
       if (peer) { peer.peer = null; peer.receiveEof(); peer.flushInbound(); }
       this.onCloseHandle();
     }
-    if (callback) queueMicrotask(callback);
+    // Node schedules a destroy(error)'s error on nextTick after close() returns.
+    // The native close completion comes afterward. One microtask here ran the
+    // close listener first, so ClientRequest replaced the actual policy denial
+    // with ECONNRESET ("socket hang up"). Leave that tick ahead of completion.
+    if (callback) queueMicrotask(() => queueMicrotask(callback));
   }
 
   /** What a `TCP` or a `Pipe` gives up beyond the stream: a port, a path. */

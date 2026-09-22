@@ -17,7 +17,7 @@ import * as dnsShim from '../shims/dns';
 import * as clusterShim from '../shims/cluster';
 import * as dgramShim from '../shims/dgram';
 import asyncHooksShim from '../shims/async_hooks';
-import stringDecoderShim from '../shims/string_decoder';
+import stringDecoderShim, { createStringDecoderModule } from '../shims/string_decoder';
 import v8Shim from '../shims/v8';
 import * as pathShim from '../shims/path';
 import * as tlsShim from '../shims/tls';
@@ -75,7 +75,10 @@ const timersModule = {
 /** Built on the first ask, for the reason `./binding/index.ts` gives. */
 // eslint-disable-next-line no-var, vars-on-top
 var __table: Record<string, () => unknown> | undefined;
-export function nodeLibPublic(name: string): (() => unknown) | undefined {
+export function nodeLibPublic(name: string, require?: (name: string) => any, _process?: object): (() => unknown) | undefined {
+  if (require && name === 'crypto') return () => cryptoShim.createCryptoModule(require);
+  if (require && name === 'tls') return () => tlsShim.createTlsModule(require);
+  if (require && name === 'string_decoder') return () => createStringDecoderModule(() => require('buffer').Buffer);
   __table ??= {
   timers: () => timersModule,
   dns: () => dnsShim,

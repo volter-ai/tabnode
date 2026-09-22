@@ -36,6 +36,10 @@ const runFds = new Map<ProcessToken, Map<number, { type: HandleType; handle: unk
 
 let nextFd = 20;
 
+/** Files and streams occupy one descriptor namespace, as on the OS. */
+export function allocateFd(): number { return nextFd++; }
+
+
 /** Record a descriptor a run is started with, under that run's name. */
 export function registerRunFd(token: ProcessToken, fd: number, type: HandleType, handle: unknown): void {
   let table = runFds.get(token);
@@ -56,7 +60,7 @@ function tableOfAskingRun(): Map<number, { type: HandleType; handle: unknown }> 
 
 /** Record a handle under a descriptor of the engine's own, and answer the number. */
 export function registerFd(type: HandleType, handle: unknown): number {
-  const fd = nextFd++;
+  const fd = allocateFd();
   openFds.set(fd, { type, handle });
   return fd;
 }

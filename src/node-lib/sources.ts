@@ -8,6 +8,7 @@
  * text; `load.ts` evaluates it in the scope Node's `BuiltinModule` gives a
  * builtin.
  */
+import PATH from './path.js?raw';
 import NET from './net.js?raw';
 import BUFFER from './buffer.js?raw';
 import INTERNAL_BUFFER from './internal/buffer.js?raw';
@@ -105,6 +106,7 @@ import INTERNAL_EVENTS_SYMBOLS from './internal/events/symbols.js?raw';
 export const NODE_LIB_VERSION = 'v22.18.0';
 
 export const NODE_LIB_SOURCES: Record<string, string> = {
+  path: PATH,
   'net': NET,
   'buffer': BUFFER,
   'internal/buffer': INTERNAL_BUFFER,

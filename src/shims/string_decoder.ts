@@ -33,10 +33,6 @@ interface BufferClass {
   from(value: unknown, offset?: unknown, length?: number): Buffer;
   alloc(size: number): Buffer;
 }
-let bufferClass: BufferClass | undefined;
-function Bytes(): BufferClass {
-  return bufferClass ??= (loadNodeLib('buffer') as { Buffer: BufferClass }).Buffer;
-}
 import {
   ERR_INVALID_ARG_TYPE,
   ERR_INVALID_THIS,
@@ -66,6 +62,8 @@ interface StringDecoderConstructor {
   prototype: StringDecoder;
 }
 
+/** A decoder's constructors and held bytes belong to one builtin graph. */
+export function createStringDecoderModule(Bytes: () => BufferClass) {
 /** lib/internal/util.js normalizeEncoding, with Node's aliases. */
 const kEncodingAliases: Record<string, string> = {
   utf8: 'utf8', 'utf-8': 'utf8',
@@ -391,6 +389,12 @@ decoderPrototype.fillLast = function fillLast(this: unknown, buf: Buffer): strin
   return undefined;
 };
 
-export const StringDecoder = StringDecoderImpl as unknown as StringDecoderConstructor;
+const StringDecoder = StringDecoderImpl as unknown as StringDecoderConstructor;
 
-export default { StringDecoder };
+return { StringDecoder };
+
+}
+let bufferClass: BufferClass | undefined;
+const decoder = createStringDecoderModule(() => bufferClass ??= (loadNodeLib('buffer') as { Buffer: BufferClass }).Buffer);
+export const StringDecoder = decoder.StringDecoder;
+export default decoder;

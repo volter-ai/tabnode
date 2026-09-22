@@ -32,7 +32,7 @@
  * - `initialize` is awaited before the first resolution the chain serves,
  *   which is where Node's synchronous `register()` has already blocked for it.
  */
-import { loadNodeLibInstance } from './load';
+import { loadNodeLibFor } from './load';
 
 /** A resolve hook's answer, as `internal/modules/esm/hooks.js` validates one. */
 export interface ResolveResult {
@@ -96,7 +96,10 @@ const ESM_CONDITIONS = ['node', 'import'];
 
 export class RunModuleHooks {
   /** The vendored file's own instance, this run's alone. */
-  readonly sync: CustomizationHooks = loadNodeLibInstance('internal/modules/customization_hooks') as CustomizationHooks;
+  readonly sync: CustomizationHooks;
+  constructor(process: object) {
+    this.sync = loadNodeLibFor(process, 'internal/modules/customization_hooks') as CustomizationHooks;
+  }
   #resolveChain: Link<AsyncResolveHook>[] = [];
   #loadChain: Link<AsyncLoadHook>[] = [];
   #initializing: Promise<unknown>[] = [];

@@ -29,6 +29,8 @@ import { nodeLibBinding } from './binding';
 import { nodeLibPublic } from './public-modules';
 import { setLibRequire } from './require-hook';
 import { NODE_LTS_VERSION, nodeVersions } from './node-versions';
+import { createUtilBinding } from './binding/util';
+import { createFsBindings } from './binding/fs';
 
 /**
  * The realm's built-ins, captured as Node captures them: before a program can
@@ -206,9 +208,16 @@ export function loadNodeLib(name: string): unknown {
  * Spread of a lazy proxy copied nothing; `Object.getOwnPropertyNames` reads
  * the proxy's ownKeys trap, which is the module's keys.
  */
-const builtinNamespaces: Array<{ cjs: object; ns: Record<string, unknown> }> = [];
+type BuiltinNamespace = { cjs: object; ns: Record<string, unknown> };
+const builtinNamespaces = new WeakMap<object, BuiltinNamespace[]>();
+const hostNamespaceOwner = {};
+function namespacesFor(owner: object): BuiltinNamespace[] {
+  let held = builtinNamespaces.get(owner);
+  if (!held) { held = []; builtinNamespaces.set(owner, held); }
+  return held;
+}
 
-export function esmNamespaceOf(mod: unknown): Record<string, unknown> {
+export function esmNamespaceOf(mod: unknown, owner: object = hostNamespaceOwner): Record<string, unknown> {
   const ns: Record<string, unknown> = { default: mod };
   if (mod !== null && (typeof mod === 'object' || typeof mod === 'function')) {
     const cjs = mod as object;
@@ -221,14 +230,14 @@ export function esmNamespaceOf(mod: unknown): Record<string, unknown> {
         set(value: unknown) { (cjs as Record<string, unknown>)[key] = value; },
       });
     }
-    builtinNamespaces.push({ cjs, ns });
+    namespacesFor(owner).push({ cjs, ns });
   }
   return ns;
 }
 
 /** Node's `module.syncBuiltinESMExports`: newly assigned CJS keys appear on the namespace. */
-export function syncBuiltinESMExports(): void {
-  for (const { cjs, ns } of builtinNamespaces) {
+export function syncBuiltinESMExports(owner: object = hostNamespaceOwner): void {
+  for (const { cjs, ns } of namespacesFor(owner)) {
     for (const key of Object.getOwnPropertyNames(cjs)) {
       if (key === 'default' || Object.prototype.hasOwnProperty.call(ns, key)) continue;
       Object.defineProperty(ns, key, {
@@ -248,35 +257,142 @@ export function loadNodeLibInstance(name: string): unknown {
 }
 
 /**
- * A vendored file cached on one engine instance rather than the realm.
- *
- * Node has one builtin cache per process. The engine runs many processes in
- * one realm, and the realm cache is keyed only by name, so a second
- * `Runtime`'s `require('fs')` was the first's module object: a `Symbol.for`
- * tag written by one guest was readable by the other. The first instance
- * still uses {@link loadNodeLib}; a later instance asks here, and the file
- * is compiled once for that owner. Its `require` of other vendored files
- * still hits the realm cache, so `net` and `events` stay one class.
+ * Each guest owns one recursively resolved builtin graph. The default loader
+ * is private to the engine; guest monkey patches never reach it or siblings.
+ * Native bindings retain the shared OS registries beneath those graphs.
  */
-let byOwner: WeakMap<object, Map<string, NodeLibModule>> | undefined;
-export function loadNodeLibFor(owner: object, name: string): unknown {
-  byOwner ??= new WeakMap();
-  let owned = byOwner.get(owner);
-  if (!owned) {
-    owned = new Map();
-    byOwner.set(owner, owned);
+export type NodeLibRequire = (name: string) => any;
+type ModuleInitializer = (name: string, value: any, require: NodeLibRequire) => void;
+const moduleInitializers = new Set<ModuleInitializer>();
+
+/** Host bootstrap adapters are applied to each newly compiled builtin. */
+export function onNodeLibLoaded(initialize: ModuleInitializer): () => void {
+  moduleInitializers.add(initialize);
+  return () => { moduleInitializers.delete(initialize); };
+}
+
+/** Native implementations can be shared; their exported module records cannot. */
+export function moduleSurface(value: any, seen = new Map<object, any>()): any {
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== null && prototype !== Object.prototype && !Array.isArray(value)) return value;
+  const surface = Array.isArray(value) ? [] : Object.create(prototype === null ? null : Object.prototype);
+  seen.set(value, surface);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (Array.isArray(value) && key === 'length') continue;
+    descriptor.configurable = true;
+    if ('value' in descriptor) {
+      descriptor.value = moduleSurface(descriptor.value, seen);
+      descriptor.writable = true;
+    }
+    Object.defineProperty(surface, key, descriptor);
   }
-  const cached = owned.get(name);
-  if (cached) return cached.exports;
-  const record = newNodeLibRecord(name);
-  owned.set(name, record);
-  try {
-    compileNodeLib(name, record);
-  } catch (error) {
-    owned.delete(name);
-    throw error;
+  return surface;
+}
+
+/** Native class implementation and OS registries are shared, JS prototypes are not. */
+function bindingSurface(value: unknown): unknown {
+  const surface = moduleSurface(value);
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(surface))) {
+    const implementation = descriptor.value;
+    // ECMAScript classes have a non-writable own prototype. Ordinary native
+    // functions stay callable functions; class facades retain their static API.
+    if (typeof implementation !== 'function'
+      || Object.getOwnPropertyDescriptor(implementation, 'prototype')?.writable !== false) continue;
+    const ScopedBinding = class extends implementation {};
+    Object.defineProperty(ScopedBinding, 'name', { value: implementation.name, configurable: true });
+    // IPC transfers native handles within the shared OS. Node's native-brand
+    // checks must recognize the received handle even when its JS facade was
+    // allocated by another process. This does not share guest module exports.
+    Object.defineProperty(ScopedBinding, Symbol.hasInstance, {
+      value: (instance: unknown) => Function.prototype[Symbol.hasInstance].call(implementation, instance),
+    });
+    Object.defineProperty(surface, key, { ...descriptor, value: ScopedBinding });
   }
-  return record.exports;
+  return surface;
+}
+
+class NodeLibScope {
+  private readonly modules = new Map<string, NodeLibModule>();
+  private readonly internals = new Map<string, unknown>();
+  private readonly bindings = new Map<string, unknown>();
+  private readonly surfaces = new Map<string, unknown>();
+  constructor(readonly process: object) {}
+
+  readonly require: NodeLibRequire = (specifier) => {
+    const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
+    if (name === 'process') return this.process;
+    if (name === 'fs/promises') return this.require('internal/fs/promises').exports;
+    if (name === 'path/posix') return this.require('path').posix;
+    if (name === 'path/win32') return this.require('path').win32;
+    if (name === 'assert/strict') return this.require('assert').strict;
+    if (name === 'util/types') return this.require('internal/util/types');
+    if (NODE_LIB_SOURCES[name] !== undefined) return this.load(name);
+    const internal = nodeLibInternal(name, this.require, this.process);
+    if (internal) {
+      if (!this.internals.has(name)) this.internals.set(name, moduleSurface(internal()));
+      return this.internals.get(name);
+    }
+    const native = nodeLibPublic(name, this.require, this.process);
+    if (native) return this.surface(name, native);
+    throw new Error(`node-lib: no builtin '${specifier}' in this process`);
+  };
+
+  surface(name: string, create: () => unknown): unknown {
+    if (!this.surfaces.has(name)) this.surfaces.set(name, moduleSurface(create()));
+    return this.surfaces.get(name);
+  }
+
+  private readonly binding = (name: string): unknown => {
+    if (!this.bindings.has(name)) {
+      if (['fs', 'fs_dir', 'fs_event_wrap'].includes(name)) {
+        // Exported handles and encoded names belong to this graph; the fd
+        // allocator, open-file descriptions and filesystem remain shared OS state.
+        const fs = createFsBindings(() => this.require('buffer').Buffer);
+        this.bindings.set('fs', fs.fsBinding);
+        this.bindings.set('fs_dir', fs.fsDirBinding);
+        this.bindings.set('fs_event_wrap', fs.fsEventWrapBinding);
+      } else {
+        this.bindings.set(name, name === 'util' ? createUtilBinding(this.require) : bindingSurface(internalBinding(name)));
+      }
+    }
+    return this.bindings.get(name);
+  };
+
+  private load(name: string): unknown {
+    const cached = this.modules.get(name);
+    if (cached) return cached.exports;
+    const record = newNodeLibRecord(name);
+    // Insert before evaluation: circular dependencies see this graph's record.
+    this.modules.set(name, record);
+    try {
+      compileNodeLib(name, record, this.require, this.process, this.binding);
+      for (const initialize of moduleInitializers) initialize(name, record.exports, this.require);
+    } catch (error) {
+      this.modules.delete(name);
+      throw error;
+    }
+    return record.exports;
+  }
+}
+
+const byOwner = new WeakMap<object, NodeLibScope>();
+function scopeFor(owner: object): NodeLibScope {
+  let scope = byOwner.get(owner);
+  if (!scope) { scope = new NodeLibScope(owner); byOwner.set(owner, scope); }
+  return scope;
+}
+export function loadNodeLibFor(owner: object, name: string): any {
+  return scopeFor(owner).require(name);
+}
+export function hasNodeLibModule(name: string): boolean {
+  return NODE_LIB_SOURCES[name] !== undefined || nodeLibPublic(name) !== undefined
+    || ['path/posix', 'path/win32', 'assert/strict', 'util/types', 'fs/promises'].includes(name);
+}
+export function nativeModuleFor(owner: object, name: string, create: () => unknown): unknown {
+  return scopeFor(owner).surface(name, create);
 }
 
 function newNodeLibRecord(name: string): NodeLibModule {
@@ -285,15 +401,16 @@ function newNodeLibRecord(name: string): NodeLibModule {
 }
 
 /** The scope Node's `BuiltinModule.compileForInternalLoader` gives a builtin. */
-function compileNodeLib(name: string, record: NodeLibModule): void {
+function compileNodeLib(name: string, record: NodeLibModule, require: NodeLibRequire = nodeLibRequire,
+  process: object = nodeLibProcessOf(), binding: (name: string) => unknown = internalBinding): void {
   // eslint-disable-next-line no-new-func
   const compiled = new Function(
     'exports', 'require', 'module', 'process', 'internalBinding', 'primordials',
     `${NODE_LIB_SOURCES[name]}\n//# sourceURL=node:${name}`,
   );
-  compiled(record.exports, nodeLibRequire, record, nodeLibProcessOf(), internalBinding, primordialsOf());
+  compiled(record.exports, require, record, process, binding, primordialsOf());
   record.loaded = true;
-  bootstrapNodeLib(name, record.exports);
+  bootstrapNodeLib(name, record.exports, process);
 }
 
 /**
@@ -307,38 +424,27 @@ function compileNodeLib(name: string, record: NodeLibModule): void {
  * `testEnabled`. The engine has no bootstrap file, so the step lives here,
  * beside the compile it belongs to.
  */
-function bootstrapNodeLib(name: string, exports: unknown): void {
+function bootstrapNodeLib(name: string, exports: unknown, process: object): void {
   if (name === 'events') {
-    // Node's own `EventTarget` sets its listener ceiling on itself in its
-    // constructor, and `events.getMaxListeners` reads that field back. The
-    // realm's `EventTarget` -- the DOM's in a tab, Node's own where the
-    // engine runs inside a Node -- has no such field, and either way it is
-    // keyed by a symbol THIS `events.js` minted, not the one the realm's
-    // class was built against. So the default goes on the prototype under
-    // this file's own keys, where `getMaxListeners` looks, and a target given
-    // its own ceiling shadows it, which is what an own property does.
-    const events = exports as { kMaxEventTargetListeners?: symbol; kMaxEventTargetListenersWarned?: symbol };
-    const target = (globalThis as { EventTarget?: { prototype: object } }).EventTarget;
-    const defaults: Array<[symbol | undefined, unknown]> = [
-      [events.kMaxEventTargetListeners, 10],
-      [events.kMaxEventTargetListenersWarned, false],
-    ];
-    if (target) {
-      for (const [key, fallback] of defaults) {
-        if (!key || key in target.prototype) continue;
-        Object.defineProperty(target.prototype, key, {
-          configurable: true,
-          get(): unknown { return fallback; },
-          set(this: object, value: unknown) {
-            Object.defineProperty(this, key, { value, writable: true, configurable: true });
-          },
-        });
-      }
-    }
+    // Browser EventTargets do not carry Node's process-local listener symbol.
+    // Adapt that native boundary without installing a new pair of symbols on
+    // the shared EventTarget prototype for every short-lived guest process.
+    const events = exports as {
+      kMaxEventTargetListeners: symbol;
+      defaultMaxListeners: number;
+      getMaxListeners: (target: any) => number;
+    };
+    const original = events.getMaxListeners;
+    events.getMaxListeners = (target) => {
+      if (typeof EventTarget !== 'undefined' && target instanceof EventTarget
+        && typeof (target as any).getMaxListeners !== 'function'
+        && (target as any)[events.kMaxEventTargetListeners] === undefined) return events.defaultMaxListeners;
+      return original(target);
+    };
     return;
   }
   if (name === 'internal/util/debuglog') {
-    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+    const env = (process as { env?: Record<string, string | undefined> }).env;
     (exports as { initializeDebugEnv?: (value: string) => void }).initializeDebugEnv?.(env?.NODE_DEBUG ?? '');
     return;
   }

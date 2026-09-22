@@ -268,6 +268,41 @@ let ownDocuments = new Set();
 // The documents and workers served from a virtual server at the root, by
 // client id, so their requests reach that server without a prefix to read.
 const rootedClients = new Map();
+const pendingBlobContexts = new Map();
+
+// Blob workers have no script fetch at which to remember resultingClientId,
+// and their URL contains no virtual port. Ask the creating preview document
+// to identify its object URL, then derive the port from that document's own
+// routing context. The document supplies ownership, never a trusted port.
+// Querying also recovers attribution after this service worker restarts.
+async function blobWorkerContext(client, requestUrl) {
+  if (pendingBlobContexts.has(client.id)) return pendingBlobContexts.get(client.id);
+  const pending = (async () => {
+    const windows = await self.clients.matchAll({ type: 'window' });
+    const candidates = await Promise.all(windows.map(async (owner) => {
+      const context = await virtualContext({ clientId: owner.id, request: {
+        url: requestUrl, referrer: owner.url, mode: 'cors', destination: '',
+      } });
+      if (!context) return null;
+      return new Promise((resolve) => {
+        const channel = new MessageChannel();
+        const finish = (value) => { clearTimeout(timer); channel.port1.close(); resolve(value); };
+        const timer = setTimeout(() => finish(null), 1000);
+        channel.port1.onmessage = (event) => finish(event.data === true ? context : null);
+        try { owner.postMessage({ type: 'virtual-blob-owner', url: client.url }, [channel.port2]); }
+        catch { finish(null); }
+      });
+    }));
+    const owners = candidates.filter(Boolean);
+    if (owners.length === 0) return null;
+    if (owners.some(owner => owner.port !== owners[0].port)) throw new Error('Ambiguous virtual blob owner');
+    rootedClients.set(client.id, owners[0].port);
+    if (rootedClients.size > 256) pruneRootedClients();
+    return owners[0];
+  })();
+  pendingBlobContexts.set(client.id, pending);
+  try { return await pending; } finally { pendingBlobContexts.delete(client.id); }
+}
 
 /**
  * The virtual server a request outside /__virtual__/ is for, if any: the
@@ -302,6 +337,9 @@ async function virtualContext(event) {
     } catch (e) { /* not a URL */ }
   }
   if (event.clientId && rootedClients.has(event.clientId)) return { prefix: null, port: rootedClients.get(event.clientId) };
+  if (client && (client.type === 'worker' || client.type === 'sharedworker') && client.url.startsWith('blob:')) {
+    return blobWorkerContext(client, event.request.url);
+  }
   if (primaryPort === null) return null;
   if (event.request.mode === 'navigate') {
     if (event.request.destination !== 'iframe' && event.request.destination !== 'frame') return null;
@@ -400,6 +438,12 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
     request.headers.forEach((value, key) => {
       headers[key] = value;
     });
+    // Fetch omits Host from Request.headers. Preserve the authority addressed
+    // by the browser, as an HTTP socket would, rather than letting the server
+    // substitute its listening port. Routing to a virtual port does not change
+    // the client's authority; server-generated resource identities must agree
+    // with those the client computes from its own URL.
+    if (headers.host === undefined) headers.host = new URL(request.url).host;
 
     // Get body if present
     let body = null;

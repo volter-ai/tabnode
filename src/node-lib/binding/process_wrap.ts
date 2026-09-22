@@ -28,6 +28,8 @@ import {
   ownerOf, type OwnedHandle,
 } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
+import { handleForFd } from './fds';
+import { TTY, type TerminalState } from './tty_wrap';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio` builds it. */
 export interface StdioEntry {
@@ -85,6 +87,7 @@ export interface RunRequest {
   stderrIsPipe: boolean;
   /** True when the child's fd 0 is a pipe whose writer has not closed. */
   stdinIsPipe: boolean;
+  terminal?: TerminalState;
   /** The IPC channel the child is started with, where it has one. */
   channel?: RunChannel;
   /** Called once, when the run has ended. */
@@ -208,6 +211,7 @@ export class Process implements OwnedHandle {
   private closed = false;
   /** The stdio entries this run was started with, and their far ends. */
   private stdio: StdioEntry[] = [];
+  private terminalEnds = new Map<number, TTY>();
   private readonly asyncId = nextAsyncId++;
 
   constructor() {
@@ -253,10 +257,26 @@ export class Process implements OwnedHandle {
       exit: (code, signal) => { this.reportExit(code, signal); },
     };
 
-    let stdinFar: Pipe | null = null;
+    let stdinFar: LibuvStreamWrap | null = null;
     for (let index = 0; index < this.stdio.length; index += 1) {
       const entry = this.stdio[index];
       if (!entry) continue;
+      if (index < 3 && !entry.ipc) {
+        const descriptor = entry.type === 'fd' || entry.type === 'inherit'
+          ? handleForFd(entry.fd ?? index) : entry.handle;
+        if (descriptor instanceof TTY && descriptor.slave) {
+          // Inherit an independent descriptor reference, never the parent's
+          // wrapper. Failed spawn and child exit release only this copy.
+          const inherited = descriptor.duplicate();
+          __adoptHandle(inherited, null);
+          this.terminalEnds.set(index, inherited);
+          request.terminal = inherited.terminal;
+          if (index === 0) { stdinFar = inherited; request.stdinIsPipe = true; }
+          else if (index === 1) request.stdout = text => this.toPipe(index, text);
+          else request.stderr = text => this.toPipe(index, text);
+          continue;
+        }
+      }
       const far = this.pairFarEnd(entry);
       if (entry.ipc) {
         if (far) {
@@ -337,7 +357,7 @@ export class Process implements OwnedHandle {
 
   /** The far end of fd `index`, whoever holds it now. */
   private farEndAt(index: number): LibuvStreamWrap | null {
-    return this.stdio[index]?.handle?.peer ?? null;
+    return this.terminalEnds.get(index) ?? this.stdio[index]?.handle?.peer ?? null;
   }
 
   private closeFarEnds(): void {
@@ -356,7 +376,7 @@ export class Process implements OwnedHandle {
   }
 
   /** Bytes the parent writes reach the child's fd 0; the parent's EOF ends it. */
-  private readStdinFrom(far: Pipe): void {
+  private readStdinFrom(far: LibuvStreamWrap): void {
     far.onread = (arrayBuffer: ArrayBuffer | null): void => {
       const length = streamBaseState[kReadBytesOrError];
       if (length <= 0 || arrayBuffer === null) { this.run?.endStdin(); return; }

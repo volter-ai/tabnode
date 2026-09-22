@@ -93,6 +93,7 @@ export const UV_ENOTCONN = codes.UV_ENOTCONN[0];
 export const UV_ECANCELED = codes.UV_ECANCELED[0];
 export const UV_ENOTSUP = codes.UV_ENOTSUP[0];
 export const UV_EBADF = codes.UV_EBADF[0];
+export const UV_EIO = codes.UV_EIO[0];
 export const UV_ENOSYS = codes.UV_ENOSYS[0];
 export const UV_EADDRNOTAVAIL = codes.UV_EADDRNOTAVAIL[0];
 export const UV_EACCES = codes.UV_EACCES[0];
