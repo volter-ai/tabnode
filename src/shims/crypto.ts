@@ -11,11 +11,9 @@ import { md5 } from '@noble/hashes/legacy.js';
 // The `buffer` package, not the guest polyfill: the byte-level encodings
 // (utf16le, latin1, offset views) crypto inputs arrive in are its own.
 import { Buffer as HostBuffer } from 'buffer/index.js';
-import { Buffer as HostGuestBuffer } from '../node-lib/buffer-module';
-import type { Buffer } from '../node-lib/buffer-module';
-/** Node's own `buffer` limit, read at use rather than at load: see `node-lib/lazy.ts`. */
-import { bufferModule as hostBufferModule } from '../node-lib/buffer-module';
-import { EventEmitter as HostEventEmitter } from '../node-lib/events-module';
+import type { Buffer, BufferConstructor, BufferModule } from '../node-lib/buffer-module';
+import type { EventsModule } from '../node-lib/events-module';
+import { lazyModule, lazyExport } from '../node-lib/lazy';
 import {
   ERR_INVALID_ARG_TYPE,
   ERR_OUT_OF_RANGE,
@@ -34,9 +32,12 @@ interface DigestState {
 
 /** Native crypto allocates guest results and classes in the caller's graph. */
 export function createCryptoModule(require?: (name: string) => any) {
-  const bufferModule = require ? require('buffer') : hostBufferModule;
-  const Buffer: typeof HostGuestBuffer = require ? bufferModule.Buffer : HostGuestBuffer;
-  const EventEmitter: typeof HostEventEmitter = require ? require('events').EventEmitter : HostEventEmitter;
+  // The host factory runs inside the builtin loader's import cycle. Create
+  // lazy references here; even reading another module's lazy-export constant
+  // eagerly can hit its TDZ under a different bundle evaluation order.
+  const bufferModule: BufferModule = require ? require('buffer') : lazyModule<BufferModule>('buffer');
+  const Buffer: BufferConstructor = require ? bufferModule.Buffer : lazyExport<BufferConstructor>('buffer', 'Buffer');
+  const EventEmitter: EventsModule['EventEmitter'] = require ? require('events').EventEmitter : lazyExport<EventsModule['EventEmitter']>('events', 'EventEmitter');
 // ============================================================================
 // Random functions
 // ============================================================================

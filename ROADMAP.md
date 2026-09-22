@@ -39,6 +39,29 @@ under the owner's no-tests instruction; this is not a full TTY compatibility cla
 
 Status: local candidate; bounded browser reading complete, release pending
 
+Production-import regression (Article 6, 2026-09-22): the compiled substrate
+entry `index-DV8Cz_o5.js` throws `ReferenceError: Cannot access 'bufferModule$1'
+before initialization` in `createCryptoModule$1`, before its toolbar exists.
+The page's retained Runtime exception establishes an application import failure,
+not a browser or Docker failure. Commit `0dc7d16` introduced factory-local eager
+reads of the host Buffer module, Buffer and EventEmitter imports; these exports
+belong to the loader's existing import cycle. The preceding implementation read
+the Buffer module only at use. Development import order hid the new eager read.
+Use the existing lazyModule/lazyExport functions to create host dependency
+references inside the factory without reading uninitialized module constants;
+retain the explicit per-process require path. The built page must pass this
+same import and create its toolbar. A retained pre-toolbar initialization error
+would disprove sufficiency; do not change browser settings or build minification.
+
+Correction reading: the compiled `index-C156Frwx.js` imports and creates the
+toolbar; the original pre-toolbar exception is absent. Through its terminal,
+`node -e` prints `engine-alive 4` using `crypto.randomBytes(4)` and exits 0.
+Engine library/declarations, engine typecheck and the production example build
+pass without automated tests. Independent source review finds no blocker.
+Full boot remains open: its server deadline expires before a worker run starts;
+a later terminal invocation reaches port 49152 in 9.5 seconds. This import fix
+does not claim to resolve the separately observed pack-placement delay.
+
 Article 6: the substrate's W61 reading finds VS Code's HTTP patches in an
 independent terminal Node command. `runtime.ts` hands every process the same
 HTTP/HTTPS exports; `load.ts` caches the underlying files at realm scope.
