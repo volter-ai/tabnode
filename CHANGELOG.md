@@ -2,6 +2,15 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## Unreleased
+
+- Child-process inherited stdout/stderr and default cwd come from the spawning
+  run, not the last guest placed on the shared realm. Inherited descriptors
+  retain their original sinks when guest JavaScript replaces stream.write.
+  `tests/process-inherited-stdio.test.mjs` reproduces the lost output on 0.4.0;
+  the instrumented VS Code browser boot no longer writes to an exited file
+  watcher's IPC channel with `EBADF`. Boot reliability remains under measurement.
+
 ## v0.4.0 — 2026-09-21
 
 The host run options add streamed input and terminal control; virtual filesystem

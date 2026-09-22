@@ -15,6 +15,7 @@
  * command gives its process has it removed.
  */
 
+import type { Process } from './shims/process';
 import { AsyncLocalStorage } from './shims/async_hooks';
 
 /** Whatever the embedding runtime uses to name one guest process. */
@@ -25,6 +26,10 @@ export const PROCESS_TOKEN_ENV = '__TABNODE_PROCESS_TOKEN';
 
 /** What the engine can answer about one named run. */
 export interface OwnedRun {
+  /** The guest whose cwd and inherited streams belong to this run. */
+  process: Process;
+  stdout(text: string): void;
+  stderr(text: string): void;
   /** The timers the run's guest still holds, as Node's loop counts them. */
   pendingTimers(): number;
   /** Clear those timers, as ending the process clears them. */

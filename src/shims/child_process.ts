@@ -485,6 +485,9 @@ export function initChildProcess(vfs: VirtualFS): void {
     // whether a pid is a live process.
     if (runToken !== null) setRunPid(runToken, proc.pid, proc.ppid);
     const releaseRun = runToken === null ? null : __recordRun(runToken, {
+      process: proc,
+      stdout: appendStdout,
+      stderr: appendStderr,
       pendingTimers: () => pendingGuestTimers(proc),
       stopTimers: () => stopGuestTimers(proc),
       reportUncaught: (error: unknown) => __reportUncaughtException(proc, error),
