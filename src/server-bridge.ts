@@ -123,6 +123,10 @@ interface UpgradeSignal {
   protocols?: string[];
   /** `"none"` asks for a byte pipe; anything else, or nothing, is a WebSocket. */
   framing?: "websocket" | "none";
+  /** The origin of the page that opened the socket, which a browser sends on every handshake. */
+  origin?: string;
+  /** The authority the client addressed, its handshake's Host; the engine's own URL names the port. */
+  host?: string;
   payload?: string | ArrayBuffer;
   code?: number;
   reason?: string;
@@ -348,11 +352,15 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
       // with the socket, which is what the real `ws` takes over. What comes
       // back here is the client's end of that same connection.
       void __upgradeOverLoopback(port, "GET", url2.pathname + url2.search, {
-        Host: url2.host,
+        // Host is the authority the client addressed, as an HTTP request's is
+        Host: typeof data2.host === "string" && /^(?:\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::[0-9]{1,5})?$/iu.test(data2.host) ? data2.host : url2.host,
         Upgrade: "websocket",
         "Sec-WebSocket-Version": "13",
         "Sec-WebSocket-Key": key,
         ...(protocols.length ? { "Sec-WebSocket-Protocol": protocols.join(", ") } : {}),
+        // A browser sends Origin on every WebSocket handshake, and a server's
+        // check of it is how it refuses sockets from pages it did not serve.
+        ...(typeof data2.origin === "string" && /^https?:\/\/[^/]+$/u.test(data2.origin) ? { Origin: data2.origin } : {}),
       }).then((result) => {
         if (result.statusCode !== 101 || !result.socket) {
           channel.postMessage({ type: "close", targetClient: data2.clientId, code: 1006, reason: "upgrade refused" });

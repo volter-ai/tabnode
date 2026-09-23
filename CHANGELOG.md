@@ -2,6 +2,14 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## v0.5.3 — 2026-09-23
+
+- A virtual WebSocket's handshake carries `Origin` and `Host` as a browser
+  sends them, when the page's side names them on `connect`: the page's origin,
+  and the authority the client addressed rather than the engine's
+  `localhost:<port>`. A guest server that checks a socket's origin against its
+  host (Workbench's terminal does) refused every socket from the tab.
+
 ## v0.5.2 — 2026-09-23
 
 - `assert.ok` with a falsy value and no message throws its AssertionError. Node's
