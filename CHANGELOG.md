@@ -5,7 +5,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 ## Unreleased
 
 - `process.stdout.write(chunk, callback)` and `stderr`'s run the callback, as
-  Node's do when it is the second argument; `end(chunk)` writes its chunk.
+  Node's do when it is the second argument; `end(chunk)` writes its chunk, and
+  a plain `Uint8Array` chunk is written as its UTF-8 text, not its byte values.
   Playwright's test runner waits on `stdout.write('', done)` before it exits
   with the run's status, so a failed `npx playwright test` in the tab exited 0.
   Measured in the tab: `process.stdout.write('x', cb)` never ran `cb`.

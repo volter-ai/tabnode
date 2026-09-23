@@ -327,21 +327,25 @@ function createProcessStream(
   // Override write for actual writable streams
   if (isWritable && writeImpl) {
     stream.write = (data: string | Buffer, ...rest: unknown[]) => {
-      const result = writeImpl(typeof data === 'string' ? data : data.toString());
+      const result = writeImpl(textOf(data));
       const callback = trailingCallback(rest);
       if (callback) queueMicrotask(callback);
       return result;
     };
     stream.end = (...args: unknown[]) => {
       const data = args[0];
-      if (typeof data === 'string') writeImpl(data);
-      else if (data instanceof Uint8Array) writeImpl(data.toString());
+      if (typeof data === 'string' || data instanceof Uint8Array) writeImpl(textOf(data));
       const callback = trailingCallback(args);
       if (callback) queueMicrotask(callback);
     };
   }
 
   return stream;
+}
+
+/** A chunk's text: bytes, a Buffer's or a plain Uint8Array's, are UTF-8. */
+function textOf(data: string | Uint8Array): string {
+  return typeof data === 'string' ? data : new TextDecoder().decode(data);
 }
 
 /**
