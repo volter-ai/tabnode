@@ -15,6 +15,31 @@ let requestId = 0;
 
 // Registered virtual server ports
 const registeredPorts = new Set();
+// HTTP response flow control is a transport property, never a path/package
+// heuristic. Legacy ports keep their existing protocol until their host opts in.
+const flowControlledPorts = new Map();
+const controlledUploads = new Set();
+const MAX_STREAM_CHUNK_BYTES = 65536;
+
+function updateFlowControl(type, data) {
+  if (type === 'server-registered' || type === 'server-unregistered') {
+    for (const upload of controlledUploads) {
+      if (upload.port === data?.port) upload.controller.abort(new Error('Virtual server registration changed'));
+    }
+  }
+  if (type === 'server-unregistered') {
+    flowControlledPorts.delete(data?.port);
+    for (const pending of pendingRequests.values()) {
+      if (pending.flowControl === 1 && pending.port === data?.port)
+        pending.fail(new Error('Virtual server closed'));
+    }
+  }
+  if (type !== 'server-registered' || !data) return;
+  if (data.flowControl === 1 && Number.isSafeInteger(data.maxRequestBytes)
+      && data.maxRequestBytes > 0 && data.maxChunkBytes === MAX_STREAM_CHUNK_BYTES) {
+    flowControlledPorts.set(data.port, { maxRequestBytes: data.maxRequestBytes, channel: mainPort });
+  } else flowControlledPorts.delete(data.port);
+}
 
 /**
  * Decode base64 string to Uint8Array
@@ -39,8 +64,24 @@ self.addEventListener('message', (event) => {
   // When a MessagePort is transferred, it's in event.ports[0], not event.data.port
   if (type === 'init' && event.ports && event.ports[0]) {
     // Initialize communication channel
+    for (const pending of pendingRequests.values()) {
+      if (pending.flowControl === 1) pending.fail(new Error('Host connection replaced'));
+    }
+    for (const upload of controlledUploads) upload.controller.abort(new Error('Host connection replaced'));
+    if (mainPort) {
+      mainPort.onmessage = null;
+      mainPort.close();
+    }
+    registeredPorts.clear();
+    flowControlledPorts.clear();
+    primaryPort = null;
+    // Existing preview documents/workers retain their virtual origin identity;
+    // a channel reconnect must not send their root-relative requests to network.
     mainPort = event.ports[0];
-    mainPort.onmessage = handleMainMessage;
+    const initializedPort = mainPort;
+    mainPort.onmessage = (message) => {
+      if (mainPort === initializedPort) handleMainMessage(message);
+    };
     if (data && Array.isArray(data.ownDocuments)) ownDocuments = new Set(data.ownDocuments.map((path) => ownPath(String(path))));
     DEBUG && console.log('[SW] Initialized communication channel with transferred port');
     // Re-claim clients so that pages opened after SW activation get controlled.
@@ -66,6 +107,13 @@ self.addEventListener('message', (event) => {
  */
 function handleMainMessage(event) {
   const { type, id, data, error } = event.data;
+  updateFlowControl(type, data);
+
+  const controlled = pendingRequests.get(id);
+  if (controlled?.flowControl === 1) {
+    controlled.message(type, data, error);
+    return;
+  }
 
   // The page's bridge speaks over this port: which servers it holds, which
   // is the preview's, and which documents are the page's own frames.
@@ -257,6 +305,150 @@ async function sendStreamingRequest(port, method, url, headers, body) {
   return { stream, headersPromise, id };
 }
 
+// A Node HTTP producer must stop when its consumer stops reading and must
+// observe disconnect. One pull credit bounds the service-worker response queue;
+// this protocol requires a paired host bridge and is negotiated per port.
+async function sendControlledRequest(port, method, url, headers, body, signal) {
+  if (!mainPort) throw new Error('Service Worker not initialized');
+  if (signal.aborted) throw signal.reason;
+  const channel = mainPort;
+  const id = ++requestId;
+  let controller, resolveHeaders, rejectHeaders, resolvePull;
+  let headed = false, credited = false, ended = false;
+  const headersPromise = new Promise((resolve, reject) => {
+    resolveHeaders = resolve;
+    rejectHeaders = reject;
+  });
+  // A synchronous postMessage failure can happen before the first await.
+  void headersPromise.catch(() => {});
+  const send = (type) => channel.postMessage({ type, id });
+  const finish = () => {
+    ended = true;
+    clearTimeout(headerTimeout);
+    pendingRequests.delete(id);
+    signal.removeEventListener('abort', abort);
+    resolvePull?.();
+    resolvePull = undefined;
+  };
+  const fail = (error, notify = true) => {
+    if (ended) return;
+    if (notify) {
+      try { send('stream-cancel'); } catch { /* connection gone */ }
+    }
+    rejectHeaders(error);
+    controller.error(error);
+    finish();
+  };
+  const abort = () => fail(signal.reason ?? new DOMException('Request cancelled', 'AbortError'));
+  // Match the existing buffered request's finite header wait. A disappeared
+  // Host must not retain this request forever when no AbortSignal fires.
+  const headerTimeout = setTimeout(() => fail(new Error('Request header timeout')), 30000);
+  const stream = new ReadableStream({
+    start(value) { controller = value; },
+    pull() {
+      if (ended) return;
+      if (credited) throw new Error('Duplicate stream credit');
+      credited = true;
+      return new Promise((resolve) => {
+        resolvePull = resolve;
+        try { send('stream-pull'); } catch (error) { fail(error, false); }
+      });
+    },
+    cancel() {
+      if (ended) return;
+      try { send('stream-cancel'); } finally { finish(); }
+    },
+  }, { highWaterMark: 0 });
+  pendingRequests.set(id, {
+    flowControl: 1,
+    fail,
+    port,
+    message(type, data, error) {
+      try {
+        if (type === 'stream-start' && !headed) {
+          headed = true;
+          clearTimeout(headerTimeout);
+          resolveHeaders(data);
+        } else if (type === 'stream-chunk' && headed && credited) {
+          if (typeof data?.chunkBase64 !== 'string'
+              || data.chunkBase64.length > Math.ceil(MAX_STREAM_CHUNK_BYTES / 3) * 4)
+            throw new Error('Stream chunk exceeds transport limit');
+          const bytes = base64ToBytes(data.chunkBase64);
+          if (bytes.byteLength > MAX_STREAM_CHUNK_BYTES)
+            throw new Error('Stream chunk exceeds transport limit');
+          credited = false;
+          controller.enqueue(bytes);
+          resolvePull?.();
+          resolvePull = undefined;
+        } else if (type === 'stream-end' && headed) {
+          controller.close();
+          finish();
+        } else if (type === 'stream-error' || (type === 'response' && error)) {
+          fail(new Error(error || data?.message || 'Host stream failed'), false);
+        } else throw new Error('Invalid flow-controlled stream message');
+      } catch (cause) { fail(cause); }
+    },
+  });
+  signal.addEventListener('abort', abort, { once: true });
+  try {
+    channel.postMessage({ type: 'request', id,
+      data: { port, method, url, headers, body, streaming: true, flowControl: 1 } });
+    if (signal.aborted) abort();
+    const head = await headersPromise;
+    const noBody = method === 'HEAD' || [204, 205, 304].includes(head.statusCode);
+    if (noBody) await stream.cancel();
+    // Match the existing virtual-port document isolation policy. Negotiating
+    // flow control must not turn a working preview into a blocked iframe.
+    const responseHeaders = new Headers(head.headers);
+    responseHeaders.set('Cross-Origin-Embedder-Policy', 'credentialless');
+    responseHeaders.set('Cross-Origin-Opener-Policy', 'same-origin');
+    responseHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    responseHeaders.delete('X-Frame-Options');
+    return new Response(noBody ? null : stream, {
+      status: head.statusCode, statusText: head.statusMessage, headers: responseHeaders,
+    });
+  } catch (error) {
+    fail(error);
+    throw error;
+  }
+}
+
+async function readRequestBody(request, limit, registrationSignal) {
+  if (!request.body) return null;
+  const reader = request.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  const checkAbort = () => {
+    if (request.signal.aborted) throw request.signal.reason;
+    if (registrationSignal.aborted) throw registrationSignal.reason;
+  };
+  const abort = () => { void reader.cancel().catch(() => {}); };
+  request.signal.addEventListener('abort', abort, { once: true });
+  registrationSignal.addEventListener('abort', abort, { once: true });
+  try {
+    while (true) {
+      checkAbort();
+      const { value, done } = await reader.read();
+      checkAbort();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limit) throw Object.assign(new Error('Request body exceeds transport limit'), { status: 413 });
+      chunks.push(value);
+    }
+    const result = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+    return result.buffer;
+  } catch (error) {
+    void reader.cancel(error).catch(() => {});
+    throw error;
+  } finally {
+    request.signal.removeEventListener('abort', abort);
+    registrationSignal.removeEventListener('abort', abort);
+    reader.releaseLock();
+  }
+}
+
 // The preview's server, whose documents are served at this origin's root as
 // they would be at their own origin: an app reads its routes from
 // `location.pathname`, and a document under /__virtual__/<port>/ is not at
@@ -395,6 +587,7 @@ self.addEventListener('fetch', (event) => {
  */
 async function handleVirtualRequest(request, port, path, rooted = false) {
   try {
+    const registration = flowControlledPorts.get(port);
     // Build headers object
     const headers = {};
     request.headers.forEach((value, key) => {
@@ -404,7 +597,13 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
     // Get body if present
     let body = null;
     if (request.method !== 'GET' && request.method !== 'HEAD') {
-      body = await request.arrayBuffer();
+      if (registration) {
+        const upload = { port, controller: new AbortController() };
+        controlledUploads.add(upload);
+        try {
+          body = await readRequestBody(request, registration.maxRequestBytes, upload.controller.signal);
+        } finally { controlledUploads.delete(upload); }
+      } else body = await request.arrayBuffer();
       // A body's length is a header Node's server always has, content-length
       // or a chunked transfer-encoding; a fetch's headers carry neither, and
       // Express 5's body parser takes their absence for no body at all.
@@ -413,7 +612,13 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
       }
     }
 
-    // Check if this is an API route that might stream (POST to /api/*)
+    if (registration) {
+      if (flowControlledPorts.get(port) !== registration || mainPort !== registration.channel)
+        throw new Error('Virtual server registration changed during upload');
+      return await sendControlledRequest(port, request.method, path, headers, body, request.signal);
+    }
+
+    // Legacy peers retain their old selection until they negotiate flow control.
     const isStreamingCandidate = request.method === 'POST' && path.startsWith('/api/');
 
     if (isStreamingCandidate) {
@@ -475,10 +680,11 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
 
     return finalResponse;
   } catch (error) {
+    if (request.signal.aborted) throw error;
     console.error('[SW] Error handling virtual request:', error);
     return new Response(`Service Worker Error: ${error.message}`, {
-      status: 500,
-      statusText: 'Internal Server Error',
+      status: error.status === 413 ? 413 : 500,
+      statusText: error.status === 413 ? 'Content Too Large' : 'Internal Server Error',
       headers: { 'Content-Type': 'text/plain' },
     });
   }

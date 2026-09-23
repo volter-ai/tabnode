@@ -8,6 +8,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   numbers, for an engine `node` child and a program the page registered;
   they were dropped.
 
+- Add negotiated virtual HTTP response flow control for Host-registered ports:
+  one pull credit per 64 KiB-or-smaller chunk, propagated abort/body cancellation,
+  bounded uploads, finite header wait and identity-safe channel replacement.
+  All methods and paths on opted-in ports use the general stream protocol;
+  legacy port response behavior remains unchanged. This corrects the source
+  service worker's unbounded push queue and missing disconnect propagation,
+  not a package-specific route. Paired substrate bridge and actual browser
+  qualification remain pending; no release or supported-browser claim yet.
+
 ## v0.4.1 — 2026-09-21
 
 - Child-process inherited stdout/stderr and default cwd come from the spawning
