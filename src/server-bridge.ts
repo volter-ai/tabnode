@@ -792,14 +792,18 @@ export class ServerBridge extends EventEmitter {
         onStart: (statusCode: number, statusMessage: string, headers: Record<string, string>) => void,
         onChunk: (chunk: string | Uint8Array) => void,
         onEnd: () => void,
+        flow?: LoopbackStreamFlow,
       ) => Promise<void>;
     };
     if (typeof server.handleStreamingRequest === 'function') {
+      // a registered server that streams is paced the same way: it is handed
+      // the reader's going away and the pause and resume of its own producer
       await server.handleStreamingRequest(
         method, url, headers, bodyBuffer,
         (statusCode, statusMessage, respHeaders) => callbacks.start(statusCode, statusMessage, respHeaders),
         (chunk) => callbacks.chunk(typeof chunk === 'string' ? _encoder.encode(chunk) : ownedBytes(chunk)),
         () => callbacks.end(),
+        flow,
       );
       return true;
     }

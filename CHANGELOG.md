@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.14 — 2026-09-23
+
+- A registered server's `handleStreamingRequest` is handed the same flow as a
+  guest's loopback, as its eighth argument: the reader's going away (`signal`)
+  and the pause and resume of its producer (`control`). A server that proxies
+  another thread's port (a worker's) can carry the page's credit and cancel
+  across to where the bytes are made. `LoopbackStreamFlow` is exported.
+
 ## v0.5.13 — 2026-09-23
 
 - The page bridge speaks the service worker's flow-controlled stream on every

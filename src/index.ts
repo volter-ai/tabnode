@@ -38,7 +38,7 @@ export { PackageManager, install } from './npm';
 export { ServerBridge, getServerBridge, resetServerBridge } from './server-bridge';
 export type { InitServiceWorkerOptions } from './server-bridge';
 /** What a page's request is answered with, the shape the bridge answers. */
-export type { ResponseData } from './node-lib/http-bridge';
+export type { ResponseData, LoopbackStreamFlow } from './node-lib/http-bridge';
 // The bundlers' own wasm builds, as doors: a host that builds outside a run
 // (the substrate's rolldown pass) reaches them here rather than through a
 // guest's `require`.
