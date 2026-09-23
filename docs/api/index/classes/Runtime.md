@@ -145,6 +145,38 @@ to each eval call and would be lost).
 
 ***
 
+### evaluate()
+
+> **evaluate**(`code`, `filename`): `object`
+
+Runs source that is not a file of the tree -- `node -e`'s, named
+`[eval]` in the directory it runs in, as Node names it -- the way
+`execute` runs a file's, without writing it anywhere.
+
+#### Parameters
+
+##### code
+
+`string`
+
+##### filename
+
+`string`
+
+#### Returns
+
+`object`
+
+##### exports
+
+> **exports**: `unknown`
+
+##### module
+
+> **module**: [`Module`](../interfaces/Module.md)
+
+***
+
 ### execute()
 
 > **execute**(`code`, `filename?`): `object`

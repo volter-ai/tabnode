@@ -666,6 +666,12 @@ and `domain` asks whether one is set before it installs its own handling.
 
 ***
 
+### title
+
+> **title**: `string`
+
+***
+
 ### umask
 
 > **umask**: (`mask?`) => `number`
