@@ -6,6 +6,7 @@
 
 import { forGuestRealm, takeFromHost } from './host-globals';
 import * as acorn from 'acorn';
+import { applySourceEdits } from './source-edits';
 
 /**
  * A module's lowered exports go to the module's exports whatever the module
@@ -335,9 +336,7 @@ function __substrateLiveImportBindings(code: any) {
 
   visit(ast, new Set(reads.keys()));
   edits.sort((a, b) => b[0] - a[0]);
-  let result = code;
-  for (const [start, end, text] of edits) result = result.slice(0, start) + text + result.slice(end);
-  return result;
+  return applySourceEdits(code, edits);
 }
 
 /** AST-based ESM→CJS transform using acorn. */

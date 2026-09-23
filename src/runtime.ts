@@ -64,6 +64,7 @@ import { createWasiModule, type WasiHostFs, type WasiModule } from './shims/wasi
 
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
 import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __substrateHasEsmSyntax } from './code-transforms';
+import { applySourceEdits } from './source-edits';
 import * as acorn from 'acorn';
 
 /**
@@ -222,17 +223,16 @@ function __substrateScopeGlobalCalls(code: string): string {
   let ast;
   try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true }); }
   catch { return code; }
-  const positions: Array<[number, number, string, string]> = [];
+  const positions: Array<[number, number, string]> = [];
   walkAst(ast, node => {
-    if (node.type === "NewExpression" && node.callee.type === "Identifier") positions.push([node.callee.start, node.callee.end, "(__substrateGuestConstructor(", ",$process))"]);
+    if (node.type === "NewExpression" && node.callee.type === "Identifier") positions.push([node.callee.start, node.callee.end, "(__substrateGuestConstructor(" + code.slice(node.callee.start, node.callee.end) + ",$process))"]);
     // The narrow with-scope below keeps global replacements dynamic.
     // Remove its object receiver for ordinary calls (including local
     // bindings, whose bare-call receiver was already undefined).
     const called = node.type === "CallExpression" ? node.callee : node.type === "TaggedTemplateExpression" ? node.tag : undefined;
-    if (called?.type === "Identifier" && (called.name === "fetch" || called.name === "Promise")) positions.push([called.start, called.end, "(0,", ")"]);
+    if (called?.type === "Identifier" && (called.name === "fetch" || called.name === "Promise")) positions.push([called.start, called.end, "(0," + code.slice(called.start, called.end) + ")"]);
   });
-  for (const [start, end, before, after] of positions.sort((a,b) => b[0] - a[0])) code = code.slice(0,start) + before + code.slice(start,end) + after + code.slice(end);
-  return code;
+  return applySourceEdits(code, positions.sort((a,b) => b[0] - a[0]));
 }
 /**
  * Work the host is doing for a guest, counted while it is outstanding.
