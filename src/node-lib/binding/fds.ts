@@ -15,6 +15,7 @@
 
 import type { ProcessToken } from '../../process-tokens';
 import { currentOwner } from './handles';
+import { nativeInheritedFdType } from '../../native-stream-binding';
 
 /** What libuv answers for a descriptor. */
 export type HandleType = 'TCP' | 'TTY' | 'UDP' | 'FILE' | 'PIPE' | 'UNKNOWN';
@@ -37,7 +38,12 @@ const runFds = new Map<ProcessToken, Map<number, { type: HandleType; handle: unk
 let nextFd = 20;
 
 /** Files and streams occupy one descriptor namespace, as on the OS. */
-export function allocateFd(): number { return nextFd++; }
+export function allocateFd(): number {
+  // The host can inherit any descriptor number, not just the usual IPC fd 3.
+  // Files allocated locally must not shadow one owned by the native channel.
+  while (nativeInheritedFdType(nextFd) !== undefined) nextFd += 1;
+  return nextFd++;
+}
 
 
 /** Record a descriptor a run is started with, under that run's name. */
@@ -79,6 +85,8 @@ export function releaseFd(fd: number): void {
 export function guessHandleTypeOfFd(fd: number): HandleType {
   const open = tableOfAskingRun()?.get(fd) ?? openFds.get(fd);
   if (open) return open.type;
+  const inherited = nativeInheritedFdType(fd);
+  if (inherited) return inherited;
   if (fd === 0 || fd === 1 || fd === 2) return 'PIPE';
   return 'FILE';
 }

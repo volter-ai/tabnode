@@ -77,6 +77,17 @@ function adopt(descriptor: NativeStreamDescriptor, receiver: Stream): Stream {
 
 export function nativeStreamFor(handle: LibuvStreamWrap): NativeStreamDriver | undefined { return drivers.get(handle); }
 
+/** Inherited descriptors live with the owner, not in this realm's JS fd table. */
+export function nativeInheritedFdType(fd: number): 'TCP' | 'PIPE' | undefined {
+  if (!transport || stopped || !Number.isInteger(fd) || fd < 0) return undefined;
+  const result = transport.call({ operation: 'fdType', fd });
+  if (result.status === UV_EBADF) return undefined;
+  if (result.status !== 0 || (result.handleType !== 'TCP' && result.handleType !== 'PIPE')) {
+    throw new Error(`Native descriptor lookup failed: ${errname(result.status)}`);
+  }
+  return result.handleType;
+}
+
 /** Trusted process admission uses this ID for explicit descriptor inheritance. */
 export function nativeStreamDescriptor(handle: LibuvStreamWrap): NativeStreamDescriptor | undefined {
   const driver = drivers.get(handle);

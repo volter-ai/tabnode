@@ -272,6 +272,24 @@ process without ending peers. Re-read actual VS Code boot, extension logs,
 watchers, language service and terminal workflows after the correction. A
 passing isolated rejection command alone does not establish this completion.
 
+Inherited-descriptor admission trace (Articles 4 and 6, ADR-0031): the native
+owner can duplicate a connected handle under a child's fd, and delegated
+TCP/Pipe `open(fd)` consults that table. However, the child's `guessHandleType`
+still consults only local JS tables and calls every other fd above 2 a file.
+Node's unchanged `net.js` selects TCP versus Pipe through that result, so an
+inherited socket cannot reach the already-implemented native open. Local file
+allocation also starts at 20 and can collide with an inherited fd at or above
+20. A pre-existing owner-backed type lookup/reservation would disprove this
+trace; neither exists. Correction: answer inherited type from the same scoped
+owner table and skip its occupied descriptors during local allocation. Carry
+explicit host-owned inheritance and resource limits through realm admission;
+failure must dispose copied handles before any guest executes. This does not
+yet cover listening handles or process dispatch.
+Implemented at the native owner, worker binding and fd allocator; existing
+raw-realm behavior takes no channel path. Engine library/declaration, substrate
+Node package and VS Code example builds pass. Browser inheritance acceptance
+remains pending, with automated tests off and publication held.
+
 ## terminal-descriptors: Allocated TTYs through the existing process host
 
 Status: local candidate, bounded browser reading complete; release pending

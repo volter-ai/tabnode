@@ -21,6 +21,7 @@ export type NativeStreamEvent =
   | { type: 'connect' | 'shutdown' | 'close'; id: number; request: number; status: number };
 export type NativeStreamOperation =
   | { operation: 'create'; kind: 'tcp' | 'pipe'; type: number }
+  | { operation: 'fdType'; fd: number }
   | { operation: 'pair'; id: number; peer: number }
   | { operation: 'duplicate'; id: number }
   | { operation: 'bind'; id: number; address: string; port?: number; ipv6?: boolean; flags?: number }
@@ -29,7 +30,7 @@ export type NativeStreamOperation =
   | { operation: 'open'; id: number; fd: number }
   | { operation: 'readStart' | 'readStop' | 'ref' | 'unref' | 'getsockname' | 'getpeername'; id: number }
   | { operation: 'shutdown' | 'close' | 'reset'; id: number; request: number };
-export interface NativeStreamReply { status: number; handle?: NativeStreamDescriptor; address?: Partial<SockName> }
+export interface NativeStreamReply { status: number; handle?: NativeStreamDescriptor; handleType?: 'TCP' | 'PIPE'; address?: Partial<SockName> }
 export interface NativeStreamTransport {
   readonly limits: Readonly<NativeStreamLimits>;
   call(operation: NativeStreamOperation): NativeStreamReply;
@@ -117,6 +118,12 @@ export class NativeStreamScope {
   /** Synchronous operations return libuv status; completions use the event door. */
   call(operation: NativeStreamOperation): NativeStreamReply {
     if (this.disposed) return { status: UV_EBADF };
+    if (operation.operation === 'fdType') {
+      if (!Number.isInteger(operation.fd) || operation.fd < 0) return { status: UV_EINVAL };
+      const id = this.descriptors.get(operation.fd);
+      const entry = id === undefined ? undefined : this.entry(id);
+      return entry ? { status: 0, handleType: entry.descriptor.kind === 'tcp' ? 'TCP' : 'PIPE' } : { status: UV_EBADF };
+    }
     if (operation.operation === 'create') {
       if (this.entries.size >= this.limits.maxHandles) return { status: UV_EMFILE };
       if ((operation.kind !== 'tcp' && operation.kind !== 'pipe')
