@@ -33,8 +33,17 @@ const unsupported = (detail: string): Error => Object.assign(new Error(`HTTP tra
 const local = (host: string): boolean => host === 'localhost' || host === '::1' || host === '[::1]' || /^127\./u.test(host);
 const tlsOptions = ['ca', 'cert', 'key', 'pfx', 'passphrase', 'ciphers', 'secureContext', 'checkServerIdentity', 'minVersion', 'maxVersion', 'secureProtocol', 'secureOptions', 'session', 'ALPNProtocols', 'pskCallback'];
 
+export interface HttpClientTransportOptions {
+  /**
+   * Loopback ports the host itself serves (a service of the page, not a
+   * guest's listener). Plain HTTP to one of them goes through the host
+   * exchange; every other loopback port stays the engine's own network.
+   */
+  hostPorts?: () => ReadonlySet<number>;
+}
+
 /** Host-only installation; guest modules receive Node's normal exports. */
-export function installHttpClientTransport(factory: HttpClientTransportFactory): () => void {
+export function installHttpClientTransport(factory: HttpClientTransportFactory, transportOptions: HttpClientTransportOptions = {}): () => void {
   type AgentPrototype = { createConnection: (...args: any[]) => any };
   const installed = new WeakMap<AgentPrototype, { original: AgentPrototype['createConnection']; connect: AgentPrototype['createConnection'] }>();
   const live = new Set<WeakRef<AgentPrototype>>();
@@ -45,8 +54,11 @@ export function installHttpClientTransport(factory: HttpClientTransportFactory):
     const original = prototype.createConnection;
     const connect = function(this: unknown, options: Record<string, any>, callback: (error: Error | null, socket?: unknown) => void): unknown {
       const host = String(options.hostname ?? options.host ?? 'localhost').toLowerCase();
-      // Plain local HTTP is the engine's existing virtual network.
-      if (protocol === 'http:' && (local(host) || options.socketPath)) return original.call(this, options, callback);
+      // Plain local HTTP is the engine's existing virtual network, except a port the host serves itself.
+      if (protocol === 'http:' && (local(host) || options.socketPath)
+        && !(local(host) && !options.socketPath && transportOptions.hostPorts?.().has(Number(options.port ?? 80)))) {
+        return original.call(this, options, callback);
+      }
       try {
         if (options.socketPath || options.localAddress || options.localPort || options.lookup || options.family) throw unsupported('custom socket routing');
         if (tlsOptions.some(key => options[key] !== undefined) || options.rejectUnauthorized === false

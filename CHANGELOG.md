@@ -4,6 +4,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `installHttpClientTransport(factory, { hostPorts })`: plain HTTP to a
+  loopback port the host names as its own goes through the host exchange
+  instead of the engine's loopback, so a guest's `http.request` reaches a
+  service the page serves (browser-substrate's Host Fetch services) as its
+  `fetch` already does. Every other loopback port is still the engine's.
 - `process.stdout.write(chunk, callback)` and `stderr`'s run the callback, as
   Node's do when it is the second argument; `end(chunk)` writes its chunk, and
   a plain `Uint8Array` chunk is written as its UTF-8 text, not its byte values.
