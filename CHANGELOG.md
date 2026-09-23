@@ -14,8 +14,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   All methods and paths on opted-in ports use the general stream protocol;
   legacy port response behavior remains unchanged. This corrects the source
   service worker's unbounded push queue and missing disconnect propagation,
-  not a package-specific route. Paired substrate bridge and actual browser
-  qualification remain pending; no release or supported-browser claim yet.
+  not a package-specific route. Same-port rebinding terminates the old active
+  response as well as uploads, even if capabilities are unchanged. The paired
+  substrate source fixture passes 22 synthetic checks; actual guest/browser
+  qualification remains pending, with no release or supported-browser claim.
 
 ## v0.4.1 — 2026-09-21
 
