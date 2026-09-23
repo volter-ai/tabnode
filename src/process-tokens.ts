@@ -17,6 +17,7 @@
 
 import type { Process } from './shims/process';
 import { AsyncLocalStorage } from './shims/async_hooks';
+import { createProcessRegistryOwner, type ProcessRegistry, type ProcessRegistryScope } from './process-registry';
 
 /** Whatever the embedding runtime uses to name one guest process. */
 export type ProcessToken = string;
@@ -134,16 +135,35 @@ export function __stopOwnedProcess(token: ProcessToken): void {
  * every extension in the tab sat at "Activating..." and `vscode.git` never
  * started at all.
  */
-let __nextPid = 1000 + Math.floor(Math.random() * 30000);
+const processRegistryOwner = createProcessRegistryOwner();
+let processRegistry: ProcessRegistry = processRegistryOwner.createScope();
+let registryInstalled = false;
+let registryUsed = false;
 const pidsOfRuns = new Map<ProcessToken, { pid: number; ppid: number }>();
+
+/** Each child realm gets its own registration authority in this container. */
+export function createProcessRegistryScope(): ProcessRegistryScope {
+  if (registryInstalled) throw new Error('Only the container owner can create process registry scopes.');
+  return processRegistryOwner.createScope();
+}
+
+/** Startup-only host seam; never swap identity authorities under live runs. */
+export function installProcessRegistry(registry: ProcessRegistry): void {
+  if (registryInstalled || registryUsed) throw new Error('Process registry must be installed once before creating processes.');
+  processRegistry = registry;
+  registryInstalled = true;
+}
 
 /** The next process number this engine hands out. */
 export function mintPid(): number {
-  return __nextPid++;
+  registryUsed = true;
+  return processRegistry.allocate();
 }
 
 /** Record the numbers a named run was started with, for the run to read back. */
 export function setRunPid(token: ProcessToken, pid: number, ppid: number): void {
+  registryUsed = true;
+  processRegistry.publish(token, { pid, ppid });
   pidsOfRuns.set(token, { pid, ppid });
 }
 
@@ -154,17 +174,16 @@ export function runPid(token: ProcessToken | null | undefined): { pid: number; p
 
 /** A run that has ended is no longer a process; its number is nobody's. */
 export function forgetRunPid(token: ProcessToken): void {
+  processRegistry.forget(token);
   pidsOfRuns.delete(token);
 }
 
 /** Whether a live run carries this number, which is what `kill(pid, 0)` asks. */
 export function pidIsLive(pid: number): boolean {
-  for (const entry of pidsOfRuns.values()) if (entry.pid === pid) return true;
-  return false;
+  return processRegistry.lookup(pid) !== undefined;
 }
 
 /** The numbers a live process carries, looked up by its own pid. */
 export function processByPid(pid: number): { pid: number; ppid: number } | undefined {
-  for (const entry of pidsOfRuns.values()) if (entry.pid === pid) return entry;
-  return undefined;
+  return processRegistry.lookup(pid);
 }

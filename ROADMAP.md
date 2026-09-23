@@ -81,7 +81,7 @@ identity; observing with catch handlers changes unhandled-rejection behavior.
 Extending only constructor or `.then` interception would still miss native
 async promise creation and is not a complete correction.
 
-Owner-approved correction (2026-09-23, substrate ADR-0031), not implemented: give each Node process
+Owner-approved correction (2026-09-23, substrate ADR-0031), implementation in progress: give each Node process
 its own native JavaScript realm, including Node children, so promise/error
 delivery has one process owner without replacing native Promise. Reuse the
 substrate's existing worker and filesystem bridges; keep World authorization
@@ -134,9 +134,29 @@ Implementation order under the approved amendment:
    delivery replace the incomplete promise-tag filter.
 
 This trace rules out merely enabling filesystem confinement or dispatching only
-top-level `node` commands. No process-routing or native-binding behavior has
-changed yet. The substrate W61 entry owns the module-only cost reading and the
-owner's distinction between tens of MB and aggregate hundreds of MB overhead.
+top-level `node` commands. The substrate W61 entry owns the module-only cost
+reading and the owner's distinction between tens of MB and aggregate hundreds
+of MB overhead.
+
+Identity foundation (Articles 4 and 6): `process-registry.ts` now supplies one
+container allocator and live table, with separate registration scopes for
+worker realms. `process-tokens.ts` retains local run lookup and delegates PID
+allocation, publication, release and cross-process lookup to that authority.
+The process binding's fallback allocator uses the same counter. Repeated
+publication/release of the same run is idempotent, but a realm cannot publish
+an unallocated PID, replace another run, or claim another realm's parent.
+The host can dispose a scope after abrupt worker death. Installation must
+precede any process allocation. The substrate connects this seam to its
+existing confined worker through a private synchronous channel; moving each
+Node child into a worker, explicit cross-realm parent/descriptor inheritance,
+remote signals and native stream transfer remain pending. Library and
+declaration builds pass. The substrate W61 reading of the compiled candidate
+restored VS Code and confirmed an ordinary fork's PID/PPID, IPC message,
+parent/child liveness and ESRCH after exit. This covers the existing shared
+realm after the registry change; the cross-worker channel is not yet accepted.
+The reading also exposed child `node -e` entering the existing filename-only
+command parser (unchanged by this patch); preserve eval/argv semantics when
+implementing migration step 3. No automated tests were added or run.
 
 Completion: native/static/chained/member-construction failures reach only
 their originating process; handling preserves promise identity and suppresses

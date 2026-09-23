@@ -27,7 +27,7 @@ import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
   ownerOf, type OwnedHandle,
 } from './handles';
-import { __runFor, type ProcessToken } from '../../process-tokens';
+import { __runFor, mintPid, type ProcessToken } from '../../process-tokens';
 import { handleForFd } from './fds';
 import { TTY, type TerminalState } from './tty_wrap';
 
@@ -126,7 +126,6 @@ export function setProcessRunner(next: ProcessRunner): void {
   runner = next;
 }
 
-let nextPid = 1001 + Math.floor(Math.random() * 30000);
 let nextAsyncId = 1;
 
 /** `envPairs` is `KEY=value` strings; the engine's shell takes a record. */
@@ -317,7 +316,7 @@ export class Process implements OwnedHandle {
     this.run = runner.start(request);
     // The number the parent reads off the handle is the child's own
     // `process.pid`, as it is in Node; a runner that names none is given one.
-    this.pid = this.run.pid ?? nextPid++;
+    this.pid = this.run.pid ?? mintPid();
     if (stdinFar) this.readStdinFrom(stdinFar);
     return 0;
   }

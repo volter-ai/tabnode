@@ -57,6 +57,8 @@ import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } 
 
 import { __currentProcessToken, __runFor, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
 export { runPid, processByPid };
+export { createProcessRegistryScope, installProcessRegistry } from './process-tokens';
+export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope } from './process-registry';
 
 export interface RunResult {
   stdout: string;
