@@ -44,6 +44,23 @@ export interface FSNode {
    * apart). Absent until something sets it, which is the write time.
    */
   atime?: number;
+  /**
+   * A tree mounted here: the paths below this node are the tree's, answered
+   * when they are read, and never this filesystem's to write. Linux's
+   * `/proc` is one.
+   */
+  mount?: MountedTree;
+}
+
+/**
+ * A read-only tree another party answers, mounted at a directory: `node`
+ * returns what is at a path relative to the mount point (`/` is the mount
+ * point itself), computed when it is asked, or undefined where nothing is.
+ * A directory's `children` names what a listing shows; a link's `target` is
+ * followed as any link is.
+ */
+export interface MountedTree {
+  node(path: string): FSNode | undefined;
 }
 
 // Identity belongs to the node, so writes and renames preserve it while an
@@ -116,7 +133,7 @@ export interface NodeError extends Error {
 }
 
 export function createNodeError(
-  code: 'ENOENT' | 'ENOTDIR' | 'EISDIR' | 'EEXIST' | 'ENOTEMPTY' | 'ELOOP' | 'EINVAL',
+  code: 'ENOENT' | 'ENOTDIR' | 'EISDIR' | 'EEXIST' | 'ENOTEMPTY' | 'ELOOP' | 'EINVAL' | 'EROFS',
   syscall: string,
   path: string,
   message?: string
@@ -127,6 +144,7 @@ export function createNodeError(
     EISDIR: -21,
     EEXIST: -17,
     ENOTEMPTY: -39,
+    EROFS: -30,
   };
 
   const messages: Record<string, string> = {
@@ -135,6 +153,7 @@ export function createNodeError(
     EISDIR: 'is a directory',
     EEXIST: 'file already exists',
     ENOTEMPTY: 'directory not empty',
+    EROFS: 'read-only file system',
   };
 
   const err = new Error(
@@ -216,6 +235,7 @@ export class VirtualFS {
   }
 
   private serializeNode(path: string, node: FSNode, files: VFSFileEntry[]): void {
+    if (node.mount) return; // a mounted tree is its answerer's, never the filesystem's contents
     if (node.type === 'file') {
       // Encode binary content as base64
       let content = '';
@@ -284,6 +304,7 @@ export class VirtualFS {
    */
   private writeFileSyncInternal(path: string, data: string | Uint8Array, emitEvent: boolean): void {
     const normalized = this.normalizePath(path);
+    this.assertWritable(normalized, 'open');
     const parentPath = this.getParentPath(normalized);
     const basename = this.getBasename(normalized);
 
@@ -377,11 +398,14 @@ export class VirtualFS {
     if (depth > 40) throw createNodeError('ELOOP', 'stat', path);
     const segments = this.getPathSegments(path);
     let current = this.root;
+    let mounted: { tree: MountedTree; at: number } | undefined;
     for (let index = 0; index < segments.length; index += 1) {
-      if (current.type !== 'directory' || !current.children) {
+      if (current.type !== 'directory' || (!mounted && !current.children)) {
         return undefined;
       }
-      const child = current.children.get(segments[index]);
+      const child = mounted
+        ? mounted.tree.node('/' + segments.slice(mounted.at + 1, index + 1).join('/'))
+        : current.children!.get(segments[index]);
       if (!child) {
         return undefined;
       }
@@ -391,9 +415,43 @@ export class VirtualFS {
         const target = this.__substrateLinkTarget(linkPath, child.target!);
         return this.__substrateNode(rest ? target + '/' + rest : target, follow, depth + 1);
       }
-      current = child;
+      if (!mounted && child.mount) {
+        mounted = { tree: child.mount, at: index };
+        current = child.mount.node('/') ?? child;
+      } else {
+        current = child;
+      }
     }
     return current;
+  }
+
+  /**
+   * Mount a read-only tree at a directory, as Linux mounts `/proc`: reads
+   * below it are the tree's answers, writes fail with `EROFS`, and a snapshot
+   * leaves it out. Answers the unmount.
+   */
+  mount(path: string, tree: MountedTree): () => void {
+    const normalized = this.normalizePath(path);
+    const basename = this.getBasename(normalized);
+    if (!basename) throw createNodeError('EINVAL', 'mount', path);
+    const parent = this.ensureDirectory(this.getParentPath(normalized));
+    const existing = parent.children!.get(basename);
+    if (existing && (existing.type !== 'directory' || existing.mount || existing.children?.size)) {
+      throw createNodeError('EEXIST', 'mount', path);
+    }
+    const node: FSNode = { type: 'directory', children: new Map(), mtime: Date.now(), mode: 0o555, mount: tree };
+    parent.children!.set(basename, node);
+    return () => { if (parent.children!.get(basename) === node) parent.children!.delete(basename); };
+  }
+
+  /** A write at or below a mount point is refused, as a read-only filesystem refuses it. */
+  private assertWritable(path: string, syscall: string): void {
+    let current: FSNode | undefined = this.root;
+    for (const segment of this.getPathSegments(path)) {
+      current = current?.children?.get(segment);
+      if (!current) return;
+      if (current.mount) throw createNodeError('EROFS', syscall, path);
+    }
   }
   /** A link's target as an absolute path: absolute as written, or relative to the link's directory. */
   __substrateLinkTarget(linkPath: string, target: string): string {
@@ -401,6 +459,7 @@ export class VirtualFS {
   }
   symlinkSync(target: string, path: string): void {
     const normalized = this.normalizePath(path);
+    this.assertWritable(normalized, 'symlink');
     const parentPath = this.getParentPath(normalized);
     const basename = this.getBasename(normalized);
     const parent = this.getNode(parentPath);
@@ -472,12 +531,14 @@ export class VirtualFS {
    * Get stats for path
    */
   chmodSync(path: string, mode: number): void {
+    this.assertWritable(path, 'chmod');
     const node = this.getNode(path);
     if (!node) throw createNodeError('ENOENT', 'chmod', path);
     node.mode = mode & 0o7777;
   }
 
   utimesSync(path: string, atime: number | Date, mtime: number | Date): void {
+    this.assertWritable(path, 'utime');
     const node = this.getNode(path);
     if (!node) throw createNodeError('ENOENT', 'utimes', path);
     node.atime = atime instanceof Date ? atime.getTime() : atime * 1000;
@@ -600,6 +661,9 @@ export class VirtualFS {
    */
   mkdirSync(path: string, options?: { recursive?: boolean }): void {
     const normalized = this.normalizePath(path);
+    // `mkdir -p` of a directory that is there, a mount point among them, is done
+    if (options?.recursive && this.getNode(normalized)?.type === 'directory') return;
+    this.assertWritable(normalized, 'mkdir');
 
     if (options?.recursive) {
       this.ensureDirectory(normalized);
@@ -657,6 +721,7 @@ export class VirtualFS {
    */
   unlinkSync(path: string): void {
     const normalized = this.normalizePath(path);
+    this.assertWritable(normalized, 'unlink');
     const parentPath = this.getParentPath(normalized);
     const basename = this.getBasename(normalized);
 
@@ -689,6 +754,7 @@ export class VirtualFS {
    */
   rmdirSync(path: string): void {
     const normalized = this.normalizePath(path);
+    this.assertWritable(normalized, 'rmdir');
     const parentPath = this.getParentPath(normalized);
     const basename = this.getBasename(normalized);
 
@@ -727,6 +793,8 @@ export class VirtualFS {
   renameSync(oldPath: string, newPath: string): void {
     const normalizedOld = this.normalizePath(oldPath);
     const normalizedNew = this.normalizePath(newPath);
+    this.assertWritable(normalizedOld, 'rename');
+    this.assertWritable(normalizedNew, 'rename');
 
     const oldParentPath = this.getParentPath(normalizedOld);
     const oldBasename = this.getBasename(normalizedOld);
@@ -846,10 +914,14 @@ export class VirtualFS {
     for (let hops = 0; hops <= 40; hops += 1) {
       const segments = resolved.split('/').filter(Boolean);
       let current: FSNode | undefined = this.root;
+      let mounted: { tree: MountedTree; at: number } | undefined;
       let linked = false;
       for (let index = 0; index < segments.length; index += 1) {
-        const child: FSNode | undefined = current && current.children ? current.children.get(segments[index]) : void 0;
+        const child: FSNode | undefined = mounted
+          ? mounted.tree.node('/' + segments.slice(mounted.at + 1, index + 1).join('/'))
+          : current && current.children ? current.children.get(segments[index]) : void 0;
         if (!child) throw createNodeError('ENOENT', 'realpath', path);
+        if (!mounted && child.mount) mounted = { tree: child.mount, at: index };
         if (child.type === 'symlink') {
           const linkPath = '/' + segments.slice(0, index + 1).join('/');
           const rest = segments.slice(index + 1).join('/');

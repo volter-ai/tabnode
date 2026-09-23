@@ -199,7 +199,7 @@ const _runStreams = new Map<ProcessToken, RunStreams>();
 /** Submit before returning to a spawning parent; completion remains async. */
 async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaunch, 'identity' | 'inherited' | 'stdinStream'>): Promise<CommandOutcome> {
   const { token, streams } = launch;
-  if (!runPid(token)) setRunPid(token, mintPid(), 0);
+  if (!runPid(token)) setRunPid(token, mintPid(), 0, { argv: ['node', ...launch.argv], cwd: launch.cwd });
   let input: ReturnType<typeof nodeProcessInput> | undefined;
   try {
     streams?.signal?.throwIfAborted();
@@ -578,7 +578,7 @@ export function initChildProcess(vfs: VirtualFS): void {
     // This run's numbers, recorded under its name: a child it spawns reads
     // them for its own `ppid`, and `process.kill(pid, 0)` asks this registry
     // whether a pid is a live process.
-    if (runToken !== null) setRunPid(runToken, proc.pid, proc.ppid);
+    if (runToken !== null) setRunPid(runToken, proc.pid, proc.ppid, { argv: ['node', ...args], cwd: ctx.cwd });
     const releaseRun = runToken === null ? null : __recordRun(runToken, {
       process: proc,
       stdout: appendStdout,
@@ -1680,7 +1680,8 @@ function startChildRun(request: RunRequest): StartedRun {
   const pid = mintPid();
   // In a process realm the admitted guest is always the spawning parent.
   // Async bookkeeping for a routed child must not make that child its parent.
-  setRunPid(token, pid, runPid(nodeProcessRealmToken() ?? __currentProcessToken() ?? __lastLaunchedToken)?.pid ?? 0);
+  setRunPid(token, pid, runPid(nodeProcessRealmToken() ?? __currentProcessToken() ?? __lastLaunchedToken)?.pid ?? 0,
+    { argv: request.args.length ? request.args : [request.file], ...(request.cwd ? { cwd: request.cwd } : {}) });
   const controller = new AbortController();
   const pendingStdin: Array<Uint8Array | null> = [];
   // A host terminal consumes input incrementally. The old string-only

@@ -2,6 +2,22 @@
 export interface ProcessIdentity {
   readonly pid: number;
   readonly ppid: number;
+  /** What the process was started as, where its starter said: `/proc/<pid>/cmdline`. */
+  readonly argv?: readonly string[];
+  /** The directory it was started in: `/proc/<pid>/cwd`. */
+  readonly cwd?: string;
+  /** When it started, in milliseconds since the epoch. */
+  readonly startedAt?: number;
+}
+
+/** The parts of an identity a starter may add, checked before they are kept. */
+function describedIdentity(identity: ProcessIdentity): ProcessIdentity {
+  const { pid, ppid, argv, cwd, startedAt } = identity;
+  const described: { pid: number; ppid: number; argv?: readonly string[]; cwd?: string; startedAt?: number } = { pid, ppid };
+  if (Array.isArray(argv) && argv.length <= 4096 && argv.every(arg => typeof arg === 'string')) described.argv = Object.freeze([...argv]);
+  if (typeof cwd === 'string' && cwd.startsWith('/')) described.cwd = cwd;
+  if (typeof startedAt === 'number' && Number.isFinite(startedAt)) described.startedAt = startedAt;
+  return Object.freeze(described);
 }
 
 /** A run already admitted by the container owner into this realm's scope. */
@@ -38,7 +54,7 @@ export interface ProcessRegistryScope extends ProcessRegistry {
  * so identical local run tokens cannot overwrite or release another realm's
  * process. Allocation alone does not announce a live process.
  */
-export function createProcessRegistryOwner(): { createScope(): ProcessRegistryScope } {
+export function createProcessRegistryOwner(): { createScope(): ProcessRegistryScope; table(): ProcessIdentity[] } {
   let nextPid = 1000 + Math.floor(Math.random() * 30000);
   const live = new Map<number, ProcessIdentity>();
   // Which realm's scope answers for each live pid, including after handoff.
@@ -104,7 +120,7 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
           if (identity.ppid !== 0 && !Array.from(runs.values()).some(parent => parent.pid === identity.ppid)) {
             throw new Error('Parent process is not owned by this realm.');
           }
-          const entry = Object.freeze({ pid: identity.pid, ppid: identity.ppid });
+          const entry = describedIdentity(identity);
           runs.set(token, entry);
           live.set(entry.pid, entry);
           receivers.set(entry.pid, receiver);
@@ -139,6 +155,10 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
       };
       scopes.set(scope, { allocated, runs, active });
       return scope;
+    },
+    /** Every live process of the container, in pid order: what `/proc` lists. */
+    table() {
+      return [...live.values()].sort((a, b) => a.pid - b.pid);
     },
   };
 }

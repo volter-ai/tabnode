@@ -17,7 +17,7 @@
 
 import type { Process } from './shims/process';
 import { AsyncLocalStorage } from './shims/async_hooks';
-import { createProcessRegistryOwner, type ProcessRegistry, type ProcessRegistryScope, type InitialProcessRegistration } from './process-registry';
+import { createProcessRegistryOwner, type ProcessIdentity, type ProcessRegistry, type ProcessRegistryScope, type InitialProcessRegistration } from './process-registry';
 
 /** Whatever the embedding runtime uses to name one guest process. */
 export type ProcessToken = string;
@@ -147,6 +147,12 @@ export function createProcessRegistryScope(): ProcessRegistryScope {
   return processRegistryOwner.createScope();
 }
 
+/** Trusted container owner only: every live process of the container, from every realm. */
+export function ownerProcessTable(): ProcessIdentity[] {
+  if (registryInstalled) throw new Error('This realm is a process registry client, not the container owner.');
+  return processRegistryOwner.table();
+}
+
 /** Trusted container owner only; worker clients cannot expose their authority. */
 export function ownerProcessRegistryScope(): ProcessRegistryScope {
   if (registryInstalled) throw new Error('This realm is a process registry client, not the container owner.');
@@ -177,9 +183,9 @@ export function mintPid(): number {
 }
 
 /** Record the numbers a named run was started with, for the run to read back. */
-export function setRunPid(token: ProcessToken, pid: number, ppid: number): void {
+export function setRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string }): void {
   registryUsed = true;
-  processRegistry.publish(token, { pid, ppid });
+  processRegistry.publish(token, { pid, ppid, ...started, startedAt: Date.now() });
   pidsOfRuns.set(token, { pid, ppid });
 }
 

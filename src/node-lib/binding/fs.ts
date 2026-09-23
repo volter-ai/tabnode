@@ -40,7 +40,7 @@ import { errname } from './uv';
  * the same shape here rather than widened there.
  */
 function createNodeError(code: string, syscall: string, path: string): Error {
-  const known = ['EEXIST', 'EINVAL', 'EISDIR', 'ENOENT', 'ENOTDIR', 'ENOTEMPTY', 'ELOOP'];
+  const known = ['EEXIST', 'EINVAL', 'EISDIR', 'ENOENT', 'ENOTDIR', 'ENOTEMPTY', 'ELOOP', 'EROFS'];
   if (known.includes(code)) return vfsError(code as 'ENOENT', syscall, path);
   return Object.assign(new Error(`${code}: ${syscall} '${path}'`), { code, syscall, path, errno: -9 });
 }

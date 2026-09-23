@@ -13,7 +13,7 @@
 // hands the host's own globals back. See `host-globals.ts`.
 export { restoreHostGlobals, guestRealmInstalled } from './host-globals';
 export { VirtualFS } from './virtual-fs';
-export type { FSNode, Stats, FSWatcher, WatchListener, WatchEventType } from './virtual-fs';
+export type { FSNode, MountedTree, Stats, FSWatcher, WatchListener, WatchEventType } from './virtual-fs';
 export { Runtime, execute } from './runtime';
 export type { Module, RuntimeOptions, RequireFunction } from './runtime';
 export { createRuntime, WorkerRuntime } from './create-runtime';
@@ -54,11 +54,12 @@ import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
 import { runCommand, registerRunStreams, releaseRunStreams, sendStdin } from './shims/child_process';
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
-import { __adoptHandle, type OwnedHandle } from './node-lib/binding/handles';
+import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/handles';
+import { listenerOnPort } from './node-lib/binding/tcp_wrap';
 
 import { __currentProcessToken, __runFor, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
 export { runPid, processByPid };
-export { createProcessRegistryScope, installProcessRegistry, ownerProcessRegistryScope } from './process-tokens';
+export { createProcessRegistryScope, installProcessRegistry, ownerProcessRegistryScope, ownerProcessTable } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
@@ -123,6 +124,8 @@ export function createContainer(options?: ContainerOptions): {
   run: (command: string, options?: RunOptions) => Promise<RunResult>;
   pendingTimers: (token: string) => number;
   processPorts: (token: string) => number[];
+  /** The pid of the process listening on a port of this engine, where a guest process is: `/proc`'s socket owner. */
+  portPid: (port: number) => number | undefined;
   stopProcess: (token: string) => boolean;
   /**
    * Input for one run's guest, by its process token; without a token, the most
@@ -208,6 +211,10 @@ export function createContainer(options?: ContainerOptions): {
     pendingTimers: (token: string): number => __runFor(token)?.pendingTimers() ?? 0,
     /** The ports the servers the named run opened are listening on. */
     processPorts: (token: string): number[] => __ownedServerPorts(token),
+    portPid: (port: number): number | undefined => {
+      const listener = listenerOnPort(port);
+      return listener ? runPid(ownerOf(listener as unknown as OwnedHandle))?.pid : undefined;
+    },
     /** End the named run: its timers stop and its servers are released. */
     stopProcess: (token: string): boolean => {
       const known = __runFor(token) !== undefined || __ownedServerPorts(token).length > 0;
