@@ -26,13 +26,17 @@ function updateFlowControl(type, data) {
     for (const upload of controlledUploads) {
       if (upload.port === data?.port) upload.controller.abort(new Error('Virtual server registration changed'));
     }
+    // A port number is not a listener identity. Rebinding must terminate the
+    // old connection, even when the replacement advertises identical limits.
+    // Otherwise an already-headed response can wait forever on its old owner.
+    for (const pending of pendingRequests.values()) {
+      if (pending.flowControl === 1 && pending.port === data?.port)
+        pending.fail(new Error(type === 'server-unregistered'
+          ? 'Virtual server closed' : 'Virtual server registration changed'));
+    }
   }
   if (type === 'server-unregistered') {
     flowControlledPorts.delete(data?.port);
-    for (const pending of pendingRequests.values()) {
-      if (pending.flowControl === 1 && pending.port === data?.port)
-        pending.fail(new Error('Virtual server closed'));
-    }
   }
   if (type !== 'server-registered' || !data) return;
   if (data.flowControl === 1 && Number.isSafeInteger(data.maxRequestBytes)
