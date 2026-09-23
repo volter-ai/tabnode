@@ -24,6 +24,7 @@ import { netModule as netShim } from './node-lib/net-module';
 import { errname as __uvErrname } from './node-lib/binding/uv';
 import { createTimersModule } from './node-lib/timers';
 import { guestTimerFunctions } from './guest-timers';
+import { stackOverrides } from './stack-overrides';
 export { pendingGuestTimers, stopGuestTimers } from './guest-timers';
 import eventsShim from './node-lib/events-module';
 import { streamModule as streamShim, streamPromisesModule as streamPromises } from './node-lib/stream-module';
@@ -2936,7 +2937,19 @@ function __substrateCallSiteFileNames(): void {
     }
     return namer;
   };
-  const get = () => (typeof guestPrepare === 'function' ? namerFor(guestPrepare as Prepare) : guestPrepare);
+  // While one of Node's own files has an override pending for a stack it is
+  // about to read, V8 is handed a function that gives that error its
+  // override and every other error what it would have had: the guest's
+  // function, else V8's own text, which is the error and one `at` line
+  // per call site. Otherwise V8 is handed exactly what the guest set.
+  const overriding: Prepare = (error, sites) => {
+    const override = error !== null && typeof error === 'object' ? stackOverrides.get(error) : undefined;
+    if (override) { stackOverrides.delete(error as object); return override(error, sites.map(named)); }
+    if (typeof guestPrepare === 'function') return namerFor(guestPrepare as Prepare)(error, sites);
+    return `${Error.prototype.toString.call(error)}${sites.map(site => `\n    at ${String(site)}`).join('')}`;
+  };
+  const get = () => (stackOverrides.size > 0 ? overriding
+    : typeof guestPrepare === 'function' ? namerFor(guestPrepare as Prepare) : guestPrepare);
   (get as { __substrateNamesFrames?: boolean }).__substrateNamesFrames = true;
   defineOnHost(Error, 'prepareStackTrace', {
     get,

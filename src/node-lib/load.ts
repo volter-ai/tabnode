@@ -31,6 +31,7 @@ import { setLibRequire } from './require-hook';
 import { NODE_LTS_VERSION, nodeVersions } from './node-versions';
 import { createUtilBinding } from './binding/util';
 import { createFsBindings } from './binding/fs';
+import { stackOverrideMap } from '../stack-overrides';
 
 /**
  * The realm's built-ins, captured as Node captures them: before a program can
@@ -443,6 +444,19 @@ function bootstrapNodeLib(name: string, exports: unknown, process: object): void
         && (target as any)[events.kMaxEventTargetListeners] === undefined) return events.defaultMaxListeners;
       return original(target);
     };
+    return;
+  }
+  if (name === 'internal/errors') {
+    // Node's bootstrap registers this file's `prepareStackTraceCallback` with
+    // V8, which reads `overrideStackTrace` before anything else formats a
+    // stack. Here the realm's `Error.prepareStackTrace` hook is that reader,
+    // so the map is the one it reads (`src/stack-overrides.ts`). Unread, an
+    // `assert.ok(false)` indexed the stack's text for a call site and threw
+    // `TypeError: call.getFileName is not a function`.
+    // A primordial map's prototype is frozen, so its methods are shadowed by
+    // definition rather than assignment.
+    const map = (exports as { overrideStackTrace: object }).overrideStackTrace;
+    for (const [key, value] of Object.entries(stackOverrideMap)) Object.defineProperty(map, key, { value, configurable: true });
     return;
   }
   if (name === 'internal/util/debuglog') {

@@ -2,6 +2,16 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## v0.5.2 — 2026-09-23
+
+- `assert.ok` with a falsy value and no message throws its AssertionError. Node's
+  files set `overrideStackTrace` to read a stack's call sites, which V8 reaches
+  through the callback Node's bootstrap registers; the engine registered none,
+  so `assert` indexed the stack's text and threw `TypeError: call.getFileName
+  is not a function`. The realm's `Error.prepareStackTrace` hook now reads
+  every process's overrides. The message is `false == true` rather than Node's
+  quoted expression: the call site's column is in the engine's module wrapper.
+
 ## v0.5.1 — 2026-09-23
 
 - A listener the page opens through `listenNet` belongs to no guest process.
