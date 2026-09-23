@@ -147,6 +147,12 @@ export function createProcessRegistryScope(): ProcessRegistryScope {
   return processRegistryOwner.createScope();
 }
 
+/** Trusted container owner only; worker clients cannot expose their authority. */
+export function ownerProcessRegistryScope(): ProcessRegistryScope {
+  if (registryInstalled) throw new Error('This realm is a process registry client, not the container owner.');
+  return processRegistry as ProcessRegistryScope;
+}
+
 /** Startup-only host seam; never swap identity authorities under live runs. */
 export function installProcessRegistry(registry: ProcessRegistry, initial?: InitialProcessRegistration): void {
   if (registryInstalled || registryUsed) throw new Error('Process registry must be installed once before creating processes.');

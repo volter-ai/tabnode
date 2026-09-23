@@ -44,7 +44,10 @@ import { VirtualFSAdapter } from './vfs-adapter';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
 import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
-import { registerRunFd, releaseRunFds } from '../node-lib/binding/fds';
+import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
+import { nodeProcessHostFor } from '../node-process-host';
+import { nativeStreamDescriptor } from '../native-stream-binding';
+import type { LibuvStreamWrap } from '../node-lib/binding/stream_wrap';
 import { UV_ESRCH } from '../node-lib/binding/uv';
 import { loadNodeLibFor } from '../node-lib/load';
 import type { ChildProcessModule } from '../node-lib/child-process-module';
@@ -362,6 +365,37 @@ export function initChildProcess(vfs: VirtualFS): void {
       return { stdout: '', stderr: 'VFS not initialized\n', exitCode: 1 };
     }
 
+    // Capture this run's name, streams and cancellation before another Node
+    // entry can start. Forks and shell entries reach this same dispatch seam.
+    const runToken = runTokenOf(ctx);
+    const streams = runToken === null ? undefined : runStreamsFor(runToken);
+    const processHost = nodeProcessHostFor(runToken);
+    if (processHost && runToken !== null) {
+      // Fork already published the PID its parent's ChildProcess exposes.
+      // A shell entry has no registration yet; admit it once before dispatch.
+      if (!runPid(runToken)) setRunPid(runToken, mintPid(), 0);
+      try {
+        streams?.signal?.throwIfAborted();
+        const inherited = inheritedRunFds(runToken).map(({ fd, handle }) => {
+          const descriptor = nativeStreamDescriptor(handle as LibuvStreamWrap);
+          if (!descriptor) throw new Error(`Node descriptor ${fd} has no native owner for process isolation.`);
+          return { fd, handle: descriptor };
+        });
+        return await processHost.run({
+          token: runToken, identity: { ...runPid(runToken)! }, argv: [...args],
+          cwd: ctx.cwd, filesystem: tree, env: guestEnvironmentOf(ctx),
+          ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}),
+          ...(streams ? { streams } : {}), inherited,
+        });
+      } finally {
+        if (streams) streams.stdin = null;
+        // A moved registration is owned by the destination scope. This
+        // releases only the source's local lookup; failed admission also
+        // removes the still-local registration.
+        forgetRunPid(runToken);
+      }
+    }
+
     // Node reads its own options before the script: `node --turbo-fast-api-calls
     // file.js a b` runs file.js with `a b`, and the options it were given are
     // its `execArgv`. Node's own suite spawns children that way, and the
@@ -415,15 +449,6 @@ export function initChildProcess(vfs: VirtualFS): void {
 
     let stdout = '';
     let stderr = '';
-
-    // A run the host named is this guest process, for as long as the run
-    // lasts: `pendingTimers`, `processPorts` and `stopProcess` are answered
-    // from here, and a server the guest opens registers under this name.
-    const runToken = runTokenOf(ctx);
-    // What the host gave THIS run — its streams, its abort handle, whether it
-    // holds the run open. Read once here and nowhere from a module global, so
-    // a child spawned by this guest (a second run) cannot take them.
-    const streams = runToken === null ? undefined : runStreamsFor(runToken);
 
     // Track whether process.exit() was called
     let exitCalled = false;

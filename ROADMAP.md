@@ -290,6 +290,34 @@ raw-realm behavior takes no channel path. Engine library/declaration, substrate
 Node package and VS Code example builds pass. Browser inheritance acceptance
 remains pending, with automated tests off and publication held.
 
+Node dispatch trace (Articles 4 and 6, ADR-0031): shell Node commands and
+engine-first spawned Node children both reach `nodeCommand`; the general
+child executor is bypassed by the latter. Dispatching only page requests would
+therefore leave forked extension hosts in the shared realm. The shared entry
+must offer the embedding host the parsed argument vector, named registration,
+streams, cancellation, filesystem view and inherited native descriptors before creating a guest
+Runtime. The process worker executes only its admitted local token itself;
+other Node entries go to the host. The host receives arguments before the
+engine's file-only parser, including raw eval/preload options from spawned
+children or a wrapper already prepared by the source toolchain. Existing
+all-Node dispatch at this entry would disprove the
+diagnosis; it currently constructs a local Runtime unconditionally. The seam
+remains inactive until the substrate connects admission and bounded lifecycle.
+
+The startup-only hook is now implemented, with exactly one admitted local
+entry per process worker and host dispatch for other entries. Source-local
+registration cleanup runs on completion or failure without deleting an adopted
+destination's identity. It has no installed substrate caller yet. The next
+handoff must preserve live stdin (fork uses `RunStreams.stdin`, while the worker
+bridge consumes an async iterable), input backpressure/cancellation, and the
+source filesystem's prepared entry. Confined workers keep wrappers in private
+runtime overlays: per-realm wrapper counters are not a shared-file collision
+there. Do not change those names to address this handoff. Do not enable dispatch
+until those interfaces, worker limits and descriptor ownership are connected.
+Engine library/declaration, downstream Node package and VS Code example builds
+pass. The hook remains uninstalled, so these are build receipts, not isolated
+process acceptance. No automated tests were added or run; publication is held.
+
 ## terminal-descriptors: Allocated TTYs through the existing process host
 
 Status: local candidate, bounded browser reading complete; release pending

@@ -58,6 +58,11 @@ export function releaseRunFds(token: ProcessToken): void {
   runFds.delete(token);
 }
 
+/** Trusted process admission reads copies of this run's descriptor entries. */
+export function inheritedRunFds(token: ProcessToken): Array<{ fd: number; type: HandleType; handle: unknown }> {
+  return Array.from(runFds.get(token) ?? [], ([fd, entry]) => ({ fd, ...entry }));
+}
+
 /** The descriptor table of the run asking, where the asking run has one. */
 function tableOfAskingRun(): Map<number, { type: HandleType; handle: unknown }> | undefined {
   const token = currentOwner();
