@@ -142,7 +142,13 @@ function __substrateScopeGlobalCalls(code: string): string {
   catch { return code; }
   const positions: Array<[number, number, string]> = [];
   walkAst(ast, node => {
-    if (node.type === "NewExpression" && node.callee.type === "Identifier") positions.push([node.callee.start, node.callee.end, "(__substrateGuestConstructor(" + code.slice(node.callee.start, node.callee.end) + ",$process))"]);
+    // A function's source is also data: a program sends `String(fn)` to be
+    // run elsewhere (a browser page, a worker), where the module wrapper's
+    // names do not exist. The rewrite is the original `new` there.
+    if (node.type === "NewExpression" && node.callee.type === "Identifier") {
+      const callee = code.slice(node.callee.start, node.callee.end);
+      positions.push([node.callee.start, node.callee.end, "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + ",$process):" + callee + ")"]);
+    }
     // The narrow with-scope below keeps global replacements dynamic.
     // Remove its object receiver for ordinary calls (including local
     // bindings, whose bare-call receiver was already undefined).

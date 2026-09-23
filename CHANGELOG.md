@@ -2,6 +2,15 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## Unreleased
+
+- A function a module defines keeps working when its source is sent elsewhere
+  and run there (`String(fn)` evaluated in a browser page, as Playwright's
+  `page.evaluate` and its injected scripts are): a `new X(...)` in it no longer
+  names a helper that exists only inside the engine's module wrapper. Measured
+  in the tab: `expect(locator).toContainText` failed with
+  `ReferenceError: __substrateGuestConstructor is not defined` in the page.
+
 ## v0.5.7 — 2026-09-23
 
 - A registered-program stub a host places on a path (`#!/bin/sh`, then
