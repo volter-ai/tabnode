@@ -4,6 +4,12 @@ export interface ProcessIdentity {
   readonly ppid: number;
 }
 
+/** A run already admitted by the container owner into this realm's scope. */
+export interface InitialProcessRegistration {
+  readonly token: string;
+  readonly identity: ProcessIdentity;
+}
+
 /** Installed by the trusted embedding host before this realm starts runs. */
 export interface ProcessRegistry {
   allocate(): number;
@@ -13,6 +19,8 @@ export interface ProcessRegistry {
 }
 
 export interface ProcessRegistryScope extends ProcessRegistry {
+  /** Trusted owner handoff before the destination worker starts; not a guest operation. */
+  adoptRun(source: ProcessRegistryScope, sourceToken: string, token: string): ProcessIdentity;
   /** Ends this realm's registrations, including after abrupt worker death. */
   dispose(): void;
 }
@@ -25,6 +33,11 @@ export interface ProcessRegistryScope extends ProcessRegistry {
 export function createProcessRegistryOwner(): { createScope(): ProcessRegistryScope } {
   let nextPid = 1000 + Math.floor(Math.random() * 30000);
   const live = new Map<number, ProcessIdentity>();
+  const scopes = new WeakMap<ProcessRegistryScope, {
+    allocated: Set<number>;
+    runs: Map<string, ProcessIdentity>;
+    active(): void;
+  }>();
   return {
     createScope() {
       const allocated = new Set<number>();
@@ -33,7 +46,24 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
       const active = (): void => {
         if (disposed) throw new Error('Process registry scope is closed.');
       };
-      return {
+      const scope: ProcessRegistryScope = {
+        adoptRun(source, sourceToken, token) {
+          active();
+          const parent = scopes.get(source);
+          if (!parent) throw new Error('Process scopes belong to different container owners.');
+          parent.active();
+          if (allocated.size || runs.size) throw new Error('Process handoff requires an unused destination scope.');
+          if (typeof sourceToken !== 'string' || typeof token !== 'string' || !token.length) throw new Error('Invalid process handoff token.');
+          const identity = parent.runs.get(sourceToken);
+          if (!identity || live.get(identity.pid) !== identity) throw new Error('Source scope does not own that live process.');
+          // The PID stays live throughout the synchronous owner operation.
+          // Old-scope disposal/forget cannot remove the child's new ownership.
+          parent.runs.delete(sourceToken);
+          parent.allocated.delete(identity.pid);
+          allocated.add(identity.pid);
+          runs.set(token, identity);
+          return identity;
+        },
         allocate() {
           active();
           if (nextPid > 0x7fffffff) throw new Error('Process identifier space exhausted.');
@@ -75,6 +105,8 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
           allocated.clear();
         },
       };
+      scopes.set(scope, { allocated, runs, active });
+      return scope;
     },
   };
 }

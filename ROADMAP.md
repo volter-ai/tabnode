@@ -245,6 +245,26 @@ shared-realm socket/fork reading; it also records the fresh-workspace observatio
 and the final inactive cleanup guards that have build verification only. No
 automated tests were added or run, and no per-process memory claim follows.
 
+Identity handoff trace (migration step 3; Articles 4 and 6): `startChildRun`
+allocates and publishes a child PID in the spawning realm before execution;
+the Node command reads that registered identity when creating its Runtime.
+The destination registry currently rejects a foreign parent and an already-live
+PID. Republishing or allocating a replacement would break the identity the
+parent's ChildProcess already exposes. The trusted owner must move the existing
+registration to an unused child scope without removing it from the live table.
+Source and destination run tokens must be independent: carrying `child-1` into
+the child's new realm would collide with that realm's own first spawned child.
+This handoff belongs only on the host-held scope, never on its guest channel.
+The disproving observation would be child execution already receiving a
+host-admitted registration in its own scope; the original path used the local
+`setRunPid` call instead. The host-only registry scope now transfers the live
+registration atomically. Startup installation accepts that registration and
+validates it against the destination scope before populating local run lookup.
+An anonymous Runtime created during container construction cannot consume the
+admitted PID. The substrate's existing realm launcher can carry the registration
+under its request-1 token; actual child dispatch and descriptor inheritance
+remain pending. This is an inactive migration seam, not cross-worker acceptance.
+
 Completion: native/static/chained/member-construction failures reach only
 their originating process; handling preserves promise identity and suppresses
 default process failure; an unhandled failure reports stderr and ends that
