@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A spawned child's `pipe` stdio entries past fd 2 reach it at their own
+  numbers, for an engine `node` child and a program the page registered;
+  they were dropped.
+
 ## v0.4.1 — 2026-09-21
 
 - Child-process inherited stdout/stderr and default cwd come from the spawning

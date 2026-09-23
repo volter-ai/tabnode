@@ -116,7 +116,10 @@ and the run ownership that keeps a run alive while it holds a handle.
   command the way the shim's `spawn` routes one today (`node`, a registered
   page program, a WALI pack, the shell) with the given `Pipe` handles as its
   stdio, sets `pid`, returns 0 or a `UV_*` code (`UV_ENOENT` when the
-  command resolves to nothing); `kill(signal)`; `onexit(exitCode,
+  command resolves to nothing); a `pipe` entry past fd 2 is the child's at
+  its own number, which an engine `node` child opens by that fd and a
+  program the page registered receives as a byte stream in each direction;
+  `kill(signal)`; `onexit(exitCode,
   signalCode)` once, when the run ends; `ref()`, `unref()`.
 - `spawn_sync`: `spawn(options)` answering `{ status, signal, output: [null,
   stdout, stderr], error, pid }` over the engine's synchronous command door
