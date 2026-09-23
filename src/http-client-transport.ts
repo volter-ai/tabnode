@@ -61,8 +61,9 @@ export function installHttpClientTransport(factory: HttpClientTransportFactory, 
       }
       try {
         if (options.socketPath || options.localAddress || options.localPort || options.lookup || options.family) throw unsupported('custom socket routing');
-        if (tlsOptions.some(key => options[key] !== undefined) || options.rejectUnauthorized === false
-          || (options.servername !== undefined && options.servername !== host)) throw unsupported('custom TLS options');
+        // Node's Agent names a servername for plain HTTP too ('' for an IP); TLS options are an https question.
+        if (protocol === 'https:' && (tlsOptions.some(key => options[key] !== undefined) || options.rejectUnauthorized === false
+          || (options.servername !== undefined && options.servername !== host))) throw unsupported('custom TLS options');
         const authority = new URL(`${protocol}//${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${options.port ?? (protocol === 'https:' ? 443 : 80)}`);
         return connection(authority, factory(), require);
       } catch (cause) {

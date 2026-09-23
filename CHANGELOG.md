@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.11 — 2026-09-23
+
+- Plain HTTP through the host exchange no longer refuses as "custom TLS
+  options": Node's Agent gives every connection a `servername` (empty for an
+  IP address), so a guest's `http.request('http://127.0.0.1:…')` to a
+  host-served port failed before it was sent. TLS options are checked for
+  `https:` only.
+
 ## v0.5.10 — 2026-09-23
 
 - `installHttpClientTransport(factory, { hostPorts })`: plain HTTP to a
