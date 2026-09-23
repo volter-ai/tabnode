@@ -14,6 +14,9 @@
  */
 import { bytesOfString } from './buffer';
 import { UV_EOF, UV_EBADF, UV_ECONNRESET, UV_EPIPE } from './uv';
+import { attachNativeStream, nativeStreamFor } from '../../native-stream-binding';
+import type { TCP } from './tcp_wrap';
+import type { Pipe } from './pipe_wrap';
 
 /**
  * The bytes this view names. Node's `Buffer.from` of a short string is a
@@ -113,6 +116,8 @@ export class LibuvStreamWrap implements OwnedHandle {
   private streamEndpoint = new StreamEndpoint(this);
   /** A live wrapper on the other end, including after the original was closed. */
   get peer(): LibuvStreamWrap | null {
+    const native = nativeStreamFor(this);
+    if (native) return native.peer;
     return this.streamEndpoint.peer?.handles.values().next().value ?? null;
   }
   /** True once `close()` has been called; a closed handle carries nothing. */
@@ -135,15 +140,22 @@ export class LibuvStreamWrap implements OwnedHandle {
     registerHandle(this);
   }
 
+  protected attachNative(kind: 'tcp' | 'pipe', type: number): void {
+    attachNativeStream(this as unknown as TCP | Pipe, kind, type,
+      callback => this.closeLocal(callback), () => this.flushInbound());
+  }
+
   getAsyncId(): number {
     return this.asyncId;
   }
 
   ref(): void {
+    nativeStreamFor(this)?.operation('ref');
     refHandle(this);
   }
 
   unref(): void {
+    nativeStreamFor(this)?.operation('unref');
     unrefHandle(this);
   }
 
@@ -153,12 +165,16 @@ export class LibuvStreamWrap implements OwnedHandle {
 
   readStart(): number {
     if (this.closed) return UV_EBADF;
+    const status = nativeStreamFor(this)?.beginRead() ?? 0;
+    if (status !== 0) return status;
     this.reading = true;
     this.flushInbound();
     return 0;
   }
 
   readStop(): number {
+    // The remote owner may already have posted its one permitted read. Keep
+    // that credit until arrival; pause guest delivery without granting another.
     this.reading = false;
     return 0;
   }
@@ -174,6 +190,8 @@ export class LibuvStreamWrap implements OwnedHandle {
    */
   shutdown(req: ShutdownWrap): number {
     if (this.closed) return UV_EBADF;
+    const native = nativeStreamFor(this);
+    if (native) return native.shutdown(status => req.oncomplete?.(status));
     this.sendEof();
     queueMicrotask(() => { req.oncomplete?.(0); });
     return 0;
@@ -194,6 +212,8 @@ export class LibuvStreamWrap implements OwnedHandle {
         parts.push(typeof chunk === 'string' ? bytesOfString(chunk, encoding) : (chunk as Uint8Array));
       }
     }
+    const native = nativeStreamFor(this);
+    if (native) return native.write(req, parts);
     let total = 0;
     for (const part of parts) total += part.byteLength;
     const joined = new Uint8Array(total);
@@ -227,6 +247,12 @@ export class LibuvStreamWrap implements OwnedHandle {
    * `close` from it and Node emits that after the turn that destroyed.
    */
   close(callback?: () => void): void {
+    const native = nativeStreamFor(this);
+    if (native) { native.close(callback); return; }
+    this.closeLocal(callback);
+  }
+
+  private closeLocal(callback?: () => void): void {
     const failures: unknown[] = [];
     const release = (action: () => void): void => { try { action(); } catch (cause) { failures.push(cause); } };
     if (!this.closed) {
@@ -295,6 +321,12 @@ export class LibuvStreamWrap implements OwnedHandle {
 
   /** Two handles become each other's peer; what one writes the other reads. */
   static pair(a: LibuvStreamWrap, b: LibuvStreamWrap): void {
+    const left = nativeStreamFor(a), right = nativeStreamFor(b);
+    if (left || right) {
+      if (!left || !right) throw new Error('Cannot pair native and realm-local stream handles.');
+      left.pair(right);
+      return;
+    }
     a.streamEndpoint.peer = b.streamEndpoint;
     b.streamEndpoint.peer = a.streamEndpoint;
   }
@@ -345,6 +377,7 @@ export class LibuvStreamWrap implements OwnedHandle {
    */
   takeOverFrom(other: LibuvStreamWrap): void {
     if (other === this) return;
+    if (nativeStreamFor(this) || nativeStreamFor(other)) throw new Error('Remote descriptors must be inherited and opened through their owner.');
     this.shareConnectionFrom(other);
     this.streamEndpoint.handles.delete(other);
     other.streamEndpoint = new StreamEndpoint(other);
@@ -367,6 +400,8 @@ export class LibuvStreamWrap implements OwnedHandle {
    * produced nothing.
    */
   protected dispatchWrite(req: WriteWrap, buffer: Uint8Array, handle?: unknown): number {
+    const native = nativeStreamFor(this);
+    if (native) return native.write(req, [buffer], handle);
     void req;
     const length = buffer.byteLength;
     streamBaseState[kBytesWritten] = length;
@@ -448,40 +483,44 @@ export class LibuvStreamWrap implements OwnedHandle {
    * from inside `onread`, so the loop re-reads `reading` every time.
    */
   protected flushInbound(): void {
-    while (this.reading && !this.closed && this.inbound.length > 0) {
-      const next = this.inbound.shift() as Inbound;
-      const bytes = next.bytes;
-      // The handle is on the channel before the bytes it belongs to reach the
-      // reader, which is where `setupChannel` takes it off.
-      if (next.handle !== undefined) this.pendingHandle = next.handle;
-      const target = this.userBuffer;
-      if (target) {
-        // `net.Socket({ onread })`: the bytes land in the program's buffer and
-        // `onStreamRead` hands the count to its callback.
-        const taken = Math.min(target.byteLength, bytes.byteLength);
-        this.bytesRead += taken;
-        target.set(bytes.subarray(0, taken));
-        if (taken < bytes.byteLength) this.inbound.unshift({ bytes: bytes.subarray(taken) });
-        streamBaseState[kReadBytesOrError] = taken;
-        streamBaseState[kArrayBufferOffset] = 0;
-        try { this.onread?.(null); } finally { this.streamEndpoint.capacityChanged(); }
-        continue;
+    try {
+      while (this.reading && !this.closed && this.inbound.length > 0) {
+        const next = this.inbound.shift() as Inbound;
+        const bytes = next.bytes;
+        // The handle is on the channel before the bytes it belongs to reach the
+        // reader, which is where `setupChannel` takes it off.
+        if (next.handle !== undefined) this.pendingHandle = next.handle;
+        const target = this.userBuffer;
+        if (target) {
+          // `net.Socket({ onread })`: the bytes land in the program's buffer and
+          // `onStreamRead` hands the count to its callback.
+          const taken = Math.min(target.byteLength, bytes.byteLength);
+          this.bytesRead += taken;
+          target.set(bytes.subarray(0, taken));
+          if (taken < bytes.byteLength) this.inbound.unshift({ bytes: bytes.subarray(taken) });
+          streamBaseState[kReadBytesOrError] = taken;
+          streamBaseState[kArrayBufferOffset] = 0;
+          try { this.onread?.(null); } finally { this.streamEndpoint.capacityChanged(); }
+          continue;
+        }
+        streamBaseState[kReadBytesOrError] = bytes.byteLength;
+        this.bytesRead += bytes.byteLength;
+        streamBaseState[kArrayBufferOffset] = bytes.byteOffset;
+        try { this.onread?.(bytes.buffer as ArrayBuffer); } finally { this.streamEndpoint.capacityChanged(); }
       }
-      streamBaseState[kReadBytesOrError] = bytes.byteLength;
-      this.bytesRead += bytes.byteLength;
-      streamBaseState[kArrayBufferOffset] = bytes.byteOffset;
-      try { this.onread?.(bytes.buffer as ArrayBuffer); } finally { this.streamEndpoint.capacityChanged(); }
-    }
-    if (this.reading && !this.closed && this.inbound.length === 0 && !this.eofDelivered &&
-        (this.inboundError !== null || this.inboundEof)) {
-      this.eofDelivered = true;
-      // libuv stops a stream when it reads EOF, and a stopped handle does not
-      // hold the loop: a socket whose peer has gone is not work, however much
-      // unread data is still in its buffer.
-      stopHandle(this);
-      streamBaseState[kReadBytesOrError] = this.inboundError ?? UV_EOF;
-      streamBaseState[kArrayBufferOffset] = 0;
-      this.onread?.(null);
+      if (this.reading && !this.closed && this.inbound.length === 0 && !this.eofDelivered &&
+          (this.inboundError !== null || this.inboundEof)) {
+        this.eofDelivered = true;
+        // libuv stops a stream when it reads EOF, and a stopped handle does not
+        // hold the loop: a socket whose peer has gone is not work, however much
+        // unread data is still in its buffer.
+        stopHandle(this);
+        streamBaseState[kReadBytesOrError] = this.inboundError ?? UV_EOF;
+        streamBaseState[kArrayBufferOffset] = 0;
+        this.onread?.(null);
+      }
+    } finally {
+      nativeStreamFor(this)?.readFlushed(this.inbound.length === 0, this.eofDelivered);
     }
   }
 }

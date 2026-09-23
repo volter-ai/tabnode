@@ -14,6 +14,7 @@
  */
 import { LibuvStreamWrap } from './stream_wrap';
 import { __adoptHandle, ownerOf } from './handles';
+import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
 import { UV_EADDRINUSE, UV_ECONNREFUSED, UV_EINVAL, UV_ENOTSUP, UV_EBADF } from './uv';
 
 /** libuv's `uv_tcp_t` flavours, and the two flags `getFlags` builds. */
@@ -104,13 +105,18 @@ export class TCP extends LibuvStreamWrap {
   constructor(type: number = constants.SOCKET) {
     super();
     this.type = type;
+    this.attachNative('tcp', type);
   }
 
   bind(address: string, port: number, _flags?: number): number {
+    const native = nativeStreamFor(this);
+    if (native) return native.call({ operation: 'bind', id: native.descriptor.id, address, port, flags: _flags }).status;
     return this.bindTo(address || '0.0.0.0', port, 'IPv4');
   }
 
   bind6(address: string, port: number, _flags?: number): number {
+    const native = nativeStreamFor(this);
+    if (native) return native.call({ operation: 'bind', id: native.descriptor.id, address, port, flags: _flags, ipv6: true }).status;
     return this.bindTo(address || '::', port, 'IPv6');
   }
 
@@ -128,6 +134,12 @@ export class TCP extends LibuvStreamWrap {
   }
 
   listen(_backlog: number): number {
+    const native = nativeStreamFor(this);
+    if (native) {
+      const status = native.call({ operation: 'listen', id: native.descriptor.id, backlog: _backlog }).status;
+      if (status === 0) this.listening = true;
+      return status;
+    }
     if (!this.local) {
       const err = this.bindTo('0.0.0.0', 0, 'IPv4');
       if (err) return err;
@@ -146,6 +158,8 @@ export class TCP extends LibuvStreamWrap {
   }
 
   private connectTo(req: TCPConnectWrap, address: string, port: number, family: string): number {
+    const native = nativeStreamFor(this);
+    if (native) return native.connect(address, port, family === 'IPv6', status => req.oncomplete?.(status, this, req, true, true));
     const target = Number(port);
     const reachable = isThisHost(address);
     if (!this.local) {
@@ -193,13 +207,20 @@ export class TCP extends LibuvStreamWrap {
 
   /** libuv's `dup()`: the same connection, under both its names. */
   override duplicate(): TCP {
-    const copy = new (this.constructor as typeof TCP)(constants.SOCKET);
+    const native = nativeStreamFor(this);
+    const copy = native ? native.duplicate() as TCP : new (this.constructor as typeof TCP)(constants.SOCKET);
     if (this.local && this.remote) copy.adoptNames(this.local, this.remote);
-    copy.shareConnectionFrom(this);
+    if (!native) copy.shareConnectionFrom(this);
     return copy;
   }
 
   getsockname(out: Partial<SockName>): number {
+    const native = nativeStreamFor(this);
+    if (native) {
+      const result = native.call({ operation: 'getsockname', id: native.descriptor.id });
+      if (result.address) Object.assign(out, result.address);
+      return result.status;
+    }
     if (!this.local) return UV_EINVAL;
     out.address = this.local.address;
     out.family = this.local.family;
@@ -208,6 +229,12 @@ export class TCP extends LibuvStreamWrap {
   }
 
   getpeername(out: Partial<SockName>): number {
+    const native = nativeStreamFor(this);
+    if (native) {
+      const result = native.call({ operation: 'getpeername', id: native.descriptor.id });
+      if (result.address) Object.assign(out, result.address);
+      return result.status;
+    }
     if (!this.remote) return UV_EINVAL;
     out.address = this.remote.address;
     out.family = this.remote.family;
@@ -231,12 +258,20 @@ export class TCP extends LibuvStreamWrap {
 
   /** An engine handle carries no descriptor a program can hand it. */
   open(_fd: number): number {
+    const native = nativeStreamFor(this);
+    if (native) {
+      const status = native.call({ operation: 'open', id: native.descriptor.id, fd: _fd }).status;
+      if (status === 0) this.fd = _fd;
+      return status;
+    }
     return UV_ENOTSUP;
   }
 
   /** libuv's `uv_tcp_close_reset`: the peer reads ECONNRESET rather than EOF. */
   reset(callback?: () => void): number {
     if (this.closed) return UV_EBADF;
+    const native = nativeStreamFor(this);
+    if (native) return native.close(callback, true);
     this.sendReset();
     this.close(callback);
     return 0;
@@ -250,4 +285,5 @@ export class TCP extends LibuvStreamWrap {
   }
 }
 
+registerNativeStreamConstructor('tcp', TCP);
 export default { TCP, TCPConnectWrap, constants };

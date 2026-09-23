@@ -15,6 +15,7 @@ import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
 import { UV_EADDRINUSE, UV_ENOENT, UV_EBADF } from './uv';
 import { handleForFd, registerFd, releaseFd } from './fds';
 import { __adoptHandle, ownerOf } from './handles';
+import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
 
 /** libuv's `uv_pipe_t` flavours, and the two chmod bits `listen` reads. */
 export const constants = {
@@ -51,9 +52,12 @@ export class Pipe extends LibuvStreamWrap {
   constructor(type: number = constants.SOCKET) {
     super();
     this.type = type;
+    this.attachNative('pipe', type);
   }
 
   bind(path: string): number {
+    const native = nativeStreamFor(this);
+    if (native) return native.call({ operation: 'bind', id: native.descriptor.id, address: path }).status;
     const held = boundPaths.get(path);
     if (held && held !== this) return UV_EADDRINUSE;
     this.path = path;
@@ -62,12 +66,20 @@ export class Pipe extends LibuvStreamWrap {
   }
 
   listen(_backlog: number): number {
+    const native = nativeStreamFor(this);
+    if (native) {
+      const status = native.call({ operation: 'listen', id: native.descriptor.id, backlog: _backlog }).status;
+      if (status === 0) this.listening = true;
+      return status;
+    }
     if (this.path === null) return UV_EBADF;
     this.listening = true;
     return 0;
   }
 
   connect(req: PipeConnectWrap, path: string): number {
+    const native = nativeStreamFor(this);
+    if (native) return native.connect(path, undefined, false, status => req.oncomplete?.(status, this, req, true, true));
     // libuv answers a connect through the request, never from the call.
     queueMicrotask(() => {
       if (this.closed) return;
@@ -95,6 +107,12 @@ export class Pipe extends LibuvStreamWrap {
    * opened it, because a child's channel is written to before the child runs.
    */
   open(fd: number): number {
+    const native = nativeStreamFor(this);
+    if (native) {
+      const status = native.call({ operation: 'open', id: native.descriptor.id, fd }).status;
+      if (status === 0) this.fd = fd;
+      return status;
+    }
     const held = handleForFd(fd) as LibuvStreamWrap | undefined;
     if (!held) return UV_EBADF;
     this.takeOverFrom(held);
@@ -111,8 +129,9 @@ export class Pipe extends LibuvStreamWrap {
 
   /** libuv's `dup()`: the same pairing, under the same flavour. */
   override duplicate(): Pipe {
-    const copy = new (this.constructor as typeof Pipe)(this.type);
-    copy.shareConnectionFrom(this);
+    const native = nativeStreamFor(this);
+    const copy = native ? native.duplicate() as Pipe : new (this.constructor as typeof Pipe)(this.type);
+    if (!native) copy.shareConnectionFrom(this);
     return copy;
   }
 
@@ -140,6 +159,8 @@ export class Pipe extends LibuvStreamWrap {
    * read as idle and was settled with exit 0.
    */
   protected override dispatchWrite(req: WriteWrap, bytes: Uint8Array, handle?: unknown): number {
+    const native = nativeStreamFor(this);
+    if (native) return native.write(req, [bytes], handle);
     if (handle === undefined || handle === null) return super.dispatchWrite(req, bytes);
     // A descriptor crosses as a duplicate, as `SCM_RIGHTS` hands one over: the
     // receiver gets its own handle on the same connection, so the sender's
@@ -164,4 +185,5 @@ export class Pipe extends LibuvStreamWrap {
   }
 }
 
+registerNativeStreamConstructor('pipe', Pipe);
 export default { Pipe, PipeConnectWrap, constants };

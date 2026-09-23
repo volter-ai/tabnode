@@ -22,6 +22,7 @@ export type NativeStreamEvent =
 export type NativeStreamOperation =
   | { operation: 'create'; kind: 'tcp' | 'pipe'; type: number }
   | { operation: 'pair'; id: number; peer: number }
+  | { operation: 'duplicate'; id: number }
   | { operation: 'bind'; id: number; address: string; port?: number; ipv6?: boolean; flags?: number }
   | { operation: 'listen'; id: number; backlog: number }
   | { operation: 'connect'; id: number; request: number; address: string; port?: number; ipv6?: boolean }
@@ -129,6 +130,14 @@ export class NativeStreamScope {
     if (!entry) return { status: UV_EBADF };
     const handle = entry.handle;
     switch (operation.operation) {
+      case 'duplicate': {
+        if (!handle.peer || handle.listening) return { status: UV_ENOTSUP };
+        if (this.entries.size >= this.limits.maxHandles) return { status: UV_EMFILE };
+        const copy = handle.duplicate();
+        const descriptor = this.claim(copy);
+        if (!descriptor) { copy.close(); return { status: UV_EMFILE }; }
+        return { status: 0, handle: descriptor };
+      }
       case 'pair': {
         const other = this.entry(operation.peer)?.handle;
         if (!other || handle.peer || other.peer || handle.listening || other.listening || other === handle) return { status: UV_EINVAL };
@@ -223,7 +232,8 @@ export class NativeStreamScope {
     if (sent && (!(handle instanceof Pipe) || !sent.peer || sent.listening || bytes.byteLength === 0)) return Promise.resolve(UV_ENOTSUP);
     // Retain the descriptor while capacity is unavailable; the sender can close
     // its original after submitting the write without invalidating this copy.
-    const owned = bytes.slice();
+    const owned = new Uint8Array(bytes.byteLength);
+    owned.set(bytes);
     const retained = sent?.duplicate();
     if (retained) __adoptHandle(retained, null);
     this.pendingWriteBytes += owned.byteLength;

@@ -216,6 +216,35 @@ and full-process memory readings remain pending. Library/declaration, substrate
 Node package and compiled VS Code example builds pass; these establish
 buildability only. No automated tests were added or run.
 
+Guest binding migration (step 2; Articles 4 and 6): the TCP/Pipe constructors
+and `LibuvStreamWrap` methods are also used by the native process binding for
+stdio and IPC. Replacing only the exported `net` binding would leave those
+paths attached to local pairings. Install one private transport before stream
+construction and delegate at these shared native operations instead, retaining
+the existing wrapper brands and Node's own JavaScript libraries. Read credit
+must follow consumed guest buffers, writes must preserve asynchronous completion
+and descriptor lifetime, and closing must wait for owner completion. The source
+trace would be disproved if process-wrap stdio already used a distinct host
+descriptor API; it currently constructs and pairs these same handles directly.
+This work does not itself enable process routing or prove browser acceptance.
+The private binding delegate now carries read credit, chunked asynchronous
+writes, accepted/transferred handles, bind/connect/name queries, ref/unref and
+close/reset. Local peer associations do not synthesize EOF: the owner delivers
+bytes and EOF in order. Pending native requests retain loop ownership even on
+unreferenced streams; shutdown follows accepted writes and close waits for the
+owner acknowledgement. Buffer views are copied into owned Uint8Arrays before
+transfer, since Node Buffer.slice aliases its backing pool. Concrete binding
+constructors register after class definition to avoid a base-class import cycle.
+The substrate's confined-worker bootstrap can install this transport before
+container creation and negotiates protocol version 1, but the current host does
+not enable it. Descriptor inheritance, listening-server transfer, process entry
+routing and browser acceptance remain pending.
+Library/declaration and downstream Node/example builds pass. The substrate W61
+receipt identifies the browser-loaded artifact and the successful existing
+shared-realm socket/fork reading; it also records the fresh-workspace observation
+and the final inactive cleanup guards that have build verification only. No
+automated tests were added or run, and no per-process memory claim follows.
+
 Completion: native/static/chained/member-construction failures reach only
 their originating process; handling preserves promise identity and suppresses
 default process failure; an unhandled failure reports stderr and ends that
