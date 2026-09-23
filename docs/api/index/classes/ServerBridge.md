@@ -248,7 +248,7 @@ method where it has one, else its buffered answer is delivered whole.
 
 ##### flow?
 
-`LoopbackStreamFlow`
+[`LoopbackStreamFlow`](../interfaces/LoopbackStreamFlow.md)
 
 #### Returns
 

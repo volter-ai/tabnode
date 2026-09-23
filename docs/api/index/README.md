@@ -42,6 +42,7 @@
 - [InitServiceWorkerOptions](interfaces/InitServiceWorkerOptions.md)
 - [IRuntime](interfaces/IRuntime.md)
 - [IRuntimeOptions](interfaces/IRuntimeOptions.md)
+- [LoopbackStreamFlow](interfaces/LoopbackStreamFlow.md)
 - [Module](interfaces/Module.md)
 - [MountedTree](interfaces/MountedTree.md)
 - [NativeStreamDescriptor](interfaces/NativeStreamDescriptor.md)
