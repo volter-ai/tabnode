@@ -10,7 +10,7 @@ import { Readable } from '../node-lib/stream-module';
 import { loadNodeLibFor } from '../node-lib/load';
 import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
-import { mintPid, pidIsLive, signalPid } from '../process-tokens';
+import { mintPid, pidIsLive, signalPid, __recordTermination } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeVersions } from '../node-lib/node-versions';
 import { freemem as osFreemem } from './os';
 
@@ -584,6 +584,7 @@ export function createProcess(options?: {
         return true;
       }
       if (__substrateIgnoredSignals.has(name)) return true;
+      __recordTermination(proc as never, name);
       proc.exit(128 + __substrateSignals[name]);
       return true;
     },

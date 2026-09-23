@@ -58,7 +58,7 @@ import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/han
 import { listenerOnPort } from './node-lib/binding/tcp_wrap';
 import { nativeStreamOwnerPid } from './native-stream-owner';
 
-import { __currentProcessToken, __runFor, __signalOwnedProcess, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
+import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
 export { runPid, processByPid };
 export { createProcessRegistryScope, installProcessRegistry, ownerProcessRegistryScope, ownerProcessTable } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
@@ -72,6 +72,8 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** The signal whose default action ended the run's guest, as Node reports a process a signal ended. */
+  signal?: string;
 }
 
 export interface RunOptions {
@@ -198,10 +200,12 @@ export function createContainer(options?: ContainerOptions): {
         // piped, as it does in a Node shell.
         runCommand(command, { cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : undefined, processToken, vfs }, (error, stdout, stderr) => {
           releaseRunStreams(processToken);
+          const terminatedBy = __takeTermination(processToken);
           resolve({
             stdout: String(stdout),
             stderr: String(stderr),
             exitCode: runOptions?.signal?.aborted ? 143 : error ? (error.code ?? 1) : 0,
+            ...(terminatedBy ? { signal: terminatedBy } : {}),
           });
         });
       });

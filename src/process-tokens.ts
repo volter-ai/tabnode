@@ -78,6 +78,22 @@ export function __recordRun(token: ProcessToken, run: OwnedRun): () => void {
   };
 }
 
+/**
+ * The signal whose default action ended a run's guest, kept under the run's
+ * name until the run reports its result: Node reports such a process as ended
+ * by that signal, not by the exit code its default action implies.
+ */
+const terminations = new Map<ProcessToken, string>();
+export function __recordTermination(process: Process, signal: string): void {
+  const token = tokensByProcess.get(process);
+  if (token !== undefined) terminations.set(token, signal);
+}
+export function __takeTermination(token: ProcessToken): string | undefined {
+  const signal = terminations.get(token);
+  terminations.delete(token);
+  return signal;
+}
+
 /** Bound guest globals retain their actual process across native await turns. */
 export function __tokenForProcess(process: Process): ProcessToken | null {
   return tokensByProcess.get(process) ?? null;

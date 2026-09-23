@@ -2,6 +2,14 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## Unreleased
+
+- A parent's `child.kill(signal)` reaches a child running in a realm of its own
+  as a machine's process takes it: the child's listeners run, else its default
+  action ends it, and a process a signal's default action ended reports that
+  signal (`container.run` answers `signal`, a `NodeProcessHost` may answer it,
+  and the child's `exit` event gets `(null, signal)`).
+
 ## v0.5.8 — 2026-09-23
 
 - `os.homedir()` returns `HOME` when the environment sets it, as Node's does;

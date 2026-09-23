@@ -60,7 +60,7 @@ import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __subs
 
 import { __substrateChildren, __onUncaughtException, __reportUncaughtException } from './process';
 
-import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __lastLaunchedToken, __setLastLaunchedToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, runPid, forgetRunPid, type ProcessToken } from '../process-tokens';
+import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __lastLaunchedToken, __setLastLaunchedToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, runPid, forgetRunPid, signalPid, type ProcessToken } from '../process-tokens';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
 const __hostProcess: { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown } | null =
   typeof process !== 'undefined' && process !== null && typeof (process as { on?: unknown }).on === 'function' && typeof (process as { off?: unknown }).off === 'function'
@@ -1399,6 +1399,7 @@ interface CommandOutcome {
   stdout: string;
   stderr: string;
   exitCode: number;
+  signal?: string;
 }
 
 /** What a caller gives one run of a command line. */
@@ -1726,6 +1727,8 @@ function startChildRun(request: RunRequest): StartedRun {
   let finished = false;
   let started = false;
   let killedBy: string | null = null;
+  // Whether the child runs on the process host, in a realm of its own.
+  let hosted = false;
   /** What the parent wrote to the child's fd 0 before the command began. */
   const initialStdin: Uint8Array[] = [];
 
@@ -1812,6 +1815,7 @@ function startChildRun(request: RunRequest): StartedRun {
       let outcome: CommandOutcome;
       try {
         const processHost = admittedNode ? nodeProcessHostFor(token) : undefined;
+        hosted = processHost !== undefined;
         const env = { ...request.env };
         delete env[PROCESS_TOKEN_ENV];
         outcome = processHost ? await runHostedNode(processHost, {
@@ -1837,7 +1841,7 @@ function startChildRun(request: RunRequest): StartedRun {
       // its own as it went, and only what it has not already sent is left.
       if (outcome.stdout.length > streamedOut) request.stdout?.(outcome.stdout.slice(streamedOut));
       if (outcome.stderr.length > streamedErr) request.stderr?.(outcome.stderr.slice(streamedErr));
-      end(outcome.exitCode, null);
+      end(outcome.exitCode, outcome.signal ?? null);
     })();
   };
 
@@ -1850,6 +1854,11 @@ function startChildRun(request: RunRequest): StartedRun {
     pid,
     kill(signal: string): number {
       if (finished) return UV_ESRCH;
+      // A child in a realm of its own takes a catchable signal as a machine's
+      // process does: its listeners run, else its default action ends it, and
+      // it ends by its own outcome. Only when nothing there receives it does
+      // the parent end it here.
+      if (hosted && signal !== 'SIGKILL' && signal !== 'SIGSTOP' && signalPid(pid, signal)) return 0;
       killedBy = signal;
       controller.abort(signal);
       __releaseOwnedServers(token, false);

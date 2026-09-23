@@ -20,7 +20,8 @@ export interface NodeProcessLaunch {
 }
 
 export interface NodeProcessHost {
-  run(launch: NodeProcessLaunch): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /** `signal` names the signal whose default action ended the process, as Node's exit event does. */
+  run(launch: NodeProcessLaunch): Promise<{ stdout: string; stderr: string; exitCode: number; signal?: string }>;
 }
 
 let host: NodeProcessHost | undefined;
