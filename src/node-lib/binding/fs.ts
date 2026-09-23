@@ -168,6 +168,40 @@ function fileFor(fd: number): OpenFile {
   return file;
 }
 
+/**
+ * Where a child's output goes when its stdio names a descriptor of the
+ * parent's (`stdio: ['ignore', fd, fd]` with `fd` from `openSync`): the file
+ * that descriptor has open, as the child's own duplicate of it, so it keeps
+ * writing after the parent closes its copy. Appending descriptors append;
+ * others write on from the position the parent's copy had. A descriptor that
+ * is a stream (a socket, a pipe) is written as a stream. Anything else is
+ * not a sink, and the child's output there goes nowhere, as `ignore` does.
+ */
+export function descriptorWriter(fd: number): ((text: string) => void) | null {
+  const stream = handleForFd(fd);
+  if (stream instanceof LibuvStreamWrap) {
+    return (text) => { try { stream.writeBuffer(new WriteWrap(), new TextEncoder().encode(text)); } catch { /* a closed stream drops the child's output, as a closed pipe does */ } };
+  }
+  const file = openFiles.get(fd);
+  if (!file || file.directory || (file.flags & 3) === 0) return null;
+  const { tree, path } = file;
+  const append = (file.flags & flagBits().append) !== 0;
+  let position = file.position;
+  return (text) => {
+    const bytes = new TextEncoder().encode(text);
+    // the parent's copy, while it is open, holds the file's bytes as it last wrote them
+    const shared = openFiles.get(fd) === file ? file : null;
+    const existing = shared?.cached ?? (tree.existsSync(path) ? tree.readFileSync(path) as Uint8Array : new Uint8Array(0));
+    const at = append ? existing.length : position;
+    const next = new Uint8Array(Math.max(existing.length, at + bytes.length));
+    next.set(existing, 0);
+    next.set(bytes, at);
+    tree.writeFileSync(path, next);
+    position = at + bytes.length;
+    if (shared) shared.cached = next;
+  };
+}
+
 /** Node's stat array: eighteen numbers, with each time a second and a nanosecond. */
 function statArray(stats: VfsStats, bigint: boolean, path?: string): Float64Array | BigInt64Array {
   const mtime = stats.mtime instanceof Date ? stats.mtime.getTime() : Number(stats.mtimeMs ?? 0);

@@ -4,6 +4,20 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.16 — 2026-09-23
+
+- A child spawned with a descriptor of the parent's as its stdio
+  (`stdio: ['ignore', fd, fd]`, `fd` from `fs.openSync`) writes its output to
+  that file, as its own duplicate of the descriptor: appending where the
+  descriptor appends, and on after the parent closes its copy. Before, only
+  descriptors 1 and 2 were inherited, and a program that logs its children to
+  a file (Workbench's installs) got an empty log.
+- `npm init -y` writes npm's defaults to package.json, keeping the fields one
+  already has, and prints it as npm does. `npm init` without `-y` (its
+  questions need a prompt) and with an initializer package are refused by
+  name. Before, `init` was an unknown command, and a recipe that begins with
+  `npm init -y` stopped there.
+
 ## v0.5.15 — 2026-09-23
 
 - A guest's listener registered as its request adapter (no longer the `null`

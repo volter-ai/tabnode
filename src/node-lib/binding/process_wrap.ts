@@ -29,6 +29,7 @@ import {
 } from './handles';
 import { __runFor, mintPid, type ProcessToken } from '../../process-tokens';
 import { handleForFd } from './fds';
+import { descriptorWriter } from './fs';
 import { TTY, type TerminalState } from './tty_wrap';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio` builds it. */
@@ -178,7 +179,8 @@ function spawningDirectory(token: ProcessToken | null): string | undefined {
 
 /** Where an `inherit` entry's bytes go: the spawning program's own stream. */
 function inheritedWriter(fd: number, token: ProcessToken | null): ((text: string) => void) | null {
-  if (fd !== 1 && fd !== 2) return null;
+  // a descriptor of the parent's own (a log file it opened) is written as the file
+  if (fd !== 1 && fd !== 2) return descriptorWriter(fd);
   // Inherit the descriptor's original sink, not a guest replacement of
   // process.stderr.write (a child commonly redirects its console over IPC).
   if (token !== null) {

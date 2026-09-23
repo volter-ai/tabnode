@@ -1011,6 +1011,10 @@ export function initChildProcess(vfs: VirtualFS): void {
       case 'ls':
       case 'list':
         return handleNpmList(ctx);
+      case 'init':
+      case 'create':
+      case 'innit':
+        return handleNpmInit(args.slice(1), ctx);
       default:
         return {
           stdout: '',
@@ -1287,6 +1291,46 @@ async function handleNpmInstall(args: string[], ctx: CommandContext): Promise<Ju
     const msg = error instanceof Error ? error.stack || error.message : String(error);
     return { stdout, stderr: `npm ERR! ${msg}\n`, exitCode: 1 };
   }
+}
+
+/**
+ * `npm init -y`: npm's defaults written to package.json, the fields a
+ * package.json already has kept, and the file printed as npm prints it. The
+ * questionnaire without `-y` needs a person at npm's prompts; it is refused by
+ * name, as is an initializer (`npm init <pkg>`), which runs another package.
+ */
+async function handleNpmInit(args: string[], ctx: CommandContext): Promise<JustBashExecResult> {
+  const yes = args.includes('-y') || args.includes('--yes');
+  const initializer = args.find((a) => !a.startsWith('-'));
+  if (initializer) {
+    return { stdout: '', stderr: `npm ERR! npm init ${initializer} runs an initializer package, which this engine's npm does not; write package.json, or run \`npm init -y\`.\n`, exitCode: 1 };
+  }
+  if (!yes) {
+    return { stdout: '', stderr: 'npm ERR! npm init asks its questions at a prompt, which this engine\'s npm does not; `npm init -y` writes the defaults.\n', exitCode: 1 };
+  }
+  const vfs = currentVfs!;
+  const file = __resolvePath(ctx.cwd, 'package.json');
+  let existing: Record<string, unknown> = {};
+  if (vfs.existsSync(file)) {
+    try { existing = JSON.parse(String(vfs.readFileSync(file, 'utf8'))) as Record<string, unknown>; }
+    catch { return { stdout: '', stderr: `npm ERR! ${file} is not valid JSON\n`, exitCode: 1 }; }
+  }
+  const base = ctx.cwd.split('/').filter(Boolean).pop() ?? 'package';
+  const name = base.toLowerCase().replace(/^[._]+/, '').replace(/[^a-z0-9._~-]+/g, '-') || 'package';
+  const manifest = {
+    name,
+    version: '1.0.0',
+    description: '',
+    main: 'index.js',
+    scripts: { test: 'echo "Error: no test specified" && exit 1' },
+    keywords: [],
+    author: '',
+    license: 'ISC',
+    ...existing,
+  };
+  const text = `${JSON.stringify(manifest, null, 2)}\n`;
+  vfs.writeFileSync(file, text);
+  return { stdout: `Wrote to ${file}:\n\n${text}\n\n`, stderr: '', exitCode: 0 };
 }
 
 /**
