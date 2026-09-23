@@ -36,6 +36,7 @@
 - [FSWatcher](interfaces/FSWatcher.md)
 - [HttpClientExchangeRequest](interfaces/HttpClientExchangeRequest.md)
 - [HttpClientExchangeResponse](interfaces/HttpClientExchangeResponse.md)
+- [HttpClientTransportOptions](interfaces/HttpClientTransportOptions.md)
 - [IExecuteResult](interfaces/IExecuteResult.md)
 - [InitialProcessRegistration](interfaces/InitialProcessRegistration.md)
 - [InitServiceWorkerOptions](interfaces/InitServiceWorkerOptions.md)

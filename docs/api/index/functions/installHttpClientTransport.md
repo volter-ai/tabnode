@@ -6,7 +6,7 @@
 
 # Function: installHttpClientTransport()
 
-> **installHttpClientTransport**(`factory`): () => `void`
+> **installHttpClientTransport**(`factory`, `transportOptions?`): () => `void`
 
 Host-only installation; guest modules receive Node's normal exports.
 
@@ -15,6 +15,10 @@ Host-only installation; guest modules receive Node's normal exports.
 ### factory
 
 [`HttpClientTransportFactory`](../type-aliases/HttpClientTransportFactory.md)
+
+### transportOptions?
+
+[`HttpClientTransportOptions`](../interfaces/HttpClientTransportOptions.md) = `{}`
 
 ## Returns
 
