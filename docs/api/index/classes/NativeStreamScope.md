@@ -13,7 +13,10 @@ descriptor from another scope; wire operations can name this scope's IDs only.
 
 ### Constructor
 
-> **new NativeStreamScope**(`limits`, `emit`): `NativeStreamScope`
+> **new NativeStreamScope**(`limits`, `emit`, `ownerPid?`): `NativeStreamScope`
+
+`ownerPid` names the process whose worker this scope serves: a listener
+it opens is that process's socket, as the container's /proc shows it.
 
 #### Parameters
 
@@ -25,9 +28,23 @@ descriptor from another scope; wire operations can name this scope's IDs only.
 
 (`event`) => `void`
 
+##### ownerPid?
+
+() => `number` \| `undefined`
+
 #### Returns
 
 `NativeStreamScope`
+
+## Properties
+
+### ownerPid?
+
+> `readonly` `optional` **ownerPid?**: () => `number` \| `undefined`
+
+#### Returns
+
+`number` \| `undefined`
 
 ## Methods
 
