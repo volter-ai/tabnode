@@ -10,7 +10,9 @@
 
 ### run()
 
-> **run**(`launch`): `Promise`\<\{ `exitCode`: `number`; `stderr`: `string`; `stdout`: `string`; \}\>
+> **run**(`launch`): `Promise`\<\{ `exitCode`: `number`; `signal?`: `string`; `stderr`: `string`; `stdout`: `string`; \}\>
+
+`signal` names the signal whose default action ended the process, as Node's exit event does.
 
 #### Parameters
 
@@ -20,4 +22,4 @@
 
 #### Returns
 
-`Promise`\<\{ `exitCode`: `number`; `stderr`: `string`; `stdout`: `string`; \}\>
+`Promise`\<\{ `exitCode`: `number`; `signal?`: `string`; `stderr`: `string`; `stdout`: `string`; \}\>

@@ -14,6 +14,14 @@
 
 ***
 
+### signal?
+
+> `optional` **signal?**: `string`
+
+The signal whose default action ended the run's guest, as Node reports a process a signal ended.
+
+***
+
 ### stderr
 
 > **stderr**: `string`
