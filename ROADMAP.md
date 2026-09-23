@@ -96,6 +96,48 @@ review establishes a concrete migration and incremental resource measurements.
 The owner specifically asked about the weight of this change; approval is not
 evidence that worker memory or startup overhead is small.
 
+Migration trace (2026-09-23): all shell-launched Node scripts reach the engine's
+`nodeCommand` in `shims/child_process.ts`; `startChildRun` currently registers
+the child's IPC Pipe in the local `binding/fds.ts` table before running that
+command engine-first. `binding/pipe_wrap.ts` implements Unix socket paths in a
+realm-local map and transfers actual duplicated stream handles beside IPC
+bytes. `binding/tcp_wrap.ts` similarly owns bound/ephemeral port maps, socket
+names and live pairings. These are shared kernel state, not process-local JS
+state that can simply be copied into another worker. `process-tokens.ts` also
+owns PID allocation and liveness; independently booting that table would break
+cross-process `kill(pid, 0)` and the VS Code lock-file workflow again.
+
+Implementation order under the approved amendment:
+
+1. Keep one container owner for PID/liveness, descriptor capabilities and
+   TCP/Unix listener registries, beside the existing filesystem owner. Define
+   the trusted host interface at the engine's native binding boundary. Bind
+   each channel to its process at creation; guest-supplied IDs cannot select
+   another process's descriptor or authority. Node's synchronous bind/open/
+   liveness results require a synchronous worker-to-owner response; asynchronous
+   stream events alone cannot implement that contract.
+2. Carry native stream operations and descriptor transfer across that channel,
+   including queued bytes, half-close, reset, pending IPC handles, duplicate
+   descriptor lifetime, ref/unref, and completion before process teardown.
+   Reuse the current libuv-shaped implementations in the owner and preserve
+   Node's unchanged serialization and child_process library in each process.
+   The existing page-net bridge only connects to numeric listeners and carries
+   bytes/end; it is not a substitute for Unix paths or IPC handle transfer.
+3. Route the Node command entry and engine-spawned Node children through native
+   workers, passing explicit PID/PPID, stdio, IPC and cancellation. Preserve
+   argv boundaries, preloads, eval wrapper files and inheritance. The existing
+   confined-command worker already supplies shared filesystem access and host
+   networking; extend that lifecycle without inventing another workspace store.
+4. Measure one fully initialized process before switching the VS Code tree,
+   then compare aggregate memory/startup against the current shared-realm
+   candidate. Only after the process boundary is real can native rejection
+   delivery replace the incomplete promise-tag filter.
+
+This trace rules out merely enabling filesystem confinement or dispatching only
+top-level `node` commands. No process-routing or native-binding behavior has
+changed yet. The substrate W61 entry owns the module-only cost reading and the
+owner's distinction between tens of MB and aggregate hundreds of MB overhead.
+
 Completion: native/static/chained/member-construction failures reach only
 their originating process; handling preserves promise identity and suppresses
 default process failure; an unhandled failure reports stderr and ends that
