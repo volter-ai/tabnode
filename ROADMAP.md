@@ -387,6 +387,10 @@ tagging. Other embedding realms retain the existing provenance filter. The
 worker's global exception backstop uses that same fixed token. This changes no
 Promise constructor or identity, and must be read through actual async failure
 delivery before the motivating gap is closed.
+The substrate's first process-mode boot exposes a duplicate host idle owner;
+its W61 entry owns that diagnosis. Export the existing startup-only installed
+capability so adapters can leave admitted process lifetime to the engine and
+supervisor, rather than infer it from root-realm idleness.
 
 ## terminal-descriptors: Allocated TTYs through the existing process host
 

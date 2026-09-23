@@ -58,7 +58,7 @@ import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } 
 import { __currentProcessToken, __runFor, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
 export { runPid, processByPid };
 export { createProcessRegistryScope, installProcessRegistry, ownerProcessRegistryScope } from './process-tokens';
-export { installNodeProcessHost } from './node-process-host';
+export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
