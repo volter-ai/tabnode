@@ -81,7 +81,15 @@ export const osBinding = {
   /** Node's `os.type()`, `release()` and `version()`, in that order. */
   getOSInformation: (): string[] => [osShim.type(), osShim.release(), osShim.version()],
   getHostname: (): string => osShim.hostname(),
-  getHomeDirectory: (): string => osShim.homedir(),
+  /**
+   * Node's `os.homedir()` is libuv's: `HOME` when the environment sets it,
+   * the account's directory otherwise. `userInfo().homedir` stays the
+   * account's, as it is in Node.
+   */
+  getHomeDirectory: (): string => {
+    const home = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.HOME;
+    return home && home.length > 0 ? home : osShim.homedir();
+  },
   getUptime: (): number => osShim.uptime(),
   getTotalMem: (): number => osShim.totalmem(),
   getFreeMem: (): number => osShim.freemem(),

@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `os.homedir()` returns `HOME` when the environment sets it, as Node's does;
+  `os.userInfo().homedir` stays the account's directory.
 - A function a module defines keeps working when its source is sent elsewhere
   and run there (`String(fn)` evaluated in a browser page, as Playwright's
   `page.evaluate` and its injected scripts are): a `new X(...)` in it no longer
