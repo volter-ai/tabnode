@@ -381,8 +381,28 @@ export function initChildProcess(vfs: VirtualFS): void {
     // its first fork.
     const execArgv: string[] = [];
     let first = 0;
+    // `-e`/`--eval` and `-p`/`--print` carry the program itself as their
+    // value: there is no script, and every word after the source is the
+    // program's argument. Taken for an option, the source was read as the
+    // script's path ("Cannot find module '/workspace/console.log(1+1)'").
+    let evaluated: { source: string; print: boolean } | null = null;
     while (first < args.length && args[first]!.startsWith('-') && args[first] !== '-' && args[first] !== '--') {
-      execArgv.push(args[first]!);
+      const option = args[first]!;
+      const inline = /^(--eval|--print)=([\s\S]*)$/.exec(option);
+      if (inline) {
+        evaluated = { source: inline[2]!, print: inline[1] === '--print' };
+        execArgv.push(option);
+        first += 1;
+        break;
+      }
+      if (option === '-e' || option === '--eval' || option === '-p' || option === '--print' || option === '-pe') {
+        if (first + 1 >= args.length) return { stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 };
+        evaluated = { source: args[first + 1]!, print: option.includes('p') };
+        execArgv.push(option, args[first + 1]!);
+        first += 2;
+        break;
+      }
+      execArgv.push(option);
       first += 1;
     }
     if (args[first] === '--') first += 1;
@@ -395,15 +415,15 @@ export function initChildProcess(vfs: VirtualFS): void {
     };
     let script = first;
     let resolvedPath: string | null = null;
-    for (let index = first; index < args.length; index += 1) {
+    for (let index = first; evaluated === null && index < args.length; index += 1) {
       const found = fileNamed(args[index]!);
       if (found !== null) { script = index; resolvedPath = found; break; }
     }
-    for (let index = first; index < script; index += 1) execArgv.push(args[index]!);
-    if (!args[script]) {
+    if (evaluated === null) for (let index = first; index < script; index += 1) execArgv.push(args[index]!);
+    if (evaluated === null && !args[script]) {
       return { stdout: '', stderr: 'Usage: node <script.js> [args...]\n', exitCode: 1 };
     }
-    if (resolvedPath === null) {
+    if (evaluated === null && resolvedPath === null) {
       return { stdout: '', stderr: `Error: Cannot find module '${__resolvePath(ctx.cwd, args[script]!)}'\n`, exitCode: 1 };
     }
 
@@ -537,7 +557,11 @@ export function initChildProcess(vfs: VirtualFS): void {
     // Set up process.argv for the script. Node fills argv[0] with the
     // executable's path, the same value `process.execPath` reports; `argv0`
     // keeps the original argv[0], the plain word.
-    proc.argv = [__substrateExecPath, resolvedPath, ...args.slice(script + 1)];
+    // An evaluated program has no script: its argv is the executable and the
+    // words after the source, as Node's is.
+    proc.argv = evaluated !== null
+      ? [__substrateExecPath, ...args.slice(first)]
+      : [__substrateExecPath, resolvedPath!, ...args.slice(script + 1)];
     proc.argv0 = 'node';
     proc.execArgv = execArgv;
 
@@ -671,7 +695,14 @@ export function initChildProcess(vfs: VirtualFS): void {
       // this program's, not whichever run started last. The engine's storage
       // carries it into the timers, microtasks and `then` callbacks the entry
       // schedules from here, so a child spawned later still names its parent.
-      const runEntry = () => runtime.runFile(resolvedPath);
+      // `-p` prints the completion value of the source, which a direct `eval`
+      // in the module body yields with the body's own `require` in scope.
+      const runEntry = () => evaluated !== null
+        ? runtime.evaluate(
+          evaluated.print ? `console.log(eval(${JSON.stringify(evaluated.source)}));` : evaluated.source,
+          __resolvePath(ctx.cwd, '[eval]'),
+        )
+        : runtime.runFile(resolvedPath!);
       entrySettling = __substratePendingOf(
         (runToken === null ? runEntry() : enterRun(runToken, runEntry)).exports,
       );
