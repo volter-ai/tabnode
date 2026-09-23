@@ -2,6 +2,14 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## Unreleased
+
+- `process.stdout.write(chunk, callback)` and `stderr`'s run the callback, as
+  Node's do when it is the second argument; `end(chunk)` writes its chunk.
+  Playwright's test runner waits on `stdout.write('', done)` before it exits
+  with the run's status, so a failed `npx playwright test` in the tab exited 0.
+  Measured in the tab: `process.stdout.write('x', cb)` never ran `cb`.
+
 ## v0.5.9 — 2026-09-23
 
 - A parent's `child.kill(signal)` reaches a child running in a realm of its own

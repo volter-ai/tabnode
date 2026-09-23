@@ -60,8 +60,8 @@ interface ProcessStream {
 }
 
 interface ProcessWritableStream extends ProcessStream {
-  write: (data: string | Buffer, encoding?: string, callback?: () => void) => boolean;
-  end?: (data?: string, callback?: () => void) => void;
+  write: (data: string | Buffer, ...rest: unknown[]) => boolean;
+  end?: (...args: unknown[]) => void;
 }
 
 /**
@@ -302,11 +302,13 @@ function createProcessStream(
       return stream;
     },
     // Default write implementation (no-op for readable streams)
-    write(_data: string | Buffer, _encoding?: string, callback?: () => void) {
+    write(_data: string | Buffer, ...rest: unknown[]) {
+      const callback = trailingCallback(rest);
       if (callback) queueMicrotask(callback);
       return true;
     },
-    end(_data?: string, callback?: () => void) {
+    end(...rest: unknown[]) {
+      const callback = trailingCallback(rest);
       if (callback) queueMicrotask(callback);
     },
     pipe(destination: unknown) {
@@ -324,14 +326,36 @@ function createProcessStream(
 
   // Override write for actual writable streams
   if (isWritable && writeImpl) {
-    stream.write = (data: string | Buffer, _encoding?: string, callback?: () => void) => {
+    stream.write = (data: string | Buffer, ...rest: unknown[]) => {
       const result = writeImpl(typeof data === 'string' ? data : data.toString());
+      const callback = trailingCallback(rest);
       if (callback) queueMicrotask(callback);
       return result;
+    };
+    stream.end = (...args: unknown[]) => {
+      const data = args[0];
+      if (typeof data === 'string') writeImpl(data);
+      else if (data instanceof Uint8Array) writeImpl(data.toString());
+      const callback = trailingCallback(args);
+      if (callback) queueMicrotask(callback);
     };
   }
 
   return stream;
+}
+
+/**
+ * Node's `write(chunk[, encoding][, callback])` and `end([chunk][, encoding][, callback])`:
+ * the callback is whichever argument is a function. `stdout.write('', done)`
+ * is how a program waits for its output to be flushed before it exits, and a
+ * callback read only from the third place never ran.
+ */
+function trailingCallback(args: readonly unknown[]): (() => void) | undefined {
+  for (let index = args.length - 1; index >= 0; index -= 1) {
+    const value = args[index];
+    if (typeof value === 'function') return value as () => void;
+  }
+  return undefined;
 }
 
 /** The signal numbers a guest sees, and the signals a tab must ignore. */
