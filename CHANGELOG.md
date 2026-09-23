@@ -4,6 +4,9 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `node -e` and `node -p` run their source, as a child spawned that way does,
+  instead of reading the source as the script's path.
+
 - A spawned child's `pipe` stdio entries past fd 2 reach it at their own
   numbers, for an engine `node` child and a program the page registered;
   they were dropped.
