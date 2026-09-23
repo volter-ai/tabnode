@@ -344,6 +344,30 @@ Create directory, optionally with recursive parent creation
 
 ***
 
+### mount()
+
+> **mount**(`path`, `tree`): () => `void`
+
+Mount a read-only tree at a directory, as Linux mounts `/proc`: reads
+below it are the tree's answers, writes fail with `EROFS`, and a snapshot
+leaves it out. Answers the unmount.
+
+#### Parameters
+
+##### path
+
+`string`
+
+##### tree
+
+[`MountedTree`](../interfaces/MountedTree.md)
+
+#### Returns
+
+() => `void`
+
+***
+
 ### off()
 
 #### Call Signature

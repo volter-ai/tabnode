@@ -126,6 +126,22 @@ The run whose guest code is executing, for a caller attributing a child.
 
 `number`
 
+### portPid
+
+> **portPid**: (`port`) => `number` \| `undefined`
+
+The pid of the process listening on a port of this engine, where a guest process is: `/proc`'s socket owner.
+
+#### Parameters
+
+##### port
+
+`number`
+
+#### Returns
+
+`number` \| `undefined`
+
 ### processByPid
 
 > **processByPid**: (`pid`) => \{ `pid`: `number`; `ppid`: `number`; \} \| `undefined`
@@ -236,6 +252,26 @@ recently started held run, which is the prompt a person is typing to.
 ### serverBridge
 
 > **serverBridge**: [`ServerBridge`](../classes/ServerBridge.md)
+
+### signalProcess
+
+> **signalProcess**: (`token`, `signal`) => `boolean`
+
+Deliver a signal to the named run as another process's `kill(pid)` does; false when the run is gone.
+
+#### Parameters
+
+##### token
+
+`string`
+
+##### signal
+
+`string`
+
+#### Returns
+
+`boolean`
 
 ### stopProcess
 
