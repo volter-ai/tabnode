@@ -34,6 +34,11 @@ continue to use Node's own HTTP library and native browser Response objects.
   ownership for intercepted constructor calls while retaining native Promise
   identity and process-local global replacement. Async, static and chained
   promise provenance remains unknown rather than assigned to another process.
+- Assemble non-overlapping source edits once during live-import and global-call
+  rewriting. The unchanged VS Code extension-host entry previously spent
+  69 seconds in preparation and missed its 60-second ready deadline; the
+  browser reread reaches eager extension activation about 14 seconds after
+  document reload. This is one successful startup, not a reliability sample.
 
 Validation: library build, typecheck and independent source review; bounded
 normal-Chrome readings through the substrate's editor and terminal cover
