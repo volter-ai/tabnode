@@ -98,6 +98,9 @@ export const UV_ENOSYS = codes.UV_ENOSYS[0];
 export const UV_EADDRNOTAVAIL = codes.UV_EADDRNOTAVAIL[0];
 export const UV_EACCES = codes.UV_EACCES[0];
 export const UV_ENOBUFS = codes.UV_ENOBUFS[0];
+export const UV_EMFILE = codes.UV_EMFILE[0];
+export const UV_EBUSY = codes.UV_EBUSY[0];
+export const UV_EALREADY = codes.UV_EALREADY[0];
 export const UV_ESRCH = codes.UV_ESRCH[0];
 
 export default uvBinding;

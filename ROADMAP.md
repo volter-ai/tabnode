@@ -190,10 +190,31 @@ An advanced-serialization variant stopped earlier in the existing `v8` shim:
 shim's Serializer lacks. The bounded cleanup's `server.close()` reached the
 same serializer error; the terminal returned to a prompt. Therefore this
 reading does not exercise advanced handle transfer. Source also shows the
-byte-write door currently drops its optional handle (`writeBuffer`), whereas
-the Pipe's UTF-8 write door performs duplication. Those gaps remain explicit
-in the IPC migration queue; no V8 serializer rewrite was added to this stream
-lifetime correction. No automated tests were added or run.
+byte-write door dropped its optional handle (`writeBuffer`), whereas the Pipe's
+UTF-8 write door performed duplication. The pending migration now forwards both
+through the same native dispatch; the V8 serializer gap remains unresolved.
+No automated tests were added or run.
+
+Native transport implementation (migration step 2; Articles 4 and 6): a
+`NativeStreamScope` retains the existing TCP/Pipe implementation in the owner,
+assigns scope-local capabilities and exposes descriptor inheritance only to
+the trusted host. The existing process-registry channel carries synchronous
+native operations and asynchronous read/write completion. Required contract:
+moving a process must preserve synchronous bind/open results, IPC handle
+lifetime and bounded receive queues. Source shows those operations currently
+depend on realm-local maps and object references; if the child path already
+used host-owned descriptor capabilities, this diagnosis would be false.
+Explicit registered-handle, chunk, per-connection queue and aggregate
+pending-write ceilings bound this new path; reads require replenished credit
+and writes wait for receiver capacity. Unread IPC descriptor copies have their
+own per-connection count limit: a byte limit alone would allow many native
+handles attached to tiny messages. Whole-tree resource accounting must include
+these per-connection ceilings multiplied by the admitted handle/process counts.
+This is inactive scaffolding until guest bindings and process dispatch use it.
+Listening-server transfer, guest binding installation, cross-worker acceptance
+and full-process memory readings remain pending. Library/declaration, substrate
+Node package and compiled VS Code example builds pass; these establish
+buildability only. No automated tests were added or run.
 
 Completion: native/static/chained/member-construction failures reach only
 their originating process; handling preserves promise identity and suppresses

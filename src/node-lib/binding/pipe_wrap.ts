@@ -139,8 +139,8 @@ export class Pipe extends LibuvStreamWrap {
    * host -- a program whose only handle is the socket its parent sent it --
    * read as idle and was settled with exit 0.
    */
-  override writeUtf8String(req: WriteWrap, text: string, handle?: unknown): number {
-    if (handle === undefined || handle === null) return super.writeUtf8String(req, text);
+  protected override dispatchWrite(req: WriteWrap, bytes: Uint8Array, handle?: unknown): number {
+    if (handle === undefined || handle === null) return super.dispatchWrite(req, bytes);
     // A descriptor crosses as a duplicate, as `SCM_RIGHTS` hands one over: the
     // receiver gets its own handle on the same connection, so the sender's
     // close on `NODE_HANDLE_ACK` -- which Node's `child_process.js` does the
@@ -151,7 +151,9 @@ export class Pipe extends LibuvStreamWrap {
     // The receiving run owns this reference; the sender retains its own until
     // Node closes it on acknowledgement, or continues using it with keepOpen.
     __adoptHandle(given, ownerOf(this.peer ?? this));
-    return super.writeUtf8String(req, text, given);
+    const status = super.dispatchWrite(req, bytes, given);
+    if (status !== 0 && given !== sent) given.close();
+    return status;
   }
 
   protected override onCloseHandle(): void {

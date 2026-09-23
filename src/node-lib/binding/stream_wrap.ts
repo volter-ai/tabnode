@@ -80,6 +80,11 @@ class StreamEndpoint {
   writeEnded = false;
   flushScheduled = false;
   readonly finalizers: Array<() => void> = [];
+  readonly capacityListeners = new Set<() => void>();
+
+  capacityChanged(): void {
+    for (const listener of [...this.capacityListeners]) listener();
+  }
 
   constructor(handle: LibuvStreamWrap) { this.handles.add(handle); }
 }
@@ -174,8 +179,8 @@ export class LibuvStreamWrap implements OwnedHandle {
     return 0;
   }
 
-  writeBuffer(req: WriteWrap, buffer: Uint8Array): number {
-    return this.dispatchWrite(req, buffer);
+  writeBuffer(req: WriteWrap, buffer: Uint8Array, handle?: unknown): number {
+    return this.dispatchWrite(req, buffer, handle);
   }
 
   writev(req: WriteWrap, chunks: unknown[], allBuffers: boolean): number {
@@ -222,6 +227,8 @@ export class LibuvStreamWrap implements OwnedHandle {
    * `close` from it and Node emits that after the turn that destroyed.
    */
   close(callback?: () => void): void {
+    const failures: unknown[] = [];
+    const release = (action: () => void): void => { try { action(); } catch (cause) { failures.push(cause); } };
     if (!this.closed) {
       this.closed = true;
       releaseHandle(this);
@@ -240,18 +247,27 @@ export class LibuvStreamWrap implements OwnedHandle {
         if (peer) {
           peer.peer = null;
           peer.eof = true;
-          for (const handle of peer.handles) handle.flushInbound();
+          for (const handle of peer.handles) release(() => handle.flushInbound());
         }
-        for (const finalize of endpoint.finalizers.splice(0)) finalize();
+        for (const finalize of endpoint.finalizers.splice(0)) release(finalize);
+        // SCM_RIGHTS copies queued on an unread IPC channel have no receiving
+        // process yet. Closing that channel must release them too.
+        for (const pending of endpoint.inbound) {
+          if (pending.handle instanceof LibuvStreamWrap) release(() => (pending.handle as LibuvStreamWrap).close());
+        }
         endpoint.inbound.length = 0;
+        release(() => endpoint.capacityChanged());
+        endpoint.capacityListeners.clear();
       }
-      this.onCloseHandle();
+      release(() => this.onCloseHandle());
     }
     // Node schedules a destroy(error)'s error on nextTick after close() returns.
     // The native close completion comes afterward. One microtask here ran the
     // close listener first, so ClientRequest replaced the actual policy denial
     // with ECONNRESET ("socket hang up"). Leave that tick ahead of completion.
     if (callback) queueMicrotask(() => queueMicrotask(callback));
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Native stream cleanup failed.');
   }
 
   /** What a `TCP` or a `Pipe` gives up beyond the stream: a port, a path. */
@@ -293,6 +309,29 @@ export class LibuvStreamWrap implements OwnedHandle {
   /** Native connection resources outlive individual duplicated wrappers. */
   protected onLastReferenceClose(callback: () => void): void {
     this.streamEndpoint.finalizers.push(callback);
+  }
+
+  /** Host transports bound copies waiting in the native receiving queue. */
+  get peerQueuedBytes(): number {
+    let bytes = 0;
+    for (const chunk of this.streamEndpoint.peer?.inbound ?? []) bytes += chunk.bytes.byteLength;
+    return bytes;
+  }
+
+  get peerQueuedHandles(): number {
+    let count = 0;
+    for (const chunk of this.streamEndpoint.peer?.inbound ?? []) {
+      if (chunk.handle !== undefined && chunk.handle !== null) count++;
+    }
+    return count;
+  }
+
+  /** Changes to the same connection end, even after its wrapper is replaced. */
+  onPeerReadCapacity(listener: () => void): () => void {
+    const endpoint = this.streamEndpoint.peer;
+    if (!endpoint) return () => {};
+    endpoint.capacityListeners.add(listener);
+    return () => { endpoint.capacityListeners.delete(listener); };
   }
 
   /**
@@ -415,22 +454,23 @@ export class LibuvStreamWrap implements OwnedHandle {
       // The handle is on the channel before the bytes it belongs to reach the
       // reader, which is where `setupChannel` takes it off.
       if (next.handle !== undefined) this.pendingHandle = next.handle;
-      this.bytesRead += bytes.byteLength;
       const target = this.userBuffer;
       if (target) {
         // `net.Socket({ onread })`: the bytes land in the program's buffer and
         // `onStreamRead` hands the count to its callback.
         const taken = Math.min(target.byteLength, bytes.byteLength);
+        this.bytesRead += taken;
         target.set(bytes.subarray(0, taken));
         if (taken < bytes.byteLength) this.inbound.unshift({ bytes: bytes.subarray(taken) });
         streamBaseState[kReadBytesOrError] = taken;
         streamBaseState[kArrayBufferOffset] = 0;
-        this.onread?.(null);
+        try { this.onread?.(null); } finally { this.streamEndpoint.capacityChanged(); }
         continue;
       }
       streamBaseState[kReadBytesOrError] = bytes.byteLength;
+      this.bytesRead += bytes.byteLength;
       streamBaseState[kArrayBufferOffset] = bytes.byteOffset;
-      this.onread?.(bytes.buffer as ArrayBuffer);
+      try { this.onread?.(bytes.buffer as ArrayBuffer); } finally { this.streamEndpoint.capacityChanged(); }
     }
     if (this.reading && !this.closed && this.inbound.length === 0 && !this.eofDelivered &&
         (this.inboundError !== null || this.inboundEof)) {
