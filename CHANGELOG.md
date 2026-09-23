@@ -2,6 +2,17 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## Unreleased
+
+- Add negotiated virtual HTTP response flow control for Host-registered ports:
+  one pull credit per 64 KiB-or-smaller chunk, propagated abort/body cancellation,
+  bounded uploads, finite header wait and identity-safe channel replacement.
+  All methods and paths on opted-in ports use the general stream protocol;
+  legacy port response behavior remains unchanged. This corrects the source
+  service worker's unbounded push queue and missing disconnect propagation,
+  not a package-specific route. Paired substrate bridge and actual browser
+  qualification remain pending; no release or supported-browser claim yet.
+
 ## v0.4.0 — 2026-09-21
 
 The host run options add streamed input and terminal control; virtual filesystem
