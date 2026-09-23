@@ -56,6 +56,7 @@ import { runCommand, registerRunStreams, releaseRunStreams, sendStdin } from './
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/handles';
 import { listenerOnPort } from './node-lib/binding/tcp_wrap';
+import { nativeStreamOwnerPid } from './native-stream-owner';
 
 import { __currentProcessToken, __runFor, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
 export { runPid, processByPid };
@@ -213,7 +214,9 @@ export function createContainer(options?: ContainerOptions): {
     processPorts: (token: string): number[] => __ownedServerPorts(token),
     portPid: (port: number): number | undefined => {
       const listener = listenerOnPort(port);
-      return listener ? runPid(ownerOf(listener as unknown as OwnedHandle))?.pid : undefined;
+      if (!listener) return undefined;
+      // a guest's own listener, or one this engine holds for another worker's process
+      return runPid(ownerOf(listener as unknown as OwnedHandle))?.pid ?? nativeStreamOwnerPid(listener);
     },
     /** End the named run: its timers stop and its servers are released. */
     stopProcess: (token: string): boolean => {

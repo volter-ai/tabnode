@@ -56,7 +56,11 @@ export class NativeStreamScope {
   private disposed = false;
   private readonly limits: Readonly<NativeStreamLimits>;
 
-  constructor(limits: NativeStreamLimits, private readonly emit: (event: NativeStreamEvent) => void) {
+  /**
+   * `ownerPid` names the process whose worker this scope serves: a listener
+   * it opens is that process's socket, as the container's /proc shows it.
+   */
+  constructor(limits: NativeStreamLimits, private readonly emit: (event: NativeStreamEvent) => void, readonly ownerPid?: () => number | undefined) {
     if ([limits.maxHandles, limits.maxReadChunkBytes, limits.maxQueuedBytes, limits.maxQueuedHandles, limits.maxPendingWriteBytes].some(value => !Number.isSafeInteger(value) || value < 1)
       || limits.maxReadChunkBytes > 0x7fffffff
       || limits.maxReadChunkBytes > limits.maxQueuedBytes
@@ -314,4 +318,9 @@ export class NativeStreamScope {
     }
     if (failures.length) throw new AggregateError(failures, 'Native stream scope cleanup failed.');
   }
+}
+
+/** The process a handle opened for another worker's process belongs to, where a scope holds it. */
+export function nativeStreamOwnerPid(handle: object): number | undefined {
+  return scopes.get(handle as NativeHandle)?.ownerPid?.();
 }
