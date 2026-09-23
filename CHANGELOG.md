@@ -2,7 +2,7 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## Unreleased
+## v0.5.8 — 2026-09-23
 
 - `os.homedir()` returns `HOME` when the environment sets it, as Node's does;
   `os.userInfo().homedir` stays the account's directory.
@@ -12,6 +12,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   names a helper that exists only inside the engine's module wrapper. Measured
   in the tab: `expect(locator).toContainText` failed with
   `ReferenceError: __substrateGuestConstructor is not defined` in the page.
+- 0.5.7's fix was incomplete: the sending side duplicates a passed socket
+  first, and a native stream's `duplicate` (and a child's descriptor
+  inheritance) still refused one whose other end had closed, so `child.send`
+  of such a socket still answered `write ENOTSUP` (measured on production with
+  0.5.7). Any connection is now duplicated and inherited; a listening server is
+  not.
 
 ## v0.5.7 — 2026-09-23
 

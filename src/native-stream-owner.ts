@@ -142,7 +142,9 @@ export class NativeStreamScope {
     const handle = entry.handle;
     switch (operation.operation) {
       case 'duplicate': {
-        if (!handle.peer || handle.listening) return { status: UV_ENOTSUP };
+        // A connection is duplicated whether or not its other end is still
+        // there (the copy reads its EOF); a listening server is not one.
+        if (handle.listening) return { status: UV_ENOTSUP };
         if (this.entries.size >= this.limits.maxHandles) return { status: UV_EMFILE };
         const copy = handle.duplicate();
         const descriptor = this.claim(copy);
@@ -289,7 +291,7 @@ export class NativeStreamScope {
     if (this.entries.size >= this.limits.maxHandles) return { status: UV_EMFILE };
     const handle = source.entry(id)?.handle;
     if (!handle) return { status: UV_EBADF };
-    if (handle.listening || !handle.peer) return { status: UV_ENOTSUP };
+    if (handle.listening) return { status: UV_ENOTSUP };
     const copy = handle.duplicate();
     const descriptor = this.claim(copy);
     if (!descriptor) { copy.close(); return { status: UV_EMFILE }; }
