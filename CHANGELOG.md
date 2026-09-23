@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Retain finite request-body metadata through Request construction and cloning
+  so a host Fetch transport can preserve ordinary uploads separately from live
+  streams (Article 6; substrate W61 owns browser acceptance).
+
 ## v0.5.0 — 2026-09-22
 
 The host API adds explicit HTTP-client and Fetch transport adapters. The host

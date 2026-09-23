@@ -18,6 +18,25 @@ export interface FetchTransportContext {
 export type FetchTransport = (input: RequestInfo | URL, init: RequestInit | undefined, context: FetchTransportContext) => Promise<Response>;
 let transport: FetchTransport | undefined;
 
+// Request.body exposes a stream even for a string, Blob or FormData. Keep
+// the native constructor's source distinction for transports crossing realms:
+// a finite body must not acquire streaming-upload restrictions in transit.
+const staticRequestBodies = new WeakSet<Request>();
+
+export function rememberRequestBodySource(request: Request, input: RequestInfo | URL, init?: RequestInit): void {
+  if (!request.body) return;
+  if (init?.body != null
+    ? !(init.body instanceof ReadableStream)
+    : typeof input === 'object' && staticRequestBodies.has(input as Request)) {
+    staticRequestBodies.add(request);
+  }
+}
+
+/** Host transport metadata; it carries no network permission. */
+export function requestHasStaticBody(request: Request): boolean {
+  return staticRequestBodies.has(request);
+}
+
 /** Host-only seam: the adapter reports pending headers/pulls and final cleanup. */
 export function installFetchTransport(adapter: FetchTransport): () => void {
   const previous = transport;

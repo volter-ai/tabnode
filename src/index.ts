@@ -236,7 +236,7 @@ export function createContainer(options?: ContainerOptions): {
 
 export default createContainer;
 
-export { installFetchTransport } from './fetch-transport';
+export { installFetchTransport, requestHasStaticBody } from './fetch-transport';
 export type { FetchActivity, FetchTransport, FetchTransportContext } from './fetch-transport';
 
 // Node's module resolution as a function over any filesystem, for a host

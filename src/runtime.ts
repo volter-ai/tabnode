@@ -7,7 +7,7 @@
 
 import { VirtualFS } from './virtual-fs';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
-import { guestFetch } from './fetch-transport';
+import { guestFetch, rememberRequestBodySource } from './fetch-transport';
 import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork } from './host-globals';
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
@@ -2778,6 +2778,7 @@ forGuestRealm(() => {
     class NodeRequest extends Native {
       constructor(input: RequestInfo | URL, init?: RequestInit) {
         super(input as RequestInfo, init);
+        rememberRequestBodySource(this, input, init);
         const asked = new Headers(init?.headers ?? (input instanceof Native ? (input as Request).headers : undefined));
         const headers = new Headers(super.headers);
         asked.forEach((value, name) => { if (!headers.has(name)) headers.set(name, value); });
@@ -2785,6 +2786,11 @@ forGuestRealm(() => {
       }
       get headers(): Headers {
         return kept.get(this) ?? super.headers;
+      }
+      clone(): Request {
+        const copy = super.clone();
+        rememberRequestBodySource(copy, this);
+        return new NodeRequest(copy, { headers: this.headers });
       }
     }
     Object.defineProperty(NodeRequest, '__substrateHeaderGuard', { value: true });

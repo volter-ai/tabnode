@@ -9,6 +9,22 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## fetch-body-source: Preserve finite Request bodies across a host transport
+
+Status: local candidate; substrate W61 owns acceptance and release
+
+Article 6, request-body regression correction: the substrate's
+streaming transport consumes `Request.body`, which is a stream even when the
+caller supplied text, bytes, a Blob or FormData. That erases finite-body metadata
+before the browser upload and adds streaming restrictions to ordinary requests.
+The existing Request constructor adapter now retains that source distinction
+across construction and clone, for the host transport to preserve it. A finite
+body already reaching native fetch as a Blob or bytes would disprove this cause;
+the pre-correction substrate instead wrapped every supplied body in a stream.
+The substrate's W61 records the bounded direct finite/streamed upload readings
+and their limits. Library and declaration builds pass. No vendor source or
+automated tests change or run.
+
 ## terminal-descriptors: Allocated TTYs through the existing process host
 
 Status: local candidate, bounded browser reading complete; release pending
