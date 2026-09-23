@@ -54,6 +54,7 @@ import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
 import { runCommand, registerRunStreams, releaseRunStreams, sendStdin } from './shims/child_process';
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
+import { __adoptHandle, type OwnedHandle } from './node-lib/binding/handles';
 
 import { __currentProcessToken, __runFor, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
 export { runPid, processByPid };
@@ -229,9 +230,14 @@ export function createContainer(options?: ContainerOptions): {
     // socket handler of its own, so a guest's `net.connect` reaches it: the
     // registry a connect consults is the `net` shim's, and a server of the
     // shim's own class is what registers in it. The call answers a disposer.
+    // The listener is the page's, not a guest's: a handle opened outside any
+    // run is otherwise charged to the run launched last, which then read the
+    // page's port as its own server and ended when the page stopped listening.
+    // Sockets it accepts take its owner, so they hold no guest open either.
     listenNet: (port: number, onConnection: (socket: NetSocket) => void) => {
       const server = new NetServer(onConnection);
       server.listen(port);
+      __adoptHandle((server as unknown as { _handle?: OwnedHandle | null })._handle, null);
       return () => { server.close(); };
     },
     createREPL: () => runtime.createREPL(),
