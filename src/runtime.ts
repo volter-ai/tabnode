@@ -343,23 +343,49 @@ function transformDynamicImportsRegex(code: string): string {
  * saw no import at all.
  */
 function __substrateRewriteDynamicImportsInScript(code: string): string {
-  if (!/(?<![.$\w#])import\s*\(/.test(code)) return code;
+  if (!/(?<![.$\w#])(?:import|eval)\s*\(/.test(code)) return code;
   let ast;
   try {
     ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true, allowHashBang: true, allowAwaitOutsideFunction: true });
   } catch {
     return code;
   }
-  const replacements: Array<[number, number]> = [];
+  const replacements: Array<[number, number, string]> = [];
   walkAst(ast, (node: any) => {
-    if (node.type === "ImportExpression") replacements.push([node.start, node.start + 6]);
+    if (node.type === "ImportExpression") replacements.push([node.start, node.start + 6, "__dynamicImport"]);
+    collectDirectEval(node, replacements);
   });
   if (replacements.length === 0) return code;
-  replacements.sort((a, b) => b[0] - a[0]);
+  return applyReplacements(code, replacements);
+}
+
+/**
+ * A direct `eval` runs source the module builds at run time, and Node runs an
+ * `import()` in it through the module's loader: Playwright loads an ES config
+ * with ``eval(`import(${url})`)``. The call stays a direct eval, so the
+ * source keeps the module's scope, `__dynamicImport` included; only the
+ * source it is given is rewritten the way the module's own was.
+ */
+function collectDirectEval(node: any, replacements: Array<[number, number, string]>): void {
+  if (node.type !== "CallExpression" || node.optional || node.callee?.type !== "Identifier" || node.callee.name !== "eval") return;
+  const source = node.arguments?.[0];
+  if (!source || source.type === "SpreadElement") return;
+  replacements.push([source.start, source.start, "__substrateEvalSource("]);
+  replacements.push([source.end, source.end, ")"]);
+}
+
+/** Applies insertions and replacements from the end, so earlier offsets hold. */
+function applyReplacements(code: string, replacements: Array<[number, number, string]>): string {
+  replacements.sort((a, b) => b[0] - a[0] || b[1] - a[1]);
   let out = code;
-  for (const [start, end] of replacements) out = out.slice(0, start) + "__dynamicImport" + out.slice(end);
+  for (const [start, end, text] of replacements) out = out.slice(0, start) + text + out.slice(end);
   return out;
 }
+
+Object.defineProperty(globalThis, "__substrateEvalSource", {
+  configurable: true,
+  value: (source: unknown): unknown => typeof source === "string" ? __substrateRewriteDynamicImportsInScript(source) : source,
+});
 function transformEsmToCjs(code: string, filename: string): string {
   // Quick check: does the code have any ESM-like patterns?
   const maybeEsm = __substrateHasEsmSyntax(code);
@@ -401,6 +427,7 @@ function transformEsmToCjsAst(code: string, filename: string): string {
       // Replace just the 'import' keyword, preserving the (...) part
       deepReplacements.push([node.start, node.start + 6, '__dynamicImport']);
     }
+    collectDirectEval(node, deepReplacements);
   });
 
   // Check for actual import/export declarations
@@ -408,11 +435,7 @@ function transformEsmToCjsAst(code: string, filename: string): string {
   const hasExportDecl = ast.body.some((n: any) => n.type?.startsWith('Export'));
 
   // Apply deep replacements from end to start (preserves earlier positions)
-  let transformed = code;
-  deepReplacements.sort((a, b) => b[0] - a[0]);
-  for (const [start, end, replacement] of deepReplacements) {
-    transformed = transformed.slice(0, start) + replacement + transformed.slice(end);
-  }
+  let transformed = applyReplacements(code, deepReplacements);
 
   // Transform import/export declarations (re-parses the modified code)
   if (hasImportDecl || hasExportDecl) {
