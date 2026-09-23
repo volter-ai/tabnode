@@ -56,7 +56,7 @@ does not establish full timers or DNS conformance or fix rejection attribution.
 
 ## rejection-ownership: Deliver native promise failures to their process
 
-Status: browser failure reproduced; correction design requires review
+Status: browser failure reproduced; owner approved realm isolation; migration review pending
 
 Articles 6 and 8. Required workflow: VS Code and its extensions receive their
 own asynchronous failures through Node's process handlers, stderr and exit
@@ -81,7 +81,7 @@ identity; observing with catch handlers changes unhandled-rejection behavior.
 Extending only constructor or `.then` interception would still miss native
 async promise creation and is not a complete correction.
 
-Proposed correction, not authorized or implemented: give each Node process
+Owner-approved correction (2026-09-23, substrate ADR-0031), not implemented: give each Node process
 its own native JavaScript realm, including Node children, so promise/error
 delivery has one process owner without replacing native Promise. Reuse the
 substrate's existing worker and filesystem bridges; keep World authorization
@@ -92,7 +92,9 @@ Before implementation, review process identity, IPC/stdio and descriptor
 ownership, shared filesystem notifications, virtual ports/sockets, cancellation,
 worker limits and boot/memory cost. Preserve worker_threads as threads with
 their own existing parent error contract. Do not reroute processes until that
-review establishes a concrete migration and the owner approves the amendment.
+review establishes a concrete migration and incremental resource measurements.
+The owner specifically asked about the weight of this change; approval is not
+evidence that worker memory or startup overhead is small.
 
 Completion: native/static/chained/member-construction failures reach only
 their originating process; handling preserves promise identity and suppresses
