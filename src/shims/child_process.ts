@@ -45,7 +45,7 @@ import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-modul
 import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
-import { nodeProcessHostFor, nodeProcessHostInstalled, nodeProcessInput } from '../node-process-host';
+import { nodeProcessHostFor, nodeProcessHostInstalled, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import type { LibuvStreamWrap } from '../node-lib/binding/stream_wrap';
 import { UV_ESRCH } from '../node-lib/binding/uv';
@@ -163,6 +163,29 @@ export interface RunStreams {
  * before exec and releases it when the run ends.
  */
 const _runStreams = new Map<ProcessToken, RunStreams>();
+
+/** Submit before returning to a spawning parent; completion remains async. */
+async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaunch, 'identity' | 'inherited' | 'stdinStream'>): Promise<CommandOutcome> {
+  const { token, streams } = launch;
+  if (!runPid(token)) setRunPid(token, mintPid(), 0);
+  let input: ReturnType<typeof nodeProcessInput> | undefined;
+  try {
+    streams?.signal?.throwIfAborted();
+    const inherited = inheritedRunFds(token).map(({ fd, handle }) => {
+      const descriptor = nativeStreamDescriptor(handle as LibuvStreamWrap);
+      if (!descriptor) throw new Error(`Node descriptor ${fd} has no native owner for process isolation.`);
+      return { fd, handle: descriptor };
+    });
+    input = nodeProcessInput(streams);
+    return await host.run({ ...launch, identity: { ...runPid(token)! }, inherited,
+      ...(input.stream ? { stdinStream: input.stream } : {}) });
+  } finally {
+    if (streams) streams.stdin = null;
+    input?.dispose();
+    // Adoption moves owner registration; only the source-local lookup remains.
+    forgetRunPid(token);
+  }
+}
 
 /**
  * One line on the host realm's console when a run the tab owns dies and
@@ -282,7 +305,7 @@ forGuestRealm(() => {
   if (typeof globalThis.addEventListener !== 'function') return;
   __backstopInstalled = true;
   globalThis.addEventListener('error', (event: Event) => {
-    const token = __currentProcessToken() ?? __lastLaunchedToken;
+    const token = nodeProcessRealmToken() ?? __currentProcessToken() ?? __lastLaunchedToken;
     if (token === null) return;
     const raised = event as ErrorEvent;
     const error = raised.error ?? new Error(raised.message || 'uncaught exception');
@@ -341,14 +364,14 @@ export function initChildProcess(vfs: VirtualFS): void {
    * of the server's became `TypeError: Cannot read properties of undefined
    * (reading 'catch')` inside a timer, 59 of them in one boot.
    */
-  const __listenForUnhandledRejections = (owner: object, report: (reason: unknown, promise?: Promise<unknown>) => void): (() => void) => {
+  const __listenForUnhandledRejections = (owner: object, report: (reason: unknown, promise?: Promise<unknown>) => void, ownsRealm: boolean): (() => void) => {
     if (typeof globalThis.addEventListener === 'function') {
       const target = globalThis as unknown as EventTarget;
       const listener = (event: Event) => {
         const rejection = event as PromiseRejectionEvent;
-        // Unknown provenance remains a realm diagnostic. Never guess its
-        // process or broadcast it to unrelated guests (including exited IPC).
-        if (promiseOwner(rejection.promise) !== owner) return;
+        // An admitted process worker has exactly one Node owner. Shared
+        // embeddings still require provenance and never broadcast failures.
+        if (!ownsRealm && promiseOwner(rejection.promise) !== owner) return;
         event.preventDefault();
         report(rejection.reason, rejection.promise);
       };
@@ -358,7 +381,7 @@ export function initChildProcess(vfs: VirtualFS): void {
     const host = __hostProcess;
     if (host) {
       const listener = (reason: unknown, promise?: Promise<unknown>) => {
-        if (promiseOwner(promise) === owner) report(reason, promise);
+        if (ownsRealm || promiseOwner(promise) === owner) report(reason, promise);
       };
       host.on('unhandledRejection', listener);
       return () => host.off('unhandledRejection', listener);
@@ -376,33 +399,10 @@ export function initChildProcess(vfs: VirtualFS): void {
     const streams = runToken === null ? undefined : runStreamsFor(runToken);
     const processHost = nodeProcessHostFor(runToken);
     if (processHost && runToken !== null) {
-      // Fork already published the PID its parent's ChildProcess exposes.
-      // A shell entry has no registration yet; admit it once before dispatch.
-      if (!runPid(runToken)) setRunPid(runToken, mintPid(), 0);
-      let input: ReturnType<typeof nodeProcessInput> | undefined;
-      try {
-        streams?.signal?.throwIfAborted();
-        const inherited = inheritedRunFds(runToken).map(({ fd, handle }) => {
-          const descriptor = nativeStreamDescriptor(handle as LibuvStreamWrap);
-          if (!descriptor) throw new Error(`Node descriptor ${fd} has no native owner for process isolation.`);
-          return { fd, handle: descriptor };
-        });
-        input = nodeProcessInput(streams);
-        return await processHost.run({
-          token: runToken, identity: { ...runPid(runToken)! }, argv: [...args],
-          cwd: ctx.cwd, filesystem: tree, env: guestEnvironmentOf(ctx),
-          ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}),
-          ...(input.stream ? { stdinStream: input.stream } : {}),
-          ...(streams ? { streams } : {}), inherited,
-        });
-      } finally {
-        if (streams) streams.stdin = null;
-        input?.dispose();
-        // A moved registration is owned by the destination scope. This
-        // releases only the source's local lookup; failed admission also
-        // removes the still-local registration.
-        forgetRunPid(runToken);
-      }
+      return runHostedNode(processHost, {
+        token: runToken, argv: [...args], cwd: ctx.cwd, filesystem: tree, env: guestEnvironmentOf(ctx),
+        ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}), ...(streams ? { streams } : {}),
+      });
     }
 
     // Node reads its own options before the script: `node --turbo-fast-api-calls
@@ -642,7 +642,8 @@ export function initChildProcess(vfs: VirtualFS): void {
       syncExecution = false;
       try { proc.exit(1); } finally { syncExecution = wasSync; }
     };
-    const detachRejections = __listenForUnhandledRejections(proc, onUnhandledRejection);
+    const detachRejections = __listenForUnhandledRejections(proc, onUnhandledRejection,
+      runToken !== null && nodeProcessRealmToken() === runToken);
 
     // An exception nobody caught ends the program it was thrown in, as it ends
     // one in Node: a guest listener for `uncaughtException` on its process
@@ -1640,7 +1641,13 @@ function startChildRun(request: RunRequest): StartedRun {
     void (async () => {
       let outcome: CommandOutcome;
       try {
-        outcome = await enterRun(token, () => routeCommand({
+        const processHost = admittedNode ? nodeProcessHostFor(token) : undefined;
+        const env = { ...request.env };
+        delete env[PROCESS_TOKEN_ENV];
+        outcome = processHost ? await runHostedNode(processHost, {
+          token, argv: request.args.slice(1), cwd: request.cwd ?? '/',
+          filesystem: currentVfs!, env, streams, ...(stdin !== undefined ? { stdin } : {}),
+        }) : await enterRun(token, () => routeCommand({
           command: __substrateLineFor(request.file, request.args, request.cwd),
           engineFirst: !hostTerminal && programExists(request.file, request.cwd, request.env),
           cwd: request.cwd,
@@ -1664,7 +1671,7 @@ function startChildRun(request: RunRequest): StartedRun {
   };
 
   _activeForkedChildren += 1;
-  if (request.stdinIsPipe) (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, begin, 0);
+  if (request.stdinIsPipe && !admittedNode) (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, begin, 0);
   else begin();
 
   const control: StartedRun = {

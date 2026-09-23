@@ -313,10 +313,10 @@ bridge consumes an async iterable), input backpressure/cancellation, and the
 source filesystem's prepared entry. Confined workers keep wrappers in private
 runtime overlays: per-realm wrapper counters are not a shared-file collision
 there. Inheriting private entries creates a different collision risk, owned by
-the substrate's prepared-entry trace. Do not enable dispatch
-until those interfaces, worker limits and descriptor ownership are connected.
+the substrate's prepared-entry trace. Dispatch must preserve these interfaces,
+worker limits and descriptor ownership; the substrate now connects them.
 Engine library/declaration, downstream Node package and VS Code example builds
-pass. The hook remains uninstalled, so these are build receipts, not isolated
+pass. The substrate now installs the hook; these are build receipts, not isolated
 process acceptance. No automated tests were added or run; publication is held.
 
 Live-input handoff trace (Articles 4 and 6, ADR-0031): the worker launcher takes
@@ -341,7 +341,7 @@ explicitly releases writes blocked on readable demand when the transform errors.
 This covers exit before the child ever reads stdin; cancelling only the writer
 could wait behind that pending write.
 Engine library/declaration, downstream Node package and VS Code example builds
-pass; no automated tests were run. The current launch path leaves the hook disabled, so
+pass; no automated tests were run. The substrate has now connected dispatch, but
 cross-worker stdin behavior and total memory remain unverified.
 
 Terminal dispatch trace: `startChildRun` previously sent terminal-backed Node
@@ -362,8 +362,31 @@ run token and descriptor IDs to its own host scope, and adoption must validate
 that the token names a child of that worker's admitted process before moving
 it. This prevents a malformed child request from moving the parent itself.
 Engine library/declaration, downstream Node package and production VS Code
-example builds pass. The launcher still leaves process mode disabled, so these
-are build receipts only. No automated tests ran and publication remains held.
+example builds pass. The substrate now enables ordinary Node process routing;
+these remain build receipts only. No automated tests ran and publication remains held.
+
+Spawn admission ordering (Articles 4 and 6; ADR-0031): a Node child must be
+submitted to its owner before a parent can exit and terminate its worker. The
+current pipe-stdin path delays `begin` to a native timer, and then goes through
+the asynchronous shell before the host hook. An immediate parent exit can
+therefore destroy the realm before the child request is sent. Hosted direct
+Node children already have incremental stdin and exact argv; dispatch them
+synchronously through the same hosted-entry implementation, without that shell
+or collection delay. Non-hosted commands keep their existing input collection.
+Also, adoption must validate the child's recorded PPID against the holder's
+admitted parent PID, rather than requiring the parent token to remain live:
+the registry and child-command messages cross distinct ports, and normal parent
+cleanup can remove that token first. Publication already proves that the PPID
+belonged to the source scope. A pre-return host submission or adoption independent
+of the parent's live token would disprove these source findings; neither is
+present. No browser race reproduction or acceptance is claimed.
+The substrate now installs root and child dispatch. In a worker admitting exactly
+one local Node entry, native error events belong to that admitted process, so
+the rejection listener can use the realm's fixed owner rather than constructor
+tagging. Other embedding realms retain the existing provenance filter. The
+worker's global exception backstop uses that same fixed token. This changes no
+Promise constructor or identity, and must be read through actual async failure
+delivery before the motivating gap is closed.
 
 ## terminal-descriptors: Allocated TTYs through the existing process host
 

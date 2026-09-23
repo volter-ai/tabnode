@@ -31,6 +31,9 @@ let localStarted = false;
 
 export function nodeProcessHostInstalled(): boolean { return installed; }
 
+/** Only a worker with one admitted local entry has an unambiguous realm owner. */
+export function nodeProcessRealmToken(): string | null { return localStarted ? localToken ?? null : null; }
+
 const HostTransformStream = globalThis.TransformStream;
 const HostTextEncoder = globalThis.TextEncoder;
 
