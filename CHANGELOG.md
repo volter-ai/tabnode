@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.10 — 2026-09-23
+
 - `installHttpClientTransport(factory, { hostPorts })`: plain HTTP to a
   loopback port the host names as its own goes through the host exchange
   instead of the engine's loopback, so a guest's `http.request` reaches a
