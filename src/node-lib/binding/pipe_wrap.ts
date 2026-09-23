@@ -165,10 +165,11 @@ export class Pipe extends LibuvStreamWrap {
     // A descriptor crosses as a duplicate, as `SCM_RIGHTS` hands one over: the
     // receiver gets its own handle on the same connection, so the sender's
     // close on `NODE_HANDLE_ACK` -- which Node's `child_process.js` does the
-    // moment the receiver confirms -- ends nothing. A handle with no pairing,
-    // a listening server's, has nothing to duplicate and crosses as it is.
-    const sent = handle as LibuvStreamWrap;
-    const given = sent.peer !== null ? sent.duplicate() : sent;
+    // moment the receiver confirms -- ends nothing. A connection is duplicated
+    // whether or not its other end is still there; a listening server has no
+    // connection to duplicate and crosses as it is.
+    const sent = handle as LibuvStreamWrap & { listening?: boolean };
+    const given = sent.listening === true ? sent : sent.duplicate();
     // The receiving run owns this reference; the sender retains its own until
     // Node closes it on acknowledgement, or continues using it with keepOpen.
     __adoptHandle(given, ownerOf(this.peer ?? this));

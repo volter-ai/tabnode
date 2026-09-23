@@ -240,7 +240,11 @@ export class NativeStreamScope {
       || this.pendingWriteBytes + bytes.byteLength > this.limits.maxPendingWriteBytes) return Promise.resolve(UV_ENOBUFS);
     const sent = sentId === undefined ? undefined : this.entry(sentId)?.handle;
     if (sentId !== undefined && !sent) return Promise.resolve(UV_EBADF);
-    if (sent && (!(handle instanceof Pipe) || !sent.peer || sent.listening || bytes.byteLength === 0)) return Promise.resolve(UV_ENOTSUP);
+    // A connection crosses whether or not its other end is still there: Node
+    // passes a socket whose peer has closed, and the receiver reads its EOF.
+    // Refusing it failed the whole channel write (`write ENOTSUP`), which ended
+    // VS Code's extension host when a reconnecting client had already gone.
+    if (sent && (!(handle instanceof Pipe) || sent.listening || bytes.byteLength === 0)) return Promise.resolve(UV_ENOTSUP);
     // Retain the descriptor while capacity is unavailable; the sender can close
     // its original after submitting the write without invalidating this copy.
     const owned = new Uint8Array(bytes.byteLength);

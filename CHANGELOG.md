@@ -8,6 +8,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   `# <name>: runtime-registered program`) is relayed to the host when spawned,
   as an unresolved name is, instead of run as a script of the engine's.
 
+## v0.5.7 — 2026-09-23
+
+- A socket whose other end has closed can still be sent to another process
+  (`child.send(message, socket)`), as Node allows; the receiver reads its EOF.
+  Across native streams the write failed with `ENOTSUP`, which closed the IPC
+  channel: VS Code's extension host died when a reconnecting client had already
+  gone. Measured in the tab: a half-open server socket whose client was
+  destroyed, sent 300 ms later, answered `write ENOTSUP`.
+
 ## v0.5.6 — 2026-09-23
 
 - An `import()` inside source a module hands to a direct `eval` loads through
