@@ -103,7 +103,7 @@ export interface StartedRun {
   /** libuv's `uv_process_kill`: 0, or `UV_ESRCH` for a run already over. */
   kill(signal: string): number;
   /** Bytes the parent wrote to the child's fd 0. */
-  writeStdin(bytes: Uint8Array): void;
+  writeStdin(bytes: Uint8Array): void | Promise<void>;
   /** The parent closed the child's fd 0. */
   endStdin(): void;
 }
@@ -379,7 +379,18 @@ export class Process implements OwnedHandle {
     far.onread = (arrayBuffer: ArrayBuffer | null): void => {
       const length = streamBaseState[kReadBytesOrError];
       if (length <= 0 || arrayBuffer === null) { this.run?.endStdin(); return; }
-      this.run?.writeStdin(new Uint8Array(arrayBuffer, streamBaseState[kArrayBufferOffset], length).slice());
+      const run = this.run;
+      const consumed = run?.writeStdin(new Uint8Array(arrayBuffer, streamBaseState[kArrayBufferOffset], length).slice());
+      if (consumed) {
+        far.readStop();
+        void consumed.then(() => {
+          if (this.run === run && !this.ended && !far.closed) far.readStart();
+        }, () => {
+          // A stopped receiver closes its input pipe. Do not resume a reader
+          // or deliver its queued bytes to a later run.
+          if (this.run === run && !this.ended) { far.close(); run?.endStdin(); }
+        });
+      }
     };
     far.readStart();
   }

@@ -45,7 +45,7 @@ import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-modul
 import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
-import { nodeProcessHostFor } from '../node-process-host';
+import { nodeProcessHostFor, nodeProcessInput } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import type { LibuvStreamWrap } from '../node-lib/binding/stream_wrap';
 import { UV_ESRCH } from '../node-lib/binding/uv';
@@ -117,7 +117,12 @@ Object.defineProperty = function(target: object, key: PropertyKey, descriptor: P
 } as typeof Object.defineProperty;
 
 /** The stdin of a held run's guest, as the run's own. */
-type RunStdin = { emit: (event: string, ...args: unknown[]) => void; push: (chunk: string | Uint8Array | null) => boolean };
+type RunStdin = {
+  emit: (event: string, ...args: unknown[]) => void;
+  push: (chunk: string | Uint8Array | null) => boolean;
+  /** A hosted sink acknowledges consumption before another pipe read. */
+  writeAsync?: (chunk: string | Uint8Array | null) => Promise<void>;
+};
 
 /**
  * What a host gave one run: where its output goes, the handle that aborts it,
@@ -374,6 +379,7 @@ export function initChildProcess(vfs: VirtualFS): void {
       // Fork already published the PID its parent's ChildProcess exposes.
       // A shell entry has no registration yet; admit it once before dispatch.
       if (!runPid(runToken)) setRunPid(runToken, mintPid(), 0);
+      let input: ReturnType<typeof nodeProcessInput> | undefined;
       try {
         streams?.signal?.throwIfAborted();
         const inherited = inheritedRunFds(runToken).map(({ fd, handle }) => {
@@ -381,14 +387,17 @@ export function initChildProcess(vfs: VirtualFS): void {
           if (!descriptor) throw new Error(`Node descriptor ${fd} has no native owner for process isolation.`);
           return { fd, handle: descriptor };
         });
+        input = nodeProcessInput(streams);
         return await processHost.run({
           token: runToken, identity: { ...runPid(runToken)! }, argv: [...args],
           cwd: ctx.cwd, filesystem: tree, env: guestEnvironmentOf(ctx),
           ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}),
+          ...(input.stream ? { stdinStream: input.stream } : {}),
           ...(streams ? { streams } : {}), inherited,
         });
       } finally {
         if (streams) streams.stdin = null;
+        input?.dispose();
         // A moved registration is owned by the destination scope. This
         // releases only the source's local lookup; failed admission also
         // removes the still-local registration.
@@ -1550,9 +1559,22 @@ function startChildRun(request: RunRequest): StartedRun {
   /** What the parent wrote to the child's fd 0 before the command began. */
   const initialStdin: Uint8Array[] = [];
 
-  const flushStdin = (): void => {
-    if (!stdinSink) return;
-    while (pendingStdin.length > 0) stdinSink.push(pendingStdin.shift() as Uint8Array | null);
+  let flushingInput: Promise<void> | undefined;
+  const flushStdin = (): void | Promise<void> => {
+    if (flushingInput) return flushingInput;
+    if (!stdinSink || finished) return;
+    while (pendingStdin.length > 0) {
+      const chunk = pendingStdin.shift() as Uint8Array | null;
+      if (stdinSink.writeAsync) {
+        const waiting = stdinSink.writeAsync(chunk);
+        flushingInput = waiting.then(() => {
+          flushingInput = undefined;
+          return flushStdin();
+        }, cause => { flushingInput = undefined; throw cause; });
+        return flushingInput;
+      }
+      stdinSink.push(chunk);
+    }
   };
 
   let streamedOut = 0;
@@ -1566,7 +1588,17 @@ function startChildRun(request: RunRequest): StartedRun {
     stderrIsPipe: request.stderrIsPipe,
     terminal: request.terminal,
     get stdin(): RunStdin | null | undefined { return stdinSink; },
-    set stdin(sink: RunStdin | null | undefined) { stdinSink = sink ?? null; if (stdinSink) flushStdin(); },
+    set stdin(sink: RunStdin | null | undefined) {
+      stdinSink = sink ?? null;
+      if (stdinSink) {
+        const pending = flushStdin();
+        if (pending) void pending.catch(cause => {
+          // Normal child exit detaches the sink before cancelling its writer.
+          // That cancellation must not turn a successful exit into failure.
+          if (!finished && stdinSink === sink) { controller.abort(cause); end(1, null); }
+        });
+      }
+    },
   };
   registerRunStreams(token, streams);
   // The child is started with the descriptors its parent wired: an IPC channel
@@ -1647,11 +1679,11 @@ function startChildRun(request: RunRequest): StartedRun {
       end(0, killedBy);
       return 0;
     },
-    writeStdin(bytes: Uint8Array): void {
+    writeStdin(bytes: Uint8Array): void | Promise<void> {
       if (hostTerminal) { pendingStdin.push(bytes); wakeInput?.(); wakeInput = undefined; return; }
       if (!started) { initialStdin.push(bytes); return; }
       pendingStdin.push(bytes);
-      flushStdin();
+      return flushStdin();
     },
     endStdin(): void {
       if (hostTerminal) { pendingStdin.push(null); wakeInput?.(); wakeInput = undefined; return; }
@@ -1663,7 +1695,11 @@ function startChildRun(request: RunRequest): StartedRun {
         return;
       }
       pendingStdin.push(null);
-      flushStdin();
+      const sink = stdinSink;
+      const pending = flushStdin();
+      if (pending) void pending.catch(cause => {
+        if (!finished && stdinSink === sink && sink) { controller.abort(cause); end(1, null); }
+      });
     },
   };
   // A pid is signalable before spawn returns, including cancellation in

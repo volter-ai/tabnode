@@ -318,6 +318,39 @@ Engine library/declaration, downstream Node package and VS Code example builds
 pass. The hook remains uninstalled, so these are build receipts, not isolated
 process acceptance. No automated tests were added or run; publication is held.
 
+Live-input handoff trace (Articles 4 and 6, ADR-0031): the worker launcher takes
+an async input iterable, but `startChildRun` exposed only a push sink and
+`Process.readStdinFrom` ignored consumption. Merely queuing those pushes onto
+a worker port would drain the native pipe into an unbounded intermediate queue.
+Correction: expose a pull-based input bridge for a hosted Node entry, let a
+run's sink acknowledge asynchronous consumption, and pause the parent's pipe
+reader until that acknowledgement. Keep ordinary synchronous sinks on their
+existing path. An existing consumption acknowledgement in `StartedRun.writeStdin`
+would disprove the diagnosis; the original return type was void. Implemented:
+a native TransformStream supplies the hosted entry's iterable; the run returns
+its sink's consumption promise and the pipe reader pauses until it settles.
+EOF closes behind accepted writes. Exit detaches the sink before cancelling
+input, so a pending write rejection cannot change normal exit into failure;
+the iterator does not abort its writer on ordinary EOF. Cancellation/early
+consumer return releases pending writes. Runtime acceptance remains necessary
+before enabling per-process dispatch.
+Disposal errors the transform controller rather than waiting on a writer abort:
+the [Streams Standard](https://streams.spec.whatwg.org/#transform-stream-error)
+explicitly releases writes blocked on readable demand when the transform errors.
+This covers exit before the child ever reads stdin; cancelling only the writer
+could wait behind that pending write.
+Engine library/declaration, downstream Node package and VS Code example builds
+pass; no automated tests were run. The dispatch hook remains uninstalled, so
+cross-worker stdin behavior and total memory remain unverified.
+
+Remaining dispatch-path constraint: `startChildRun` sends a terminal-backed
+child through the general host executor before the Node entry hook, and that
+executor strips the local process token. Its existing `hostInput` queue also
+does not acknowledge consumption. Admission metadata and input credit must
+cover that path before claiming all Node children preserve their identity and
+bounded input. Do not enable isolation with only the engine-first fork path
+connected. This is a source trace, not a reproduced terminal regression.
+
 ## terminal-descriptors: Allocated TTYs through the existing process host
 
 Status: local candidate, bounded browser reading complete; release pending
