@@ -208,7 +208,7 @@ Handle an incoming request from Service Worker
 
 ### handleStreamingRequest()
 
-> **handleStreamingRequest**(`port`, `method`, `url`, `headers`, `body`, `callbacks`): `Promise`\<`boolean`\>
+> **handleStreamingRequest**(`port`, `method`, `url`, `headers`, `body`, `callbacks`, `flow?`): `Promise`\<`boolean`\>
 
 A page-side request streamed to the caller as it arrives, the door a host
 reads a guest's server through when it wants chunks rather than a body:
@@ -245,6 +245,10 @@ method where it has one, else its buffered answer is delivered whole.
 ###### end
 
 ###### start
+
+##### flow?
+
+`LoopbackStreamFlow`
 
 #### Returns
 
