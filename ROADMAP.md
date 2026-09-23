@@ -25,6 +25,35 @@ The substrate's W61 records the bounded direct finite/streamed upload readings
 and their limits. Library and declaration builds pass. No vendor source or
 automated tests change or run.
 
+## native-public-surface: Complete process-owned builtin exports
+
+Status: local candidate; bounded browser reading complete, release pending
+
+Article 6: the `0dc7d16` loader migration bypassed runtime.ts's completed builtin
+table for native public modules. The browser reading lost `timers.promises`,
+legacy timer functions and DNS error constants; `dns.promises` differs from
+`require('dns/promises')`. A complete export surface in the process-owned native
+factory would disprove this diagnosis, but `public-modules.ts` supplies smaller
+objects than the old table. Move the existing timers and DNS completion into
+their module factories and resolve promise aliases through the owning graph.
+Do not return the old shared table or edit vendored Node sources. The browser
+must show restored exports and alias identity, then successful timer completion.
+
+The first corrected browser reading restores those names and identities, but
+the ten-millisecond promise timer prints no value before the command exits.
+The module factory still schedules realm timers, while `pendingGuestTimers`
+counts only callbacks scheduled through the guest global view. Move that existing
+tracking into a shared owner-bound timer adapter and use it for the native
+module factory as well; retaining the untracked realm callback would disprove
+the correction. This is process liveness, not a network or Chrome failure.
+
+The corrected build's terminal reading restores timer/DNS aliases, all three
+legacy timer function names and both DNS NOTFOUND constants. The identical
+promise-timer invocation prints `timer-ok` before returning to its prompt.
+Engine library/declarations, Node package and compiled VS Code example builds
+pass. W61 records exact browser artifacts and the before/after receipt. This
+does not establish full timers or DNS conformance or fix rejection attribution.
+
 ## terminal-descriptors: Allocated TTYs through the existing process host
 
 Status: local candidate, bounded browser reading complete; release pending

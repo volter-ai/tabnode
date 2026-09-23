@@ -15,21 +15,23 @@ import { simpleHash } from './utils/hash';
 import { uint8ToBase64, uint8ToHex } from './utils/binary-encoding';
 import { createFsShim, FsShim } from './shims/fs';
 import * as pathShim from './shims/path';
-import { createProcess, Process, __reportUncaughtException } from './shims/process';
+import { createProcess, Process } from './shims/process';
 import {
   httpModule, httpsModule, httpCommonModule, httpIncomingModule, httpOutgoingModule,
   httpServerModule, httpClientModule, httpAgentModule,
 } from './node-lib/http-module';
 import { netModule as netShim } from './node-lib/net-module';
 import { errname as __uvErrname } from './node-lib/binding/uv';
-import { nodeTimeout, timerHandleOf } from './node-lib/timers';
+import { createTimersModule } from './node-lib/timers';
+import { guestTimerFunctions } from './guest-timers';
+export { pendingGuestTimers, stopGuestTimers } from './guest-timers';
 import eventsShim from './node-lib/events-module';
 import { streamModule as streamShim, streamPromisesModule as streamPromises } from './node-lib/stream-module';
 import * as urlShim from './shims/url';
 import utilShim from './node-lib/util-module';
 import * as cryptoShim from './shims/crypto';
 import * as stringDecoderShim from './shims/string_decoder';
-import * as dnsShim from './shims/dns';
+import { createDnsModule } from './shims/dns';
 import { bufferModule as bufferShim } from './node-lib/buffer-module';
 import { initChildProcess } from './shims/child_process';
 import { childProcessModule as childProcessShim } from './node-lib/child-process-module';
@@ -101,92 +103,6 @@ function walkAst(node: any, callback: (node: any) => void): void {
  * answers for them.
  */
 const __substrateGuestGlobals = new WeakMap<Process, Record<string, unknown>>();
-/**
- * The timers a guest process has pending: what Node's loop counts to decide
- * a program is done. A timer the guest sets through its global view is
- * held here until it fires, is cleared, or is unref'd, and the `node`
- * command's end-of-program rule asks how many remain.
- */
-const __substratePendingTimers = new WeakMap<Process, Set<unknown>>();
-export function pendingGuestTimers(process: Process): number {
-  return __substratePendingTimers.get(process)?.size ?? 0;
-}
-/**
- * Clear every timer a guest still holds, as ending a Node process clears the
- * ones its loop was waiting on. The ids were made by the host's own
- * `setTimeout`/`setInterval` through the guest's global view, so the host's
- * own clears end them; a `Timeout` is cleared by either in Node, and either
- * refusing an id of the other kind is not an error here.
- */
-export function stopGuestTimers(process: Process): void {
-  const held = __substratePendingTimers.get(process);
-  if (!held) return;
-  const host = globalThis as unknown as Record<string, unknown>;
-  const clearOnce = host.clearTimeout as ((id: unknown) => void) | undefined;
-  const clearRepeating = host.clearInterval as ((id: unknown) => void) | undefined;
-  for (const id of [...held]) {
-    try { clearOnce?.call(host, id); } catch {}
-    try { clearRepeating?.call(host, id); } catch {}
-  }
-  held.clear();
-}
-function __substrateTimerFunctions(process: Process, host: Record<string, unknown>): Record<string, unknown> {
-  let pending = __substratePendingTimers.get(process);
-  if (!pending) { pending = new Set(); __substratePendingTimers.set(process, pending); }
-  const held = pending;
-  const hostSetTimeout = host.setTimeout as (fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) => unknown;
-  const hostSetInterval = host.setInterval as (fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) => unknown;
-  const hostClearTimeout = host.clearTimeout as (id: unknown) => void;
-  const hostClearInterval = host.clearInterval as (id: unknown) => void;
-  // Node's timers answer a `Timeout`: an object with `ref`, `unref`,
-  // `hasRef` and `refresh`, which vitest and many packages call. A browser's
-  // answer a number. The engine used to correct this by replacing the realm's
-  // `setTimeout`, which in a Node host replaced the host's own; the
-  // correction belongs to the guest that reads Node's shape, so it is made
-  // here, on the guest's timer, and a host that already answers a `Timeout`
-  // keeps its own. The shape itself is `src/node-lib/timers.ts`: Node's own
-  // files take their timers from `require('timers')` rather than from the
-  // realm, and a timer made through one is cleared through the other.
-  const handleOf = timerHandleOf;
-  // An exception a timer callback throws is that program's uncaught
-  // exception: Node gives it to the process's `uncaughtException` listeners,
-  // else prints the stack to that process's stderr and exits it 1, and every
-  // other process is untouched. The engine's timers are the realm's own, so
-  // an uncaught throw left the guest's frames and reached the realm's global
-  // `error` event — in the tab the worker's, which the substrate's container
-  // reads as a dead host and disposes, killing openvscode-server's extension
-  // host and every other program in the tab along with the one that threw.
-  // A callback with no owning program (the engine imported as a library) is
-  // rethrown, so the host reports it as it always did.
-  const inProcess = (fn: (...a: unknown[]) => void) => (...args: unknown[]): void => {
-    try { fn(...args); }
-    catch (error) { if (!__reportUncaughtException(process, error)) throw error; }
-  };
-  const track = (id: unknown): unknown => {
-    held.add(id);
-    if (id && typeof id === "object" && typeof (id as { unref?: unknown }).unref === "function") {
-      const handle = id as { unref: () => unknown; ref: () => unknown };
-      const unref = handle.unref.bind(handle);
-      const ref = handle.ref.bind(handle);
-      handle.unref = () => { held.delete(id); return unref(); };
-      handle.ref = () => { held.add(id); return ref(); };
-    }
-    return id;
-  };
-  return {
-    setTimeout(fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) {
-      let id: unknown;
-      const call = inProcess(fn);
-      id = nodeTimeout(hostSetTimeout.call(host, (...args: unknown[]) => { held.delete(id); call(...args); }, ms, ...rest));
-      return track(id);
-    },
-    setInterval(fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) {
-      return track(nodeTimeout(hostSetInterval.call(host, inProcess(fn), ms, ...rest)));
-    },
-    clearTimeout(id: unknown) { held.delete(id); return hostClearTimeout.call(host, handleOf(id)); },
-    clearInterval(id: unknown) { held.delete(id); return hostClearInterval.call(host, handleOf(id)); },
-  };
-}
 const __substrateAsyncFunction = (async function() {}).constructor;
 const __substrateFunctionScope = Function("__substrateFunctionGlobals", "__substrateFunctionSource", "with (__substrateFunctionGlobals) { return eval('(' + __substrateFunctionSource + ')'); }");
 function __substrateGuestConstructor(Constructor: unknown, process: Process): unknown {
@@ -296,8 +212,8 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       if (["setTimeout", "clearTimeout", "setInterval", "clearInterval"].includes(key as string) && typeof value === "function") {
         // The guest's timers, counted for it; rebuilt if the host's own change.
         if (boundGlobals.get(key)?.original !== value) {
-          const timers = __substrateTimerFunctions(process, host);
-          for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"]) boundGlobals.set(name, { original: Reflect.get(host, name, host), bound: timers[name] });
+          const timers = guestTimerFunctions(process, host);
+          for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] as const) boundGlobals.set(name, { original: Reflect.get(host, name, host), bound: timers[name] });
         }
         return boundGlobals.get(key)!.bound;
       }
@@ -750,43 +666,6 @@ export interface RequireFunction {
 }
 
 /**
- * Create a basic timers module
- */
-function createTimersModule() {
-  // Node's legacy timer list API, deprecated (DEP0095) and still exported:
-  // an object with `_onTimeout` is enrolled for a duration, made active to
-  // start or restart its countdown, and unenrolled to stop it.
-  type Enrolled = { _onTimeout?: () => void; _idleTimeout?: number; _idleTimeoutId?: ReturnType<typeof setTimeout> | null };
-  const unenroll = (item: Enrolled): void => {
-    if (item._idleTimeoutId) globalThis.clearTimeout(item._idleTimeoutId);
-    item._idleTimeoutId = null;
-    item._idleTimeout = -1;
-  };
-  const enroll = (item: Enrolled, msecs: number): void => {
-    if (item._idleTimeoutId) globalThis.clearTimeout(item._idleTimeoutId);
-    item._idleTimeoutId = null;
-    item._idleTimeout = msecs;
-  };
-  const active = (item: Enrolled): void => {
-    const msecs = item._idleTimeout;
-    if (typeof msecs !== 'number' || msecs < 0) return;
-    if (item._idleTimeoutId) globalThis.clearTimeout(item._idleTimeoutId);
-    item._idleTimeoutId = globalThis.setTimeout(() => { item._idleTimeoutId = null; if (typeof item._onTimeout === 'function') item._onTimeout(); }, msecs);
-  };
-  return {
-    setTimeout: globalThis.setTimeout,
-    setInterval: globalThis.setInterval,
-    setImmediate: (fn: () => void) => setTimeout(fn, 0),
-    clearTimeout: globalThis.clearTimeout,
-    clearInterval: globalThis.clearInterval,
-    clearImmediate: globalThis.clearTimeout,
-    active,
-    enroll,
-    unenroll,
-  };
-}
-
-/**
  * Minimal prettier shim - just returns input unchanged
  * This is needed because prettier uses createRequire which conflicts with our runtime
  */
@@ -904,7 +783,7 @@ const builtinModules: Record<string, unknown> = {
   os: osModule,
   crypto: cryptoShim,
   zlib: zlibModule,
-  dns: dnsShim,
+  dns: createDnsModule(),
   child_process: childProcessShim,
   assert: assertModule,
   string_decoder: stringDecoderShim,
@@ -995,13 +874,7 @@ const builtinModules: Record<string, unknown> = {
   // path.win32 name (Node's test-path-posix-exists.js asserts that identity).
   'path/posix': pathShim.posix,
   'path/win32': pathShim.win32,
-  // timers subpaths
-  'timers/promises': {
-    setTimeout: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
-    setInterval: globalThis.setInterval,
-    setImmediate: (value?: unknown) => new Promise(resolve => setTimeout(() => resolve(value), 0)),
-    scheduler: { wait: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)) },
-  },
+
 };
 // Node's `assert/strict` is the module's own `strict` property, read when
 // a guest asks rather than when this table is built -- `assert` is a lazy
@@ -1102,37 +975,7 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
   // is Node's own code; `errorNames` above stays, because the engine's own
   // parts still name an errno.
 
-  // timers/promises.setInterval was the global setInterval, which answers a
-  // handle rather than the async generator Node does, so "for await" over it
-  // never yielded; setTimeout dropped the value it was given, and neither took
-  // a signal.
-  const timersPromises = {
-    setTimeout: (delay: any, value: any, options: any) => new Promise((resolve, reject) => {
-      const signal = options && options.signal;
-      if (signal && signal.aborted) { reject(abortError()); return; }
-      const onAbort = () => { clearTimeout(handle); reject(abortError()); };
-      const handle = setTimeout(() => {
-        if (signal) signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      }, delay);
-      if (signal) signal.addEventListener("abort", onAbort, { once: true });
-    }),
-    setImmediate: (value: any, options: any) => timersPromises.setTimeout(0, value, options),
-    setInterval: async function* setInterval(delay: any, value: any, options: any) {
-      const signal = options && options.signal;
-      for (;;) {
-        await timersPromises.setTimeout(delay, void 0, options);
-        if (signal && signal.aborted) return;
-        yield value;
-      }
-    },
-    scheduler: {
-      wait: (delay: any, options: any) => timersPromises.setTimeout(delay, void 0, options),
-      yield: () => timersPromises.setTimeout(0, void 0, void 0)
-    }
-  };
-  table["timers/promises"] = timersPromises;
-  table.timers.promises = timersPromises;
+  table["timers/promises"] = table.timers.promises;
 
   // Node's punycode decoder, RFC 3492, so domainToUnicode answers the name a
   // person reads rather than the xn-- label: the engine dropped the punycode
@@ -1261,21 +1104,7 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
     availableParallelism: () => (typeof navigator === "object" && navigator && Number(navigator.hardwareConcurrency)) || 1
   });
 
-  // dns's error codes are the names a guest compares err.code against; the
-  // engine had none of them, and dns/promises was not a module at all.
-  const dnsCodes = {
-    NODATA: "ENODATA", FORMERR: "EFORMERR", SERVFAIL: "ESERVFAIL", NOTFOUND: "ENOTFOUND",
-    NOTIMP: "ENOTIMP", REFUSED: "EREFUSED", BADQUERY: "EBADQUERY", BADNAME: "EBADNAME",
-    BADFAMILY: "EBADFAMILY", BADRESP: "EBADRESP", CONNREFUSED: "ECONNREFUSED", TIMEOUT: "ETIMEOUT",
-    EOF: "EOF", FILE: "EFILE", NOMEM: "ENOMEM", DESTRUCTION: "EDESTRUCTION", BADSTR: "EBADSTR",
-    BADFLAGS: "EBADFLAGS", NONAME: "ENONAME", BADHINTS: "EBADHINTS", NOTINITIALIZED: "ENOTINITIALIZED",
-    LOADIPHLPAPI: "ELOADIPHLPAPI", ADDRGETNETWORKPARAMS: "EADDRGETNETWORKPARAMS", CANCELLED: "ECANCELLED"
-  };
-  const dnsModule = extend("dns", dnsCodes);
-  const dnsPromises = Object.assign({}, dnsModule.promises, dnsCodes);
-  dnsPromises.default = dnsPromises;
-  dnsModule.promises = dnsPromises;
-  table["dns/promises"] = dnsPromises;
+  table["dns/promises"] = table.dns.promises;
 
   // readline/promises was not a module, and the engine's readline.promises
   // answered an object with only createInterface on it whose async iterator
@@ -2755,7 +2584,7 @@ forGuestRealm(() => {
 // That correction used to be made on the realm, which replaced the
 // `setTimeout` of any Node process that imported the engine. It is the
 // guest's, and it is made on the guest's own timers, in
-// `__substrateTimerFunctions`.
+// `guestTimerFunctions`.
 
 forGuestRealm(() => {
   // Node's `fetch` does not apply the fetch specification's

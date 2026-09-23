@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Restore timers/DNS exports and promise aliases in each process's builtin
+  graph; module timers use the same process lifetime tracking as global timers
+  (Article 6; substrate W61 owns the bounded browser reading).
+
 - Retain finite request-body metadata through Request construction and cloning
   so a host Fetch transport can preserve ordinary uploads separately from live
   streams (Article 6; substrate W61 owns browser acceptance).

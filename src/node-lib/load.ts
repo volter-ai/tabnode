@@ -325,6 +325,8 @@ class NodeLibScope {
     const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
     if (name === 'process') return this.process;
     if (name === 'fs/promises') return this.require('internal/fs/promises').exports;
+    if (name === 'timers/promises') return this.require('timers').promises;
+    if (name === 'dns/promises') return this.require('dns').promises;
     if (name === 'path/posix') return this.require('path').posix;
     if (name === 'path/win32') return this.require('path').win32;
     if (name === 'assert/strict') return this.require('assert').strict;
@@ -389,7 +391,7 @@ export function loadNodeLibFor(owner: object, name: string): any {
 }
 export function hasNodeLibModule(name: string): boolean {
   return NODE_LIB_SOURCES[name] !== undefined || nodeLibPublic(name) !== undefined
-    || ['path/posix', 'path/win32', 'assert/strict', 'util/types', 'fs/promises'].includes(name);
+    || ['path/posix', 'path/win32', 'assert/strict', 'util/types', 'fs/promises', 'timers/promises', 'dns/promises'].includes(name);
 }
 export function nativeModuleFor(owner: object, name: string, create: () => unknown): unknown {
   return scopeFor(owner).surface(name, create);
