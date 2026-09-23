@@ -2,11 +2,16 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## Unreleased
+## v0.5.6 — 2026-09-23
 
 - An `import()` inside source a module hands to a direct `eval` loads through
   the engine, as a module's own does: Playwright's test runner loads an ES
   config with ``eval(`import(...)`)``.
+- A listener the engine holds for another worker's process (a
+  `NativeStreamScope`'s) names that process: `container.portPid` answers the
+  scope's `ownerPid`, which the embedder gives the scope. Measured in the tab:
+  a server a Node process opened listed no owner in `/proc/<pid>/fd`, because
+  a process's sockets are the owner's handles.
 
 ## v0.5.5 — 2026-09-23
 
@@ -22,9 +27,7 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   when (`argv`, `cwd`, `startedAt`), and the container owner reads every live
   process of the container (`ownerProcessTable()`), for a `/proc` to list.
 - `container.portPid(port)` names the process listening on a port of the
-  engine, for the socket owner `/proc/<pid>/fd` shows: a guest's own listener,
-  or one a `NativeStreamScope` holds for another worker's process, named by
-  the scope's new `ownerPid`.
+  engine, for the socket owner `/proc/<pid>/fd` shows.
 
 ## v0.5.4 — 2026-09-23
 
