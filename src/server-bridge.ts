@@ -5,7 +5,7 @@
 
 import {
   __requestOverLoopback, __streamOverLoopback, __upgradeOverLoopback, __listening,
-  type ResponseData,
+  type ResponseData, type LoopbackStreamFlow,
 } from './node-lib/http-bridge';
 import { setPortWatchers } from './node-lib/net-module';
 import { EventEmitter } from './node-lib/events-module';
@@ -15,6 +15,12 @@ import { Buffer } from './node-lib/buffer-module';
 import { uint8ToBase64 } from './utils/binary-encoding';
 
 const _encoder = new TextEncoder();
+// The worker's flow-controlled stream: a request body up to this size, and a
+// response in chunks of exactly the worker's own maximum, one per pull.
+const FLOW_MAX_REQUEST_BYTES = 64 * 1024 * 1024;
+const FLOW_MAX_CHUNK_BYTES = 65536;
+// Chunks that may wait for the reader's credit before the server is paused.
+const FLOW_QUEUED_CHUNKS = 4;
 
 /** The bytes this view names, in a buffer of their own. A pooled Buffer is a window on 8 KB. */
 function ownedBytes(view: Uint8Array): Uint8Array {
@@ -649,6 +655,7 @@ export class ServerBridge extends EventEmitter {
     // to all clients when a request arrives but mainPort is null.
     const reinit = () => {
       if (navigator.serviceWorker.controller) {
+        for (const stream of [...this.controlledStreams.values()]) stream.cancel();
         this.messageChannel = new MessageChannel();
         this.messageChannel.port1.onmessage = this.handleServiceWorkerMessage.bind(this);
         navigator.serviceWorker.controller.postMessage(
@@ -684,6 +691,16 @@ export class ServerBridge extends EventEmitter {
 
     ServerBridge.DEBUG && console.log('[ServerBridge] SW message:', type, id, data?.url);
 
+    if (type === 'stream-pull' || type === 'stream-cancel') {
+      const stream = this.controlledStreams.get(id);
+      if (type === 'stream-pull') stream?.pull(); else stream?.cancel();
+      return;
+    }
+    if (type === 'request' && data?.flowControl === 1) {
+      const { port, method, url, headers, body } = data;
+      await this.controlledStream(id, port, method, url, headers, body);
+      return;
+    }
     if (type === 'request') {
       const { port, method, url, headers, body, streaming } = data;
 
@@ -752,6 +769,7 @@ export class ServerBridge extends EventEmitter {
       chunk(chunk: Uint8Array): void;
       end(): void;
     },
+    flow?: LoopbackStreamFlow,
   ): Promise<boolean> {
     const virtualServer = this.servers.get(port);
     if (!virtualServer) return false;
@@ -764,6 +782,7 @@ export class ServerBridge extends EventEmitter {
         (statusCode, statusMessage, respHeaders) => callbacks.start(statusCode, statusMessage, respHeaders),
         (chunk) => callbacks.chunk(ownedBytes(chunk)),
         () => callbacks.end(),
+        flow,
       );
       return true;
     }
@@ -909,7 +928,71 @@ export class ServerBridge extends EventEmitter {
    */
   private notifyServiceWorker(type: string, data: unknown): void {
     if (this.serviceWorkerReady && this.messageChannel) {
-      this.messageChannel.port1.postMessage({ type, data });
+      // Every port this bridge answers speaks the worker's flow-controlled
+      // stream: a response is paced by the reader's pulls, one chunk a pull,
+      // and a reader that goes away ends the request (virtual HTTP flow
+      // control, the worker's side of which is in public/__sw__.js).
+      const flow = type === 'server-registered'
+        ? { flowControl: 1, maxRequestBytes: FLOW_MAX_REQUEST_BYTES, maxChunkBytes: FLOW_MAX_CHUNK_BYTES } : {};
+      this.messageChannel.port1.postMessage({ type, data: { ...(data as object), ...flow } });
+    }
+  }
+
+  /** Flow-controlled requests in flight: a pull is one chunk's credit, a cancel ends the upstream. */
+  private readonly controlledStreams = new Map<number, { pull(): void; cancel(): void }>();
+
+  /**
+   * A request the worker sent under flow control: the response starts with
+   * its head, then goes one chunk (at most FLOW_MAX_CHUNK_BYTES) for each
+   * `stream-pull`, and ends with `stream-end` once the server finished and
+   * every chunk went out. The upstream connection is paused while chunks wait
+   * for credit, so a slow reader holds the server back; `stream-cancel` ends it.
+   */
+  private async controlledStream(id: number, port: number, method: string, url: string, headers: Record<string, string>, body?: ArrayBuffer): Promise<void> {
+    // the stream belongs to the channel it arrived on; a new channel's worker failed it already
+    const channel = this.messageChannel;
+    const post = (type: string, data?: unknown): void => { channel?.port1.postMessage({ type, id, ...(data === undefined ? {} : { data }) }); };
+    const queue: Uint8Array[] = [];
+    const abort = new AbortController();
+    let credits = 0;
+    let upstreamEnded = false;
+    let finished = false;
+    let paused = false;
+    let pause = (): void => undefined;
+    let resume = (): void => undefined;
+    const finish = (): void => { finished = true; this.controlledStreams.delete(id); };
+    const flush = (): void => {
+      if (finished) return;
+      while (credits > 0 && queue.length > 0) {
+        credits -= 1;
+        post('stream-chunk', { chunkBase64: uint8ToBase64(queue.shift()!) });
+      }
+      if (upstreamEnded && queue.length === 0) { post('stream-end'); finish(); return; }
+      // a few chunks may wait for credit; more than that, and the server waits
+      if (queue.length >= FLOW_QUEUED_CHUNKS && !paused) { paused = true; pause(); }
+      else if (queue.length < FLOW_QUEUED_CHUNKS && paused) { paused = false; resume(); }
+    };
+    this.controlledStreams.set(id, {
+      pull: () => { credits += 1; flush(); },
+      cancel: () => { if (finished) return; finish(); queue.length = 0; abort.abort(); },
+    });
+    try {
+      const answered = await this.handleStreamingRequest(port, method, url, headers, body, {
+        start: (statusCode, statusMessage, respHeaders) => post('stream-start', { statusCode, statusMessage, headers: respHeaders }),
+        chunk: (chunk) => {
+          if (finished) return;
+          for (let at = 0; at < chunk.byteLength; at += FLOW_MAX_CHUNK_BYTES) queue.push(chunk.slice(at, at + FLOW_MAX_CHUNK_BYTES));
+          flush();
+        },
+        end: () => { upstreamEnded = true; flush(); },
+      }, { signal: abort.signal, control: (p, r) => { pause = p; resume = r; } });
+      if (!answered) {
+        post('stream-start', { statusCode: 503, statusMessage: 'Service Unavailable', headers: {} });
+        post('stream-end');
+        finish();
+      }
+    } catch (error) {
+      if (!finished) { post('stream-error', { message: error instanceof Error ? error.message : String(error) }); finish(); }
     }
   }
 

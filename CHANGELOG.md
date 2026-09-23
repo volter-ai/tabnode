@@ -4,6 +4,17 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.13 — 2026-09-23
+
+- The page bridge speaks the service worker's flow-controlled stream on every
+  port it registers: a response goes to the reader one chunk (at most 64 KiB)
+  per pull, the server's connection is paused while chunks wait for credit,
+  and a reader that goes away closes it. A guest server's streaming answer
+  (server-sent events, a long download) now reaches the page as it is
+  written; before, the page never announced flow control, so every GET to a
+  guest port was buffered until the server ended it, and an event stream
+  never arrived.
+
 ## v0.5.12 — 2026-09-23
 
 - `container.streamHandles()` lists every native stream handle the
