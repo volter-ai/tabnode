@@ -54,6 +54,53 @@ Engine library/declarations, Node package and compiled VS Code example builds
 pass. W61 records exact browser artifacts and the before/after receipt. This
 does not establish full timers or DNS conformance or fix rejection attribution.
 
+## rejection-ownership: Deliver native promise failures to their process
+
+Status: browser failure reproduced; correction design requires review
+
+Articles 6 and 8. Required workflow: VS Code and its extensions receive their
+own asynchronous failures through Node's process handlers, stderr and exit
+behavior. Source attribution identified `0dc7d16`'s ownership filter as
+incomplete: it recognizes only promises constructed through the identifier
+constructor seam. Restoring the earlier broadcast would deliver unrelated
+failures to every process and revive the observed IPC cancellation cascade.
+
+The substrate W61 terminal reading on engine `7279bda` supplied five distinct
+string rejection reasons and installed a process `unhandledRejection` listener.
+Only `new Promise(...)` reached it. Static `Promise.reject`, a `.then` chain,
+a native async function, and `new globalThis.Promise(...)` reached browser
+diagnostics only. A 100 ms owned timer printed the collected reasons before
+the command exited 0; the existing workbench remained usable. Delivery of all
+five reasons to that process would have disproved the diagnosis. W61 owns
+the exact command and artifact receipt. No automated test was added or run.
+
+The existing AsyncLocalStorage shim explicitly cannot follow native `await`
+reliably across overlapping runs. An active/last-process fallback is therefore
+not evidence of ownership. Subclassing Promise previously broke native async
+identity; observing with catch handlers changes unhandled-rejection behavior.
+Extending only constructor or `.then` interception would still miss native
+async promise creation and is not a complete correction.
+
+Proposed correction, not authorized or implemented: give each Node process
+its own native JavaScript realm, including Node children, so promise/error
+delivery has one process owner without replacing native Promise. Reuse the
+substrate's existing worker and filesystem bridges; keep World authorization
+outside the guest. This is more than enabling the existing confined-command
+flag: guest Node children currently run engine-first in the same realm, and
+the cross-worker child protocol does not carry the engine's IPC descriptors.
+Before implementation, review process identity, IPC/stdio and descriptor
+ownership, shared filesystem notifications, virtual ports/sockets, cancellation,
+worker limits and boot/memory cost. Preserve worker_threads as threads with
+their own existing parent error contract. Do not reroute processes until that
+review establishes a concrete migration and the owner approves the amendment.
+
+Completion: native/static/chained/member-construction failures reach only
+their originating process; handling preserves promise identity and suppresses
+default process failure; an unhandled failure reports stderr and ends that
+process without ending peers. Re-read actual VS Code boot, extension logs,
+watchers, language service and terminal workflows after the correction. A
+passing isolated rejection command alone does not establish this completion.
+
 ## terminal-descriptors: Allocated TTYs through the existing process host
 
 Status: local candidate, bounded browser reading complete; release pending
