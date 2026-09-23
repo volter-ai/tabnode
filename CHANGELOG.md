@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.12 — 2026-09-23
+
+- `container.streamHandles()` lists every native stream handle the
+  processes of other workers hold through this engine, with the pid each
+  scope serves, its kind and whether it listens: the descriptors a
+  container's `/proc/<pid>/fd` lists, so a process that reaches its
+  `maxHandles` can be read before it refuses (`accept EMFILE`).
+
 ## v0.5.11 — 2026-09-23
 
 - Plain HTTP through the host exchange no longer refuses as "custom TLS

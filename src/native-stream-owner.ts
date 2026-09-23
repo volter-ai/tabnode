@@ -41,6 +41,12 @@ export interface NativeStreamTransport {
 type NativeHandle = TCP | Pipe;
 interface Entry { handle: NativeHandle; descriptor: NativeStreamDescriptor; buffer?: Uint8Array }
 const scopes = new WeakMap<LibuvStreamWrap, NativeStreamScope>();
+// Every scope not yet disposed: what the container's /proc lists as each
+// process's descriptors.
+const liveScopes = new Set<NativeStreamScope>();
+
+/** One open stream handle, as a process's descriptor table shows it. */
+export interface NativeStreamHandleView { pid?: number; id: number; kind: 'tcp' | 'pipe'; listening: boolean }
 
 /**
  * One capability namespace per worker. Only the trusted host can inherit a
@@ -66,6 +72,16 @@ export class NativeStreamScope {
       || limits.maxReadChunkBytes > limits.maxQueuedBytes
       || limits.maxReadChunkBytes > limits.maxPendingWriteBytes) throw new Error('Invalid native stream resource limits.');
     this.limits = Object.freeze({ ...limits });
+    liveScopes.add(this);
+  }
+
+  /** This scope's open handles, with the process it serves. */
+  handles(): NativeStreamHandleView[] {
+    if (this.disposed) return [];
+    const pid = this.ownerPid?.();
+    return [...this.entries.values()].map(({ handle, descriptor }) => ({
+      ...(pid !== undefined ? { pid } : {}), id: descriptor.id, kind: descriptor.kind, listening: !!handle.listening,
+    }));
   }
 
   private entry(id: number): Entry | undefined {
@@ -318,6 +334,7 @@ export class NativeStreamScope {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    liveScopes.delete(this);
     const failures: unknown[] = [];
     for (const id of [...this.entries.keys()]) {
       try { this.close(id); } catch (cause) { failures.push(cause); }
@@ -329,4 +346,9 @@ export class NativeStreamScope {
 /** The process a handle opened for another worker's process belongs to, where a scope holds it. */
 export function nativeStreamOwnerPid(handle: object): number | undefined {
   return scopes.get(handle as NativeHandle)?.ownerPid?.();
+}
+
+/** Every open native stream handle in this worker, by the process each scope serves. */
+export function nativeStreamHandles(): NativeStreamHandleView[] {
+  return [...liveScopes].flatMap(scope => scope.handles());
 }

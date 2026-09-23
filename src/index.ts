@@ -56,7 +56,7 @@ import { runCommand, registerRunStreams, releaseRunStreams, sendStdin } from './
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/handles';
 import { listenerOnPort } from './node-lib/binding/tcp_wrap';
-import { nativeStreamOwnerPid } from './native-stream-owner';
+import { nativeStreamHandles, nativeStreamOwnerPid, type NativeStreamHandleView } from './native-stream-owner';
 
 import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
 export { runPid, processByPid };
@@ -66,7 +66,7 @@ export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
-export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport } from './native-stream-owner';
+export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport, NativeStreamHandleView } from './native-stream-owner';
 
 export interface RunResult {
   stdout: string;
@@ -129,6 +129,8 @@ export function createContainer(options?: ContainerOptions): {
   processPorts: (token: string) => number[];
   /** The pid of the process listening on a port of this engine, where a guest process is: `/proc`'s socket owner. */
   portPid: (port: number) => number | undefined;
+  /** The stream handles the processes of other workers hold through this engine: `/proc/<pid>/fd`. */
+  streamHandles: () => NativeStreamHandleView[];
   /** Deliver a signal to the named run as another process's `kill(pid)` does; false when the run is gone. */
   signalProcess: (token: string, signal: string) => boolean;
   stopProcess: (token: string) => boolean;
@@ -224,6 +226,7 @@ export function createContainer(options?: ContainerOptions): {
       // a guest's own listener, or one this engine holds for another worker's process
       return runPid(ownerOf(listener as unknown as OwnedHandle))?.pid ?? nativeStreamOwnerPid(listener);
     },
+    streamHandles: (): NativeStreamHandleView[] => nativeStreamHandles(),
     /**
      * Deliver a signal to the named run as another process's `kill(pid)` does:
      * the guest's listeners for it run, else its default action ends the run.
