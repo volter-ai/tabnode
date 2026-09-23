@@ -45,7 +45,7 @@ import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-modul
 import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
-import { nodeProcessHostFor, nodeProcessInput } from '../node-process-host';
+import { nodeProcessHostFor, nodeProcessHostInstalled, nodeProcessInput } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import type { LibuvStreamWrap } from '../node-lib/binding/stream_wrap';
 import { UV_ESRCH } from '../node-lib/binding/uv';
@@ -1538,7 +1538,8 @@ function startChildRun(request: RunRequest): StartedRun {
   const pendingStdin: Array<Uint8Array | null> = [];
   // A host terminal consumes input incrementally. The old string-only
   // route dropped every keystroke that arrived after a child was launched.
-  const hostTerminal = request.terminal !== undefined && hostExecutor() !== null;
+  const admittedNode = nodeProcessHostInstalled() && engineProgramFor(request.file, request.cwd) === 'node';
+  const hostTerminal = request.terminal !== undefined && hostExecutor() !== null && !admittedNode;
   let wakeInput: (() => void) | undefined;
   const hostInput: AsyncIterable<Uint8Array> = {
     async *[Symbol.asyncIterator]() {

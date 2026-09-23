@@ -29,6 +29,8 @@ let started = false;
 let localToken: string | undefined;
 let localStarted = false;
 
+export function nodeProcessHostInstalled(): boolean { return installed; }
+
 const HostTransformStream = globalThis.TransformStream;
 const HostTextEncoder = globalThis.TextEncoder;
 

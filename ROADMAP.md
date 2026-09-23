@@ -312,7 +312,8 @@ handoff must preserve live stdin (fork uses `RunStreams.stdin`, while the worker
 bridge consumes an async iterable), input backpressure/cancellation, and the
 source filesystem's prepared entry. Confined workers keep wrappers in private
 runtime overlays: per-realm wrapper counters are not a shared-file collision
-there. Do not change those names to address this handoff. Do not enable dispatch
+there. Inheriting private entries creates a different collision risk, owned by
+the substrate's prepared-entry trace. Do not enable dispatch
 until those interfaces, worker limits and descriptor ownership are connected.
 Engine library/declaration, downstream Node package and VS Code example builds
 pass. The hook remains uninstalled, so these are build receipts, not isolated
@@ -340,16 +341,29 @@ explicitly releases writes blocked on readable demand when the transform errors.
 This covers exit before the child ever reads stdin; cancelling only the writer
 could wait behind that pending write.
 Engine library/declaration, downstream Node package and VS Code example builds
-pass; no automated tests were run. The dispatch hook remains uninstalled, so
+pass; no automated tests were run. The current launch path leaves the hook disabled, so
 cross-worker stdin behavior and total memory remain unverified.
 
-Remaining dispatch-path constraint: `startChildRun` sends a terminal-backed
-child through the general host executor before the Node entry hook, and that
-executor strips the local process token. Its existing `hostInput` queue also
-does not acknowledge consumption. Admission metadata and input credit must
-cover that path before claiming all Node children preserve their identity and
-bounded input. Do not enable isolation with only the engine-first fork path
-connected. This is a source trace, not a reproduced terminal regression.
+Terminal dispatch trace: `startChildRun` previously sent terminal-backed Node
+children through the general host executor before the Node entry hook, stripping
+the local process token and using an unacknowledged `hostInput` queue. Explicit
+Node executables now retain their entry route and acknowledged input when the
+hook is installed. Shell-mediated routes remain to be traced before claiming
+every Node child preserves its identity. This is source evidence, not a browser
+acceptance receipt.
+
+Worker dispatch connection (Articles 4 and 6): explicitly resolved Node
+executables with terminal descriptors must still reach the Node entry hook
+when that hook is installed. Their terminal metadata already lives in
+RunStreams and can cross the existing input/resize bridge; sending them to the
+generic executor first loses their registered identity. Other terminal programs
+keep their existing route. The process-worker protocol must carry the child
+run token and descriptor IDs to its own host scope, and adoption must validate
+that the token names a child of that worker's admitted process before moving
+it. This prevents a malformed child request from moving the parent itself.
+Engine library/declaration, downstream Node package and production VS Code
+example builds pass. The launcher still leaves process mode disabled, so these
+are build receipts only. No automated tests ran and publication remains held.
 
 ## terminal-descriptors: Allocated TTYs through the existing process host
 

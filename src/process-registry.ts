@@ -20,7 +20,7 @@ export interface ProcessRegistry {
 
 export interface ProcessRegistryScope extends ProcessRegistry {
   /** Trusted owner handoff before the destination worker starts; not a guest operation. */
-  adoptRun(source: ProcessRegistryScope, sourceToken: string, token: string): ProcessIdentity;
+  adoptRun(source: ProcessRegistryScope, sourceToken: string, token: string, parentToken?: string): ProcessIdentity;
   /** Ends this realm's registrations, including after abrupt worker death. */
   dispose(): void;
 }
@@ -47,7 +47,7 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
         if (disposed) throw new Error('Process registry scope is closed.');
       };
       const scope: ProcessRegistryScope = {
-        adoptRun(source, sourceToken, token) {
+        adoptRun(source, sourceToken, token, parentToken) {
           active();
           const parent = scopes.get(source);
           if (!parent) throw new Error('Process scopes belong to different container owners.');
@@ -56,6 +56,12 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
           if (typeof sourceToken !== 'string' || typeof token !== 'string' || !token.length) throw new Error('Invalid process handoff token.');
           const identity = parent.runs.get(sourceToken);
           if (!identity || live.get(identity.pid) !== identity) throw new Error('Source scope does not own that live process.');
+          if (parentToken !== undefined) {
+            const ancestor = parent.runs.get(parentToken);
+            if (!ancestor || live.get(ancestor.pid) !== ancestor || identity.pid === ancestor.pid || identity.ppid !== ancestor.pid) {
+              throw new Error('Process admission does not name a child of the source realm.');
+            }
+          }
           // The PID stays live throughout the synchronous owner operation.
           // Old-scope disposal/forget cannot remove the child's new ownership.
           parent.runs.delete(sourceToken);
