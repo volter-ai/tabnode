@@ -199,13 +199,24 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   const shadowed = (target: object, key: string | symbol): boolean => Reflect.getOwnPropertyDescriptor(target, key) !== undefined;
   const localGlobals = Object.create(null);
   Object.defineProperty(localGlobals, "Promise", { value: intrinsicPromise, writable: true, configurable: true, enumerable: false });
+  // Node's own navigator, scoped to this process; never expose WorkerNavigator.
+  Object.defineProperties(localGlobals, {
+    navigator: { configurable: true, enumerable: true,
+      get: () => loadNodeLibFor(process, 'internal/navigator').navigator },
+    Navigator: { configurable: true, enumerable: false,
+      get: () => loadNodeLibFor(process, 'internal/navigator').Navigator,
+      set: value => Object.defineProperty(localGlobals, 'Navigator', {
+        value, writable: true, configurable: true, enumerable: false,
+      }) },
+  });
+  const isLocalGlobal = (key: string | symbol) => key === 'Promise' || key === 'navigator' || key === 'Navigator';
   guest = new Proxy(localGlobals, {
     get(target, key) {
       if (["document", "window", "location", "self"].includes(key as string)) return undefined;
       if (key === "fetch") return fetch;
       if (key === "Buffer") return buffer ?? loadNodeLibFor(process, 'buffer').Buffer;
       if (key === "process") return process;
-      if (key === "Promise") return Reflect.get(target, key, guest);
+      if (isLocalGlobal(key)) return Reflect.get(target, key, guest);
       if (key === "globalThis" || key === "global") return guest;
       if (shadowed(target, key)) return Reflect.get(target, key, guest);
       const value = Reflect.get(host, key, host);
@@ -241,20 +252,20 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       return value;
     },
     set(target, key, value) {
-      if (key === "Promise") return Reflect.set(target, key, value, target);
+      if (isLocalGlobal(key)) return Reflect.set(target, key, value, target);
       if (key === "fetch") { fetch = value; return true; }
       if (key === "Buffer") { buffer = value; return true; }
       if (shadowed(target, key)) return Reflect.set(target, key, value, target);
       return Reflect.set(host, key, value, host);
     },
-    has(target, key) { return key === "Promise" ? Reflect.has(target, key) : key === "global" || shadowed(target, key) || key in host; },
+    has(target, key) { return isLocalGlobal(key) ? Reflect.has(target, key) : key === "global" || shadowed(target, key) || key in host; },
     ownKeys(target) {
       const keys = Reflect.ownKeys(target);
-      for (const key of Reflect.ownKeys(host)) if (key !== "Promise" && !keys.includes(key)) keys.push(key);
+      for (const key of Reflect.ownKeys(host)) if (!isLocalGlobal(key) && !keys.includes(key)) keys.push(key);
       return keys;
     },
     getOwnPropertyDescriptor(target, key) {
-      if (key === "Promise") return Reflect.getOwnPropertyDescriptor(target, key);
+      if (isLocalGlobal(key)) return Reflect.getOwnPropertyDescriptor(target, key);
       if (key === "fetch") return { value: fetch, writable: true, configurable: true, enumerable: true };
       if (key === "Buffer") return { value: buffer ?? loadNodeLibFor(process, 'buffer').Buffer, writable: true, configurable: true, enumerable: true };
       // A key the guest defined non-configurable lives on the proxy's own
@@ -266,7 +277,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       return descriptor ? { ...descriptor, configurable: true } : undefined;
     },
     defineProperty(target, key, descriptor) {
-      if (key === "Promise") return Reflect.defineProperty(target, key, descriptor);
+      if (isLocalGlobal(key)) return Reflect.defineProperty(target, key, descriptor);
       if (key === "fetch") { if (!("value" in descriptor)) return false; fetch = descriptor.value; return true; }
       if (key === "Buffer") { if (!("value" in descriptor)) return false; buffer = descriptor.value; return true; }
       // A non-configurable define, undici's of its global dispatcher symbol,
@@ -1821,7 +1832,7 @@ function createRequire(
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0, self = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0, self = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${__substrateSourceURL(resolvedPath)}`;
 
@@ -2342,7 +2353,7 @@ export class Runtime {
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0, self = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0, self = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${__substrateSourceURL(filename)}`;
 

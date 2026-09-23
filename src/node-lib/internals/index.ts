@@ -32,6 +32,9 @@ import { internalBootstrapRealm, internalUrl, internalEncoding } from './modules
 var __table: Record<string, () => unknown> | undefined;
 export function nodeLibInternal(name: string, require?: (name: string) => any, process?: any): (() => unknown) | undefined {
   if (require && name === 'internal/webstreams/adapters') return () => createWebStreamsAdapters(require);
+  if (process && name === 'internal/process/per_thread') return () => ({
+    platform: process.platform, arch: process.arch, version: process.version,
+  });
   if (process && name === 'internal/process/execution') return () => ({
     tryGetCwd() { try { return process.cwd(); } catch { return ''; } },
   });

@@ -166,6 +166,8 @@ export const encodingBinding = {
  * Node without ICU does, and is the one thing `buffer.js` loses here.
  */
 export const configBinding = {
+  // No ICU: Node navigator supplies its own default for an empty locale.
+  getDefaultLocale: (): string => '',
   hasIntl: false,
   hasSmallICU: false,
   hasNodeOptions: true,
