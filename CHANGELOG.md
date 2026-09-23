@@ -22,7 +22,9 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   when (`argv`, `cwd`, `startedAt`), and the container owner reads every live
   process of the container (`ownerProcessTable()`), for a `/proc` to list.
 - `container.portPid(port)` names the process listening on a port of the
-  engine, for the socket owner `/proc/<pid>/fd` shows.
+  engine, for the socket owner `/proc/<pid>/fd` shows: a guest's own listener,
+  or one a `NativeStreamScope` holds for another worker's process, named by
+  the scope's new `ownerPid`.
 
 ## v0.5.4 — 2026-09-23
 
