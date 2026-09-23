@@ -199,6 +199,11 @@ export function pidIsLive(pid: number): boolean {
   return processRegistry.lookup(pid) !== undefined;
 }
 
+/** `kill(pid, signal)` to another realm's live process; whether one took it. */
+export function signalPid(pid: number, signal: string): boolean {
+  return processRegistry.signal(pid, signal);
+}
+
 /** The numbers a live process carries, looked up by its own pid. */
 export function processByPid(pid: number): { pid: number; ppid: number } | undefined {
   return processRegistry.lookup(pid);

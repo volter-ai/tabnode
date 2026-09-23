@@ -16,9 +16,17 @@ export interface ProcessRegistry {
   publish(token: string, identity: ProcessIdentity): void;
   forget(token: string): void;
   lookup(pid: number): ProcessIdentity | undefined;
+  /**
+   * `kill(pid, signal)` for a live process of another realm in this container:
+   * whether a process there took the signal. A machine lets a process signal
+   * any process of its user, including one its parent left behind.
+   */
+  signal(pid: number, signal: string): boolean;
 }
 
 export interface ProcessRegistryScope extends ProcessRegistry {
+  /** Trusted owner only: how this realm answers a signal sent to one of its processes. */
+  receiveSignals(handler: (pid: number, signal: string) => boolean): void;
   /** Trusted owner handoff before the destination worker starts; not a guest operation. */
   adoptRun(source: ProcessRegistryScope, sourceToken: string, token: string, parentPid?: number): ProcessIdentity;
   /** Ends this realm's registrations, including after abrupt worker death. */
@@ -33,6 +41,8 @@ export interface ProcessRegistryScope extends ProcessRegistry {
 export function createProcessRegistryOwner(): { createScope(): ProcessRegistryScope } {
   let nextPid = 1000 + Math.floor(Math.random() * 30000);
   const live = new Map<number, ProcessIdentity>();
+  // Which realm's scope answers for each live pid, including after handoff.
+  const receivers = new Map<number, { handler?: (pid: number, signal: string) => boolean }>();
   const scopes = new WeakMap<ProcessRegistryScope, {
     allocated: Set<number>;
     runs: Map<string, ProcessIdentity>;
@@ -43,6 +53,7 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
       const allocated = new Set<number>();
       const runs = new Map<string, ProcessIdentity>();
       let disposed = false;
+      const receiver: { handler?: (pid: number, signal: string) => boolean } = {};
       const active = (): void => {
         if (disposed) throw new Error('Process registry scope is closed.');
       };
@@ -70,6 +81,7 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
           parent.allocated.delete(identity.pid);
           allocated.add(identity.pid);
           runs.set(token, identity);
+          receivers.set(identity.pid, receiver);
           return identity;
         },
         allocate() {
@@ -95,6 +107,7 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
           const entry = Object.freeze({ pid: identity.pid, ppid: identity.ppid });
           runs.set(token, entry);
           live.set(entry.pid, entry);
+          receivers.set(entry.pid, receiver);
         },
         forget(token) {
           active();
@@ -102,13 +115,24 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
           if (!entry) return;
           runs.delete(token);
           live.delete(entry.pid);
+          receivers.delete(entry.pid);
           allocated.delete(entry.pid);
         },
         lookup(pid) { active(); return live.get(pid); },
+        signal(pid, signal) {
+          active();
+          if (!live.has(pid) || typeof signal !== 'string') return false;
+          return receivers.get(pid)?.handler?.(pid, signal) === true;
+        },
+        receiveSignals(handler) {
+          active();
+          receiver.handler = handler;
+        },
         dispose() {
           if (disposed) return;
           disposed = true;
-          for (const entry of runs.values()) live.delete(entry.pid);
+          for (const entry of runs.values()) { live.delete(entry.pid); receivers.delete(entry.pid); }
+          receiver.handler = undefined;
           runs.clear();
           allocated.clear();
         },

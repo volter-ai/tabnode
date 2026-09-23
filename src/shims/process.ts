@@ -10,7 +10,7 @@ import { Readable } from '../node-lib/stream-module';
 import { loadNodeLibFor } from '../node-lib/load';
 import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
-import { mintPid, pidIsLive } from '../process-tokens';
+import { mintPid, pidIsLive, signalPid } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeVersions } from '../node-lib/node-versions';
 import { freemem as osFreemem } from './os';
 
@@ -556,9 +556,10 @@ export function createProcess(options?: {
       if (signal !== 0 && (typeof name !== "string" || __substrateSignals[name] === void 0)) {
         throw Object.assign(new TypeError("Unknown signal: " + signal), { code: "ERR_UNKNOWN_SIGNAL" });
       }
-      // The guest is the only process on this side of the kernel: a signal to
-      // its own pid is raised on its own process object the way Node raises
-      // one, and every other pid is ESRCH rather than a silent success.
+      // A signal to the guest's own pid is raised on its own process object
+      // the way Node raises one; its children take theirs through their
+      // handles, other live processes of the container through the process
+      // registry, and every other pid is ESRCH rather than a silent success.
       if (pid !== proc.pid) {
         const child = __substrateChildren.get(Math.abs(pid));
         if (child === void 0 || child.exitCode !== null || child.signalCode !== null) {
@@ -567,6 +568,10 @@ export function createProcess(options?: {
           // of a lock file, a parent's. A live run answers yes and carries no
           // signal; anything else is `ESRCH`, as it is on a machine.
           if (signal === 0 && pidIsLive(Math.abs(pid))) return true;
+          // Any other live process of the container takes the signal too,
+          // including one whose parent has exited; otherwise nothing could
+          // ever end it.
+          if (signal !== 0 && child === void 0 && pid > 0 && signalPid(pid, name)) return true;
           throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
         }
         if (signal === 0) return true;
