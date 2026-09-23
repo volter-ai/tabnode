@@ -2276,8 +2276,6 @@ export class Runtime {
     code: string,
     filename: string = '/index.js'
   ): { exports: unknown; module: Module } {
-    const dirname = pathShim.dirname(filename);
-
     // The tree holds the file the run names; it is written only when the
     // text differs. Every run wrote it, and a file run as it stands in the
     // tree was rewritten with itself, which fired its watcher (a dev server
@@ -2286,6 +2284,19 @@ export class Runtime {
     let held: string | undefined;
     try { held = this.vfs.readFileSync(filename, 'utf8') as string; } catch { held = undefined; }
     if (held !== code) this.vfs.writeFileSync(filename, code);
+    return this.evaluate(code, filename);
+  }
+
+  /**
+   * Runs source that is not a file of the tree -- `node -e`'s, named
+   * `[eval]` in the directory it runs in, as Node names it -- the way
+   * `execute` runs a file's, without writing it anywhere.
+   */
+  evaluate(
+    code: string,
+    filename: string
+  ): { exports: unknown; module: Module } {
+    const dirname = pathShim.dirname(filename);
 
     // Create require function
     const require = createRequire(

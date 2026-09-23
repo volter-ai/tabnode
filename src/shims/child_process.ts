@@ -47,7 +47,11 @@ import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
 import { nodeProcessHostFor, nodeProcessHostInstalled, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
-import type { LibuvStreamWrap } from '../node-lib/binding/stream_wrap';
+import { Pipe, constants as pipeConstants } from '../node-lib/binding/pipe_wrap';
+import {
+  WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
+  type LibuvStreamWrap,
+} from '../node-lib/binding/stream_wrap';
 import { UV_ESRCH } from '../node-lib/binding/uv';
 import { loadNodeLibFor } from '../node-lib/load';
 import type { ChildProcessModule } from '../node-lib/child-process-module';
@@ -458,8 +462,28 @@ export function initChildProcess(vfs: VirtualFS): void {
     // its first fork.
     const execArgv: string[] = [];
     let first = 0;
+    // `-e`/`--eval` and `-p`/`--print` carry the program itself as their
+    // value: there is no script, and every word after the source is the
+    // program's argument. Taken for an option, the source was read as the
+    // script's path ("Cannot find module '/workspace/console.log(1+1)'").
+    let evaluated: { source: string; print: boolean } | null = null;
     while (first < args.length && args[first]!.startsWith('-') && args[first] !== '-' && args[first] !== '--') {
-      execArgv.push(args[first]!);
+      const option = args[first]!;
+      const inline = /^(--eval|--print)=([\s\S]*)$/.exec(option);
+      if (inline) {
+        evaluated = { source: inline[2]!, print: inline[1] === '--print' };
+        execArgv.push(option);
+        first += 1;
+        break;
+      }
+      if (option === '-e' || option === '--eval' || option === '-p' || option === '--print' || option === '-pe') {
+        if (first + 1 >= args.length) return { stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 };
+        evaluated = { source: args[first + 1]!, print: option.includes('p') };
+        execArgv.push(option, args[first + 1]!);
+        first += 2;
+        break;
+      }
+      execArgv.push(option);
       first += 1;
     }
     if (args[first] === '--') first += 1;
@@ -472,15 +496,15 @@ export function initChildProcess(vfs: VirtualFS): void {
     };
     let script = first;
     let resolvedPath: string | null = null;
-    for (let index = first; index < args.length; index += 1) {
+    for (let index = first; evaluated === null && index < args.length; index += 1) {
       const found = fileNamed(args[index]!);
       if (found !== null) { script = index; resolvedPath = found; break; }
     }
-    for (let index = first; index < script; index += 1) execArgv.push(args[index]!);
-    if (!args[script]) {
+    if (evaluated === null) for (let index = first; index < script; index += 1) execArgv.push(args[index]!);
+    if (evaluated === null && !args[script]) {
       return { stdout: '', stderr: 'Usage: node <script.js> [args...]\n', exitCode: 1 };
     }
-    if (resolvedPath === null) {
+    if (evaluated === null && resolvedPath === null) {
       return { stdout: '', stderr: `Error: Cannot find module '${__resolvePath(ctx.cwd, args[script]!)}'\n`, exitCode: 1 };
     }
 
@@ -605,7 +629,11 @@ export function initChildProcess(vfs: VirtualFS): void {
     // Set up process.argv for the script. Node fills argv[0] with the
     // executable's path, the same value `process.execPath` reports; `argv0`
     // keeps the original argv[0], the plain word.
-    proc.argv = [__substrateExecPath, resolvedPath, ...args.slice(script + 1)];
+    // An evaluated program has no script: its argv is the executable and the
+    // words after the source, as Node's is.
+    proc.argv = evaluated !== null
+      ? [__substrateExecPath, ...args.slice(first)]
+      : [__substrateExecPath, resolvedPath!, ...args.slice(script + 1)];
     proc.argv0 = 'node';
     proc.execArgv = execArgv;
 
@@ -740,7 +768,14 @@ export function initChildProcess(vfs: VirtualFS): void {
       // this program's, not whichever run started last. The engine's storage
       // carries it into the timers, microtasks and `then` callbacks the entry
       // schedules from here, so a child spawned later still names its parent.
-      const runEntry = () => runtime.runFile(resolvedPath);
+      // `-p` prints the completion value of the source, which a direct `eval`
+      // in the module body yields with the body's own `require` in scope.
+      const runEntry = () => evaluated !== null
+        ? runtime.evaluate(
+          evaluated.print ? `console.log(eval(${JSON.stringify(evaluated.source)}));` : evaluated.source,
+          __resolvePath(ctx.cwd, '[eval]'),
+        )
+        : runtime.runFile(resolvedPath!);
       entrySettling = __substratePendingOf(
         (runToken === null ? runEntry() : enterRun(runToken, runEntry)).exports,
       );
@@ -1313,6 +1348,19 @@ interface ChildProcessHostResult {
   exitCode: number;
 }
 
+/**
+ * One of a child's pipes past fd 2, as the host's program holds it: the
+ * parent's handle for that fd is the other end.
+ */
+interface ChildProcessHostDescriptor {
+  /** Bytes the parent writes to this fd, in order; ends when the parent closes it. */
+  input: AsyncIterable<Uint8Array>;
+  /** Bytes the child writes on this fd; they are reads on the parent's handle. */
+  write(bytes: Uint8Array): void;
+  /** The child closed this fd: EOF on the parent's handle. */
+  end(): void;
+}
+
 /** How a command is handed to that host. */
 interface ChildProcessHostRequest {
   cwd?: string;
@@ -1325,6 +1373,8 @@ interface ChildProcessHostRequest {
   hold: { value: boolean };
   onStdout: (data: string) => void;
   onStderr: (data: string) => void;
+  /** The child's pipes past fd 2, by number; only where it was started with any. */
+  descriptors?: Record<number, ChildProcessHostDescriptor>;
 }
 
 /** The executor a host publishes on the well-known global symbol. */
@@ -1376,6 +1426,8 @@ interface CommandRun {
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
   vfs?: VirtualFS;
+  /** The child's ends of its pipes past fd 2, for a host that runs it. */
+  descriptors?: { fd: number; pipe: Pipe }[];
 }
 
 /**
@@ -1419,6 +1471,9 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     // Host ancestry is already carried by the current process context.
     const hostEnv = run.env === undefined ? undefined : { ...run.env };
     if (hostEnv) delete hostEnv[PROCESS_TOKEN_ENV];
+    // The host's program is the one holding the child's pipes past fd 2; the
+    // run's end is its end of them, whatever it did not close itself.
+    const opened = (run.descriptors ?? []).map(({ fd, pipe }) => ({ fd, ...descriptorOver(pipe) }));
     try {
       const result = await bridge.run(run.command, {
         cwd: run.cwd,
@@ -1430,6 +1485,9 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
         hold: { value: true },
         onStdout,
         onStderr,
+        ...(opened.length > 0
+          ? { descriptors: Object.fromEntries(opened.map(({ fd, descriptor }) => [fd, descriptor])) }
+          : {}),
       });
       const stdout = result.stdout || streamedOut;
       const stderr = result.stderr || streamedErr;
@@ -1438,6 +1496,7 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
       return { stdout, stderr, exitCode: result.exitCode };
     } finally {
       if (bridge.parentSignal) bridge.parentSignal.removeEventListener('abort', abortWithParent);
+      for (const { release } of opened) release();
     }
   }
 
@@ -1448,6 +1507,63 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
   });
   return { stdout: result.stdout || '', stderr: result.stderr || '', exitCode: result.exitCode };
+}
+
+/**
+ * A child's pipe past fd 2, held by a program the host runs: the parent's
+ * writes on its handle are the program's input, read the way the handle's fd 0
+ * is read, and the program's writes are reads on the parent's handle, as bytes.
+ * `release` is the run's end: reading stops and the input ends.
+ */
+function descriptorOver(pipe: Pipe): { descriptor: ChildProcessHostDescriptor; release(): void } {
+  const queued: Uint8Array[] = [];
+  let waiting: ((result: IteratorResult<Uint8Array>) => void) | null = null;
+  let ended = false;
+  const finish = (): void => {
+    if (ended) return;
+    ended = true;
+    pipe.readStop();
+    pipe.onread = null;
+    if (waiting) { const wake = waiting; waiting = null; wake({ value: undefined, done: true }); }
+  };
+  pipe.onread = (arrayBuffer: ArrayBuffer | null): void => {
+    const length = streamBaseState[kReadBytesOrError];
+    if (length <= 0 || arrayBuffer === null) { finish(); return; }
+    const bytes = new Uint8Array(arrayBuffer, streamBaseState[kArrayBufferOffset], length).slice();
+    if (waiting) { const wake = waiting; waiting = null; wake({ value: bytes, done: false }); }
+    else queued.push(bytes);
+  };
+  pipe.readStart();
+  const input: AsyncIterable<Uint8Array> = {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+      return {
+        next(): Promise<IteratorResult<Uint8Array>> {
+          const next = queued.shift();
+          if (next) return Promise.resolve({ value: next, done: false });
+          if (ended) return Promise.resolve({ value: undefined, done: true });
+          return new Promise((resolve) => { waiting = resolve; });
+        },
+        return(): Promise<IteratorResult<Uint8Array>> {
+          finish();
+          return Promise.resolve({ value: undefined, done: true });
+        },
+      };
+    },
+  };
+  return {
+    descriptor: {
+      input,
+      write(bytes: Uint8Array): void {
+        if (pipe.closed) return;
+        pipe.writeBuffer(new WriteWrap(), bytes);
+      },
+      end(): void {
+        finish();
+        if (!pipe.closed) pipe.shutdown(new ShutdownWrap());
+      },
+    },
+    release: finish,
+  };
 }
 
 /** A child whose stdin nobody writes to still needs a stream the host can read. */
@@ -1637,6 +1753,8 @@ function startChildRun(request: RunRequest): StartedRun {
   // is at the number its `NODE_CHANNEL_FD` will name, under this run's name,
   // because every child is told the same number.
   if (request.channel) registerRunFd(token, request.channel.fd, 'PIPE', request.channel.pipe);
+  // Its pipes past fd 2 are there the same way, at the numbers it was given.
+  for (const { fd, pipe } of request.descriptors) registerRunFd(token, fd, 'PIPE', pipe);
 
   const end = (code: number, signal: string | null): void => {
     if (finished) return;
@@ -1687,6 +1805,7 @@ function startChildRun(request: RunRequest): StartedRun {
           signal: controller.signal,
           onStdout: streams.onStdout,
           onStderr: streams.onStderr,
+          descriptors: request.descriptors,
         }));
       } catch (error) {
         outcome = { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };

@@ -2,17 +2,7 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## Unreleased
-
-- Restore timers/DNS exports and promise aliases in each process's builtin
-  graph; module timers use the same process lifetime tracking as global timers
-  (Article 6; substrate W61 owns the bounded browser reading).
-
-- Retain finite request-body metadata through Request construction and cloning
-  so a host Fetch transport can preserve ordinary uploads separately from live
-  streams (Article 6; substrate W61 owns browser acceptance).
-
-## v0.5.0 — 2026-09-22
+## v0.5.0 — 2026-09-23
 
 The host API adds explicit HTTP-client and Fetch transport adapters. The host
 retains authorization, transport selection and cancellation; guest applications
@@ -47,6 +37,30 @@ continue to use Node's own HTTP library and native browser Response objects.
   69 seconds in preparation and missed its 60-second ready deadline; the
   browser reread reaches eager extension activation about 14 seconds after
   document reload. This is one successful startup, not a reliability sample.
+- Restore timers/DNS exports and promise aliases in each process's builtin
+  graph; module timers use the same process lifetime tracking as global timers
+  (Article 6; substrate W61 owns the bounded browser reading).
+- Retain finite request-body metadata through Request construction and cloning
+  so a host Fetch transport can preserve ordinary uploads separately from live
+  streams (Article 6; substrate W61 owns browser acceptance).
+- `node -e` and `node -p` run their source, as a child spawned that way does,
+  instead of reading the source as the script's path.
+- A spawned child's `pipe` stdio entries past fd 2 reach it at their own
+  numbers, for an engine `node` child and a program the page registered;
+  they were dropped.
+- Add negotiated virtual HTTP response flow control for Host-registered ports:
+  one pull credit per 64 KiB-or-smaller chunk, propagated abort/body cancellation,
+  bounded uploads, finite header wait and identity-safe channel replacement.
+  All methods and paths on opted-in ports use the general stream protocol;
+  legacy port response behavior remains unchanged. This corrects the source
+  service worker's unbounded push queue and missing disconnect propagation,
+  not a package-specific route. Same-port rebinding terminates the old active
+  response as well as uploads, even if capabilities are unchanged. The paired
+  substrate source fixture passes 22 synthetic checks; actual guest/browser
+  qualification remains pending, with no release or supported-browser claim.
+- Deliver `process.kill(pid, signal)` to a live process of another realm in the
+  container through the process registry, so a child whose parent exited can
+  still be ended; the embedding host decides how that realm answers.
 
 Validation: library build, typecheck and independent source review; bounded
 normal-Chrome readings through the substrate's editor and terminal cover

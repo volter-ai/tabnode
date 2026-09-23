@@ -90,6 +90,11 @@ export interface RunRequest {
   terminal?: TerminalState;
   /** The IPC channel the child is started with, where it has one. */
   channel?: RunChannel;
+  /**
+   * The child's pipes past fd 2 (`stdio: [..., 'pipe', 'pipe']`), each at the
+   * number the child reads or writes it by, with the child's end of it.
+   */
+  descriptors: { fd: number; pipe: Pipe }[];
   /** Called once, when the run has ended. */
   exit(code: number, signal: string | null): void;
 }
@@ -253,6 +258,7 @@ export class Process implements OwnedHandle {
       stderr: null,
       stderrIsPipe: false,
       stdinIsPipe: false,
+      descriptors: [],
       exit: (code, signal) => { this.reportExit(code, signal); },
     };
 
@@ -292,7 +298,12 @@ export class Process implements OwnedHandle {
         request.stdinIsPipe = far !== null;
         continue;
       }
-      if (index !== 1 && index !== 2) continue;
+      if (index > 2) {
+        // A pipe past fd 2 is the child's too, at its own number: libuv
+        // hands a child every `UV_CREATE_PIPE` entry, not only stdio's three.
+        if (far) request.descriptors.push({ fd: index, pipe: far });
+        continue;
+      }
       if (far) {
         const to = index;
         const write = (text: string): void => { this.toPipe(to, text); };

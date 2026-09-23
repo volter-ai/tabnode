@@ -1,5 +1,24 @@
 # tabnode roadmap (Volter's fork)
 
+## virtual-http-flow-control: Qualify negotiated streaming and cancellation
+
+Status: source candidate; paired substrate integration and browser proof pending
+
+Browser-substrate ADR-0030 requires unchanged guest HTTP clients to retain
+streaming backpressure and disconnect propagation through the service worker.
+The existing source pushed chunks without credit and dropped cancellation.
+The candidate negotiates flowControl:1 only over the Host channel for explicit
+ports, uses a zero-high-water-mark stream and one 64 KiB chunk credit, bounds
+their uploads and keeps a finite header wait. Legacy ports retain their wire.
+
+Completion:
+- Paired substrate W63 bridge consumes the same credit/cancel protocol and
+  proves bounds, errors, abort, teardown and reinitialization through its doors.
+- An actual browser guest completes unchanged HTTP SDK requests, slow reading,
+  cancellation and clean reopen; source/protocol fixtures alone are not done.
+- After independent review and explicit release authority, publish an exact
+  engine version and move the substrate pin; never patch installed dist files.
+
 Open work on tabnode, Volter's fork of `macaly/almostnode`, Node in the browser patched toward Node as source. One
 `## <id>: <title>` section each, with `Status:` and the `Completion:` lines that define done. The
 measure is Node's own suites run against `dist/index.mjs` by `scripts/node-tests.mjs`
