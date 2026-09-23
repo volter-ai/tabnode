@@ -287,6 +287,16 @@ Deliver a signal to the named run as another process's `kill(pid)` does; false w
 
 `boolean`
 
+### streamHandles
+
+> **streamHandles**: () => [`NativeStreamHandleView`](../interfaces/NativeStreamHandleView.md)[]
+
+The stream handles the processes of other workers hold through this engine: `/proc/<pid>/fd`.
+
+#### Returns
+
+[`NativeStreamHandleView`](../interfaces/NativeStreamHandleView.md)[]
+
 ### vfs
 
 > **vfs**: [`VirtualFS`](../classes/VirtualFS.md)

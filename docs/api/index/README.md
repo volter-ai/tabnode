@@ -45,6 +45,7 @@
 - [Module](interfaces/Module.md)
 - [MountedTree](interfaces/MountedTree.md)
 - [NativeStreamDescriptor](interfaces/NativeStreamDescriptor.md)
+- [NativeStreamHandleView](interfaces/NativeStreamHandleView.md)
 - [NativeStreamLimits](interfaces/NativeStreamLimits.md)
 - [NativeStreamReply](interfaces/NativeStreamReply.md)
 - [NativeStreamTransport](interfaces/NativeStreamTransport.md)

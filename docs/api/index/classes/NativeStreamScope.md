@@ -76,6 +76,18 @@ Synchronous operations return libuv status; completions use the event door.
 
 ***
 
+### handles()
+
+> **handles**(): [`NativeStreamHandleView`](../interfaces/NativeStreamHandleView.md)[]
+
+This scope's open handles, with the process it serves.
+
+#### Returns
+
+[`NativeStreamHandleView`](../interfaces/NativeStreamHandleView.md)[]
+
+***
+
 ### inherit()
 
 > **inherit**(`fd`, `source`, `id`): [`NativeStreamReply`](../interfaces/NativeStreamReply.md)
