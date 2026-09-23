@@ -2942,13 +2942,25 @@ function __substrateCallSiteFileNames(): void {
   // override and every other error what it would have had: the guest's
   // function, else V8's own text, which is the error and one `at` line
   // per call site. Otherwise V8 is handed exactly what the guest set.
-  const overriding: Prepare = (error, sites) => {
-    const override = error !== null && typeof error === 'object' ? stackOverrides.get(error) : undefined;
-    if (override) { stackOverrides.delete(error as object); return override(error, sites.map(named)); }
-    if (typeof guestPrepare === 'function') return namerFor(guestPrepare as Prepare)(error, sites);
-    return `${Error.prototype.toString.call(error)}${sites.map(site => `\n    at ${String(site)}`).join('')}`;
+  const overridingFor = (guest: unknown): Prepare => {
+    const known = typeof guest === 'function' ? overridings.get(guest) : overridingNone;
+    if (known) return known;
+    const overriding: Prepare = (error, sites) => {
+      const override = error !== null && typeof error === 'object' ? stackOverrides.get(error) : undefined;
+      if (override) { stackOverrides.delete(error as object); return override(error, sites.map(named)); }
+      if (typeof guest === 'function') return namerFor(guest as Prepare)(error, sites);
+      return `${Error.prototype.toString.call(error)}${sites.map(site => `\n    at ${String(site)}`).join('')}`;
+    };
+    // A guest that saves the hook and restores it later restores the function
+    // it read; that stands for the guest's own, as a namer does.
+    guests.set(overriding, guest);
+    if (typeof guest === 'function') overridings.set(guest, overriding);
+    else overridingNone = overriding;
+    return overriding;
   };
-  const get = () => (stackOverrides.size > 0 ? overriding
+  const overridings = new WeakMap<object, Prepare>();
+  let overridingNone: Prepare | undefined;
+  const get = () => (stackOverrides.size > 0 ? overridingFor(guestPrepare)
     : typeof guestPrepare === 'function' ? namerFor(guestPrepare as Prepare) : guestPrepare);
   (get as { __substrateNamesFrames?: boolean }).__substrateNamesFrames = true;
   defineOnHost(Error, 'prepareStackTrace', {
