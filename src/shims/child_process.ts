@@ -1650,11 +1650,32 @@ function programExists(file: string, cwd: string | undefined, env: Record<string
   // what `spawn('/usr/bin/env', …)` means and what a Dockerfile's shebang
   // reaches. A file in the tree is a program too, and so is one on PATH.
   if (shellCommandNames().has(bare)) return true;
-  if (name.includes('/')) return existsInTree(__resolvePath(cwd ?? '/', name));
+  if (name.includes('/')) {
+    const path = __resolvePath(cwd ?? '/', name);
+    return existsInTree(path) && !isRegisteredProgramStub(path);
+  }
   for (const dir of (env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin').split(':')) {
-    if (dir.length > 0 && existsInTree(`${dir}/${name}`.replace(/\/+/gu, '/'))) return true;
+    const path = `${dir}/${name}`.replace(/\/+/gu, '/');
+    if (dir.length > 0 && existsInTree(path) && !isRegisteredProgramStub(path)) return true;
   }
   return false;
+}
+
+/**
+ * A program the page registered is not a file, so a host places a stub where
+ * a loader looks for it (`#!/bin/sh` then `# <name>: runtime-registered
+ * program`), for a caller that checks the path exists or walks PATH. The stub
+ * is the page's program, not a script of this engine's: it is relayed to the
+ * host, whose process host maps the pathname to the program by its basename.
+ */
+const REGISTERED_PROGRAM_STUB = /^#!\/bin\/sh\n# [\w.+-]+: runtime-registered program\n/u;
+function isRegisteredProgramStub(path: string): boolean {
+  if (!currentVfs) return false;
+  try {
+    const stat = currentVfs.statSync(path);
+    if (!stat.isFile() || stat.size > 256) return false;
+    return REGISTERED_PROGRAM_STUB.test(String(currentVfs.readFileSync(path, 'utf8')));
+  } catch { return false; }
 }
 
 /** The runs a `Process` handle started, so a later name never lands on a live one. */
