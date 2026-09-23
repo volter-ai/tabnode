@@ -13,7 +13,7 @@
  * `net.js` is vendored.
  */
 import { bytesOfString } from './buffer';
-import { UV_EOF, UV_EBADF, UV_ECONNRESET } from './uv';
+import { UV_EOF, UV_EBADF, UV_ECONNRESET, UV_EPIPE } from './uv';
 
 /**
  * The bytes this view names. Node's `Buffer.from` of a short string is a
@@ -70,15 +70,28 @@ interface Inbound {
   handle?: unknown;
 }
 
+/** The connection end shared by duplicated native descriptors, not a JS socket. */
+class StreamEndpoint {
+  readonly handles = new Set<LibuvStreamWrap>();
+  peer: StreamEndpoint | null = null;
+  inbound: Inbound[] = [];
+  eof = false;
+  error: number | null = null;
+  writeEnded = false;
+  flushScheduled = false;
+  readonly finalizers: Array<() => void> = [];
+
+  constructor(handle: LibuvStreamWrap) { this.handles.add(handle); }
+}
+
 /**
  * The base every `TCP` and `Pipe` extends, as `LibuvStreamWrap` is the base of
  * libuv's `uv_stream_t` wrappers.
  *
- * A pairing is two of these with `peer` pointing at each other. A write copies
- * its bytes and hands them to the peer on a microtask, because libuv never
- * delivers a read inside the write that caused it; the peer delivers them to
- * `onread` while it is reading and holds them while it is not, which is what
- * `readStart` and `readStop` mean.
+ * A pairing joins two connection endpoints. Duplicated wrappers reference the
+ * same endpoint and consume its bytes once. A write queues a copy at the peer;
+ * reads are delivered on its own turn while a wrapper is reading, which is
+ * what `readStart` and `readStop` mean.
  */
 export class LibuvStreamWrap implements OwnedHandle {
   /** Set by `net.js` to `onStreamRead`; the only way bytes reach a stream. */
@@ -92,8 +105,11 @@ export class LibuvStreamWrap implements OwnedHandle {
   /** The engine has no descriptors for a paired handle, as libuv reports -1 for one it has no fd for. */
   fd = -1;
 
-  /** The other end of the pairing, once there is one. */
-  peer: LibuvStreamWrap | null = null;
+  private streamEndpoint = new StreamEndpoint(this);
+  /** A live wrapper on the other end, including after the original was closed. */
+  get peer(): LibuvStreamWrap | null {
+    return this.streamEndpoint.peer?.handles.values().next().value ?? null;
+  }
   /** True once `close()` has been called; a closed handle carries nothing. */
   closed = false;
   /**
@@ -103,9 +119,9 @@ export class LibuvStreamWrap implements OwnedHandle {
    */
   pendingHandle: unknown = null;
 
-  protected inbound: Inbound[] = [];
-  protected inboundEof = false;
-  protected inboundError: number | null = null;
+  protected get inbound(): Inbound[] { return this.streamEndpoint.inbound; }
+  protected get inboundEof(): boolean { return this.streamEndpoint.eof; }
+  protected get inboundError(): number | null { return this.streamEndpoint.error; }
   protected eofDelivered = false;
   protected userBuffer: Uint8Array | null = null;
   protected readonly asyncId = nextAsyncId++;
@@ -152,6 +168,7 @@ export class LibuvStreamWrap implements OwnedHandle {
    * reads EOF. The request completes on its own turn, as libuv's does.
    */
   shutdown(req: ShutdownWrap): number {
+    if (this.closed) return UV_EBADF;
     this.sendEof();
     queueMicrotask(() => { req.oncomplete?.(0); });
     return 0;
@@ -200,22 +217,34 @@ export class LibuvStreamWrap implements OwnedHandle {
   }
 
   /**
-   * libuv's `uv_close`. The peer reads EOF, as it does when the other end of a
-   * socket goes; the callback runs on its own turn, because `net.js` emits
+   * libuv's `uv_close`. The peer reads EOF when the last descriptor closes;
+   * the callback runs on its own turn, because `net.js` emits
    * `close` from it and Node emits that after the turn that destroyed.
    */
   close(callback?: () => void): void {
     if (!this.closed) {
       this.closed = true;
       releaseHandle(this);
-      const peer = this.peer;
-      this.peer = null;
+      const endpoint = this.streamEndpoint;
+      endpoint.handles.delete(this);
       // Writes land in the peer's inbound queue at once; flushing here
       // delivers those bytes and then EOF, in that order, on this turn. A
       // child's setupChannel then disconnects (`connected` false) before the
       // next `process.send`, so that send is ERR_IPC_CHANNEL_CLOSED rather
       // than a write on a handle a later release would close (`write EBADF`).
-      if (peer) { peer.peer = null; peer.receiveEof(); peer.flushInbound(); }
+      // Closing one descriptor must not end a connection another process
+      // still holds (`send(socket, { keepOpen: true })` is one such case).
+      if (endpoint.handles.size === 0) {
+        const peer = endpoint.peer;
+        endpoint.peer = null;
+        if (peer) {
+          peer.peer = null;
+          peer.eof = true;
+          for (const handle of peer.handles) handle.flushInbound();
+        }
+        for (const finalize of endpoint.finalizers.splice(0)) finalize();
+        endpoint.inbound.length = 0;
+      }
       this.onCloseHandle();
     }
     // Node schedules a destroy(error)'s error on nextTick after close() returns.
@@ -238,21 +267,32 @@ export class LibuvStreamWrap implements OwnedHandle {
    * for both, that close ended the connection the child had just been given
    * and its first write was `EBADF`.
    *
-   * The duplicate takes over this end of the pairing and this end is left
-   * peerless, so closing it announces nothing -- the sender has already given
-   * the socket up (`handleConversion`'s `send` sets `socket._handle = null`
-   * and silences its reads before the write).
+   * Both descriptors share the connection and its unread bytes. Node may
+   * close the sender on acknowledgement or keep it open; the binding must
+   * support either, without knowing the child_process option that chose it.
    */
   duplicate(): LibuvStreamWrap {
     const copy = new LibuvStreamWrap();
-    copy.takeOverFrom(this);
+    copy.shareConnectionFrom(this);
     return copy;
   }
 
   /** Two handles become each other's peer; what one writes the other reads. */
   static pair(a: LibuvStreamWrap, b: LibuvStreamWrap): void {
-    a.peer = b;
-    b.peer = a;
+    a.streamEndpoint.peer = b.streamEndpoint;
+    b.streamEndpoint.peer = a.streamEndpoint;
+  }
+
+  /** A fresh wrapper acquires a descriptor reference on this connection. */
+  protected shareConnectionFrom(other: LibuvStreamWrap): void {
+    this.streamEndpoint.handles.delete(this);
+    this.streamEndpoint = other.streamEndpoint;
+    this.streamEndpoint.handles.add(this);
+  }
+
+  /** Native connection resources outlive individual duplicated wrappers. */
+  protected onLastReferenceClose(callback: () => void): void {
+    this.streamEndpoint.finalizers.push(callback);
   }
 
   /**
@@ -265,15 +305,10 @@ export class LibuvStreamWrap implements OwnedHandle {
    * waiting for a message its parent had already sent.
    */
   takeOverFrom(other: LibuvStreamWrap): void {
-    const peer = other.peer;
-    other.peer = null;
-    if (peer) LibuvStreamWrap.pair(this, peer);
-    if (other.inbound.length > 0) {
-      this.inbound = [...this.inbound, ...other.inbound];
-      other.inbound = [];
-    }
-    if (other.inboundEof) this.inboundEof = true;
-    if (other.inboundError !== null && this.inboundError === null) this.inboundError = other.inboundError;
+    if (other === this) return;
+    this.shareConnectionFrom(other);
+    this.streamEndpoint.handles.delete(other);
+    other.streamEndpoint = new StreamEndpoint(other);
     this.flushInbound();
   }
 
@@ -298,6 +333,7 @@ export class LibuvStreamWrap implements OwnedHandle {
     streamBaseState[kBytesWritten] = length;
     streamBaseState[kLastWriteWasAsync] = 0;
     if (this.closed) return UV_EBADF;
+    if (this.streamEndpoint.writeEnded) return UV_EPIPE;
     this.bytesWritten += length;
     const peer = this.peer;
     if (!peer || peer.closed) return 0;
@@ -314,6 +350,7 @@ export class LibuvStreamWrap implements OwnedHandle {
    * reader first and the bytes never reached it at all.
    */
   protected sendEof(): void {
+    this.streamEndpoint.writeEnded = true;
     const peer = this.peer;
     if (peer) peer.receiveEof();
   }
@@ -323,6 +360,7 @@ export class LibuvStreamWrap implements OwnedHandle {
    * which is how `socket.resetAndDestroy()` differs from `socket.destroy()`.
    */
   protected sendReset(): void {
+    this.streamEndpoint.writeEnded = true;
     const peer = this.peer;
     if (peer) peer.receiveError(UV_ECONNRESET);
   }
@@ -330,7 +368,7 @@ export class LibuvStreamWrap implements OwnedHandle {
   /** An error arriving on the read side, delivered as libuv delivers one. */
   receiveError(code: number): void {
     if (this.closed) return;
-    this.inboundError = code;
+    this.streamEndpoint.error = code;
     this.scheduleFlush();
   }
 
@@ -344,7 +382,7 @@ export class LibuvStreamWrap implements OwnedHandle {
   /** The peer is done writing. */
   receiveEof(): void {
     if (this.closed) return;
-    this.inboundEof = true;
+    this.streamEndpoint.eof = true;
     this.scheduleFlush();
   }
 
@@ -354,11 +392,14 @@ export class LibuvStreamWrap implements OwnedHandle {
    * libuv's loop reads in: everything a writer did in one turn is read in the
    * order it did it, and never from inside the call that did it.
    */
-  private flushScheduled = false;
   protected scheduleFlush(): void {
-    if (this.flushScheduled) return;
-    this.flushScheduled = true;
-    queueMicrotask(() => { this.flushScheduled = false; this.flushInbound(); });
+    const endpoint = this.streamEndpoint;
+    if (endpoint.flushScheduled) return;
+    endpoint.flushScheduled = true;
+    queueMicrotask(() => {
+      endpoint.flushScheduled = false;
+      for (const handle of endpoint.handles) handle.flushInbound();
+    });
   }
 
   /**

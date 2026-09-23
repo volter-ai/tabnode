@@ -158,6 +158,43 @@ The reading also exposed child `node -e` entering the existing filename-only
 command parser (unchanged by this patch); preserve eval/argv semantics when
 implementing migration step 3. No automated tests were added or run.
 
+IPC lifetime diagnosis (Articles 6 and 8; prerequisite of migration step 2):
+the current `duplicate()` calls `takeOverFrom()`, which removes the sender's
+peer. That answers a move, not two descriptors on one connection. In the
+VS Code terminal on `aef0816`, a parent sent an accepted TCP socket to a child
+with `{ keepOpen: true }`; the child wrote `child`, closed its copy and notified
+the parent over IPC, then the parent wrote `parent` and closed its own copy.
+The client printed `received=["child"]` and `final=["child"]`, losing the
+parent's write. [Node v22's child-process contract](https://nodejs.org/download/release/v22.18.0/docs/api/child_process.html#subprocesssendmessage-sendhandle-options-callback) keeps the sender's socket
+usable; the unchanged vendored library already implements the keepOpen branch.
+The owning correction is the native stream binding: shared connection state
+and queues with independent wrapper references, close on the last reference,
+and a distinct move operation for opening inherited descriptors. TCP ephemeral
+port lifetime must follow that same final reference. Both writes arriving
+before correction would disprove this cause. Do not carry the move-as-duplicate
+behavior into the worker bridge. Socket/server transfer and actual cross-worker
+acceptance remain separate requirements.
+
+The corrected binding separates shared connection state from wrapper lifetime:
+duplication shares the unread queue and write-shutdown state; the final close
+releases the peer and TCP port reservation. Opening an inherited Pipe still
+moves its existing descriptor reference. The substrate's identical terminal
+reading now prints `received=["child","parent"]` and
+`final=["child","parent"]`, then returns to the prompt. VS Code itself restored
+its workbench, Markdown preview, terminal and Git decorations on that build.
+Library/declaration and example builds passed. This is a connected-socket
+reading, not listening-server transfer or cross-worker acceptance.
+
+An advanced-serialization variant stopped earlier in the existing `v8` shim:
+`ChildProcessSerializer.writeChannelMessage` calls `writeRawBytes`, which the
+shim's Serializer lacks. The bounded cleanup's `server.close()` reached the
+same serializer error; the terminal returned to a prompt. Therefore this
+reading does not exercise advanced handle transfer. Source also shows the
+byte-write door currently drops its optional handle (`writeBuffer`), whereas
+the Pipe's UTF-8 write door performs duplication. Those gaps remain explicit
+in the IPC migration queue; no V8 serializer rewrite was added to this stream
+lifetime correction. No automated tests were added or run.
+
 Completion: native/static/chained/member-construction failures reach only
 their originating process; handling preserves promise identity and suppresses
 default process failure; an unhandled failure reports stderr and ends that

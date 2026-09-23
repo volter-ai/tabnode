@@ -14,7 +14,7 @@
  */
 import { LibuvStreamWrap } from './stream_wrap';
 import { __adoptHandle, ownerOf } from './handles';
-import { UV_EADDRINUSE, UV_ECONNREFUSED, UV_EINVAL, UV_ENOTSUP } from './uv';
+import { UV_EADDRINUSE, UV_ECONNREFUSED, UV_EINVAL, UV_ENOTSUP, UV_EBADF } from './uv';
 
 /** libuv's `uv_tcp_t` flavours, and the two flags `getFlags` builds. */
 export const constants = {
@@ -100,7 +100,6 @@ export class TCP extends LibuvStreamWrap {
 
   private local: SockName | null = null;
   private remote: SockName | null = null;
-  private ephemeral: number | null = null;
 
   constructor(type: number = constants.SOCKET) {
     super();
@@ -124,6 +123,7 @@ export class TCP extends LibuvStreamWrap {
     if (this.local && boundPorts.get(this.local.port) === this) boundPorts.delete(this.local.port);
     this.local = { address, family, port: bound };
     boundPorts.set(bound, this);
+    this.onLastReferenceClose(() => { if (boundPorts.get(bound) === this) boundPorts.delete(bound); });
     return 0;
   }
 
@@ -151,7 +151,7 @@ export class TCP extends LibuvStreamWrap {
     if (!this.local) {
       const mine = allocatePort();
       ephemeralPorts.add(mine);
-      this.ephemeral = mine;
+      this.onLastReferenceClose(() => { ephemeralPorts.delete(mine); });
       this.local = { address: family === 'IPv6' ? '::1' : '127.0.0.1', family, port: mine };
     }
     this.remote = { address, family, port: target };
@@ -195,7 +195,7 @@ export class TCP extends LibuvStreamWrap {
   override duplicate(): TCP {
     const copy = new (this.constructor as typeof TCP)(constants.SOCKET);
     if (this.local && this.remote) copy.adoptNames(this.local, this.remote);
-    copy.takeOverFrom(this);
+    copy.shareConnectionFrom(this);
     return copy;
   }
 
@@ -236,6 +236,7 @@ export class TCP extends LibuvStreamWrap {
 
   /** libuv's `uv_tcp_close_reset`: the peer reads ECONNRESET rather than EOF. */
   reset(callback?: () => void): number {
+    if (this.closed) return UV_EBADF;
     this.sendReset();
     this.close(callback);
     return 0;
@@ -246,8 +247,6 @@ export class TCP extends LibuvStreamWrap {
     this.listening = false;
     this.onconnection = null;
     if (wasListening && this.local) { try { onCloseWatcher?.(this.local.port); } catch { /* as above */ } }
-    if (this.local && boundPorts.get(this.local.port) === this) boundPorts.delete(this.local.port);
-    if (this.ephemeral !== null) { ephemeralPorts.delete(this.ephemeral); this.ephemeral = null; }
   }
 }
 

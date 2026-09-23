@@ -112,7 +112,7 @@ export class Pipe extends LibuvStreamWrap {
   /** libuv's `dup()`: the same pairing, under the same flavour. */
   override duplicate(): Pipe {
     const copy = new (this.constructor as typeof Pipe)(this.type);
-    copy.takeOverFrom(this);
+    copy.shareConnectionFrom(this);
     return copy;
   }
 
@@ -133,9 +133,9 @@ export class Pipe extends LibuvStreamWrap {
    *
    * The handle becomes the receiving run's. Node's `send(message, socket)`
    * duplicates the sender's descriptor into the other process, and from then
-   * on the socket is an active handle of that process's loop; here parent and
-   * child are one realm and there is nothing to duplicate, so the move is the
-   * run ownership the engine counts. Without it, openvscode-server's extension
+   * on the socket is an active handle of that process's loop. The binding
+   * duplicates the wrapper and assigns that reference to the receiver.
+   * Without that ownership, openvscode-server's extension
    * host -- a program whose only handle is the socket its parent sent it --
    * read as idle and was settled with exit 0.
    */
@@ -148,9 +148,8 @@ export class Pipe extends LibuvStreamWrap {
     // a listening server's, has nothing to duplicate and crosses as it is.
     const sent = handle as LibuvStreamWrap;
     const given = sent.peer !== null ? sent.duplicate() : sent;
-    // The receiving run owns it from here: parent and child are one realm and
-    // there is no descriptor table to move it in, so the move is the count the
-    // engine keeps of what holds a run open.
+    // The receiving run owns this reference; the sender retains its own until
+    // Node closes it on acknowledgement, or continues using it with keepOpen.
     __adoptHandle(given, ownerOf(this.peer ?? this));
     return super.writeUtf8String(req, text, given);
   }
