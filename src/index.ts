@@ -57,7 +57,7 @@ import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } 
 import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/handles';
 import { listenerOnPort } from './node-lib/binding/tcp_wrap';
 
-import { __currentProcessToken, __runFor, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
+import { __currentProcessToken, __runFor, __signalOwnedProcess, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
 export { runPid, processByPid };
 export { createProcessRegistryScope, installProcessRegistry, ownerProcessRegistryScope, ownerProcessTable } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
@@ -126,6 +126,8 @@ export function createContainer(options?: ContainerOptions): {
   processPorts: (token: string) => number[];
   /** The pid of the process listening on a port of this engine, where a guest process is: `/proc`'s socket owner. */
   portPid: (port: number) => number | undefined;
+  /** Deliver a signal to the named run as another process's `kill(pid)` does; false when the run is gone. */
+  signalProcess: (token: string, signal: string) => boolean;
   stopProcess: (token: string) => boolean;
   /**
    * Input for one run's guest, by its process token; without a token, the most
@@ -215,6 +217,11 @@ export function createContainer(options?: ContainerOptions): {
       const listener = listenerOnPort(port);
       return listener ? runPid(ownerOf(listener as unknown as OwnedHandle))?.pid : undefined;
     },
+    /**
+     * Deliver a signal to the named run as another process's `kill(pid)` does:
+     * the guest's listeners for it run, else its default action ends the run.
+     */
+    signalProcess: (token: string, signal: string): boolean => __signalOwnedProcess(token, signal),
     /** End the named run: its timers stop and its servers are released. */
     stopProcess: (token: string): boolean => {
       const known = __runFor(token) !== undefined || __ownedServerPorts(token).length > 0;

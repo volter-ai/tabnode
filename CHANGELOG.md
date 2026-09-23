@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## v0.5.5 — 2026-09-23
 
+- A host delivers another process's `kill(pid, signal)` to a named run with
+  `signalProcess(token, signal)`: the guest's listeners for it run, else its
+  default action ends the run, as on a machine. A confined realm ended its
+  process without running them.
 - The filesystem mounts a read-only tree at a directory (`vfs.mount(path,
   tree)`), as Linux mounts `/proc`: reads below it are the tree's answers,
   made when they are read, links in it are followed as any link, writes fail

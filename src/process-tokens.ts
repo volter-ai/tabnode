@@ -114,6 +114,27 @@ export function __stopOwnedProcess(token: ProcessToken): void {
 }
 
 /**
+ * Another process's `kill(pid, signal)`, delivered to a named run's guest.
+ * On a machine the target's handlers run, or its default action ends it; the
+ * guest's own `process.kill(process.pid, signal)` is exactly that, so the
+ * signal is raised through it, as the run. False when the run is gone or the
+ * signal is not one Node names.
+ */
+export function __signalOwnedProcess(token: ProcessToken, signal: string): boolean {
+  const run = runs.get(token);
+  if (!run) return false;
+  const guest = run.process as unknown as { pid: number; kill(pid: number, signal: string): unknown };
+  try { enterRun(token, () => guest.kill(guest.pid, signal)); }
+  catch (error) {
+    // A default action ends the process by `exit`, which a synchronous guest
+    // frame reports by throwing; that is the signal delivered.
+    if (error instanceof Error && error.message.startsWith("Process exited with code")) return true;
+    return false;
+  }
+  return true;
+}
+
+/**
  * A process's own number.
  *
  * Node gives every process a distinct pid and `process.ppid` names its
