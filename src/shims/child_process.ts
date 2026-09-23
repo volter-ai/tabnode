@@ -68,6 +68,34 @@ import { resolve as __resolvePath } from './path';
 import { setSyncChildVfs, warmSyncChild } from './sync-child';
 import type { PackageJson } from '../types/package-json';
 
+// Capture host capabilities before the guest's authority is restricted. These
+// endpoints are private, carry no guest bytes, and close at each checkpoint.
+const HostBroadcastChannel = globalThis.BroadcastChannel;
+const hostChannelName = globalThis.crypto?.randomUUID.bind(globalThis.crypto);
+const isWorkerRealm = typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined';
+
+async function settlePrintedEntry(): Promise<void> {
+  await new Promise<void>(resolve => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, resolve, 0));
+  if (!isWorkerRealm || nodeProcessRealmToken() === null) return;
+  if (!HostBroadcastChannel || !hostChannelName) throw new Error('Native process rejection checkpoint is unavailable.');
+  // HTML queues rejection reporting after the microtask checkpoint on the
+  // DOM manipulation task source. A timer alone can overtake that report.
+  // BroadcastChannel uses the same source, ordering this acknowledgment
+  // behind reports already queued before the timer turn above.
+  const name = hostChannelName();
+  const receiver = new HostBroadcastChannel(name);
+  try {
+    const sender = new HostBroadcastChannel(name);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        receiver.onmessage = () => resolve();
+        receiver.onmessageerror = () => reject(new Error('Native process rejection checkpoint failed.'));
+        sender.postMessage(null);
+      });
+    } finally { sender.close(); }
+  } finally { receiver.close(); }
+}
+
 // Singleton bash instance - uses VFS adapter for two-way file sync
 let bashInstance: Bash | null = null;
 let vfsAdapter: VirtualFSAdapter | null = null;
@@ -778,7 +806,7 @@ export function initChildProcess(vfs: VirtualFS): void {
     if ((stdout.length > 0 || stderr.length > 0) && !__printedThenWorking()) {
       // Settling the command is host work. Killing guest timers must not
       // cancel this continuation and leave the command's promise unresolved.
-      await new Promise(r => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, r, 0));
+      await settlePrintedEntry();
       // Work that began during that tick is the program's still: a build
       // reached through a dynamic import's chain, a timer the entry set.
       // vue-pure-admin's mock loader, `import('bundle-import').then(...)`
