@@ -4,7 +4,7 @@ import type { TCP } from './node-lib/binding/tcp_wrap';
 import type { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, type WriteWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './node-lib/binding/stream_wrap';
 import { __adoptHandle, ownerOf, registerHandle, releaseHandle } from './node-lib/binding/handles';
-import { UV_EBADF, UV_ECANCELED, UV_ENOBUFS, UV_EINVAL, UV_EPIPE, errname } from './node-lib/binding/uv';
+import { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EPIPE, errname } from './node-lib/binding/uv';
 
 type Stream = TCP | Pipe;
 const drivers = new WeakMap<LibuvStreamWrap, NativeStreamDriver>();
@@ -15,7 +15,6 @@ let allocated = false;
 let stopped = false;
 let incoming: NativeStreamDescriptor | undefined;
 let nextRequest = 1;
-let pendingWriteBytes = 0;
 
 // Register after each concrete binding class is defined. Importing TCP/Pipe
 // here at runtime would cycle through StreamWrap before their base class exists.
@@ -241,7 +240,7 @@ export class NativeStreamDriver {
     streamBaseState[kBytesWritten] = bytes;
     if (this.closing || stopped) return UV_EBADF;
     if (this.writeEnded) return UV_EPIPE;
-    if (!Number.isSafeInteger(bytes) || pendingWriteBytes + bytes > this.channel.limits.maxPendingWriteBytes) return UV_ENOBUFS;
+    if (!Number.isSafeInteger(bytes)) return UV_EINVAL;
     if (bytes === 0) return sent == null ? 0 : UV_EINVAL;
     let retained: number | undefined;
     if (sent != null) {
@@ -252,7 +251,9 @@ export class NativeStreamDriver {
       retained = result.handle.id;
     }
     const write: PendingWrite = { request, parts, bytes, sent: retained, ended: false, release: holdRequest(this.handle) };
-    pendingWriteBytes += bytes;
+    // Node retains the caller's buffers until completion, even for a write
+    // larger than the transport budget. The channel bounds copied chunks and
+    // waits for capacity; rejecting this whole write breaks normal streaming.
     this.handle.writeQueueSize += bytes;
     this.writes.push(write);
     request.async = true;
@@ -298,7 +299,6 @@ export class NativeStreamDriver {
     write.ended = true;
     const index = this.writes.indexOf(write);
     if (index >= 0) this.writes.splice(index, 1);
-    pendingWriteBytes -= write.bytes;
     this.handle.writeQueueSize -= write.bytes;
     write.parts = [];
     try { if (write.sent !== undefined) closeDescriptor(write.sent); }
