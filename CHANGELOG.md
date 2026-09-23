@@ -4,6 +4,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.15 — 2026-09-23
+
+- A guest's listener registered as its request adapter (no longer the `null`
+  sentinel) is streamed off its connection again, by `handleStreamingRequest`
+  and by the service worker's stream: an event-stream answer reaches the page
+  as it is written instead of whole at its end.
+
 ## v0.5.14 — 2026-09-23
 
 - A registered server's `handleStreamingRequest` is handed the same flow as a

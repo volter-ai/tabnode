@@ -774,7 +774,9 @@ export class ServerBridge extends EventEmitter {
     const virtualServer = this.servers.get(port);
     if (!virtualServer) return false;
     const bodyBuffer = body ? Buffer.from(new Uint8Array(body)) : undefined;
-    if (virtualServer.server === null) {
+    // A guest's listener (the old null sentinel, now a request adapter) is
+    // streamed off its connection; its adapter would answer whole.
+    if (virtualServer.server === null || this.guestServers.has(virtualServer.server)) {
       const named = Object.keys(headers).some((name) => name.toLowerCase() === 'host');
       const authority = `${virtualServer.hostname && virtualServer.hostname !== '0.0.0.0' && virtualServer.hostname !== '::' ? virtualServer.hostname : '127.0.0.1'}:${port}`;
       await __streamOverLoopback(
@@ -839,7 +841,7 @@ export class ServerBridge extends EventEmitter {
 
     // A guest's server is a port: its answer is streamed off the connection
     // as it arrives, which is what the page reads chunk by chunk.
-    if (virtualServer.server === null) {
+    if (virtualServer.server === null || this.guestServers.has(virtualServer.server)) {
       const bodyBuffer = body ? Buffer.from(new Uint8Array(body)) : undefined;
       const named = Object.keys(headers).some((name) => name.toLowerCase() === 'host');
       const authority = `${virtualServer.hostname && virtualServer.hostname !== '0.0.0.0' && virtualServer.hostname !== '::' ? virtualServer.hostname : '127.0.0.1'}:${port}`;
