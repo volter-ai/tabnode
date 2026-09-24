@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.30 — 2026-09-24
+
 - A host can start the frame documents its servers serve with a prelude:
   `init`'s `documentPrelude` is markup the service worker puts first in a
   frame's HTML document (after its doctype), streamed through, so an
