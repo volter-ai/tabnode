@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.29 — 2026-09-24
+
 - `AsyncLocalStorage` follows an `await`, as Node's does. A module body the
   engine compiles takes its async function's context on entry and puts it
   back where the function resumes (after an `await`, in a `catch` or
