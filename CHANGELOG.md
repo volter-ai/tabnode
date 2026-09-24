@@ -4,6 +4,16 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.23 — 2026-09-24
+
+- The service worker holds a host per page. Each page that sends `init` keeps
+  its own channel, servers, preview port and own documents, and a request goes
+  to the page whose document or worker made it (the requesting client, the
+  document its referrer names, or the only page holding the port). Before,
+  the worker had one channel for the whole origin: a second page's `init`
+  replaced the first's, failed its requests in flight, and every preview of
+  the first page was answered by the second page's servers.
+
 ## v0.5.22 — 2026-09-24
 
 - `crypto.generateKeyPair` exists, done by WebCrypto for `ec` (P-256, P-384,
