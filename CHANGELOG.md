@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.19 — 2026-09-24
+
+- `require('stream/web').ReadableStream` is `globalThis.ReadableStream` again,
+  as in Node. The module copied the globals when the engine loaded, and 0.5.17
+  then wrapped the global `ReadableStream` for Node's closed-promise tracking,
+  so the module held the unwrapped constructor and `instanceof` across the two
+  names failed. The module now reads the globals when a property is used.
+
 ## v0.5.18 — 2026-09-24
 
 - A `.ts`, `.mts` or `.cts` program runs with its types erased, as Node runs

@@ -820,9 +820,14 @@ function __substratePackageIdentity(vfs: VirtualFS, file: string): string | unde
 }
 
 function __webStreamsModule(): Record<string, unknown> {
+  // Read when used, not when the engine loads: the engine later wraps the
+  // global ReadableStream (Node's closed-promise tracking), and a copy taken
+  // here was the unwrapped one, so require('stream/web').ReadableStream was
+  // not globalThis.ReadableStream, as it is in Node.
   const module: Record<string, unknown> = {};
   for (const name of ["ReadableStream", "ReadableStreamDefaultReader", "ReadableStreamBYOBReader", "ReadableStreamBYOBRequest", "ReadableByteStreamController", "ReadableStreamDefaultController", "TransformStream", "TransformStreamDefaultController", "WritableStream", "WritableStreamDefaultWriter", "WritableStreamDefaultController", "ByteLengthQueuingStrategy", "CountQueuingStrategy", "TextEncoderStream", "TextDecoderStream", "CompressionStream", "DecompressionStream"]) {
-    if (typeof (globalThis as Record<string, unknown>)[name] !== "undefined") module[name] = (globalThis as Record<string, unknown>)[name];
+    if (typeof (globalThis as Record<string, unknown>)[name] === "undefined") continue;
+    Object.defineProperty(module, name, { enumerable: true, configurable: true, get: () => (globalThis as Record<string, unknown>)[name] });
   }
   return module;
 }
