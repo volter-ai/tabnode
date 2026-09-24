@@ -43,7 +43,8 @@ function openHost(id, channel) {
   };
   hosts.set(id, host);
   latestHost = host;
-  void pruneClients();
+  // Clients that are gone are forgotten; a prune that fails forgets nothing.
+  void pruneClients().catch(() => {});
   return host;
 }
 
@@ -544,7 +545,7 @@ async function blobWorkerContext(client, requestUrl) {
     if (owners.some(owner => owner.context.port !== owners[0].context.port || owner.host !== owners[0].host)) throw new Error('Ambiguous virtual blob owner');
     rootedClients.set(client.id, owners[0].context.port);
     if (owners[0].host) clientHosts.set(client.id, owners[0].host.id);
-    if (rootedClients.size > 256) pruneClients();
+    if (rootedClients.size > 256) void pruneClients().catch(() => {});
     return owners[0].context;
   })();
   pendingBlobContexts.set(client.id, pending);
@@ -617,7 +618,7 @@ async function askForInit() {
 function handleRootedRequest(event, port, path) {
   if (event.resultingClientId) {
     rootedClients.set(event.resultingClientId, port);
-    if (rootedClients.size > 256) pruneClients();
+    if (rootedClients.size > 256) void pruneClients().catch(() => {});
   }
   return handleVirtualRequest(event.request, port, path, true);
 }

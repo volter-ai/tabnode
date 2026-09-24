@@ -4,6 +4,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.25 — 2026-09-24
+
+- The worker's pruning of gone clients never leaves a rejected promise
+  unhandled where `clients.matchAll` is unavailable.
+
 ## v0.5.24 — 2026-09-24
 
 - An `init` whose sender the worker cannot name replaces the previous such
