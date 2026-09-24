@@ -8,6 +8,21 @@ import { EventEmitter } from '../node-lib/events-module';
 import { lazyExport } from '../node-lib/lazy';
 import type { Socket } from '../node-lib/net-module';
 
+/** A TLS server as Node's module exposes it: constructed with or without `new`. */
+export interface TlsServer extends EventEmitter {
+  listen(...args: unknown[]): this;
+  close(callback?: (err?: Error) => void): this;
+  address(): { port: number; family: string; address: string } | string | null;
+  getTicketKeys(): Buffer;
+  setTicketKeys(keys: Buffer): void;
+  setSecureContext(options: unknown): void;
+}
+export interface TlsServerConstructor {
+  new (options?: unknown, connectionListener?: (socket: Socket) => void): TlsServer;
+  (options?: unknown, connectionListener?: (socket: Socket) => void): TlsServer;
+  readonly prototype: TlsServer;
+}
+
 // Keep the ordinary stream lifecycle (error, close, destroy) from Node's own
 // Socket. Resolve it lazily, like the other builtin classes, to avoid a loader
 // cycle while the engine is being imported.
@@ -56,34 +71,43 @@ class TLSSocket extends NetSocket {
   }
 }
 
-class Server extends Events {
-  constructor(_options?: unknown, _connectionListener?: (socket: TLSSocket) => void) {
-    super();
-  }
+// A function constructor, as Node's: its own `https.js` builds an https.Server
+// by calling `tls.Server` on the instance, which a class refuses.
+const Server = function TLSServer(this: TlsServer, options?: unknown, connectionListener?: (socket: Socket) => void): TlsServer {
+  if (!(this instanceof Server)) return new Server(options, connectionListener);
+  (Events as unknown as (this: TlsServer) => void).call(this);
+  return this;
+} as unknown as TlsServerConstructor;
+Object.setPrototypeOf(Server.prototype, Events.prototype);
+Object.setPrototypeOf(Server, Events);
 
-  listen(..._args: unknown[]): this {
+Object.assign(Server.prototype, {
+  // No TLS transport terminates a connection here, so a server that said it
+  // listened would take connections it can never read; it fails as a bound
+  // port does, asynchronously, with the reason.
+  listen(this: TlsServer, ..._args: unknown[]) {
+    queueMicrotask(() => this.emit('error', Object.assign(
+      new Error('TLS server is unavailable in this runtime: no TLS transport terminates connections in the tab, so an https or tls server cannot listen. Serve over http; the browser holds TLS.'),
+      { code: 'ERR_TLS_UNAVAILABLE' },
+    )));
     return this;
-  }
-
-  close(_callback?: (err?: Error) => void): this {
+  },
+  close(this: TlsServer, callback?: (err?: Error) => void) {
+    if (callback) queueMicrotask(() => callback());
     return this;
-  }
-
-  address(): { port: number; family: string; address: string } | string | null {
+  },
+  address() {
     return null;
-  }
-
-  getTicketKeys(): Buffer {
+  },
+  getTicketKeys() {
     return (require ? require('buffer').Buffer : Buffer).from('');
-  }
+  },
+  setTicketKeys(_keys: Buffer) {},
+  setSecureContext(_options: unknown) {},
+});
 
-  setTicketKeys(_keys: Buffer): void {}
-
-  setSecureContext(_options: unknown): void {}
-}
-
-function createServer(_options?: unknown, _connectionListener?: (socket: TLSSocket) => void): Server {
-  return new Server(_options, _connectionListener);
+function createServer(options?: unknown, connectionListener?: (socket: Socket) => void): TlsServer {
+  return new Server(options, connectionListener);
 }
 
 function connect(_options: unknown, _callback?: () => void): TLSSocket {

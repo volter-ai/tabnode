@@ -85,10 +85,17 @@ describe('tls module (Node.js compat)', () => {
       expect(server).toBeInstanceOf(Server);
     });
 
-    it('listen() and close() should be chainable', () => {
+    it('listen() fails with the reason, and close() is chainable', async () => {
       const server = new Server();
+      const failed = new Promise<NodeJS.ErrnoException>((resolve) => server.once('error', resolve));
       expect(server.listen()).toBe(server);
+      expect((await failed).code).toBe('ERR_TLS_UNAVAILABLE');
       expect(server.close()).toBe(server);
+    });
+
+    it('is constructed when called without new, as https.Server calls it', () => {
+      const server = (Server as unknown as (options?: unknown) => InstanceType<typeof Server>)();
+      expect(server).toBeInstanceOf(Server);
     });
 
     it('address() should return null in shim', () => {
