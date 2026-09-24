@@ -26,6 +26,14 @@ let __nodeLowering = false;
 const __cjsExports = () => __nodeLowering ? "$exports" : "exports";
 const __cjsModule = () => __nodeLowering ? "$module" : "module";
 const __cjsRequire = () => __nodeLowering ? "$require" : "require";
+// The realm's own `Object` and `Symbol`, by names a module cannot declare over.
+// Lowered code calls them before the module's own body has run -- its exports
+// are defined at the top -- and a module that imports a binding called `Object`
+// (typebox does, its object type) had the lowering's `Object.defineProperty`
+// read that import in its dead zone. The dev server's lowering of a browser
+// module keeps the plain names, which exist where that module runs.
+const __cjsObject = () => __nodeLowering ? "__browserRuntimeObject" : "Object";
+const __cjsSymbol = () => __nodeLowering ? "__browserRuntimeSymbol" : "Symbol";
 const __cjsDefault = (expression: string) => __nodeLowering ? "__browserRuntimeInteropDefault(" + expression + ")" : expression;
 // The helper lowered code calls by bare name. It is a name on the realm, so
 // it goes up when a guest first exists, not when this module is loaded.
@@ -33,8 +41,12 @@ forGuestRealm(() => {
   if ((globalThis as Record<string, unknown>).__browserRuntimeInteropDefault) return;
   takeFromHost(globalThis, '__browserRuntimeInteropDefault', (imported: any) => imported && imported.__esModule && "default" in imported ? imported.default : imported);
 });
+forGuestRealm(() => {
+  if (!(globalThis as Record<string, unknown>).__browserRuntimeObject) takeFromHost(globalThis, '__browserRuntimeObject', Object);
+  if (!(globalThis as Record<string, unknown>).__browserRuntimeSymbol) takeFromHost(globalThis, '__browserRuntimeSymbol', Symbol);
+});
 export const setNodeLowering = (value: boolean): void => { __nodeLowering = value; };
-export { __cjsExports };
+export { __cjsExports, __cjsObject };
 
 /**
  * Whether a module is ESM is a fact of its syntax, not of its text. Asking
@@ -175,7 +187,7 @@ function __substrateLiveImportBindings(code: any) {
       // or in what it imports; an importer waits for it, as a module graph
       // evaluates in order. The marker becomes `await` when the loader runs
       // this body as an async function, and reads nothing otherwise.
-      parts.push("/*__substrate_await__*/(" + namespace + " && " + namespace + "[Symbol.for(\"substrate.pending\")]);");
+      parts.push("/*__substrate_await__*/(" + namespace + " && " + namespace + "[" + __cjsSymbol() + ".for(\"substrate.pending\")]);");
     }
     for (const imported of declaration.specifiers) {
       const read = imported.type === "ImportDefaultSpecifier" ? __cjsDefault(namespace)
@@ -210,7 +222,10 @@ function __substrateLiveImportBindings(code: any) {
     if (typeof node.type !== "string") return;
     switch (node.type) {
       case "ImportDeclaration": case "ImportSpecifier": case "ImportDefaultSpecifier":
-      case "ImportNamespaceSpecifier": case "ExportSpecifier": case "MetaProperty":
+      // `export * as X from "…"` holds a name and a source, no reference: an
+      // imported binding also called X was rewritten into the exported name,
+      // and typebox's `export * as Guard` became `__substrateImport1`.
+      case "ImportNamespaceSpecifier": case "ExportSpecifier": case "ExportAllDeclaration": case "MetaProperty":
       case "BreakStatement": case "ContinueStatement": case "PrivateIdentifier":
         return;
       case "Identifier":
@@ -368,7 +383,7 @@ function transformEsmToCjsAst(code: string): string {
         // for any import (the marker becomes `await` in an async body).
         sideEffectImports += 1;
         const namespace = `__substrateImportSide${sideEffectImports}`;
-        replacements.push([node.start, node.end, `const ${namespace} = ${__cjsRequire()}(${JSON.stringify(source)}); /*__substrate_await__*/(${namespace} && ${namespace}[Symbol.for("substrate.pending")]);`]);
+        replacements.push([node.start, node.end, `const ${namespace} = ${__cjsRequire()}(${JSON.stringify(source)}); /*__substrate_await__*/(${namespace} && ${namespace}[${__cjsSymbol()}.for("substrate.pending")]);`]);
       } else {
         const defaultSpec = specs.find((s: any) => s.type === 'ImportDefaultSpecifier');
         const nsSpec = specs.find((s: any) => s.type === 'ImportNamespaceSpecifier');
@@ -404,7 +419,7 @@ function transformEsmToCjsAst(code: string): string {
       // `module.exports = X`, which threw away every named export defined
       // before it (readdirp exports `readdirp` by name and as the default;
       // chokidar imports the name and found the module was the function).
-      const defineDefault = (value: string): string => `Object.defineProperty(${__cjsExports()}, "default", { enumerable: true, configurable: true, get: function () { return ${value}; } });`;
+      const defineDefault = (value: string): string => `${__cjsObject()}.defineProperty(${__cjsExports()}, "default", { enumerable: true, configurable: true, get: function () { return ${value}; } });`;
       if (decl.type === 'FunctionDeclaration') {
         const funcCode = code.slice(decl.start, node.end);
         replacements.push([node.start, node.end, decl.id ? `${funcCode}\n${defineDefault(decl.id.name)}` : `${defineDefault(`(${funcCode})`)}`]);
@@ -423,11 +438,11 @@ function transformEsmToCjsAst(code: string): string {
           const name = decl.id.name;
           const funcCode = code.slice(decl.start, node.end);
           replacements.push([node.start, node.end, funcCode]);
-          hoisted.push(`Object.defineProperty(${__cjsExports()}, "${name}", { enumerable: true, get: function () { return ${name}; } });`);
+          hoisted.push(`${__cjsObject()}.defineProperty(${__cjsExports()}, "${name}", { enumerable: true, get: function () { return ${name}; } });`);
         } else if (decl.type === 'ClassDeclaration') {
           const name = decl.id.name;
           const classCode = code.slice(decl.start, node.end);
-          replacements.push([node.start, node.end, `${classCode}\nObject.defineProperty(${__cjsExports()}, "${name}", { enumerable: true, get: function () { return ${name}; } });`]);
+          replacements.push([node.start, node.end, `${classCode}\n${__cjsObject()}.defineProperty(${__cjsExports()}, "${name}", { enumerable: true, get: function () { return ${name}; } });`]);
         } else if (decl.type === 'VariableDeclaration') {
           // The declaration stays as written, so the module keeps a binding of
           // its own; what follows is an export that reads that binding when
@@ -446,7 +461,7 @@ function transformEsmToCjsAst(code: string): string {
             else if (pattern.type === 'RestElement') collect(pattern.argument);
           };
           for (const declarator of decl.declarations) collect(declarator.id);
-          for (const name of names) parts.push(`Object.defineProperty(${__cjsExports()}, "${name}", { enumerable: true, get: function () { return ${name}; } });`);
+          for (const name of names) parts.push(`${__cjsObject()}.defineProperty(${__cjsExports()}, "${name}", { enumerable: true, get: function () { return ${name}; } });`);
           replacements.push([node.start, node.end, parts.join('\n')]);
         }
       } else if (node.source) {
@@ -462,9 +477,9 @@ function transformEsmToCjsAst(code: string): string {
         const tmpVar = `__reexport_${node.start}`;
         parts.push(`const ${tmpVar} = ${__cjsRequire()}(${JSON.stringify(source)})`);
         // The re-exported module may still be settling; wait for it as for an import.
-        parts.push(`/*__substrate_await__*/(${tmpVar} && ${tmpVar}[Symbol.for("substrate.pending")])`);
+        parts.push(`/*__substrate_await__*/(${tmpVar} && ${tmpVar}[${__cjsSymbol()}.for("substrate.pending")])`);
         for (const spec of node.specifiers) {
-          parts.push(`Object.defineProperty(${__cjsExports()}, "${spec.exported.name}", { enumerable: true, configurable: true, get: function () { return ${tmpVar}.${spec.local.name}; } })`);
+          parts.push(`${__cjsObject()}.defineProperty(${__cjsExports()}, "${spec.exported.name}", { enumerable: true, configurable: true, get: function () { return ${tmpVar}.${spec.local.name}; } })`);
         }
         replacements.push([node.start, node.end, parts.join(';\n')]);
       } else {
@@ -472,7 +487,7 @@ function transformEsmToCjsAst(code: string): string {
         // an explicit export that replaces a star's getter of the same name.
         const parts: string[] = [];
         for (const spec of node.specifiers) {
-          parts.push(`Object.defineProperty(${__cjsExports()}, "${spec.exported.name}", { enumerable: true, configurable: true, get: function () { return ${spec.local.name}; } })`);
+          parts.push(`${__cjsObject()}.defineProperty(${__cjsExports()}, "${spec.exported.name}", { enumerable: true, configurable: true, get: function () { return ${spec.local.name}; } })`);
         }
         replacements.push([node.start, node.end, parts.join(';\n')]);
       }
@@ -485,7 +500,7 @@ function transformEsmToCjsAst(code: string): string {
       const source = node.source.value;
       const name = node.exported.type === 'Identifier' ? node.exported.name : node.exported.value;
       const tmpVar = `__reexport_${node.start}`;
-      replacements.push([node.start, node.end, `const ${tmpVar} = ${__cjsRequire()}(${JSON.stringify(source)}); /*__substrate_await__*/(${tmpVar} && ${tmpVar}[Symbol.for("substrate.pending")]); Object.defineProperty(${__cjsExports()}, ${JSON.stringify(name)}, { enumerable: true, configurable: true, get: function () { return ${tmpVar}; } })`]);
+      replacements.push([node.start, node.end, `const ${tmpVar} = ${__cjsRequire()}(${JSON.stringify(source)}); /*__substrate_await__*/(${tmpVar} && ${tmpVar}[${__cjsSymbol()}.for("substrate.pending")]); ${__cjsObject()}.defineProperty(${__cjsExports()}, ${JSON.stringify(name)}, { enumerable: true, configurable: true, get: function () { return ${tmpVar}; } })`]);
     } else if (node.type === 'ExportAllDeclaration') {
       // export * from './helpers'
       const source = node.source.value;
@@ -498,7 +513,7 @@ function transformEsmToCjsAst(code: string): string {
       // module does not already export; a local export shadows a star's, as the
       // language says.
       const tmpVar = `__reexport_${node.start}`;
-      replacements.push([node.start, node.end, `const ${tmpVar} = ${__cjsRequire()}(${JSON.stringify(source)}); /*__substrate_await__*/(${tmpVar} && ${tmpVar}[Symbol.for("substrate.pending")]); (function (__from, __into) { for (const __key of Object.keys(__from)) { if (__key === "default" || __key === "__esModule" || Object.prototype.hasOwnProperty.call(__into, __key)) continue; Object.defineProperty(__into, __key, { enumerable: true, configurable: true, get: function () { return __from[__key]; } }); } })(${tmpVar}, ${__cjsExports()})`]);
+      replacements.push([node.start, node.end, `const ${tmpVar} = ${__cjsRequire()}(${JSON.stringify(source)}); /*__substrate_await__*/(${tmpVar} && ${tmpVar}[${__cjsSymbol()}.for("substrate.pending")]); (function (__from, __into) { for (const __key of ${__cjsObject()}.keys(__from)) { if (__key === "default" || __key === "__esModule" || ${__cjsObject()}.prototype.hasOwnProperty.call(__into, __key)) continue; ${__cjsObject()}.defineProperty(__into, __key, { enumerable: true, configurable: true, get: function () { return __from[__key]; } }); } })(${tmpVar}, ${__cjsExports()})`]);
     }
   }
 

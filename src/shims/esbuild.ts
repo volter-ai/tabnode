@@ -398,6 +398,16 @@ export interface EsbuildHost {
 }
 let currentHost: EsbuildHost | null = null;
 
+/**
+ * esbuild-wasm starts its compiler on a Worker unless told not to. A realm
+ * that runs guests may withhold `Worker` (the execution worker confines its
+ * guests that way), and there the compiler runs on the calling thread, which
+ * is esbuild's own `worker: false`.
+ */
+function realmCanStartWorker(): boolean {
+  return typeof (globalThis as { Worker?: unknown }).Worker === 'function';
+}
+
 let inlineEsbuild: Promise<typeof import('esbuild-wasm')> | null = null;
 function ownEsbuild(): Promise<typeof import('esbuild-wasm')> {
   // A build that brings plugins of its own, a bundler such as tsup does,
@@ -408,7 +418,7 @@ function ownEsbuild(): Promise<typeof import('esbuild-wasm')> {
     /* @vite-ignore */
     esbuildModuleURL
   ).then(async (esbuild) => {
-    await esbuild.initialize({ wasmURL });
+    await esbuild.initialize({ wasmURL, worker: realmCanStartWorker() });
     return esbuild;
   }).catch((cause) => {
     // A load that failed, a page whose server was away for a moment, is not kept: the next build tries again.
@@ -527,6 +537,7 @@ export async function initialize(options?: { wasmURL?: string }): Promise<void> 
 
       await esbuild.initialize({
         wasmURL: options?.wasmURL || wasmURL,
+        worker: realmCanStartWorker(),
       });
 
       esbuildInstance = esbuild;

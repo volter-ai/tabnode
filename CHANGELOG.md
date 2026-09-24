@@ -4,6 +4,60 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `http.maxHeaderSize` is Node's default, 16 KiB, and `internal/options`
+  answers `--max-http-header-size`, `--insecure-http-parser` and
+  `--enable-source-maps` with Node's defaults. undici 8 reads the size when
+  its `Client` is made, and every fetch through an undici a program installed
+  (Pi's) failed with `http module not available`.
+- `tls.getCACertificates(type)` answers the same empty store
+  `tls.rootCertificates` does, and refuses an unknown type as Node does. VS
+  Code's proxy agent calls it on every fetch it patches, so the extension
+  host's first fetch threw.
+- A web stream a guest constructs carries Node's closed promise
+  (`nodejs.webstream.isClosedPromise`), settled by its own controller's
+  `close`, `error`, a failing `pull` or `cancel`. undici's fetch waits for a
+  response body's end with `stream.finished()`, which read that promise off
+  the browser's stream and threw, so every fetch body stalled after its head.
+  The constructor stays the browser's, so a platform stream is still
+  `instanceof ReadableStream`.
+- `StringDecoder.write` returns a string argument as it is given, as Node's
+  does. readline decodes every chunk, and an input stream with an encoding
+  hands it strings: Pi resuming a session read its JSONL through
+  `createReadStream(path, 'utf8')` and died on the first line.
+- `worker_threads.markAsUncloneable` and `isMarkedAsUncloneable` exist, as in
+  Node 22. undici 7 and 8 mark their WebIDL objects at construction and a
+  program loading them died before its first line. The mark is recorded; the
+  engine's channels do not yet refuse a marked object.
+- `performance.markResourceTiming` exists and records nothing. undici calls it
+  after every response it reads, and the browser's `performance` has no such
+  method.
+- `zlib.createBrotliDecompress` decodes, over `brotli`'s pure-JavaScript
+  decoder, the whole stream at its finish. A server serving a pre-compressed
+  artifact to a client that did not ask for Brotli inflates it instead of
+  refusing. Brotli compression is still refused by name.
+- ESM lowered for Node calls the realm's `Object` and `Symbol` by names a
+  module cannot declare (`__browserRuntimeObject`, `__browserRuntimeSymbol`).
+  The lowering's `Object.defineProperty` ran before the module's body, and a
+  module that imports a binding called `Object` (typebox's object type) read
+  it in its dead zone. An `export * as X from` no longer has its exported
+  name rewritten as a reference: typebox's `export * as Guard` became
+  `__substrateImport1`.
+- A guest global the host holds read-only is still the guest's to replace, as
+  Node's globals are: the guest gets its own binding and the host's is
+  untouched. undici's `install()` assigns `globalThis.WebSocket`, and Pi died
+  on the refusal.
+- A child whose fd 0 is a pipe and which the host runs (a program pack, not a
+  builtin of the engine's shell) reads its input as the parent writes it.
+  Before, it was handed what had been written when it began and then EOF, so
+  a JSON-RPC server over stdio (`supercode harness serve`) exited before its
+  client's first request.
+- The hard minute that ends a run whose work the engine cannot see also waits
+  for work the host holds for it (a build, a pre-bundle): a dev server whose
+  start passed a minute mid pre-bundle was ended with exit 0.
+- esbuild-wasm runs its compiler on the calling thread (`worker: false`) in a
+  realm that withholds `Worker`, where its start threw `Worker is not a
+  constructor`.
+
 ## v0.5.16 — 2026-09-23
 
 - A child spawned with a descriptor of the parent's as its stdio

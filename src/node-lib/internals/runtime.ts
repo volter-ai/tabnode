@@ -219,8 +219,9 @@ export const internalEventTarget = {
 };
 
 /**
- * `internal/options`: the command-line options Node's `net` reads. The engine
- * takes no command line of its own, so each is Node's own default.
+ * `internal/options`: the command-line options Node's `net`, `http` and
+ * `util` read. The engine takes no command line of its own, so each is
+ * Node's own default.
  */
 const optionValues: Record<string, unknown> = {
   '--network-family-autoselection': true,
@@ -231,6 +232,9 @@ const optionValues: Record<string, unknown> = {
   '--pending-deprecation': false,
   '--report-uncaught-exception': false,
   '--experimental-print-required-tla': false,
+  '--max-http-header-size': 16 * 1024,
+  '--insecure-http-parser': false,
+  '--enable-source-maps': false,
 };
 
 export const internalOptions = {

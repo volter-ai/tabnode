@@ -2,6 +2,7 @@
  * perf_hooks shim - Performance measurement APIs
  * Wraps browser Performance API
  */
+import { forGuestRealm } from '../host-globals';
 
 export const performance = globalThis.performance || {
   now: () => Date.now(),
@@ -15,6 +16,23 @@ export const performance = globalThis.performance || {
   clearMeasures: () => {},
   clearResourceTimings: () => {},
 };
+
+/**
+ * Node's `performance.markResourceTiming`, which a browser's `performance`
+ * does not have. undici's fetch reads it off the global `performance` at load
+ * and calls it after every response, so each fetch through an undici a
+ * program installed (Pi's does) threw once the body was read. Node records a
+ * PerformanceResourceTiming entry there; this engine keeps no resource
+ * timeline for a guest's own HTTP, so the call records nothing.
+ */
+forGuestRealm(() => {
+  const own = globalThis.performance as (Performance & { markResourceTiming?: unknown }) | undefined;
+  if (own && typeof own.markResourceTiming !== 'function') {
+    try {
+      Object.defineProperty(own, 'markResourceTiming', { value: () => undefined, writable: true, configurable: true, enumerable: false });
+    } catch { /* a performance object that refuses the name keeps its own shape */ }
+  }
+});
 
 export class PerformanceObserver {
   private callback: (list: PerformanceObserverEntryList) => void;

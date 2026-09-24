@@ -936,8 +936,10 @@ export function initChildProcess(vfs: VirtualFS): void {
         // engine's own registries. A run that still holds a handle or a timer
         // is not that -- Node's loop runs while one is open, for as long as it
         // is open -- and cutting it at a minute ended a forked child that was
-        // a server, which is every extension host and every pty host.
-        if (!isLongRunning && !stillWorking() && Date.now() - startTime >= MAX_TOTAL_MS) break;
+        // a server, which is every extension host and every pty host. Work the
+        // host holds for it (a build, a pre-bundle) is seen work too: a dev
+        // server whose start passed a minute mid pre-bundle was cut with exit 0.
+        if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) break;
       }
 
       return { stdout, stderr, exitCode: exitCalled ? exitCode : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
@@ -1755,6 +1757,15 @@ function startChildRun(request: RunRequest): StartedRun {
   const admittedNode = nodeProcessHostInstalled() && engineProgramFor(request.file, request.cwd) === 'node';
   const hostTerminal = request.terminal !== undefined && hostExecutor() !== null && !admittedNode;
   let wakeInput: (() => void) | undefined;
+  /**
+   * A piped fd 0 that stays open for a program the host runs (a program pack,
+   * not a builtin of the engine's shell): what the parent writes reaches it
+   * as it is written, through the same live stream a terminal gets. A
+   * builtin reads its input once, before it runs; a server that speaks
+   * JSON-RPC over stdio (`supercode harness serve`) read that one string,
+   * saw EOF and exited before its client's first request.
+   */
+  let liveInput = false;
   const hostInput: AsyncIterable<Uint8Array> = {
     async *[Symbol.asyncIterator]() {
       while (!finished && !controller.signal.aborted) {
@@ -1854,6 +1865,12 @@ function startChildRun(request: RunRequest): StartedRun {
   const begin = (): void => {
     if (started || finished) return;
     started = true;
+    const engineFirst = !hostTerminal && programExists(request.file, request.cwd, request.env);
+    liveInput = !hostTerminal && !admittedNode && request.stdinIsPipe && !engineFirst;
+    if (liveInput) {
+      pendingStdin.unshift(...initialStdin);
+      initialStdin.length = 0;
+    }
     const stdin = initialStdin.length > 0 ? Buffer.concat(initialStdin).toString('utf8') : undefined;
     void (async () => {
       let outcome: CommandOutcome;
@@ -1867,11 +1884,11 @@ function startChildRun(request: RunRequest): StartedRun {
           filesystem: currentVfs!, env, streams, ...(stdin !== undefined ? { stdin } : {}),
         }) : await enterRun(token, () => routeCommand({
           command: __substrateLineFor(request.file, request.args, request.cwd),
-          engineFirst: !hostTerminal && programExists(request.file, request.cwd, request.env),
+          engineFirst,
           cwd: request.cwd,
           env: { ...request.env, [PROCESS_TOKEN_ENV]: token },
           stdin,
-          ...(hostTerminal ? { stdinStream: hostInput, terminal: request.terminal } : {}),
+          ...(hostTerminal ? { stdinStream: hostInput, terminal: request.terminal } : liveInput ? { stdinStream: hostInput } : {}),
           signal: controller.signal,
           onStdout: streams.onStdout,
           onStderr: streams.onStderr,
@@ -1912,18 +1929,20 @@ function startChildRun(request: RunRequest): StartedRun {
       return 0;
     },
     writeStdin(bytes: Uint8Array): void | Promise<void> {
-      if (hostTerminal) { pendingStdin.push(bytes); wakeInput?.(); wakeInput = undefined; return; }
+      if (hostTerminal || liveInput) { pendingStdin.push(bytes); wakeInput?.(); wakeInput = undefined; return; }
       if (!started) { initialStdin.push(bytes); return; }
       pendingStdin.push(bytes);
       return flushStdin();
     },
     endStdin(): void {
-      if (hostTerminal) { pendingStdin.push(null); wakeInput?.(); wakeInput = undefined; return; }
+      if (hostTerminal || liveInput) { pendingStdin.push(null); wakeInput?.(); wakeInput = undefined; return; }
       if (!started) {
         // The writer closed before the command began: the run's fd 0 is the
         // string already collected and nothing more, so it is not held open.
         streams.stdinOpen = false;
         begin();
+        // A live pipe closed before it began still ends where it was closed.
+        if (liveInput) { pendingStdin.push(null); wakeInput?.(); wakeInput = undefined; }
         return;
       }
       pendingStdin.push(null);
@@ -1951,3 +1970,4 @@ export default {
   runCommand,
   sendStdin,
 };
+

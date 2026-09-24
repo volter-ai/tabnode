@@ -308,6 +308,7 @@ function base64End(this: StringDecoder, buf?: unknown): string {
 // ---------------------------------------------------------------------------
 
 function simpleWrite(this: StringDecoder, buf: unknown): string {
+  if (typeof buf === 'string') return buf;
   return decoderInput(this, buf).toString(this.encoding as BufferEncoding);
 }
 
@@ -353,6 +354,10 @@ const decoderPrototype = StringDecoderImpl.prototype as unknown as StringDecoder
 
 decoderPrototype.write = function write(this: unknown, buffer: unknown): string {
   const self = assertDecoder(this);
+  // Node returns a string as it is given: readline decodes every chunk of its
+  // input, and an input stream with an encoding (`createReadStream(path,
+  // 'utf8')`) hands it strings.
+  if (typeof buffer === 'string') return buffer;
   const buf = decoderInput(self, buffer);
   if (buf.length === 0) return '';
   let r: string | undefined;

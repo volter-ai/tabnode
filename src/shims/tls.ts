@@ -102,6 +102,17 @@ const DEFAULT_MIN_VERSION = 'TLSv1.2';
 
 const rootCertificates: string[] = [];
 
+// Node's certificate-store door, read by callers that build their own agents
+// (VS Code's proxy agent, on every fetch it patches). The engine holds no
+// store: certificates are the browser's, so every kind answers the same empty
+// set `rootCertificates` does.
+const getCACertificates = (type: string = 'default'): string[] => {
+  if (!['default', 'system', 'bundled', 'extra'].includes(type)) {
+    throw Object.assign(new TypeError(`The argument 'type' must be one of: 'default', 'system', 'bundled', 'extra'. Received '${String(type)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
+  }
+  return [];
+};
+
 return {
   TLSSocket,
   Server,
@@ -109,6 +120,7 @@ return {
   connect,
   createSecureContext,
   getCiphers,
+  getCACertificates,
   DEFAULT_ECDH_CURVE,
   DEFAULT_MAX_VERSION,
   DEFAULT_MIN_VERSION,
@@ -117,7 +129,7 @@ return {
 
 }
 const tls = createTlsModule();
-export const { TLSSocket, Server, createServer, connect, createSecureContext, getCiphers,
+export const { TLSSocket, Server, createServer, connect, createSecureContext, getCiphers, getCACertificates,
   DEFAULT_ECDH_CURVE, DEFAULT_MAX_VERSION, DEFAULT_MIN_VERSION, rootCertificates } = tls;
 export type TLSSocket = InstanceType<typeof TLSSocket>;
 export type Server = InstanceType<typeof Server>;

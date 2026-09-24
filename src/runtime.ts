@@ -66,7 +66,7 @@ import * as domainShim from './shims/domain';
 import { createWasiModule, type WasiHostFs, type WasiModule } from './shims/wasi';
 
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
-import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __substrateHasEsmSyntax } from './code-transforms';
+import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __cjsObject, __substrateHasEsmSyntax } from './code-transforms';
 import { applySourceEdits } from './source-edits';
 import * as acorn from 'acorn';
 
@@ -263,7 +263,12 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       if (key === "fetch") { fetch = value; return true; }
       if (key === "Buffer") { buffer = value; return true; }
       if (shadowed(target, key)) return Reflect.set(target, key, value, target);
-      return Reflect.set(host, key, value, host);
+      if (Reflect.set(host, key, value, host)) return true;
+      // A global the host holds read-only (a confined realm's \`WebSocket\`) is
+      // still the guest's to replace, as Node's globals are: undici's
+      // \`install()\` assigns \`globalThis.WebSocket\` and Pi died on the refusal.
+      // The value becomes the guest's own binding; the host's is untouched.
+      return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
     },
     has(target, key) { return isLocalGlobal(key) ? Reflect.has(target, key) : key === "global" || shadowed(target, key) || key in host; },
     ownKeys(target) {
@@ -448,7 +453,7 @@ function transformEsmToCjsAst(code: string, filename: string): string {
     transformed = transformEsmToCjsSimple(transformed);
 
     if (hasExportDecl) {
-      transformed = `Object.defineProperty(${__cjsExports()}, "__esModule", { value: true });\n` + transformed;
+      transformed = `${__cjsObject()}.defineProperty(${__cjsExports()}, "__esModule", { value: true });\n` + transformed;
     }
   }
 
@@ -476,7 +481,7 @@ function transformEsmToCjsRegexFallback(code: string, filename: string): string 
   if (hasImport || hasExport) {
     transformed = transformEsmToCjsSimple(transformed);
     if (hasExport) {
-      transformed = `Object.defineProperty(${__cjsExports()}, "__esModule", { value: true });\n` + transformed;
+      transformed = `${__cjsObject()}.defineProperty(${__cjsExports()}, "__esModule", { value: true });\n` + transformed;
     }
   }
 
@@ -2678,6 +2683,56 @@ forGuestRealm(() => {
     Object.defineProperty(NodeRequest, 'name', { value: 'Request', configurable: true });
     takeFromHost(globalThis, 'Request', NodeRequest);
   }
+});
+
+forGuestRealm(() => {
+  // Node's `stream.finished()` on a web stream waits on a promise Node's own
+  // web streams carry (`nodejs.webstream.isClosedPromise`), settled when the
+  // stream closes or errors, and undici's fetch finalizes every response that
+  // way. The worker's streams are the browser's and carry none, so a stream a
+  // guest constructs is given one, settled by its own controller. The
+  // constructor stays the browser's (a proxy of it), so a stream the platform
+  // made is still `instanceof ReadableStream`.
+  const kIsClosedPromise = Symbol.for('nodejs.webstream.isClosedPromise');
+  const Native = globalThis.ReadableStream;
+  if (typeof Native !== 'function' || (Native as unknown as { __substrateClosedPromise?: boolean }).__substrateClosedPromise) return;
+  type Source = { start?: (controller: unknown) => unknown; pull?: (controller: unknown) => unknown; cancel?: (reason: unknown) => unknown };
+  const Tracked: typeof ReadableStream = new Proxy(Native, {
+    construct(target, args, newTarget): object {
+      let resolve!: () => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+      promise.then(undefined, () => {});
+      const source = args[0] as Source | null | undefined;
+      const track = (controller: { close?: (...rest: unknown[]) => unknown; error?: (...rest: unknown[]) => unknown }): void => {
+        const close = controller.close;
+        const error = controller.error;
+        if (typeof close === 'function') controller.close = function (this: unknown, ...rest: unknown[]) { const result = close.apply(this, rest); resolve(); return result; };
+        if (typeof error === 'function') controller.error = function (this: unknown, ...rest: unknown[]) { reject(rest[0]); return error.apply(this, rest); };
+      };
+      const failed = (cause: unknown): never => { reject(cause); throw cause; };
+      const wrapped: Source = Object.create(source ?? null);
+      wrapped.start = (controller) => {
+        track(controller as Parameters<typeof track>[0]);
+        try { return source?.start?.call(source, controller); } catch (cause) { return failed(cause); }
+      };
+      if (typeof source?.pull === 'function') {
+        const pull = source.pull;
+        wrapped.pull = (controller) => {
+          try { return Promise.resolve(pull.call(source, controller)).catch(failed); } catch (cause) { return failed(cause); }
+        };
+      }
+      wrapped.cancel = (reason) => {
+        resolve();
+        return source?.cancel?.call(source, reason);
+      };
+      const stream: object = Reflect.construct(target, [wrapped, ...args.slice(1)], newTarget === Tracked ? target : newTarget);
+      Object.defineProperty(stream, kIsClosedPromise, { value: { promise, resolve, reject }, configurable: true });
+      return stream;
+    },
+  });
+  Object.defineProperty(Tracked, '__substrateClosedPromise', { value: true });
+  takeFromHost(globalThis, 'ReadableStream', Tracked);
 });
 
 // Polyfill Error.captureStackTrace/prepareStackTrace for Safari/WebKit
