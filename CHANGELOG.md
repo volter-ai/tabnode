@@ -4,6 +4,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.31 — 2026-09-24
+
+- `zlib`'s handle returns nothing from `write` and `writeSync`, as Node's
+  binding does. pngjs's synchronous inflate reads `writeSync(...) ||
+  this._writeState`, so a returned handle stood in for the shared pair and
+  every `PNG.sync.read` threw `have should not go down`.
+
 ## v0.5.30 — 2026-09-24
 
 - A host can start the frame documents its servers serve with a prelude:
