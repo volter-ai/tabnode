@@ -2003,11 +2003,11 @@ function createRequire(
       // playwright-core afresh, 28 s each, measured in a tab.
       if (prepared) {
         const body = __substrateScopeGlobalCalls(prepareModuleCode(rawCode, resolvedPath));
-        try {
-          const partial = `${prepared}.${process.pid}.partial`;
-          vfs.writeFileSync(partial, body);
-          vfs.renameSync(partial, prepared);
-        } catch { /* a process that may not write there prepares its own */ }
+        // One write is one step of the tab's filesystem, so no reader sees
+        // half a body; a rename after it failed in a forked process's realm
+        // and left the half-named file behind.
+        try { vfs.writeFileSync(prepared, body); }
+        catch { /* a process that may not write there prepares its own */ }
         runModuleBody(module, body, resolvedPath, dirname, true);
         return module;
       }
