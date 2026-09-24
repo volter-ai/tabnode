@@ -242,7 +242,7 @@ describe('crypto module', () => {
     // any module that imported jose failed at import.
     it('promisifies to { publicKey, privateKey } as Node does', async () => {
       const { promisify } = await import('node:util');
-      const { publicKey, privateKey } = await promisify(crypto.generateKeyPair)('ec', { namedCurve: 'prime256v1' }) as { publicKey: { type: string }; privateKey: { type: string } };
+      const { publicKey, privateKey } = await (promisify(crypto.generateKeyPair) as unknown as (type: string, options: object) => Promise<unknown>)('ec', { namedCurve: 'prime256v1' }) as { publicKey: { type: string }; privateKey: { type: string } };
       expect(publicKey.type).toBe('public');
       expect(privateKey.type).toBe('private');
     });
