@@ -4,6 +4,32 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.18 — 2026-09-24
+
+- A `.ts`, `.mts` or `.cts` program runs with its types erased, as Node runs
+  one: the entry a `node` command names and every module it requires or
+  imports. A realm with no stripper registered (the engine under Node) ran
+  such a file as JavaScript and died on its first type (`Unexpected
+  identifier 'SlackReply'`), and an entry was never stripped anywhere. Where
+  the page registers no stripper, the engine uses Node's own
+  `internal/modules/typescript.js` (v22.18.0, vendored) over amaro 1.1.0, the
+  release v22.18.0 carries, now a dependency: strip-only, lines and columns
+  kept, `enum`, value namespaces and parameter properties refused with
+  `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`, files under `node_modules` refused,
+  and `--experimental-transform-types` transforming instead.
+  `process.versions.amaro` is reported.
+- An ES module's stack frames name the file's own lines; they were one line
+  below, under the lowering's `"use strict"` line.
+- The engine's shell runs a statement ending in `&` in the background. `$!`
+  is the job's pid in the engine's process table (a `node` job's own
+  `process.pid`), `wait` (all, `-n`, or pids) waits and returns the job's
+  status or 128 + the signal that ended it, `kill` (`-s`, `-n`, `-SIG`, `-l`)
+  signals any process of the engine by pid, `disown` forgets a job. The
+  shell parsed `&` and ran the statement to its end first, `$!` was 0,
+  `wait` answered 0 at once, and `kill` was not a command.
+- A spawned child whose command line mixed builtins with a streaming `node`
+  no longer loses the builtins' output at its end.
+
 ## v0.5.17 — 2026-09-24
 
 - `http.maxHeaderSize` is Node's default, 16 KiB, and `internal/options`
