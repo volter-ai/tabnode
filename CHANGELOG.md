@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.17 — 2026-09-24
+
 - `http.maxHeaderSize` is Node's default, 16 KiB, and `internal/options`
   answers `--max-http-header-size`, `--insecure-http-parser` and
   `--enable-source-maps` with Node's defaults. undici 8 reads the size when
