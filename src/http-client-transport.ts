@@ -2,7 +2,8 @@
  * Node's Agent connection seam over a host HTTP exchange. Both sides of the
  * internal connection use Node's unmodified HTTP library: it parses requests,
  * generates responses and owns ClientRequest/IncomingMessage and backpressure.
- * No TLS socket or network metadata is fabricated. The host admits the target
+ * No TLS socket or network metadata is fabricated for a remote host; a
+ * loopback port stays the engine's own network, plain or TLS. The host admits the target
  * and capabilities before sending, and returns one response without retries.
  */
 import { httpModule, httpsModule } from './node-lib/http-module';
@@ -54,9 +55,12 @@ export function installHttpClientTransport(factory: HttpClientTransportFactory, 
     const original = prototype.createConnection;
     const connect = function(this: unknown, options: Record<string, any>, callback: (error: Error | null, socket?: unknown) => void): unknown {
       const host = String(options.hostname ?? options.host ?? 'localhost').toLowerCase();
-      // Plain local HTTP is the engine's existing virtual network, except a port the host serves itself.
-      if (protocol === 'http:' && (local(host) || options.socketPath)
-        && !(local(host) && !options.socketPath && transportOptions.hostPorts?.().has(Number(options.port ?? 80)))) {
+      // Local HTTP, plain or TLS, is the engine's existing virtual network,
+      // except a port the host serves itself: a TLS connect to loopback pairs
+      // with the guest's listener, as `tls` does, with no wire to protect.
+      const hostPort = local(host) && !options.socketPath
+        && transportOptions.hostPorts?.().has(Number(options.port ?? (protocol === 'https:' ? 443 : 80)));
+      if (!hostPort && ((protocol === 'http:' && (local(host) || options.socketPath)) || (protocol === 'https:' && local(host) && !options.socketPath))) {
         return original.call(this, options, callback);
       }
       try {

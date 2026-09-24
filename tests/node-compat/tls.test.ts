@@ -85,12 +85,23 @@ describe('tls module (Node.js compat)', () => {
       expect(server).toBeInstanceOf(Server);
     });
 
-    it('listen() fails with the reason, and close() is chainable', async () => {
-      const server = new Server();
-      const failed = new Promise<NodeJS.ErrnoException>((resolve) => server.once('error', resolve));
-      expect(server.listen()).toBe(server);
-      expect((await failed).code).toBe('ERR_TLS_UNAVAILABLE');
-      expect(server.close()).toBe(server);
+    it('listens on the loopback, and a TLS connect there reaches it as secure', async () => {
+      const server = createServer({}, (socket) => {
+        expect((socket as unknown as { encrypted: boolean }).encrypted).toBe(true);
+        socket.end('hello');
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as { port: number };
+      const socket = connect({ host: 'localhost', port });
+      const received = await new Promise<string>((resolve, reject) => {
+        let text = '';
+        socket.once('secureConnect', () => socket.setEncoding('utf8'));
+        socket.on('data', (chunk: string) => { text += chunk; });
+        socket.on('end', () => resolve(text));
+        socket.on('error', reject);
+      });
+      expect(received).toBe('hello');
+      await new Promise((resolve) => server.close(resolve));
     });
 
     it('is constructed when called without new, as https.Server calls it', () => {

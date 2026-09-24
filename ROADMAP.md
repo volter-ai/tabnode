@@ -606,6 +606,23 @@ error; the next live gallery POST reports "Failed to fetch". POST relay delivery
 remains open in the substrate. The existing Readable.toWeb adapter ignores
 backpressure and its strategy option, so bounded upload memory remains unproven.
 
+## loopback-tls: A TLS server listens on the tab's loopback
+
+Status: source landed, not released
+
+Article 6: Node's own `https.js` builds `https.Server` by calling `tls.Server`
+on the instance; the class stub refused, so `https.createServer` threw. Playwright's
+own test suite starts an HTTPS test server in every worker, so in a substrate tab
+every test that takes a page server failed at setup. `tls.Server` is now a
+net server on the loopback that hands each connection on as secure, and a TLS
+connect (or an `https` request) to a loopback port pairs with it unencrypted,
+since nothing lies between the two ends; the browser holds TLS where there is a
+wire. A TLS connect to another host still fails with `ERR_TLS_UNAVAILABLE`.
+
+Completion: released and pinned in the substrate, and Playwright's pinned suite
+runs in a tab past its worker fixture. No automated tests are run under the
+owner's instruction.
+
 ## unavailable-tls-settles: Report unsupported TLS connections
 
 Status: local candidate, not released

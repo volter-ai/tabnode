@@ -59,7 +59,7 @@ from .58.
 | `string_decoder` | Node's current file needs a stateful binding -- the carry-over bytes of a half-read code point, held across calls in C++. The realm's `TextDecoder` does not expose that state, so Node's older pure-JavaScript file is what runs. |
 | `url` | Node's `url.js` reaches `internal/url`, which is the C++ URL parser's own state machine. The realm's `URL` answers the WHATWG API but not that binding's contract. |
 | `crypto` | Node's is OpenSSL; synchronous hashing has no WebCrypto twin, so the engine binds `@noble/hashes` and `sha.js` |
-| `tls` | the page's TLS relay is the transport (Article 4) |
+| `tls` | the page's TLS relay is the transport (Article 4); on the loopback a TLS server listens as a net server and a TLS connect pairs with it, with no wire to protect |
 | `dns` | a tab resolves nothing; the World answers |
 | `vm` | V8 contexts; the engine's guest-global scoping is the tab's `vm` |
 | `worker_threads` | Web Workers |
