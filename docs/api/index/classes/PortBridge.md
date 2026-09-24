@@ -2,21 +2,25 @@
 
 ***
 
-[@volter/tabnode](../../README.md) / [index](../README.md) / ServerBridge
+[@volter/tabnode](../../README.md) / [index](../README.md) / PortBridge
 
-# Class: ServerBridge
+# Class: PortBridge
 
 Server Bridge manages virtual HTTP servers and routes requests
 
 ## Extends
 
-- [`PortBridge`](PortBridge.md)
+- `BridgeEvents`
+
+## Extended by
+
+- [`ServerBridge`](ServerBridge.md)
 
 ## Constructors
 
 ### Constructor
 
-> **new ServerBridge**(`options?`): `ServerBridge`
+> **new PortBridge**(`options?`): `PortBridge`
 
 #### Parameters
 
@@ -26,11 +30,11 @@ Server Bridge manages virtual HTTP servers and routes requests
 
 #### Returns
 
-`ServerBridge`
+`PortBridge`
 
 #### Overrides
 
-[`PortBridge`](PortBridge.md).[`constructor`](PortBridge.md#constructor)
+`BridgeEvents.constructor`
 
 ## Properties
 
@@ -38,19 +42,11 @@ Server Bridge manages virtual HTTP servers and routes requests
 
 > **servers**: `Map`\<`number`, `VirtualServer`\>
 
-#### Inherited from
-
-[`PortBridge`](PortBridge.md).[`servers`](PortBridge.md#servers)
-
 ***
 
 ### DEBUG
 
 > `static` **DEBUG**: `boolean` = `false`
-
-#### Inherited from
-
-[`PortBridge`](PortBridge.md).[`DEBUG`](PortBridge.md#debug)
 
 ## Methods
 
@@ -74,7 +70,7 @@ Server Bridge manages virtual HTTP servers and routes requests
 
 #### Inherited from
 
-[`PortBridge`](PortBridge.md).[`addListener`](PortBridge.md#addlistener)
+`BridgeEvents.addListener`
 
 ***
 
@@ -82,7 +78,7 @@ Server Bridge manages virtual HTTP servers and routes requests
 
 > `protected` **bodyOf**(`bytes`): `Uint8Array`
 
-A server of this engine reads a request's body as Node's Buffer.
+A request's body as the servers of this realm read it.
 
 #### Parameters
 
@@ -93,10 +89,6 @@ A server of this engine reads a request's body as Node's Buffer.
 #### Returns
 
 `Uint8Array`
-
-#### Overrides
-
-[`PortBridge`](PortBridge.md).[`bodyOf`](PortBridge.md#bodyof)
 
 ***
 
@@ -112,10 +104,6 @@ container calls it and has its process back; calling it twice is nothing.
 
 `void`
 
-#### Overrides
-
-[`PortBridge`](PortBridge.md).[`close`](PortBridge.md#close)
-
 ***
 
 ### createFetchHandler()
@@ -127,10 +115,6 @@ Create a mock request handler for testing without Service Worker
 #### Returns
 
 (`request`) => `Promise`\<`Response`\>
-
-#### Inherited from
-
-[`PortBridge`](PortBridge.md).[`createFetchHandler`](PortBridge.md#createfetchhandler)
 
 ***
 
@@ -154,7 +138,7 @@ Create a mock request handler for testing without Service Worker
 
 #### Inherited from
 
-[`PortBridge`](PortBridge.md).[`emit`](PortBridge.md#emit)
+`BridgeEvents.emit`
 
 ***
 
@@ -167,10 +151,6 @@ Get all registered server ports
 #### Returns
 
 `number`[]
-
-#### Inherited from
-
-[`PortBridge`](PortBridge.md).[`getServerPorts`](PortBridge.md#getserverports)
 
 ***
 
@@ -189,10 +169,6 @@ Get server URL for a port
 #### Returns
 
 `string`
-
-#### Inherited from
-
-[`PortBridge`](PortBridge.md).[`getServerUrl`](PortBridge.md#getserverurl)
 
 ***
 
@@ -227,10 +203,6 @@ Handle an incoming request from Service Worker
 #### Returns
 
 `Promise`\<[`ResponseData`](../interfaces/ResponseData.md)\>
-
-#### Inherited from
-
-[`PortBridge`](PortBridge.md).[`handleRequest`](PortBridge.md#handlerequest)
 
 ***
 
@@ -282,10 +254,6 @@ method where it has one, else its buffered answer is delivered whole.
 
 `Promise`\<`boolean`\>
 
-#### Inherited from
-
-[`PortBridge`](PortBridge.md).[`handleStreamingRequest`](PortBridge.md#handlestreamingrequest)
-
 ***
 
 ### initServiceWorker()
@@ -306,17 +274,16 @@ Configuration options for the service worker
 
 `Promise`\<`void`\>
 
-#### Inherited from
-
-[`PortBridge`](PortBridge.md).[`initServiceWorker`](PortBridge.md#initserviceworker)
-
 ***
 
 ### isGuest()
 
 > `protected` **isGuest**(`entry`): `boolean`
 
-A guest's listener (the old null sentinel, now a request adapter) is answered over the loopback.
+Whether a registration is a guest's own listener, answered over the
+engine's loopback rather than by a server object the host registered. A
+bridge with no engine in its realm has none: every server it holds was
+registered by the host, a worker's proxies among them.
 
 #### Parameters
 
@@ -327,10 +294,6 @@ A guest's listener (the old null sentinel, now a request adapter) is answered ov
 #### Returns
 
 `boolean`
-
-#### Overrides
-
-[`PortBridge`](PortBridge.md).[`isGuest`](PortBridge.md#isguest)
 
 ***
 
@@ -350,7 +313,7 @@ A guest's listener (the old null sentinel, now a request adapter) is answered ov
 
 #### Inherited from
 
-[`PortBridge`](PortBridge.md).[`listenerCount`](PortBridge.md#listenercount)
+`BridgeEvents.listenerCount`
 
 ***
 
@@ -374,7 +337,7 @@ A guest's listener (the old null sentinel, now a request adapter) is answered ov
 
 #### Inherited from
 
-[`PortBridge`](PortBridge.md).[`off`](PortBridge.md#off)
+`BridgeEvents.off`
 
 ***
 
@@ -398,7 +361,7 @@ A guest's listener (the old null sentinel, now a request adapter) is answered ov
 
 #### Inherited from
 
-[`PortBridge`](PortBridge.md).[`on`](PortBridge.md#on)
+`BridgeEvents.on`
 
 ***
 
@@ -422,7 +385,7 @@ A guest's listener (the old null sentinel, now a request adapter) is answered ov
 
 #### Inherited from
 
-[`PortBridge`](PortBridge.md).[`once`](PortBridge.md#once)
+`BridgeEvents.once`
 
 ***
 
@@ -450,10 +413,6 @@ Register a server on a port
 
 `void`
 
-#### Inherited from
-
-[`PortBridge`](PortBridge.md).[`registerServer`](PortBridge.md#registerserver)
-
 ***
 
 ### removeAllListeners()
@@ -472,7 +431,7 @@ Register a server on a port
 
 #### Inherited from
 
-[`PortBridge`](PortBridge.md).[`removeAllListeners`](PortBridge.md#removealllisteners)
+`BridgeEvents.removeAllListeners`
 
 ***
 
@@ -496,13 +455,13 @@ Register a server on a port
 
 #### Inherited from
 
-[`PortBridge`](PortBridge.md).[`removeListener`](PortBridge.md#removelistener)
+`BridgeEvents.removeListener`
 
 ***
 
 ### requestGuest()
 
-> `protected` **requestGuest**(`port`, `method`, `url`, `headers`, `body`): `Promise`\<[`ResponseData`](../interfaces/ResponseData.md)\>
+> `protected` **requestGuest**(`port`, `_method`, `_url`, `_headers`, `_body`): `Promise`\<[`ResponseData`](../interfaces/ResponseData.md)\>
 
 A request to a guest's listener, over the engine's loopback.
 
@@ -512,29 +471,25 @@ A request to a guest's listener, over the engine's loopback.
 
 `number`
 
-##### method
+##### \_method
 
 `string`
 
-##### url
+##### \_url
 
 `string`
 
-##### headers
+##### \_headers
 
 `Record`\<`string`, `string`\>
 
-##### body
+##### \_body
 
 `Uint8Array`\<`ArrayBufferLike`\> \| `undefined`
 
 #### Returns
 
 `Promise`\<[`ResponseData`](../interfaces/ResponseData.md)\>
-
-#### Overrides
-
-[`PortBridge`](PortBridge.md).[`requestGuest`](PortBridge.md#requestguest)
 
 ***
 
@@ -558,15 +513,11 @@ is (re)initialized, since a worker that restarted remembers nothing.
 
 `void`
 
-#### Inherited from
-
-[`PortBridge`](PortBridge.md).[`setPrimaryPort`](PortBridge.md#setprimaryport)
-
 ***
 
 ### streamGuest()
 
-> `protected` **streamGuest**(`port`, `method`, `url`, `headers`, `body`, `onStart`, `onChunk`, `onEnd`, `flow?`): `Promise`\<`void`\>
+> `protected` **streamGuest**(`port`, `_method`, `_url`, `_headers`, `_body`, `_onStart`, `_onChunk`, `_onEnd`, `_flow?`): `Promise`\<`void`\>
 
 A guest's answer streamed off its connection as it arrives.
 
@@ -576,45 +527,41 @@ A guest's answer streamed off its connection as it arrives.
 
 `number`
 
-##### method
+##### \_method
 
 `string`
 
-##### url
+##### \_url
 
 `string`
 
-##### headers
+##### \_headers
 
 `Record`\<`string`, `string`\>
 
-##### body
+##### \_body
 
 `Uint8Array`\<`ArrayBufferLike`\> \| `undefined`
 
-##### onStart
+##### \_onStart
 
 (`statusCode`, `statusMessage`, `headers`) => `void`
 
-##### onChunk
+##### \_onChunk
 
 (`chunk`) => `void`
 
-##### onEnd
+##### \_onEnd
 
 () => `void`
 
-##### flow?
+##### \_flow?
 
 [`LoopbackStreamFlow`](../interfaces/LoopbackStreamFlow.md)
 
 #### Returns
 
 `Promise`\<`void`\>
-
-#### Overrides
-
-[`PortBridge`](PortBridge.md).[`streamGuest`](PortBridge.md#streamguest)
 
 ***
 
@@ -633,7 +580,3 @@ Unregister a server
 #### Returns
 
 `void`
-
-#### Inherited from
-
-[`PortBridge`](PortBridge.md).[`unregisterServer`](PortBridge.md#unregisterserver)

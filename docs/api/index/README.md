@@ -20,6 +20,7 @@
 ## Classes
 
 - [NativeStreamScope](classes/NativeStreamScope.md)
+- [PortBridge](classes/PortBridge.md)
 - [Runtime](classes/Runtime.md)
 - [ServerBridge](classes/ServerBridge.md)
 - [VirtualFS](classes/VirtualFS.md)
@@ -99,6 +100,7 @@
 - [createProcessRegistryScope](functions/createProcessRegistryScope.md)
 - [createRuntime](functions/createRuntime.md)
 - [execute](functions/execute.md)
+- [getPortBridge](functions/getPortBridge.md)
 - [getServerBridge](functions/getServerBridge.md)
 - [guestRealmInstalled](functions/guestRealmInstalled.md)
 - [installFetchTransport](functions/installFetchTransport.md)
