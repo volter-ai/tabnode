@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.32 — 2026-09-24
+
+- A module body the loader prepares for a file the image carries none for
+  (a package installed in the tab) is kept in `/.tabnode/prepared` under the
+  file's content key, as the image's bodies are, so the next process takes
+  it instead of parsing again: `require('@playwright/test')` in a new process
+  went from 20 s to 0.4 s, measured in a tab.
+
 ## v0.5.31 — 2026-09-24
 
 - `zlib`'s handle returns nothing from `write` and `writeSync`, as Node's
