@@ -163,7 +163,7 @@ export class Zlib {
   write(
     flush: number, inBuf: Uint8Array | null, inOff: number, inLen: number,
     outBuf: Uint8Array, outOff: number, outLen: number,
-  ): this {
+  ): void {
     // Node's own binding does this work on the thread pool and calls back;
     // a tab has one thread, so the work is done here and the callback is the
     // next tick, which is the difference a program can observe.
@@ -173,15 +173,15 @@ export class Zlib {
       this.#run(flush, inBuf, inOff, inLen, outBuf, outOff, outLen);
       this.#callback?.();
     });
-    return this;
   }
 
   writeSync(
     flush: number, inBuf: Uint8Array | null, inOff: number, inLen: number,
     outBuf: Uint8Array, outOff: number, outLen: number,
-  ): this {
+  ): void {
+    // Node's binding returns nothing: the answer is the shared pair, and
+    // pngjs's `res || this._writeState` reads a returned value in its place.
     this.#run(flush, inBuf, inOff, inLen, outBuf, outOff, outLen);
-    return this;
   }
 
   /**
@@ -292,19 +292,17 @@ class BrotliDecoderHandle {
     }
   }
 
-  write(flush: number, inBuf: Uint8Array | null, inOff: number, inLen: number, outBuf: Uint8Array, outOff: number, outLen: number): this {
+  write(flush: number, inBuf: Uint8Array | null, inOff: number, inLen: number, outBuf: Uint8Array, outOff: number, outLen: number): void {
     const tick = (globalThis as { process?: { nextTick?: (fn: () => void) => void } }).process?.nextTick
       ?? ((fn: () => void) => { queueMicrotask(fn); });
     tick(() => {
       this.#run(flush, inBuf, inOff, inLen, outBuf, outOff, outLen);
       this.#callback?.();
     });
-    return this;
   }
 
-  writeSync(flush: number, inBuf: Uint8Array | null, inOff: number, inLen: number, outBuf: Uint8Array, outOff: number, outLen: number): this {
+  writeSync(flush: number, inBuf: Uint8Array | null, inOff: number, inLen: number, outBuf: Uint8Array, outOff: number, outLen: number): void {
     this.#run(flush, inBuf, inOff, inLen, outBuf, outOff, outLen);
-    return this;
   }
 
   params(): void {}
