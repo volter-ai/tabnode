@@ -657,6 +657,48 @@ export class VirtualFS {
   }
 
   /**
+   * Adds bytes at a file's end, creating it. A file grown a piece at a time
+   * (a write stream's chunks) is kept in a buffer with room to grow, so an
+   * append copies only what it adds: writing the whole file again for each
+   * 1 KB chunk of a 50 MB file copied about a terabyte. A tree that keeps its
+   * files elsewhere (its own writeFileSync) is appended to through its own
+   * read and write unless it answers appends itself.
+   */
+  appendFileSync(path: string, data: string | Uint8Array): void {
+    const bytes = typeof data === 'string' ? this.encoder.encode(data) : data;
+    if (this.writeFileSync !== VirtualFS.prototype.writeFileSync) {
+      const existing = this.existsSync(path) ? this.readFileSync(path) as Uint8Array : new Uint8Array(0);
+      const whole = new Uint8Array(existing.byteLength + bytes.byteLength);
+      whole.set(existing, 0);
+      whole.set(bytes, existing.byteLength);
+      this.writeFileSync(path, whole);
+      return;
+    }
+    const normalized = this.normalizePath(path);
+    const node = this.getNode(normalized);
+    if (!node) {
+      this.writeFileSyncInternal(normalized, bytes.slice(), true);
+      return;
+    }
+    if (node.type !== 'file') throw createNodeError('EISDIR', 'open', path);
+    this.assertWritable(normalized, 'open');
+    const current = node.content ?? new Uint8Array(0);
+    const length = current.byteLength + bytes.byteLength;
+    let room = (node as FSNode & { room?: Uint8Array }).room;
+    if (!room || current.buffer !== room.buffer || current.byteOffset !== 0 || room.byteLength < length) {
+      room = new Uint8Array(Math.max(length, current.byteLength * 2, 4096));
+      room.set(current, 0);
+    }
+    room.set(bytes, current.byteLength);
+    node.content = room.subarray(0, length);
+    (node as FSNode & { room?: Uint8Array }).room = room;
+    node.mtime = Date.now();
+    this.notifyWatchers(normalized, 'change');
+    // The change event carries the file's text; it is made only for a listener.
+    if (this.eventListeners.get('change')?.size) this.emit('change', normalized, this.decoder.decode(node.content));
+  }
+
+  /**
    * Create directory, optionally with recursive parent creation
    */
   mkdirSync(path: string, options?: { recursive?: boolean }): void {

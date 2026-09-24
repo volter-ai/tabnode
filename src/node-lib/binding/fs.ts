@@ -157,6 +157,8 @@ interface OpenFile {
    * it could send ready.
    */
   cached?: Uint8Array;
+  /** The buffer `cached` views when writes have grown it a piece at a time. */
+  room?: Uint8Array;
 }
 
 /** Every descriptor this engine has open, and the next number to hand out. */
@@ -606,6 +608,28 @@ const fsBinding = {
       if ((file.flags & 3) === 0) throw createNodeError('EBADF', 'write', file.path);
       const tree = file.tree;
       const slice = buffer.subarray(offset, offset + length);
+      // A write at the file's end is an append: the tree is given only the
+      // bytes it adds, and this descriptor's copy grows in a buffer with room.
+      // Writing the whole file again for each chunk made a 50 MB stream of
+      // 1 KB writes copy about a terabyte.
+      const held = file.cached?.length ?? (tree.existsSync(file.path) ? tree.statSync(file.path).size : 0);
+      const end = (file.flags & flagBits().append) !== 0 ? held
+        : position === null || position === undefined || position < 0 ? file.position : position;
+      if (end === held && typeof (tree as { appendFileSync?: unknown }).appendFileSync === 'function') {
+        (tree as { appendFileSync(path: string, data: Uint8Array): void }).appendFileSync(file.path, slice);
+        if (file.cached !== undefined) {
+          let room = file.room;
+          if (!room || file.cached.buffer !== room.buffer || file.cached.byteOffset !== 0 || room.byteLength < held + slice.length) {
+            room = new Uint8Array(Math.max(held + slice.length, held * 2, 4096));
+            room.set(file.cached, 0);
+          }
+          room.set(slice, held);
+          file.cached = room.subarray(0, held + slice.length);
+          file.room = room;
+        }
+        if (position === null || position === undefined || position < 0) file.position = end + slice.length;
+        return slice.length;
+      }
       const existing = file.cached ?? (tree.existsSync(file.path) ? tree.readFileSync(file.path) as Uint8Array : new Uint8Array(0));
       const at = (file.flags & flagBits().append) !== 0 ? existing.length
         : position === null || position === undefined || position < 0 ? file.position : position;
