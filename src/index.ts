@@ -36,6 +36,7 @@ export { utilModule as util } from './node-lib/util-module';
 export * as npm from './npm';
 export { PackageManager, install } from './npm';
 export { ServerBridge, getServerBridge, resetServerBridge } from './server-bridge';
+export { PortBridge, getPortBridge } from './port-bridge';
 export type { InitServiceWorkerOptions } from './server-bridge';
 /** What a page's request is answered with, the shape the bridge answers. */
 export type { ResponseData, LoopbackStreamFlow } from './node-lib/http-bridge';

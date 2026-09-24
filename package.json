@@ -33,6 +33,10 @@
     "./vite": {
       "types": "./dist/vite-plugin.d.ts",
       "default": "./dist/vite-plugin.mjs"
+    },
+    "./port-bridge": {
+      "types": "./dist/port-bridge.d.ts",
+      "default": "./dist/port-bridge.mjs"
     }
   },
   "files": [

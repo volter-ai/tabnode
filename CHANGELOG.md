@@ -4,6 +4,17 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.27 — 2026-09-24
+
+- `@volter/tabnode/port-bridge` is the page's side of the service worker
+  alone: the servers a host registered, by port, and the protocol the worker
+  speaks to reach them, flow control and streaming included, in 26 KB with
+  none of Node's library. A page whose engine runs in a worker imports it and
+  loads no engine; before, the page's bridge was the engine's, and a page
+  serving a worker's ports carried the whole engine (3 MB) to do it.
+  `ServerBridge` extends `PortBridge` with the servers the engine's guests
+  listen on, and is unchanged for them.
+
 ## v0.5.26 — 2026-09-24
 
 - A module body can be prepared where the image is built.

@@ -54,6 +54,9 @@ export default defineConfig({
       entry: {
         index: resolve(__dirname, 'src/index.ts'),
         'vite-plugin': resolve(__dirname, 'src/vite-plugin.ts'),
+        // The page's side of the service worker alone, with none of Node's
+        // library: a page whose engine runs in a worker imports this.
+        'port-bridge': resolve(__dirname, 'src/port-bridge.ts'),
       },
       name: 'Tabnode',
       formats: ['es'],
