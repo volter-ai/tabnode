@@ -436,6 +436,66 @@ function collectDirectEval(node: any, replacements: Array<[number, number, strin
   replacements.push([source.end, source.end, ")"]);
 }
 
+/**
+ * Node's AsyncLocalStorage context follows an `await`; in a tab nothing can
+ * observe one (see shims/async_hooks), so the body follows it itself. An async
+ * function takes its frame on entry and puts it back wherever it resumes:
+ * after each `await`, at the start of a `catch` or `finally` (a rejected
+ * `await` resumes there), and in and after a `for await`. An async arrow with
+ * an expression body takes the frame at each `await`, which is the same
+ * frame. Playwright names each API call from a zone it keeps in one; a zone
+ * left over from another call made its errors lose `locator.click:`. Only
+ * insertions, and no line breaks, so a stack frame keeps its line.
+ */
+const ASYNC_FRAME = '__substrateAsyncFrame';
+function __substrateFollowAwaits(code: string): string {
+  if (!/\bawait\b/.test(code)) return code;
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true, allowHashBang: true, allowAwaitOutsideFunction: true });
+  } catch {
+    return code;
+  }
+  const edits: Array<[number, number, string]> = [];
+  const insert = (at: number, text: string): void => { edits.push([at, at, text]); };
+  const restore = `__substrateRestore(${ASYNC_FRAME});`;
+  const isFunction = (node: any): boolean => node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression';
+  // `framed`: the nearest function is async and holds the frame in ASYNC_FRAME.
+  const visit = (node: any, framed: boolean, parent: any): void => {
+    if (isFunction(node)) {
+      framed = node.async && node.body.type === 'BlockStatement';
+      if (framed) {
+        const directives = node.body.body.filter((statement: any) => statement.directive !== undefined);
+        const at = directives.length ? directives[directives.length - 1].end : node.body.start + 1;
+        insert(at, `const ${ASYNC_FRAME}=__substrateContext();`);
+      }
+    } else if (node.type === 'AwaitExpression') {
+      insert(node.start, `__substrateResume(${framed ? ASYNC_FRAME : '__substrateContext()'},`);
+      insert(node.end, ')');
+    } else if (framed && node.type === 'CatchClause') {
+      insert(node.body.start + 1, restore);
+    } else if (framed && node.type === 'TryStatement' && node.finalizer) {
+      insert(node.finalizer.start + 1, restore);
+    } else if (framed && node.type === 'ForOfStatement' && node.await) {
+      if (node.body.type === 'BlockStatement') insert(node.body.start + 1, restore);
+      else { insert(node.body.start, `{${restore}`); insert(node.body.end, '}'); }
+      const whole = parent?.type === 'LabeledStatement' ? parent : node;
+      insert(whole.start, '{');
+      insert(whole.end, `;${restore}}`);
+    }
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
+      const child = node[key];
+      if (!child || typeof child !== 'object') continue;
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item, framed, node);
+      } else if (typeof child.type === 'string') visit(child, framed, node);
+    }
+  };
+  visit(ast, false, undefined);
+  return edits.length ? applyReplacements(code, edits) : code;
+}
+
 /** Applies insertions and replacements from the end, so earlier offsets hold. */
 function applyReplacements(code: string, replacements: Array<[number, number, string]>): string {
   replacements.sort((a, b) => b[0] - a[0] || b[1] - a[1]);
@@ -448,7 +508,7 @@ Object.defineProperty(globalThis, "__substrateEvalSource", {
   configurable: true,
   value: (source: unknown): unknown => typeof source === "string" ? __substrateRewriteDynamicImportsInScript(source) : source,
 });
-/** A file's source made a body: shebang stripped, types stripped, ESM lowered, dynamic imports rewritten. */
+/** A file's source made a body: shebang stripped, types stripped, ESM lowered, dynamic imports rewritten, awaits followed. */
 function __substratePrepareBody(rawCode: string, resolvedPath: string, format: string | undefined, process: unknown): string {
   let code = rawCode;
 
@@ -487,7 +547,7 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
     code = __substrateRewriteDynamicImportsInScript(code);
   }
 
-  return code;
+  return __substrateFollowAwaits(code);
 }
 
 /**
@@ -499,7 +559,7 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
  * place of the passes when the file it read hashes to one.
  */
 export const PREPARED_MODULES_DIR = '/.tabnode/prepared';
-const PREPARED_MODULES_FORMAT = 'tabnode-prepared-1';
+const PREPARED_MODULES_FORMAT = 'tabnode-prepared-2';
 /** The name a prepared body goes under: the hash of the file as read, and how it is compiled. Undefined for a file no body is prepared for. */
 export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
   const extension = /\.(js|cjs|mjs)$/u.exec(resolvedPath)?.[1];
