@@ -4,6 +4,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.24 — 2026-09-24
+
+- An `init` whose sender the worker cannot name replaces the previous such
+  channel, as every `init` did before 0.5.23, and a replaced host's channel
+  is never answered from again.
+
 ## v0.5.23 — 2026-09-24
 
 - The service worker holds a host per page. Each page that sends `init` keeps

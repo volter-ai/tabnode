@@ -12,6 +12,8 @@ const DEBUG = false;
 // is keyed by the id of the window that sent `init`.
 const hosts = new Map();
 let latestHost = null;
+// An `init` whose sender is unknown replaces the previous such channel.
+const UNNAMED_HOST = 'unnamed-host';
 // The documents and workers a host's servers made, by client id, so their
 // requests reach the host that served them.
 const clientHosts = new Map();
@@ -149,10 +151,10 @@ self.addEventListener('message', (event) => {
     // their virtual origin identity; a channel reconnect must not send their
     // root-relative requests to network.
     const mainPort = event.ports[0];
-    const host = openHost(event.source && event.source.id ? event.source.id : `host-${++requestId}`, mainPort);
+    const host = openHost(event.source && event.source.id ? event.source.id : UNNAMED_HOST, mainPort);
     const initializedPort = mainPort;
     mainPort.onmessage = (message) => {
-      if (host.port === initializedPort) handleMainMessage(host, message);
+      if (hosts.get(host.id) === host && host.port === initializedPort) handleMainMessage(host, message);
     };
     if (data && Array.isArray(data.ownDocuments)) host.ownDocuments = new Set(data.ownDocuments.map((path) => ownPath(String(path))));
     DEBUG && console.log('[SW] Initialized communication channel with transferred port');
@@ -626,7 +628,7 @@ async function pruneClients() {
   for (const id of [...rootedClients.keys()]) if (!alive.has(id)) rootedClients.delete(id);
   for (const [id, host] of [...clientHosts]) if (!alive.has(id) || !hosts.has(host)) clientHosts.delete(id);
   for (const [id, host] of [...hosts]) {
-    if (alive.has(id) || id.startsWith('host-')) continue;
+    if (alive.has(id) || id === UNNAMED_HOST) continue;
     hosts.delete(id);
     host.port.onmessage = null;
     host.port.close();
