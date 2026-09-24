@@ -43,6 +43,7 @@ import INTERNAL_VALIDATORS from './internal/validators.js?raw';
 import INTERNAL_ABORT_LISTENER from './internal/events/abort_listener.js?raw';
 import INTERNAL_CHILD_PROCESS_SERIALIZATION from './internal/child_process/serialization.js?raw';
 import INTERNAL_MODULES_CUSTOMIZATION_HOOKS from './internal/modules/customization_hooks.js?raw';
+import INTERNAL_MODULES_TYPESCRIPT from './internal/modules/typescript.js?raw';
 import EVENTS from './events.js?raw';
 import INTERNAL_CONSTANTS from './internal/constants.js?raw';
 import INTERNAL_MIME from './internal/mime.js?raw';
@@ -142,6 +143,7 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/events/abort_listener': INTERNAL_ABORT_LISTENER,
   'internal/child_process/serialization': INTERNAL_CHILD_PROCESS_SERIALIZATION,
   'internal/modules/customization_hooks': INTERNAL_MODULES_CUSTOMIZATION_HOOKS,
+  'internal/modules/typescript': INTERNAL_MODULES_TYPESCRIPT,
   'events': EVENTS,
   'internal/constants': INTERNAL_CONSTANTS,
   'internal/mime': INTERNAL_MIME,

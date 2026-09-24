@@ -235,10 +235,25 @@ const optionValues: Record<string, unknown> = {
   '--max-http-header-size': 16 * 1024,
   '--insecure-http-parser': false,
   '--enable-source-maps': false,
+  '--experimental-transform-types': false,
 };
 
+/**
+ * Options one run was started with, answered only while a call made for that
+ * run is on the stack. Node reads an option of its own process; the engine
+ * holds many processes in one realm, so a caller that knows whose call it is
+ * (the module loader stripping a `.ts` file for a run started with
+ * `--experimental-transform-types`) says so for the length of that call.
+ */
+let optionOverrides: Record<string, unknown> | null = null;
+export function withOptionValues<T>(overrides: Record<string, unknown>, fn: () => T): T {
+  const previous = optionOverrides;
+  optionOverrides = { ...(previous ?? {}), ...overrides };
+  try { return fn(); } finally { optionOverrides = previous; }
+}
+
 export const internalOptions = {
-  getOptionValue: (name: string): unknown => optionValues[name],
+  getOptionValue: (name: string): unknown => (optionOverrides !== null && name in optionOverrides ? optionOverrides[name] : optionValues[name]),
   getEmbedderOptions: () => ({ shouldNotRegisterESMLoader: false, noGlobalSearchPaths: false, noBrowserGlobals: false }),
 };
 

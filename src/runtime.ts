@@ -68,6 +68,7 @@ import { createWasiModule, type WasiHostFs, type WasiModule } from './shims/wasi
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
 import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __cjsObject, __substrateHasEsmSyntax } from './code-transforms';
 import { applySourceEdits } from './source-edits';
+import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typescript-module';
 import * as acorn from 'acorn';
 
 /**
@@ -113,6 +114,31 @@ function __substrateGuestConstructor(Constructor: unknown, process: Process): un
     const compiled = Reflect.construct(target as new (...args: unknown[]) => unknown, args);
     return __substrateFunctionScope(__substrateGuestGlobal(process), String(compiled));
   } });
+}
+/**
+ * A `.ts`, `.mts` or `.cts` file runs with its types stripped, as Node runs
+ * one since 22.18, before the module's imports are read -- the entry a `node`
+ * command names and every module it loads alike. A page that loaded a
+ * stripper into the realm supplies it; elsewhere the engine erases the types
+ * itself, through Node's own `typescript.js` over amaro
+ * (`node-lib/typescript-module.ts`): strip-only, positions kept, the syntax
+ * Node refuses refused with Node's error. Before this, a realm with no stripper
+ * registered -- the engine under Node -- ran the file as JavaScript and died on
+ * its first type (`Unexpected identifier 'SlackReply'`), and an entry was never
+ * stripped anywhere. A realm that can load neither runs the file as it is.
+ *
+ * `format` is what a load hook named, and it decides instead of the extension
+ * where a hook gave one.
+ */
+function __substrateModuleTypes(code: string, resolvedPath: string, format: string | undefined, process: unknown): string {
+  const typescript = format === undefined
+    ? /[.](?:ts|mts|cts)$/u.test(resolvedPath) && !resolvedPath.endsWith('.d.ts')
+    : format === 'typescript' || format === 'commonjs-typescript' || format === 'module-typescript';
+  if (!typescript) return code;
+  const registered = (globalThis as { __substrateStripTypes?: (code: string, filename: string) => string }).__substrateStripTypes;
+  if (typeof registered === 'function') return registered(code, resolvedPath);
+  if (!canStripTypes()) return code;
+  return stripModuleTypes(code, resolvedPath, process as object);
 }
 /**
  * The name the script of a module's body carries.
@@ -1775,7 +1801,7 @@ function createRequire(
   const prepareModuleCode = (rawCode: string, resolvedPath: string, format?: string): string => {
     // Check processed code cache (useful for HMR when module cache is cleared but code hasn't changed)
     // Use a simple hash of the content for cache key to handle content changes
-    const codeCacheKey = `${resolvedPath}|${format ?? ''}|${simpleHash(rawCode)}`;
+    const codeCacheKey = `${resolvedPath}|${format ?? ''}|${transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }) ? 'transform-types|' : ''}${simpleHash(rawCode)}`;
     let code = processedCodeCache?.get(codeCacheKey);
 
     if (!code) {
@@ -1786,16 +1812,7 @@ function createRequire(
         code = code.slice(code.indexOf('\n') + 1);
       }
 
-      // A `.ts`, `.mts` or `.cts` file runs with its types stripped, as Node
-      // runs one since 22.18: the source goes to the type stripper the realm
-      // loaded, amaro, before the module's imports are read. A realm without one
-      // runs the file as it is.
-      const __typescript = format === undefined
-        ? /[.](?:ts|mts|cts)$/u.test(resolvedPath) && !resolvedPath.endsWith('.d.ts')
-        : format === 'typescript' || format === 'commonjs-typescript' || format === 'module-typescript';
-      if (__typescript && typeof (globalThis as any).__substrateStripTypes === 'function') {
-        code = (globalThis as any).__substrateStripTypes(code, resolvedPath) as string;
-      }
+      code = __substrateModuleTypes(code, resolvedPath, format, process);
 
       // Transform ESM to CJS if needed (for .mjs files or ESM that wasn't pre-transformed)
       // transformEsmToCjs uses AST to handle import/export, import.meta, and dynamic imports
@@ -1804,12 +1821,15 @@ function createRequire(
         ? true
         : format === 'module' || format === 'module-typescript'
           ? false
-          : resolvedPath.endsWith('.cjs');
+          : resolvedPath.endsWith('.cjs') || resolvedPath.endsWith('.cts');
       if (!__commonjs) {
         // An ES module is strict wherever it runs; the mark says so to the
         // compile below, which is otherwise sloppy as a CommonJS body is.
+        // The directive shares the body's first line, as Node's one-line
+        // wrapper does, so a frame of an ES module counts the file's own lines;
+        // on a line of its own it put every frame one line below the file's.
         const lowered = transformEsmToCjs(code, resolvedPath);
-        code = lowered === code ? code : `${__substrateModuleMarker}"use strict";\n${lowered}`;
+        code = lowered === code ? code : `${__substrateModuleMarker}"use strict";${lowered}`;
       } else {
         // A `.cjs` module skips the ESM transform, and with it the rewrite of
         // `import(...)` to the engine's dynamic import, so its
@@ -2374,10 +2394,13 @@ export class Runtime {
       code = code.slice(code.indexOf('\n') + 1);
     }
 
+    code = __substrateModuleTypes(code, filename, undefined, this.process);
+
     // Transform ESM to CJS if needed (AST-based, handles import.meta and dynamic imports too)
-    if (!filename.endsWith('.cjs')) {
+    if (!filename.endsWith('.cjs') && !filename.endsWith('.cts')) {
       const lowered = transformEsmToCjs(code, filename);
-      code = lowered === code ? code : `${__substrateModuleMarker}"use strict";\n${lowered}`;
+      // The directive shares the body's first line, as `prepareModuleCode`'s does.
+      code = lowered === code ? code : `${__substrateModuleMarker}"use strict";${lowered}`;
     } else {
       // A `.cjs` module skips the ESM transform, and with it the rewrite of
       // `import(...)` to the engine's dynamic import, so its

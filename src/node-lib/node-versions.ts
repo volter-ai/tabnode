@@ -25,10 +25,13 @@ export function nodeVersions(node: string = NODE_LTS_VERSION): {
   uv: string;
   webcontainer: string;
   openssl: string;
+  amaro: string;
 } {
   // `https.js` calls `assertCrypto()`, which is `!process.versions.openssl`.
   // The engine has crypto (the noble-hashes binding); Node reports openssl
   // whenever it does. A worker compiles `internal/util` against this table
   // before any guest process exists, so the name has to live here.
-  return { node, v8: "11.3.244.8", uv: "1.44.2", webcontainer: "1", openssl: "3.0.15" };
+  // `amaro` is the type stripper a `.ts` file runs through, the release Node
+  // v22.18.0 carries; `internal/util` reads it for `assertTypeScript()`.
+  return { node, v8: "11.3.244.8", uv: "1.44.2", webcontainer: "1", openssl: "3.0.15", amaro: "1.1.0" };
 }

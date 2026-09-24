@@ -26,6 +26,7 @@ import {
   internalAbortController, internalBlob, internalFile, internalWebStreamsAdapters, createWebStreamsAdapters,
 } from './buffer-and-streams';
 import { internalBootstrapRealm, internalUrl, internalEncoding } from './modules';
+import { internalAmaro } from './amaro';
 
 /** Built on the first ask, for the reason `./binding/index.ts` gives. */
 // eslint-disable-next-line no-var, vars-on-top
@@ -69,6 +70,7 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   'internal/process/warning': () => internalProcessWarning,
   'internal/source_map/source_map_cache': () => internalSourceMapCache,
   'internal/deps/undici/undici': () => internalUndici,
+  'internal/deps/amaro/dist/index': () => internalAmaro(),
   'internal/readline/interface': () => internalReadlineInterface,
   'internal/worker/js_transferable': () => internalJsTransferable,
 };;
