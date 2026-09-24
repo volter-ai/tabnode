@@ -4,6 +4,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A host can start the frame documents its servers serve with a prelude:
+  `init`'s `documentPrelude` is markup the service worker puts first in a
+  frame's HTML document (after its doctype), streamed through, so an
+  embedding's script runs before the document's own. Browser Substrate's
+  sandbox uses it to prepare each preview document for its inspector (init
+  scripts, bindings, the Worker wrapper) before the page's scripts run.
+
 ## v0.5.29 — 2026-09-24
 
 - `AsyncLocalStorage` follows an `await`, as Node's does. A module body the

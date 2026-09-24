@@ -1,7 +1,7 @@
 /**
  * Service Worker for Mini WebContainers
  * Intercepts fetch requests and routes them to virtual servers
- * Version: 16 - a host per page: each page's channel, servers and preview are its own
+ * Version: 17 - a host's document prelude: its frames' documents start with it
  */
 
 const DEBUG = false;
@@ -158,6 +158,9 @@ self.addEventListener('message', (event) => {
       if (hosts.get(host.id) === host && host.port === initializedPort) handleMainMessage(host, message);
     };
     if (data && Array.isArray(data.ownDocuments)) host.ownDocuments = new Set(data.ownDocuments.map((path) => ownPath(String(path))));
+    // Markup a frame's document served from this host's servers starts with
+    // (after its doctype): the page's first script, before the document's own.
+    host.documentPrelude = data && typeof data.documentPrelude === 'string' && data.documentPrelude ? data.documentPrelude : null;
     DEBUG && console.log('[SW] Initialized communication channel with transferred port');
     // Re-claim clients so that pages opened after SW activation get controlled.
     // Without this, controllerchange never fires for late-arriving pages.
@@ -664,7 +667,7 @@ self.addEventListener('fetch', (event) => {
         const targetPath = url.pathname + url.search;
         if (context.prefix === null) {
           DEBUG && console.log('[SW] Answering a root request from the virtual server:', url.pathname);
-          return handleRootedRequest(event, context.port, targetPath);
+          return withDocumentPrelude(event, await handleRootedRequest(event, context.port, targetPath));
         }
         if (event.request.mode === 'navigate') {
           DEBUG && console.log('[SW] Redirecting navigation from virtual context:', url.pathname);
@@ -683,8 +686,53 @@ self.addEventListener('fetch', (event) => {
   const port = parseInt(match[1], 10);
   const path = match[2] || '/';
 
-  event.respondWith(handleVirtualRequest(event.request, port, path + url.search));
+  event.respondWith(handleVirtualRequest(event.request, port, path + url.search).then((response) => withDocumentPrelude(event, response)));
 });
+
+/**
+ * A frame's HTML document from a host's servers, with the host's prelude
+ * first: after a leading doctype (so the document keeps its mode), else at
+ * the very start, where the parser puts a script into the head it makes.
+ */
+async function withDocumentPrelude(event, response) {
+  const request = event.request;
+  if (request.mode !== 'navigate' || (request.destination !== 'iframe' && request.destination !== 'frame')) return response;
+  if (!response.body || !/text\/html/i.test(response.headers.get('content-type') || '')) return response;
+  let host = null;
+  try { host = await hostForEvent(event); } catch (e) { /* no host */ }
+  const prelude = host && host.documentPrelude;
+  if (!prelude) return response;
+  const encoder = new TextEncoder();
+  const inserted = encoder.encode(prelude);
+  let pending = new Uint8Array(0);
+  let done = false;
+  const release = (controller, cut) => {
+    controller.enqueue(pending.subarray(0, cut));
+    controller.enqueue(inserted);
+    controller.enqueue(pending.subarray(cut));
+    pending = new Uint8Array(0);
+    done = true;
+  };
+  const body = response.body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      if (done) { controller.enqueue(chunk); return; }
+      const joined = new Uint8Array(pending.length + chunk.length);
+      joined.set(pending); joined.set(chunk, pending.length);
+      pending = joined;
+      const head = new TextDecoder().decode(pending.subarray(0, 2048));
+      const doctype = /^\uFEFF?\s*<!doctype[^>]*>/i.exec(head);
+      if (doctype) { release(controller, encoder.encode(doctype[0]).length); return; }
+      // A doctype still arriving waits for its end; anything else is no doctype.
+      const start = head.replace(/^\uFEFF?\s*/, '');
+      if (pending.length < 2048 && ('<!doctype'.startsWith(start.toLowerCase()) || /^<!doctype/i.test(start))) return;
+      release(controller, 0);
+    },
+    flush(controller) { if (!done) release(controller, 0); },
+  }));
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
+}
 
 /**
  * Handle a request to a virtual server
