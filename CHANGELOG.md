@@ -4,6 +4,18 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.20 — 2026-09-24
+
+- `https.createServer` serves. Node's own `https.js` calls `tls.Server` on its
+  instance, and the stub was a class, so the call threw `Class constructor
+  Server cannot be invoked without 'new'`; Playwright's own test suite starts
+  an https test server in every worker and failed there. A TLS server is now a
+  net server on the tab's loopback that hands each connection on as secure
+  (`socket.encrypted`), and a TLS connect or `https` request to a loopback
+  port pairs with it. The bytes cross unencrypted: nothing lies between the
+  two ends, and the browser holds TLS wherever there is a wire. A TLS connect
+  to any other host still fails with `ERR_TLS_UNAVAILABLE`.
+
 ## v0.5.19 — 2026-09-24
 
 - `require('stream/web').ReadableStream` is `globalThis.ReadableStream` again,
