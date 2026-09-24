@@ -236,4 +236,27 @@ describe('crypto module', () => {
       expect(hash.length).toBe(128); // SHA-512 = 64 bytes = 128 hex chars
     });
   });
+
+  describe('generateKeyPair', () => {
+    // jose's Node build promisifies generateKeyPair when it loads; without it,
+    // any module that imported jose failed at import.
+    it('promisifies to { publicKey, privateKey } as Node does', async () => {
+      const { promisify } = await import('node:util');
+      const { publicKey, privateKey } = await promisify(crypto.generateKeyPair)('ec', { namedCurve: 'prime256v1' }) as { publicKey: { type: string }; privateKey: { type: string } };
+      expect(publicKey.type).toBe('public');
+      expect(privateKey.type).toBe('private');
+    });
+
+    it('encodes the pair as PEM when asked', async () => {
+      const { publicKey, privateKey } = await new Promise<{ publicKey: string; privateKey: string }>((resolve, reject) =>
+        crypto.generateKeyPair('ed25519', { publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } },
+          (error, publicKey, privateKey) => error ? reject(error) : resolve({ publicKey: publicKey as string, privateKey: privateKey as string })));
+      expect(publicKey).toMatch(/^-----BEGIN PUBLIC KEY-----\n/);
+      expect(privateKey).toMatch(/^-----BEGIN PRIVATE KEY-----\n/);
+    });
+
+    it('refuses an unknown type synchronously, as Node does', () => {
+      expect(() => crypto.generateKeyPair('dsa-nope', {}, () => undefined)).toThrow(/type/);
+    });
+  });
 });

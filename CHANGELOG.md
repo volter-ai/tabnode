@@ -4,6 +4,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.22 — 2026-09-24
+
+- `crypto.generateKeyPair` exists, done by WebCrypto for `ec` (P-256, P-384,
+  P-521), `rsa`, `rsa-pss`, `ed25519` and `x25519`, returning `KeyObject`s or
+  `spki`/`pkcs8` PEM and DER, with Node's custom promisify resolving
+  `{ publicKey, privateKey }`. jose's Node build promisifies it when it loads,
+  so any module importing jose (Dub's middleware among them) failed at import.
+  `generateKeyPairSync` stays absent: a browser has no synchronous key generation.
+
 ## v0.5.21 — 2026-09-24
 
 - A child writing to its parent's file descriptor shares one offset with every

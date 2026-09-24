@@ -801,6 +801,92 @@ function createPrivateKey(key: KeyLike): KeyObject {
 }
 
 // ============================================================================
+// generateKeyPair: Node's asynchronous key generation, done by WebCrypto.
+// A browser has no synchronous key generation, so generateKeyPairSync stays
+// absent; the callback form and its promisified form (which resolves
+// { publicKey, privateKey }, as Node's custom promisify does) are complete for
+// the types WebCrypto generates. jose's Node build promisifies this function
+// when it loads, so its absence failed any module that imported jose.
+// ============================================================================
+
+type KeyEncoding = { type?: string; format?: string };
+type KeyPairOptions = { modulusLength?: number; publicExponent?: number; namedCurve?: string; publicKeyEncoding?: KeyEncoding; privateKeyEncoding?: KeyEncoding };
+
+const NAMED_CURVES: Record<string, string> = {
+  'prime256v1': 'P-256', 'p-256': 'P-256', 'secp256r1': 'P-256',
+  'secp384r1': 'P-384', 'p-384': 'P-384',
+  'secp521r1': 'P-521', 'p-521': 'P-521',
+};
+
+function keyPairAlgorithm(type: string, options: KeyPairOptions): { generate: AlgorithmIdentifier & Record<string, unknown>; usages: KeyUsage[]; name: string } {
+  const exponent = (value: number | undefined): Uint8Array => {
+    let rest = value ?? 0x10001;
+    const bytes: number[] = [];
+    while (rest > 0) { bytes.unshift(rest & 0xff); rest = Math.floor(rest / 256); }
+    return new Uint8Array(bytes);
+  };
+  switch (type) {
+    case 'rsa':
+    case 'rsa-pss': {
+      if (!Number.isInteger(options.modulusLength)) throw Object.assign(new TypeError('The "options.modulusLength" property must be of type number.'), { code: 'ERR_INVALID_ARG_TYPE' });
+      const name = type === 'rsa' ? 'RSASSA-PKCS1-v1_5' : 'RSA-PSS';
+      return { generate: { name, modulusLength: options.modulusLength, publicExponent: exponent(options.publicExponent), hash: 'SHA-256' }, usages: ['sign', 'verify'], name: type === 'rsa' ? 'RSA-SHA256' : 'RSA-PSS' };
+    }
+    case 'ec': {
+      const curve = NAMED_CURVES[String(options.namedCurve ?? '').toLowerCase()];
+      if (!curve) throw Object.assign(new TypeError(`Invalid EC curve name ${String(options.namedCurve)}`), { code: 'ERR_CRYPTO_INVALID_CURVE' });
+      return { generate: { name: 'ECDSA', namedCurve: curve }, usages: ['sign', 'verify'], name: curve === 'P-256' ? 'ES256' : curve === 'P-384' ? 'ES384' : 'ES512' };
+    }
+    case 'ed25519':
+      return { generate: { name: 'Ed25519' }, usages: ['sign', 'verify'], name: 'Ed25519' };
+    case 'x25519':
+      return { generate: { name: 'X25519' }, usages: ['deriveBits'], name: 'X25519' };
+    default:
+      throw Object.assign(new TypeError(`The argument 'type' must be a supported key type. Received '${type}'`), { code: 'ERR_INVALID_ARG_VALUE' });
+  }
+}
+
+function encodedKey(der: ArrayBuffer, encoding: KeyEncoding, kind: 'public' | 'private'): string | Buffer {
+  const expected = kind === 'public' ? 'spki' : 'pkcs8';
+  if (encoding.type !== undefined && encoding.type !== expected) {
+    unsupported(`Encoding a ${kind} key as ${encoding.type}`);
+  }
+  const bytes = Buffer.from(der);
+  if (encoding.format === 'der') return bytes;
+  if (encoding.format !== 'pem') unsupported(`Encoding a key in the ${String(encoding.format)} format`);
+  const label = kind === 'public' ? 'PUBLIC KEY' : 'PRIVATE KEY';
+  const body = bytes.toString('base64').match(/.{1,64}/g)!.join('\n');
+  return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----\n`;
+}
+
+async function generateKeyPairAsync(type: string, options: KeyPairOptions): Promise<{ publicKey: KeyObject | string | Buffer; privateKey: KeyObject | string | Buffer }> {
+  const algorithm = keyPairAlgorithm(type, options);
+  const pair = await crypto.subtle.generateKey(algorithm.generate as AlgorithmIdentifier, true, algorithm.usages) as CryptoKeyPair;
+  const publicKey = options.publicKeyEncoding
+    ? encodedKey(await crypto.subtle.exportKey('spki', pair.publicKey), options.publicKeyEncoding, 'public')
+    : new KeyObject('public', pair.publicKey, algorithm.name);
+  const privateKey = options.privateKeyEncoding
+    ? encodedKey(await crypto.subtle.exportKey('pkcs8', pair.privateKey), options.privateKeyEncoding, 'private')
+    : new KeyObject('private', pair.privateKey, algorithm.name);
+  return { publicKey, privateKey };
+}
+
+function generateKeyPair(type: string, options: KeyPairOptions | ((error: Error | null, publicKey?: unknown, privateKey?: unknown) => void), callback?: (error: Error | null, publicKey?: unknown, privateKey?: unknown) => void): void {
+  if (typeof options === 'function') { callback = options; options = {}; }
+  if (typeof callback !== 'function') throw Object.assign(new TypeError('The "callback" argument must be of type function.'), { code: 'ERR_INVALID_ARG_TYPE' });
+  const done = callback;
+  // Argument errors throw synchronously, as Node's do.
+  keyPairAlgorithm(type, options ?? {});
+  generateKeyPairAsync(type, options ?? {}).then(
+    ({ publicKey, privateKey }) => done(null, publicKey, privateKey),
+    (error) => done(error instanceof Error ? error : new Error(String(error))),
+  );
+}
+Object.defineProperty(generateKeyPair, Symbol.for('nodejs.util.promisify.custom'), {
+  value: (type: string, options?: KeyPairOptions) => generateKeyPairAsync(type, options ?? {}),
+});
+
+// ============================================================================
 // Utility functions
 // ============================================================================
 
@@ -1067,10 +1153,11 @@ return {
   createSecretKey,
   createPublicKey,
   createPrivateKey,
+  generateKeyPair,
 };
 
 }
 const cryptoModule = createCryptoModule();
-export const { randomBytes, randomFillSync, randomFill, randomUUID, randomInt, getRandomValues, unsupported, createHash, createHmac, hash, pbkdf2Sync, pbkdf2, sign, verify, createSign, createVerify, KeyObject, createSecretKey, createPublicKey, createPrivateKey, timingSafeEqual, getCiphers, getHashes } = cryptoModule;
+export const { randomBytes, randomFillSync, randomFill, randomUUID, randomInt, getRandomValues, unsupported, createHash, createHmac, hash, pbkdf2Sync, pbkdf2, sign, verify, createSign, createVerify, KeyObject, createSecretKey, createPublicKey, createPrivateKey, generateKeyPair, timingSafeEqual, getCiphers, getHashes } = cryptoModule;
 export type KeyObject = InstanceType<typeof KeyObject>;
 export default cryptoModule;
