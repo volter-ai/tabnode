@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.34 — 2026-09-24
+
+- A write at a file's end is an append that costs what it adds. A descriptor's
+  write rebuilt the whole file for every chunk, so a 50 MB file written in 1 KB
+  stream chunks copied about a terabyte; `VirtualFS.appendFileSync` takes the
+  added bytes (in memory, in a buffer with room to grow), and an embedding's
+  tree can answer appends itself. Read in a tab: 20 MB in 1 KB chunks, 4.6 s.
+
 ## v0.5.33 — 2026-09-24
 
 - A module body the loader keeps is written under its name in one step. In
