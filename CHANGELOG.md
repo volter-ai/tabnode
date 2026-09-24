@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.21 — 2026-09-24
+
 - A child writing to its parent's file descriptor shares one offset with every
   other writer of that open file, as a dup'd descriptor does: stdout and
   stderr handed the same file no longer overwrite each other from one
