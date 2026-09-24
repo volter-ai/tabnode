@@ -4,6 +4,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.33 — 2026-09-24
+
+- A module body the loader keeps is written under its name in one step. In
+  0.5.32 it was written under a half name and renamed, and the rename failed
+  in a forked process's realm (Playwright's test workers), so those bodies
+  were left half-named and never kept.
+
 ## v0.5.32 — 2026-09-24
 
 - A module body the loader prepares for a file the image carries none for
