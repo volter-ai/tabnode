@@ -363,8 +363,8 @@ function trailingCallback(args: readonly unknown[]): (() => void) | undefined {
 }
 
 /** The signal numbers a guest sees, and the signals a tab must ignore. */
-const __substrateSignals: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGWINCH: 28 };
-const __substrateSignalNames: Record<number, string> = Object.fromEntries(Object.entries(__substrateSignals).map(([name, number]) => [number, name]));
+export const __substrateSignals: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGWINCH: 28 };
+export const __substrateSignalNames: Record<number, string> = Object.fromEntries(Object.entries(__substrateSignals).map(([name, number]) => [number, name]));
 // Node prints the `process.binding` deprecation once per process; the engine
 // runs many guests in one realm, so the record is per guest, not per load.
 const __substrateBindingWarned = new WeakSet<object>();

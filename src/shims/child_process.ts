@@ -70,6 +70,8 @@ import { Runtime, pendingGuestTimers, stopGuestTimers, __substratePendingOf } fr
 import { __nodeResolverFor } from '../node-resolver';
 import { resolve as __resolvePath } from './path';
 import { setSyncChildVfs, warmSyncChild } from './sync-child';
+import { installShellJobs } from './shell-jobs';
+import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
 
 // Capture host capabilities before the guest's authority is restricted. These
@@ -1036,6 +1038,9 @@ export function initChildProcess(vfs: VirtualFS): void {
     },
     customCommands: [nodeCommand, npmCommand],
   });
+  // A statement ending in `&` runs in the background, with `$!`, `wait` and
+  // `kill` over the engine's process table (`shell-jobs.ts` says how).
+  installShellJobs(bashInstance, { runTokenOf, runStreamsFor, registerRunStreams, releaseRunStreams });
   shells.set(tree, { bash: bashInstance, adapter: vfsAdapter });
 
   if (processRunnerInstalled) return;
@@ -1805,11 +1810,11 @@ function startChildRun(request: RunRequest): StartedRun {
     }
   };
 
-  let streamedOut = 0;
-  let streamedErr = 0;
+  const streamedOut: string[] = [];
+  const streamedErr: string[] = [];
   const streams: RunStreams = {
-    onStdout: (data: string) => { streamedOut += data.length; request.stdout?.(data); },
-    onStderr: (data: string) => { streamedErr += data.length; request.stderr?.(data); },
+    onStdout: (data: string) => { streamedOut.push(data); request.stdout?.(data); },
+    onStderr: (data: string) => { streamedErr.push(data); request.stderr?.(data); },
     signal: controller.signal,
     held: false,
     stdinOpen: request.stdinIsPipe,
@@ -1899,9 +1904,12 @@ function startChildRun(request: RunRequest): StartedRun {
       }
       // A command the engine's shell ran to the end and did not stream --
       // every builtin -- delivers its output here; the `node` command streamed
-      // its own as it went, and only what it has not already sent is left.
-      if (outcome.stdout.length > streamedOut) request.stdout?.(outcome.stdout.slice(streamedOut));
-      if (outcome.stderr.length > streamedErr) request.stderr?.(outcome.stderr.slice(streamedErr));
+      // its own as it went, and only what it has not already sent is left
+      // (`streamed-output.ts` says why that is not a cut at a length).
+      const restOut = unstreamedOutput(outcome.stdout, streamedOut);
+      const restErr = unstreamedOutput(outcome.stderr, streamedErr);
+      if (restOut) request.stdout?.(restOut);
+      if (restErr) request.stderr?.(restErr);
       end(outcome.exitCode, outcome.signal ?? null);
     })();
   };

@@ -237,6 +237,12 @@ export function forgetRunPid(token: ProcessToken): void {
   pidsOfRuns.delete(token);
 }
 
+/** The named run a pid belongs to in this realm, for a signal sent by number (the shell's `kill`). */
+export function tokenOfPid(pid: number): ProcessToken | null {
+  for (const [token, numbers] of pidsOfRuns) if (numbers.pid === pid) return token;
+  return null;
+}
+
 /** Whether a live run carries this number, which is what `kill(pid, 0)` asks. */
 export function pidIsLive(pid: number): boolean {
   return processRegistry.lookup(pid) !== undefined;

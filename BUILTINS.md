@@ -27,7 +27,7 @@ from .58.
 |---|---|---|---|
 | `path` | no tests of its own here | none; it is pure | |
 | `net` | 109 of 151 | `tcp_wrap`, `pipe_wrap`, `stream_wrap`: the engine's loopback pairing and its port registry | a third are the harness's (`internal/test/binding`, `node:test`, `process.send`, `process.getuid`, `--expose-internals`); the rest are the binding's synchronous writes, which queue nothing, so `bufferSize`, `bytesWritten` mid-write, `drain` and cork batching read 0, and the `autoSelectFamily` timing tests, which need a second address family to race |
-| `child_process` | 63 of 109 | `process_wrap`, `spawn_sync`, `tty_wrap`, the IPC flavour of `pipe_wrap` | signals, timeouts and buffer limits on synchronous children, which run on a thread with no process to kill (`ROADMAP.md`); the harness's `node:test` and `--expose-internals` |
+| `child_process` | 72 of 109 | `process_wrap`, `spawn_sync`, `tty_wrap`, the IPC flavour of `pipe_wrap` | signals, timeouts and buffer limits on synchronous children, which run on a thread with no process to kill (`ROADMAP.md`); the harness's `node:test` and `--expose-internals` |
 | `stream` | 158 of 171 | none; eighteen `internal/streams/*` files over `events`, `buffer` and `string_decoder` | the harness's `node:test` |
 | `buffer` | 50 of 64 | `buffer`: encode, decode, compare, search, fill, copy, swap over `TextEncoder` and `TextDecoder` | the harness's `--expose-internals`; a few `inspect` details |
 | `events` | 2 of 9 | none; `internal/event_target`'s two questions are answered over the realm's `EventTarget` | four are the harness's (`--expose-internals` for `internal/event_target`, `node:test`); two need an `EventTarget` whose listeners can be enumerated, which the DOM does not allow; one reads a stack shape |
