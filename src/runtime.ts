@@ -118,6 +118,29 @@ function __substrateGuestConstructor(Constructor: unknown, process: Process): un
   } });
 }
 /**
+ * `vm.runInThisContext` runs its script in the calling process's global scope,
+ * as Node's does. The shim evaluated it in the host's, so a script saw the
+ * worker's own timers: jiti evaluates every module it loads this way, and
+ * pi-mcp-adapter's `setInterval(...).unref()` threw "unref is not a function"
+ * because the browser's `setInterval` returns a number. The script runs inside
+ * the process's guest global, as a guest `Function` does
+ * (`__substrateGuestConstructor`).
+ */
+const __substrateScriptScope = Function("__substrateScriptGlobals", "__substrateScriptSource", "with (__substrateScriptGlobals) { return eval(__substrateScriptSource); }");
+const __substrateGuestVms = new WeakMap<Process, unknown>();
+function __substrateGuestVm(process: Process): unknown {
+  let vm = __substrateGuestVms.get(process);
+  if (vm) return vm;
+  const run = (code: string): unknown => __substrateScriptScope(__substrateGuestGlobal(process), String(code));
+  class Script extends vmShim.Script {
+    override runInThisContext(_options?: object): unknown { return run((this as unknown as { code: string }).code); }
+  }
+  vm = { ...vmShim, Script, runInThisContext: (code: string, _options?: object) => run(code), default: undefined };
+  (vm as { default: unknown }).default = vm;
+  __substrateGuestVms.set(process, vm);
+  return vm;
+}
+/**
  * A `.ts`, `.mts` or `.cts` file runs with its types stripped, as Node runs
  * one since 22.18, before the module's imports are read -- the entry a `node`
  * command names and every module it loads alike. A page that loaded a
@@ -456,8 +479,12 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
     // A `.cjs` module skips the ESM transform, and with it the rewrite of
     // `import(...)` to the engine's dynamic import, so its
     // `import("fs/promises")` reached the browser's own import and failed on
-    // the bare specifier. The dynamic-import rewrite applies to `.cjs` too.
-    code = transformDynamicImportsRegex(code);
+    // the bare specifier. The dynamic-import rewrite applies to `.cjs` too,
+    // from the syntax tree as for every other CommonJS module: the text
+    // rewrite also renamed a method called `import`, and jiti's
+    // `async import(e,t){...}` became `__dynamicImport`, so `jiti.import` was
+    // undefined and every Pi extension failed to load.
+    code = __substrateRewriteDynamicImportsInScript(code);
   }
 
   return code;
@@ -724,6 +751,27 @@ async function __substrateImportChain(
     format: context.format,
   }));
   return doors.__loadFromURL(resolved.url, loaded.format ?? resolved.format, loaded.source ?? void 0);
+}
+
+/**
+ * A module's `import.meta`: `url`, `dirname`, `filename` and Node's synchronous
+ * `resolve` (Node 20.6+). Pi's extension loader resolves its own packages with
+ * `import.meta.resolve(specifier)`, and without it every Pi extension failed to
+ * load with "import_meta.resolve is not a function". A relative or URL specifier
+ * resolves against the module's URL, a builtin to `node:<name>`, and a bare one
+ * through the module's own resolver, the one `import()` uses here. Unlike Node,
+ * a relative specifier naming a missing file resolves instead of throwing.
+ */
+function createImportMeta(moduleRequire: RequireFunction, url: string, dirname: string, filename: string): Record<string, unknown> {
+  const resolve = (specifier: unknown, parent?: unknown): string => {
+    const id = typeof specifier === 'string' ? specifier : String(specifier);
+    const base = parent === undefined ? url : String(parent);
+    if (id.startsWith('./') || id.startsWith('../') || id.startsWith('/')) return new URL(id, base).href;
+    if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(id)) return id.startsWith('node:') ? id : new URL(id).href;
+    if (Object.prototype.hasOwnProperty.call(builtinModules, id)) return `node:${id}`;
+    return 'file://' + moduleRequire.resolve(id);
+  };
+  return { url, dirname, filename, resolve };
 }
 
 function createDynamicImport(moduleRequire: RequireFunction, process: Process, parentURL?: string): (specifier: unknown) => Promise<unknown> {
@@ -1962,7 +2010,7 @@ function createRequire(
         dirname,
         process,
         consoleWrapper,
-        { url: importMetaUrl, dirname, filename: resolvedPath },
+        createImportMeta(moduleRequire, importMetaUrl, dirname, resolvedPath),
         dynamicImport,
         __substrateGuestGlobal,
         __substrateGuestConstructor
@@ -2129,6 +2177,11 @@ function createRequire(
     }
     if (id === 'module') {
       return __substrateModule();
+    }
+    // Ahead of the per-process builtin table: node-lib's own modules require
+    // `vm` first and that table keeps the first answer for the process.
+    if (id === 'vm') {
+      return __substrateGuestVm(process);
     }
     if (id === 'wasi') {
       return __substrateGuestWasi(fsShim, process);
@@ -2445,8 +2498,12 @@ export class Runtime {
       // A `.cjs` module skips the ESM transform, and with it the rewrite of
       // `import(...)` to the engine's dynamic import, so its
       // `import("fs/promises")` reached the browser's own import and failed on
-      // the bare specifier. The dynamic-import rewrite applies to `.cjs` too.
-      code = transformDynamicImportsRegex(code);
+      // the bare specifier. The dynamic-import rewrite applies to `.cjs` too,
+      // from the syntax tree as for every other CommonJS module: the text
+      // rewrite also renamed a method called `import`, and jiti's
+      // `async import(e,t){...}` became `__dynamicImport`, so `jiti.import` was
+      // undefined and every Pi extension failed to load.
+      code = __substrateRewriteDynamicImportsInScript(code);
     }
 
     // Execute code
@@ -2492,7 +2549,7 @@ export class Runtime {
         dirname,
         this.process,
         consoleWrapper,
-        { url: importMetaUrl, dirname, filename },
+        createImportMeta(require, importMetaUrl, dirname, filename),
         dynamicImport,
         __substrateGuestGlobal,
         __substrateGuestConstructor

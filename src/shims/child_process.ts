@@ -1143,7 +1143,26 @@ function readPackageJson(cwd: string): { pkgJson: PackageJson; error?: undefined
  * Handle `npm run [script]` — execute a script from package.json
  */
 async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBashExecResult> {
-  const scriptName = args[0];
+  // npm's own options come before the script's name and are npm's
+  // (`npm run --silent vgai -- mcp .`, as a project's `.mcp.json` launches its
+  // server); what follows the name goes to the script, everything after `--`
+  // untouched. The name used to be `args[0]`, so `--silent` was looked up as a
+  // script, and the script's own arguments were dropped.
+  let scriptName: string | undefined;
+  let silent = false;
+  let ifPresent = false;
+  const passed: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === '--') { if (scriptName !== undefined) passed.push(...args.slice(index + 1)); break; }
+    if (arg.startsWith('-') && arg !== '-') {
+      if (arg === '--silent' || arg === '-s' || arg === '--quiet' || arg === '-q' || arg === '--loglevel=silent') silent = true;
+      else if (arg === '--if-present') ifPresent = true;
+      continue;
+    }
+    if (scriptName === undefined) scriptName = arg;
+    else passed.push(arg);
+  }
 
   // "npm run" with no script name: list available scripts
   if (!scriptName) {
@@ -1158,6 +1177,7 @@ async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBa
   const scriptCommand = scripts[scriptName];
 
   if (!scriptCommand) {
+    if (ifPresent) return { stdout: '', stderr: '', exitCode: 0 };
     const available = Object.keys(scripts);
     let msg = `npm ERR! Missing script: "${scriptName}"\n`;
     if (available.length > 0) {
@@ -1193,7 +1213,7 @@ async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBa
   // Run pre<script> if it exists
   const preScript = scripts[`pre${scriptName}`];
   if (preScript) {
-    allStderr += `\n> ${label} pre${scriptName}\n> ${preScript}\n\n`;
+    if (!silent) allStderr += `\n> ${label} pre${scriptName}\n> ${preScript}\n\n`;
     const preResult = await ctx.exec(preScript, { cwd: ctx.cwd, env: npmEnv });
     allStdout += preResult.stdout;
     allStderr += preResult.stderr;
@@ -1202,9 +1222,14 @@ async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBa
     }
   }
 
-  // Run the main script
-  allStderr += `\n> ${label} ${scriptName}\n> ${scriptCommand}\n\n`;
-  const mainResult = await ctx.exec(scriptCommand, { cwd: ctx.cwd, env: npmEnv });
+  // Run the main script, with the arguments npm passes it, each quoted.
+  const command = passed.length > 0
+    ? `${scriptCommand} ${passed.map((arg) => /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`).join(' ')}`
+    : scriptCommand;
+  if (!silent) allStderr += `\n> ${label} ${scriptName}\n> ${command}\n\n`;
+  // The script reads npm's standard input: a `.mcp.json` server launched as
+  // `npm run … -- serve` speaks JSON-RPC on it.
+  const mainResult = await ctx.exec(command, { cwd: ctx.cwd, env: npmEnv, ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}) });
   allStdout += mainResult.stdout;
   allStderr += mainResult.stderr;
 
@@ -1215,7 +1240,7 @@ async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBa
   // Run post<script> if it exists
   const postScript = scripts[`post${scriptName}`];
   if (postScript) {
-    allStderr += `\n> ${label} post${scriptName}\n> ${postScript}\n\n`;
+    if (!silent) allStderr += `\n> ${label} post${scriptName}\n> ${postScript}\n\n`;
     const postResult = await ctx.exec(postScript, { cwd: ctx.cwd, env: npmEnv });
     allStdout += postResult.stdout;
     allStderr += postResult.stderr;

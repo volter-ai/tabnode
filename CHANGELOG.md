@@ -4,6 +4,26 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.28 — 2026-09-24
+
+- `import.meta.resolve(specifier)` exists, as Node's synchronous one has since
+  20.6: a relative or URL specifier resolves against the module's URL, a
+  builtin to `node:<name>`, a bare one through the module's resolver. Pi's
+  extension loader resolves its own packages with it, and every Pi extension
+  failed to load with "import_meta.resolve is not a function".
+- A `.cjs` module's dynamic `import()` is rewritten from its syntax tree, as
+  every other CommonJS module's is. The text rewrite also renamed a method
+  called `import`, so jiti's `async import(e, t)` became `__dynamicImport` and
+  `jiti.import` was undefined.
+- `vm.runInThisContext` (and a `vm.Script`'s) runs in the calling process's
+  global scope, so a script sees Node's timers: jiti evaluates every module it
+  loads this way, and a module's `setInterval(...).unref()` threw.
+- `npm run` takes npm's options before the script's name (`npm run --silent
+  vgai -- mcp .` looked up `--silent` as the script), passes the arguments
+  after the name and after `--` to the script, which it dropped, suppresses
+  its banner under `--silent`, succeeds under `--if-present` when the script is
+  missing, and hands the script its standard input.
+
 ## v0.5.27 — 2026-09-24
 
 - `@volter/tabnode/port-bridge` is the page's side of the service worker
