@@ -86,6 +86,7 @@
 - [http](variables/http.md)
 - [https](variables/https.md)
 - [net](variables/net.md)
+- [PREPARED\_MODULES\_DIR](variables/PREPARED_MODULES_DIR.md)
 - [stream](variables/stream.md)
 - [util](variables/util.md)
 
@@ -109,6 +110,8 @@
 - [nodeProcessHostInstalled](functions/nodeProcessHostInstalled.md)
 - [ownerProcessRegistryScope](functions/ownerProcessRegistryScope.md)
 - [ownerProcessTable](functions/ownerProcessTable.md)
+- [preparedModuleKey](functions/preparedModuleKey.md)
+- [prepareModuleForImage](functions/prepareModuleForImage.md)
 - [processByPid](functions/processByPid.md)
 - [requestHasStaticBody](functions/requestHasStaticBody.md)
 - [resetServerBridge](functions/resetServerBridge.md)
