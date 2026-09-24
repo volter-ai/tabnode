@@ -66,7 +66,7 @@ import * as domainShim from './shims/domain';
 import { createWasiModule, type WasiHostFs, type WasiModule } from './shims/wasi';
 
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
-import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __cjsObject, __substrateHasEsmSyntax } from './code-transforms';
+import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __cjsObject } from './code-transforms';
 import { applySourceEdits } from './source-edits';
 import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typescript-module';
 import * as acorn from 'acorn';
@@ -200,8 +200,11 @@ function __substrateScopeGlobalCallsUncached(code: string): string {
   let ast;
   try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true }); }
   catch { return code; }
+  return applySourceEdits(code, __substrateScopeEdits(code, ast).sort((a,b) => b[0] - a[0]));
+}
+function __substrateScopeEdits(code: string, ast: any): Array<[number, number, string]> {
   const positions: Array<[number, number, string]> = [];
-  walkAst(ast, node => {
+  walkAst(ast, (node: any) => {
     // A function's source is also data: a program sends `String(fn)` to be
     // run elsewhere (a browser page, a worker), where the module wrapper's
     // names do not exist. The rewrite is the original `new` there.
@@ -215,7 +218,7 @@ function __substrateScopeGlobalCallsUncached(code: string): string {
     const called = node.type === "CallExpression" ? node.callee : node.type === "TaggedTemplateExpression" ? node.tag : undefined;
     if (called?.type === "Identifier" && (called.name === "fetch" || called.name === "Promise")) positions.push([called.start, called.end, "(0," + code.slice(called.start, called.end) + ")"]);
   });
-  return applySourceEdits(code, positions.sort((a,b) => b[0] - a[0]));
+  return positions;
 }
 /**
  * Work the host is doing for a guest, counted while it is outstanding.
@@ -413,21 +416,27 @@ function transformDynamicImportsRegex(code: string): string {
  * the engine's loader call inside webpack's generated entry, where webpack then
  * saw no import at all.
  */
-function __substrateRewriteDynamicImportsInScript(code: string): string {
+function __substrateRewriteDynamicImportsInScript(code: string, parsed?: unknown): string {
   if (!/(?<![.$\w#])(?:import|eval)\s*\(/.test(code)) return code;
-  let ast;
-  try {
-    ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true, allowHashBang: true, allowAwaitOutsideFunction: true });
-  } catch {
-    return code;
+  let ast = parsed as any;
+  if (!ast) {
+    try {
+      ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true, allowHashBang: true, allowAwaitOutsideFunction: true });
+    } catch {
+      return code;
+    }
   }
+  const replacements = __substrateDynamicImportEdits(ast);
+  if (replacements.length === 0) return code;
+  return applyReplacements(code, replacements);
+}
+function __substrateDynamicImportEdits(ast: any): Array<[number, number, string]> {
   const replacements: Array<[number, number, string]> = [];
   walkAst(ast, (node: any) => {
     if (node.type === "ImportExpression") replacements.push([node.start, node.start + 6, "__dynamicImport"]);
     collectDirectEval(node, replacements);
   });
-  if (replacements.length === 0) return code;
-  return applyReplacements(code, replacements);
+  return replacements;
 }
 
 /**
@@ -457,10 +466,31 @@ Object.defineProperty(globalThis, "__substrateEvalSource", {
   configurable: true,
   value: (source: unknown): unknown => typeof source === "string" ? __substrateRewriteDynamicImportsInScript(source) : source,
 });
+/**
+ * A CommonJS file is parsed once, as a module, to learn it has no import or
+ * export declaration; the same tree gives the `import()` rewrite and the
+ * global-call scoping, which each parsed it again (with the check, 0.9 s of a
+ * 1.2 s `require('playwright-core')` under Node).
+ */
+const __substrateEsmDeclaration = (node: { type: string }): boolean => node.type === "ImportDeclaration"
+  || node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration" || node.type === "ExportAllDeclaration";
 function transformEsmToCjs(code: string, filename: string): string {
-  // Quick check: does the code have any ESM-like patterns?
-  const maybeEsm = __substrateHasEsmSyntax(code);
-  if (!maybeEsm) return __substrateRewriteDynamicImportsInScript(code);
+  // The words are a prefilter; a file the parser cannot read as a module is
+  // judged by them and lowered, as __substrateHasEsmSyntax judges it.
+  if (!/\bimport\b|\bexport\b/.test(code)) return __substrateRewriteDynamicImportsInScript(code);
+  let parsed: any;
+  try { parsed = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true }); } catch { parsed = undefined; }
+  if (parsed && !parsed.body.some(__substrateEsmDeclaration)) {
+    // Both rewrites come off this tree and are applied together. The scoping
+    // rewrite no longer matches its own output (a rewritten callee is not a
+    // bare name), so the result is recorded as already scoped.
+    const edits = /(?<![.$\w#])(?:import|eval)\s*\(/.test(code) ? __substrateDynamicImportEdits(parsed) : [];
+    const scoped = /\b(?:new|fetch|Promise)\b/u.test(code);
+    if (scoped) edits.push(...__substrateScopeEdits(code, parsed));
+    const out = edits.length === 0 ? code : applySourceEdits(code, edits.sort((a, b) => b[0] - a[0] || b[1] - a[1]));
+    if (scoped) __substrateSharedCode(`scope\u0000${out}`, () => out);
+    return out;
+  }
 
   setNodeLowering(true);
   try {
