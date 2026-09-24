@@ -12,6 +12,8 @@ import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork 
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
 import { simpleHash } from './utils/hash';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { uint8ToBase64, uint8ToHex } from './utils/binary-encoding';
 import { createFsShim, FsShim } from './shims/fs';
 import * as pathShim from './shims/path';
@@ -423,6 +425,66 @@ Object.defineProperty(globalThis, "__substrateEvalSource", {
   configurable: true,
   value: (source: unknown): unknown => typeof source === "string" ? __substrateRewriteDynamicImportsInScript(source) : source,
 });
+/** A file's source made a body: shebang stripped, types stripped, ESM lowered, dynamic imports rewritten. */
+function __substratePrepareBody(rawCode: string, resolvedPath: string, format: string | undefined, process: unknown): string {
+  let code = rawCode;
+
+  // Strip shebang line if present (e.g. #!/usr/bin/env node)
+  if (code.startsWith('#!')) {
+    code = code.slice(code.indexOf('\n') + 1);
+  }
+
+  code = __substrateModuleTypes(code, resolvedPath, format, process);
+
+  // Transform ESM to CJS if needed (for .mjs files or ESM that wasn't pre-transformed)
+  // transformEsmToCjs uses AST to handle import/export, import.meta, and dynamic imports
+  // It also handles already-CJS files safely (AST finds no ESM nodes → no-op)
+  const __commonjs = format === 'commonjs' || format === 'commonjs-typescript'
+    ? true
+    : format === 'module' || format === 'module-typescript'
+      ? false
+      : resolvedPath.endsWith('.cjs') || resolvedPath.endsWith('.cts');
+  if (!__commonjs) {
+    // An ES module is strict wherever it runs; the mark says so to the
+    // compile below, which is otherwise sloppy as a CommonJS body is.
+    // The directive shares the body's first line, as Node's one-line
+    // wrapper does, so a frame of an ES module counts the file's own lines;
+    // on a line of its own it put every frame one line below the file's.
+    const lowered = transformEsmToCjs(code, resolvedPath);
+    code = lowered === code ? code : `${__substrateModuleMarker}"use strict";${lowered}`;
+  } else {
+    // A `.cjs` module skips the ESM transform, and with it the rewrite of
+    // `import(...)` to the engine's dynamic import, so its
+    // `import("fs/promises")` reached the browser's own import and failed on
+    // the bare specifier. The dynamic-import rewrite applies to `.cjs` too.
+    code = transformDynamicImportsRegex(code);
+  }
+
+  return code;
+}
+
+/**
+ * Module bodies prepared where the image is built. Parsing a package's files
+ * for the passes above is most of a `require` in a tab: 36 of 45 s for
+ * playwright-core's, measured in a tab, against 0.9 s under Node on the same
+ * machine. The image carries each body under the hash of the file it was made
+ * from, in this directory of the tab's filesystem, and the loader takes it in
+ * place of the passes when the file it read hashes to one.
+ */
+export const PREPARED_MODULES_DIR = '/.tabnode/prepared';
+const PREPARED_MODULES_FORMAT = 'tabnode-prepared-1';
+/** The name a prepared body goes under: the hash of the file as read, and how it is compiled. Undefined for a file no body is prepared for. */
+export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
+  const extension = /\.(js|cjs|mjs)$/u.exec(resolvedPath)?.[1];
+  if (!extension) return undefined;
+  const kind = extension === 'cjs' ? 'cjs' : 'js';
+  return bytesToHex(sha256(new TextEncoder().encode(`${PREPARED_MODULES_FORMAT}|${kind}|${rawCode}`)));
+}
+/** The body the loader would compile for this file, with no load hooks and no type stripping: what the image carries. */
+export function prepareModuleForImage(rawCode: string, resolvedPath: string): string {
+  return __substrateScopeGlobalCalls(__substratePrepareBody(rawCode, resolvedPath, undefined, { execArgv: [], env: {} }));
+}
+
 function transformEsmToCjs(code: string, filename: string): string {
   // Quick check: does the code have any ESM-like patterns?
   const maybeEsm = __substrateHasEsmSyntax(code);
@@ -1789,6 +1851,14 @@ function createRequire(
     const rawCode = source === undefined || source === null ? defaultSource() : String(source);
     const dirname = resolvedPath.startsWith('data:') ? currentDir : pathShim.dirname(resolvedPath);
 
+    if (format === undefined && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }) && vfs.existsSync(PREPARED_MODULES_DIR)) {
+      const key = preparedModuleKey(rawCode, resolvedPath);
+      const prepared = key ? `${PREPARED_MODULES_DIR}/${key}` : undefined;
+      if (prepared && vfs.existsSync(prepared)) {
+        runModuleBody(module, vfs.readFileSync(prepared, 'utf8'), resolvedPath, dirname, true);
+        return module;
+      }
+    }
     runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, dirname);
     return module;
   };
@@ -1808,45 +1878,10 @@ function createRequire(
     // Use a simple hash of the content for cache key to handle content changes
     const codeCacheKey = `${resolvedPath}|${format ?? ''}|${transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }) ? 'transform-types|' : ''}${simpleHash(rawCode)}`;
     let code = processedCodeCache?.get(codeCacheKey);
-
     if (!code) {
-      code = rawCode;
-
-      // Strip shebang line if present (e.g. #!/usr/bin/env node)
-      if (code.startsWith('#!')) {
-        code = code.slice(code.indexOf('\n') + 1);
-      }
-
-      code = __substrateModuleTypes(code, resolvedPath, format, process);
-
-      // Transform ESM to CJS if needed (for .mjs files or ESM that wasn't pre-transformed)
-      // transformEsmToCjs uses AST to handle import/export, import.meta, and dynamic imports
-      // It also handles already-CJS files safely (AST finds no ESM nodes → no-op)
-      const __commonjs = format === 'commonjs' || format === 'commonjs-typescript'
-        ? true
-        : format === 'module' || format === 'module-typescript'
-          ? false
-          : resolvedPath.endsWith('.cjs') || resolvedPath.endsWith('.cts');
-      if (!__commonjs) {
-        // An ES module is strict wherever it runs; the mark says so to the
-        // compile below, which is otherwise sloppy as a CommonJS body is.
-        // The directive shares the body's first line, as Node's one-line
-        // wrapper does, so a frame of an ES module counts the file's own lines;
-        // on a line of its own it put every frame one line below the file's.
-        const lowered = transformEsmToCjs(code, resolvedPath);
-        code = lowered === code ? code : `${__substrateModuleMarker}"use strict";${lowered}`;
-      } else {
-        // A `.cjs` module skips the ESM transform, and with it the rewrite of
-        // `import(...)` to the engine's dynamic import, so its
-        // `import("fs/promises")` reached the browser's own import and failed on
-        // the bare specifier. The dynamic-import rewrite applies to `.cjs` too.
-        code = transformDynamicImportsRegex(code);
-      }
-
-      // Cache the processed code
+      code = __substratePrepareBody(rawCode, resolvedPath, format, process);
       processedCodeCache?.set(codeCacheKey, code);
     }
-
     return code;
   };
 
@@ -1858,7 +1893,7 @@ function createRequire(
    * hands the result to it; the engine's own pipeline is what makes the
    * body Node-shaped here.
    */
-  const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string): void => {
+  const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, scoped = false): void => {
     let code = prepared;
     // Create require for this module
     const moduleRequire = createRequire(
@@ -1884,7 +1919,7 @@ function createRequire(
     try {
       const importMetaUrl = resolvedPath.startsWith('data:') ? resolvedPath : 'file://' + resolvedPath;
       const strictBody = code.startsWith(__substrateModuleMarker);
-      code = __substrateScopeGlobalCalls(code);
+      if (!scoped) code = __substrateScopeGlobalCalls(code);
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
