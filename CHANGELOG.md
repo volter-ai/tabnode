@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A child writing to its parent's file descriptor shares one offset with every
+  other writer of that open file, as a dup'd descriptor does: stdout and
+  stderr handed the same file no longer overwrite each other from one
+  position, and the parent's own writes after the spawn follow the child's.
+- `npm init -y --scope @x` (or `-w pkg`, `--init-license MIT`) writes the
+  package instead of refusing a flag's value as an initializer, and a scope
+  names the package `@x/<folder>`.
+
 ## v0.5.20 — 2026-09-24
 
 - `https.createServer` serves. Node's own `https.js` calls `tls.Server` on its

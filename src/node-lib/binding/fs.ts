@@ -186,21 +186,28 @@ export function descriptorWriter(fd: number): ((text: string) => void) | null {
   if (!file || file.directory || (file.flags & 3) === 0) return null;
   const { tree, path } = file;
   const append = (file.flags & flagBits().append) !== 0;
-  let position = file.position;
+  // One offset per open file, as a dup'd descriptor shares one: a child's
+  // stdout and stderr on the same file follow each other, and the parent's
+  // own position moves with them while its copy is open.
+  let cursor = descriptorCursors.get(file);
+  if (!cursor) { cursor = { position: file.position }; descriptorCursors.set(file, cursor); }
+  const offset = cursor;
   return (text) => {
     const bytes = new TextEncoder().encode(text);
     // the parent's copy, while it is open, holds the file's bytes as it last wrote them
     const shared = openFiles.get(fd) === file ? file : null;
+    if (shared) offset.position = shared.position;
     const existing = shared?.cached ?? (tree.existsSync(path) ? tree.readFileSync(path) as Uint8Array : new Uint8Array(0));
-    const at = append ? existing.length : position;
+    const at = append ? existing.length : offset.position;
     const next = new Uint8Array(Math.max(existing.length, at + bytes.length));
     next.set(existing, 0);
     next.set(bytes, at);
     tree.writeFileSync(path, next);
-    position = at + bytes.length;
-    if (shared) shared.cached = next;
+    offset.position = at + bytes.length;
+    if (shared) { shared.cached = next; shared.position = offset.position; }
   };
 }
+const descriptorCursors = new WeakMap<object, { position: number }>();
 
 /** Node's stat array: eighteen numbers, with each time a second and a nanosecond. */
 function statArray(stats: VfsStats, bigint: boolean, path?: string): Float64Array | BigInt64Array {

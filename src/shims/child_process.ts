@@ -1308,7 +1308,14 @@ async function handleNpmInstall(args: string[], ctx: CommandContext): Promise<Ju
  */
 async function handleNpmInit(args: string[], ctx: CommandContext): Promise<JustBashExecResult> {
   const yes = args.includes('-y') || args.includes('--yes');
-  const initializer = args.find((a) => !a.startsWith('-'));
+  // a flag's value is not an initializer: `--scope @x`, `-w pkg`, `--init-license MIT`
+  const takesValue = (flag: string) => !flag.includes('=') && (flag === '--scope' || flag === '-w' || flag === '--workspace' || flag.startsWith('--init-'));
+  const valueOf = (flag: string) => {
+    const at = args.findIndex((a) => a === flag || a.startsWith(`${flag}=`));
+    if (at < 0) return undefined;
+    return args[at].includes('=') ? args[at].slice(args[at].indexOf('=') + 1) : args[at + 1];
+  };
+  const initializer = args.find((a, i) => !a.startsWith('-') && !(i > 0 && takesValue(args[i - 1]!)));
   if (initializer) {
     return { stdout: '', stderr: `npm ERR! npm init ${initializer} runs an initializer package, which this engine's npm does not; write package.json, or run \`npm init -y\`.\n`, exitCode: 1 };
   }
@@ -1323,7 +1330,9 @@ async function handleNpmInit(args: string[], ctx: CommandContext): Promise<JustB
     catch { return { stdout: '', stderr: `npm ERR! ${file} is not valid JSON\n`, exitCode: 1 }; }
   }
   const base = ctx.cwd.split('/').filter(Boolean).pop() ?? 'package';
-  const name = base.toLowerCase().replace(/^[._]+/, '').replace(/[^a-z0-9._~-]+/g, '-') || 'package';
+  const bare = base.toLowerCase().replace(/^[._]+/, '').replace(/[^a-z0-9._~-]+/g, '-') || 'package';
+  const scope = valueOf('--scope')?.replace(/^@?/, '@');
+  const name = scope ? `${scope}/${bare}` : bare;
   const manifest = {
     name,
     version: '1.0.0',
