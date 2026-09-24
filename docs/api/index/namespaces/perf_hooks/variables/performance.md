@@ -7,6 +7,3 @@
 # Variable: performance
 
 > `const` **performance**: `Performance`
-
-perf_hooks shim - Performance measurement APIs
-Wraps browser Performance API

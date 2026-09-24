@@ -24,6 +24,8 @@
 ## Functions
 
 - [getEnvironmentData](functions/getEnvironmentData.md)
+- [isMarkedAsUncloneable](functions/isMarkedAsUncloneable.md)
+- [markAsUncloneable](functions/markAsUncloneable.md)
 - [markAsUntransferable](functions/markAsUntransferable.md)
 - [moveMessagePortToContext](functions/moveMessagePortToContext.md)
 - [receiveMessageOnPort](functions/receiveMessageOnPort.md)
