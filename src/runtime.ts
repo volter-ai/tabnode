@@ -1997,6 +1997,20 @@ function createRequire(
         runModuleBody(module, vfs.readFileSync(prepared, 'utf8'), resolvedPath, dirname, true);
         return module;
       }
+      // A file the image carries no body for (a package installed in the
+      // tab) is prepared here once and kept under the same name, so the next
+      // process takes it: every Playwright test worker required
+      // playwright-core afresh, 28 s each, measured in a tab.
+      if (prepared) {
+        const body = __substrateScopeGlobalCalls(prepareModuleCode(rawCode, resolvedPath));
+        try {
+          const partial = `${prepared}.${process.pid}.partial`;
+          vfs.writeFileSync(partial, body);
+          vfs.renameSync(partial, prepared);
+        } catch { /* a process that may not write there prepares its own */ }
+        runModuleBody(module, body, resolvedPath, dirname, true);
+        return module;
+      }
     }
     runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, dirname);
     return module;
