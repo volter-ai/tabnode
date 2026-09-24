@@ -4,6 +4,17 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.26 — 2026-09-24
+
+- A module body can be prepared where the image is built.
+  `prepareModuleForImage` makes the body the loader would compile for a file
+  (ES-module lowering, the `import()` rewrite, global-call scoping), and
+  `preparedModuleKey` names it by the hash of the file. A body placed in
+  `/.tabnode/prepared` under that key is loaded in place of those passes, for a
+  file loaded with no load hooks and no type stripping. The passes were most of
+  a `require` in a tab: with bodies for playwright-core 1.63.0, its require
+  took 2.6 to 4.1 s in a Browser Substrate tab against 7.5 to 8.8 s without.
+
 ## v0.5.25 — 2026-09-24
 
 - The worker's pruning of gone clients never leaves a rejected promise
