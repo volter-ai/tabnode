@@ -4,6 +4,17 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `AsyncLocalStorage` follows an `await`, as Node's does. A module body the
+  engine compiles takes its async function's context on entry and puts it
+  back where the function resumes (after an `await`, in a `catch` or
+  `finally`, around a `for await`), and `run` restores the previous context
+  when its callback returns instead of holding its store until the
+  callback's promise settles. Two overlapping async runs saw whichever store
+  was entered last: Playwright found another call's zone and dropped its
+  `locator.click:` error prefix. `AsyncResource` runs its callbacks in the
+  context it was made in. Prepared module bodies change format
+  (`tabnode-prepared-2`), so an image prepares them again.
+
 ## v0.5.28 — 2026-09-24
 
 - `import.meta.resolve(specifier)` exists, as Node's synchronous one has since
