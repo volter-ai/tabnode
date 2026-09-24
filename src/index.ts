@@ -14,7 +14,7 @@
 export { restoreHostGlobals, guestRealmInstalled } from './host-globals';
 export { VirtualFS } from './virtual-fs';
 export type { FSNode, MountedTree, Stats, FSWatcher, WatchListener, WatchEventType } from './virtual-fs';
-export { Runtime, execute } from './runtime';
+export { Runtime, execute, prepareModuleForImage, preparedModuleKey, PREPARED_MODULES_DIR } from './runtime';
 export type { Module, RuntimeOptions, RequireFunction } from './runtime';
 export { createRuntime, WorkerRuntime } from './create-runtime';
 export type { IRuntime, IExecuteResult, CreateRuntimeOptions, IRuntimeOptions, VFSSnapshot } from './runtime-interface';
