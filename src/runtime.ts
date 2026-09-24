@@ -161,42 +161,8 @@ function __substrateSourceURL(resolvedPath: string): string {
   }
   return /[\n\r]/u.test(name) ? '' : `\n//# sourceURL=${name}`;
 }
-/**
- * Prepared module bodies, shared by every run of this engine. Each `node` a
- * page starts is a run of the same worker, and a run's own cache died with it:
- * Playwright's test runner starts a process per worker and again after every
- * failure, and each parsed its 13 MB of `playwright-core` up to three times
- * with the JavaScript parser (1.2 s of a 1.6 s require, measured under Node;
- * 4.6 s in a tab). Keyed by the source itself, so a changed file is a new entry;
- * bounded by size, oldest first.
- */
-const SHARED_CODE_BUDGET = 256 * 1024 * 1024;
-let sharedCodeSize = 0;
-const sharedCode = new Map<string, string>();
-function __substrateSharedCode(key: string, make: () => string): string {
-  const cached = sharedCode.get(key);
-  if (cached !== undefined) {
-    sharedCode.delete(key);
-    sharedCode.set(key, cached);
-    return cached;
-  }
-  const value = make();
-  const size = key.length + value.length;
-  if (size > SHARED_CODE_BUDGET / 4) return value;
-  sharedCode.set(key, value);
-  sharedCodeSize += size;
-  for (const [oldKey, oldValue] of sharedCode) {
-    if (sharedCodeSize <= SHARED_CODE_BUDGET) break;
-    sharedCode.delete(oldKey);
-    sharedCodeSize -= oldKey.length + oldValue.length;
-  }
-  return value;
-}
 function __substrateScopeGlobalCalls(code: string): string {
   if (!/\b(?:new|fetch|Promise)\b/u.test(code)) return code;
-  return __substrateSharedCode(`scope\u0000${code}`, () => __substrateScopeGlobalCallsUncached(code));
-}
-function __substrateScopeGlobalCallsUncached(code: string): string {
   let ast;
   try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true }); }
   catch { return code; }
@@ -1841,8 +1807,7 @@ function createRequire(
     // Check processed code cache (useful for HMR when module cache is cleared but code hasn't changed)
     // Use a simple hash of the content for cache key to handle content changes
     const codeCacheKey = `${resolvedPath}|${format ?? ''}|${transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }) ? 'transform-types|' : ''}${simpleHash(rawCode)}`;
-    let code = processedCodeCache?.get(codeCacheKey)
-      ?? sharedCode.get(`prepared\u0000${codeCacheKey}\u0000${rawCode}`);
+    let code = processedCodeCache?.get(codeCacheKey);
 
     if (!code) {
       code = rawCode;
@@ -1880,8 +1845,6 @@ function createRequire(
 
       // Cache the processed code
       processedCodeCache?.set(codeCacheKey, code);
-      const prepared = code;
-      __substrateSharedCode(`prepared\u0000${codeCacheKey}\u0000${rawCode}`, () => prepared);
     }
 
     return code;
