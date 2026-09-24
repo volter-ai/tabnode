@@ -114,6 +114,33 @@ Access check - in our VFS, always succeeds if file exists
 
 ***
 
+### appendFileSync()
+
+> **appendFileSync**(`path`, `data`): `void`
+
+Adds bytes at a file's end, creating it. A file grown a piece at a time
+(a write stream's chunks) is kept in a buffer with room to grow, so an
+append copies only what it adds: writing the whole file again for each
+1 KB chunk of a 50 MB file copied about a terabyte. A tree that keeps its
+files elsewhere (its own writeFileSync) is appended to through its own
+read and write unless it answers appends itself.
+
+#### Parameters
+
+##### path
+
+`string`
+
+##### data
+
+`string` \| `Uint8Array`\<`ArrayBufferLike`\>
+
+#### Returns
+
+`void`
+
+***
+
 ### chmodSync()
 
 > **chmodSync**(`path`, `mode`): `void`
