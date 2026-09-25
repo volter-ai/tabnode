@@ -4,6 +4,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.35 — 2026-09-24
+
+- The service worker passes each request's Fetch `destination` to the page
+  that answers it, so an embedding can report and route a page's documents,
+  frames and subresources apart from its fetches.
+
 ## v0.5.34 — 2026-09-24
 
 - A write at a file's end is an append that costs what it adds. A descriptor's
