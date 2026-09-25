@@ -796,6 +796,16 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
       bodyBase64Length: response.bodyBase64?.length,
     });
 
+    // The frame's embedding policy goes on every answer, an empty one too:
+    // the page is cross-origin isolated, and a document without these
+    // headers is blocked in its frame (an empty 200 lost the preview).
+    const respHeaders = new Headers(response.headers);
+    respHeaders.set('Cross-Origin-Embedder-Policy', 'credentialless');
+    respHeaders.set('Cross-Origin-Opener-Policy', 'same-origin');
+    respHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    // Remove any headers that might block iframe loading
+    respHeaders.delete('X-Frame-Options');
+
     // Decode base64 body and create response
     let finalResponse;
     if (response.bodyBase64 && response.bodyBase64.length > 0) {
@@ -803,18 +813,12 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
         const bytes = base64ToBytes(response.bodyBase64);
         DEBUG && console.log('[SW] Decoded body length:', bytes.length);
 
-        // Use Blob to ensure proper body handling
-        const blob = new Blob([bytes], { type: response.headers['Content-Type'] || 'application/octet-stream' });
+        // Use Blob to ensure proper body handling. Its type is the server's,
+        // or none: a document the server gave no type is the browser's to
+        // sniff, and an invented octet-stream made a page a download.
+        const declared = new Headers(response.headers).get('content-type');
+        const blob = new Blob([bytes], declared ? { type: declared } : {});
         DEBUG && console.log('[SW] Created blob size:', blob.size);
-
-        // Merge response headers with CORP/COEP headers to allow iframe embedding
-        // The parent page has COEP: credentialless, so we need matching headers
-        const respHeaders = new Headers(response.headers);
-        respHeaders.set('Cross-Origin-Embedder-Policy', 'credentialless');
-        respHeaders.set('Cross-Origin-Opener-Policy', 'same-origin');
-        respHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
-        // Remove any headers that might block iframe loading
-        respHeaders.delete('X-Frame-Options');
 
         finalResponse = new Response(blob, {
           status: response.statusCode,
@@ -832,7 +836,7 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
       finalResponse = new Response(null, {
         status: response.statusCode,
         statusText: response.statusMessage,
-        headers: response.headers,
+        headers: respHeaders,
       });
     }
 
