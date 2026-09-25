@@ -4,6 +4,23 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.37 — 2026-09-25
+
+- The service worker asks the page for its init only when another window of
+  its origin can answer. A page's own document and scripts come before its
+  init, and a frame being opened is no window yet: on an origin whose worker
+  had restarted, each such request waited out the whole 5 s ask.
+- `PREPARED_MODULES_DIR` is `/opt/.tabnode/prepared`, under a root a tab's
+  store keeps, so a host links an image's prepared bodies once from a shared
+  store instead of writing each into memory on every open.
+- An async function or block that opens with an `await`
+  (`async function f(){await g()}`, `finally{await h()}`) is rewritten to
+  valid code: the frame's take and restore landed inside the await's resume,
+  a syntax error that made Code-OSS's forked children exit 1.
+- A package with an `exports` map resolves its subpaths through the map
+  alone, as Node does: `require.resolve('<pkg>/package.json')` throws where
+  the map does not name it.
+
 ## v0.5.36 — 2026-09-25
 
 - A buffered answer carries the frame's embedding headers (COEP, COOP, CORP)
