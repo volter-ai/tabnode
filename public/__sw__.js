@@ -578,7 +578,7 @@ async function virtualContext(event) {
   // virtual request asks for its port, so a restart does not send the
   // preview's own requests to the network.
   if (hosts.size === 0 && ((client && client.frameType === 'nested') || (event.request.mode === 'navigate' && (event.request.destination === 'iframe' || event.request.destination === 'frame')))) {
-    await askForInit();
+    await askForInit(event.clientId);
   }
   const contextUrl = event.request.referrer || (client ? client.url : '');
   if (contextUrl) {
@@ -607,9 +607,16 @@ function ownPath(pathname) {
   return pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
 }
 
-/** Asks every window for the page's registrations and waits for them, as a request waits for its port. */
-async function askForInit() {
-  const allClients = await self.clients.matchAll({ type: 'window' });
+/**
+ * Asks every window for the page's registrations and waits for them, as a
+ * request waits for its port. Only another window can answer: a page's own
+ * document and scripts come before its `init`, and a frame being opened is no
+ * window yet, so with no other window each waited out the whole ask (a page
+ * opened on an origin whose worker had restarted took 5 s per request).
+ */
+async function askForInit(requesterId) {
+  const allClients = (await self.clients.matchAll({ type: 'window' })).filter((client) => client.id !== requesterId);
+  if (allClients.length === 0) return;
   for (const client of allClients) client.postMessage({ type: 'sw-needs-init' });
   await new Promise((resolve) => {
     const check = setInterval(() => { if (hosts.size > 0) { clearInterval(check); resolve(); } }, 50);
@@ -739,7 +746,7 @@ async function withDocumentPrelude(event, response) {
  */
 async function handleVirtualRequest(request, port, path, rooted = false) {
   try {
-    if (hosts.size === 0) await askForInit();
+    if (hosts.size === 0) await askForInit(requestEvents.get(request)?.clientId);
     const host = await hostForRequest(request, port);
     const registration = host ? host.flowControlledPorts.get(port) : undefined;
     // Build headers object
