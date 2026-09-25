@@ -289,7 +289,7 @@ function handleMainMessage(host, event) {
 /**
  * Send request to main thread and wait for response
  */
-async function sendRequest(host, port, method, url, headers, body) {
+async function sendRequest(host, port, method, url, headers, body, destination = '') {
   DEBUG && console.log('[SW] sendRequest called, host:', !!host, 'url:', url);
 
   if (!host) {
@@ -312,7 +312,7 @@ async function sendRequest(host, port, method, url, headers, body) {
     host.port.postMessage({
       type: 'request',
       id,
-      data: { port, method, url, headers, body },
+      data: { port, method, url, headers, body, destination },
     });
   });
 }
@@ -321,7 +321,7 @@ async function sendRequest(host, port, method, url, headers, body) {
  * Send streaming request to main thread
  * Returns a ReadableStream that receives chunks from main thread
  */
-async function sendStreamingRequest(host, port, method, url, headers, body) {
+async function sendStreamingRequest(host, port, method, url, headers, body, destination = '') {
   DEBUG && console.log('[SW] sendStreamingRequest called, url:', url);
 
   if (!host) {
@@ -351,7 +351,7 @@ async function sendStreamingRequest(host, port, method, url, headers, body) {
       host.port.postMessage({
         type: 'request',
         id,
-        data: { port, method, url, headers, body, streaming: true },
+        data: { port, method, url, headers, body, streaming: true, destination },
       });
     },
     cancel() {
@@ -365,7 +365,7 @@ async function sendStreamingRequest(host, port, method, url, headers, body) {
 // A Node HTTP producer must stop when its consumer stops reading and must
 // observe disconnect. One pull credit bounds the service-worker response queue;
 // this protocol requires a paired host bridge and is negotiated per port.
-async function sendControlledRequest(host, port, method, url, headers, body, signal) {
+async function sendControlledRequest(host, port, method, url, headers, body, signal, destination = '') {
   if (!host) throw new Error('Service Worker not initialized');
   if (signal.aborted) throw signal.reason;
   const channel = host.port;
@@ -450,7 +450,7 @@ async function sendControlledRequest(host, port, method, url, headers, body, sig
   signal.addEventListener('abort', abort, { once: true });
   try {
     channel.postMessage({ type: 'request', id,
-      data: { port, method, url, headers, body, streaming: true, flowControl: 1 } });
+      data: { port, method, url, headers, body, streaming: true, flowControl: 1, destination } });
     if (signal.aborted) abort();
     const head = await headersPromise;
     const noBody = method === 'HEAD' || [204, 205, 304].includes(head.statusCode);
@@ -775,7 +775,7 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
     if (registration) {
       if (host.flowControlledPorts.get(port) !== registration || host.port !== registration.channel || hosts.get(host.id) !== host)
         throw new Error('Virtual server registration changed during upload');
-      return await sendControlledRequest(host, port, request.method, path, headers, body, request.signal);
+      return await sendControlledRequest(host, port, request.method, path, headers, body, request.signal, request.destination);
     }
 
     // Legacy peers retain their old selection until they negotiate flow control.
@@ -783,12 +783,12 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
 
     if (isStreamingCandidate) {
       DEBUG && console.log('[SW] Using streaming mode for:', path);
-      return handleStreamingRequest(host, port, request.method, path, headers, body);
+      return handleStreamingRequest(host, port, request.method, path, headers, body, request.destination);
     }
     DEBUG && console.log('[SW] Using non-streaming mode for:', request.method, path);
 
     // Send to main thread
-    const response = await sendRequest(host, port, request.method, path, headers, body);
+    const response = await sendRequest(host, port, request.method, path, headers, body, request.destination);
 
     DEBUG && console.log('[SW] Got response from main thread:', {
       statusCode: response.statusCode,
@@ -853,8 +853,8 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
 /**
  * Handle a streaming request
  */
-async function handleStreamingRequest(host, port, method, path, headers, body) {
-  const { stream, headersPromise, id } = await sendStreamingRequest(host, port, method, path, headers, body);
+async function handleStreamingRequest(host, port, method, path, headers, body, destination = '') {
+  const { stream, headersPromise, id } = await sendStreamingRequest(host, port, method, path, headers, body, destination);
 
   // Wait for headers to arrive
   const responseData = await headersPromise;
