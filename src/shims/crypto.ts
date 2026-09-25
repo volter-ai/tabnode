@@ -330,12 +330,21 @@ type HostBytes = InstanceType<typeof HostBuffer>;
  * encodings the guest Buffer polyfill does not (utf16le, latin1) and views a
  * caller's ArrayBuffer at its offset instead of copying the whole store.
  */
+const utf8Encoder = new TextEncoder();
 function cryptoBytes(value: unknown, encoding?: string, allowArrayBuffer = false): HostBytes {
   if (typeof value === 'string') {
     // `buffer` 6.0.3 predates base64url; the alphabet is a superset of base64's.
     if (encoding?.toLowerCase() === 'base64url') return HostBuffer.from(value, 'base64');
     if (encoding !== undefined && !HostBuffer.isEncoding(encoding)) {
       throw new TypeError(`Unknown encoding: ${encoding}`);
+    }
+    // UTF-8, the default, by the engine's encoder: `buffer`'s own builds an
+    // array of numbers per string, and a Vite session hashing every module it
+    // served made hundreds of MB of that garbage in its first seconds in a tab.
+    const lower = encoding?.toLowerCase();
+    if (lower === undefined || lower === 'utf8' || lower === 'utf-8') {
+      const bytes = utf8Encoder.encode(value);
+      return HostBuffer.from(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength);
     }
     return HostBuffer.from(value, encoding);
   }
