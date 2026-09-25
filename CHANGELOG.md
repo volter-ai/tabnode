@@ -4,6 +4,16 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.38 — 2026-09-25
+
+- `Buffer`'s base64 is the engine's own (`Uint8Array.prototype.toBase64`
+  where it exists) and a UTF-8 length is counted, not encoded. Built a
+  character at a time, a Vite session's sourcemap base64 was 600 MB of its
+  1.4 GB allocated in its first 20 s in a tab.
+- A string hashed as UTF-8 is encoded by `TextEncoder`: the `buffer`
+  package's own path built an array of numbers per string, and a Vite
+  session hashes every module it serves.
+
 ## v0.5.37 — 2026-09-25
 
 - The service worker asks the page for its init only when another window of
