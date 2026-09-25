@@ -20,3 +20,5 @@ Releases are cut by a maintainer the way `RELEASING.md` says.
 ## What is not taken
 
 A demo, a site, a dev server, a hand-written framework server, or a compatibility shim for one package: the engine is the engine and nothing else.
+
+- **Upstream stays a source.** A change taken from `macaly/almostnode` arrives as a patch with its reason at the site, and `dist` is rebuilt after every release so the suite never measures a stale build.
