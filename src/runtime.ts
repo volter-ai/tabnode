@@ -468,33 +468,35 @@ function __substrateFollowAwaits(code: string): string {
   const isFunction = (node: any): boolean => node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression';
   // `framed`: the nearest function is async and holds the frame in ASYNC_FRAME.
   const visit = (node: any, framed: boolean, parent: any): void => {
-    // The frame is taken before anything in the body: where the body's first
-    // statement is an `await` (`async function f(){await g()}`, as minified
-    // code writes it), the take and the await's resume share an offset, and
-    // edits at one offset land in reverse of the order they were made. So the
-    // take is made after the body's own edits, and lands first.
-    let take: number | undefined;
+    // What opens a block (the frame's take in an async body, the restore
+    // at the start of a catch, a finally or a for-await body) goes before
+    // anything in it: where the block's first statement is an `await`
+    // (`async function f(){await g()}`, `finally{await h()}`, as minified code
+    // writes them), both share an offset, and edits at one offset land in
+    // reverse of the order they were made. So these are made after the
+    // block's own edits, and land first.
+    const leading: Array<[number, string]> = [];
     if (isFunction(node)) {
       framed = node.async && node.body.type === 'BlockStatement';
       if (framed) {
         const directives = node.body.body.filter((statement: any) => statement.directive !== undefined);
-        take = directives.length ? directives[directives.length - 1].end : node.body.start + 1;
+        leading.push([directives.length ? directives[directives.length - 1].end : node.body.start + 1, FOLLOW_TAKE]);
       }
     } else if (node.type === 'AwaitExpression') {
       insert(node.start, framed ? FOLLOW_RESUME_FRAMED : FOLLOW_RESUME_TAKEN);
       insert(node.end, `${FOLLOW_MARK})`);
     } else if (framed && node.type === 'CatchClause') {
-      insert(node.body.start + 1, FOLLOW_RESTORE);
+      leading.push([node.body.start + 1, FOLLOW_RESTORE]);
     } else if (framed && node.type === 'TryStatement' && node.finalizer) {
-      insert(node.finalizer.start + 1, FOLLOW_RESTORE);
+      leading.push([node.finalizer.start + 1, FOLLOW_RESTORE]);
     } else if (framed && node.type === 'ForOfStatement' && node.await) {
       // The loop's own wrap first: where its end is the body's, an insertion
       // made later lands before it, so the body's brace closes inside.
       const whole = parent?.type === 'LabeledStatement' ? parent : node;
       insert(whole.start, `{${FOLLOW_MARK}`);
       insert(whole.end, `;${FOLLOW_RESTORE}${FOLLOW_MARK}}`);
-      if (node.body.type === 'BlockStatement') insert(node.body.start + 1, FOLLOW_RESTORE);
-      else { insert(node.body.start, `{${FOLLOW_MARK}${FOLLOW_RESTORE}`); insert(node.body.end, `${FOLLOW_MARK}}`); }
+      if (node.body.type === 'BlockStatement') leading.push([node.body.start + 1, FOLLOW_RESTORE]);
+      else { leading.push([node.body.start, `{${FOLLOW_MARK}${FOLLOW_RESTORE}`]); insert(node.body.end, `${FOLLOW_MARK}}`); }
     }
     for (const key of Object.keys(node)) {
       if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
@@ -504,7 +506,7 @@ function __substrateFollowAwaits(code: string): string {
         for (const item of child) if (item && typeof item.type === 'string') visit(item, framed, node);
       } else if (typeof child.type === 'string') visit(child, framed, node);
     }
-    if (take !== undefined) insert(take, FOLLOW_TAKE);
+    for (const [at, text] of leading) insert(at, text);
   };
   visit(ast, false, undefined);
   return edits.length ? applyReplacements(code, edits) : code;
