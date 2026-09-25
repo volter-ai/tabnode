@@ -9,28 +9,11 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
-## virtual-http-flow-control: Qualify negotiated streaming and cancellation
-
-Status: released in v0.5.0; browser qualification pending with substrate W63
-
-Browser-substrate ADR-0032 requires unchanged guest HTTP clients to retain
-streaming backpressure and disconnect propagation through the service worker.
-The existing source pushed chunks without credit and dropped cancellation.
-The candidate negotiates flowControl:1 only over the Host channel for explicit
-ports, uses a zero-high-water-mark stream and one 64 KiB chunk credit, bounds
-their uploads and keeps a finite header wait. Legacy ports retain their wire.
-
-Completion:
-- Paired substrate W63 bridge consumes the same credit/cancel protocol and
-  proves bounds, errors, abort, teardown and reinitialization through its doors.
-- An actual browser guest completes unchanged HTTP SDK requests, slow reading,
-  cancellation and clean reopen; source/protocol fixtures alone are not done.
-
 ## rejection-ownership: Deliver native promise failures to their process
 
-Status: realm-per-process migration in progress (its scaffolding released in v0.5.0); native rejection delivery open
+Status: active; the realm-per-process migration is under way (its scaffolding released in v0.5.0)
 
-Articles 6 and 8. VS Code and its extensions receive their own asynchronous failures through Node's process
+Substrate constitution Articles 6 and 8. VS Code and its extensions receive their own asynchronous failures through Node's process
 handlers, stderr and exit behavior. Ownership recorded at the identifier-constructor seam misses static,
 chained, member-construction and native async promises, and restoring a broadcast would deliver unrelated
 failures to every process. The owner-approved correction (substrate ADR-0037) gives each Node process, children
@@ -45,7 +28,6 @@ still owes:
   against its admitted parent rather than a live parent token;
 - cross-worker stdin behavior and full-process memory read in the browser.
 
-The traces behind each step are in this section's record before `4d62152` and in the CHANGELOG.
 
 Completion: native/static/chained/member-construction failures reach only
 their originating process; handling preserves promise identity and suppresses
@@ -56,9 +38,9 @@ passing isolated rejection command alone does not establish this completion.
 
 ## preview-workers-and-watch-encoding: Core editor runtime follow-up
 
-Status: released in v0.5.0; two completions open
+Status: planned
 
-Article 6: blob-worker requests keep their creating virtual server, fs.watch keeps its requested filename
+Substrate constitution Article 6: blob-worker requests keep their creating virtual server, fs.watch keeps its requested filename
 encoding, and a preview request forwards its Host authority (all in v0.5.0). Nested blob creation inside
 workers and shared workers outliving their creator are unverified; the watcher process's first failure and a
 renderer crash seen on 2026-09-22 have no established cause.
@@ -72,16 +54,16 @@ Completion:
 Status: active
 Node's own fixtures drive the measurement (`scripts/node-tests.mjs`):
 each module's current number is in `BUILTINS.md`. Each fix closes a class (what Node answers, deprecated or not), never a
-fixture. The shell's text-patch layer is already deleted; the gate measures the fork alone.
+fixture.
 Completion:
 - Node's `test/wasi` and `test/child-process` suites pass in the engine, with every remaining failure recorded as an evidenced platform constraint.
 
 ## synchronous-children: Signals, timeouts and buffer limits for synchronous children
 
 Status: planned
-A synchronous child runs on a thread while the caller blocks on shared memory; a signal, a timeout
-and a buffer limit are not honoured because there is no process to kill, and the browser path is
-written but unproven.
+A synchronous child runs on a thread while the caller blocks on shared memory; `timeout` and `killSignal`
+are ignored, and `maxBuffer` is reported after exit (ENOBUFS) rather than enforced, because there is no
+process to kill; the browser path is written but unproven.
 Completion:
 - `spawnSync` and `execSync` honour `timeout`, `killSignal` and `maxBuffer` as Node does, proven on Node's fixtures in the tab.
 
