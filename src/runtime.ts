@@ -468,12 +468,17 @@ function __substrateFollowAwaits(code: string): string {
   const isFunction = (node: any): boolean => node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression';
   // `framed`: the nearest function is async and holds the frame in ASYNC_FRAME.
   const visit = (node: any, framed: boolean, parent: any): void => {
+    // The frame is taken before anything in the body: where the body's first
+    // statement is an `await` (`async function f(){await g()}`, as minified
+    // code writes it), the take and the await's resume share an offset, and
+    // edits at one offset land in reverse of the order they were made. So the
+    // take is made after the body's own edits, and lands first.
+    let take: number | undefined;
     if (isFunction(node)) {
       framed = node.async && node.body.type === 'BlockStatement';
       if (framed) {
         const directives = node.body.body.filter((statement: any) => statement.directive !== undefined);
-        const at = directives.length ? directives[directives.length - 1].end : node.body.start + 1;
-        insert(at, FOLLOW_TAKE);
+        take = directives.length ? directives[directives.length - 1].end : node.body.start + 1;
       }
     } else if (node.type === 'AwaitExpression') {
       insert(node.start, framed ? FOLLOW_RESUME_FRAMED : FOLLOW_RESUME_TAKEN);
@@ -499,6 +504,7 @@ function __substrateFollowAwaits(code: string): string {
         for (const item of child) if (item && typeof item.type === 'string') visit(item, framed, node);
       } else if (typeof child.type === 'string') visit(child, framed, node);
     }
+    if (take !== undefined) insert(take, FOLLOW_TAKE);
   };
   visit(ast, false, undefined);
   return edits.length ? applyReplacements(code, edits) : code;
