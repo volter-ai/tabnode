@@ -6,7 +6,7 @@
 
 # Variable: PREPARED\_MODULES\_DIR
 
-> `const` **PREPARED\_MODULES\_DIR**: `"/.tabnode/prepared"` = `'/.tabnode/prepared'`
+> `const` **PREPARED\_MODULES\_DIR**: `"/opt/.tabnode/prepared"` = `'/opt/.tabnode/prepared'`
 
 Module bodies prepared where the image is built. Parsing a package's files
 for the passes above is most of a `require` in a tab: 36 of 45 s for
@@ -15,3 +15,6 @@ machine. The image carries each body under the hash of the file it was made
 from, in this directory of the tab's filesystem, and the loader takes it in
 place of the passes when the file it read hashes to one. A body the loader
 prepares for a file the image has none for is kept there the same way.
+Under `/opt`, a root a tab's store keeps, so a host can link the image's
+bodies there once from a store they share instead of writing each into
+every process's memory.
