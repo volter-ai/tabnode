@@ -11,7 +11,7 @@ changelog records what each version changed in the tab. What shipped is in
 
 ## rejection-ownership: Deliver native promise failures to their process
 
-Status: active; the realm-per-process migration is under way (its scaffolding released in v0.5.0)
+Status: active
 
 Substrate constitution Articles 6 and 8. VS Code and its extensions receive their own asynchronous failures through Node's process
 handlers, stderr and exit behavior. Ownership recorded at the identifier-constructor seam misses static,
@@ -20,8 +20,9 @@ failures to every process. The owner-approved correction (substrate ADR-0037) gi
 included, its own native JavaScript realm, reusing the substrate's worker and filesystem bridges, with World
 authorization outside the guest. Process routing and the synchronous channel are connected; what the migration
 still owes:
-- descriptor inheritance across realms: an inherited socket reaches the native open (the child's
-  `guessHandleType` reads only local tables today), listening-server transfer, and the V8 serializer gap;
+- descriptor inheritance across realms: browser acceptance of an inherited socket reaching the native open (the
+  child's `guessHandleTypeOfFd` asks the native owner since `7f434c0`), listening-server transfer, and the V8
+  serializer gap;
 - native stream transfer (queued bytes, half-close, reset, pending IPC handles, duplicate descriptor lifetime,
   ref/unref, completion before teardown) and remote signals, with synchronous bind/open results preserved;
 - shell-mediated routes traced so every Node child keeps its identity, and a child's recorded PPID validated
