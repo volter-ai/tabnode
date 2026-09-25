@@ -27,14 +27,9 @@ still owes:
 - shell-mediated routes traced so every Node child keeps its identity, and a child's recorded PPID validated
   against its admitted parent rather than a live parent token;
 - cross-worker stdin behavior and full-process memory read in the browser.
-
-
-Completion: native/static/chained/member-construction failures reach only
-their originating process; handling preserves promise identity and suppresses
-default process failure; an unhandled failure reports stderr and ends that
-process without ending peers. Re-read actual VS Code boot, extension logs,
-watchers, language service and terminal workflows after the correction. A
-passing isolated rejection command alone does not establish this completion.
+Completion:
+- Native, static, chained and member-construction failures reach only their originating process; handling preserves promise identity and suppresses default process failure; an unhandled failure reports stderr and ends that process without ending peers.
+- VS Code's boot, extension logs, watchers, language service and terminal workflows are re-read after the correction (an isolated rejection command alone does not establish this).
 
 ## preview-workers-and-watch-encoding: Core editor runtime follow-up
 
@@ -43,7 +38,7 @@ Status: planned
 Substrate constitution Article 6: blob-worker requests keep their creating virtual server, fs.watch keeps its requested filename
 encoding, and a preview request forwards its Host authority (all in v0.5.0). Nested blob creation inside
 workers and shared workers outliving their creator are unverified; the watcher process's first failure and a
-renderer crash seen on 2026-09-22 have no established cause.
+renderer crash have no established cause.
 
 Completion:
 - Establish the watcher process's first failure and recover the crashed renderer.
@@ -56,7 +51,7 @@ Node's own fixtures drive the measurement (`scripts/node-tests.mjs`):
 each module's current number is in `BUILTINS.md`. Each fix closes a class (what Node answers, deprecated or not), never a
 fixture.
 Completion:
-- Node's `test/wasi` and `test/child-process` suites pass in the engine, with every remaining failure recorded as an evidenced platform constraint.
+- Node's `test/wasi` suite and its `test/parallel/test-child-process-*` tests pass in the engine, with every remaining failure recorded as an evidenced platform constraint.
 
 ## synchronous-children: Signals, timeouts and buffer limits for synchronous children
 
@@ -66,9 +61,3 @@ are ignored, and `maxBuffer` is reported after exit (ENOBUFS) rather than enforc
 process to kill; the browser path is written but unproven.
 Completion:
 - `spawnSync` and `execSync` honour `timeout`, `killSignal` and `maxBuffer` as Node does, proven on Node's fixtures in the tab.
-
-## fork-maintenance: The fork stays a fork of upstream
-
-Status: proposed
-Completion:
-- A change taken from upstream arrives as a patch with the reason at the site, and `dist` is rebuilt after every release so the suite cannot lie.
