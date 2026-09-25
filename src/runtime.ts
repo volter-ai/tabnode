@@ -509,7 +509,34 @@ function __substrateFollowAwaits(code: string): string {
     for (const [at, text] of leading) insert(at, text);
   };
   visit(ast, false, undefined);
-  return edits.length ? applyReplacements(code, edits) : code;
+  const followed = edits.length ? applyReplacements(code, edits) : code;
+  return __substrateTopLevelAwait(ast) ? `${followed}\n${__substrateTopLevelAwaitMarker}` : followed;
+}
+
+/**
+ * Whether a module body awaits outside every function of its own. Its
+ * import markers make it a generator, and in a generator `await (x)` is a
+ * call of an identifier named `await`: chrome-devtools-mcp's bundle
+ * (`const HOST_RUNTIME = await (async () => ...)()`) compiled, ran, and
+ * threw "await is not defined". Such a body runs as an async function.
+ */
+const __substrateTopLevelAwaitMarker = '/*__substrate_top_level_await__*/';
+function __substrateTopLevelAwait(ast: any): boolean {
+  const isFunction = (node: any): boolean => node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression';
+  const stack: any[] = [ast];
+  while (stack.length) {
+    const node = stack.pop();
+    if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await)) return true;
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
+      const child = node[key];
+      if (!child || typeof child !== 'object') continue;
+      for (const item of Array.isArray(child) ? child : [child]) {
+        if (item && typeof item.type === 'string' && !isFunction(item)) stack.push(item);
+      }
+    }
+  }
+  return false;
 }
 
 /**
@@ -2100,10 +2127,10 @@ function createRequire(
       // still settling; a body that must wait, on a top-level `await` of its
       // own, runs as an async function. Either way its settling is what its
       // importers await.
-      let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
+      let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
       let fn;
       try {
-        fn = __substrateSloppyEval(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : wrappedCode);
+        fn = __substrateSloppyEval(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode);
       } catch (evalError) {
         const msg = evalError instanceof Error ? evalError.message : String(evalError);
       // A module with top-level await runs. Node runs a `.js` file of a package
@@ -2648,10 +2675,10 @@ export class Runtime {
       // a module lowered to a function body made V8 refuse vue3-ssr's server at
       // its first top-level `await`. A body V8 refuses for that reason runs as
       // an async function body instead.
-      let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
+      let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
       let fn;
       try {
-        fn = __substrateSloppyEval(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : wrappedCode);
+        fn = __substrateSloppyEval(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode);
       } catch (syntaxError) {
         if (!(syntaxError instanceof SyntaxError)) throw syntaxError;
         bodyKind = 'async';

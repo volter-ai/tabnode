@@ -4,6 +4,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A module that awaits at its top level while its imports are lowered runs
+  as an async body. Its import markers made it a generator, where
+  `await (x)` is a call of an identifier named `await`: it compiled, ran, and
+  threw "await is not defined" (chrome-devtools-mcp's bundle,
+  `const HOST_RUNTIME = await (async () => ...)()`, never started).
+
 ## v0.5.38 — 2026-09-25
 
 - `Buffer`'s base64 is the engine's own (`Uint8Array.prototype.toBase64`
