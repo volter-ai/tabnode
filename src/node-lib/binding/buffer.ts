@@ -205,7 +205,16 @@ export function hexSlice(this: Uint8Array, start?: number, end?: number): string
   return out;
 }
 
+/** The engine's own encoder where it has one (`Uint8Array.prototype.toBase64`): one string, no garbage. */
+const nativeBase64 = typeof (Uint8Array.prototype as { toBase64?: unknown }).toBase64 === 'function';
+
 function base64Text(bytes: Uint8Array, url: boolean): string {
+  // Built a character at a time, a sourcemap's base64 was ropes of garbage:
+  // 600 MB of a Vite session's 1.4 GB allocated in its first 20 s in a tab.
+  if (nativeBase64) {
+    return (bytes as Uint8Array & { toBase64(options: { alphabet: string; omitPadding: boolean }): string })
+      .toBase64({ alphabet: url ? 'base64url' : 'base64', omitPadding: url });
+  }
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   let out = '';
   for (let index = 0; index < bytes.length; index += 3) {
@@ -235,7 +244,19 @@ export function base64urlSlice(this: Uint8Array, start?: number, end?: number): 
 
 /** Node's `ByteLengthUtf8`. */
 export function byteLengthUtf8(string: string): number {
-  return encoder.encode(string).length;
+  // Counted, not encoded: encoding the whole string to read its length
+  // allocated every Buffer.from(string) twice.
+  let length = 0;
+  for (let index = 0; index < string.length; index += 1) {
+    const code = string.charCodeAt(index);
+    if (code < 0x80) length += 1;
+    else if (code < 0x800) length += 2;
+    else if (code >= 0xd800 && code < 0xdc00 && index + 1 < string.length) {
+      const next = string.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next < 0xe000) { length += 4; index += 1; } else length += 3;
+    } else length += 3;
+  }
+  return length;
 }
 
 /** Node's `Compare`: two buffers whole, as `memcmp` orders them. */
