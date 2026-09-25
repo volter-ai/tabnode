@@ -4,7 +4,7 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
-## v0.5.38 — 2026-09-25
+## v0.5.39 — 2026-09-25
 
 - A module that awaits at its top level while its imports are lowered runs
   as an async body. Its import markers made it a generator, where
