@@ -158,14 +158,17 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     return parts[0]!.startsWith("@") && parts.length > 1 ? `${parts[0]}/${parts[1]}` : parts[0]!;
   };
   // LOAD_NODE_MODULES from one directory: exports, else the package's own entry or a file under it.
+  // A package with `exports` is answered by the map alone, as Node answers it:
+  // a subpath the map does not name, or names to a missing file, does not
+  // resolve. Falling through to the file under the package made
+  // `require.resolve("<pkg>/package.json")` succeed where Node throws, and a
+  // program that asks that question to decide what it does (Vite config that
+  // excludes a package it cannot resolve) decided differently in the tab.
   const loadFromNodeModules = (nodeModules: string, specifier: string): string | null => {
     const packageName = packageNameOf(specifier);
     const packageRoot = `${nodeModules}/${packageName}`;
     const pkg = isDirectory(packageRoot) ? manifest(packageRoot) : null;
-    if (pkg && pkg.exports !== undefined && pkg.exports !== null) {
-      const found = loadPackageExports(packageRoot, pkg, specifier, packageName);
-      if (found) return found;
-    }
+    if (pkg && pkg.exports !== undefined && pkg.exports !== null) return loadPackageExports(packageRoot, pkg, specifier, packageName);
     const path = `${nodeModules}/${specifier}`;
     return loadAsFile(path) ?? loadAsDirectory(path);
   };
