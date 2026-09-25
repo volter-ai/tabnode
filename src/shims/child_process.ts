@@ -1320,6 +1320,8 @@ async function handleNpmInstall(args: string[], ctx: CommandContext): Promise<Ju
     }
     return { stdout, stderr: '', exitCode: 0 };
   } catch (error) {
+    // The engine installs nothing (src/npm/install-trap.ts): the refusal is the answer, in its own words.
+    if ((error as { code?: unknown } | null)?.code === 'EINSTALLREFUSED') return { stdout: '', stderr: `${(error as Error).message}\n`, exitCode: 2 };
     const msg = error instanceof Error ? error.stack || error.message : String(error);
     return { stdout, stderr: `npm ERR! ${msg}\n`, exitCode: 1 };
   }

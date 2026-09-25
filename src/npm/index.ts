@@ -3,6 +3,7 @@
  * Orchestrates package installation into the virtual file system
  */
 
+import { refuseInstall } from './install-trap';
 import { VirtualFS } from '../virtual-fs';
 import { Registry, RegistryOptions } from './registry';
 import {
@@ -88,6 +89,7 @@ export class PackageManager {
     packageSpec: string,
     options: InstallOptions = {}
   ): Promise<InstallResult> {
+    refuseInstall({ door: 'npm install', subject: packageSpec });
     const { onProgress } = options;
 
     // Parse package spec (name@version)
@@ -127,6 +129,7 @@ export class PackageManager {
    * Install all dependencies from package.json
    */
   async installFromPackageJson(options: InstallOptions = {}): Promise<InstallResult> {
+    refuseInstall({ door: 'npm install', subject: `the dependencies of ${path.join(this.cwd, 'package.json')}` });
     const { onProgress } = options;
 
     const pkgJsonPath = path.join(this.cwd, 'package.json');

@@ -3,6 +3,7 @@
  * Downloads and extracts npm package tarballs into the virtual file system
  */
 
+import { refuseInstall } from './install-trap';
 import pako from 'pako';
 import { VirtualFS } from '../virtual-fs';
 import * as path from '../shims/path';
@@ -150,6 +151,7 @@ export function extractTarball(
   destPath: string,
   options: ExtractOptions = {}
 ): string[] {
+  refuseInstall({ door: 'tarball extraction', subject: 'an npm tarball would be extracted in the tab' });
   const { stripComponents = 1, filter, onProgress } = options;
 
   // Decompress gzip
@@ -225,6 +227,7 @@ export async function downloadAndExtract(
   destPath: string,
   options: ExtractOptions = {}
 ): Promise<string[]> {
+  refuseInstall({ door: 'tarball download', subject: url });
   const { onProgress } = options;
 
   onProgress?.(`Downloading ${url}...`);

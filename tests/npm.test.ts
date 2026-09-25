@@ -181,12 +181,6 @@ describe('npm', () => {
   });
 
   describe('tarball extraction', () => {
-    let vfs: VirtualFS;
-
-    beforeEach(() => {
-      vfs = new VirtualFS();
-    });
-
     it('should decompress gzipped data', () => {
       const original = new TextEncoder().encode('hello world');
       const compressed = pako.gzip(original);
@@ -194,61 +188,12 @@ describe('npm', () => {
       expect(new TextDecoder().decode(decompressed)).toBe('hello world');
     });
 
-    it('should extract tarball to VFS', () => {
-      // Create a minimal tar archive with package/ prefix
-      const tarball = createMinimalTarball({
-        'package/package.json': '{"name":"test","version":"1.0.0"}',
-        'package/index.js': 'module.exports = 42;',
-      });
-
-      // Gzip it
-      const compressed = pako.gzip(tarball);
-
-      // Extract to /node_modules/test
-      const files = extractTarball(compressed, vfs, '/node_modules/test');
-
-      expect(vfs.existsSync('/node_modules/test/package.json')).toBe(true);
-      expect(vfs.existsSync('/node_modules/test/index.js')).toBe(true);
-
-      const pkgJson = JSON.parse(
-        vfs.readFileSync('/node_modules/test/package.json', 'utf8')
-      );
-      expect(pkgJson.name).toBe('test');
-      expect(pkgJson.version).toBe('1.0.0');
-
-      expect(vfs.readFileSync('/node_modules/test/index.js', 'utf8')).toBe(
-        'module.exports = 42;'
-      );
-    });
-
-    it('should strip leading path components', () => {
-      const tarball = createMinimalTarball({
-        'package/lib/utils.js': 'exports.util = true;',
-      });
-      const compressed = pako.gzip(tarball);
-
-      extractTarball(compressed, vfs, '/pkg', { stripComponents: 1 });
-
-      expect(vfs.existsSync('/pkg/lib/utils.js')).toBe(true);
-      expect(vfs.existsSync('/pkg/package')).toBe(false);
-    });
-
-    it('should apply filter function', () => {
-      const tarball = createMinimalTarball({
-        'package/index.js': 'code',
-        'package/test.js': 'test code',
-        'package/README.md': 'readme',
-      });
-      const compressed = pako.gzip(tarball);
-
-      extractTarball(compressed, vfs, '/pkg', {
-        stripComponents: 1,
-        filter: (path) => path.endsWith('.js'),
-      });
-
-      expect(vfs.existsSync('/pkg/index.js')).toBe(true);
-      expect(vfs.existsSync('/pkg/test.js')).toBe(true);
-      expect(vfs.existsSync('/pkg/README.md')).toBe(false);
+    // The engine installs nothing: extracting an npm tarball into the tree is refused before it starts.
+    it('refuses to extract a tarball', () => {
+      const vfs = new VirtualFS();
+      const compressed = pako.gzip(createMinimalTarball({ 'package/package.json': '{"name":"test","version":"1.0.0"}' }));
+      expect(() => extractTarball(compressed, vfs, '/node_modules/test')).toThrow(/REFUSED \(tarball extraction\)/);
+      expect(vfs.existsSync('/node_modules/test/package.json')).toBe(false);
     });
   });
 
@@ -301,236 +246,19 @@ describe('npm', () => {
       expect(pm.list()).toEqual({});
     });
 
-    it('should install package with mocked fetch', async () => {
-      // Mock fetch responses
-      const mockManifest = {
-        name: 'tiny-pkg',
-        'dist-tags': { latest: '1.0.0' },
-        versions: {
-          '1.0.0': {
-            name: 'tiny-pkg',
-            version: '1.0.0',
-            dist: {
-              tarball: 'https://registry.npmjs.org/tiny-pkg/-/tiny-pkg-1.0.0.tgz',
-              shasum: 'abc123',
-            },
-            dependencies: {},
-          },
-        },
-      };
-
-      const tarballContent = createMinimalTarball({
-        'package/package.json': '{"name":"tiny-pkg","version":"1.0.0"}',
-        'package/index.js': 'module.exports = "tiny";',
-      });
-      const compressedTarball = pako.gzip(tarballContent);
-
-      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
-        const urlStr = url.toString();
-        if (urlStr.includes('registry.npmjs.org/tiny-pkg') && !urlStr.includes('.tgz')) {
-          return new Response(JSON.stringify(mockManifest), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-        if (urlStr.includes('.tgz')) {
-          return new Response(compressedTarball, { status: 200 });
-        }
-        return new Response('Not found', { status: 404 });
-      });
-
-      const result = await pm.install('tiny-pkg');
-
-      expect(result.installed.size).toBe(1);
-      expect(result.installed.has('tiny-pkg')).toBe(true);
-      expect(vfs.existsSync('/node_modules/tiny-pkg/package.json')).toBe(true);
-      expect(vfs.existsSync('/node_modules/tiny-pkg/index.js')).toBe(true);
-
-      const pkgJson = JSON.parse(
-        vfs.readFileSync('/node_modules/tiny-pkg/package.json', 'utf8')
-      );
-      expect(pkgJson.version).toBe('1.0.0');
+    // The engine installs nothing: no registry is asked and nothing is written.
+    it('refuses to install a package', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      await expect(pm.install('tiny-pkg')).rejects.toMatchObject({ code: 'EINSTALLREFUSED' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(vfs.existsSync('/node_modules/tiny-pkg')).toBe(false);
     });
 
-    it('should create bin stubs in /node_modules/.bin/ for packages with bin field', async () => {
-      const mockManifest = {
-        name: 'my-cli',
-        'dist-tags': { latest: '1.0.0' },
-        versions: {
-          '1.0.0': {
-            name: 'my-cli',
-            version: '1.0.0',
-            dist: {
-              tarball: 'https://registry.npmjs.org/my-cli/-/my-cli-1.0.0.tgz',
-              shasum: 'abc123',
-            },
-            dependencies: {},
-          },
-        },
-      };
-
-      const tarballContent = createMinimalTarball({
-        'package/package.json': '{"name":"my-cli","version":"1.0.0","bin":{"mycli":"bin/cli.js"}}',
-        'package/bin/cli.js': 'console.log("hello from cli");',
-      });
-      const compressedTarball = pako.gzip(tarballContent);
-
-      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
-        const urlStr = url.toString();
-        if (urlStr.includes('registry.npmjs.org/my-cli') && !urlStr.includes('.tgz')) {
-          return new Response(JSON.stringify(mockManifest), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-        if (urlStr.includes('.tgz')) {
-          return new Response(compressedTarball, { status: 200 });
-        }
-        return new Response('Not found', { status: 404 });
-      });
-
-      await pm.install('my-cli');
-
-      // Bin stub should exist
-      expect(vfs.existsSync('/node_modules/.bin/mycli')).toBe(true);
-
-      // Bin stub should be a bash script calling node with the entry point
-      const stubContent = vfs.readFileSync('/node_modules/.bin/mycli', 'utf8');
-      expect(stubContent).toContain('node');
-      expect(stubContent).toContain('/node_modules/my-cli/bin/cli.js');
-    });
-
-    it('should handle string bin field (command name = package name)', async () => {
-      const mockManifest = {
-        name: 'simple-tool',
-        'dist-tags': { latest: '1.0.0' },
-        versions: {
-          '1.0.0': {
-            name: 'simple-tool',
-            version: '1.0.0',
-            dist: {
-              tarball: 'https://registry.npmjs.org/simple-tool/-/simple-tool-1.0.0.tgz',
-              shasum: 'abc123',
-            },
-            dependencies: {},
-          },
-        },
-      };
-
-      const tarballContent = createMinimalTarball({
-        'package/package.json': '{"name":"simple-tool","version":"1.0.0","bin":"./index.js"}',
-        'package/index.js': 'console.log("simple");',
-      });
-      const compressedTarball = pako.gzip(tarballContent);
-
-      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
-        const urlStr = url.toString();
-        if (urlStr.includes('registry.npmjs.org/simple-tool') && !urlStr.includes('.tgz')) {
-          return new Response(JSON.stringify(mockManifest), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-        if (urlStr.includes('.tgz')) {
-          return new Response(compressedTarball, { status: 200 });
-        }
-        return new Response('Not found', { status: 404 });
-      });
-
-      await pm.install('simple-tool');
-
-      // Bin stub should use package name as command name
-      expect(vfs.existsSync('/node_modules/.bin/simple-tool')).toBe(true);
-      const stubContent = vfs.readFileSync('/node_modules/.bin/simple-tool', 'utf8');
-      expect(stubContent).toContain('node');
-      expect(stubContent).toContain('/node_modules/simple-tool/index.js');
-    });
-
-    it('should resolve and install dependencies', async () => {
-      const manifestA = {
-        name: 'pkg-a',
-        'dist-tags': { latest: '1.0.0' },
-        versions: {
-          '1.0.0': {
-            name: 'pkg-a',
-            version: '1.0.0',
-            dist: {
-              tarball: 'https://registry.npmjs.org/pkg-a/-/pkg-a-1.0.0.tgz',
-              shasum: 'abc',
-            },
-            dependencies: {
-              'pkg-b': '^1.0.0',
-            },
-          },
-        },
-      };
-
-      const manifestB = {
-        name: 'pkg-b',
-        'dist-tags': { latest: '1.2.0' },
-        versions: {
-          '1.0.0': {
-            name: 'pkg-b',
-            version: '1.0.0',
-            dist: {
-              tarball: 'https://registry.npmjs.org/pkg-b/-/pkg-b-1.0.0.tgz',
-              shasum: 'def',
-            },
-            dependencies: {},
-          },
-          '1.2.0': {
-            name: 'pkg-b',
-            version: '1.2.0',
-            dist: {
-              tarball: 'https://registry.npmjs.org/pkg-b/-/pkg-b-1.2.0.tgz',
-              shasum: 'ghi',
-            },
-            dependencies: {},
-          },
-        },
-      };
-
-      const tarballA = pako.gzip(
-        createMinimalTarball({
-          'package/package.json': '{"name":"pkg-a","version":"1.0.0"}',
-        })
-      );
-
-      const tarballB = pako.gzip(
-        createMinimalTarball({
-          'package/package.json': '{"name":"pkg-b","version":"1.2.0"}',
-        })
-      );
-
-      vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
-        const urlStr = url.toString();
-        if (urlStr.includes('/pkg-a') && !urlStr.includes('.tgz')) {
-          return new Response(JSON.stringify(manifestA), { status: 200 });
-        }
-        if (urlStr.includes('/pkg-b') && !urlStr.includes('.tgz')) {
-          return new Response(JSON.stringify(manifestB), { status: 200 });
-        }
-        if (urlStr.includes('pkg-a-1.0.0.tgz')) {
-          return new Response(tarballA, { status: 200 });
-        }
-        if (urlStr.includes('pkg-b-1.2.0.tgz')) {
-          return new Response(tarballB, { status: 200 });
-        }
-        return new Response('Not found', { status: 404 });
-      });
-
-      const result = await pm.install('pkg-a');
-
-      expect(result.installed.size).toBe(2);
-      expect(result.installed.has('pkg-a')).toBe(true);
-      expect(result.installed.has('pkg-b')).toBe(true);
-
-      // Should install the highest compatible version of pkg-b
-      const pkgB = result.installed.get('pkg-b');
-      expect(pkgB?.version).toBe('1.2.0');
-
-      expect(vfs.existsSync('/node_modules/pkg-a/package.json')).toBe(true);
-      expect(vfs.existsSync('/node_modules/pkg-b/package.json')).toBe(true);
+    it('refuses to install from package.json', async () => {
+      vfs.writeFileSync('/package.json', '{"name":"app","dependencies":{"tiny-pkg":"^1.0.0"}}');
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      await expect(pm.installFromPackageJson()).rejects.toMatchObject({ code: 'EINSTALLREFUSED' });
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
   });
 });

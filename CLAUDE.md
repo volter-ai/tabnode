@@ -2,7 +2,7 @@
 
 ## What this is
 
-tabnode runs Node in the browser: Node's own library files on bindings written once, an in-memory virtual filesystem, npm installation, and a service worker answering a guest server's port. It is a library; the host it is built for is `volter-ai/browser-substrate`, which installs it from npm by version. `CONSTITUTION.md` is what it must remain, `CONTRIBUTING.md` and `RELEASING.md` hold the rules for changing and releasing it, and `BUILTINS.md` names every builtin's kind, number and remainder.
+tabnode runs Node in the browser: Node's own library files on bindings written once, an in-memory virtual filesystem, and a service worker answering a guest server's port. It installs nothing: a package reaches a project as a pack its image or catalog carries, and every install is refused (`src/npm/install-trap.ts`). It is a library; the host it is built for is `volter-ai/browser-substrate`, which installs it from npm by version. `CONSTITUTION.md` is what it must remain, `CONTRIBUTING.md` and `RELEASING.md` hold the rules for changing and releasing it, and `BUILTINS.md` names every builtin's kind, number and remainder.
 
 ## Core principle
 
@@ -16,7 +16,7 @@ When a package does not work, the fix goes toward Node: a builtin that is Node's
 - **Node's library** (`src/node-lib/`) — v22.18.0's own files, byte for byte, over `src/node-lib/binding/`, which answers what libuv and V8 would have
 - **The engine's own modules** (`src/shims/`) — only where Node's is native and the tab has no twin, each with its reason at its site (`BUILTINS.md`, Kind 2)
 - **VirtualFS** (`src/virtual-fs.ts`) — the in-memory tree every `fs` binding reads
-- **PackageManager** (`src/npm/`) — real packages fetched, extracted and lowered through esbuild-wasm
+- **PackageManager** (`src/npm/`) — refuses every install before it starts (`install-trap.ts`); its resolver and semver remain for reading what a project names
 - **ServerBridge** (`src/server-bridge.ts`) — a page request answered by a guest's own `http` server, at `/__virtual__/{port}/`
 - **just-bash** — the shell behind `container.run`, with `node` and `npm` as commands
 - **Code transforms** (`src/code-transforms.ts`) — ESM lowered to CommonJS over acorn's AST
