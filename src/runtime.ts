@@ -597,8 +597,11 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
  * from, in this directory of the tab's filesystem, and the loader takes it in
  * place of the passes when the file it read hashes to one. A body the loader
  * prepares for a file the image has none for is kept there the same way.
+ * Under `/opt`, a root a tab's store keeps, so a host can link the image's
+ * bodies there once from a store they share instead of writing each into
+ * every process's memory.
  */
-export const PREPARED_MODULES_DIR = '/.tabnode/prepared';
+export const PREPARED_MODULES_DIR = '/opt/.tabnode/prepared';
 const PREPARED_MODULES_FORMAT = 'tabnode-prepared-2';
 /** The name a prepared body goes under: the hash of the file as read, and how it is compiled. Undefined for a file no body is prepared for. */
 export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
