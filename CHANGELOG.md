@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.36 — 2026-09-25
+
+- A buffered answer carries the frame's embedding headers (COEP, COOP, CORP)
+  even when its body is empty: an empty document was blocked in a cross-origin
+  isolated page and the frame showed Chrome's error page. A body the server
+  gave no Content-Type keeps none, for the browser to sniff; it was typed
+  application/octet-stream, which made a document a download.
+
 ## v0.5.35 — 2026-09-24
 
 - The service worker passes each request's Fetch `destination` to the page
