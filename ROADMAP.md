@@ -1,10 +1,19 @@
 # tabnode roadmap (Volter's fork)
 
+Open work on tabnode, Volter's fork of `macaly/almostnode`, Node in the browser patched toward Node as source. One
+`## <id>: <title>` section each, with `Status:` and the `Completion:` lines that define done. The
+measure is Node's own suites run against `dist/index.mjs` by `scripts/node-tests.mjs`
+(`scripts/NODE-TESTS.md`); `BUILTINS.md` carries each module's number and what each remainder
+is made of. The consumer is `volter-ai/browser-substrate`, which pins the engine by version and whose
+changelog records what each version changed in the tab. What shipped is in
+[`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
+[`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
+
 ## virtual-http-flow-control: Qualify negotiated streaming and cancellation
 
-Status: source candidate; paired substrate integration and browser proof pending
+Status: released in v0.5.0; browser qualification pending with substrate W63
 
-Browser-substrate ADR-0030 requires unchanged guest HTTP clients to retain
+Browser-substrate ADR-0032 requires unchanged guest HTTP clients to retain
 streaming backpressure and disconnect propagation through the service worker.
 The existing source pushed chunks without credit and dropped cancellation.
 The candidate negotiates flowControl:1 only over the Host channel for explicit
@@ -16,66 +25,10 @@ Completion:
   proves bounds, errors, abort, teardown and reinitialization through its doors.
 - An actual browser guest completes unchanged HTTP SDK requests, slow reading,
   cancellation and clean reopen; source/protocol fixtures alone are not done.
-- After independent review and explicit release authority, publish an exact
-  engine version and move the substrate pin; never patch installed dist files.
-
-Open work on tabnode, Volter's fork of `macaly/almostnode`, Node in the browser patched toward Node as source. One
-`## <id>: <title>` section each, with `Status:` and the `Completion:` lines that define done. The
-measure is Node's own suites run against `dist/index.mjs` by `scripts/node-tests.mjs`
-(`scripts/NODE-TESTS.md`); `BUILTINS.md` carries each module's number and what each remainder
-is made of. The consumer is `volter-ai/browser-substrate`, which pins the engine by version and whose
-changelog records what each version changed in the tab. What shipped is in
-[`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
-[`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
-
-## fetch-body-source: Preserve finite Request bodies across a host transport
-
-Status: local candidate; substrate W61 owns acceptance and release
-
-Article 6, request-body regression correction: the substrate's
-streaming transport consumes `Request.body`, which is a stream even when the
-caller supplied text, bytes, a Blob or FormData. That erases finite-body metadata
-before the browser upload and adds streaming restrictions to ordinary requests.
-The existing Request constructor adapter now retains that source distinction
-across construction and clone, for the host transport to preserve it. A finite
-body already reaching native fetch as a Blob or bytes would disprove this cause;
-the pre-correction substrate instead wrapped every supplied body in a stream.
-The substrate's W61 records the bounded direct finite/streamed upload readings
-and their limits. Library and declaration builds pass. No vendor source or
-automated tests change or run.
-
-## native-public-surface: Complete process-owned builtin exports
-
-Status: local candidate; bounded browser reading complete, release pending
-
-Article 6: the `0dc7d16` loader migration bypassed runtime.ts's completed builtin
-table for native public modules. The browser reading lost `timers.promises`,
-legacy timer functions and DNS error constants; `dns.promises` differs from
-`require('dns/promises')`. A complete export surface in the process-owned native
-factory would disprove this diagnosis, but `public-modules.ts` supplies smaller
-objects than the old table. Move the existing timers and DNS completion into
-their module factories and resolve promise aliases through the owning graph.
-Do not return the old shared table or edit vendored Node sources. The browser
-must show restored exports and alias identity, then successful timer completion.
-
-The first corrected browser reading restores those names and identities, but
-the ten-millisecond promise timer prints no value before the command exits.
-The module factory still schedules realm timers, while `pendingGuestTimers`
-counts only callbacks scheduled through the guest global view. Move that existing
-tracking into a shared owner-bound timer adapter and use it for the native
-module factory as well; retaining the untracked realm callback would disprove
-the correction. This is process liveness, not a network or Chrome failure.
-
-The corrected build's terminal reading restores timer/DNS aliases, all three
-legacy timer function names and both DNS NOTFOUND constants. The identical
-promise-timer invocation prints `timer-ok` before returning to its prompt.
-Engine library/declarations, Node package and compiled VS Code example builds
-pass. W61 records exact browser artifacts and the before/after receipt. This
-does not establish full timers or DNS conformance or fix rejection attribution.
 
 ## rejection-ownership: Deliver native promise failures to their process
 
-Status: browser failure reproduced; owner approved realm isolation; migration review pending
+Status: realm-per-process migration in progress (its scaffolding released in v0.5.0); native rejection delivery open
 
 Articles 6 and 8. Required workflow: VS Code and its extensions receive their
 own asynchronous failures through Node's process handlers, stderr and exit
@@ -100,7 +53,7 @@ identity; observing with catch handlers changes unhandled-rejection behavior.
 Extending only constructor or `.then` interception would still miss native
 async promise creation and is not a complete correction.
 
-Owner-approved correction (2026-09-23, substrate ADR-0031), implementation in progress: give each Node process
+Owner-approved correction (2026-09-23, substrate ADR-0037), implementation in progress: give each Node process
 its own native JavaScript realm, including Node children, so promise/error
 delivery has one process owner without replacing native Promise. Reuse the
 substrate's existing worker and filesystem bridges; keep World authorization
@@ -291,7 +244,7 @@ process without ending peers. Re-read actual VS Code boot, extension logs,
 watchers, language service and terminal workflows after the correction. A
 passing isolated rejection command alone does not establish this completion.
 
-Inherited-descriptor admission trace (Articles 4 and 6, ADR-0031): the native
+Inherited-descriptor admission trace (Articles 4 and 6, ADR-0037): the native
 owner can duplicate a connected handle under a child's fd, and delegated
 TCP/Pipe `open(fd)` consults that table. However, the child's `guessHandleType`
 still consults only local JS tables and calls every other fd above 2 a file.
@@ -309,7 +262,7 @@ raw-realm behavior takes no channel path. Engine library/declaration, substrate
 Node package and VS Code example builds pass. Browser inheritance acceptance
 remains pending, with automated tests off and publication held.
 
-Node dispatch trace (Articles 4 and 6, ADR-0031): shell Node commands and
+Node dispatch trace (Articles 4 and 6, ADR-0037): shell Node commands and
 engine-first spawned Node children both reach `nodeCommand`; the general
 child executor is bypassed by the latter. Dispatching only page requests would
 therefore leave forked extension hosts in the shared realm. The shared entry
@@ -338,7 +291,7 @@ Engine library/declaration, downstream Node package and VS Code example builds
 pass. The substrate now installs the hook; these are build receipts, not isolated
 process acceptance. No automated tests were added or run; publication is held.
 
-Live-input handoff trace (Articles 4 and 6, ADR-0031): the worker launcher takes
+Live-input handoff trace (Articles 4 and 6, ADR-0037): the worker launcher takes
 an async input iterable, but `startChildRun` exposed only a push sink and
 `Process.readStdinFrom` ignored consumption. Merely queuing those pushes onto
 a worker port would drain the native pipe into an unbounded intermediate queue.
@@ -384,7 +337,7 @@ Engine library/declaration, downstream Node package and production VS Code
 example builds pass. The substrate now enables ordinary Node process routing;
 these remain build receipts only. No automated tests ran and publication remains held.
 
-Spawn admission ordering (Articles 4 and 6; ADR-0031): a Node child must be
+Spawn admission ordering (Articles 4 and 6; ADR-0037): a Node child must be
 submitted to its owner before a parent can exit and terminate its worker. The
 current pipe-stdin path delays `begin` to a native timer, and then goes through
 the asynchronous shell before the host hook. An immediate parent exit can
@@ -411,241 +364,9 @@ its W61 entry owns that diagnosis. Export the existing startup-only installed
 capability so adapters can leave admitted process lifetime to the engine and
 supervisor, rather than infer it from root-realm idleness.
 
-## terminal-descriptors: Allocated TTYs through the existing process host
-
-Status: local candidate, bounded browser reading complete; release pending
-
-Article 6: the substrate's unchanged terminal addon needs descriptor-backed
-TTY streams and child stdio. Restore TTY descriptor attachment, fs.write on
-stream descriptors, one allocation namespace for files and streams, and carry
-terminal input and resize through the existing process runner. The embedding
-addon owns its own ABI; the engine recognizes no package. The substrate's W53
-records the observed integrated-terminal failure and owns the real UI reading.
-No vendored Node files or automated tests are changed or run.
-
-The first UI reading reaches command output, terminal dimensions, resize,
-filesystem updates and independent terminal termination. It also exposes the
-engine's internal process token in the host shell environment. Crossing the
-host boundary must strip that private routing value: a later Node launch
-otherwise inherits an explicit env assignment overriding its own stream token,
-so raw output reaches the ancestor and the returned output is delivered again.
-Ancestry stays in the existing process context. The substrate owns the rereading.
-After stripping that token only from the host-bound environment copy, the
-engine build and substrate package builds pass. In the substrate's integrated
-terminal Node prints once without an internal marker, the shell no longer
-inherits the token, and another terminal remains usable after the first exits.
-Independent source review found no blocker. Node's suite remains unmeasured
-under the owner's no-tests instruction; this is not a full TTY compatibility claim.
-
-## process-owned-builtins: Guest builtin modules belong to their process
-
-Status: local candidate; bounded browser reading complete, release pending
-
-Production-import regression (Article 6, 2026-09-22): the compiled substrate
-entry `index-DV8Cz_o5.js` throws `ReferenceError: Cannot access 'bufferModule$1'
-before initialization` in `createCryptoModule$1`, before its toolbar exists.
-The page's retained Runtime exception establishes an application import failure,
-not a browser or Docker failure. Commit `0dc7d16` introduced factory-local eager
-reads of the host Buffer module, Buffer and EventEmitter imports; these exports
-belong to the loader's existing import cycle. The preceding implementation read
-the Buffer module only at use. Development import order hid the new eager read.
-Use the existing lazyModule/lazyExport functions to create host dependency
-references inside the factory without reading uninitialized module constants;
-retain the explicit per-process require path. The built page must pass this
-same import and create its toolbar. A retained pre-toolbar initialization error
-would disprove sufficiency; do not change browser settings or build minification.
-
-Correction reading: the compiled `index-C156Frwx.js` imports and creates the
-toolbar; the original pre-toolbar exception is absent. Through its terminal,
-`node -e` prints `engine-alive 4` using `crypto.randomBytes(4)` and exits 0.
-Engine library/declarations, engine typecheck and the production example build
-pass without automated tests. Independent source review finds no blocker.
-Full boot remains open: its server deadline expires before a worker run starts;
-a later terminal invocation reaches port 49152 in 9.5 seconds. This import fix
-does not claim to resolve the separately observed pack-placement delay.
-
-Article 6: the substrate's W61 reading finds VS Code's HTTP patches in an
-independent terminal Node command. `runtime.ts` hands every process the same
-HTTP/HTTPS exports; `load.ts` caches the underlying files at realm scope.
-The request subsequently creates its socket without a live process owner and
-returns no callback to the terminal, despite a completed host exchange.
-
-The correction is a process-owned module cache with recursively bound require
-and process, preserving dependency and constructor identity. Keep the default
-host/bootstrap graph private to the host. `fsModuleFor` is partial precedent:
-its first guest still shares the host module and its internal requires still
-reach the global cache. Lazy getters, hand-bound internals, native shim module
-surfaces and `libRequire` paths must not escape to another process's graph.
-Initialize the existing host HTTP adapter for each process's Agents using that
-graph's http/net/stream classes; retain shared OS binding registries.
-Independent review supports this ownership boundary. Copying HTTP exports,
-resetting a vendor patch or adding a keepalive does not restore the contract.
-
-Completion: independent Node commands see their own unpatched builtins while
-the unchanged VS Code process retains its patches; the permitted HTTPS request
-delivers a response or error through the existing World broker. The bounded
-success reading below meets this reproduction; it does not establish complete
-native-prototype isolation or all request-lifetime cases. No automated tests
-are authorized.
-
-Candidate implementation: all vendored files resolve recursively inside a
-process scope, including lazy util exports, customization hooks and ESM
-namespaces. The first guest no longer shares the host fs graph. The native
-TLS, decoder and crypto factories, filesystem encoded-name results, stdin and
-web-stream adapters use the requesting graph's constructors. OS descriptor,
-listener and run-ownership registries remain shared. Host HTTP transport is
-installed on each graph's Agent before guest code, with weak restoration
-tracking. Native module data records are copied per scope; native/platform
-function objects outside those factories are still shared implementations, so
-this is not a claim of complete realm or native-prototype isolation.
-
-Independent review found and corrected host Buffer results from crypto,
-console-proxy property loss and unbounded per-process symbols on the shared
-EventTarget prototype. The crypto factory's private key metadata accessor was
-also corrected before building. Engine declarations, engine build and substrate
-package builds pass. No automated tests were added or run.
-The first rebuilt boot then failed before port publication: Node's `net.js`
-tried to redefine `TCP.prototype.owner` on a shared native class. The owning
-boundary is the same process graph: native class facades need per-process JS
-prototypes over shared OS implementations, and accepted/duplicated handles
-must use the relevant listener/handle constructor. This correction is now in
-the candidate. Native facade `instanceof` deliberately recognizes the shared
-OS implementation brand, so IPC-transferred handles remain valid in the
-receiver without sharing guest JS builtin constructors. Independent source
-review accepted this correction. In the next boot, the independent integrated
-terminal command prints `request request get get`, crypto Buffer and stdin
-Readable identity checks print true, and the unchanged GitHub HTTPS GET prints
-`status 200`, `end` and returns to the prompt. `git status --short` preserves
-`A core-workflow.txt` and `?? README.md`.
-
-That candidate also left the remote extension host uninitialized: Markdown
-preview stayed empty and the Git output channel had not registered. Source
-tracing found another graph escape in child bootstrap: attachChannel invoked
-the host graph's setupChannel, constructing received sockets in the host net
-graph. It now uses the child's own unmodified child_process._forkChild, within
-the existing run context. Independent review accepted this ownership correction;
-engine and substrate package builds pass.
-
-The subsequent normal-Chrome reading completes remote extension activation,
-registers Git/GitLens/Markdown output channels, and renders the README preview.
-With those extensions active, an independent integrated-terminal Node command
-again prints `request request get get`, `status 200`, `end`, and the shell prompt.
-The broker records one selected/completed GitHub relay attempt. Excluded Open
-VSX and GitKraken destinations remain denied. Git still reports the preserved
-staged sample and untracked README. Temporary debugger instrumentation was
-removed. This resolves the observed cross-process patch leak and child bootstrap
-graph escape; broader W61 transport acceptance remains separate and open.
-
-
-
-## fetch-request-lifetime: Host fetch I/O belongs to its requesting process
-
-Status: local candidate; bounded browser reading complete, release pending
-
-Article 6: a terminal Node command's ordinary `fetch(...).then(...)` returns to
-the prompt without output, while the broker records a completed direct GitHub
-exchange. The same command with a five-second application timer prints its 200
-response and clears that timer. This distinguishes premature run completion
-from a transport or permission failure. The runtime exposes host fetch without
-an owned request, and both module wrappers leave bare `fetch` outside the guest
-global view. A transport failure with a live run would disprove this diagnosis;
-the successful timed reading instead supports it.
-
-Use the existing owned-handle registry and an explicit host fetch lifecycle
-seam. Bind the process before entering the host transport; count pending headers
-and actual body pulls, retaining cancellation ownership while idle. Release on
-EOF/error/cancel and cancel on process exit. The existing broker stream source
-observes all native Response consumption paths, so no Response imitation or
-eager body draining is needed. Hold-through-EOF alone is incorrect: an unread
-body has no pulls and would hang. Independent source review supports this shape.
-No arbitrary promises, guest keepalive, network grant, or vendor patch is added.
-Completion is the original direct-fetch command printing its result without a
-timer, plus cancellation and unread-body exit through the terminal. No automated
-tests are authorized.
-
-The candidate adds a host-installed Fetch adapter with an explicitly bound
-process context. Its request activities use the existing owned-handle registry;
-the substrate worker accounts for headers and stream pulls through that seam.
-Bare and qualified global fetch share dynamic process-local replacement;
-normal direct-call receiver semantics are retained by the existing AST pass.
-Review found and corrected failed pull-send cleanup and late requests from ended
-processes. The weak process/token association distinguishes an ended run from
-an unregistered library consumer. No native Response/stream object is replaced.
-Other embedders must install the lifecycle adapter to supply this accounting;
-the ordinary host-fetch fallback is unchanged. Engine and substrate package
-builds pass. In the rebuilt existing normal-Chrome tab, the original command
-prints `direct 200 5566` without an application timer and returns the prompt.
-Headers-only fetch prints 200 and exits; the broker cancels its unread body.
-Cancelling a native reader after a first chunk prints `cancelled true` and
-returns the prompt. Native Response cloning returns equal bodies; a strict
-process-local fetch replacement observes the original bare-call receiver and
-matching global function identity. These are bounded worker-lane observations,
-not a complete Fetch, relay-cost, or cross-embedder compatibility claim.
-
-## http-client-host-transport: Node HTTP clients over an admitted host exchange
-
-Status: local implementation in progress
-
-Articles 5 and 6: connect Node's unchanged HTTP clients at Agent.createConnection
-to a host exchange. Node's own HTTP server reads the internal request wire and
-frames its answer; a bounded Duplex stream binding carries the bytes. The host
-captures process attribution at connection creation and owns transport policy,
-authorization, cost and cancellation. No application names or TLS certificates
-are fabricated. Raw TLS remains unsupported. W61 in the substrate owns relay
-capabilities, policy defaults and browser acceptance.
-
-Completion: unchanged HTTP/HTTPS clients receive real status, ordered headers
-and streamed bodies through the admitted broker; errors and cancellation settle.
-No automated tests are added or run under the owner's instruction.
-
-First substrate reading: the gallery GET returns bytes through the local native
-relay. A broker denial exposed close-before-error ordering in LibuvStreamWrap:
-its close callback ran before Node's queued error and ClientRequest reported
-"socket hang up". Deferring completion behind that tick preserves the actual
-error; the next live gallery POST reports "Failed to fetch". POST relay delivery
-remains open in the substrate. The existing Readable.toWeb adapter ignores
-backpressure and its strategy option, so bounded upload memory remains unproven.
-
-## loopback-tls: A TLS server listens on the tab's loopback
-
-Status: source landed, not released
-
-Article 6: Node's own `https.js` builds `https.Server` by calling `tls.Server`
-on the instance; the class stub refused, so `https.createServer` threw. Playwright's
-own test suite starts an HTTPS test server in every worker, so in a substrate tab
-every test that takes a page server failed at setup. `tls.Server` is now a
-net server on the loopback that hands each connection on as secure, and a TLS
-connect (or an `https` request) to a loopback port pairs with it unencrypted,
-since nothing lies between the two ends; the browser holds TLS where there is a
-wire. A TLS connect to another host still fails with `ERR_TLS_UNAVAILABLE`.
-
-Completion: released and pinned in the substrate, and Playwright's pinned suite
-runs in a tab past its worker fixture. No automated tests are run under the
-owner's instruction.
-
-## unavailable-tls-settles: Report unsupported TLS connections
-
-Status: local candidate, not released
-
-Article 6: a failed connection emits an error and closes instead of hanging a
-Node HTTP client. In the substrate terminal, an unchanged `https.get()` gets
-neither a response nor an error before its three-second application deadline.
-The TLS stub was an EventEmitter that never connected or failed. The candidate
-uses Node's Socket lifecycle and destroys it asynchronously with
-`ERR_TLS_UNAVAILABLE`; its secure-connect callback never reports false success.
-This is failure settlement, not the missing HTTP egress adapter. The substrate's
-W61 owns that adapter and its transport-policy, header and streaming contract.
-
-Measured in the existing substrate tab: the same request reaches its error
-handler with `ERR_TLS_UNAVAILABLE`, clears its deadline and exits 0; the
-workbench also reports its gallery HTTPS failures instead of hanging. The engine
-build passes. No automated tests were added or run.
-
-Completion: source review and release; the relay adapter remains separate.
-
 ## preview-workers-and-watch-encoding: Core editor runtime follow-up
 
-Status: local candidate, not released
+Status: released in v0.5.0; two completions open
 
 Article 6: preserve the creating virtual server for blob-worker requests and
 restore Node's requested filename encoding at the fs.watch binding. The service
@@ -709,58 +430,17 @@ the added file when the workbench regains focus, consistent with the Git
 extension's own focus gating. No automated tests were added or run.
 
 Completion:
-- Read automatic Explorer and Source Control updates through the existing tab.
 - Establish the watcher process's first failure and recover the crashed renderer.
 - Verify blob-worker attribution across worker and service-worker lifetimes.
-
-## launch: The repository goes public from its own first commit
-
-Status: done 2026-09-21
-The repository's history is its own: `main` began on 2026-09-21 at one commit holding the tree as it
-stood, and `release` and its tags are cut from it. What the tree carries of its provenance is the
-licence's, not the history's: `LICENSE` keeps upstream's notice, `src/node-lib/LICENSE` is Node's, and
-`THIRD-PARTY-NOTICES.md` names the rest. The substrate pins the engine by version, and each version is a tag of
-this history.
-
-Completion:
-- Done in `v0.2.14-volter.87`. The one file that named a package (`src/tailwind-vite-stand-in.ts`) left the
-  engine: the loader and the bundler read the host's table of stand-ins, as the resolver already did.
-  `npm run type-check` is clean over `tests/` as well as `src/`. Node's suite is run by
-  `scripts/node-tests.mjs` in this repository. The repository is public.
-
-## the-tree-is-the-engine: The repository is the engine and nothing else
-
-Status: done 2026-09-21
-The fork carried upstream's whole product beside the engine: a landing site and a docs site, seven
-demo pages with their entry files, a hand-written Next dev server and a hand-written Vite dev server
-(about seven thousand lines under `src/frameworks/`), a cross-origin sandbox runtime with its page and
-its build, an end-to-end suite, three GitHub workflows, and a PM apparatus (`hermes/`,
-`.open-autonomy/`) for a project run by pull request. None of it was reachable from the engine's own
-doors, and the substrate imports none of it. Eight of the hand-written builtins that `BUILTINS.md`
-already recorded as deleted were still in `src/shims/`, imported by `runtime.ts` and served to nobody;
-four more files keep a builtin's name for a different job, which is the engine's process model, a
-binding's table of host answers, the `node:zlib` a bundler resolves, and `createFsShim`.
-
-Article 5 of the substrate's constitution is the reason the framework servers could not come back: a
-framework's routing, rendering and hot reload are that framework's own code, run as a guest program.
-Article 9 is the reason the records could not stay: a document that describes a tree that is not there
-is not a record.
-
-Completion:
-- Done in `v0.2.14-volter.85`. The tree is the engine: `src/`, `tests/`, the records, the library build.
-  What a guest gets is unchanged except where an imitation was shadowing Node's own module, which is
-  written up in the changelog.
 
 ## node-as-source: The engine behaves as Node, measured by Node's own suites
 
 Status: active
 Node's own fixtures drive the measurement (`scripts/node-tests.mjs`):
-`test/wasi` stands at 7 of 12 and `test/child-process` at 45 of 109 after synchronous children landed;
-`test-path-` is 16 of 16. Each fix closes a class (what Node answers, deprecated or not), never a
+each module's current number is in `BUILTINS.md`. Each fix closes a class (what Node answers, deprecated or not), never a
 fixture. The shell's text-patch layer is already deleted; the gate measures the fork alone.
 Completion:
-- Node's `test/wasi` and `test/child-process` suites pass in the engine, with every remaining failure recorded as an evidenced platform constraint, and `test-path-` stays at 16 of 16.
-- `browser-substrate`'s node-adapters gate passes on the fork alone.
+- Node's `test/wasi` and `test/child-process` suites pass in the engine, with every remaining failure recorded as an evidenced platform constraint.
 
 ## synchronous-children: Signals, timeouts and buffer limits for synchronous children
 
