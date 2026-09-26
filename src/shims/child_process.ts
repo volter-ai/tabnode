@@ -1199,8 +1199,19 @@ async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBa
   }
 
   // Set up npm-specific environment variables
+  const inherited = environmentOf(ctx);
+  // npm runs a script with each node_modules/.bin from the package's folder
+  // up to the root ahead of PATH, so a script names the package's own bins
+  // whatever PATH its caller had (a `.mcp.json` server started by an agent
+  // whose PATH is /usr/local/bin:/usr/bin:/bin).
+  const bins: string[] = [];
+  for (let directory = ctx.cwd || '/'; ; directory = directory.slice(0, directory.lastIndexOf('/')) || '/') {
+    bins.push(`${directory === '/' ? '' : directory}/node_modules/.bin`);
+    if (directory === '/') break;
+  }
   const npmEnv: Record<string, string> = {
-    ...environmentOf(ctx),
+    ...inherited,
+    PATH: [...bins, inherited.PATH ?? '/usr/local/bin:/usr/bin:/bin'].join(':'),
     npm_lifecycle_event: scriptName,
   };
   if (pkgJson.name) npmEnv.npm_package_name = pkgJson.name;

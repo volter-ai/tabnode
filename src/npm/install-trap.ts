@@ -45,6 +45,7 @@ export function installTrap(request: InstallRequest): never {
   (scope[TRAPPED] ??= []).push(request);
   scope[RECORDER]?.(request);
   console.error(`[install-trap] ${request.door}: ${request.subject}`);
+  console.info(`[install-trap-record] ${JSON.stringify(request)}`);
   throw new InstallRefusedError(request);
 }
 
