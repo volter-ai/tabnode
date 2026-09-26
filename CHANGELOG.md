@@ -4,6 +4,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A prepared body's name is a MurmurHash3 x86_128 of the source as read,
+  its UTF-16 units taken as they are (`tabnode-prepared-3`), not a SHA-256
+  of the text encoded again: about half the time on every module a process
+  loads. Bodies named the old way are not found; an image built with this
+  engine names its bodies the new way.
+
 - A WebSocket frame a guest's server writes in many chunks is joined once,
   when its header says they hold it all: the bridge re-joined every pending
   byte on every chunk as an array of numbers, 740 ms of the store owner's

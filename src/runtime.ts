@@ -12,8 +12,6 @@ import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork 
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
 import { simpleHash } from './utils/hash';
-import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
 import { uint8ToBase64, uint8ToHex } from './utils/binary-encoding';
 import { createFsShim, FsShim } from './shims/fs';
 import * as pathShim from './shims/path';
@@ -621,13 +619,90 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
  * every process's memory.
  */
 export const PREPARED_MODULES_DIR = '/opt/.tabnode/prepared';
-const PREPARED_MODULES_FORMAT = 'tabnode-prepared-2';
-/** The name a prepared body goes under: the hash of the file as read, and how it is compiled. Undefined for a file no body is prepared for. */
+const PREPARED_MODULES_FORMAT = 'tabnode-prepared-3';
+/**
+ * The name a prepared body goes under: a hash of the file as read, and how it
+ * is compiled. Undefined for a file no body is prepared for.
+ *
+ * MurmurHash3 x86_128 over the source's UTF-16 code units, written out as 64
+ * hex digits. A name, not a seal: whoever can write a body under a name can write
+ * the module itself. SHA-256 of the encoded text cost every process in a tab
+ * 150 ms of its start (the Volter model editor's session, 2026-09-26); this
+ * reads the string as it is, with no copy.
+ */
 export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
   const extension = /\.(js|cjs|mjs)$/u.exec(resolvedPath)?.[1];
   if (!extension) return undefined;
   const kind = extension === 'cjs' ? 'cjs' : 'js';
-  return bytesToHex(sha256(new TextEncoder().encode(`${PREPARED_MODULES_FORMAT}|${kind}|${rawCode}`)));
+  const text = `${PREPARED_MODULES_FORMAT}|${kind}|${rawCode}`;
+  // One pass over the source; the name's second half is the first's own hash,
+  // so it keeps the 64-digit shape the image's index checks.
+  const first = murmur128(text, 0x9747b28c);
+  return first + murmur128(first, 0x5bd1e995);
+}
+
+/** MurmurHash3 x86_128 of a string's UTF-16LE bytes, as 32 hex digits. */
+function murmur128(text: string, seed: number): string {
+  const c1 = 0x239b961b, c2 = 0xab0e9789, c3 = 0x38b34ae5, c4 = 0xa1e38b93;
+  let h1 = seed | 0, h2 = seed | 0, h3 = seed | 0, h4 = seed | 0;
+  const units = text.length;
+  const blocks = units >>> 3;
+  let k1 = 0, k2 = 0, k3 = 0, k4 = 0;
+  for (let block = 0, i = 0; block < blocks; block += 1, i += 8) {
+    k1 = text.charCodeAt(i) | (text.charCodeAt(i + 1) << 16);
+    k2 = text.charCodeAt(i + 2) | (text.charCodeAt(i + 3) << 16);
+    k3 = text.charCodeAt(i + 4) | (text.charCodeAt(i + 5) << 16);
+    k4 = text.charCodeAt(i + 6) | (text.charCodeAt(i + 7) << 16);
+    k1 = Math.imul(k1, c1); k1 = (k1 << 15) | (k1 >>> 17); k1 = Math.imul(k1, c2); h1 ^= k1;
+    h1 = (h1 << 19) | (h1 >>> 13); h1 = (h1 + h2) | 0; h1 = (Math.imul(h1, 5) + 0x561ccd1b) | 0;
+    k2 = Math.imul(k2, c2); k2 = (k2 << 16) | (k2 >>> 16); k2 = Math.imul(k2, c3); h2 ^= k2;
+    h2 = (h2 << 17) | (h2 >>> 15); h2 = (h2 + h3) | 0; h2 = (Math.imul(h2, 5) + 0x0bcaa747) | 0;
+    k3 = Math.imul(k3, c3); k3 = (k3 << 17) | (k3 >>> 15); k3 = Math.imul(k3, c4); h3 ^= k3;
+    h3 = (h3 << 15) | (h3 >>> 17); h3 = (h3 + h4) | 0; h3 = (Math.imul(h3, 5) + 0x96cd1c35) | 0;
+    k4 = Math.imul(k4, c4); k4 = (k4 << 18) | (k4 >>> 14); k4 = Math.imul(k4, c1); h4 ^= k4;
+    h4 = (h4 << 13) | (h4 >>> 19); h4 = (h4 + h1) | 0; h4 = (Math.imul(h4, 5) + 0x32ac3b17) | 0;
+  }
+  // The tail: up to seven code units, fourteen bytes, as MurmurHash3 reads bytes.
+  const tail = blocks << 3;
+  const bytes: number[] = [];
+  for (let i = tail; i < units; i += 1) { const unit = text.charCodeAt(i); bytes.push(unit & 0xff, unit >>> 8); }
+  k1 = k2 = k3 = k4 = 0;
+  const at = (index: number): number => bytes[index] ?? 0;
+  switch (bytes.length) {
+    case 14: k4 ^= at(13) << 8; // falls through
+    case 13: k4 ^= at(12);
+      k4 = Math.imul(k4, c4); k4 = (k4 << 18) | (k4 >>> 14); k4 = Math.imul(k4, c1); h4 ^= k4; // falls through
+    case 12: k3 ^= at(11) << 24; // falls through
+    case 11: k3 ^= at(10) << 16; // falls through
+    case 10: k3 ^= at(9) << 8; // falls through
+    case 9: k3 ^= at(8);
+      k3 = Math.imul(k3, c3); k3 = (k3 << 17) | (k3 >>> 15); k3 = Math.imul(k3, c4); h3 ^= k3; // falls through
+    case 8: k2 ^= at(7) << 24; // falls through
+    case 7: k2 ^= at(6) << 16; // falls through
+    case 6: k2 ^= at(5) << 8; // falls through
+    case 5: k2 ^= at(4);
+      k2 = Math.imul(k2, c2); k2 = (k2 << 16) | (k2 >>> 16); k2 = Math.imul(k2, c3); h2 ^= k2; // falls through
+    case 4: k1 ^= at(3) << 24; // falls through
+    case 3: k1 ^= at(2) << 16; // falls through
+    case 2: k1 ^= at(1) << 8; // falls through
+    case 1: k1 ^= at(0);
+      k1 = Math.imul(k1, c1); k1 = (k1 << 15) | (k1 >>> 17); k1 = Math.imul(k1, c2); h1 ^= k1;
+  }
+  const length = units * 2;
+  h1 ^= length; h2 ^= length; h3 ^= length; h4 ^= length;
+  h1 = (h1 + h2) | 0; h1 = (h1 + h3) | 0; h1 = (h1 + h4) | 0;
+  h2 = (h2 + h1) | 0; h3 = (h3 + h1) | 0; h4 = (h4 + h1) | 0;
+  h1 = fmix32(h1); h2 = fmix32(h2); h3 = fmix32(h3); h4 = fmix32(h4);
+  h1 = (h1 + h2) | 0; h1 = (h1 + h3) | 0; h1 = (h1 + h4) | 0;
+  h2 = (h2 + h1) | 0; h3 = (h3 + h1) | 0; h4 = (h4 + h1) | 0;
+  return [h1, h2, h3, h4].map((h) => (h >>> 0).toString(16).padStart(8, '0')).join('');
+}
+
+function fmix32(h: number): number {
+  h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return h;
 }
 /** The body the loader would compile for this file, with no load hooks and no type stripping: what the image carries. */
 export function prepareModuleForImage(rawCode: string, resolvedPath: string): string {
