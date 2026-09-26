@@ -1,3 +1,5 @@
+<p align="center"><img src="https://brand.volter.ai/logo/tabnode/svg?size=96" alt="tabnode"></p>
+
 # tabnode
 
 **Node's own library, in a browser tab.**
