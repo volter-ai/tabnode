@@ -185,6 +185,21 @@ export class NativeStreamDriver {
     return this.closing || stopped ? { status: UV_EBADF } : this.channel.call(operation);
   }
 
+  /**
+   * The realm stopped reading: a grant still outstanding is taken back at the
+   * owner, as a call, so it reads nothing more for this realm until asked.
+   * Without it the owner kept the grant and read one more chunk for a paused
+   * socket: VS Code's server pauses the extension host's socket to hand it to
+   * that process, the chunk reached the server, and the extension host's
+   * stream began mid-frame. A chunk already on its way still arrives, and is
+   * kept, as Node keeps what it read before a pause.
+   */
+  endRead(): void {
+    if (!this.readingCredit || this.closing || stopped) return;
+    this.call({ operation: 'readStop', id: this.descriptor.id });
+    this.readingCredit = false;
+  }
+
   operation(operation: 'readStop' | 'ref' | 'unref'): number {
     return this.call({ operation, id: this.descriptor.id }).status;
   }
@@ -193,6 +208,14 @@ export class NativeStreamDriver {
     if (this.closing || stopped) return UV_EBADF;
     if (this.readingCredit || this.buffered || this.readEnded) return 0;
     this.readingCredit = true;
+    // Posted where it can be: a refusal is the read that fails. A realm that
+    // stops reading takes the grant back (endRead), so the owner never reads
+    // ahead for a socket its realm has paused.
+    if (this.channel.post) {
+      try { this.channel.post({ operation: 'readStart', id: this.descriptor.id }); }
+      catch (cause) { this.readingCredit = false; throw cause; }
+      return 0;
+    }
     const status = this.call({ operation: 'readStart', id: this.descriptor.id }).status;
     if (status !== 0) this.readingCredit = false;
     return status;
@@ -221,7 +244,7 @@ export class NativeStreamDriver {
     // way, and Node's own completion of one reads no status (net's
     // `afterShutdown`), so a refusal the owner completes is the same to it.
     if (operation.operation === 'shutdown' && this.channel.post && !this.closing && !stopped) {
-      try { this.channel.post(operation); return 0; }
+      try { this.channel.post(operation as { operation: 'shutdown'; id: number; request: number }); return 0; }
       catch (cause) { this.completions.delete(operation.request); release(); throw cause; }
     }
     try {

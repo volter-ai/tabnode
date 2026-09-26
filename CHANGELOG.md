@@ -36,12 +36,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 - The resolver asks whether a directory has a `package.json` before reading
   it: most directories on the way up have none, and each thrown ENOENT cost
   about 100 ms of a dev server's start.
-- A stream's shutdown is posted to its native owner when the transport can
-  (`NativeStreamTransport.post`): Node's completion of one reads no status,
-  so a refusal the owner completes is the same to it. Read grants and closes
-  stay calls: posted, they let the owner read a chunk for a socket its realm
-  had stopped reading to hand to a child, and the child's stream began
-  mid-frame.
+- A stream that stops reading takes back the read grant its native owner
+  still holds: the owner kept it and read one more chunk for a paused socket,
+  and a socket paused to be handed to another process (VS Code's server gives
+  the extension host its socket) lost that chunk to the parent; the child's
+  stream began mid-frame. With the grant taken back, read grants are posted
+  again without waiting (`NativeStreamTransport.post`), and a shutdown too
+  (Node's completion of one reads no status): 0 of 11 opens failed, where 5
+  of 21 had, and a warm open of the Volter model editor reaches its session's
+  URL at 2.6 s rather than 3.6 s with grants as calls.
 - A realm asks its native owner once which descriptor numbers it holds
   streams at (`fdList`), not once per file it opens: a process that opened a
   few thousand files spent 0.3 s asking. The list is asked again after the
