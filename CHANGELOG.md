@@ -14,6 +14,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   page's main thread in the same open. A worker that predates it still gets
   base64. The service worker's other streaming path no longer drops the
   chunks the bridge already sent as buffers.
+- A module body's edits are joined in one pass: each one sliced and
+  re-joined the whole file, 845 ms of an extension host's first start on the
+  Volter model editor, and 3.5 s for a 10 MB file with 5,000 edits (now
+  2 ms). Overlapping edits, which the passes never make, keep their meaning.
 
 ## v0.5.38 — 2026-09-25
 
