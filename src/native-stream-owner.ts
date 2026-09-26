@@ -38,9 +38,10 @@ export interface NativeStreamTransport {
   call(operation: NativeStreamOperation): NativeStreamReply;
   /**
    * An operation whose answer nothing waits for, sent without waiting for
-   * the owner: the owner takes it in order with every call after it. A read
-   * grant it refuses arrives as the handle's failed read, a close it refuses
-   * as the close's completion. Optional; without it each is a call.
+   * the owner: the owner takes it in order with every call after it, and one
+   * it refuses completes with its status. The driver posts only a shutdown:
+   * a posted read grant or close lost data on a socket handed to a child.
+   * Optional; without it a shutdown is a call.
    */
   post?(operation: { operation: 'readStart'; id: number } | { operation: 'close' | 'reset' | 'shutdown'; id: number; request: number }): void;
   write(id: number, bytes: Uint8Array, handle?: number): Promise<number>;

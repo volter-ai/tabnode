@@ -36,15 +36,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 - The resolver asks whether a directory has a `package.json` before reading
   it: most directories on the way up have none, and each thrown ENOENT cost
   about 100 ms of a dev server's start.
-- A stream reading from its native owner grants the next chunk's credit
-  without waiting, when the transport can post (`NativeStreamTransport.post`):
-  a dev server waited on its owner once per drained chunk, 0.3 s of its start
-  in a tab while the owner was busy. A grant the owner refuses arrives as the
-  handle's failed read.
-- A stream's first read grant and its close are posted too, where the
-  transport can: a refused grant is the handle's failed read, a refused close
-  completes with its status. A shutdown is posted too: Node's completion of
-  one reads no status.
+- A stream's shutdown is posted to its native owner when the transport can
+  (`NativeStreamTransport.post`): Node's completion of one reads no status,
+  so a refusal the owner completes is the same to it. Read grants and closes
+  stay calls: posted, they let the owner read a chunk for a socket its realm
+  had stopped reading to hand to a child, and the child's stream began
+  mid-frame.
 - A realm asks its native owner once which descriptor numbers it holds
   streams at (`fdList`), not once per file it opens: a process that opened a
   few thousand files spent 0.3 s asking. The list is asked again after the
