@@ -808,36 +808,93 @@ async function fromHttpCache(key) {
   } catch { return null; }
 }
 
+/**
+ * Kept only whole and bounded: a body is read for the cache up to this many
+ * bytes and for this long, and one that is longer or never ends (an event
+ * stream, a long poll) is let go, its copy cancelled, the page's untouched.
+ */
+const HTTP_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const HTTP_CACHE_READ_MS = 30_000;
+
 function keepInHttpCache(key, request, response) {
   if (response.status !== 200 || !response.body || freshFor(response.headers.get('cache-control')) === 0) return;
+  const length = Number(response.headers.get('content-length') ?? 0);
+  if (!Number.isFinite(length) || length > HTTP_CACHE_MAX_BYTES) return;
+  if (/^text\/event-stream\b/iu.test(response.headers.get('content-type') ?? '')) return;
   const vary = response.headers.get('vary');
   if (vary && vary.split(',').some((name) => name.trim() === '*')) return;
   if (response.headers.has('set-cookie')) return;
   const copy = response.clone();
   const headers = new Headers(copy.headers);
   headers.set(STORED_AT, String(Date.now()));
-  const kept = caches.open(HTTP_CACHE)
-    .then((cache) => cache.put(key, new Response(copy.body, { status: copy.status, statusText: copy.statusText, headers })))
-    .catch(() => undefined);
+  const kept = (async () => {
+    const reader = copy.body.getReader();
+    const chunks = [];
+    let bytes = 0;
+    const deadline = Date.now() + HTTP_CACHE_READ_MS;
+    try {
+      for (;;) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return;
+        let timer;
+        const next = await Promise.race([reader.read(), new Promise((resolve) => { timer = setTimeout(() => resolve(null), remaining); })]);
+        clearTimeout(timer);
+        if (next === null) return;
+        if (next.done) break;
+        bytes += next.value.byteLength;
+        if (bytes > HTTP_CACHE_MAX_BYTES) return;
+        chunks.push(next.value);
+      }
+      const cache = await caches.open(HTTP_CACHE);
+      await cache.put(key, new Response(new Blob(chunks), { status: copy.status, statusText: copy.statusText, headers }));
+    } finally {
+      reader.cancel().catch(() => undefined);
+    }
+  })().catch(() => undefined);
   try { requestEvents.get(request)?.waitUntil(kept); } catch { /* the event has settled; the put still runs */ }
+}
+
+/**
+ * A host found by what the request is (its client is the host's page, or a
+ * document or worker its servers made, or it is the only host), not guessed
+ * from its port or the latest page: only that host's answers are kept under
+ * its scope, so one project's answer is never kept as another's.
+ */
+function ownsRequest(request, host) {
+  const event = requestEvents.get(request);
+  return hosts.size === 1 || (event !== undefined && ownerOf(event.clientId) === host);
+}
+
+let httpCacheSwept = false;
+/** Once a worker's life: entries past their freshness are dropped, so what nothing asks for again does not stay. */
+function sweepHttpCache() {
+  if (httpCacheSwept) return;
+  httpCacheSwept = true;
+  void (async () => {
+    const cache = await caches.open(HTTP_CACHE);
+    for (const key of await cache.keys()) {
+      const kept = await cache.match(key);
+      const storedAt = Number(kept?.headers.get(STORED_AT));
+      if (!kept || !Number.isFinite(storedAt) || Date.now() - storedAt >= freshFor(kept.headers.get('cache-control')) * 1000) await cache.delete(key);
+    }
+  })().catch(() => undefined);
 }
 
 async function handleVirtualRequest(request, port, path, rooted = false) {
   if (hosts.size === 0) await askForInit(requestEvents.get(request)?.clientId);
-  const host = httpCacheable(request) ? await hostForRequest(request, port) : null;
-  if (!host || !host.httpCacheScope) return answerVirtualRequest(request, port, path, rooted);
+  const host = await hostForRequest(request, port);
+  if (!host || !host.httpCacheScope || !httpCacheable(request) || !ownsRequest(request, host)) return answerVirtualRequest(request, port, path, rooted, host);
+  sweepHttpCache();
   const key = httpCacheKey(host, port, path, request);
   const kept = await fromHttpCache(key);
   if (kept) return kept;
-  const response = await answerVirtualRequest(request, port, path, rooted);
+  const response = await answerVirtualRequest(request, port, path, rooted, host);
   keepInHttpCache(key, request, response);
   return response;
 }
 
-async function answerVirtualRequest(request, port, path, rooted = false) {
+async function answerVirtualRequest(request, port, path, rooted = false, host = null) {
   try {
-    if (hosts.size === 0) await askForInit(requestEvents.get(request)?.clientId);
-    const host = await hostForRequest(request, port);
     const registration = host ? host.flowControlledPorts.get(port) : undefined;
     // Build headers object
     const headers = {};
