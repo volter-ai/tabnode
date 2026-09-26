@@ -169,6 +169,12 @@ export class NativeStreamDriver {
     if (this.closing || stopped) return UV_EBADF;
     if (this.readingCredit || this.buffered || this.readEnded) return 0;
     this.readingCredit = true;
+    // Posted where it can be: a refusal is the read that fails.
+    if (this.channel.post) {
+      try { this.channel.post({ operation: 'readStart', id: this.descriptor.id }); }
+      catch (cause) { this.readingCredit = false; throw cause; }
+      return 0;
+    }
     const status = this.call({ operation: 'readStart', id: this.descriptor.id }).status;
     if (status !== 0) this.readingCredit = false;
     return status;
@@ -180,14 +186,8 @@ export class NativeStreamDriver {
     if (this.handle.reading && empty && !this.readEnded && !this.closing && !stopped) {
       // Each drained chunk grants the next, so a server reading a stream
       // waited on its owner once per chunk: 0.3 s of a dev server's start in
-      // a tab while the owner was busy placing its store. Posted, the grant
-      // costs nothing here, and a refusal is the read that fails.
-      if (this.channel.post && !this.readingCredit) {
-        this.readingCredit = true;
-        try { this.channel.post({ operation: 'readStart', id: this.descriptor.id }); }
-        catch (cause) { this.readingCredit = false; throw cause; }
-        return;
-      }
+      // a tab while the owner was busy placing its store. Posted (beginRead),
+      // the grant costs nothing here, and a refusal is the read that fails.
       const status = this.beginRead();
       if (status !== 0) this.handle.receiveError(status);
     }
@@ -333,6 +333,12 @@ export class NativeStreamDriver {
     const request = requestId();
     this.completions.set(request, () => this.finishClose());
     if (stopped) { this.finishClose(); return 0; }
+    // Posted where it can be: the close completes by its event either way,
+    // and a refused one is completed by the owner with its status.
+    if (this.channel.post) {
+      try { this.channel.post({ operation: reset ? 'reset' : 'close', id: this.descriptor.id, request }); return 0; }
+      catch { this.completions.delete(request); this.finishClose(); return 0; }
+    }
     try {
       const status = this.channel.call({ operation: reset ? 'reset' : 'close', id: this.descriptor.id, request }).status;
       if (status !== 0) { this.completions.delete(request); this.finishClose(); }

@@ -41,6 +41,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   a dev server waited on its owner once per drained chunk, 0.3 s of its start
   in a tab while the owner was busy. A grant the owner refuses arrives as the
   handle's failed read.
+- A stream's first read grant and its close are posted too, where the
+  transport can: a refused grant is the handle's failed read, a refused close
+  completes with its status. Shutdown stays a call, since Node reads its
+  status at once.
 - The service worker keeps a virtual server's cacheable answers when the
   page names a scope for them (`initServiceWorker({ httpCacheScope })`, the
   project its servers belong to): a GET's 200 whose Cache-Control gives a
