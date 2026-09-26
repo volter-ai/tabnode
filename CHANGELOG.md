@@ -23,6 +23,18 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   JavaScript decoder took 784 ms. A synchronous decode asked for before the
   wasm is ready still has the JavaScript one. A flow-controlled response
   keeps 16 chunks of credit in flight instead of one.
+- A file run as the entry (`node file.js`, a program's bin) takes its
+  prepared body as a required file does, and keeps one it prepares, so an
+  image's dry run carries it: the VS Code server's entry was parsed afresh at
+  every open, a quarter of a second in a tab.
+- The resolver asks whether a directory has a `package.json` before reading
+  it: most directories on the way up have none, and each thrown ENOENT cost
+  about 100 ms of a dev server's start.
+- A stream reading from its native owner grants the next chunk's credit
+  without waiting, when the transport can post (`NativeStreamTransport.post`):
+  a dev server waited on its owner once per drained chunk, 0.3 s of its start
+  in a tab while the owner was busy. A grant the owner refuses arrives as the
+  handle's failed read.
 
 ## v0.5.38 — 2026-09-25
 

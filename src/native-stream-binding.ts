@@ -178,6 +178,16 @@ export class NativeStreamDriver {
     this.buffered = !empty;
     this.readEnded ||= ended;
     if (this.handle.reading && empty && !this.readEnded && !this.closing && !stopped) {
+      // Each drained chunk grants the next, so a server reading a stream
+      // waited on its owner once per chunk: 0.3 s of a dev server's start in
+      // a tab while the owner was busy placing its store. Posted, the grant
+      // costs nothing here, and a refusal is the read that fails.
+      if (this.channel.post && !this.readingCredit) {
+        this.readingCredit = true;
+        try { this.channel.post({ operation: 'readStart', id: this.descriptor.id }); }
+        catch (cause) { this.readingCredit = false; throw cause; }
+        return;
+      }
       const status = this.beginRead();
       if (status !== 0) this.handle.receiveError(status);
     }

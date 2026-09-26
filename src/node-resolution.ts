@@ -68,7 +68,9 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     const path = `${directory === "/" ? "" : directory}/package.json`;
     if (manifests.has(path)) return manifests.get(path)!;
     let parsed: Record<string, unknown> | null = null;
-    try { const text = fs.readFileSync(path, "utf8"); parsed = JSON.parse(typeof text === "string" ? text : new TextDecoder().decode(text)) as Record<string, unknown>; } catch { parsed = null; }
+    // Most directories on the way up have none; asking first spares a thrown
+    // ENOENT per directory, which is most of a resolution's cost in a tab.
+    try { if (!fs.existsSync(path)) { manifests.set(path, null); return null; } const text = fs.readFileSync(path, "utf8"); parsed = JSON.parse(typeof text === "string" ? text : new TextDecoder().decode(text)) as Record<string, unknown>; } catch { parsed = null; }
     manifests.set(path, parsed);
     return parsed;
   };

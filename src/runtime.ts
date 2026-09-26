@@ -2578,9 +2578,24 @@ export class Runtime {
    */
   evaluate(
     code: string,
-    filename: string
+    filename: string,
+    asFile = false
   ): { exports: unknown; module: Module } {
     const dirname = pathShim.dirname(filename);
+    // A file run as the entry (`runFile`) takes its prepared body as a
+    // required file does, and keeps one it prepares: the VS Code server's
+    // entry was parsed afresh in every open, a quarter of a second in a tab.
+    let prepared: string | undefined;
+    if (asFile && !transformsTypes(this.process as { execArgv?: string[]; env?: Record<string, string> }) && this.vfs.existsSync(PREPARED_MODULES_DIR)) {
+      const key = preparedModuleKey(code, filename);
+      const path = key ? `${PREPARED_MODULES_DIR}/${key}` : undefined;
+      if (path && this.vfs.existsSync(path)) prepared = this.vfs.readFileSync(path, 'utf8') as string;
+      else if (path) {
+        prepared = __substrateScopeGlobalCalls(__substratePrepareBody(code, filename, undefined, this.process));
+        try { this.vfs.writeFileSync(path, prepared); }
+        catch { /* a process that may not write there prepares its own */ }
+      }
+    }
 
     // Create require function
     const require = createRequire(
@@ -2619,27 +2634,30 @@ export class Runtime {
 
     // Transform code the same way loadModule does
     // Strip shebang line if present (e.g. #!/usr/bin/env node)
-    if (code.startsWith('#!')) {
+    if (prepared !== undefined) code = prepared;
+    else if (code.startsWith('#!')) {
       code = code.slice(code.indexOf('\n') + 1);
     }
 
-    code = __substrateModuleTypes(code, filename, undefined, this.process);
+    if (prepared === undefined) {
+      code = __substrateModuleTypes(code, filename, undefined, this.process);
 
-    // Transform ESM to CJS if needed (AST-based, handles import.meta and dynamic imports too)
-    if (!filename.endsWith('.cjs') && !filename.endsWith('.cts')) {
-      const lowered = transformEsmToCjs(code, filename);
-      // The directive shares the body's first line, as `prepareModuleCode`'s does.
-      code = lowered === code ? code : `${__substrateModuleMarker}"use strict";${lowered}`;
-    } else {
-      // A `.cjs` module skips the ESM transform, and with it the rewrite of
-      // `import(...)` to the engine's dynamic import, so its
-      // `import("fs/promises")` reached the browser's own import and failed on
-      // the bare specifier. The dynamic-import rewrite applies to `.cjs` too,
-      // from the syntax tree as for every other CommonJS module: the text
-      // rewrite also renamed a method called `import`, and jiti's
-      // `async import(e,t){...}` became `__dynamicImport`, so `jiti.import` was
-      // undefined and every Pi extension failed to load.
-      code = __substrateRewriteDynamicImportsInScript(code);
+      // Transform ESM to CJS if needed (AST-based, handles import.meta and dynamic imports too)
+      if (!filename.endsWith('.cjs') && !filename.endsWith('.cts')) {
+        const lowered = transformEsmToCjs(code, filename);
+        // The directive shares the body's first line, as `prepareModuleCode`'s does.
+        code = lowered === code ? code : `${__substrateModuleMarker}"use strict";${lowered}`;
+      } else {
+        // A `.cjs` module skips the ESM transform, and with it the rewrite of
+        // `import(...)` to the engine's dynamic import, so its
+        // `import("fs/promises")` reached the browser's own import and failed on
+        // the bare specifier. The dynamic-import rewrite applies to `.cjs` too,
+        // from the syntax tree as for every other CommonJS module: the text
+        // rewrite also renamed a method called `import`, and jiti's
+        // `async import(e,t){...}` became `__dynamicImport`, so `jiti.import` was
+        // undefined and every Pi extension failed to load.
+        code = __substrateRewriteDynamicImportsInScript(code);
+      }
     }
 
     // Execute code
@@ -2647,7 +2665,7 @@ export class Runtime {
     try {
       const importMetaUrl = 'file://' + filename;
       const strictBody = code.startsWith(__substrateModuleMarker);
-      code = __substrateScopeGlobalCalls(code);
+      if (prepared === undefined) code = __substrateScopeGlobalCalls(code);
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
@@ -2732,8 +2750,10 @@ export class Runtime {
     // `.bin` entry resolved `../lib` beside `.bin` and found nothing.
     let real = filename;
     try { real = this.vfs.realpathSync(filename) as string; } catch { /* the read below reports it */ }
-    const code = this.vfs.readFileSync(real, 'utf8');
-    return this.execute(code, real);
+    const code = this.vfs.readFileSync(real, 'utf8') as string;
+    // The file is run as it stands in the tree, so it is the tree's own and
+    // may take and keep a prepared body; source handed to `execute` is not.
+    return this.evaluate(code, real, true);
   }
 
   /**
