@@ -43,8 +43,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   handle's failed read.
 - A stream's first read grant and its close are posted too, where the
   transport can: a refused grant is the handle's failed read, a refused close
-  completes with its status. Shutdown stays a call, since Node reads its
-  status at once.
+  completes with its status. A shutdown is posted too: Node's completion of
+  one reads no status.
+- A realm asks its native owner once which descriptor numbers it holds
+  streams at (`fdList`), not once per file it opens: a process that opened a
+  few thousand files spent 0.3 s asking. The list is asked again after the
+  realm opens a stream at a number itself.
 - The service worker keeps a virtual server's cacheable answers when the
   page names a scope for them (`initServiceWorker({ httpCacheScope })`, the
   project its servers belong to): a GET's 200 whose Cache-Control gives a

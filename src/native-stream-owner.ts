@@ -22,6 +22,8 @@ export type NativeStreamEvent =
 export type NativeStreamOperation =
   | { operation: 'create'; kind: 'tcp' | 'pipe'; type: number }
   | { operation: 'fdType'; fd: number }
+  /** Every descriptor number this scope holds a stream at: what a realm's own files must not take. */
+  | { operation: 'fdList' }
   | { operation: 'pair'; id: number; peer: number }
   | { operation: 'duplicate'; id: number }
   | { operation: 'bind'; id: number; address: string; port?: number; ipv6?: boolean; flags?: number }
@@ -30,7 +32,7 @@ export type NativeStreamOperation =
   | { operation: 'open'; id: number; fd: number }
   | { operation: 'readStart' | 'readStop' | 'ref' | 'unref' | 'getsockname' | 'getpeername'; id: number }
   | { operation: 'shutdown' | 'close' | 'reset'; id: number; request: number };
-export interface NativeStreamReply { status: number; handle?: NativeStreamDescriptor; handleType?: 'TCP' | 'PIPE'; address?: Partial<SockName> }
+export interface NativeStreamReply { status: number; handle?: NativeStreamDescriptor; handleType?: 'TCP' | 'PIPE'; address?: Partial<SockName>; fds?: number[] }
 export interface NativeStreamTransport {
   readonly limits: Readonly<NativeStreamLimits>;
   call(operation: NativeStreamOperation): NativeStreamReply;
@@ -40,7 +42,7 @@ export interface NativeStreamTransport {
    * grant it refuses arrives as the handle's failed read, a close it refuses
    * as the close's completion. Optional; without it each is a call.
    */
-  post?(operation: { operation: 'readStart'; id: number } | { operation: 'close' | 'reset'; id: number; request: number }): void;
+  post?(operation: { operation: 'readStart'; id: number } | { operation: 'close' | 'reset' | 'shutdown'; id: number; request: number }): void;
   write(id: number, bytes: Uint8Array, handle?: number): Promise<number>;
   onEvent(listener: (event: NativeStreamEvent) => void): () => void;
 }
@@ -145,6 +147,11 @@ export class NativeStreamScope {
   /** Synchronous operations return libuv status; completions use the event door. */
   call(operation: NativeStreamOperation): NativeStreamReply {
     if (this.disposed) return { status: UV_EBADF };
+    if (operation.operation === 'fdList') {
+      const fds = [...this.descriptors].filter(([, id]) => this.entry(id)).map(([fd]) => fd);
+      // The reply's buffer is small; a scope holding more asks number by number.
+      return fds.length > 256 ? { status: UV_EINVAL } : { status: 0, fds };
+    }
     if (operation.operation === 'fdType') {
       if (!Number.isInteger(operation.fd) || operation.fd < 0) return { status: UV_EINVAL };
       const id = this.descriptors.get(operation.fd);

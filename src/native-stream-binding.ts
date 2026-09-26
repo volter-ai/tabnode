@@ -11,6 +11,14 @@ const drivers = new WeakMap<LibuvStreamWrap, NativeStreamDriver>();
 const handles = new Map<number, Stream>();
 const constructors: Partial<Record<'tcp' | 'pipe', new (type: number) => Stream>> = {};
 let transport: NativeStreamTransport | undefined;
+/**
+ * The descriptor numbers the owner holds streams at for this realm: asked once
+ * (a scope's are inherited before its realm runs, and added later only by the
+ * realm's own `open`), not once per file the realm opens (0.3 s of a process
+ * opening a few thousand files). Undefined until asked; null where the owner
+ * cannot list them.
+ */
+let heldFds: Set<number> | null | undefined;
 let allocated = false;
 let stopped = false;
 let incoming: NativeStreamDescriptor | undefined;
@@ -31,6 +39,7 @@ function requestId(): number {
 export function installNativeStreamTransport(next: NativeStreamTransport): void {
   if (transport || allocated) throw new Error('Native stream transport must be installed before stream construction.');
   transport = next;
+  heldFds = undefined;
   next.onEvent(event => {
     if (event.type === 'closed') {
       stopped = true;
@@ -75,6 +84,21 @@ function adopt(descriptor: NativeStreamDescriptor, receiver: Stream): Stream {
 }
 
 export function nativeStreamFor(handle: LibuvStreamWrap): NativeStreamDriver | undefined { return drivers.get(handle); }
+
+/** Whether the owner holds a stream at this descriptor number, which a file this realm opens must then not take. */
+export function nativeFdHeld(fd: number): boolean {
+  if (!transport || stopped || !Number.isInteger(fd) || fd < 0) return false;
+  if (heldFds === undefined) {
+    const result = transport.call({ operation: 'fdList' });
+    heldFds = result.status === 0 && Array.isArray(result.fds) ? new Set(result.fds) : null;
+  }
+  return heldFds ? heldFds.has(fd) : nativeInheritedFdType(fd) !== undefined;
+}
+
+/** The realm opened a stream at a descriptor number: the list is asked again. */
+export function forgetHeldFds(): void {
+  heldFds = undefined;
+}
 
 /** Inherited descriptors live with the owner, not in this realm's JS fd table. */
 export function nativeInheritedFdType(fd: number): 'TCP' | 'PIPE' | undefined {
@@ -197,6 +221,13 @@ export class NativeStreamDriver {
     if (!('request' in operation)) throw new Error('Native completion requires a request ID.');
     const release = holdRequest(this.handle);
     this.completions.set(operation.request, status => { try { callback(status); } finally { release(); } });
+    // A shutdown is posted where it can be: it completes by its event either
+    // way, and Node's own completion of one reads no status (net's
+    // `afterShutdown`), so a refusal the owner completes is the same to it.
+    if (operation.operation === 'shutdown' && this.channel.post && !this.closing && !stopped) {
+      try { this.channel.post(operation); return 0; }
+      catch (cause) { this.completions.delete(operation.request); release(); throw cause; }
+    }
     try {
       const status = this.call(operation).status;
       if (status !== 0) { this.completions.delete(operation.request); release(); }

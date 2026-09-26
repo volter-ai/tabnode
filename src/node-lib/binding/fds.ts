@@ -15,7 +15,7 @@
 
 import type { ProcessToken } from '../../process-tokens';
 import { currentOwner } from './handles';
-import { nativeInheritedFdType } from '../../native-stream-binding';
+import { nativeFdHeld, nativeInheritedFdType } from '../../native-stream-binding';
 
 /** What libuv answers for a descriptor. */
 export type HandleType = 'TCP' | 'TTY' | 'UDP' | 'FILE' | 'PIPE' | 'UNKNOWN';
@@ -41,7 +41,7 @@ let nextFd = 20;
 export function allocateFd(): number {
   // The host can inherit any descriptor number, not just the usual IPC fd 3.
   // Files allocated locally must not shadow one owned by the native channel.
-  while (nativeInheritedFdType(nextFd) !== undefined) nextFd += 1;
+  while (nativeFdHeld(nextFd)) nextFd += 1;
   return nextFd++;
 }
 

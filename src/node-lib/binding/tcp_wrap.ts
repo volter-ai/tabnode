@@ -14,7 +14,7 @@
  */
 import { LibuvStreamWrap } from './stream_wrap';
 import { __adoptHandle, ownerOf } from './handles';
-import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
+import { forgetHeldFds, nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
 import { UV_EADDRINUSE, UV_ECONNREFUSED, UV_EINVAL, UV_ENOTSUP, UV_EBADF } from './uv';
 
 /** libuv's `uv_tcp_t` flavours, and the two flags `getFlags` builds. */
@@ -261,6 +261,7 @@ export class TCP extends LibuvStreamWrap {
     const native = nativeStreamFor(this);
     if (native) {
       const status = native.call({ operation: 'open', id: native.descriptor.id, fd: _fd }).status;
+      forgetHeldFds();
       if (status === 0) this.fd = _fd;
       return status;
     }

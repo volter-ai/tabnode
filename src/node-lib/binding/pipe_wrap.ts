@@ -15,7 +15,7 @@ import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
 import { UV_EADDRINUSE, UV_ENOENT, UV_EBADF } from './uv';
 import { handleForFd, registerFd, releaseFd } from './fds';
 import { __adoptHandle, ownerOf } from './handles';
-import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
+import { forgetHeldFds, nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
 
 /** libuv's `uv_pipe_t` flavours, and the two chmod bits `listen` reads. */
 export const constants = {
@@ -110,6 +110,7 @@ export class Pipe extends LibuvStreamWrap {
     const native = nativeStreamFor(this);
     if (native) {
       const status = native.call({ operation: 'open', id: native.descriptor.id, fd }).status;
+      forgetHeldFds();
       if (status === 0) this.fd = fd;
       return status;
     }
