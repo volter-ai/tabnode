@@ -1,7 +1,7 @@
 /**
  * Service Worker for Mini WebContainers
  * Intercepts fetch requests and routes them to virtual servers
- * Version: 17 - a host's document prelude: its frames' documents start with it
+ * Version: 18 - a host that names a cache scope has its servers' cacheable answers kept
  */
 
 const DEBUG = false;
@@ -40,6 +40,7 @@ function openHost(id, channel) {
     flowControlledPorts: new Map(),
     primaryPort: null,
     ownDocuments: new Set(),
+    httpCacheScope: null,
   };
   hosts.set(id, host);
   latestHost = host;
@@ -163,6 +164,9 @@ self.addEventListener('message', (event) => {
     // Markup a frame's document served from this host's servers starts with
     // (after its doctype): the page's first script, before the document's own.
     host.documentPrelude = data && typeof data.documentPrelude === 'string' && data.documentPrelude ? data.documentPrelude : null;
+    // The name its servers' answers are kept under across its pages, when
+    // the host gives one: the project whose servers they are.
+    host.httpCacheScope = data && typeof data.httpCacheScope === 'string' && /^[\w.:-]{1,200}$/u.test(data.httpCacheScope) ? data.httpCacheScope : null;
     DEBUG && console.log('[SW] Initialized communication channel with transferred port');
     // Re-claim clients so that pages opened after SW activation get controlled.
     // Without this, controllerchange never fires for late-arriving pages.
@@ -759,7 +763,78 @@ async function withDocumentPrelude(event, response) {
 /**
  * Handle a request to a virtual server
  */
+/**
+ * The browser keeps a server's cacheable answers in its HTTP cache, but not
+ * an answer this worker makes, so a virtual server's never were: every open
+ * asked the server again for files it had said would not change for a year
+ * (the VS Code workbench's own scripts, 0.4 s of a warm open in a tab). A
+ * host that names a scope, the project its servers belong to, has them kept
+ * here as the browser would keep a real origin's: a GET's 200 whose
+ * Cache-Control gives it a max-age and does not forbid storing, answered from
+ * here while it is fresh, varying on what its Vary names. Navigations are
+ * always asked, as a document is where a server says what changed.
+ */
+const HTTP_CACHE = 'tabnode-http-1';
+const STORED_AT = 'x-tabnode-stored-at';
+
+function freshFor(cacheControl) {
+  const directives = String(cacheControl ?? '').toLowerCase().split(',').map((part) => part.trim());
+  if (directives.some((part) => part === 'no-store' || part === 'no-cache' || part.startsWith('no-cache='))) return 0;
+  const maxAge = directives.find((part) => part.startsWith('max-age='));
+  const seconds = maxAge ? Number.parseInt(maxAge.slice('max-age='.length), 10) : 0;
+  return Number.isSafeInteger(seconds) && seconds > 0 ? seconds : 0;
+}
+
+function httpCacheKey(host, port, path, request) {
+  const url = `${self.registration.scope}__tabnode_http_cache__/${encodeURIComponent(host.httpCacheScope)}/${port}${path.startsWith('/') ? path : `/${path}`}`;
+  return new Request(url, { headers: request.headers });
+}
+
+function httpCacheable(request) {
+  return request.method === 'GET' && request.mode !== 'navigate'
+    && !request.headers.has('authorization') && !request.headers.has('range')
+    && request.cache !== 'no-store' && request.cache !== 'reload' && request.cache !== 'no-cache';
+}
+
+async function fromHttpCache(key) {
+  try {
+    const cache = await caches.open(HTTP_CACHE);
+    const kept = await cache.match(key);
+    if (!kept) return null;
+    const storedAt = Number(kept.headers.get(STORED_AT));
+    if (Number.isFinite(storedAt) && Date.now() - storedAt < freshFor(kept.headers.get('cache-control')) * 1000) return kept;
+    await cache.delete(key);
+    return null;
+  } catch { return null; }
+}
+
+function keepInHttpCache(key, request, response) {
+  if (response.status !== 200 || !response.body || freshFor(response.headers.get('cache-control')) === 0) return;
+  const vary = response.headers.get('vary');
+  if (vary && vary.split(',').some((name) => name.trim() === '*')) return;
+  if (response.headers.has('set-cookie')) return;
+  const copy = response.clone();
+  const headers = new Headers(copy.headers);
+  headers.set(STORED_AT, String(Date.now()));
+  const kept = caches.open(HTTP_CACHE)
+    .then((cache) => cache.put(key, new Response(copy.body, { status: copy.status, statusText: copy.statusText, headers })))
+    .catch(() => undefined);
+  try { requestEvents.get(request)?.waitUntil(kept); } catch { /* the event has settled; the put still runs */ }
+}
+
 async function handleVirtualRequest(request, port, path, rooted = false) {
+  if (hosts.size === 0) await askForInit(requestEvents.get(request)?.clientId);
+  const host = httpCacheable(request) ? await hostForRequest(request, port) : null;
+  if (!host || !host.httpCacheScope) return answerVirtualRequest(request, port, path, rooted);
+  const key = httpCacheKey(host, port, path, request);
+  const kept = await fromHttpCache(key);
+  if (kept) return kept;
+  const response = await answerVirtualRequest(request, port, path, rooted);
+  keepInHttpCache(key, request, response);
+  return response;
+}
+
+async function answerVirtualRequest(request, port, path, rooted = false) {
   try {
     if (hosts.size === 0) await askForInit(requestEvents.get(request)?.clientId);
     const host = await hostForRequest(request, port);

@@ -35,6 +35,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   a dev server waited on its owner once per drained chunk, 0.3 s of its start
   in a tab while the owner was busy. A grant the owner refuses arrives as the
   handle's failed read.
+- The service worker keeps a virtual server's cacheable answers when the
+  page names a scope for them (`initServiceWorker({ httpCacheScope })`, the
+  project its servers belong to): a GET's 200 whose Cache-Control gives a
+  max-age and does not forbid storing is answered from the worker's cache
+  while fresh, varying on its Vary, as the browser keeps a real origin's
+  (it never sees an answer the worker makes). Navigations are always asked.
+  A warm open of the Volter model editor spent 0.4 s instead of 0.75 s on
+  the VS Code workbench's own scripts, and 0.08 s instead of 0.3-0.8 s on
+  its extensions' files.
 
 ## v0.5.38 — 2026-09-25
 

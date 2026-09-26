@@ -69,6 +69,13 @@ export interface InitServiceWorkerOptions {
    * host), by path, so the worker does not take one for the preview's.
    */
   ownDocuments?: string[];
+  /**
+   * The name this page's servers' cacheable answers are kept under in the
+   * worker's HTTP cache, across the page's reloads: the project the servers
+   * belong to. The browser's own cache never sees an answer the worker makes;
+   * without a scope the worker keeps none.
+   */
+  httpCacheScope?: string;
 }
 
 type Listener = (...args: any[]) => void;
@@ -216,6 +223,10 @@ export class PortBridge extends BridgeEvents {
     }
   }
   private ownDocuments: string[] | undefined;
+  private httpCacheScope: string | undefined;
+  private initData(): { ownDocuments: string[]; httpCacheScope?: string } {
+    return { ownDocuments: this.ownDocuments ?? [], ...(this.httpCacheScope ? { httpCacheScope: this.httpCacheScope } : {}) };
+  }
 
   /**
    * Get server URL for a port
@@ -333,8 +344,9 @@ export class PortBridge extends BridgeEvents {
     this.messageChannel.port1.onmessage = this.handleServiceWorkerMessage.bind(this);
 
     this.ownDocuments = options?.ownDocuments;
+    this.httpCacheScope = options?.httpCacheScope;
     // Send port to service worker
-    sw.postMessage({ type: 'init', port: this.messageChannel.port2, data: { ownDocuments: this.ownDocuments ?? [] } }, [
+    sw.postMessage({ type: 'init', port: this.messageChannel.port2, data: this.initData() }, [
       this.messageChannel.port2,
     ]);
 
@@ -351,7 +363,7 @@ export class PortBridge extends BridgeEvents {
         this.messageChannel = new MessageChannel();
         this.messageChannel.port1.onmessage = this.handleServiceWorkerMessage.bind(this);
         navigator.serviceWorker.controller.postMessage(
-          { type: 'init', port: this.messageChannel.port2, data: { ownDocuments: this.ownDocuments ?? [] } },
+          { type: 'init', port: this.messageChannel.port2, data: this.initData() },
           [this.messageChannel.port2]
         );
         this.announceServers();
