@@ -16,7 +16,7 @@ const _encoder = new TextEncoder();
 const FLOW_MAX_REQUEST_BYTES = 64 * 1024 * 1024;
 const FLOW_MAX_CHUNK_BYTES = 65536;
 // Chunks that may wait for the reader's credit before the server is paused.
-const FLOW_QUEUED_CHUNKS = 4;
+const FLOW_QUEUED_CHUNKS = 16;
 
 /** The bytes this view names, in a buffer of their own. A pooled Buffer is a window on 8 KB. */
 export function ownedBytes(view: Uint8Array): Uint8Array {

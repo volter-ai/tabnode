@@ -30,7 +30,34 @@
 import { zstream, inflateModule, deflateModule, zlibConstants } from './zlib-pako';
 // @ts-expect-error `brotli` ships no types; its decoder takes and returns bytes.
 import brotliDecompressUntyped from 'brotli/decompress';
-const brotliDecompress = brotliDecompressUntyped as (input: Uint8Array) => Uint8Array;
+// By file: the package exports only an entry that fetches its wasm by URL,
+// and an engine realm's network is closed; its build inlines both.
+import initBrotliWasm, { decompress as brotliWasmDecompress } from '../../../node_modules/brotli-wasm/pkg.web/brotli_wasm.js';
+// @ts-expect-error `?base64` is the build's own (scripts/base64-asset-plugin.mjs): the file as base64.
+import brotliWasmBase64 from '../../../node_modules/brotli-wasm/pkg.web/brotli_wasm_bg.wasm?base64';
+const brotliDecompressJs = brotliDecompressUntyped as (input: Uint8Array) => Uint8Array;
+
+/**
+ * Brotli in wasm (`brotli-wasm`, its bytes inlined, compiled once per realm
+ * as the binding loads), with the pure-JavaScript decoder only for a
+ * synchronous decode asked for before the wasm is ready. The JavaScript one
+ * inflated a server's pre-compressed 18.6 MB file to 86 MB in about a second
+ * of a process's thread (Blender's engine, served in browser-substrate's tab,
+ * 2026-09-26).
+ */
+let brotliWasmReady = false;
+const brotliWasmLoading: Promise<void> = (async () => {
+  try {
+    const binary = atob(String(brotliWasmBase64));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    await initBrotliWasm(await WebAssembly.compile(bytes));
+    brotliWasmReady = true;
+  } catch { /* the JavaScript decoder answers */ }
+})();
+function brotliDecompress(input: Uint8Array): Uint8Array {
+  return brotliWasmReady ? brotliWasmDecompress(input) : brotliDecompressJs(input);
+}
 
 /** Node's `zlib` modes, by the numbers `zlib.js` passes. */
 const DEFLATE = 1;
@@ -296,8 +323,10 @@ class BrotliDecoderHandle {
     const tick = (globalThis as { process?: { nextTick?: (fn: () => void) => void } }).process?.nextTick
       ?? ((fn: () => void) => { queueMicrotask(fn); });
     tick(() => {
-      this.#run(flush, inBuf, inOff, inLen, outBuf, outOff, outLen);
-      this.#callback?.();
+      // The stream's decode waits for the wasm decoder, which the binding began compiling as it loaded.
+      const run = (): void => { this.#run(flush, inBuf, inOff, inLen, outBuf, outOff, outLen); this.#callback?.(); };
+      if (flush === BROTLI_OPERATION_FINISH && !brotliWasmReady) void brotliWasmLoading.then(run);
+      else run();
     });
   }
 

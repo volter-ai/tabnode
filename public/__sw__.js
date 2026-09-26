@@ -98,6 +98,8 @@ let requestId = 0;
 // in; each host's `flowControlledPorts` holds what its ports negotiated.
 const controlledUploads = new Set();
 const MAX_STREAM_CHUNK_BYTES = 65536;
+/** Chunks a flow-controlled response may have in flight: 1 MiB. */
+const STREAM_CREDIT_WINDOW = 16;
 
 function updateFlowControl(host, type, data) {
   if (type === 'server-registered' || type === 'server-unregistered') {
@@ -374,7 +376,8 @@ async function sendControlledRequest(host, port, method, url, headers, body, sig
   const channel = host.port;
   const id = ++requestId;
   let controller, resolveHeaders, rejectHeaders, resolvePull;
-  let headed = false, credited = false, ended = false;
+  // Credits the host holds: how many chunks it may send before this worker asks again.
+  let headed = false, outstanding = 0, ended = false;
   const headersPromise = new Promise((resolve, reject) => {
     resolveHeaders = resolve;
     rejectHeaders = reject;
@@ -407,11 +410,14 @@ async function sendControlledRequest(host, port, method, url, headers, body, sig
     start(value) { controller = value; },
     pull() {
       if (ended) return;
-      if (credited) throw new Error('Duplicate stream credit');
-      credited = true;
+      // A window of credits, not one: every credit is a round trip through
+      // the page, whose main thread the application shares, and one chunk
+      // per trip moved a 19 MB response at 9 MB/s (the Volter model editor's
+      // Blender, 2026-09-26). The window bounds what may arrive unasked for.
       return new Promise((resolve) => {
         resolvePull = resolve;
-        try { send('stream-pull'); } catch (error) { fail(error, false); }
+        try { while (outstanding < STREAM_CREDIT_WINDOW) { outstanding += 1; send('stream-pull'); } }
+        catch (error) { fail(error, false); }
       });
     },
     cancel() {
@@ -430,7 +436,7 @@ async function sendControlledRequest(host, port, method, url, headers, body, sig
           headed = true;
           clearTimeout(headerTimeout);
           resolveHeaders(data);
-        } else if (type === 'stream-chunk' && headed && credited) {
+        } else if (type === 'stream-chunk' && headed && outstanding > 0) {
           // The bytes themselves, transferred, from a host that read this
           // worker's `binaryChunks`; base64 from one that predates it.
           let bytes;
@@ -443,7 +449,7 @@ async function sendControlledRequest(host, port, method, url, headers, body, sig
           }
           if (bytes.byteLength > MAX_STREAM_CHUNK_BYTES)
             throw new Error('Stream chunk exceeds transport limit');
-          credited = false;
+          outstanding -= 1;
           controller.enqueue(bytes);
           resolvePull?.();
           resolvePull = undefined;

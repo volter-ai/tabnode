@@ -1,10 +1,12 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
 import wasm from 'vite-plugin-wasm';
+import { base64Asset } from './scripts/base64-asset-plugin.mjs';
 
 
 export default defineConfig({
   plugins: [
+    base64Asset(),
     wasm(),
     {
       name: 'browser-shims',

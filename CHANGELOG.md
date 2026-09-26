@@ -18,6 +18,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   re-joined the whole file, 845 ms of an extension host's first start on the
   Volter model editor, and 3.5 s for a 10 MB file with 5,000 edits (now
   2 ms). Overlapping edits, which the passes never make, keep their meaning.
+- Brotli decodes in wasm (`brotli-wasm`, its bytes carried in the engine): a
+  server's pre-compressed 18.6 MB file inflates in 287 ms where the
+  JavaScript decoder took 784 ms. A synchronous decode asked for before the
+  wasm is ready still has the JavaScript one. A flow-controlled response
+  keeps 16 chunks of credit in flight instead of one.
 
 ## v0.5.38 — 2026-09-25
 
