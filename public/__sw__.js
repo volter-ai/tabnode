@@ -257,9 +257,12 @@ function handleMainMessage(host, event) {
     const pending = pendingRequests.get(id);
     if (pending && pending.streamController) {
       try {
-        // Decode base64 chunk and enqueue
-        if (data.chunkBase64) {
-          const bytes = base64ToBytes(data.chunkBase64);
+        // A chunk as base64, or as bytes: the bridge's streaming path posts
+        // the chunk's ArrayBuffer itself, which this dropped.
+        const bytes = data instanceof ArrayBuffer ? new Uint8Array(data)
+          : data?.chunk instanceof ArrayBuffer ? new Uint8Array(data.chunk)
+          : data?.chunkBase64 ? base64ToBytes(data.chunkBase64) : null;
+        if (bytes) {
           pending.streamController.enqueue(bytes);
           DEBUG && console.log('[SW] chunk enqueued, bytes:', bytes.length);
         }
@@ -428,10 +431,16 @@ async function sendControlledRequest(host, port, method, url, headers, body, sig
           clearTimeout(headerTimeout);
           resolveHeaders(data);
         } else if (type === 'stream-chunk' && headed && credited) {
-          if (typeof data?.chunkBase64 !== 'string'
-              || data.chunkBase64.length > Math.ceil(MAX_STREAM_CHUNK_BYTES / 3) * 4)
-            throw new Error('Stream chunk exceeds transport limit');
-          const bytes = base64ToBytes(data.chunkBase64);
+          // The bytes themselves, transferred, from a host that read this
+          // worker's `binaryChunks`; base64 from one that predates it.
+          let bytes;
+          if (data?.chunk instanceof ArrayBuffer) bytes = new Uint8Array(data.chunk);
+          else {
+            if (typeof data?.chunkBase64 !== 'string'
+                || data.chunkBase64.length > Math.ceil(MAX_STREAM_CHUNK_BYTES / 3) * 4)
+              throw new Error('Stream chunk exceeds transport limit');
+            bytes = base64ToBytes(data.chunkBase64);
+          }
           if (bytes.byteLength > MAX_STREAM_CHUNK_BYTES)
             throw new Error('Stream chunk exceeds transport limit');
           credited = false;
@@ -450,7 +459,7 @@ async function sendControlledRequest(host, port, method, url, headers, body, sig
   signal.addEventListener('abort', abort, { once: true });
   try {
     channel.postMessage({ type: 'request', id,
-      data: { port, method, url, headers, body, streaming: true, flowControl: 1, destination } });
+      data: { port, method, url, headers, body, streaming: true, flowControl: 1, binaryChunks: 1, destination } });
     if (signal.aborted) abort();
     const head = await headersPromise;
     const noBody = method === 'HEAD' || [204, 205, 304].includes(head.statusCode);

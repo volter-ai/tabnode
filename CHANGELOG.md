@@ -4,6 +4,17 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A WebSocket frame a guest's server writes in many chunks is joined once,
+  when its header says they hold it all: the bridge re-joined every pending
+  byte on every chunk as an array of numbers, 740 ms of the store owner's
+  thread opening the Volter model editor, every socket waiting behind it. A
+  frame over 64 MiB closes the socket with 1009 instead of being held.
+- A flow-controlled response streams to a service worker that asks for
+  bytes (`binaryChunks`) as transferred buffers, not base64: 373 ms of the
+  page's main thread in the same open. A worker that predates it still gets
+  base64. The service worker's other streaming path no longer drops the
+  chunks the bridge already sent as buffers.
+
 ## v0.5.38 — 2026-09-25
 
 - `Buffer`'s base64 is the engine's own (`Uint8Array.prototype.toBase64`

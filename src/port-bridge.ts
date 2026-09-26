@@ -390,7 +390,7 @@ export class PortBridge extends BridgeEvents {
     }
     if (type === 'request' && data?.flowControl === 1) {
       const { port, method, url, headers, body } = data;
-      await this.controlledStream(id, port, method, url, headers, body);
+      await this.controlledStream(id, port, method, url, headers, body, data.binaryChunks === 1);
       return;
     }
     if (type === 'request') {
@@ -647,10 +647,19 @@ export class PortBridge extends BridgeEvents {
    * every chunk went out. The upstream connection is paused while chunks wait
    * for credit, so a slow reader holds the server back; `stream-cancel` ends it.
    */
-  private async controlledStream(id: number, port: number, method: string, url: string, headers: Record<string, string>, body?: ArrayBuffer): Promise<void> {
+  private async controlledStream(id: number, port: number, method: string, url: string, headers: Record<string, string>, body?: ArrayBuffer, binaryChunks = false): Promise<void> {
     // the stream belongs to the channel it arrived on; a new channel's worker failed it already
     const channel = this.messageChannel;
-    const post = (type: string, data?: unknown): void => { channel?.port1.postMessage({ type, id, ...(data === undefined ? {} : { data }) }); };
+    const post = (type: string, data?: unknown, transfer: Transferable[] = []): void => { channel?.port1.postMessage({ type, id, ...(data === undefined ? {} : { data }) }, transfer); };
+    // A worker that reads bytes is sent a copy of each chunk, transferred:
+    // base64 of every response body was 373 ms of the page's main thread
+    // opening the model editor (2026-09-26). The copy is the chunk's own,
+    // never a view of a buffer the server or a pool still holds.
+    const postChunk = (bytes: Uint8Array): void => {
+      if (!binaryChunks) { post('stream-chunk', { chunkBase64: uint8ToBase64(bytes) }); return; }
+      const copy = Uint8Array.prototype.slice.call(bytes) as Uint8Array;
+      post('stream-chunk', { chunk: copy.buffer }, [copy.buffer]);
+    };
     const queue: Uint8Array[] = [];
     const abort = new AbortController();
     let credits = 0;
@@ -664,7 +673,7 @@ export class PortBridge extends BridgeEvents {
       if (finished) return;
       while (credits > 0 && queue.length > 0) {
         credits -= 1;
-        post('stream-chunk', { chunkBase64: uint8ToBase64(queue.shift()!) });
+        postChunk(queue.shift()!);
       }
       if (upstreamEnded && queue.length === 0) { post('stream-end'); finish(); return; }
       // a few chunks may wait for credit; more than that, and the server waits
