@@ -4,6 +4,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Brotli is decoded by `brotli-wasm`'s module alone, instantiated the first
+  time a Brotli stream is made (compiled off the thread) or a synchronous
+  decode asks (compiled then): the pure-JavaScript `brotli` decoder, kept for
+  a synchronous decode before the wasm was ready, decoded its dictionary as
+  the engine loaded, in every process. A process in browser-substrate's tab
+  starts in about 182 ms instead of 196. The engine no longer carries the
+  module twice (the glue's own `data:` URL copy), 1.4 MB less; `brotli` is
+  no longer a dependency.
+
 - A prepared body's name is a MurmurHash3 x86_128 of the source as read,
   its UTF-16 units taken as they are (`tabnode-prepared-3`), not a SHA-256
   of the text encoded again: about half the time on every module a process

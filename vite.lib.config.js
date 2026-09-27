@@ -71,7 +71,6 @@ export default defineConfig({
         'comlink',
         'just-bash',
         'resolve.exports',
-        'brotli',
         // Node.js built-ins for vite-plugin
         'fs',
         'path',

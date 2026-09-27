@@ -28,36 +28,7 @@
  * which this product does not do. The row in BUILTINS.md says the same.
  */
 import { zstream, inflateModule, deflateModule, zlibConstants } from './zlib-pako';
-// @ts-expect-error `brotli` ships no types; its decoder takes and returns bytes.
-import brotliDecompressUntyped from 'brotli/decompress';
-// By file: the package exports only an entry that fetches its wasm by URL,
-// and an engine realm's network is closed; its build inlines both.
-import initBrotliWasm, { decompress as brotliWasmDecompress } from '../../../node_modules/brotli-wasm/pkg.web/brotli_wasm.js';
-// @ts-expect-error `?base64` is the build's own (scripts/base64-asset-plugin.mjs): the file as base64.
-import brotliWasmBase64 from '../../../node_modules/brotli-wasm/pkg.web/brotli_wasm_bg.wasm?base64';
-const brotliDecompressJs = brotliDecompressUntyped as (input: Uint8Array) => Uint8Array;
-
-/**
- * Brotli in wasm (`brotli-wasm`, its bytes inlined, compiled once per realm
- * as the binding loads), with the pure-JavaScript decoder only for a
- * synchronous decode asked for before the wasm is ready. The JavaScript one
- * inflated a server's pre-compressed 18.6 MB file to 86 MB in about a second
- * of a process's thread (Blender's engine, served in browser-substrate's tab,
- * 2026-09-26).
- */
-let brotliWasmReady = false;
-const brotliWasmLoading: Promise<void> = (async () => {
-  try {
-    const binary = atob(String(brotliWasmBase64));
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-    await initBrotliWasm(await WebAssembly.compile(bytes));
-    brotliWasmReady = true;
-  } catch { /* the JavaScript decoder answers */ }
-})();
-function brotliDecompress(input: Uint8Array): Uint8Array {
-  return brotliWasmReady ? brotliWasmDecompress(input) : brotliDecompressJs(input);
-}
+import { brotliDecoderReady, brotliDecompress } from './brotli-decoder';
 
 /** Node's `zlib` modes, by the numbers `zlib.js` passes. */
 const DEFLATE = 1;
@@ -267,8 +238,8 @@ function absentCodec(name: string, reason: string): new (...args: unknown[]) => 
 }
 
 /**
- * `BrotliDecoder`, over the engine's own Brotli decoder (`brotli`'s, pure
- * JavaScript). That decoder takes a whole stream, so this handle collects
+ * `BrotliDecoder`, over the engine's own Brotli decoder (`brotli-wasm`'s,
+ * `./brotli-decoder`). That decoder takes a whole stream, so this handle collects
  * the input it is given and decodes when `zlib.js` sends the finishing
  * flush, then hands the output back as the caller's buffers take it: a
  * stream is inflated, it is not inflated incrementally. A server reading a
@@ -283,7 +254,10 @@ class BrotliDecoderHandle {
   #outputAt = 0;
   onerror: ((message: string, errno: number, code?: string) => void) | null = null;
 
-  constructor(public readonly mode: number) {}
+  constructor(public readonly mode: number) {
+    // A stream's decode waits for the module; a synchronous one compiles it itself.
+    void brotliDecoderReady().catch(() => {});
+  }
 
   init(_params: Uint32Array, writeState: Uint32Array, processCallback: ProcessCallback): boolean {
     this.#writeState = writeState;
@@ -323,9 +297,9 @@ class BrotliDecoderHandle {
     const tick = (globalThis as { process?: { nextTick?: (fn: () => void) => void } }).process?.nextTick
       ?? ((fn: () => void) => { queueMicrotask(fn); });
     tick(() => {
-      // The stream's decode waits for the wasm decoder, which the binding began compiling as it loaded.
+      // The stream's decode waits for the decoder this handle began compiling when it was made.
       const run = (): void => { this.#run(flush, inBuf, inOff, inLen, outBuf, outOff, outLen); this.#callback?.(); };
-      if (flush === BROTLI_OPERATION_FINISH && !brotliWasmReady) void brotliWasmLoading.then(run);
+      if (flush === BROTLI_OPERATION_FINISH) void brotliDecoderReady().then(run, run);
       else run();
     });
   }
@@ -341,7 +315,7 @@ class BrotliDecoderHandle {
 }
 
 const BROTLI_REASON =
-  'Brotli is a codec of its own, not zlib; the engine decodes it (`brotli`, pure JavaScript) but has no ' +
+  'Brotli is a codec of its own, not zlib; the engine decodes it (`brotli-wasm`) but has no ' +
   'encoder for Node\'s Brotli handle yet. `zlib.gzip`, `deflate` and `inflate` are Node\'s own here.';
 const ZSTD_REASON =
   'Zstandard is a codec of its own and this engine has no implementation of it at all. ' +

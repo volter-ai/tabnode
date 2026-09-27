@@ -27,4 +27,18 @@ describe('Brotli in the engine', () => {
     expect(Buffer.compare(Buffer.from(vfs.readFileSync('/app/engine.bin') as Uint8Array), Buffer.from(raw))).toBe(0);
     console.log(`inflated ${raw.length} bytes in ${ms} ms`);
   });
+
+  it('decodes synchronously before any stream has compiled the decoder, and refuses a corrupt stream by code', () => {
+    const vfs = new VirtualFS();
+    vfs.mkdirSync('/app', { recursive: true });
+    vfs.writeFileSync('/app/hello.br', new Uint8Array(brotliCompressSync(Buffer.from('hello from a pre-compressed file'))));
+    const runtime = new Runtime(vfs, { cwd: '/app' });
+    const result = runtime.execute(`
+      const fs = require('fs'), zlib = require('zlib');
+      let refused;
+      try { zlib.brotliDecompressSync(Buffer.from([1, 2, 3, 4, 5, 6, 7, 8])); } catch (error) { refused = error.code; }
+      module.exports = { text: zlib.brotliDecompressSync(fs.readFileSync('/app/hello.br')).toString(), refused };
+    `, '/app/sync.js') as { exports: { text: string; refused: string } };
+    expect(result.exports).toEqual({ text: 'hello from a pre-compressed file', refused: 'ERR_BROTLI_DECOMPRESSION_FAILED' });
+  });
 });
