@@ -44,7 +44,7 @@ export default defineConfig({
     // The worker's engine reads Brotli's module as bare base64 too, not a data: URL.
     plugins: () => [
       base64Asset(),
-    lazyText(),
+      lazyText(),
       wasm(),
     ],
     rollupOptions: {

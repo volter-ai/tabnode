@@ -24,7 +24,7 @@
  */
 import { globToRegExp } from '../utils/glob';
 
-import NODE_PATH_SOURCE from '../node-lib/path.js?raw';
+import NODE_PATH_SOURCE from '../node-lib/path.js?lazytext';
 // internal/errors and internal/validators, shared with every Node file the
 // engine runs on a binding (see src/node-internals.ts).
 import { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, validateObject, validateString } from '../node-internals';
@@ -212,7 +212,7 @@ export interface PlatformPath {
 const nodePath: PlatformPath = (() => {
   const module: { exports: unknown } = { exports: {} };
   // eslint-disable-next-line no-new-func
-  new Function('primordials', 'require', 'module', 'exports', 'process', NODE_PATH_SOURCE)(
+  new Function('primordials', 'require', 'module', 'exports', 'process', NODE_PATH_SOURCE())(
     primordials,
     nodeInternalRequire,
     module,

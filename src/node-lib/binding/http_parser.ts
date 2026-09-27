@@ -26,7 +26,7 @@
  * and a main-thread realm that asks for it is told exactly that rather than
  * left with a parser that does nothing.
  */
-import { LLHTTP_WASM_BASE64 } from './llhttp-wasm';
+import { llhttpWasmBase64 } from './llhttp-wasm';
 
 /** llhttp's `llhttp_type`. */
 const TYPE_REQUEST = 1;
@@ -109,7 +109,10 @@ function llhttp(): LlhttpExports {
   if (wasm !== undefined) return wasm;
   let module: WebAssembly.Module;
   try {
-    const binary = Uint8Array.from(atob(LLHTTP_WASM_BASE64), (character) => character.charCodeAt(0));
+    // Decoded into one array: Uint8Array.from over atob's string made a string per byte.
+    const text = atob(llhttpWasmBase64());
+    const binary = new Uint8Array(text.length);
+    for (let index = 0; index < text.length; index += 1) binary[index] = text.charCodeAt(index);
     module = new WebAssembly.Module(binary);
   } catch (error) {
     throw Object.assign(new Error(

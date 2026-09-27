@@ -109,11 +109,15 @@ export const NODE_LIB_VERSION = 'v22.18.0';
 
 /**
  * Each file's text, made a string when it is read: a top-level constant was a
- * second copy, in every realm, of text the bundle's source already holds, and
- * most realms require a small part of Node's library. Ask whether a file is
- * here with `hasNodeLibSource`, which makes nothing.
+ * second copy, in every realm, of text the bundle's source already holds.
+ * The engine requires about half of the library as it loads (net and
+ * child_process bind at module scope, and the builtins table is filled then);
+ * the rest (http and its parts, zlib, tty among them) is made only when a
+ * program requires it. Ask whether a file is here with `hasNodeLibSource`,
+ * which makes nothing; enumerating this object (keys, entries, a spread, JSON)
+ * would make every string at once.
  */
-export const NODE_LIB_SOURCES: Record<string, string> = lazily({
+export const NODE_LIB_SOURCES: Readonly<Record<string, string>> = lazily({
   'internal/navigator': NAVIGATOR,
   path: PATH,
   'net': NET,
