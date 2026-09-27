@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- The engine's build keeps each CommonJS dependency in its own function
+  (`strictRequires`). Hoisted into the bundle's module body, a dependency's
+  top-level code ran inside a function the size of the whole engine, and a
+  TypeError V8 throws there has its message printed by re-parsing the
+  function it was thrown in: get-intrinsic's `null.error` probe (reached
+  through sha.js) cost about 38 ms of every process's start in Chrome. The
+  engine evaluates in a Chrome worker in about 103 ms instead of 137.
+
 - Brotli is decoded by `brotli-wasm`'s module alone, instantiated the first
   time a Brotli stream is made (compiled off the thread) or a synchronous
   decode asks (compiled then): the pure-JavaScript `brotli` decoder, kept for

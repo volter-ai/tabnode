@@ -89,6 +89,12 @@ export default defineConfig({
     },
     sourcemap: false,
     minify: false,
+    // Every CommonJS dependency keeps its own function. Hoisted into the
+    // bundle's module body instead, its top-level code ran in a function the
+    // size of the engine, and a TypeError V8 throws there (get-intrinsic's
+    // `null.error` probe, via sha.js) has its message printed by re-parsing
+    // that function: about 38 ms of every process's start in Chrome.
+    commonjsOptions: { strictRequires: true },
   },
   assetsInclude: ['**/*.wasm'],
 });
