@@ -254,10 +254,7 @@ class BrotliDecoderHandle {
   #outputAt = 0;
   onerror: ((message: string, errno: number, code?: string) => void) | null = null;
 
-  constructor(public readonly mode: number) {
-    // A stream's decode waits for the module; a synchronous one compiles it itself.
-    void brotliDecoderReady().catch(() => {});
-  }
+  constructor(public readonly mode: number) {}
 
   init(_params: Uint32Array, writeState: Uint32Array, processCallback: ProcessCallback): boolean {
     this.#writeState = writeState;
@@ -296,8 +293,12 @@ class BrotliDecoderHandle {
   write(flush: number, inBuf: Uint8Array | null, inOff: number, inLen: number, outBuf: Uint8Array, outOff: number, outLen: number): void {
     const tick = (globalThis as { process?: { nextTick?: (fn: () => void) => void } }).process?.nextTick
       ?? ((fn: () => void) => { queueMicrotask(fn); });
+    // A stream begins compiling the decoder as its first bytes arrive; a
+    // synchronous decode (`writeSync`) compiles it itself, once, and never
+    // starts this second compile.
+    void brotliDecoderReady().catch(() => {});
     tick(() => {
-      // The stream's decode waits for the decoder this handle began compiling when it was made.
+      // The stream's decode waits for that compile.
       const run = (): void => { this.#run(flush, inBuf, inOff, inLen, outBuf, outOff, outLen); this.#callback?.(); };
       if (flush === BROTLI_OPERATION_FINISH) void brotliDecoderReady().then(run, run);
       else run();

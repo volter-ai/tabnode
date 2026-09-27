@@ -15,9 +15,6 @@ export default defineConfig({
         if (source === 'node:zlib' || source === 'zlib') {
           return resolve(__dirname, 'src/shims/zlib.ts');
         }
-        if (source === 'brotli-wasm/pkg.web/brotli_wasm.js') {
-          return resolve(__dirname, 'node_modules/brotli-wasm/pkg.web/brotli_wasm.js');
-        }
         if (source === 'brotli-wasm/pkg.web/brotli_wasm_bg.wasm?url') {
           return {
             id: resolve(__dirname, 'node_modules/brotli-wasm/pkg.web/brotli_wasm_bg.wasm') + '?url',
@@ -42,7 +39,9 @@ export default defineConfig({
   },
   worker: {
     format: 'es',
+    // The worker's engine reads Brotli's module as bare base64 too, not a data: URL.
     plugins: () => [
+      base64Asset(),
       wasm(),
     ],
     rollupOptions: {

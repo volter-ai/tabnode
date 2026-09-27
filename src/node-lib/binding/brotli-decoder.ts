@@ -60,8 +60,9 @@ const text = (ptr: number, len: number): string => textDecoder.decode(new Uint8A
 
 /**
  * What the module imports, by name with wasm-bindgen's hash dropped. The
- * decoder reaches only the error ones; the rest are the encoder's, answered
- * so the module links.
+ * decoder reaches the error ones, and a panic reaches the panic hook's
+ * (`new`, `stack`, `error`); the rest are the encoder's, answered so the
+ * module links.
  */
 function importsFor(module: WebAssembly.Module): WebAssembly.Imports {
   const answers: Record<string, (...args: number[]) => unknown> = {
@@ -72,6 +73,11 @@ function importsFor(module: WebAssembly.Module): WebAssembly.Imports {
     __wbindgen_object_drop_ref: (index) => { takeObject(index); },
     __wbindgen_throw: (ptr, len) => { throw new Error(text(ptr, len)); },
     __wbg_new: () => addHeapObject(new Error()),
+    // The panic hook asks for the Error's stack as a string it owns; an empty one serves.
+    __wbg_stack: (retptr) => { new Int32Array(exports!.memory.buffer, retptr, 2).set([0, 0]); },
+    __wbg_error: (ptr, len) => {
+      try { console.error(text(ptr, len)); } finally { exports!.__wbindgen_free(ptr, len); }
+    },
   };
   const wbg: Record<string, (...args: number[]) => unknown> = {};
   for (const { module: from, name } of WebAssembly.Module.imports(module)) {
@@ -87,7 +93,7 @@ function link(module: WebAssembly.Module): void {
   exports ??= new WebAssembly.Instance(module, importsFor(module)).exports as unknown as BrotliExports;
 }
 
-/** Begins compiling the module off the thread, once; a stream's decode waits for it. */
+/** Begins compiling the module off the thread, once; a stream's decode waits for it, a synchronous one does not. */
 export function brotliDecoderReady(): Promise<void> {
   if (exports) return Promise.resolve();
   compiling ??= WebAssembly.compile(wasmBytes()).then(link);
