@@ -12,7 +12,6 @@
  * compiled off the thread when a stream is made, synchronously when a
  * synchronous decode comes first.
  */
-// @ts-expect-error `?base64` is the build's own (scripts/base64-asset-plugin.mjs): the file as base64.
 import brotliWasmBase64 from '../../../node_modules/brotli-wasm/pkg.web/brotli_wasm_bg.wasm?base64';
 
 interface BrotliExports {
@@ -28,8 +27,8 @@ let compiling: Promise<void> | null = null;
 
 function wasmBytes(): Uint8Array<ArrayBuffer> {
   const fromBase64 = (Uint8Array as unknown as { fromBase64?: (text: string) => Uint8Array<ArrayBuffer> }).fromBase64;
-  if (fromBase64) return fromBase64(String(brotliWasmBase64));
-  const binary = atob(String(brotliWasmBase64));
+  if (fromBase64) return fromBase64(brotliWasmBase64());
+  const binary = atob(brotliWasmBase64());
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return bytes;

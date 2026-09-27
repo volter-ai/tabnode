@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Node's library files and the Brotli decoder's module are carried as
+  functions that return their text (`?lazytext`, `?base64`): a top-level
+  string constant was a second copy, made in every realm as the engine
+  loaded, of text the bundle's source already holds, and most realms require
+  a small part of Node's library. A worker that loads the engine retains
+  15.2 MB of heap instead of 16.9; ten idle Node processes in
+  browser-substrate's tab hold 342 MB instead of 378.
+
 - The engine's build keeps each CommonJS dependency in its own function
   (`strictRequires`). Hoisted into the bundle's module body, a dependency's
   top-level code ran inside a function the size of the whole engine, and a

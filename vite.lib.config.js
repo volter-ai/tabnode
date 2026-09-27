@@ -2,11 +2,13 @@ import { defineConfig } from 'vite';
 import { resolve } from 'path';
 import wasm from 'vite-plugin-wasm';
 import { base64Asset } from './scripts/base64-asset-plugin.mjs';
+import { lazyText } from './scripts/lazy-text-plugin.mjs';
 
 
 export default defineConfig({
   plugins: [
     base64Asset(),
+    lazyText(),
     wasm(),
     {
       name: 'browser-shims',
@@ -42,6 +44,7 @@ export default defineConfig({
     // The worker's engine reads Brotli's module as bare base64 too, not a data: URL.
     plugins: () => [
       base64Asset(),
+    lazyText(),
       wasm(),
     ],
     rollupOptions: {

@@ -23,7 +23,7 @@
  * `internalBinding(name)` is the libuv-shaped surface in `./binding/`.
  */
 import PRIMORDIALS_SOURCE from './primordials.js?raw';
-import { NODE_LIB_SOURCES } from './sources';
+import { NODE_LIB_SOURCES, hasNodeLibSource } from './sources';
 import { nodeLibInternal } from './internals';
 import { nodeLibBinding } from './binding';
 import { nodeLibPublic } from './public-modules';
@@ -154,7 +154,7 @@ export function nodeLibProcessOf(): Record<string, unknown> {
 
 function nodeLibRequire(specifier: string): unknown {
   const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
-  if (NODE_LIB_SOURCES[name] !== undefined) return loadNodeLib(name);
+  if (hasNodeLibSource(name)) return loadNodeLib(name);
   const internal = nodeLibInternal(name);
   if (internal !== undefined) {
     builtInternals ??= new Map<string, unknown>();
@@ -332,7 +332,7 @@ class NodeLibScope {
     if (name === 'path/win32') return this.require('path').win32;
     if (name === 'assert/strict') return this.require('assert').strict;
     if (name === 'util/types') return this.require('internal/util/types');
-    if (NODE_LIB_SOURCES[name] !== undefined) return this.load(name);
+    if (hasNodeLibSource(name)) return this.load(name);
     const internal = nodeLibInternal(name, this.require, this.process);
     if (internal) {
       if (!this.internals.has(name)) this.internals.set(name, moduleSurface(internal()));
@@ -391,7 +391,7 @@ export function loadNodeLibFor(owner: object, name: string): any {
   return scopeFor(owner).require(name);
 }
 export function hasNodeLibModule(name: string): boolean {
-  return NODE_LIB_SOURCES[name] !== undefined || nodeLibPublic(name) !== undefined
+  return hasNodeLibSource(name) || nodeLibPublic(name) !== undefined
     || ['path/posix', 'path/win32', 'assert/strict', 'util/types', 'fs/promises', 'timers/promises', 'dns/promises'].includes(name);
 }
 export function nativeModuleFor(owner: object, name: string, create: () => unknown): unknown {
@@ -399,7 +399,7 @@ export function nativeModuleFor(owner: object, name: string, create: () => unkno
 }
 
 function newNodeLibRecord(name: string): NodeLibModule {
-  if (NODE_LIB_SOURCES[name] === undefined) throw new Error(`node-lib: no vendored file for '${name}'`);
+  if (!hasNodeLibSource(name)) throw new Error(`node-lib: no vendored file for '${name}'`);
   return { exports: {}, id: name, filename: `node:${name}`, loaded: false };
 }
 

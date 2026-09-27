@@ -47,7 +47,7 @@
  * thread for a clock subscription (Atomics.wait where the thread may, a timed
  * spin where it may not), as uvwasi blocks on its loop.
  */
-import NODE_WASI_SOURCE from '../node-lib/wasi.js?raw';
+import NODE_WASI_SOURCE from '../node-lib/wasi.js?lazytext';
 import {
   ERR_INVALID_ARG_TYPE,
   ERR_INVALID_ARG_VALUE,
@@ -1429,7 +1429,7 @@ export function createWasiModule(fs: WasiHostFs, process: WasiHostProcess): Wasi
   };
   const module: { exports: unknown } = { exports: {} };
   // eslint-disable-next-line no-new-func
-  new Function('primordials', 'require', 'internalBinding', 'module', 'exports', NODE_WASI_SOURCE)(
+  new Function('primordials', 'require', 'internalBinding', 'module', 'exports', NODE_WASI_SOURCE())(
     primordials,
     nodeInternalRequire,
     internalBinding,

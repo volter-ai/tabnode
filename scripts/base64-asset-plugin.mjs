@@ -1,4 +1,4 @@
-// `import text from './file?base64'`: the file's bytes as a base64 string
+// `import text from './file?base64'`: a function returning the file's bytes as a base64 string
 // module, for bytes an engine realm must hold without fetching them (its
 // network is closed): the Brotli decoder's wasm.
 import { readFileSync } from 'node:fs';
@@ -16,7 +16,8 @@ export function base64Asset() {
     },
     load(id) {
       if (!id.endsWith('?base64')) return null;
-      return `export default ${JSON.stringify(readFileSync(id.slice(0, -'?base64'.length)).toString('base64'))};`;
+      // A function, not a constant: the text is made only when it is asked for (see lazy-text-plugin.mjs).
+      return `export default function base64() { return ${JSON.stringify(readFileSync(id.slice(0, -'?base64'.length)).toString('base64'))}; }`;
     },
   };
 }

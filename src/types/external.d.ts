@@ -53,3 +53,15 @@ declare module '*?raw' {
   const content: string;
   export default content;
 }
+
+/** `?lazytext` (scripts/lazy-text-plugin.mjs): a function returning the file's text. */
+declare module '*?lazytext' {
+  const text: () => string;
+  export default text;
+}
+
+/** `?base64` (scripts/base64-asset-plugin.mjs): a function returning the file's bytes as base64. */
+declare module '*?base64' {
+  const base64: () => string;
+  export default base64;
+}
