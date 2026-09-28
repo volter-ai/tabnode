@@ -45,6 +45,24 @@ Completion:
 - Establish the watcher process's first failure and recover the crashed renderer.
 - Verify blob-worker attribution across worker and service-worker lifetimes.
 
+## follow-awaits-shapes: The await pass keeps every program it is given parsing
+
+Status: planned
+`__substrateFollowAwaits` (src/runtime.ts) only inserts, and a body that stops parsing after it fails in a tab where it
+ran under Node. v0.5.42 fixed closings landing after the next node's opening at a shared offset; the independent
+review that passed it, fuzzing 4,712 generated programs, found two older shapes that still break, the same before and
+after that fix:
+- A directive with no semicolon before a newline: `async function f(){"use strict"\nawait a}` gets the frame's take
+  at the directive's end, before the newline that let the missing semicolon stand, and reads
+  `"use strict"const __substrateAsyncFrame=…` ("Unexpected token 'const'").
+- A `for await` under two labels: `async function f(){L:M:for await(x of y){continue L}}` wraps only the nearest label,
+  so `L` names a block ("'L' does not denote an iteration statement"); the outermost label of the chain is the one to
+  wrap.
+Completion:
+- Both shapes parse after the pass, and a generated-program harness over the pass's inputs (async functions, arrows,
+  catch and finally, labeled and nested `for await`, directives, with and without semicolons) finds none that parse
+  before and not after, with the fragments' removal giving the source back byte for byte.
+
 ## node-as-source: The engine behaves as Node, measured by Node's own suites
 
 Status: active
