@@ -8,7 +8,7 @@
 import { VirtualFS } from './virtual-fs';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { guestFetch, rememberRequestBodySource } from './fetch-transport';
-import { nodeResponseClass } from './node-response';
+import { installNodeResponse } from './node-response';
 import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork } from './host-globals';
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
@@ -2978,9 +2978,7 @@ forGuestRealm(() => {
 forGuestRealm(() => {
   // A response keeps the Set-Cookie headers it was built with, as Node's
   // does; the browser's response guard drops them (see node-response.ts).
-  if (typeof globalThis.Response === 'function' && !(globalThis.Response as unknown as { __substrateSetCookie?: boolean }).__substrateSetCookie) {
-    takeFromHost(globalThis, 'Response', nodeResponseClass(globalThis.Response));
-  }
+  installNodeResponse(globalThis);
 });
 
 forGuestRealm(() => {

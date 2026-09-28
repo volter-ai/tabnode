@@ -4,15 +4,19 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
-- A web `Response` keeps the `Set-Cookie` headers it was built with, as Node's
-  (undici's) does: `getSetCookie()` lists each, `get` joins them with ", ", and
-  iteration yields one entry per cookie. The guest's `Response` was the
-  browser's, whose response guard drops `Set-Cookie` silently, so a server that
-  answers with a web Response lost every cookie it set before its answer
-  reached the socket: Dub's NextAuth (`next start` in a tab) answered
-  `/api/auth/csrf` with no cookie and its credentials sign-in went back to the
-  login page. `Response.json`, `Response.redirect` and `clone()` keep them too;
-  a platform response (a fetch's answer) is still `instanceof Response`.
+- A web `Response` keeps the `Set-Cookie` and `Set-Cookie2` headers it is
+  built with, as Node's (undici's) does: `getSetCookie()` lists each, `get`
+  joins them with ", ", iteration yields one entry per cookie, and a later
+  `append` or `set` keeps them too. The guest's `Response` was the browser's,
+  whose response guard drops both silently, so a server that answers with a web
+  Response lost every cookie it set before its answer reached the socket; in a
+  tab, Dub's `/api/auth/csrf` (NextAuth under `next start`) answered with none.
+  The realm's `Response` is still the browser's class but for its constructor,
+  which shares the browser's prototype: a fetch's answer, `Response.error()` and
+  a subclass are `instanceof Response` with `Response` as their `constructor`.
+  `Response.json` and `clone()` keep the cookies; `formData()` and `blob()` read
+  a content type changed after construction, as Node's do. A response a host
+  transport builds in the realm keeps the cookies of what it relays too.
 
 ## v0.5.47 — 2026-09-28
 
