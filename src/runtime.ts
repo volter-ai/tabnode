@@ -465,6 +465,12 @@ function __substrateFollowAwaits(code: string): string {
   }
   const edits: Array<[number, number, string]> = [];
   const insert = (at: number, text: string): void => { edits.push([at, at, text]); };
+  // What closes a node goes before what opens the next one at the same offset: a node that ends where another starts
+  // never holds it, so its closing lands first. `for await(x of y)await a;await b` ends the loop's body and starts the
+  // next statement's `await` at one offset, and the resume opened there landed inside the loop's brace: a SyntaxError
+  // in a 7 MB server chunk of Dub's (its web-stream pipe). Closings are kept apart and applied after, so they land first.
+  const closings: Array<[number, number, string]> = [];
+  const close = (at: number, text: string): void => { closings.push([at, at, text]); };
   const isFunction = (node: any): boolean => node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression';
   // `framed`: the nearest function is async and holds the frame in ASYNC_FRAME.
   const visit = (node: any, framed: boolean, parent: any): void => {
@@ -484,7 +490,7 @@ function __substrateFollowAwaits(code: string): string {
       }
     } else if (node.type === 'AwaitExpression') {
       insert(node.start, framed ? FOLLOW_RESUME_FRAMED : FOLLOW_RESUME_TAKEN);
-      insert(node.end, `${FOLLOW_MARK})`);
+      close(node.end, `${FOLLOW_MARK})`);
     } else if (framed && node.type === 'CatchClause') {
       leading.push([node.body.start + 1, FOLLOW_RESTORE]);
     } else if (framed && node.type === 'TryStatement' && node.finalizer) {
@@ -494,9 +500,9 @@ function __substrateFollowAwaits(code: string): string {
       // made later lands before it, so the body's brace closes inside.
       const whole = parent?.type === 'LabeledStatement' ? parent : node;
       insert(whole.start, `{${FOLLOW_MARK}`);
-      insert(whole.end, `;${FOLLOW_RESTORE}${FOLLOW_MARK}}`);
+      close(whole.end, `;${FOLLOW_RESTORE}${FOLLOW_MARK}}`);
       if (node.body.type === 'BlockStatement') leading.push([node.body.start + 1, FOLLOW_RESTORE]);
-      else { leading.push([node.body.start, `{${FOLLOW_MARK}${FOLLOW_RESTORE}`]); insert(node.body.end, `${FOLLOW_MARK}}`); }
+      else { leading.push([node.body.start, `{${FOLLOW_MARK}${FOLLOW_RESTORE}`]); close(node.body.end, `${FOLLOW_MARK}}`); }
     }
     for (const key of Object.keys(node)) {
       if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
@@ -509,7 +515,8 @@ function __substrateFollowAwaits(code: string): string {
     for (const [at, text] of leading) insert(at, text);
   };
   visit(ast, false, undefined);
-  const followed = edits.length ? applyReplacements(code, edits) : code;
+  // applyReplacements' sort is stable and lands edits at one offset in reverse of their order: closings after openings
+  const followed = edits.length || closings.length ? applyReplacements(code, [...edits, ...closings]) : code;
   return __substrateTopLevelAwait(ast) ? `${followed}\n${__substrateTopLevelAwaitMarker}` : followed;
 }
 
