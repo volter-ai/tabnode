@@ -1,4 +1,5 @@
 import { defineOnHost, takeFromHost } from './host-globals';
+import { nodeResponseBody } from './node-body';
 
 /**
  * A web `Response` that keeps its `Set-Cookie` headers, as Node's does.
@@ -76,7 +77,9 @@ export function installNodeResponse(target: { Response?: typeof Response }): voi
   const Native = target.Response as ResponseConstructor | undefined;
   if (typeof Native !== 'function' || Native[INSTALLED]) return;
   const proto = Native.prototype;
-  const nativeHeaders = Object.getOwnPropertyDescriptor(proto, 'headers')?.get;
+  // The getter is the prototype's own in a browser; found up the chain wherever it is.
+  let nativeHeaders: (() => unknown) | undefined;
+  for (let at: object | null = proto; at && !nativeHeaders; at = Object.getPrototypeOf(at)) nativeHeaders = Object.getOwnPropertyDescriptor(at, 'headers')?.get;
   const nativeFormData = proto.formData;
   const nativeBlob = proto.blob;
   const nativeArrayBuffer = proto.arrayBuffer;
@@ -87,7 +90,7 @@ export function installNodeResponse(target: { Response?: typeof Response }): voi
   const NodeResponse = function Response(this: unknown, body?: BodyInit | null, init?: ResponseInit): Response {
     if (!new.target) throw new TypeError("Class constructor Response cannot be invoked without 'new'");
     const given = givenHeaders(init);
-    const response = Reflect.construct(Native, [body, given ? withHeaders(init, given) : init], (new.target as unknown) === NodeResponse ? Native : new.target) as Response;
+    const response = Reflect.construct(Native, [nodeResponseBody(body) as BodyInit | null | undefined, given ? withHeaders(init, given) : init], (new.target as unknown) === NodeResponse ? Native : new.target) as Response;
     kept.set(response, withCookies(nativeHeaders.call(response) as Headers, given));
     return response;
   } as unknown as ResponseConstructor;

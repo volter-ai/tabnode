@@ -4,6 +4,16 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A `Request` or `Response` body may be any async iterable, as Node's fetch
+  (undici) reads it: a Node stream, an `http.IncomingMessage`, an async
+  generator, each chunk a Buffer, typed array or string. The browser's
+  constructors took such an object for a string ("[object Object]"). Next's App
+  Router builds each route handler's request with the Node request as its body,
+  so every POST a route handler read in a tab was that string: Dub's NextAuth
+  credentials callback found no CSRF token and sent sign-in back to the login.
+  The `Response` correction also finds the platform's `headers` getter up the
+  prototype chain.
+
 ## v0.5.48 — 2026-09-28
 
 - A web `Response` keeps the `Set-Cookie` and `Set-Cookie2` headers it is

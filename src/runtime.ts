@@ -9,6 +9,7 @@ import { VirtualFS } from './virtual-fs';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { guestFetch, rememberRequestBodySource } from './fetch-transport';
 import { installNodeResponse } from './node-response';
+import { withNodeRequestBody } from './node-body';
 import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork } from './host-globals';
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
@@ -2953,6 +2954,8 @@ forGuestRealm(() => {
     const kept = new WeakMap<object, Headers>();
     class NodeRequest extends Native {
       constructor(input: RequestInfo | URL, init?: RequestInit) {
+        // An async-iterable body (a Node stream) is read as undici reads it.
+        init = withNodeRequestBody(init);
         super(input as RequestInfo, init);
         rememberRequestBodySource(this, input, init);
         const asked = new Headers(init?.headers ?? (input instanceof Native ? (input as Request).headers : undefined));
