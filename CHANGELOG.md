@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Prepared module bodies are keyed \`tabnode-prepared-3\`: v0.5.42 changed what
+  the await pass writes, and a body an image or a tab's store kept under the old
+  key was the broken one, served again for the file it was made from.
+
 ## v0.5.43 — 2026-09-28
 
 ## v0.5.42 — 2026-09-28
