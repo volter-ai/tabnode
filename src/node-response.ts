@@ -33,7 +33,9 @@ type ResponseConstructor = typeof Response & { [INSTALLED]?: true };
 function withCookies(own: Headers, given: Headers | undefined): Headers {
   const headers = new Headers(own);
   if (!given) return headers;
-  const cookies = typeof given.getSetCookie === 'function' ? given.getSetCookie() : [];
+  const cookies: string[] = [];
+  if (typeof given.getSetCookie === 'function') cookies.push(...given.getSetCookie());
+  else given.forEach((value, name) => { if (name === 'set-cookie') cookies.push(value); });
   if (cookies.length) {
     headers.delete('set-cookie');
     for (const cookie of cookies) headers.append('set-cookie', cookie);
@@ -47,6 +49,22 @@ function withCookies(own: Headers, given: Headers | undefined): Headers {
 function givenHeaders(init: ResponseInit | undefined): Headers | undefined {
   const headers = init?.headers;
   return headers === undefined || headers === null ? undefined : new Headers(headers);
+}
+
+/**
+ * The init with its headers replaced, read as the platform reads a
+ * dictionary: each member by name, inherited ones too (a `Response` passed as
+ * the init, as Next's `NextResponse` does, carries its status on a getter of
+ * its prototype, which a spread would not copy).
+ */
+function withHeaders(init: ResponseInit | undefined, headers: Headers): ResponseInit {
+  const status = init?.status;
+  const statusText = init?.statusText;
+  return {
+    headers,
+    ...(status === undefined ? {} : { status }),
+    ...(statusText === undefined ? {} : { statusText }),
+  };
 }
 
 /**
@@ -69,7 +87,7 @@ export function installNodeResponse(target: { Response?: typeof Response }): voi
   const NodeResponse = function Response(this: unknown, body?: BodyInit | null, init?: ResponseInit): Response {
     if (!new.target) throw new TypeError("Class constructor Response cannot be invoked without 'new'");
     const given = givenHeaders(init);
-    const response = Reflect.construct(Native, [body, given ? { ...init, headers: given } : init], (new.target as unknown) === NodeResponse ? Native : new.target) as Response;
+    const response = Reflect.construct(Native, [body, given ? withHeaders(init, given) : init], (new.target as unknown) === NodeResponse ? Native : new.target) as Response;
     kept.set(response, withCookies(nativeHeaders.call(response) as Headers, given));
     return response;
   } as unknown as ResponseConstructor;
@@ -83,7 +101,7 @@ export function installNodeResponse(target: { Response?: typeof Response }): voi
   Object.defineProperty(NodeResponse, 'json', {
     value: function json(data: unknown, init?: ResponseInit): Response {
       const given = givenHeaders(init);
-      const response = Native.json(data, given ? { ...init, headers: given } : init);
+      const response = Native.json(data, given ? withHeaders(init, given) : init);
       kept.set(response, withCookies(nativeHeaders.call(response) as Headers, given));
       return response;
     },

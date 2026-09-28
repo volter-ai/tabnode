@@ -16,7 +16,9 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   a subclass are `instanceof Response` with `Response` as their `constructor`.
   `Response.json` and `clone()` keep the cookies; `formData()` and `blob()` read
   a content type changed after construction, as Node's do. A response a host
-  transport builds in the realm keeps the cookies of what it relays too.
+  transport builds in the realm keeps the cookies of what it relays too. An init
+  is read as the platform reads it, inherited `status` included, so
+  `new Response(body, otherResponse)` (Next's `NextResponse.json`) keeps its status.
 
 ## v0.5.47 — 2026-09-28
 

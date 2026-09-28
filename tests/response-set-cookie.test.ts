@@ -30,6 +30,11 @@ const PROGRAM = [
   "const redirect = Response.redirect('http://x.test/y', 307);",
   "let redirectMutable = true; try { redirect.headers.set('x', '1'); } catch { redirectMutable = false; }",
   "const error = Response.error();",
+  "class NextLike extends Response { static json(body, init) { const r = Response.json(body, init); return new NextLike(r.body, r); } }",
+  "const denied = NextLike.json({ error: 'no' }, { status: 401, statusText: 'Nope', headers: { 'set-cookie': 'n=1' } });",
+  "const rewrapped = new Response(null, new Response(null, { status: 404, statusText: 'NF', headers: { 'set-cookie': 'r=1' } }));",
+  "class Init { get status() { return 203; } }",
+  "const accessor = new Response(null, Object.assign(new Init(), { headers: { 'set-cookie': 'i=1' } }));",
   "(async () => {",
   "  const formEntries = [...(await form.formData()).entries()];",
   "  console.log(JSON.stringify({",
@@ -47,6 +52,9 @@ const PROGRAM = [
   "    redirect: redirect.headers.get('location'), redirectMutable,",
   "    errorIsResponse: error instanceof Response, errorIsFramework: error instanceof Framework, errorType: error.type,",
   "    constructorIsResponse: error.constructor === Response, prototypeIsResponse: Object.getPrototypeOf(error) === Response.prototype,",
+  "    denied: [denied.status, denied.statusText, denied.headers.getSetCookie()],",
+  "    rewrapped: [rewrapped.status, rewrapped.statusText, rewrapped.headers.getSetCookie()],",
+  "    accessor: [accessor.status, accessor.headers.getSetCookie()],",
   "    name: Response.name, length: Response.length,",
   "  }));",
   "})();",
@@ -128,5 +136,8 @@ describe('a web Response built by a guest', () => {
     expect(seen.cookies).toEqual(['a=1; Path=/; HttpOnly', 'b=2, c; Max-Age=60', 'd=4']);
     expect(seen.sub).toEqual(['sid=s', 'later=1']);
     expect(seen.formEntries).toEqual([['a', '1'], ['b', '2']]);
+    expect(seen.denied).toEqual([401, 'Nope', ['n=1']]);
+    expect(seen.rewrapped).toEqual([404, 'NF', ['r=1']]);
+    expect(seen.accessor).toEqual([203, ['i=1']]);
   }, 30_000);
 });
