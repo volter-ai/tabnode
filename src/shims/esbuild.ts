@@ -5,7 +5,7 @@
 
 import { heldWork } from '../host-globals';
 import type { VirtualFS } from '../virtual-fs';
-import { ESBUILD_WASM_BINARY_CDN, ESBUILD_WASM_BROWSER_CDN } from '../config/cdn';
+import { ESBUILD_WASM_BINARY_CDN, ESBUILD_WASM_BROWSER_CDN, ESBUILD_WASM_VERSION } from '../config/cdn';
 import { __nodeResolverFor } from '../node-resolver';
 
 /**
@@ -1605,7 +1605,7 @@ export function buildSync(_options: BuildOptions): BuildResult {
  * Get the esbuild version
  */
 export function version(): string {
-  return '0.20.0'; // Version of esbuild-wasm we're using
+  return ESBUILD_WASM_VERSION; // Version of esbuild-wasm we're using
 }
 
 // A build that named an output wrote nothing and Vite's own build, which
