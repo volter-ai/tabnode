@@ -15,6 +15,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   and sent sign-in back to the login. A request with such a body and no
   `duplex` now throws, as Node's does, where the tab accepted it. `fetch` reads
   such a body the same way whichever transport answers it.
+- A start script runs whole under a hosted program. A `node` on any line of
+  a script (`sh start.sh`, `sh -c 'a && node b'`) is a process of its own
+  under the script's pid, where it was admitted under the shell's identity
+  and its exit ended the script. `sh` and `bash` carry the run's name into
+  the script they run, so its `node` is no longer refused for want of a
+  named run, and pass over their own options (`sh -e file`). A shell a
+  hosted program spawns runs at the host when there is one, where the
+  page's programs (`npx`) are found. `exec command` runs the command with
+  the script's environment.
 
 ## v0.5.48 — 2026-09-28
 

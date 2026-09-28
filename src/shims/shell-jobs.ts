@@ -400,6 +400,11 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
       let zero: string;
       let positional: string[];
       let sourced: string | undefined;
+      // Options before the script (`sh -e start.sh`, `bash -eu -c …`) are the
+      // shell's own; they are passed over rather than read as the file's name.
+      let at = 0;
+      while (at < args.length && /^[-+][a-bd-zA-Z]+$/u.test(args[at]!)) at++;
+      args = args.slice(at);
       if (args[0] === '-c' && args.length >= 2) {
         script = args[1]!;
         zero = args[2] ?? shell;
@@ -440,10 +445,10 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
   // The shell's own `exec` ran a builtin but a program the engine defines,
   // `node`, ran nothing: a start script's `exec node server.js` ended with
   // no server and no word. This one hands the line back to the shell, which
-  // is where `node`, `npm` and the host's programs are found. What bash
-  // replaces (the shell itself is gone once the command ends) is kept to
-  // this: nothing after an `exec` line runs, since the command's status is
-  // the script's, as an `exit` there would be.
+  // is where `node`, `npm` and the host's programs are found. The shell is
+  // not replaced: a line after `exec` runs once the command ends, where
+  // bash would never reach it. A start script's `exec` is its last line, a
+  // server that does not end.
   bash.registerCommand(defineCommand('exec', async (args, ctx) => {
     if (args.length === 0) return { stdout: '', stderr: '', exitCode: 0 };
     if (!ctx.exec) return { stdout: '', stderr: 'bash: exec: needs a shell that can run a line\n', exitCode: 1 };
