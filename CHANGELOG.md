@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.48 — 2026-09-28
+
 - A web `Response` keeps the `Set-Cookie` and `Set-Cookie2` headers it is
   built with, as Node's (undici's) does: `getSetCookie()` lists each, `get`
   joins them with ", ", iteration yields one entry per cookie, and a later
