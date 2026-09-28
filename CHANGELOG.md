@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.49 — 2026-09-28
+
 - A `Request` or `Response` body may be any async iterable, as Node's fetch
   (undici) reads it: a Node stream, an `http.IncomingMessage`, an async
   generator, each chunk taken through `Buffer.from` as Node's is, an empty one
