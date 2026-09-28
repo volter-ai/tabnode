@@ -26,7 +26,7 @@ When a package does not work, the fix goes toward Node: a builtin that is Node's
 ```bash
 npm run build:lib    # the bundle and its declarations, into dist/
 npm run type-check   # tsc over src and tests
-npm run docs:api     # docs/api/ from the declarations; the release script runs it
+npm run docs:api     # docs/api/ from the declarations; every release runs it
 ```
 
 There is no dev server, no demo page and no end-to-end suite here: this repository is the engine, and what drives it is the substrate's tab.
