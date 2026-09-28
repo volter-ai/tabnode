@@ -630,6 +630,17 @@ const fsBinding = {
         if (position === null || position === undefined || position < 0) file.position = end + slice.length;
         return slice.length;
       }
+      // A write elsewhere in the file goes where it lands, when the tree takes one: a database's page or log
+      // record costs its own bytes, not the file's (Postgres's commits wrote its whole 16 MB log again).
+      if (typeof (tree as { writeAtSync?: unknown }).writeAtSync === 'function') {
+        const at = position === null || position === undefined || position < 0 ? file.position : position;
+        (tree as { writeAtSync(path: string, data: Uint8Array, position: number): void }).writeAtSync(file.path, slice, at);
+        // this descriptor's copy is the tree's again at its next read
+        file.cached = undefined;
+        file.room = undefined;
+        if (position === null || position === undefined || position < 0) file.position = at + slice.length;
+        return slice.length;
+      }
       const existing = file.cached ?? (tree.existsSync(file.path) ? tree.readFileSync(file.path) as Uint8Array : new Uint8Array(0));
       const at = (file.flags & flagBits().append) !== 0 ? existing.length
         : position === null || position === undefined || position < 0 ? file.position : position;

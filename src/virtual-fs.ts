@@ -699,6 +699,51 @@ export class VirtualFS {
   }
 
   /**
+   * Bytes written into a file at `position`, as a disk takes them: a gap past
+   * the end reads as zeros, and the file grows in its own buffer as an append
+   * grows it. A database rewrites its log and its pages a page at a time;
+   * writing the whole file again for each page copied Postgres's 16 MB
+   * write-ahead log at every commit. A tree that keeps its files elsewhere
+   * (its own writeFileSync) is written through its own read and write unless
+   * it answers this itself.
+   */
+  writeAtSync(path: string, data: Uint8Array, position: number): void {
+    if (this.writeFileSync !== VirtualFS.prototype.writeFileSync) {
+      const existing = this.existsSync(path) ? this.readFileSync(path) as Uint8Array : new Uint8Array(0);
+      const whole = new Uint8Array(Math.max(existing.byteLength, position + data.byteLength));
+      whole.set(existing, 0);
+      whole.set(data, position);
+      this.writeFileSync(path, whole);
+      return;
+    }
+    const normalized = this.normalizePath(path);
+    const node = this.getNode(normalized);
+    if (!node) {
+      const whole = new Uint8Array(position + data.byteLength);
+      whole.set(data, position);
+      this.writeFileSyncInternal(normalized, whole, true);
+      return;
+    }
+    if (node.type !== 'file') throw createNodeError('EISDIR', 'open', path);
+    this.assertWritable(normalized, 'open');
+    const current = node.content ?? new Uint8Array(0);
+    const length = Math.max(current.byteLength, position + data.byteLength);
+    let room = (node as FSNode & { room?: Uint8Array }).room;
+    if (!room || current.buffer !== room.buffer || current.byteOffset !== 0 || room.byteLength < length) {
+      room = new Uint8Array(Math.max(length, current.byteLength * 2, 4096));
+      room.set(current, 0);
+    } else if (position > current.byteLength) {
+      room.fill(0, current.byteLength, position);
+    }
+    room.set(data, position);
+    node.content = room.subarray(0, length);
+    (node as FSNode & { room?: Uint8Array }).room = room;
+    node.mtime = Date.now();
+    this.notifyWatchers(normalized, 'change');
+    if (this.eventListeners.get('change')?.size) this.emit('change', normalized, this.decoder.decode(node.content));
+  }
+
+  /**
    * Create directory, optionally with recursive parent creation
    */
   mkdirSync(path: string, options?: { recursive?: boolean }): void {
