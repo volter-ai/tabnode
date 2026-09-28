@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.45 — 2026-09-28
+
 ## v0.5.44 — 2026-09-28
 
 - Prepared module bodies are keyed `tabnode-prepared-3`: v0.5.42 changed what
