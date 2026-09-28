@@ -324,6 +324,9 @@ export class VirtualFS {
     if (existed && existing!.type === 'file') {
       existing!.content = content;
       existing!.mtime = Date.now();
+      // the caller's bytes, which it may still hold: never written in place
+      (existing as FSNode & { room?: Uint8Array; lent?: boolean }).room = undefined;
+      (existing as FSNode & { lent?: boolean }).lent = true;
     } else {
       parent.children!.set(basename, {
         type: 'file',
@@ -646,6 +649,10 @@ export class VirtualFS {
       return this.decoder.decode(content);
     }
 
+    // The bytes are handed out as they are, so a caller (a copy, a read
+    // stream's chunk) may hold them: a later write into the file does not
+    // change them in place (writeAtSync), it moves the file to bytes of its own.
+    (node as FSNode & { lent?: boolean }).lent = true;
     return content;
   }
 
@@ -710,6 +717,7 @@ export class VirtualFS {
   writeAtSync(path: string, data: Uint8Array, position: number): void {
     if (this.writeFileSync !== VirtualFS.prototype.writeFileSync) {
       const existing = this.existsSync(path) ? this.readFileSync(path) as Uint8Array : new Uint8Array(0);
+      if (data.byteLength === 0 && this.existsSync(path)) return;
       const whole = new Uint8Array(Math.max(existing.byteLength, position + data.byteLength));
       whole.set(existing, 0);
       whole.set(data, position);
@@ -726,12 +734,18 @@ export class VirtualFS {
     }
     if (node.type !== 'file') throw createNodeError('EISDIR', 'open', path);
     this.assertWritable(normalized, 'open');
+    // Node's write of no bytes changes nothing, past the end included
+    if (data.byteLength === 0) return;
     const current = node.content ?? new Uint8Array(0);
     const length = Math.max(current.byteLength, position + data.byteLength);
-    let room = (node as FSNode & { room?: Uint8Array }).room;
-    if (!room || current.buffer !== room.buffer || current.byteOffset !== 0 || room.byteLength < length) {
+    const held = node as FSNode & { room?: Uint8Array; lent?: boolean };
+    let room = held.room;
+    // Written in place only into bytes the file owns and nobody else holds: a copy made from the file
+    // (writeFileSync(dest, readFileSync(src))) or a read's result shares them, and would change with it.
+    if (!room || held.lent || current.buffer !== room.buffer || current.byteOffset !== 0 || room.byteLength < length) {
       room = new Uint8Array(Math.max(length, current.byteLength * 2, 4096));
       room.set(current, 0);
+      held.lent = false;
     } else if (position > current.byteLength) {
       room.fill(0, current.byteLength, position);
     }

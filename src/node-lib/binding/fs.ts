@@ -635,9 +635,22 @@ const fsBinding = {
       if (typeof (tree as { writeAtSync?: unknown }).writeAtSync === 'function') {
         const at = position === null || position === undefined || position < 0 ? file.position : position;
         (tree as { writeAtSync(path: string, data: Uint8Array, position: number): void }).writeAtSync(file.path, slice, at);
-        // this descriptor's copy is the tree's again at its next read
-        file.cached = undefined;
-        file.room = undefined;
+        // This descriptor's copy takes the same bytes, in a buffer of its own with room, as an append's does: a
+        // read after the write is answered from it rather than by reading the whole file again.
+        if (file.cached !== undefined && slice.length > 0) {
+          const cached = file.cached;
+          const length = Math.max(cached.length, at + slice.length);
+          let room = file.room;
+          if (!room || cached.buffer !== room.buffer || cached.byteOffset !== 0 || room.byteLength < length) {
+            room = new Uint8Array(Math.max(length, cached.length * 2, 4096));
+            room.set(cached, 0);
+          } else if (at > cached.length) {
+            room.fill(0, cached.length, at);
+          }
+          room.set(slice, at);
+          file.cached = room.subarray(0, length);
+          file.room = room;
+        }
         if (position === null || position === undefined || position < 0) file.position = at + slice.length;
         return slice.length;
       }

@@ -2418,14 +2418,19 @@ function createRequire(
     // module there, and the first that resolves wins. The option was ignored and every lookup started at the caller,
     // so a module installed in one tree could not find a package another tree holds (a World's injector resolving
     // the application's own Prisma adapter from the application's directory). Node 12.
-    if (options && Array.isArray(options.paths)) {
-      for (const from of options.paths) {
-        if (typeof from !== 'string') continue;
-        try { return resolveModule(id, pathShim.resolve(currentDir, from)); } catch { /* the next directory */ }
+    if (options && options.paths !== undefined) {
+      if (!Array.isArray(options.paths)) {
+        throw Object.assign(new TypeError(`The property 'options.paths' must be an Array. Received ${String(options.paths)}`), { code: 'ERR_INVALID_ARG_VALUE' });
       }
-      const error = new Error(`Cannot find module '${id}'`) as Error & { code?: string };
-      error.code = 'MODULE_NOT_FOUND';
-      throw error;
+      options.paths.forEach((from, index) => {
+        if (typeof from !== 'string') throw Object.assign(new TypeError(`The "paths[${index}]" argument must be of type string. Received ${typeof from}`), { code: 'ERR_INVALID_ARG_TYPE' });
+      });
+      // A relative entry is the process's working directory's, as Node's Module._resolveFilename makes it.
+      const requireStack = parentModule && typeof parentModule.filename === 'string' ? [parentModule.filename] : [];
+      for (const from of options.paths as string[]) {
+        try { return resolveModule(id, pathShim.resolve(process.cwd(), from)); } catch { /* the next directory */ }
+      }
+      throw Object.assign(new Error(`Cannot find module '${id}'${requireStack.length ? `\nRequire stack:\n- ${requireStack.join('\n- ')}` : ''}`), { code: 'MODULE_NOT_FOUND', requireStack });
     }
     return resolveModule(id, currentDir);
   };
