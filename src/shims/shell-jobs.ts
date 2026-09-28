@@ -386,6 +386,24 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
     return { stdout: held.stdout, stderr: held.stderr + stderr, exitCode: status };
   }));
 
+  // `exec command…` runs the command in the script's place, with the
+  // script's environment and its run's name, and answers with its status.
+  // The shell's own `exec` ran a builtin but a program the engine defines,
+  // `node`, ran nothing: a start script's `exec node server.js` ended with
+  // no server and no word. This one hands the line back to the shell, which
+  // is where `node`, `npm` and the host's programs are found. What bash
+  // replaces (the shell itself is gone once the command ends) is kept to
+  // this: nothing after an `exec` line runs, since the command's status is
+  // the script's, as an `exit` there would be.
+  bash.registerCommand(defineCommand('exec', async (args, ctx) => {
+    if (args.length === 0) return { stdout: '', stderr: '', exitCode: 0 };
+    if (!ctx.exec) return { stdout: '', stderr: 'bash: exec: needs a shell that can run a line\n', exitCode: 1 };
+    const line = args.map((word) => /^[A-Za-z0-9_./:=@%+,-]+$/u.test(word) ? word : `'${word.replace(/'/gu, "'\\''")}'`).join(' ');
+    const env: Record<string, string> = Object.fromEntries(ctx.env);
+    const result = await ctx.exec(line, { env, cwd: ctx.cwd, replaceEnv: true });
+    return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', exitCode: result.exitCode ?? 0 };
+  }));
+
   bash.registerCommand(defineCommand('kill', async (args) => {
     let signal = 'SIGTERM';
     let index = 0;
