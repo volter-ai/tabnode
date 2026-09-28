@@ -6,13 +6,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 - A `Request` or `Response` body may be any async iterable, as Node's fetch
   (undici) reads it: a Node stream, an `http.IncomingMessage`, an async
-  generator, each chunk a Buffer, typed array or string. The browser's
-  constructors took such an object for a string ("[object Object]"). Next's App
-  Router builds each route handler's request with the Node request as its body,
-  so every POST a route handler read in a tab was that string: Dub's NextAuth
-  credentials callback found no CSRF token and sent sign-in back to the login.
-  The `Response` correction also finds the platform's `headers` getter up the
-  prototype chain.
+  generator, each chunk taken through `Buffer.from` as Node's is, an empty one
+  passed over, and a stream already read or locked refused with undici's
+  TypeError. The browser's constructors took such an object for a string
+  ("[object Object]"). Next's App Router builds each route handler's request
+  with the Node request as its body, so every POST a route handler read in a
+  tab was that string: Dub's NextAuth credentials callback found no CSRF token
+  and sent sign-in back to the login. A request with such a body and no
+  `duplex` now throws, as Node's does, where the tab accepted it. `fetch` reads
+  such a body the same way whichever transport answers it.
 
 ## v0.5.48 — 2026-09-28
 

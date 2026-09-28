@@ -12,7 +12,10 @@
  *
  * Only such a body is changed; every other init is handed on untouched.
  */
-const encoder = new TextEncoder();
+import { Buffer } from './node-lib/buffer-module';
+
+/** The mark Node's streams carry once read (`internal/streams/utils`, `kIsDisturbed`). */
+const kIsDisturbed = Symbol.for('nodejs.stream.disturbed');
 
 function isAsyncIterableBody(body: unknown): body is AsyncIterable<unknown> {
   if (body === null || typeof body !== 'object') return false;
@@ -24,44 +27,62 @@ function isAsyncIterableBody(body: unknown): body is AsyncIterable<unknown> {
   return typeof (body as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function';
 }
 
-/** undici's `ReadableStreamFrom`: one chunk a pull, bytes as they come, the iterator returned on cancel. */
+/** Node's `isDisturbed`, and undici's refusal of a body already read or locked. */
+function refuseDisturbed(body: object): void {
+  const stream = body as { locked?: unknown; readableDidRead?: unknown; readableAborted?: unknown; [kIsDisturbed]?: unknown };
+  const disturbed = stream[kIsDisturbed] !== undefined ? Boolean(stream[kIsDisturbed]) : Boolean(stream.readableDidRead || stream.readableAborted);
+  if (disturbed || stream.locked === true) throw new TypeError('Response body object should not be disturbed or locked');
+}
+
+/**
+ * undici's `ReadableStreamFrom`: the iterator made when the stream starts,
+ * each chunk `Buffer.from`'d as Node's is (a chunk `Buffer.from` refuses
+ * errors the stream), an empty chunk passed over for the next, and the
+ * iterator returned, with no argument, on cancel.
+ */
 function streamFrom(iterable: AsyncIterable<unknown>): ReadableStream<Uint8Array> {
   let iterator: AsyncIterator<unknown> | undefined;
   return new ReadableStream<Uint8Array>({
-    start() { iterator = iterable[Symbol.asyncIterator](); },
+    async start() { iterator = iterable[Symbol.asyncIterator](); },
     async pull(controller) {
-      const { done, value } = await iterator!.next();
-      if (done) { controller.close(); return; }
-      const bytes = typeof value === 'string' ? encoder.encode(value)
-        : value instanceof Uint8Array ? value
-        : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-        : value instanceof ArrayBuffer ? new Uint8Array(value)
-        : new Uint8Array(value as ArrayLike<number>);
-      if (bytes.byteLength) controller.enqueue(new Uint8Array(bytes));
+      for (;;) {
+        const { done, value } = await iterator!.next();
+        if (done) { controller.close(); return; }
+        const bytes = (Buffer.isBuffer(value) ? value : (Buffer.from as (chunk: unknown) => Uint8Array)(value)) as Uint8Array;
+        if (bytes.byteLength) { controller.enqueue(new Uint8Array(bytes)); return; }
+      }
     },
-    async cancel(reason) { await iterator?.return?.(reason); },
+    async cancel() { await iterator?.return?.(); },
   }, { highWaterMark: 0 });
 }
 
-const REQUEST_INIT_MEMBERS = ['method', 'headers', 'body', 'referrer', 'referrerPolicy', 'mode', 'credentials', 'cache', 'redirect', 'integrity', 'keepalive', 'signal', 'window', 'duplex', 'priority'] as const;
+const REQUEST_INIT_MEMBERS = ['method', 'headers', 'referrer', 'referrerPolicy', 'mode', 'credentials', 'cache', 'redirect', 'integrity', 'keepalive', 'signal', 'window', 'duplex', 'priority'] as const;
 
 /**
  * The init with an async-iterable body read as a stream, or the init itself.
- * The replacement is built member by member (an init may carry its members on
- * getters of its prototype, as a `Request` passed as an init does).
+ * The body is read once; the replacement is built member by member (an init
+ * may carry its members on getters of its prototype, as a `Request` passed as
+ * an init does), with the init's own other members as they are.
  */
 export function withNodeRequestBody<T extends RequestInit | undefined>(init: T): T {
-  if (!init || !isAsyncIterableBody((init as RequestInit).body)) return init;
+  if (!init) return init;
+  const body = (init as RequestInit).body as unknown;
+  if (!isAsyncIterableBody(body)) return init;
+  refuseDisturbed(body);
   const copy: Record<string, unknown> = {};
+  for (const member of Object.keys(init)) if (member !== 'body') copy[member] = (init as Record<string, unknown>)[member];
   for (const member of REQUEST_INIT_MEMBERS) {
+    if (member in copy) continue;
     const value = (init as Record<string, unknown>)[member];
     if (value !== undefined) copy[member] = value;
   }
-  copy.body = streamFrom((init as RequestInit).body as unknown as AsyncIterable<unknown>);
+  copy.body = streamFrom(body);
   return copy as T;
 }
 
 /** A response body as undici takes it: an async iterable read as a stream, anything else as given. */
 export function nodeResponseBody(body: unknown): unknown {
-  return isAsyncIterableBody(body) ? streamFrom(body) : body;
+  if (!isAsyncIterableBody(body)) return body;
+  refuseDisturbed(body);
+  return streamFrom(body);
 }

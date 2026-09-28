@@ -1,4 +1,5 @@
 /** Host Fetch I/O uses the same process-owned liveness registry as sockets. */
+import { withNodeRequestBody } from './node-body';
 import type { Process } from './shims/process';
 import { __tokenForProcess, __runFor, enterRun, type ProcessToken } from './process-tokens';
 import { registerHandle, __adoptHandle, refHandle, unrefHandle, releaseHandle } from './node-lib/binding/handles';
@@ -82,6 +83,8 @@ function activity(owner: ProcessToken | null, cancel: () => void): FetchActivity
 /** Each process may replace its own fetch; the host adapter remains private. */
 export function guestFetch(process: Process, fallback: typeof globalThis.fetch): typeof globalThis.fetch {
   return function fetch(input, init) {
+    // A stream body is read as undici reads it, whichever door the fetch leaves by.
+    init = withNodeRequestBody(init);
     const adapter = transport;
     if (!adapter) return fallback.call(globalThis, input, init);
     const owner = __tokenForProcess(process);

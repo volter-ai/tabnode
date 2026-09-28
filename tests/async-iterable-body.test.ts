@@ -26,6 +26,12 @@ const PROGRAM = [
   "  out.response = await new Response(Readable.from(['r', 'e', 's'])).text();",
   "  out.plain = await new Request('http://x.test/p', { method: 'POST', body: 'plain' }).text();",
   "  out.params = await new Request('http://x.test/p', { method: 'POST', body: new URLSearchParams({ q: '1' }) }).text();",
+  "  out.empty = await new Response(Readable.from(['', 'x', ''])).text();",
+  "  const read = Readable.from(['ab', 'cd']); for await (const chunk of read) { break; }",
+  "  try { new Response(read); out.disturbed = 'accepted'; } catch (e) { out.disturbed = e.constructor.name + ': ' + e.message; }",
+  "  try { await new Response(Readable.from([7])).text(); out.number = 'read'; } catch (e) { out.number = e.constructor.name; }",
+  "  try { new Request('http://x.test/p', { method: 'POST', body: Readable.from(['x']) }); out.noDuplex = 'accepted'; } catch (e) { out.noDuplex = e.constructor.name; }",
+  "  out.uint16 = [...new Uint8Array(await new Response(Readable.from([new Uint16Array([0x4241])], { objectMode: true })).arrayBuffer())];",
   "  // Next's shape: an http server's request handed on as the body of a web Request.",
   "  const server = http.createServer(async (req, res) => {",
   "    const web = new Request('http://localhost' + req.url, { method: req.method, headers: req.headers, body: req, duplex: 'half' });",
@@ -91,5 +97,7 @@ describe('a body that is an async iterable', () => {
     expect(seen.readable).toBe('a=1&json=true');
     expect(seen.generator).toBe('g=1&h=2');
     expect(seen.server).toEqual({ csrfToken: 't', json: 'true' });
+    expect(seen.empty).toBe('x');
+    expect(seen.disturbed).toBe('TypeError: Response body object should not be disturbed or locked');
   }, 30_000);
 });
