@@ -1,9 +1,10 @@
 #!/bin/bash
-# Cuts a release from main: the changelog must already have the version's
-# section; the version is set, committed and tagged v<version>, and pushed.
-# .github/workflows/publish.yml then builds the tag, publishes @volter/tabnode
-# to npm with provenance, and makes the GitHub release from the changelog's
-# section. Nothing here needs a credential.
+# Cuts a minor (or any chosen) release from main; every push is otherwise
+# released at its next patch by .github/workflows/publish.yml. The changelog
+# must already have the version's section; the version is set, committed and
+# tagged v<version>, and pushed, and the workflow publishes @volter/tabnode at
+# that version with provenance and makes the GitHub release from the
+# changelog's section. Nothing here needs a credential.
 #
 #   bash scripts/release.sh 0.3.1
 set -e

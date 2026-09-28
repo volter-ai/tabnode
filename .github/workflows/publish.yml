@@ -1,21 +1,33 @@
-# The release, from a tag: the tag's tree is built and published to npm as
-# @volter/tabnode with provenance, and the GitHub release is made with the
-# changelog's section for the version as its notes. scripts/release.sh cuts
-# the tag. The publish authenticates with the repository secret NPM_TOKEN
-# until npm's trusted publisher for this workflow is confirmed
-# (RELEASING.md); then the secret and the NODE_AUTH_TOKEN line go.
+# The release, on every push to main: when anything changed since the last
+# version, autorelease.mjs moves @volter/tabnode to its next patch version, the
+# changelog's Unreleased section becomes that version's, docs/api is
+# regenerated, the package is built and published to npm with provenance, the
+# release commit goes back to main, and the tag v<version> and the GitHub
+# release (the changelog's section, or the commits since the last tag, as its
+# notes) are made. A minor or major release sets its version on main by hand
+# (scripts/release.sh); it is published as it is. Auth is the repository
+# secret NPM_TOKEN.
 name: publish
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: publish
+  cancel-in-progress: false
 permissions:
   contents: write
   id-token: write
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      PACKAGES: .
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -23,16 +35,55 @@ jobs:
           cache: npm
       - name: An npm that publishes with provenance
         run: npm install -g npm@latest
-      - run: npm ci
-      - run: npm run build:lib
-      - name: The version is the tag
-        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
-      - run: npm publish --provenance --access public
+      - run: git config core.fileMode false
+      - name: Version what changed since its last release
+        id: release
+        run: node .github/autorelease.mjs
+      - name: Is this version on npm yet
+        id: check
+        run: |
+          v="$(node -p "require('./package.json').version")"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [ -n "$(npm view "@volter/tabnode@$v" version 2>/dev/null)" ]; then echo "$v is published"; else echo "$v is new"; echo new=1 >> "$GITHUB_OUTPUT"; fi
+      - if: steps.check.outputs.new
+        run: npm ci
+      - if: steps.check.outputs.new
+        name: The lockfile, the changelog's section and docs/api follow the version
+        env:
+          V: ${{ steps.check.outputs.version }}
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          if ! grep -q "^## v$V " CHANGELOG.md; then
+            awk -v v="$V" -v d="$(date -u +%F)" '!done && /^## Unreleased$/ { print; print ""; print "## v" v " — " d; done = 1; next } { print }' CHANGELOG.md > "$RUNNER_TEMP/changelog" && mv "$RUNNER_TEMP/changelog" CHANGELOG.md
+          fi
+          npm run docs:api
+      - if: steps.check.outputs.new
+        run: npm run build:lib
+      - if: steps.check.outputs.new
+        name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: The GitHub release, with the changelog's section as its notes
+        run: |
+          if ! npm publish --provenance --access public 2>"$RUNNER_TEMP/err"; then
+            cat "$RUNNER_TEMP/err"; grep -qi 'cannot publish over' "$RUNNER_TEMP/err" || exit 1
+          fi
+      - if: steps.check.outputs.new
+        name: The release commit, the tag and the GitHub release
         env:
+          V: ${{ steps.check.outputs.version }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes=$(awk -v h="## $GITHUB_REF_NAME " 'index($0, h) == 1 { p = 1; next } p && /^## / { exit } p' CHANGELOG.md)
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "${notes:-$GITHUB_REF_NAME}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json CHANGELOG.md docs/api
+          git diff --cached --quiet || git commit -qm "release v$V"
+          git reset -q --hard HEAD
+          for attempt in 1 2 3 4 5; do
+            if git pull -q --rebase origin main; then git push -q origin HEAD:main && break; else git rebase --abort; fi
+            [ "$attempt" = 5 ] && exit 1; sleep 5
+          done
+          git rev-parse -q --verify "refs/tags/v$V" >/dev/null || { git tag -a "v$V" -m "v$V" && git push -q origin "v$V"; }
+          notes=$(awk -v h="## v$V " 'index($0, h) == 1 { p = 1; next } p && /^## / { exit } p' CHANGELOG.md | sed '/^$/d')
+          previous=$(git describe --tags --abbrev=0 "v$V^" 2>/dev/null || true)
+          [ -n "$notes" ] || notes=$(git log --format='- %s' ${previous:+$previous..}"v$V" | grep -v '^- release v')
+          gh release view "v$V" >/dev/null 2>&1 || gh release create "v$V" --title "v$V" --notes "${notes:-v$V}"
