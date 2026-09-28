@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.47 — 2026-09-28
+
 - esbuild-wasm moves from 0.20.0 to 0.28.2. 0.20.0 is built with Go 1.20,
   whose wasm `IndexByte` sign-extends the address it finds (golang/go#65571):
   once esbuild's heap passes 2 GiB of linear memory, a search of a buffer above
