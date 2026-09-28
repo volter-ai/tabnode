@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.43 — 2026-09-28
+
 ## v0.5.42 — 2026-09-28
 
 - The pass that follows an async function's frame across its awaits lands
