@@ -827,6 +827,38 @@ Watch for file changes
 
 ***
 
+### writeAtSync()
+
+> **writeAtSync**(`path`, `data`, `position`): `void`
+
+Bytes written into a file at `position`, as a disk takes them: a gap past
+the end reads as zeros, and the file grows in its own buffer as an append
+grows it. A database rewrites its log and its pages a page at a time;
+writing the whole file again for each page copied Postgres's 16 MB
+write-ahead log at every commit. A tree that keeps its files elsewhere
+(its own writeFileSync) is written through its own read and write unless
+it answers this itself.
+
+#### Parameters
+
+##### path
+
+`string`
+
+##### data
+
+`Uint8Array`
+
+##### position
+
+`number`
+
+#### Returns
+
+`void`
+
+***
+
 ### writeFileSync()
 
 > **writeFileSync**(`path`, `data`): `void`

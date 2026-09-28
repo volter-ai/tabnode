@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.46 — 2026-09-28
+
 - A positioned write costs its own bytes. `fs.writeSync` at a position that is
   not the file's end copied the whole file and wrote it all back; the binding
   now calls the tree's `writeAtSync`, which `VirtualFS` answers in place in a
