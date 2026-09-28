@@ -2410,9 +2410,22 @@ function createRequire(
     return loadModule(resolved).exports;
   };
 
-  require.resolve = (id: string): string => {
+  require.resolve = (id: string, options?: { paths?: unknown }): string => {
     if (id === 'fs' || id === 'process' || id.startsWith('node:') || moduleShim.builtinModules.includes(id)) {
       return id;
+    }
+    // Node's `options.paths`: each directory, in order, is where the lookup starts, as if the request came from a
+    // module there, and the first that resolves wins. The option was ignored and every lookup started at the caller,
+    // so a module installed in one tree could not find a package another tree holds (a World's injector resolving
+    // the application's own Prisma adapter from the application's directory). Node 12.
+    if (options && Array.isArray(options.paths)) {
+      for (const from of options.paths) {
+        if (typeof from !== 'string') continue;
+        try { return resolveModule(id, pathShim.resolve(currentDir, from)); } catch { /* the next directory */ }
+      }
+      const error = new Error(`Cannot find module '${id}'`) as Error & { code?: string };
+      error.code = 'MODULE_NOT_FOUND';
+      throw error;
     }
     return resolveModule(id, currentDir);
   };
