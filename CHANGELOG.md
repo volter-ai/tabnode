@@ -4,6 +4,18 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A positioned write costs its own bytes. `fs.writeSync` at a position that is
+  not the file's end copied the whole file and wrote it all back; the binding
+  now calls the tree's `writeAtSync`, which `VirtualFS` answers in place in a
+  buffer the file owns and nobody holds (a copy or a read's result is never
+  changed by a later write). Postgres in a tab, whose commits rewrite a page of
+  its 16 MB write-ahead log, went from 44 ms a commit to under 1 ms with
+  browser-substrate's store answering `writeAtSync` too.
+- `require.resolve(id, { paths })` honours `paths` as Node does: each entry,
+  relative ones against the working directory, is where the lookup starts; a
+  non-array or a non-string entry is refused with Node's codes. A World's
+  injector found a Prisma adapter the application installs this way.
+
 ## v0.5.45 — 2026-09-28
 
 ## v0.5.44 — 2026-09-28
