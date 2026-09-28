@@ -6,6 +6,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## v0.5.42 — 2026-09-28
 
+- The pass that follows an async function's frame across its awaits lands
+  what closes a node before what opens the next one at the same offset.
+  `for await(x of y)await a;await b`, as minified code writes it, ended the
+  loop where the next statement's `await` began, and the resume opened there
+  landed inside the loop's brace: "SyntaxError: Unexpected token '}'" in two of
+  Dub's 2003 Next server chunks, while Next collected page data in a tab.
+
 ## v0.5.41 — 2026-09-28
 
 ## v0.5.40 — 2026-09-28
