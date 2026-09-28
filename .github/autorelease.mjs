@@ -1,11 +1,12 @@
 // Autorelease: every push to main releases what changed. Run by the publish
 // workflow before its build and publish steps:
 //
-//   PACKAGES="<dir> …" [LOCKSTEP=1] [SOURCES="<path> …"] [PIN_FILES="<json> …"]
-//   [VERSION_TEXT="<file>=<package name> …"] node .github/autorelease.mjs
+//   PACKAGES="<dir> …" [LOCKSTEP=1] [SOURCES="<path> …"] [PATHS="<dir>=<path>,… …"]
+//   [PIN_FILES="<json> …"] [VERSION_TEXT="<file>=<package name> …"] node .github/autorelease.mjs
 //
 // A package is released when a commit since the last change to its version line
-// touched its directory (or SOURCES, which every package is built from). Every
+// touched its directory (or the paths PATHS names for it instead, or SOURCES,
+// which every package is built from). Every
 // package that depends on a released one through an exact pin or a `workspace:`
 // range is released with it; LOCKSTEP=1 releases all of them together. Each
 // released package moves to the next patch after the higher of its version on
@@ -42,7 +43,8 @@ const exact = (range) => /^\d/.test(range) || range.startsWith('workspace:');
 function changed({ dir, file }) {
   const since = git('log', '-1', '--format=%H', '-G', '"version":', '--', file);
   if (!since) return true;
-  const paths = [dir === '.' ? '.' : dir, ...list('SOURCES')];
+  const own = list('PATHS').find((entry) => entry.split('=')[0] === dir)?.split('=')[1].split(',');
+  const paths = [...(own ?? [dir]), ...list('SOURCES')];
   return git('diff', '--name-only', since, 'HEAD', '--', ...paths, ':(exclude).github').length > 0;
 }
 
