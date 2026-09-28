@@ -268,6 +268,22 @@ export function registerRunStreams(token: ProcessToken, streams: RunStreams): vo
 /** Forget a run that has ended. */
 export function releaseRunStreams(token: ProcessToken): void {
   _runStreams.delete(token);
+  shellRuns.delete(token);
+  hostedNodes.delete(token);
+}
+
+/** Runs whose program is a shell or another non-node program: a `node` they run is their child. */
+const shellRuns = new Set<ProcessToken>();
+/** Runs that are themselves a hosted `node`: a further `node` under them is a child. */
+const hostedNodes = new Set<ProcessToken>();
+
+/** A child identity for a `node` a run's shell runs: its own token and pid under the run's, on the run's streams. */
+function nestedNodeToken(parentToken: ProcessToken, args: readonly string[], cwd: string | undefined): ProcessToken {
+  const token: ProcessToken = `child-${__nextChildRun++}`;
+  setRunPid(token, mintPid(), runPid(parentToken)?.pid ?? 0, { argv: ['node', ...args], ...(cwd ? { cwd } : {}) });
+  const parentStreams = runStreamsFor(parentToken);
+  if (parentStreams) registerRunStreams(token, parentStreams);
+  return token;
 }
 
 /** What the host gave the named run, while it lasts. */
@@ -429,14 +445,30 @@ export function initChildProcess(vfs: VirtualFS): void {
 
     // Capture this run's name, streams and cancellation before another Node
     // entry can start. Forks and shell entries reach this same dispatch seam.
-    const runToken = runTokenOf(ctx);
+    const parentToken = runTokenOf(ctx);
+    // A `node` a shell runs is a process of its own unless it is the run
+    // itself: the first `node` of a run that is not a shell's child is the
+    // run (the CMD `node server.js`, the page's `node -e`), and every other
+    // one, a line of a start script, the second command of a `-c` line, a
+    // step of a `sh file` child, gets a child token under the run's pid,
+    // the run's streams, and its own admission at the host. Admitted under
+    // the shell's own token, its exit was read as the shell's: a script
+    // ended at its first `node` line with nothing after it (measured
+    // 2026-09-28: `sh start.sh` printed its first step and stopped).
+    const nested = parentToken !== null && (shellRuns.has(parentToken) || hostedNodes.has(parentToken));
+    const runToken = nested ? nestedNodeToken(parentToken!, args, ctx.cwd) : parentToken;
     const streams = runToken === null ? undefined : runStreamsFor(runToken);
     const processHost = nodeProcessHostFor(runToken);
     if (processHost && runToken !== null) {
-      return runHostedNode(processHost, {
-        token: runToken, argv: [...args], cwd: ctx.cwd, filesystem: tree, env: guestEnvironmentOf(ctx),
-        ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}), ...(streams ? { streams } : {}),
-      });
+      if (!nested) hostedNodes.add(runToken);
+      try {
+        return await runHostedNode(processHost, {
+          token: runToken, argv: [...args], cwd: ctx.cwd, filesystem: tree, env: guestEnvironmentOf(ctx),
+          ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}), ...(streams ? { streams } : {}),
+        });
+      } finally {
+        if (nested) releaseRunStreams(runToken);
+      }
     }
 
     // Node reads its own options before the script: `node --turbo-fast-api-calls
@@ -1719,6 +1751,9 @@ function existsInTree(path: string): boolean {
  * a program the engine can run; the engine's own `node`, written to
  * `/usr/local/bin/node` when the shim is initialized, is one of those.
  */
+/** The shells a script or a `-c` line runs under; a child of these goes to the host when there is one. */
+const SHELL_PROGRAMS = new Set(['sh', 'bash', 'dash', '/bin/sh', '/bin/bash', '/usr/bin/sh', '/usr/bin/bash']);
+
 function engineProgramFor(file: string, cwd?: string): string {
   const name = __substrateProgramName(file);
   if (!name.includes('/')) return name;
@@ -1794,6 +1829,7 @@ function startChildRun(request: RunRequest): StartedRun {
   // A host terminal consumes input incrementally. The old string-only
   // route dropped every keystroke that arrived after a child was launched.
   const admittedNode = nodeProcessHostInstalled() && engineProgramFor(request.file, request.cwd) === 'node';
+  if (!admittedNode) shellRuns.add(token);
   const hostTerminal = request.terminal !== undefined && hostExecutor() !== null && !admittedNode;
   let wakeInput: (() => void) | undefined;
   /**
@@ -1904,7 +1940,14 @@ function startChildRun(request: RunRequest): StartedRun {
   const begin = (): void => {
     if (started || finished) return;
     started = true;
-    const engineFirst = !hostTerminal && programExists(request.file, request.cwd, request.env);
+    // A shell a hosted program spawns (`sh start.sh`, `sh -c '…'`) runs at
+    // the host when there is one, not in this worker's own bash: the host is
+    // where the programs the page registered live (`npx` under /usr/bin),
+    // and where a `node` inside the script is given a named run. Run here,
+    // the script's `node` found no name and was refused, and its `npx` was
+    // not found at all.
+    const shellChild = SHELL_PROGRAMS.has(engineProgramFor(request.file, request.cwd)) && hostExecutor() !== null;
+    const engineFirst = !hostTerminal && !shellChild && programExists(request.file, request.cwd, request.env);
     liveInput = !hostTerminal && !admittedNode && request.stdinIsPipe && !engineFirst;
     if (liveInput) {
       pendingStdin.unshift(...initialStdin);
