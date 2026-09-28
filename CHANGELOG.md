@@ -4,6 +4,16 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A web `Response` keeps the `Set-Cookie` headers it was built with, as Node's
+  (undici's) does: `getSetCookie()` lists each, `get` joins them with ", ", and
+  iteration yields one entry per cookie. The guest's `Response` was the
+  browser's, whose response guard drops `Set-Cookie` silently, so a server that
+  answers with a web Response lost every cookie it set before its answer
+  reached the socket: Dub's NextAuth (`next start` in a tab) answered
+  `/api/auth/csrf` with no cookie and its credentials sign-in went back to the
+  login page. `Response.json`, `Response.redirect` and `clone()` keep them too;
+  a platform response (a fetch's answer) is still `instanceof Response`.
+
 ## v0.5.47 — 2026-09-28
 
 - esbuild-wasm moves from 0.20.0 to 0.28.2. 0.20.0 is built with Go 1.20,
