@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.53 — 2026-09-29
+
 - Prepare extensionless JavaScript executable modules using the same image cache as `.js` files, matching Node loading them as JavaScript. Dub’s Next CLI was the last measured preparation miss (t_9360174c / t_92ec0dc2; Article 6).
 
 ## v0.5.52 — 2026-09-29
