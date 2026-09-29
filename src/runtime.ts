@@ -657,7 +657,10 @@ const PREPARED_MODULES_FORMAT = 'tabnode-prepared-3';
 /** The name a prepared body goes under: the hash of the file as read, and how it is compiled. Undefined for a file no body is prepared for. */
 export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
   const extension = /\.(js|cjs|mjs)$/u.exec(resolvedPath)?.[1];
-  if (!extension) return undefined;
+  // Node also loads extensionless JavaScript executables (for example a
+  // package's bin entry). Their preparation is identical to ordinary JS.
+  const extensionless = !resolvedPath.slice(resolvedPath.lastIndexOf('/') + 1).includes('.');
+  if (!extension && !extensionless) return undefined;
   const kind = extension === 'cjs' ? 'cjs' : 'js';
   return bytesToHex(sha256(new TextEncoder().encode(`${PREPARED_MODULES_FORMAT}|${kind}|${rawCode}`)));
 }
