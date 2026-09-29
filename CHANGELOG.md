@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.51 — 2026-09-29
+
 ## v0.5.50 — 2026-09-29
 
 - `crypto.createCipheriv` and `createDecipheriv`, which were missing, for AES
