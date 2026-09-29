@@ -99,6 +99,16 @@ let requestId = 0;
 const controlledUploads = new Set();
 const MAX_STREAM_CHUNK_BYTES = 65536;
 
+// A response chunk as the host sent it: its bytes, transferred, from a bridge this worker told it
+// takes them (`sw-capabilities`), or base64 from one that predates that. Base64 cost the page's
+// own thread an encode of every byte a virtual server sent (5.4 s of 46 while a 307 MB document
+// crossed, measured in the hosted model editor) and left a third more garbage than the bytes.
+function chunkBytes(data) {
+  if (data?.chunk instanceof Uint8Array) return data.chunk;
+  if (typeof data?.chunkBase64 === 'string') return base64ToBytes(data.chunkBase64);
+  return null;
+}
+
 function updateFlowControl(host, type, data) {
   if (type === 'server-registered' || type === 'server-unregistered') {
     for (const upload of controlledUploads) {
@@ -157,6 +167,7 @@ self.addEventListener('message', (event) => {
     mainPort.onmessage = (message) => {
       if (hosts.get(host.id) === host && host.port === initializedPort) handleMainMessage(host, message);
     };
+    mainPort.postMessage({ type: 'sw-capabilities', data: { binaryChunks: 1 } });
     if (data && Array.isArray(data.ownDocuments)) host.ownDocuments = new Set(data.ownDocuments.map((path) => ownPath(String(path))));
     // Markup a frame's document served from this host's servers starts with
     // (after its doctype): the page's first script, before the document's own.
@@ -257,9 +268,8 @@ function handleMainMessage(host, event) {
     const pending = pendingRequests.get(id);
     if (pending && pending.streamController) {
       try {
-        // Decode base64 chunk and enqueue
-        if (data.chunkBase64) {
-          const bytes = base64ToBytes(data.chunkBase64);
+        const bytes = chunkBytes(data);
+        if (bytes && bytes.byteLength > 0) {
           pending.streamController.enqueue(bytes);
           DEBUG && console.log('[SW] chunk enqueued, bytes:', bytes.length);
         }
@@ -428,10 +438,11 @@ async function sendControlledRequest(host, port, method, url, headers, body, sig
           clearTimeout(headerTimeout);
           resolveHeaders(data);
         } else if (type === 'stream-chunk' && headed && credited) {
-          if (typeof data?.chunkBase64 !== 'string'
-              || data.chunkBase64.length > Math.ceil(MAX_STREAM_CHUNK_BYTES / 3) * 4)
+          if (typeof data?.chunkBase64 === 'string'
+              && data.chunkBase64.length > Math.ceil(MAX_STREAM_CHUNK_BYTES / 3) * 4)
             throw new Error('Stream chunk exceeds transport limit');
-          const bytes = base64ToBytes(data.chunkBase64);
+          const bytes = chunkBytes(data);
+          if (!bytes) throw new Error('Stream chunk carries no bytes');
           if (bytes.byteLength > MAX_STREAM_CHUNK_BYTES)
             throw new Error('Stream chunk exceeds transport limit');
           credited = false;

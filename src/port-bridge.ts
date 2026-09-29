@@ -378,8 +378,23 @@ export class PortBridge extends BridgeEvents {
   /**
    * Handle messages from Service Worker
    */
+  /** The channels whose worker takes a response chunk as transferred bytes (`sw-capabilities`). */
+  private readonly binaryChunkPorts = new WeakSet<MessagePort>();
+
+  /** One response chunk on `port`: its bytes transferred where the worker said it takes them,
+   *  base64 to a worker that predates that. `bytes` must be the chunk's own buffer. */
+  private postChunk(port: MessagePort | undefined, id: number, bytes: Uint8Array): void {
+    if (!port) return;
+    if (this.binaryChunkPorts.has(port)) port.postMessage({ type: 'stream-chunk', id, data: { chunk: bytes } }, [bytes.buffer]);
+    else port.postMessage({ type: 'stream-chunk', id, data: { chunkBase64: uint8ToBase64(bytes) } });
+  }
+
   private async handleServiceWorkerMessage(event: MessageEvent): Promise<void> {
     const { type, id, data } = event.data;
+    if (type === 'sw-capabilities') {
+      if (data?.binaryChunks === 1 && event.target instanceof MessagePort) this.binaryChunkPorts.add(event.target);
+      return;
+    }
 
     PortBridge.DEBUG && console.log('[ServerBridge] SW message:', type, id, data?.url);
 
@@ -578,14 +593,9 @@ export class PortBridge extends BridgeEvents {
         },
         // onChunk - called for each chunk
         (chunk: string | Uint8Array) => {
-          const bytes = typeof chunk === 'string' ? _encoder.encode(chunk) : chunk;
-          const chunkBase64 = uint8ToBase64(bytes);
-          PortBridge.DEBUG && console.log('[ServerBridge] 🟡 onChunk called, sending stream-chunk, size:', chunkBase64.length);
-          this.messageChannel?.port1.postMessage({
-            type: 'stream-chunk',
-            id,
-            data: { chunkBase64 },
-          });
+          const bytes = typeof chunk === 'string' ? _encoder.encode(chunk) : ownedBytes(chunk);
+          PortBridge.DEBUG && console.log('[ServerBridge] 🟡 onChunk called, sending stream-chunk, size:', bytes.byteLength);
+          this.postChunk(this.messageChannel?.port1, id, bytes);
         },
         // onEnd - called when response is complete
         () => {
@@ -610,12 +620,8 @@ export class PortBridge extends BridgeEvents {
       });
 
       if (response.body && response.body.length > 0) {
-        const bytes = response.body instanceof Uint8Array ? response.body : new Uint8Array(0);
-        this.messageChannel?.port1.postMessage({
-          type: 'stream-chunk',
-          id,
-          data: { chunkBase64: uint8ToBase64(bytes) },
-        });
+        const bytes = response.body instanceof Uint8Array ? ownedBytes(response.body) : new Uint8Array(0);
+        this.postChunk(this.messageChannel?.port1, id, bytes);
       }
 
       this.messageChannel?.port1.postMessage({ type: 'stream-end', id });
@@ -664,7 +670,7 @@ export class PortBridge extends BridgeEvents {
       if (finished) return;
       while (credits > 0 && queue.length > 0) {
         credits -= 1;
-        post('stream-chunk', { chunkBase64: uint8ToBase64(queue.shift()!) });
+        this.postChunk(channel?.port1, id, queue.shift()!);
       }
       if (upstreamEnded && queue.length === 0) { post('stream-end'); finish(); return; }
       // a few chunks may wait for credit; more than that, and the server waits
