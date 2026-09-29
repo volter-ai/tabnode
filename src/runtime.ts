@@ -571,12 +571,27 @@ forGuestRealm(() => {
   takeFromHost(Function.prototype, 'toString', function toString(this: unknown): string { return __substrateUnfollowAwaits(native.call(this)); });
 });
 
-/** Applies insertions and replacements from the end, so earlier offsets hold. */
+/** Applies edits in source coordinates, preserving reverse insertion order at a shared offset. */
 function applyReplacements(code: string, replacements: Array<[number, number, string]>): string {
   replacements.sort((a, b) => b[0] - a[0] || b[1] - a[1]);
-  let out = code;
-  for (const [start, end, text] of replacements) out = out.slice(0, start) + text + out.slice(end);
-  return out;
+  // Rebuilding the whole module per insertion made loading a large generated
+  // module quadratic. Node accepts these modules without that copying cost.
+  // Keep the original descending order (including stable ties), collecting
+  // each untouched span once, then assemble once. Current passes emit disjoint
+  // ranges; retain the old semantics if a future pass supplies overlaps.
+  const parts: string[] = [];
+  let cursor = code.length;
+  for (const [start, end, text] of replacements) {
+    if (end > cursor) {
+      let out = code;
+      for (const [from, to, replacement] of replacements) out = out.slice(0, from) + replacement + out.slice(to);
+      return out;
+    }
+    parts.push(code.slice(end, cursor), text);
+    cursor = start;
+  }
+  parts.push(code.slice(0, cursor));
+  return parts.reverse().join('');
 }
 
 Object.defineProperty(globalThis, "__substrateEvalSource", {

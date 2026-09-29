@@ -80,3 +80,11 @@ are ignored, and `maxBuffer` is reported after exit (ENOBUFS) rather than enforc
 process to kill; the browser path is written but unproven.
 Completion:
 - `spawnSync` and `execSync` honour `timeout`, `killSignal` and `maxBuffer` as Node does, proven on Node's fixtures in the tab.
+
+## linear-module-edits: Assemble module edits once (t_9360174c / t_e24fccae)
+
+Status: active
+
+Substrate Article 6. Node loads generated modules without rebuilding their source once per edit. The reviewed Dub profile spends about 44 s in applyReplacements; preserve exact replacement ordering and assemble non-overlapping spans once.
+Completion:
+- The original Dub recipe runs this engine in the tab; replacement assembly no longer dominates preparation and generated bodies retain their semantics.
