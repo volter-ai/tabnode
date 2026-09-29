@@ -21,6 +21,7 @@ import {
   validateNumber,
 } from '../node-internals';
 import { cryptoConstants as constants } from './crypto-constants';
+import { cipherNames, createCipherClasses } from './crypto-cipher';
 export { constants };
 
 interface DigestState {
@@ -911,7 +912,8 @@ function timingSafeEqual(a: Buffer | Uint8Array, b: Buffer | Uint8Array): boolea
 }
 
 function getCiphers(): string[] {
-  return ['aes-128-cbc', 'aes-256-cbc', 'aes-128-gcm', 'aes-256-gcm'];
+  // What createCipheriv accepts, no more, as getHashes is createHash's.
+  return cipherNames();
 }
 
 function getHashes(): string[] {
@@ -1134,10 +1136,33 @@ async function importKey(
 }
 
 // ============================================================================
+// Ciphers
+// ============================================================================
+
+const { Cipheriv, Decipheriv, createCipheriv, createDecipheriv } = createCipherClasses({
+  toBuffer: (bytes) => Buffer.from(bytes),
+  bytesOf: (value, encoding) => cryptoBytes(value, encoding, true),
+  secretKeyBytes: (value) => {
+    if (!(value instanceof KeyObject)) return undefined;
+    const info = keyInfoOf(value);
+    if (info.type !== 'secret' || !(info.keyData instanceof Uint8Array)) {
+      throw Object.assign(new TypeError(`Invalid key object type ${info.type}, expected secret.`), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+    }
+    return info.keyData;
+  },
+  encode: (bytes, encoding) => digestResult(bytes, encoding),
+  error: cryptoError,
+});
+
+// ============================================================================
 // Exports
 // ============================================================================
 
 return {
+  Cipheriv,
+  Decipheriv,
+  createCipheriv,
+  createDecipheriv,
   unsupported,
   randomBytes,
   randomFill,
@@ -1167,6 +1192,6 @@ return {
 
 }
 const cryptoModule = createCryptoModule();
-export const { randomBytes, randomFillSync, randomFill, randomUUID, randomInt, getRandomValues, unsupported, createHash, createHmac, hash, pbkdf2Sync, pbkdf2, sign, verify, createSign, createVerify, KeyObject, createSecretKey, createPublicKey, createPrivateKey, generateKeyPair, timingSafeEqual, getCiphers, getHashes } = cryptoModule;
+export const { Cipheriv, Decipheriv, createCipheriv, createDecipheriv, randomBytes, randomFillSync, randomFill, randomUUID, randomInt, getRandomValues, unsupported, createHash, createHmac, hash, pbkdf2Sync, pbkdf2, sign, verify, createSign, createVerify, KeyObject, createSecretKey, createPublicKey, createPrivateKey, generateKeyPair, timingSafeEqual, getCiphers, getHashes } = cryptoModule;
 export type KeyObject = InstanceType<typeof KeyObject>;
 export default cryptoModule;

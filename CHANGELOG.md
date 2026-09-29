@@ -4,6 +4,17 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `crypto.createCipheriv` and `createDecipheriv`, which were missing, for AES
+  in GCM, CBC, CTR and ECB (128, 192 and 256-bit keys): synchronous as Node's,
+  over `@noble/ciphers`' AES block and GHASH, streaming as OpenSSL does, with
+  GCM's `setAAD`, `getAuthTag`, `setAuthTag` and `authTagLength`, CBC and ECB's
+  PKCS#7 padding and `setAutoPadding`, and Node's errors for an unknown cipher,
+  a wrong key or IV length, bad padding and a tag that does not authenticate.
+  NextAuth seals its session cookie with jose's AES-GCM, so every sign-in in a
+  tab failed with "createCipheriv is not a function" (Dub). `getCiphers` lists
+  exactly what `createCipheriv` accepts; it listed four ciphers it did not.
+  The ciphers are not `stream.Transform`s yet.
+
 ## v0.5.49 — 2026-09-28
 
 - A `Request` or `Response` body may be any async iterable, as Node's fetch
