@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.50 — 2026-09-29
+
 - `crypto.createCipheriv` and `createDecipheriv`, which were missing, for AES
   in GCM, CBC, CTR and ECB (128, 192 and 256-bit keys): synchronous as Node's,
   over `@noble/ciphers`' AES block and GHASH, streaming as OpenSSL does, with
