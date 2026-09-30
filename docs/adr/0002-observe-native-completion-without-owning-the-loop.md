@@ -10,7 +10,12 @@ caller result0 after verified World rollback. It does not retain native IPC
 and close callback order. Node's own internal/child_process.js unrefs its IPC
 channel when a pending send completes. The binding releases the process
 handle at onexit while native pipe close completion reaches the process on
-another message turn. This is a candidate explanation, not a measured cause.
+another message turn. Libuv's documented loop-alive contract includes active
+requests and closing handles, even when no referenced active handle remains
+([loop API](https://docs.libuv.org/en/stable/loop.html#c.uv_loop_alive)); Node's
+child close event follows process exit and descriptor completion
+([Node22 API](https://nodejs.org/docs/latest-v22.x/api/child_process.html#event-close)).
+This is a candidate explanation, not a measured F3 cause.
 
 Use an explicit `NODE_DEBUG=tabnode-completion` selection on the diagnostic
 command. The native binding and common Node runner record only timestamps,
