@@ -62,7 +62,7 @@
 
 ### statSync()
 
-> **statSync**(`path`): `object`
+> **statSync**(`path`, `options?`): \{ `isDirectory`: `boolean`; `isFile`: `boolean`; \} \| `undefined`
 
 #### Parameters
 
@@ -70,22 +70,12 @@
 
 `string`
 
+##### options?
+
+###### throwIfNoEntry?
+
+`boolean`
+
 #### Returns
 
-`object`
-
-##### isDirectory()
-
-> **isDirectory**(): `boolean`
-
-###### Returns
-
-`boolean`
-
-##### isFile()
-
-> **isFile**(): `boolean`
-
-###### Returns
-
-`boolean`
+\{ `isDirectory`: `boolean`; `isFile`: `boolean`; \} \| `undefined`

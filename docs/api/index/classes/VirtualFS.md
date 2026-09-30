@@ -331,19 +331,65 @@ Async lstat
 
 ### lstatSync()
 
+#### Call Signature
+
 > **lstatSync**(`path`): [`Stats`](../interfaces/Stats.md)
 
 lstatSync - same as statSync for our virtual FS (no symlinks)
 
-#### Parameters
+##### Parameters
 
-##### path
+###### path
 
 `string`
 
-#### Returns
+##### Returns
 
 [`Stats`](../interfaces/Stats.md)
+
+#### Call Signature
+
+> **lstatSync**(`path`, `options`): [`Stats`](../interfaces/Stats.md) \| `undefined`
+
+lstatSync - same as statSync for our virtual FS (no symlinks)
+
+##### Parameters
+
+###### path
+
+`string`
+
+###### options
+
+###### throwIfNoEntry
+
+`false`
+
+##### Returns
+
+[`Stats`](../interfaces/Stats.md) \| `undefined`
+
+#### Call Signature
+
+> **lstatSync**(`path`, `options?`): [`Stats`](../interfaces/Stats.md) \| `undefined`
+
+lstatSync - same as statSync for our virtual FS (no symlinks)
+
+##### Parameters
+
+###### path
+
+`string`
+
+###### options?
+
+###### throwIfNoEntry?
+
+`boolean`
+
+##### Returns
+
+[`Stats`](../interfaces/Stats.md) \| `undefined`
 
 ***
 
@@ -713,17 +759,59 @@ Async stat
 
 ### statSync()
 
+#### Call Signature
+
 > **statSync**(`path`): [`Stats`](../interfaces/Stats.md)
 
-#### Parameters
+##### Parameters
 
-##### path
+###### path
 
 `string`
 
-#### Returns
+##### Returns
 
 [`Stats`](../interfaces/Stats.md)
+
+#### Call Signature
+
+> **statSync**(`path`, `options`): [`Stats`](../interfaces/Stats.md) \| `undefined`
+
+##### Parameters
+
+###### path
+
+`string`
+
+###### options
+
+###### throwIfNoEntry
+
+`false`
+
+##### Returns
+
+[`Stats`](../interfaces/Stats.md) \| `undefined`
+
+#### Call Signature
+
+> **statSync**(`path`, `options?`): [`Stats`](../interfaces/Stats.md) \| `undefined`
+
+##### Parameters
+
+###### path
+
+`string`
+
+###### options?
+
+###### throwIfNoEntry?
+
+`boolean`
+
+##### Returns
+
+[`Stats`](../interfaces/Stats.md) \| `undefined`
 
 ***
 
