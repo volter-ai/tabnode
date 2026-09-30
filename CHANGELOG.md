@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Carry Node's nonthrowing stat option to the filesystem and module resolver, avoiding error allocation for ordinary absent candidates and manifests (t_94bcd252, t_41f48f39; substrate Article 6). Published timing awaits independent review; no test numbers are changed.
+
 ## v0.5.54 — 2026-09-30
 
 - Share successful module path resolutions across a process’s sibling modules with filesystem/process identities and bounded string payload; use one stat probe per candidate, matching Node’s loader approach (ADR-0001, t_9360174c / t_83018b53; substrate Article6).

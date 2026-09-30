@@ -13,7 +13,7 @@
 
 export interface ResolutionFs {
   existsSync(path: string): boolean;
-  statSync(path: string): { isFile(): boolean; isDirectory(): boolean };
+  statSync(path: string, options?: { throwIfNoEntry?: boolean }): { isFile(): boolean; isDirectory(): boolean } | undefined;
   readFileSync(path: string, encoding: "utf8"): string | Uint8Array;
   realpathSync?(path: string): string;
 }
@@ -64,13 +64,15 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
   const manifests = new Map<string, Record<string, unknown> | null>();
   // stat already distinguishes absence and type; probing exists first walks
   // the same filesystem path twice for every successful module candidate.
-  const isFile = (path: string): boolean => { try { return fs.statSync(path).isFile(); } catch { return false; } };
-  const isDirectory = (path: string): boolean => { try { return fs.statSync(path).isDirectory(); } catch { return false; } };
+  const isFile = (path: string): boolean => { try { return fs.statSync(path, { throwIfNoEntry: false })?.isFile() ?? false; } catch { return false; } };
+  const isDirectory = (path: string): boolean => { try { return fs.statSync(path, { throwIfNoEntry: false })?.isDirectory() ?? false; } catch { return false; } };
   const manifest = (directory: string): Record<string, unknown> | null => {
     const path = `${directory === "/" ? "" : directory}/package.json`;
     if (manifests.has(path)) return manifests.get(path)!;
     let parsed: Record<string, unknown> | null = null;
-    try { const text = fs.readFileSync(path, "utf8"); parsed = JSON.parse(typeof text === "string" ? text : new TextDecoder().decode(text)) as Record<string, unknown>; } catch { parsed = null; }
+    if (isFile(path)) {
+      try { const text = fs.readFileSync(path, "utf8"); parsed = JSON.parse(typeof text === "string" ? text : new TextDecoder().decode(text)) as Record<string, unknown>; } catch { parsed = null; }
+    }
     manifests.set(path, parsed);
     return parsed;
   };

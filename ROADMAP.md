@@ -11,6 +11,17 @@ changelog records what each version changed in the tab. What shipped is in
 
 ## rejection-ownership: Deliver native promise failures to their process
 
+Card t_94bcd252, task t_41f48f39, substrate Article 6: the accepted cold/repeat
+profiles spend 0.10–0.21 s per busy process constructing missing-path errors.
+The shared resolver's stat-only candidates throw for ordinary absence, and
+the binding catches an allocated ENOENT even when Node requested
+`throwIfNoEntry: false`. Preserve Node's nonthrowing stat contract down to
+VirtualFS, use it for resolver candidates and internalModuleStat, and avoid
+reading nonexistent package manifests. The substrate's packed adapter must
+carry the same option. The owner forbids automated tests in this coding lane;
+independent published-build review owns measurement. Disproof: ordinary absent
+candidates still construct errors, or throwing probes/symlink errors change.
+
 Status: active
 
 Substrate constitution Articles 6 and 8. VS Code and its extensions receive their own asynchronous failures through Node's process

@@ -548,9 +548,13 @@ export class VirtualFS {
     node.mtime = mtime instanceof Date ? mtime.getTime() : mtime * 1000;
   }
 
-  statSync(path: string): Stats {
+  statSync(path: string): Stats;
+  statSync(path: string, options: { throwIfNoEntry: false }): Stats | undefined;
+  statSync(path: string, options?: { throwIfNoEntry?: boolean }): Stats | undefined;
+  statSync(path: string, options?: { throwIfNoEntry?: boolean }): Stats | undefined {
     const node = this.getNode(path);
     if (!node) {
+      if (options?.throwIfNoEntry === false) return undefined;
       throw createNodeError('ENOENT', 'stat', path);
     }
 
@@ -590,9 +594,13 @@ export class VirtualFS {
   /**
    * lstatSync - same as statSync for our virtual FS (no symlinks)
    */
-  lstatSync(path: string): Stats {
+  lstatSync(path: string): Stats;
+  lstatSync(path: string, options: { throwIfNoEntry: false }): Stats | undefined;
+  lstatSync(path: string, options?: { throwIfNoEntry?: boolean }): Stats | undefined;
+  lstatSync(path: string, options?: { throwIfNoEntry?: boolean }): Stats | undefined {
     const node = this.__substrateNode(path, false, 0);
     if (!node) {
+      if (options?.throwIfNoEntry === false) return undefined;
       throw createNodeError('ENOENT', 'lstat', path);
     }
     if (node.type !== 'symlink') return this.statSync(path);

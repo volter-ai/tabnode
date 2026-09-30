@@ -700,7 +700,12 @@ const fsBinding = {
   stat(path: unknown, bigint: boolean, req?: FSReq, throwIfNoEntry = true): Float64Array | BigInt64Array | undefined {
     const work = (): Float64Array | BigInt64Array | undefined => {
       const name = asPath(path);
-      try { return statArray(vfs().statSync(name), bigint, name); }
+      try {
+        // Native stat does not allocate an Error for an ordinary absent path
+        // when its caller asked for absence. Carry that choice to the tree.
+        const stats = vfs().statSync(name, { throwIfNoEntry });
+        return stats === undefined ? undefined : statArray(stats, bigint, name);
+      }
       catch (error) {
         if (throwIfNoEntry === false && (error as { code?: string }).code === 'ENOENT') return undefined;
         throw error;
@@ -712,7 +717,10 @@ const fsBinding = {
   lstat(path: unknown, bigint: boolean, req?: FSReq, throwIfNoEntry = true): Float64Array | BigInt64Array | undefined {
     const work = (): Float64Array | BigInt64Array | undefined => {
       const name = asPath(path);
-      try { return statArray(vfs().lstatSync(name), bigint, name); }
+      try {
+        const stats = vfs().lstatSync(name, { throwIfNoEntry });
+        return stats === undefined ? undefined : statArray(stats, bigint, name);
+      }
       catch (error) {
         if (throwIfNoEntry === false && (error as { code?: string }).code === 'ENOENT') return undefined;
         throw error;
@@ -822,8 +830,8 @@ const fsBinding = {
   internalModuleStat(receiver: unknown, path?: unknown): number {
     const name = path === undefined ? receiver : path;
     try {
-      const stats = vfs().statSync(asPath(name));
-      return stats.isDirectory() ? 1 : 0;
+      const stats = vfs().statSync(asPath(name), { throwIfNoEntry: false });
+      return stats === undefined ? -2 : stats.isDirectory() ? 1 : 0;
     } catch { return -2; }
   },
 
