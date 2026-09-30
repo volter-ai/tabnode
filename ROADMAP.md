@@ -11,6 +11,16 @@ changelog records what each version changed in the tab. What shipped is in
 
 ## rejection-ownership: Deliver native promise failures to their process
 
+F3 completion diagnosis (t_94bcd252 / t_8f8d833d): an accepted-public World
+boot owner returned1 after verified rollback, but its CLI caller returned0.
+The caller's native process handle releases before remote descriptor close
+completion; Node's IPC send completion can leave its channel unreferenced.
+Whether this ordering lets the caller reap before its close callback is still
+unproven. `NODE_DEBUG=tabnode-completion` enables bounded native result, IPC
+read/close and guest-return observations, without payloads, new refs or timers.
+Evidence: substrate task-evidence/t_94bcd252/f3-diagnostic/baseline-073-repeat/
+{F3-FINDING.md,boot-results.json}. No behavior correction or speed claim yet.
+
 Card t_94bcd252, task t_41f48f39, substrate Article 6: the accepted cold/repeat
 profiles spend 0.10–0.21 s per busy process constructing missing-path errors.
 The shared resolver's stat-only candidates throw for ordinary absence, and

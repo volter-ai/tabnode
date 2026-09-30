@@ -5,6 +5,8 @@ import type { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, type WriteWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './node-lib/binding/stream_wrap';
 import { __adoptHandle, ownerOf, registerHandle, releaseHandle } from './node-lib/binding/handles';
 import { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EPIPE, errname } from './node-lib/binding/uv';
+import { handleHasRef } from './node-lib/binding/handles';
+import { traceCompletion } from './node-completion-trace';
 
 type Stream = TCP | Pipe;
 const drivers = new WeakMap<LibuvStreamWrap, NativeStreamDriver>();
@@ -316,6 +318,9 @@ export class NativeStreamDriver {
     if (this.closing) return 0;
     this.closing = true;
     this.releaseClose = holdRequest(this.handle);
+    if (this.descriptor.kind === 'pipe' && this.descriptor.type === 2) {
+      traceCompletion(ownerOf(this.handle), 'ipc-close-start', { id: this.descriptor.id, ref: handleHasRef(this.handle) });
+    }
     this.handle.closed = true;
     this.handle.reading = false;
     // Keep the local handle registered until the owner's close completes.
@@ -336,6 +341,9 @@ export class NativeStreamDriver {
 
   private finishClose(): void {
     if (!handles.has(this.descriptor.id)) return;
+    if (this.descriptor.kind === 'pipe' && this.descriptor.type === 2) {
+      traceCompletion(ownerOf(this.handle), 'ipc-close-complete', { id: this.descriptor.id });
+    }
     handles.delete(this.descriptor.id);
     drivers.delete(this.handle);
     this.endpoint.handles.delete(this.handle);
@@ -359,6 +367,10 @@ export class NativeStreamDriver {
 
   receive(event: Exclude<NativeStreamEvent, { type: 'closed' }>): void {
     if (event.type === 'read') {
+      if (this.descriptor.kind === 'pipe' && this.descriptor.type === 2) {
+        traceCompletion(ownerOf(this.handle), 'ipc-read', { id: this.descriptor.id, status: event.status,
+          ref: handleHasRef(this.handle), closing: this.closing });
+      }
       this.readingCredit = false;
       if (this.closing) { if (event.handle) closeDescriptor(event.handle.id); return; }
       this.buffered = true;

@@ -31,6 +31,7 @@ import { __runFor, mintPid, type ProcessToken } from '../../process-tokens';
 import { handleForFd } from './fds';
 import { descriptorWriter } from './fs';
 import { TTY, type TerminalState } from './tty_wrap';
+import { completionTraceEnabled, traceCompletion } from '../../node-completion-trace';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio` builds it. */
 export interface StdioEntry {
@@ -373,10 +374,16 @@ export class Process implements OwnedHandle {
   }
 
   private closeFarEnds(): void {
+    const owner = ownerOf(this);
     for (let index = 0; index < this.stdio.length; index += 1) {
       const far = this.farEndAt(index);
       if (!far) continue;
-      try { far.close(); } catch { /* an end already closed is already given up */ }
+      try {
+        if (completionTraceEnabled(owner)) {
+          traceCompletion(owner, 'child-fd-close-start', { pid: this.pid, fd: index, ipc: this.stdio[index]?.ipc === true });
+          far.close(() => traceCompletion(owner, 'child-fd-close-complete', { pid: this.pid, fd: index }));
+        } else far.close();
+      } catch { /* an end already closed is already given up */ }
     }
   }
 
@@ -417,10 +424,14 @@ export class Process implements OwnedHandle {
   private reportExit(code: number, signal: string | null): void {
     if (this.ended) return;
     this.ended = true;
+    const owner = ownerOf(this);
+    traceCompletion(owner, 'child-result-before-close', { pid: this.pid, exitCode: code, signaled: signal !== null });
     this.closeFarEnds();
     const report = this.onexit;
     this.run = null;
-    if (report) report(code, signal);
+    traceCompletion(owner, 'child-onexit-start', { pid: this.pid, exitCode: code });
+    try { if (report) report(code, signal); }
+    finally { traceCompletion(owner, 'child-onexit-return', { pid: this.pid, exitCode: code }); }
   }
 }
 
