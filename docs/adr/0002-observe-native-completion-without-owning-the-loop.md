@@ -25,6 +25,21 @@ realm emits at most4096 records. The observer adds no ref, request or timer;
 its sink failure cannot change a result. With the selection absent, descriptor
 close has its existing callback behavior.
 
+Verify the selection against the consumer's served worker bytes before reading
+the trace. Installing a source tarball does not rebuild a consumer's prebuilt
+shell. An absent marker in that shell is not evidence of an absent callback.
+The consumer may select the diagnostic through its public environment option;
+the unmodified guest and World still own their ordinary result and policy.
+
+The current-source captures under substrate task evidence
+`f3-diagnostic/completion-rebuilt`, `completion-cold` and
+`completion-verified-cold` retain successful close/return sequences and one
+ordinary startup failure correctly propagated as caller exit1. The verified
+cold capture records zero filesystem, IndexedDB and cache usage before boot.
+These observations do not reproduce the accepted-public lost failure, so they
+do not establish the proposed closing-loop correction. Diagnostic selection
+and machine contention also exclude them from canonical latency accounting.
+
 The event order must show whether the caller returned with an unreferenced IPC
 channel before EOF/close delivery, or locate a different failure. A correction
 must preserve Node's child exit/close ordering and ordinary unref behavior,
