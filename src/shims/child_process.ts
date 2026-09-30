@@ -982,7 +982,7 @@ export function initChildProcess(vfs: VirtualFS): void {
       }
 
       traceCompletion(runToken, 'node-loop-return', { pid: proc.pid, exitCalled, aborted: streams?.signal?.aborted === true,
-        timers: pendingGuestTimers(proc), work: heldWork().count, childrenExited,
+        timers: pendingGuestTimers(proc), work: heldWork().count, childrenExited, idleMs,
         exitCode: exitCalled ? exitCode : (typeof proc.exitCode === 'number' ? proc.exitCode : 0) });
       return { stdout, stderr, exitCode: exitCalled ? exitCode : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
     } finally {

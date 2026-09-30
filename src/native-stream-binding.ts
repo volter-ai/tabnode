@@ -3,9 +3,8 @@ import type { NativeStreamDescriptor, NativeStreamEvent, NativeStreamOperation, 
 import type { TCP } from './node-lib/binding/tcp_wrap';
 import type { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, type WriteWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './node-lib/binding/stream_wrap';
-import { __adoptHandle, ownerOf, registerHandle, releaseHandle } from './node-lib/binding/handles';
+import { __adoptHandle, ownerOf, registerHandle, releaseHandle, handleHasRef } from './node-lib/binding/handles';
 import { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EPIPE, errname } from './node-lib/binding/uv';
-import { handleHasRef } from './node-lib/binding/handles';
 import { traceCompletion } from './node-completion-trace';
 
 type Stream = TCP | Pipe;
@@ -355,11 +354,17 @@ export class NativeStreamDriver {
     // only for this synchronous handoff after the native descriptor is gone.
     this.handle.closed = false;
     const callbacks = this.closeCallbacks.splice(0);
+    const owner = ownerOf(this.handle);
     this.closeLocal(() => {
       const failures: unknown[] = [];
       try {
         for (const callback of callbacks) { try { callback(); } catch (cause) { failures.push(cause); } }
-      } finally { this.releaseClose?.(); this.releaseClose = undefined; }
+      } finally {
+        this.releaseClose?.(); this.releaseClose = undefined;
+        if (this.descriptor.kind === 'pipe' && this.descriptor.type === 2) {
+          traceCompletion(owner, 'ipc-close-released', { id: this.descriptor.id });
+        }
+      }
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, 'Native close callbacks failed.');
     });

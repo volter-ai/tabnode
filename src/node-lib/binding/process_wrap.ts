@@ -380,8 +380,8 @@ export class Process implements OwnedHandle {
       if (!far) continue;
       try {
         if (completionTraceEnabled(owner)) {
-          traceCompletion(owner, 'child-fd-close-start', { pid: this.pid, fd: index, ipc: this.stdio[index]?.ipc === true });
-          far.close(() => traceCompletion(owner, 'child-fd-close-complete', { pid: this.pid, fd: index }));
+          traceCompletion(owner, 'child-fd-close-start', { pid: this.pid ?? null, fd: index, ipc: this.stdio[index]?.ipc === true });
+          far.close(() => traceCompletion(owner, 'child-fd-close-complete', { pid: this.pid ?? null, fd: index }));
         } else far.close();
       } catch { /* an end already closed is already given up */ }
     }
@@ -425,13 +425,14 @@ export class Process implements OwnedHandle {
     if (this.ended) return;
     this.ended = true;
     const owner = ownerOf(this);
-    traceCompletion(owner, 'child-result-before-close', { pid: this.pid, exitCode: code, signaled: signal !== null });
+    traceCompletion(owner, 'child-result-before-close', { pid: this.pid ?? null, exitCode: code, signaled: signal !== null });
     this.closeFarEnds();
     const report = this.onexit;
     this.run = null;
-    traceCompletion(owner, 'child-onexit-start', { pid: this.pid, exitCode: code });
-    try { if (report) report(code, signal); }
-    finally { traceCompletion(owner, 'child-onexit-return', { pid: this.pid, exitCode: code }); }
+    traceCompletion(owner, 'child-onexit-start', { pid: this.pid ?? null, exitCode: code });
+    let delivered = false;
+    try { if (report) report(code, signal); delivered = true; }
+    finally { traceCompletion(owner, 'child-onexit-return', { pid: this.pid ?? null, exitCode: code, delivered }); }
   }
 }
 
