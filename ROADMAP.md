@@ -19,7 +19,12 @@ Whether this ordering lets the caller reap before its close callback is still
 unproven. `NODE_DEBUG=tabnode-completion` enables bounded native result, IPC
 read/close and guest-return observations, without payloads, new refs or timers.
 Evidence: substrate task-evidence/t_94bcd252/f3-diagnostic/baseline-073-repeat/
-{F3-FINDING.md,boot-results.json}. No behavior correction or speed claim yet.
+{F3-FINDING.md,boot-results.json}. ADR0003 separately owns the confirmed
+zero-count gap while inherited fd close is pending, seen in completion-rebuilt
+and verified cold traces. Retain one spawning-loop closing request through
+the actual descriptor callback, preserving onexit ordering, unref lifetime
+and explicit exit/abort cleanup. This restores libuv closing-work liveness;
+the original lost-failure cause and speed/Acceptance remain unverified.
 
 Card t_94bcd252, task t_41f48f39, substrate Article 6: the accepted cold/repeat
 profiles spend 0.10–0.21 s per busy process constructing missing-path errors.

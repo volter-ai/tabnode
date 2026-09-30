@@ -378,12 +378,25 @@ export class Process implements OwnedHandle {
     for (let index = 0; index < this.stdio.length; index += 1) {
       const far = this.farEndAt(index);
       if (!far) continue;
+      // The inherited wire has no run owner while the child lives. Its close
+      // still belongs to the spawning loop: uv_loop_alive includes closing
+      // handles, even after onexit releases Process and IPC is unreferenced.
+      // Real child traces counted zero before this descriptor's callback.
+      // Hold that actual completion, not the child lifetime or a grace timer.
+      const completion: OwnedHandle = { close: () => releaseHandle(completion) };
+      registerHandle(completion);
+      __adoptHandle(completion, owner);
       try {
-        if (completionTraceEnabled(owner)) {
+        const traced = completionTraceEnabled(owner);
+        if (traced) {
           traceCompletion(owner, 'child-fd-close-start', { pid: this.pid ?? null, fd: index, ipc: this.stdio[index]?.ipc === true });
-          far.close(() => traceCompletion(owner, 'child-fd-close-complete', { pid: this.pid ?? null, fd: index }));
-        } else far.close();
-      } catch { /* an end already closed is already given up */ }
+        }
+        far.close(() => {
+          try {
+            if (traced) traceCompletion(owner, 'child-fd-close-complete', { pid: this.pid ?? null, fd: index });
+          } finally { completion.close(); }
+        });
+      } catch { completion.close(); /* an end already closed is already given up */ }
     }
   }
 

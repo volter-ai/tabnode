@@ -47,3 +47,7 @@ retain real native completion rather than add a delay, and remain independent
 of the app, framework, service and vendor. The owner forbids automated tests;
 the authorized F3 product diagnosis and subsequent independent review own the
 observations. These observations do not establish a performance floor.
+
+ADR0003 separately corrects the source/trace-proven zero-count interval for
+pending inherited-descriptor close. That contract violation is established by
+successful traces; the original lost-failure causal claim remains unqualified.
