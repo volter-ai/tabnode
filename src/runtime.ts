@@ -1711,6 +1711,32 @@ function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string): boolean {
  * consults it before its own path.
  */
 const __substrateModuleClasses = new WeakMap<Record<string, Module>, any>();
+// Node shares successful path resolutions between a process's modules
+// (Module._pathCache). A cache per require repeated sibling imports' tree
+// probes: 0.863 s inclusive resolveModule in Dub's retained World host.
+// Keep failures local and separate filesystems/process module caches. The
+// payload estimate bounds retained strings, not JavaScript heap overhead.
+const __substrateResolvedPaths = new WeakMap<Record<string, Module>, WeakMap<VirtualFS, { paths: Map<string, string>; bytes: number }>>();
+function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
+  let filesystems = __substrateResolvedPaths.get(cache);
+  if (!filesystems) { filesystems = new WeakMap(); __substrateResolvedPaths.set(cache, filesystems); }
+  let paths = filesystems.get(fs);
+  if (!paths) { paths = { paths: new Map(), bytes: 0 }; filesystems.set(fs, paths); }
+  return paths;
+}
+function __substrateKeepPath(cache: { paths: Map<string, string>; bytes: number }, key: string, path: string): void {
+  const bytes = 2 * (key.length + path.length);
+  if (bytes > 8 * 1024 * 1024) return;
+  const old = cache.paths.get(key);
+  if (old !== undefined) { cache.paths.delete(key); cache.bytes -= 2 * (key.length + old.length); }
+  while (cache.paths.size >= 8192 || cache.bytes + bytes > 8 * 1024 * 1024) {
+    const first = cache.paths.entries().next().value!;
+    cache.paths.delete(first[0]);
+    cache.bytes -= 2 * (first[0].length + first[1].length);
+  }
+  cache.paths.set(key, path);
+  cache.bytes += bytes;
+}
 // The directory a module resolves from: its file's, or, for the stand-in
 // parent a require without a module names, the directory itself, which it
 // carries with a trailing slash that dirname would otherwise climb out of.
@@ -1856,6 +1882,7 @@ function createRequire(
   };
   // Module resolution cache for faster repeated imports
   const resolutionCache: Map<string, string | null> = new Map();
+  const successfulPaths = __substratePathsFor(moduleCache, vfs);
 
   // Package.json parsing cache
   const packageJsonCache: Map<string, PackageJson | null> = new Map();
@@ -1910,7 +1937,7 @@ function createRequire(
       if (__resolvedImport) return __resolvedImport;
       throw Object.assign(new Error(`Cannot find module '${id}'`), { code: 'MODULE_NOT_FOUND' });
     }
-    const cacheKey = `${fromDir}|${id}`;
+    const cacheKey = `${fromDir}\0${id}`;
     const cached = resolutionCache.get(cacheKey);
     if (cached !== undefined) {
       if (cached === null) {
@@ -1918,6 +1945,8 @@ function createRequire(
       }
       return cached;
     }
+    const successful = successfulPaths.paths.get(cacheKey);
+    if (successful !== undefined) return successful;
 
     // One resolver for every name the engine resolves: this require, the simple
     // loader's, and the bundler's plugin. Each had a hand-rolled subset of
@@ -1927,7 +1956,7 @@ function createRequire(
     {
       const __resolved = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir);
       if (__resolved) {
-        resolutionCache.set(cacheKey, __resolved);
+        __substrateKeepPath(successfulPaths, cacheKey, __resolved);
         return __resolved;
       }
     }

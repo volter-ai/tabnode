@@ -88,3 +88,11 @@ Status: active
 Substrate Article 6. Node loads generated modules without rebuilding their source once per edit. The reviewed Dub profile spends about 44 s in applyReplacements; preserve exact replacement ordering and assemble non-overlapping spans once.
 Completion:
 - The original Dub recipe runs this engine in the tab; replacement assembly no longer dominates preparation and generated bodies retain their semantics.
+
+## process-module-path-cache: Share successful sibling module resolution (t_9360174c / t_83018b53)
+
+Status: active
+
+Substrate Article6 and engine correction toward Node. The retained World host spends0.863s inclusive in resolveModule; per-module require caches repeat sibling filesystem searches while Node shares successful paths across the process. Keep filesystem/process identities separate, missing/computed stand-ins local, and a bounded positive cache; replace exists-plus-stat with one stat. ADR0001 owns the decision.
+Completion:
+- The original Dub recipe reaches its real sign-in with this released engine and module-resolution work is reduced, with failures retained and the whole-load targets owned by c9.

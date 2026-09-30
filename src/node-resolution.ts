@@ -62,8 +62,10 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     return `/${parts.join("/")}`;
   };
   const manifests = new Map<string, Record<string, unknown> | null>();
-  const isFile = (path: string): boolean => { try { return fs.existsSync(path) && fs.statSync(path).isFile(); } catch { return false; } };
-  const isDirectory = (path: string): boolean => { try { return fs.existsSync(path) && fs.statSync(path).isDirectory(); } catch { return false; } };
+  // stat already distinguishes absence and type; probing exists first walks
+  // the same filesystem path twice for every successful module candidate.
+  const isFile = (path: string): boolean => { try { return fs.statSync(path).isFile(); } catch { return false; } };
+  const isDirectory = (path: string): boolean => { try { return fs.statSync(path).isDirectory(); } catch { return false; } };
   const manifest = (directory: string): Record<string, unknown> | null => {
     const path = `${directory === "/" ? "" : directory}/package.json`;
     if (manifests.has(path)) return manifests.get(path)!;
