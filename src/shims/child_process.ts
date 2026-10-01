@@ -67,7 +67,6 @@ const __hostProcess: { on(event: string, listener: (reason: unknown) => void): u
     ? (process as { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown })
     : null;
 import { Runtime, pendingGuestTimers, stopGuestTimers, __substratePendingOf } from '../runtime';
-import { traceCompletion } from '../node-completion-trace';
 import { __nodeResolverFor } from '../node-resolver';
 import { resolve as __resolvePath } from './path';
 import { setSyncChildVfs, warmSyncChild } from './sync-child';
@@ -637,7 +636,6 @@ export function initChildProcess(vfs: VirtualFS): void {
         // As Node takes one: a string from a command line becomes its number.
         exitCode = __substrateExitCode(code);
         code = exitCode;
-        traceCompletion(runToken, 'node-exit-called', { pid: proc.pid, exitCode });
         // A handled uncaught that then `process.exit(1)` is a normal exit
         // with code 1. The receipt still names the error the handler saw:
         // VS Code's host installs `uncaughtException` and exits 1, and the
@@ -893,9 +891,6 @@ export function initChildProcess(vfs: VirtualFS): void {
       // finished run and abort it before it listened. A run nobody holds
       // waits for its timers below, as Node's loop does.
       if (streams?.held || (!__printedThenWorking() && pendingGuestTimers(proc) === 0)) {
-        traceCompletion(runToken, 'node-printed-return', { pid: proc.pid, held: streams?.held === true,
-          timers: pendingGuestTimers(proc), work: heldWork().count,
-          exitCode: typeof proc.exitCode === 'number' ? proc.exitCode : 0 });
         return { stdout, stderr, exitCode: typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0 };
       }
     }
@@ -981,9 +976,6 @@ export function initChildProcess(vfs: VirtualFS): void {
         if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) break;
       }
 
-      traceCompletion(runToken, 'node-loop-return', { pid: proc.pid, exitCalled, aborted: streams?.signal?.aborted === true,
-        timers: pendingGuestTimers(proc), work: heldWork().count, childrenExited, idleMs,
-        exitCode: exitCalled ? exitCode : (typeof proc.exitCode === 'number' ? proc.exitCode : 0) });
       return { stdout, stderr, exitCode: exitCalled ? exitCode : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
     } finally {
       if (streams) streams.stdin = null;
@@ -2063,3 +2055,4 @@ export default {
   runCommand,
   sendStdin,
 };
+
