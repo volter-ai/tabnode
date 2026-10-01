@@ -1,6 +1,7 @@
 # Observe native completion without owning the loop
 
-Status: accepted for diagnosis; no lifetime correction established.
+Status: accepted for bounded diagnosis; narrower closing-work correction is
+recorded in ADR0003, with original F3 causality still unverified.
 
 Card t_94bcd252, task t_8f8d833d; substrate Articles3,6,9 and the engine's
 correction-toward-Node invariant.
@@ -37,7 +38,7 @@ The current-source captures under substrate task evidence
 ordinary startup failure correctly propagated as caller exit1. The verified
 cold capture records zero filesystem, IndexedDB and cache usage before boot.
 These observations do not reproduce the accepted-public lost failure, so they
-do not establish the proposed closing-loop correction. Diagnostic selection
+do not establish the original lost-failure cause. Diagnostic selection
 and machine contention also exclude them from canonical latency accounting.
 
 The event order must show whether the caller returned with an unreferenced IPC

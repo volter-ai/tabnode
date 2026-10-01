@@ -1,6 +1,7 @@
 # Retain inherited descriptor close in the spawning loop
 
-Status: accepted at source; product correction and F3 causality unverified.
+Status: accepted at source; coder product observation retained; independent
+acceptance and original F3 causality unverified.
 Card t_94bcd252, task t_8f8d833d. Substrate Articles6/9.
 Complements the diagnostic contract in ADR0002.
 
@@ -51,3 +52,21 @@ independent branch reviewer; no automated tests or person walks. Disproof:
 closing work still counts zero before its callback, the request survives
 completion/abort, Node unref lifetime changes, or child exit/close ordering
 changes. The original F3 mechanism stays open until its failure path is seen.
+
+## Coder product observation
+
+The normal source consumer with engine02e5af8 rebuilt and served worker
+38b7c51c89b2c374; the artifact SHA256 is recorded in substrate task evidence
+f3-diagnostic/CLOSING-ENGINE-IDENTITY.json. closing-verified-cold retains a
+zero-storage receipt before boot, successful sign-in with splash gone, the
+raw console events and exact completion sequence. Child28353 starts fd3 close
+at1790813941702 (caller count2); onexit returns1790813941704 (count1);
+fd close callback runs1790813941711 (count2, including parent IPC close).
+Caller28351 returns1790813941812 with count0 after completion. This sees
+the intended closing-work handoff without changing the unreferenced channel.
+World exports precede normal app stop, consumer retirement and World down;
+final status has no live PIDs, and explicit-exit teardown returns count0.
+
+This successful diagnostic does not exercise a failed World result, identify
+the older F3 cause, qualify latency, or replace independent review. Trace
+selection was enabled and no quiet interval granted; no automated tests.

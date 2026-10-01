@@ -24,7 +24,10 @@ zero-count gap while inherited fd close is pending, seen in completion-rebuilt
 and verified cold traces. Retain one spawning-loop closing request through
 the actual descriptor callback, preserving onexit ordering, unref lifetime
 and explicit exit/abort cleanup. This restores libuv closing-work liveness;
-the original lost-failure cause and speed/Acceptance remain unverified.
+The ordinary closing-verified-cold product capture now sees caller count1
+through the pending descriptor callback, then count0 on return; World teardown
+has no live PIDs. ADR0003 retains that observation. The original lost-failure
+cause, independent acceptance and speed outcomes remain unverified.
 
 Card t_94bcd252, task t_41f48f39, substrate Article 6: the accepted cold/repeat
 profiles spend 0.10–0.21 s per busy process constructing missing-path errors.
