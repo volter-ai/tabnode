@@ -236,17 +236,19 @@ export class VirtualFS {
 
   private serializeNode(path: string, node: FSNode, files: VFSFileEntry[]): void {
     if (node.mount) return; // a mounted tree is its answerer's, never the filesystem's contents
+    // Each entry keeps its permission bits and modification time, so a filesystem rebuilt from the snapshot has them.
+    const metadata = { ...(node.mode !== undefined ? { mode: node.mode & 0o7777 } : {}), mtimeMs: node.mtime };
     if (node.type === 'file') {
       // Encode binary content as base64
       let content = '';
       if (node.content && node.content.length > 0) {
         content = uint8ToBase64(node.content);
       }
-      files.push({ path, type: 'file', content });
+      files.push({ path, type: 'file', content, ...metadata });
     } else if (node.type === 'symlink') {
-      files.push({ path, type: 'symlink', target: node.target } as unknown as VFSFileEntry);
+      files.push({ path, type: 'symlink', target: node.target, ...metadata } as unknown as VFSFileEntry);
     } else if (node.type === 'directory') {
-      files.push({ path, type: 'directory' });
+      files.push({ path, type: 'directory', ...metadata });
       if (node.children) {
         for (const [name, child] of node.children) {
           const childPath = path === '/' ? `/${name}` : `${path}/${name}`;
@@ -294,6 +296,12 @@ export class VirtualFS {
         }
         vfs.writeFileSyncInternal(entry.path, content, false); // Don't emit events during restore
       }
+    }
+    // Modes and times last: creating an entry's children would move a directory's time again.
+    for (const entry of sortedFiles) {
+      if (entry.path === '/' || (entry as { type: string }).type === 'symlink') continue;
+      if (entry.mode !== undefined) vfs.chmodSync(entry.path, entry.mode);
+      if (entry.mtimeMs !== undefined) vfs.utimesSync(entry.path, new Date(entry.mtimeMs), new Date(entry.mtimeMs));
     }
 
     return vfs;
