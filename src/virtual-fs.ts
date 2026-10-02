@@ -299,7 +299,7 @@ export class VirtualFS {
     }
     // Modes and times last: creating an entry's children would move a directory's time again.
     for (const entry of sortedFiles) {
-      if (entry.path === '/' || (entry as { type: string }).type === 'symlink') continue;
+      if ((entry as { type: string }).type === 'symlink') continue; // the root included: it exists already, and keeps its own
       if (entry.mode !== undefined) vfs.chmodSync(entry.path, entry.mode);
       if (entry.mtimeMs !== undefined) vfs.utimesSync(entry.path, new Date(entry.mtimeMs), new Date(entry.mtimeMs));
     }
