@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.57 — 2026-10-02
+
 ## v0.5.56 — 2026-10-02
 
 ## v0.5.55 — 2026-09-30
