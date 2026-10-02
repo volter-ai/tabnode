@@ -552,8 +552,10 @@ export class VirtualFS {
     this.assertWritable(path, 'utime');
     const node = this.getNode(path);
     if (!node) throw createNodeError('ENOENT', 'utimes', path);
-    node.atime = atime instanceof Date ? atime.getTime() : atime * 1000;
-    node.mtime = mtime instanceof Date ? mtime.getTime() : mtime * 1000;
+    // A number is seconds, as Node reads it; anything else is a Date, read by value, so a Date from another realm
+    // (a confined realm's, a worker's) is its milliseconds rather than NaN.
+    node.atime = typeof atime === 'number' ? atime * 1000 : Number(atime);
+    node.mtime = typeof mtime === 'number' ? mtime * 1000 : Number(mtime);
   }
 
   statSync(path: string): Stats;
