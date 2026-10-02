@@ -309,7 +309,8 @@ export class PortBridge extends BridgeEvents {
     });
     // A page loaded under an earlier deploy's worker asks for this deploy's now, before anything depends on the one in
     // control: otherwise the new worker installs later, claims the page mid-boot and every stream it carries is cut.
-    try { await registration.update(); } catch { /* offline: the worker in control serves */ }
+    // bounded: on a slow or captive network the worker in control serves rather than the boot waiting on the fetch
+    try { await Promise.race([registration.update(), new Promise((resolve) => setTimeout(resolve, 5_000))]); } catch { /* offline: the worker in control serves */ }
 
     // The incoming worker when there is one, else the active: the page binds to the worker that will control it
     const sw = registration.installing || registration.waiting || registration.active;
@@ -319,11 +320,11 @@ export class PortBridge extends BridgeEvents {
     }
 
     await new Promise<void>((resolve) => {
-      if (sw.state === 'activated') {
+      if (sw.state === 'activated' || sw.state === 'redundant') {
         resolve();
       } else {
         const handler = () => {
-          // a worker made redundant by a newer one leaves the newer one in charge
+          // a worker that failed to install, or was replaced, leaves the registration's active one in charge
           if (sw.state === 'activated' || sw.state === 'redundant') {
             sw.removeEventListener('statechange', handler);
             resolve();
@@ -335,9 +336,11 @@ export class PortBridge extends BridgeEvents {
     // an incoming worker claims the page as it activates (clients.claim): wait for it to be in control, so the page
     // starts under the worker it keeps
     const controlling = sw.state === 'redundant' ? registration.active : sw;
-    if (controlling && navigator.serviceWorker.controller && navigator.serviceWorker.controller !== controlling) {
+    // a first install that failed leaves no worker at all: say so, rather than wait for a controller that never comes
+    if (!controlling) throw new Error('Service Worker failed to install');
+    if (navigator.serviceWorker.controller && navigator.serviceWorker.controller !== controlling) {
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(done, 10_000);
+        const timer = setTimeout(() => { console.warn('tabnode: the new service worker did not take control within 10 s; starting under the one in control'); done(); }, 10_000);
         function done(): void { clearTimeout(timer); navigator.serviceWorker.removeEventListener('controllerchange', changed); resolve(); }
         function changed(): void { if (navigator.serviceWorker.controller === controlling) done(); }
         navigator.serviceWorker.addEventListener('controllerchange', changed);
@@ -351,7 +354,7 @@ export class PortBridge extends BridgeEvents {
 
     this.ownDocuments = options?.ownDocuments;
     // Send port to service worker
-    (controlling ?? sw).postMessage({ type: 'init', port: this.messageChannel.port2, data: { ownDocuments: this.ownDocuments ?? [] } }, [
+    controlling.postMessage({ type: 'init', port: this.messageChannel.port2, data: { ownDocuments: this.ownDocuments ?? [] } }, [
       this.messageChannel.port2,
     ]);
 
