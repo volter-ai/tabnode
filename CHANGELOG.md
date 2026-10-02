@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.56 — 2026-10-02
+
 ## v0.5.55 — 2026-09-30
 
 - Carry Node's nonthrowing stat option to the filesystem and module resolver, avoiding error allocation for ordinary absent candidates and manifests (t_94bcd252, t_41f48f39; substrate Article 6). Published timing awaits independent review; no test numbers are changed.
