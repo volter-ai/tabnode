@@ -305,10 +305,14 @@ export class PortBridge extends BridgeEvents {
     // Register service worker
     const registration = await navigator.serviceWorker.register(swUrl, {
       scope: '/',
+      updateViaCache: 'none',
     });
+    // A page loaded under an earlier deploy's worker asks for this deploy's now, before anything depends on the one in
+    // control: otherwise the new worker installs later, claims the page mid-boot and every stream it carries is cut.
+    try { await registration.update(); } catch { /* offline: the worker in control serves */ }
 
-    // Wait for service worker to be active
-    const sw = registration.active || registration.waiting || registration.installing;
+    // The incoming worker when there is one, else the active: the page binds to the worker that will control it
+    const sw = registration.installing || registration.waiting || registration.active;
 
     if (!sw) {
       throw new Error('Service Worker registration failed');
@@ -319,7 +323,8 @@ export class PortBridge extends BridgeEvents {
         resolve();
       } else {
         const handler = () => {
-          if (sw.state === 'activated') {
+          // a worker made redundant by a newer one leaves the newer one in charge
+          if (sw.state === 'activated' || sw.state === 'redundant') {
             sw.removeEventListener('statechange', handler);
             resolve();
           }
@@ -327,6 +332,18 @@ export class PortBridge extends BridgeEvents {
         sw.addEventListener('statechange', handler);
       }
     });
+    // an incoming worker claims the page as it activates (clients.claim): wait for it to be in control, so the page
+    // starts under the worker it keeps
+    const controlling = sw.state === 'redundant' ? registration.active : sw;
+    if (controlling && navigator.serviceWorker.controller && navigator.serviceWorker.controller !== controlling) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(done, 10_000);
+        function done(): void { clearTimeout(timer); navigator.serviceWorker.removeEventListener('controllerchange', changed); resolve(); }
+        function changed(): void { if (navigator.serviceWorker.controller === controlling) done(); }
+        navigator.serviceWorker.addEventListener('controllerchange', changed);
+        changed();
+      });
+    }
 
     // Set up message channel for communication
     this.messageChannel = new MessageChannel();
@@ -334,7 +351,7 @@ export class PortBridge extends BridgeEvents {
 
     this.ownDocuments = options?.ownDocuments;
     // Send port to service worker
-    sw.postMessage({ type: 'init', port: this.messageChannel.port2, data: { ownDocuments: this.ownDocuments ?? [] } }, [
+    (controlling ?? sw).postMessage({ type: 'init', port: this.messageChannel.port2, data: { ownDocuments: this.ownDocuments ?? [] } }, [
       this.messageChannel.port2,
     ]);
 
