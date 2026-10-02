@@ -14,8 +14,6 @@ import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork 
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
 import { simpleHash } from './utils/hash';
-import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
 import { uint8ToBase64, uint8ToHex } from './utils/binary-encoding';
 import { createFsShim, FsShim } from './shims/fs';
 import * as pathShim from './shims/path';
@@ -653,7 +651,7 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
  * every process's memory.
  */
 export const PREPARED_MODULES_DIR = '/opt/.tabnode/prepared';
-const PREPARED_MODULES_FORMAT = 'tabnode-prepared-3';
+const PREPARED_MODULES_FORMAT = 'tabnode-prepared-4';
 /** The name a prepared body goes under: the hash of the file as read, and how it is compiled. Undefined for a file no body is prepared for. */
 export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
   const extension = /\.(js|cjs|mjs)$/u.exec(resolvedPath)?.[1];
@@ -662,7 +660,56 @@ export function preparedModuleKey(rawCode: string, resolvedPath: string): string
   const extensionless = !resolvedPath.slice(resolvedPath.lastIndexOf('/') + 1).includes('.');
   if (!extension && !extensionless) return undefined;
   const kind = extension === 'cjs' ? 'cjs' : 'js';
-  return bytesToHex(sha256(new TextEncoder().encode(`${PREPARED_MODULES_FORMAT}|${kind}|${rawCode}`)));
+  return contentKey128(`${PREPARED_MODULES_FORMAT}|${kind}|${rawCode}`);
+}
+
+/**
+ * A 128-bit content key (MurmurHash3 x86_128 over the string's UTF-16 code
+ * units, two to a 32-bit word). The key only names a prepared body in a
+ * directory the tab's processes can write; anyone who can write there can
+ * also compute any hash of a file they can read, so a cryptographic hash
+ * protected nothing, and every process paid it for every module it loaded:
+ * SHA-256 here was 0.27-0.38 s of each boot's World host start in a tab,
+ * and over those modules natively it takes 2.8x as long as this (143 ms
+ * against 52 ms for 263 files).
+ */
+function contentKey128(text: string): string {
+  const c1 = 0x239b961b, c2 = 0xab0e9789, c3 = 0x38b34ae5, c4 = 0xa1e38b93;
+  let h1 = 0, h2 = 0, h3 = 0, h4 = 0;
+  const units = text.length;
+  const words = units >>> 1; // 32-bit words
+  const blocks = words >>> 2; // 128-bit blocks
+  const word = (index: number): number => text.charCodeAt(index * 2) | (text.charCodeAt(index * 2 + 1) << 16);
+  for (let block = 0; block < blocks; block++) {
+    let k1 = word(block * 4), k2 = word(block * 4 + 1), k3 = word(block * 4 + 2), k4 = word(block * 4 + 3);
+    k1 = Math.imul(k1, c1); k1 = (k1 << 15) | (k1 >>> 17); k1 = Math.imul(k1, c2); h1 ^= k1;
+    h1 = (h1 << 19) | (h1 >>> 13); h1 = (h1 + h2) | 0; h1 = (Math.imul(h1, 5) + 0x561ccd1b) | 0;
+    k2 = Math.imul(k2, c2); k2 = (k2 << 16) | (k2 >>> 16); k2 = Math.imul(k2, c3); h2 ^= k2;
+    h2 = (h2 << 17) | (h2 >>> 15); h2 = (h2 + h3) | 0; h2 = (Math.imul(h2, 5) + 0x0bcaa747) | 0;
+    k3 = Math.imul(k3, c3); k3 = (k3 << 17) | (k3 >>> 15); k3 = Math.imul(k3, c4); h3 ^= k3;
+    h3 = (h3 << 15) | (h3 >>> 17); h3 = (h3 + h4) | 0; h3 = (Math.imul(h3, 5) + 0x96cd1c35) | 0;
+    k4 = Math.imul(k4, c4); k4 = (k4 << 18) | (k4 >>> 14); k4 = Math.imul(k4, c1); h4 ^= k4;
+    h4 = (h4 << 13) | (h4 >>> 19); h4 = (h4 + h1) | 0; h4 = (Math.imul(h4, 5) + 0x32ac3b17) | 0;
+  }
+  // The tail: the words after the last whole block, then an odd last code unit.
+  const tail: number[] = [];
+  for (let index = blocks * 4; index < words; index++) tail.push(word(index));
+  if (units & 1) tail.push(text.charCodeAt(units - 1));
+  let k1 = tail[0] ?? 0, k2 = tail[1] ?? 0, k3 = tail[2] ?? 0, k4 = tail[3] ?? 0;
+  if (tail.length > 3) { k4 = Math.imul(k4, c4); k4 = (k4 << 18) | (k4 >>> 14); k4 = Math.imul(k4, c1); h4 ^= k4; }
+  if (tail.length > 2) { k3 = Math.imul(k3, c3); k3 = (k3 << 17) | (k3 >>> 15); k3 = Math.imul(k3, c4); h3 ^= k3; }
+  if (tail.length > 1) { k2 = Math.imul(k2, c2); k2 = (k2 << 16) | (k2 >>> 16); k2 = Math.imul(k2, c3); h2 ^= k2; }
+  if (tail.length > 0) { k1 = Math.imul(k1, c1); k1 = (k1 << 15) | (k1 >>> 17); k1 = Math.imul(k1, c2); h1 ^= k1; }
+  // Finalization: the length in bytes, then each lane mixed into the others.
+  const length = units * 2;
+  h1 ^= length; h2 ^= length; h3 ^= length; h4 ^= length;
+  h1 = (h1 + h2 + h3 + h4) | 0; h2 = (h2 + h1) | 0; h3 = (h3 + h1) | 0; h4 = (h4 + h1) | 0;
+  const fmix = (h: number): number => {
+    h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16; return h;
+  };
+  h1 = fmix(h1); h2 = fmix(h2); h3 = fmix(h3); h4 = fmix(h4);
+  h1 = (h1 + h2 + h3 + h4) | 0; h2 = (h2 + h1) | 0; h3 = (h3 + h1) | 0; h4 = (h4 + h1) | 0;
+  return [h1, h2, h3, h4].map((lane) => (lane >>> 0).toString(16).padStart(8, '0')).join('');
 }
 /** The body the loader would compile for this file, with no load hooks and no type stripping: what the image carries. */
 export function prepareModuleForImage(rawCode: string, resolvedPath: string): string {
