@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Stop a named held run through the guest's SIGTERM path so its awaiting caller
+  settles and its timers and handles are released. Signal-terminated runs report
+  `exitCode: null` and the signal, as Node's child-process exit event does.
+
 ## v0.5.57 — 2026-10-02
 
 ## v0.5.56 — 2026-10-02

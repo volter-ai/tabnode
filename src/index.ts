@@ -72,7 +72,8 @@ export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, Nat
 export interface RunResult {
   stdout: string;
   stderr: string;
-  exitCode: number;
+  /** Null when a signal ended the guest, as Node's child_process 'exit' reports. */
+  exitCode: number | null;
   /** The signal whose default action ended the run's guest, as Node reports a process a signal ended. */
   signal?: string;
 }
@@ -207,7 +208,7 @@ export function createContainer(options?: ContainerOptions): {
           resolve({
             stdout: String(stdout),
             stderr: String(stderr),
-            exitCode: runOptions?.signal?.aborted ? 143 : error ? (error.code ?? 1) : 0,
+            exitCode: terminatedBy ? null : runOptions?.signal?.aborted ? 143 : error ? (error.code ?? 1) : 0,
             ...(terminatedBy ? { signal: terminatedBy } : {}),
           });
         });
@@ -233,9 +234,15 @@ export function createContainer(options?: ContainerOptions): {
      * the guest's listeners for it run, else its default action ends the run.
      */
     signalProcess: (token: string, signal: string): boolean => __signalOwnedProcess(token, signal),
-    /** End the named run: its timers stop and its servers are released. */
+    /** Stop the named run with SIGTERM, Node's default child-process kill signal. */
     stopProcess: (token: string): boolean => {
       const known = __runFor(token) !== undefined || __ownedServerPorts(token).length > 0;
+      // Clearing handles alone left a held container.run awaiting forever.
+      // Use the guest's existing signal path: its default action reaches the
+      // child_process command's process.exit override and wakes its exitPromise.
+      // Node reports that end with code null and the signal:
+      // https://nodejs.org/download/release/v22.18.0/docs/api/child_process.html#event-exit
+      __signalOwnedProcess(token, 'SIGTERM');
       // The servers first, and their timers here rather than on a tick of
       // their own: a caller that asks is told what it may then read back.
       __releaseOwnedServers(token, false);
