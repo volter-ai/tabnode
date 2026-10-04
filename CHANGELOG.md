@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Preserve guest-created `Worker` and `self` globals as process-local bare bindings in both module wrappers and guest eval/Function scopes; browser worker authority remains hidden. Sharp's upstream pthread glue exercises this general Node behavior (substrate Article 6). Source change only; release and guest execution measurement pending.
+
 ## v0.5.57 — 2026-10-02
 
 ## v0.5.56 — 2026-10-02
