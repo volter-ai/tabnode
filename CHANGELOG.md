@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Guest-created `Worker` and `self` globals are process-local bare bindings in module wrappers and guest eval/Function scopes; browser worker authority stays hidden. Sharp's upstream pthread glue assigns `global.Worker` then calls bare `new Worker`, and assigns `globalThis.self` then reads bare `self`.
+
 ## v0.5.61 — 2026-10-05
 
 - `node` takes the first word after its options as the script, as Node does, with value-taking options (`-r`, `--import`, `--conditions`, ...) consuming their value: it used to run the first later word that named a file, so `node <next-bin> start apps/web` ran the directory `apps/web` (EISDIR) when the bin did not resolve.
