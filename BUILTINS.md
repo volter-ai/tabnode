@@ -49,12 +49,15 @@ from .58.
 `os`'s file is Node's own, and its two real defects, `tmpdir()` ignoring
 `TMPDIR` and `setPriority` not round-tripping, are fixed.
 
+The library now comes from Node v24.5.0 (ADR-0003). Existing suite numbers above describe their recorded Node22.18 fixture runs; no Node24 suite score is claimed by this migration.
+
 ## Kind 2 -- the engine's own, with the reason
 
 | Module | Why it is not Node's file |
 |---|---|
 | `domain` | a consumer of the async-hooks machinery: Node's `domain.js` installs a trampoline the C++ layer calls to enter and leave a domain around every async callback. The engine has no such layer, so the vendored file loads and then catches nothing. Measured: it fails at `useDomainTrampoline is not a function`. |
 | `async_hooks` | the same machinery seen from the other side -- an async id stack V8 and libuv maintain per resource. The engine's `AsyncLocalStorage` is the realm's, per run. |
+| `perf_hooks` | Browser Performance plus actual guest-loop execution intervals for eventLoopUtilization (ADR-0003). The realm loop is shared by its virtual processes; this is not OS CPU/native GC accounting. GC enum constants are Node's; native GC observer events are unavailable. |
 | `timers` | Node's timer wheel over libuv's loop. The engine's timers are the realm's, counted per run by the run's own loop, which is what decides when a run is idle. |
 | `string_decoder` | Node's current file needs a stateful binding -- the carry-over bytes of a half-read code point, held across calls in C++. The realm's `TextDecoder` does not expose that state, so Node's older pure-JavaScript file is what runs. |
 | `url` | Node's `url.js` reaches `internal/url`, which is the C++ URL parser's own state machine. The realm's `URL` answers the WHATWG API but not that binding's contract. |

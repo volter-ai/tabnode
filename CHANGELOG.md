@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Move the unchanged vendored library to Node v24.5.0 with its filesystem removal, TypeScript cache-disabled binding and readline history contracts; report the implemented library version by default, preserving host-name and POSIX process-group semantics (ADR-0003).
+
+- Restore perf_hooks GC-kind constants and event-loop utilization from monotonic guest execution intervals, including idle and snapshot differences, without inventing native CPU/GC observations (ADR-0003).
+
 ## v0.5.64 — 2026-10-05
 
 - Host lookup retains IP literals and resolves the engine’s loopback; names without a host route now report asynchronous ENOTFOUND instead of 0.0.0.0, which could connect to an unrelated local listener. Callback and Promise lookup share the behavior; unsupported DNS record and reverse queries also fail explicitly (ADR-0002, substrate Article 6).

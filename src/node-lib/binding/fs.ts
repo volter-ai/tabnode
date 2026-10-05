@@ -877,6 +877,47 @@ const fsBinding = {
     return answer(req, () => { vfs().rmdirSync(asPath(path)); return undefined; });
   },
 
+  /** Node24 moved synchronous rm out of JS rimraf into this binding. */
+  rmSync(path: unknown, maxRetries: number, recursive: boolean, retryDelay: number): undefined {
+    const name = asPath(path);
+    const tree = vfs();
+    const retryable = new Set(['EBUSY', 'EMFILE', 'ENFILE', 'ENOTEMPTY', 'EPERM']);
+    // The native entry uses status (follows links) before remove/remove_all,
+    // whose traversal itself never follows a link. Keep the same distinction.
+    const initial = tree.statSync(name, { throwIfNoEntry: false });
+    if (!initial) return undefined;
+    if (initial.isDirectory() && !recursive) {
+      throw Object.assign(createNodeError('EISDIR', 'rm', name), { code: 'ERR_FS_EISDIR' });
+    }
+    const remove = (target: string): void => {
+      const stats = tree.lstatSync(target, { throwIfNoEntry: false });
+      if (!stats) return;
+      if (!stats.isDirectory()) { tree.unlinkSync(target); return; }
+      if (!recursive) throw Object.assign(createNodeError('EISDIR', 'rm', target), { code: 'ERR_FS_EISDIR' });
+      for (const entry of tree.readdirSync(target)) remove(`${target.endsWith('/') ? target.slice(0, -1) : target}/${entry}`);
+      tree.rmdirSync(target);
+    };
+    for (let attempt = 0; ; attempt++) {
+      try { remove(name); return undefined; }
+      catch (error) {
+        const code = (error as { code?: string }).code;
+        if (code === 'ENOENT') return undefined;
+        if (!recursive || !code || !retryable.has(code) || attempt >= maxRetries) {
+          if (code && code !== 'ERR_FS_EISDIR') throw createNodeError(code, 'rm', name);
+          throw error;
+        }
+        // The isolated worker can block as Node's synchronous rm does. Only
+        // an actual transient filesystem failure needs this wait; no pending
+        // timer or fabricated successful deletion substitutes for it.
+        if (retryDelay > 0) {
+          if (typeof SharedArrayBuffer !== 'function') throw createNodeError('ENOTSUP', 'rm', name);
+          try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, (attempt + 1) * retryDelay); }
+          catch { throw createNodeError('ENOTSUP', 'rm', name); }
+        }
+      }
+    }
+  },
+
   unlink(path: unknown, req?: FSReq): undefined {
     return answer(req, () => { vfs().unlinkSync(asPath(path)); return undefined; });
   },

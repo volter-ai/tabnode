@@ -15,6 +15,7 @@ const {
   SafeArrayIterator,
   SafePromisePrototypeFinally,
   Symbol,
+  SymbolAsyncDispose,
   Uint8Array,
   uncurryThis,
 } = primordials;
@@ -84,6 +85,7 @@ const {
   validateEncoding,
   validateInteger,
   validateObject,
+  validateOneOf,
   kValidateObjectAllowNullable,
 } = require('internal/validators');
 const pathModule = require('path');
@@ -96,7 +98,6 @@ const {
   promisify,
   isWindows,
   isMacOS,
-  SymbolAsyncDispose,
 } = require('internal/util');
 const EventEmitter = require('events');
 const { StringDecoder } = require('string_decoder');
@@ -977,9 +978,9 @@ async function readlink(path, options) {
   );
 }
 
-async function symlink(target, path, type_) {
-  let type = (typeof type_ === 'string' ? type_ : null);
-  if (isWindows && type === null) {
+async function symlink(target, path, type) {
+  validateOneOf(type, 'type', ['dir', 'file', 'junction', null, undefined]);
+  if (isWindows && type == null) {
     try {
       const absoluteTarget = pathModule.resolve(`${path}`, '..', `${target}`);
       type = (await stat(absoluteTarget)).isDirectory() ? 'dir' : 'file';
@@ -1187,6 +1188,39 @@ async function mkdtemp(prefix, options) {
   );
 }
 
+async function mkdtempDisposable(prefix, options) {
+  options = getOptions(options);
+
+  prefix = getValidatedPath(prefix, 'prefix');
+  warnOnNonPortableTemplate(prefix);
+
+  const cwd = process.cwd();
+  const path = await PromisePrototypeThen(
+    binding.mkdtemp(prefix, options.encoding, kUsePromises),
+    undefined,
+    handleErrorFromBinding,
+  );
+  // Stash the full path in case of process.chdir()
+  const fullPath = pathModule.resolve(cwd, path);
+
+  const remove = async () => {
+    const rmrf = lazyRimRaf();
+    await rmrf(fullPath, {
+      maxRetries: 0,
+      recursive: true,
+      retryDelay: 0,
+    });
+  };
+  return {
+    __proto__: null,
+    path,
+    remove,
+    async [SymbolAsyncDispose]() {
+      await remove();
+    },
+  };
+}
+
 async function writeFile(path, data, options) {
   options = getOptions(options, {
     encoding: 'utf8',
@@ -1299,6 +1333,7 @@ module.exports = {
     lutimes,
     realpath,
     mkdtemp,
+    mkdtempDisposable,
     writeFile,
     appendFile,
     readFile,

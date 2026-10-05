@@ -2,6 +2,7 @@
 
 const {
   Promise,
+  SymbolDispose,
 } = primordials;
 
 const {
@@ -22,7 +23,6 @@ const { validateAbortSignal } = require('internal/validators');
 
 const {
   kEmptyObject,
-  SymbolDispose,
 } = require('internal/util');
 let addAbortListener;
 

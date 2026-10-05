@@ -3,8 +3,10 @@
  * Wraps browser Performance API
  */
 import { forGuestRealm } from '../host-globals';
+import { eventLoopUtilization } from '../guest-loop';
+export type { EventLoopUtilization } from '../guest-loop';
 
-export const performance = globalThis.performance || {
+const hostPerformance = globalThis.performance || {
   now: () => Date.now(),
   timeOrigin: Date.now(),
   mark: () => {},
@@ -16,6 +18,38 @@ export const performance = globalThis.performance || {
   clearMeasures: () => {},
   clearResourceTimings: () => {},
 };
+
+
+/** Bind browser Performance methods to their actual receiver; add only the
+ * engine-accounted method without mutating a host that imported the engine. */
+const performanceMethods = new Map<PropertyKey, { original: Function; bound: Function }>();
+export const performance = new Proxy(hostPerformance, {
+  get(target, key) {
+    if (key === 'eventLoopUtilization') return eventLoopUtilization;
+    const value = Reflect.get(target, key, target);
+    if (typeof value !== 'function') return value;
+    if (performanceMethods.get(key)?.original !== value) {
+      performanceMethods.set(key, { original: value, bound: value.bind(target) });
+    }
+    return performanceMethods.get(key)!.bound;
+  },
+}) as typeof hostPerformance & { eventLoopUtilization: typeof eventLoopUtilization };
+
+/** Node24.5.0 src/node_perf.h and V8's GCType/GCCallbackFlags enum values.
+ * Constants describe kinds; they do not claim the browser emits GC entries. */
+export const constants = Object.freeze({
+  NODE_PERFORMANCE_GC_MAJOR: 4,
+  NODE_PERFORMANCE_GC_MINOR: 1,
+  NODE_PERFORMANCE_GC_INCREMENTAL: 8,
+  NODE_PERFORMANCE_GC_WEAKCB: 16,
+  NODE_PERFORMANCE_GC_FLAGS_NO: 0,
+  NODE_PERFORMANCE_GC_FLAGS_CONSTRUCT_RETAINED: 2,
+  NODE_PERFORMANCE_GC_FLAGS_FORCED: 4,
+  NODE_PERFORMANCE_GC_FLAGS_SYNCHRONOUS_PHANTOM_PROCESSING: 8,
+  NODE_PERFORMANCE_GC_FLAGS_ALL_AVAILABLE_GARBAGE: 16,
+  NODE_PERFORMANCE_GC_FLAGS_ALL_EXTERNAL_MEMORY: 32,
+  NODE_PERFORMANCE_GC_FLAGS_SCHEDULE_IDLE: 64,
+});
 
 /**
  * Node's `performance.markResourceTiming`, which a browser's `performance`
@@ -104,6 +138,7 @@ export function monitorEventLoopDelay(options?: { resolution?: number }): Histog
 
 export default {
   performance,
+  constants,
   PerformanceObserver,
   createHistogram,
   monitorEventLoopDelay,

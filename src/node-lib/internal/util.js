@@ -135,6 +135,17 @@ function isPendingDeprecation() {
     !getOptionValue('--no-deprecation');
 }
 
+function deprecateProperty(key, msg, code, isPendingDeprecation) {
+  const emitDeprecationWarning = getDeprecationWarningEmitter(
+    code, msg, undefined, false, isPendingDeprecation,
+  );
+  return (options) => {
+    if (key in options) {
+      emitDeprecationWarning();
+    }
+  };
+}
+
 // Internal deprecator for pending --pending-deprecation. This can be invoked
 // at snapshot building time as the warning permission is only queried at
 // run time.
@@ -158,7 +169,7 @@ function pendingDeprecate(fn, msg, code) {
 // Mark that a method should not be used.
 // Returns a modified function which warns once by default.
 // If --no-deprecation is set, then it is a no-op.
-function deprecate(fn, msg, code, useEmitSync) {
+function deprecate(fn, msg, code, useEmitSync, modifyPrototype = true) {
   // Lazy-load to avoid a circular dependency.
   if (validateString === undefined)
     ({ validateString } = require('internal/validators'));
@@ -181,21 +192,33 @@ function deprecate(fn, msg, code, useEmitSync) {
     return ReflectApply(fn, this, args);
   }
 
-  // The wrapper will keep the same prototype as fn to maintain prototype chain
-  ObjectSetPrototypeOf(deprecated, fn);
-  if (fn.prototype) {
-    // Setting this (rather than using Object.setPrototype, as above) ensures
-    // that calling the unwrapped constructor gives an instanceof the wrapped
-    // constructor.
-    deprecated.prototype = fn.prototype;
+  if (modifyPrototype) {
+    // The wrapper will keep the same prototype as fn to maintain prototype chain
+    // Modifying the prototype does alter the object chains, and as observed in
+    // most cases, it slows the code.
+    ObjectSetPrototypeOf(deprecated, fn);
+    if (fn.prototype) {
+      // Setting this (rather than using Object.setPrototype, as above) ensures
+      // that calling the unwrapped constructor gives an instanceof the wrapped
+      // constructor.
+      deprecated.prototype = fn.prototype;
+    }
+
+    ObjectDefineProperty(deprecated, 'length', {
+      __proto__: null,
+      ...ObjectGetOwnPropertyDescriptor(fn, 'length'),
+    });
   }
 
-  ObjectDefineProperty(deprecated, 'length', {
-    __proto__: null,
-    ...ObjectGetOwnPropertyDescriptor(fn, 'length'),
-  });
-
   return deprecated;
+}
+
+function deprecateInstantiation(target, code, ...args) {
+  assert(typeof code === 'string');
+
+  getDeprecationWarningEmitter(code, `Instantiating ${target.name} without the 'new' keyword has been deprecated.`, target)();
+
+  return ReflectConstruct(target, args);
 }
 
 function decorateErrorStack(err) {
@@ -938,6 +961,8 @@ module.exports = {
   defineLazyProperties,
   defineReplaceableLazyAttribute,
   deprecate,
+  deprecateInstantiation,
+  deprecateProperty,
   emitExperimentalWarning,
   encodingsMap,
   exposeInterface,
@@ -972,14 +997,6 @@ module.exports = {
   spliceOne,
   setupCoverageHooks,
   removeColors,
-
-  // Define Symbol.dispose and Symbol.asyncDispose
-  // Until these are defined by the environment.
-  // TODO(MoLow): Remove this polyfill once Symbol.dispose and Symbol.asyncDispose are available in primordials.
-  // eslint-disable-next-line node-core/prefer-primordials
-  SymbolDispose: Symbol.dispose || SymbolFor('nodejs.dispose'),
-  // eslint-disable-next-line node-core/prefer-primordials
-  SymbolAsyncDispose: Symbol.asyncDispose || SymbolFor('nodejs.asyncDispose'),
 
   // Symbol used to customize promisify conversion
   customPromisifyArgs: kCustomPromisifyArgsSymbol,

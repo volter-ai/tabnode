@@ -1,19 +1,3 @@
-// VENDORED, UNMODIFIED: Node.js lib/path.js
-//
-//   version: v22.18.0
-//   commit:  d1b18258ce0d85253e4e44cede152e31363ef5db
-//   source:  https://raw.githubusercontent.com/nodejs/node/v22.18.0/lib/path.js
-//   sha256:  3448e7d5a3a27f4ddc34e3d5278f39f1a0c560fd4cbbf55d07803113b720cda1
-//
-// Everything below this header is Node's own text, byte for byte; the sha256
-// above is of that text alone, so the vendoring is checkable with
-//   tail -n +17 src/node-lib/path.js | shasum -a 256
-// Nothing here is edited. The free names the file expects of the Node runtime
-// -- `primordials`, `require` of `internal/constants`, `internal/validators`,
-// `internal/util` and `internal/deps/minimatch/index`, `module` and `process`
-// -- are supplied by the binding in src/shims/path.ts, which evaluates this
-// text. To move to a newer Node, replace this file and the header, and run
-// Node's own test/parallel/test-path-*.js against the build.
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -71,12 +55,11 @@ const {
 } = require('internal/validators');
 
 const {
-  getLazy,
   isWindows,
-  isMacOS,
+  getLazy,
 } = require('internal/util');
 
-const lazyMinimatch = getLazy(() => require('internal/deps/minimatch/index'));
+const lazyMatchGlobPattern = getLazy(() => require('internal/fs/glob').matchGlobPattern);
 
 function isPathSeparator(code) {
   return code === CHAR_FORWARD_SLASH || code === CHAR_BACKWARD_SLASH;
@@ -193,20 +176,6 @@ function _format(sep, pathObject) {
   return dir === pathObject.root ? `${dir}${base}` : `${dir}${sep}${base}`;
 }
 
-function glob(path, pattern, windows) {
-  validateString(path, 'path');
-  validateString(pattern, 'pattern');
-  return lazyMinimatch().minimatch(path, pattern, {
-    __proto__: null,
-    nocase: isMacOS || isWindows,
-    windowsPathsNoEscape: true,
-    nonegate: true,
-    nocomment: true,
-    optimizationLevel: 2,
-    platform: windows ? 'win32' : 'posix',
-    nocaseMagicOnly: true,
-  });
-}
 const forwardSlashRegExp = /\//g;
 
 const win32 = {
@@ -305,10 +274,16 @@ const win32 = {
                 j++;
               }
               if (j === len || j !== last) {
-                // We matched a UNC root
-                device =
-                  `\\\\${firstPart}\\${StringPrototypeSlice(path, last, j)}`;
-                rootEnd = j;
+                if (firstPart !== '.' && firstPart !== '?') {
+                  // We matched a UNC root
+                  device =
+                    `\\\\${firstPart}\\${StringPrototypeSlice(path, last, j)}`;
+                  rootEnd = j;
+                } else {
+                  // We matched a device root (e.g. \\\\.\\PHYSICALDRIVE0)
+                  device = `\\\\${firstPart}`;
+                  rootEnd = 4;
+                }
               }
             }
           }
@@ -418,17 +393,22 @@ const win32 = {
                    !isPathSeparator(StringPrototypeCharCodeAt(path, j))) {
               j++;
             }
-            if (j === len) {
-              // We matched a UNC root only
-              // Return the normalized version of the UNC root since there
-              // is nothing left to process
-              return `\\\\${firstPart}\\${StringPrototypeSlice(path, last)}\\`;
-            }
-            if (j !== last) {
-              // We matched a UNC root with leftovers
-              device =
-                `\\\\${firstPart}\\${StringPrototypeSlice(path, last, j)}`;
-              rootEnd = j;
+            if (j === len || j !== last) {
+              if (firstPart === '.' || firstPart === '?') {
+                // We matched a device root (e.g. \\\\.\\PHYSICALDRIVE0)
+                device = `\\\\${firstPart}`;
+                rootEnd = 4;
+              } else if (j === len) {
+                // We matched a UNC root only
+                // Return the normalized version of the UNC root since there
+                // is nothing left to process
+                return `\\\\${firstPart}\\${StringPrototypeSlice(path, last)}\\`;
+              } else {
+                // We matched a UNC root with leftovers
+                device =
+                  `\\\\${firstPart}\\${StringPrototypeSlice(path, last, j)}`;
+                rootEnd = j;
+              }
             }
           }
         }
@@ -1193,7 +1173,7 @@ const win32 = {
   },
 
   matchesGlob(path, pattern) {
-    return glob(path, pattern, true);
+    return lazyMatchGlobPattern()(path, pattern, true);
   },
 
   sep: '\\',
@@ -1675,7 +1655,7 @@ const posix = {
   },
 
   matchesGlob(path, pattern) {
-    return glob(path, pattern, false);
+    return lazyMatchGlobPattern()(path, pattern, false);
   },
 
   sep: '/',

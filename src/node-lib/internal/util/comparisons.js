@@ -55,8 +55,8 @@ const {
 
 const { compare } = internalBinding('buffer');
 const assert = require('internal/assert');
-const { isError } = require('internal/util');
 const { isURL } = require('internal/url');
+const { isError } = require('internal/util');
 const { Buffer } = require('buffer');
 
 const wellKnownConstructors = new SafeSet()
@@ -513,7 +513,10 @@ function handleCycles(val1, val2, mode, keys1, keys2, memos, iterationType) {
   if (memos.set === undefined) {
     if (memos.deep === false) {
       if (memos.a === val1) {
-        if (memos.b === val2) return true;
+        return memos.b === val2;
+      }
+      if (memos.b === val2) {
+        return false;
       }
       memos.c = val1;
       memos.d = val2;
@@ -534,8 +537,8 @@ function handleCycles(val1, val2, mode, keys1, keys2, memos, iterationType) {
   const originalSize = set.size;
   set.add(val1);
   set.add(val2);
-  if (originalSize === set.size) {
-    return true;
+  if (originalSize !== set.size - 2) {
+    return originalSize === set.size;
   }
 
   const areEq = objEquiv(val1, val2, mode, keys1, keys2, memos, iterationType);

@@ -1,7 +1,7 @@
 /**
  * The vendored Node files, by the name Node's own `require` calls each one.
  *
- * Every file here is `nodejs/node` v22.18.0's, byte for byte. None is edited,
+ * Every file here is `nodejs/node` v24.5.0's, byte for byte. None is edited,
  * ever: a bug in one is fixed by moving the file to a newer Node, and a thing
  * one needs that the engine lacks is supplied by the binding or by a
  * hand-bound internal, never by a change here. Vite's `?raw` reads each as
@@ -103,9 +103,10 @@ import INTERNAL_UTIL_DEBUGLOG from './internal/util/debuglog.js?raw';
 import INTERNAL_UTIL_COLORS from './internal/util/colors.js?raw';
 import INTERNAL_FIXED_QUEUE from './internal/fixed_queue.js?raw';
 import INTERNAL_EVENTS_SYMBOLS from './internal/events/symbols.js?raw';
+import INTERNAL_REPL_HISTORY from './internal/repl/history.js?raw';
 
 /** The Node the vendored files come from, reported in `BUILTINS.md`. */
-export const NODE_LIB_VERSION = 'v22.18.0';
+export const NODE_LIB_VERSION = 'v24.5.0';
 
 export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/navigator': NAVIGATOR,
@@ -203,4 +204,5 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/util/colors': INTERNAL_UTIL_COLORS,
   'internal/fixed_queue': INTERNAL_FIXED_QUEUE,
   'internal/events/symbols': INTERNAL_EVENTS_SYMBOLS,
+  'internal/repl/history': INTERNAL_REPL_HISTORY,
 };

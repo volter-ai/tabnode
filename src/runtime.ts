@@ -6,6 +6,7 @@
  */
 
 import { VirtualFS } from './virtual-fs';
+import { startGuestLoop, withGuestExecution } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { guestFetch, rememberRequestBodySource } from './fetch-transport';
 import { installNodeResponse } from './node-response';
@@ -286,6 +287,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       if (isLocalGlobal(key)) return Reflect.get(target, key, guest);
       if (key === "globalThis" || key === "global") return guest;
       if (shadowed(target, key)) return Reflect.get(target, key, guest);
+      if (key === "performance") return perfHooksShim.performance;
       const value = Reflect.get(host, key, host);
       if (["setTimeout", "clearTimeout", "setInterval", "clearInterval"].includes(key as string) && typeof value === "function") {
         // The guest's timers, counted for it; rebuilt if the host's own change.
@@ -851,15 +853,15 @@ function __substrateDriveBody(kind: 'sync' | 'generator' | 'async', body: unknow
   if (kind === 'sync') return undefined;
   if (kind === 'async') return (module as { __substrateBodyDone?: boolean }).__substrateBodyDone ? undefined : body as Promise<unknown>;
   const iterator = body as Iterator<unknown>;
-  let step: IteratorResult<unknown> = iterator.next();
-  while (!step.done && !step.value) step = iterator.next();
+  let step: IteratorResult<unknown> = withGuestExecution(() => iterator.next());
+  while (!step.done && !step.value) step = withGuestExecution(() => iterator.next());
   if (step.done) return undefined;
   return (async () => {
     let current: IteratorResult<unknown> = step;
     while (!current.done) {
       await current.value;
-      current = iterator.next();
-      while (!current.done && !current.value) current = iterator.next();
+      current = withGuestExecution(() => iterator.next());
+      while (!current.done && !current.value) current = withGuestExecution(() => iterator.next());
     }
   })();
 }
@@ -2209,7 +2211,7 @@ function createRequire(
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(moduleRequire, process, importMetaUrl);
 
-      const body = fn(
+      const body = withGuestExecution(() => fn(
         module.exports,
         moduleRequire,
         module,
@@ -2221,7 +2223,7 @@ function createRequire(
         dynamicImport,
         __substrateGuestGlobal,
         __substrateGuestConstructor
-      );
+      ));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
       if (settling) __substrateKeepPending(module, settling, () => { delete moduleCache[resolvedPath]; });
@@ -2639,6 +2641,7 @@ export class Runtime {
     // not when this module is loaded. Importing the engine into someone
     // else's Node process leaves that process's globals alone;
     // `restoreHostGlobals()` hands back what a runtime took.
+    startGuestLoop();
     installGuestRealm();
   }
 
@@ -2766,7 +2769,7 @@ export class Runtime {
         try { fn = __substrateSloppyEval(__substrateAsyncBody(wrappedCode)); }
         catch { throw syntaxError; }
       }
-      const body = fn(
+      const body = withGuestExecution(() => fn(
         module.exports,
         require,
         module,
@@ -2778,7 +2781,7 @@ export class Runtime {
         dynamicImport,
         __substrateGuestGlobal,
         __substrateGuestConstructor
-      );
+      ));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
       if (settling) __substrateKeepPending(module, settling, () => { delete this.moduleCache[filename]; });

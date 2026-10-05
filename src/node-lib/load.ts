@@ -477,22 +477,7 @@ function bootstrapNodeLib(name: string, exports: unknown, process: object): void
     }
     return;
   }
-  if (name === 'fs') {
-    // Node 23 hangs `mkdtempDisposableSync` off `fs`; the vendored 22.18
-    // file does not, and `openAsBlob`'s neighbour in the gate calls it.
-    const fs = exports as {
-      mkdtempSync?: (prefix: string, options?: unknown) => string;
-      mkdtempDisposableSync?: unknown;
-      rmSync?: (path: string, options?: { recursive?: boolean; force?: boolean }) => void;
-    };
-    if (typeof fs.mkdtempDisposableSync !== 'function' && typeof fs.mkdtempSync === 'function') {
-      fs.mkdtempDisposableSync = (prefix: string, options?: unknown) => {
-        const tempPath = fs.mkdtempSync!(prefix, options);
-        const remove = (): void => { try { fs.rmSync?.(tempPath, { recursive: true, force: true }); } catch { /* gone */ } };
-        return { path: tempPath, remove, [Symbol.dispose]: remove };
-      };
-    }
-  }
+
 }
 
 /**
