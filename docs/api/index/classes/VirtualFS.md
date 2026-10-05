@@ -631,7 +631,7 @@ Read file contents as Uint8Array
 
 ###### encoding
 
-`"utf8"` \| `"utf-8"`
+`"utf-8"` \| `"utf8"`
 
 ##### Returns
 

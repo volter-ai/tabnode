@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.68 — 2026-10-05
+
 - Move the unchanged vendored library and primordials to Node24.21.0; adapt
   Buffer allocation/encoding and transfer ownership, actual timer/context
   accounting, diagnostics links, packed child spawn flags and TTY/TCP

@@ -18,7 +18,7 @@ One open stream handle, as a process's descriptor table shows it.
 
 ### kind
 
-> **kind**: `"pipe"` \| `"tcp"`
+> **kind**: `"tcp"` \| `"pipe"`
 
 ***
 
