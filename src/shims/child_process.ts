@@ -1833,7 +1833,7 @@ function startChildRun(request: RunRequest): StartedRun {
   // In a process realm the admitted guest is always the spawning parent.
   // Async bookkeeping for a routed child must not make that child its parent.
   setRunPid(token, pid, runPid(nodeProcessRealmToken() ?? __currentProcessToken() ?? __lastLaunchedToken)?.pid ?? 0,
-    { argv: request.args.length ? request.args : [request.file], ...(request.cwd ? { cwd: request.cwd } : {}) });
+    { detached: request.detached, argv: request.args.length ? request.args : [request.file], ...(request.cwd ? { cwd: request.cwd } : {}) });
   const controller = new AbortController();
   const pendingStdin: Array<Uint8Array | null> = [];
   // A host terminal consumes input incrementally. The old string-only
@@ -2065,4 +2065,3 @@ export default {
   runCommand,
   sendStdin,
 };
-

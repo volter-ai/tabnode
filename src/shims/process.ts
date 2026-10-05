@@ -10,7 +10,7 @@ import { Readable } from '../node-lib/stream-module';
 import { loadNodeLibFor } from '../node-lib/load';
 import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
-import { mintPid, pidIsLive, signalPid, __recordTermination } from '../process-tokens';
+import { mintPid, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeVersions } from '../node-lib/node-versions';
 import { freemem as osFreemem } from './os';
 
@@ -583,6 +583,15 @@ export function createProcess(options?: {
       const name = (typeof signal === "number" && signal !== 0 ? __substrateSignalNames[signal] : signal) as string;
       if (signal !== 0 && (typeof name !== "string" || __substrateSignals[name] === void 0)) {
         throw Object.assign(new TypeError("Unknown signal: " + signal), { code: "ERR_UNKNOWN_SIGNAL" });
+      }
+      // POSIX negative targets name a group, not abs(pid). World teardown
+      // probes that group then signals every member from another realm; the
+      // former abs(pid) probe succeeded while both termination signals failed.
+      // Keep the legacy path only for hosts without the optional operations.
+      if (pid < 0) {
+        const result = signal === 0 ? groupIsLive(-pid) : signalGroup(-pid, name);
+        if (result === true) return true;
+        if (result === false) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
       }
       // A signal to the guest's own pid is raised on its own process object
       // the way Node raises one; its children take theirs through their

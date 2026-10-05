@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Detached children start private POSIX process groups; ordinary descendants inherit them, and negative-PID liveness and signals resolve every live member across worker realms, including after the leader exits. Older embedding hosts retain their existing PID operations. World teardown previously saw a live group while its SIGTERM and SIGKILL deliveries were refused.
+
 ## v0.5.62 — 2026-10-05
 
 - Guest-created `Worker` and `self` globals are process-local bare bindings in module wrappers and guest eval/Function scopes; browser worker authority stays hidden. Sharp's upstream pthread glue assigns `global.Worker` then calls bare `new Worker`, and assigns `globalThis.self` then reads bare `self`.

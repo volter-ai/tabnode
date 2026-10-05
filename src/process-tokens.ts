@@ -173,10 +173,15 @@ export function __signalOwnedProcess(token: ProcessToken, signal: string): boole
  * started at all.
  */
 const processRegistryOwner = createProcessRegistryOwner();
-let processRegistry: ProcessRegistry = processRegistryOwner.createScope();
+const localProcessRegistry = processRegistryOwner.createScope();
+localProcessRegistry.receiveSignals((pid, signal) => {
+  const token = tokenOfPid(pid);
+  return token !== null && __signalOwnedProcess(token, signal);
+});
+let processRegistry: ProcessRegistry = localProcessRegistry;
 let registryInstalled = false;
 let registryUsed = false;
-const pidsOfRuns = new Map<ProcessToken, { pid: number; ppid: number }>();
+const pidsOfRuns = new Map<ProcessToken, { pid: number; ppid: number; pgid?: number }>();
 
 /** Each child realm gets its own registration authority in this container. */
 export function createProcessRegistryScope(): ProcessRegistryScope {
@@ -205,7 +210,8 @@ export function installProcessRegistry(registry: ProcessRegistry, initial?: Init
     // adopted child this is an idempotent publication, not a new PID or a
     // guest claim to another realm's parent. Container construction can
     // allocate an anonymous Runtime first; that must not consume this PID.
-    const identity = Object.freeze({ pid: initial.identity.pid, ppid: initial.identity.ppid });
+    const identity = Object.freeze({ pid: initial.identity.pid, ppid: initial.identity.ppid,
+      ...(initial.identity.pgid !== undefined ? { pgid: initial.identity.pgid } : {}) });
     registry.publish(initial.token, identity);
     pidsOfRuns.set(initial.token, identity);
   }
@@ -220,14 +226,18 @@ export function mintPid(): number {
 }
 
 /** Record the numbers a named run was started with, for the run to read back. */
-export function setRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string }): void {
+export function setRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string; detached?: boolean }): void {
   registryUsed = true;
-  processRegistry.publish(token, { pid, ppid, ...started, startedAt: Date.now() });
-  pidsOfRuns.set(token, { pid, ppid });
+  // Node's detached spawn starts a private group. Every other child inherits
+  // its parent's, and a second publication preserves an adopted group.
+  const pgid = pidsOfRuns.get(token)?.pgid ?? (started?.detached ? pid : processRegistry.lookup(ppid)?.pgid ?? pid);
+  const { detached: _detached, ...description } = started ?? {};
+  processRegistry.publish(token, { pid, ppid, pgid, ...description, startedAt: Date.now() });
+  pidsOfRuns.set(token, { pid, ppid, pgid });
 }
 
 /** The numbers a named run was started with, where one was recorded. */
-export function runPid(token: ProcessToken | null | undefined): { pid: number; ppid: number } | undefined {
+export function runPid(token: ProcessToken | null | undefined): { pid: number; ppid: number; pgid?: number } | undefined {
   return token === null || token === undefined ? undefined : pidsOfRuns.get(token);
 }
 
@@ -251,6 +261,14 @@ export function pidIsLive(pid: number): boolean {
 /** `kill(pid, signal)` to another realm's live process; whether one took it. */
 export function signalPid(pid: number, signal: string): boolean {
   return processRegistry.signal(pid, signal);
+}
+
+/** Undefined means the embedding host predates process-group operations. */
+export function groupIsLive(pgid: number): boolean | undefined {
+  return processRegistry.lookupGroup?.(pgid);
+}
+export function signalGroup(pgid: number, signal: string): boolean | undefined {
+  return processRegistry.signalGroup?.(pgid, signal);
 }
 
 /** The numbers a live process carries, looked up by its own pid. */

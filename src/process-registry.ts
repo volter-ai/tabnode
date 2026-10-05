@@ -2,6 +2,8 @@
 export interface ProcessIdentity {
   readonly pid: number;
   readonly ppid: number;
+  /** POSIX process group; optional for hosts predating group support. */
+  readonly pgid?: number;
   /** What the process was started as, where its starter said: `/proc/<pid>/cmdline`. */
   readonly argv?: readonly string[];
   /** The directory it was started in: `/proc/<pid>/cwd`. */
@@ -12,11 +14,11 @@ export interface ProcessIdentity {
 
 /** The parts of an identity a starter may add, checked before they are kept. */
 function describedIdentity(identity: ProcessIdentity): ProcessIdentity {
-  const { pid, ppid, argv, cwd, startedAt } = identity;
-  const described: { pid: number; ppid: number; argv?: readonly string[]; cwd?: string; startedAt?: number } = { pid, ppid };
-  if (Array.isArray(argv) && argv.length <= 4096 && argv.every(arg => typeof arg === 'string')) described.argv = Object.freeze([...argv]);
-  if (typeof cwd === 'string' && cwd.startsWith('/')) described.cwd = cwd;
-  if (typeof startedAt === 'number' && Number.isFinite(startedAt)) described.startedAt = startedAt;
+  const { pid, ppid, pgid, argv, cwd, startedAt } = identity;
+  const described: ProcessIdentity = { pid, ppid, ...(pgid !== undefined ? { pgid } : {}),
+    ...(Array.isArray(argv) && argv.length <= 4096 && argv.every(arg => typeof arg === 'string') ? { argv: Object.freeze([...argv]) } : {}),
+    ...(typeof cwd === 'string' && cwd.startsWith('/') ? { cwd } : {}),
+    ...(typeof startedAt === 'number' && Number.isFinite(startedAt) ? { startedAt } : {}) };
   return Object.freeze(described);
 }
 
@@ -38,6 +40,10 @@ export interface ProcessRegistry {
    * any process of its user, including one its parent left behind.
    */
   signal(pid: number, signal: string): boolean;
+  /** A group may remain live after its leader exits. */
+  lookupGroup?(pgid: number): boolean;
+  /** Deliver to every live group member; true when any member took it. */
+  signalGroup?(pgid: number, signal: string): boolean;
 }
 
 export interface ProcessRegistryScope extends ProcessRegistry {
@@ -110,17 +116,26 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
         publish(token, identity) {
           active();
           const previous = runs.get(token);
-          if (previous?.pid === identity.pid && previous.ppid === identity.ppid) return;
+          if (previous?.pid === identity.pid && previous.ppid === identity.ppid) {
+            if (identity.pgid !== undefined && identity.pgid !== previous.pgid) throw new Error('Process group identity cannot change at publication.');
+            return;
+          }
           if (previous || !allocated.has(identity.pid) || live.has(identity.pid)) {
             throw new Error('Process identity is not owned by this run.');
           }
           if (!Number.isInteger(identity.ppid) || identity.ppid < 0 || identity.ppid > 0x7fffffff) {
             throw new Error('Invalid parent process identifier.');
           }
-          if (identity.ppid !== 0 && !Array.from(runs.values()).some(parent => parent.pid === identity.ppid)) {
+          const parent = Array.from(runs.values()).find(parent => parent.pid === identity.ppid);
+          if (identity.ppid !== 0 && !parent) {
             throw new Error('Parent process is not owned by this realm.');
           }
-          const entry = describedIdentity(identity);
+          const inherited = parent?.pgid ?? parent?.pid ?? identity.pid;
+          const pgid = identity.pgid ?? inherited;
+          if (!Number.isInteger(pgid) || pgid < 1 || pgid > 0x7fffffff || (pgid !== identity.pid && pgid !== inherited)) {
+            throw new Error('Invalid or unowned process group identifier.');
+          }
+          const entry = describedIdentity({ ...identity, pgid });
           runs.set(token, entry);
           live.set(entry.pid, entry);
           receivers.set(entry.pid, receiver);
@@ -139,6 +154,22 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
           active();
           if (!live.has(pid) || typeof signal !== 'string') return false;
           return receivers.get(pid)?.handler?.(pid, signal) === true;
+        },
+        lookupGroup(pgid) {
+          active();
+          return Array.from(live.values()).some(identity => identity.pgid === pgid);
+        },
+        signalGroup(pgid, signal) {
+          active();
+          if (typeof signal !== 'string') return false;
+          // Snapshot before delivery: a leader's handler may retire itself or
+          // other members. Group membership is independent of leader liveness.
+          const members = Array.from(live.values()).filter(identity => identity.pgid === pgid);
+          let delivered = false;
+          for (const identity of members) {
+            if (live.get(identity.pid) === identity && receivers.get(identity.pid)?.handler?.(identity.pid, signal) === true) delivered = true;
+          }
+          return delivered;
         },
         receiveSignals(handler) {
           active();
