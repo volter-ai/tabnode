@@ -43,12 +43,21 @@ export class TCPConnectWrap {
 }
 
 /**
- * Every port this engine holds: a handle that has bound one, listening or
- * not, and every ephemeral port a client end was given. One space, because
- * one engine is one host and a port is taken once.
+ * Every port this engine holds, by address family: a handle that has bound
+ * one, listening or not, and every ephemeral port a client end was given. An
+ * IPv4 bind takes the IPv4 space, an `ipv6Only` bind the IPv6 space, and a
+ * dual-stack IPv6 bind both, so an IPv6-only socket can share a port number
+ * with an IPv4 one, as on a host.
  */
-const boundPorts = new Map<number, TCP>();
+const v4Ports = new Map<number, TCP>();
+const v6Ports = new Map<number, TCP>();
 const ephemeralPorts = new Set<number>();
+const portTaken = (port: number): boolean => v4Ports.has(port) || v6Ports.has(port) || ephemeralPorts.has(port);
+/** The family spaces a bind occupies. */
+function spacesOf(family: string, flags: number): Array<Map<number, TCP>> {
+  if (family !== 'IPv6') return [v4Ports];
+  return (flags & constants.UV_TCP_IPV6ONLY) ? [v6Ports] : [v4Ports, v6Ports];
+}
 
 /** Linux's ephemeral range, walked in order as a kernel walks it. */
 let nextEphemeral = 49152;
@@ -56,7 +65,7 @@ function allocatePort(): number {
   for (let tries = 0; tries < 16384; tries += 1) {
     const port = nextEphemeral;
     nextEphemeral = nextEphemeral >= 65535 ? 49152 : nextEphemeral + 1;
-    if (!boundPorts.has(port) && !ephemeralPorts.has(port)) return port;
+    if (!portTaken(port)) return port;
   }
   return 0;
 }
@@ -87,9 +96,13 @@ export function setPortWatchers(onListen: ListenWatcher | null, onClose: ((port:
 }
 
 /** The listening handle a connect to this port reaches, if any. */
-export function listenerOnPort(port: number): TCP | undefined {
-  const bound = boundPorts.get(port);
-  return bound && bound.listening ? bound : undefined;
+export function listenerOnPort(port: number, family?: string): TCP | undefined {
+  const order = family === 'IPv6' ? [v6Ports, v4Ports] : [v4Ports, v6Ports];
+  for (const space of order) {
+    const bound = space.get(port);
+    if (bound && bound.listening) return bound;
+  }
+  return undefined;
 }
 
 export class TCP extends LibuvStreamWrap {
@@ -111,25 +124,26 @@ export class TCP extends LibuvStreamWrap {
   bind(address: string, port: number, _flags?: number): number {
     const native = nativeStreamFor(this);
     if (native) return native.call({ operation: 'bind', id: native.descriptor.id, address, port, flags: _flags }).status;
-    return this.bindTo(address || '0.0.0.0', port, 'IPv4');
+    return this.bindTo(address || '0.0.0.0', port, 'IPv4', Number(_flags) || 0);
   }
 
   bind6(address: string, port: number, _flags?: number): number {
     const native = nativeStreamFor(this);
     if (native) return native.call({ operation: 'bind', id: native.descriptor.id, address, port, flags: _flags, ipv6: true }).status;
-    return this.bindTo(address || '::', port, 'IPv6');
+    return this.bindTo(address || '::', port, 'IPv6', Number(_flags) || 0);
   }
 
-  private bindTo(address: string, port: number, family: string): number {
+  private bindTo(address: string, port: number, family: string, flags = 0): number {
     if (!isThisHost(address)) return UV_EADDRINUSE;
     const wanted = Number(port) || 0;
-    if (wanted !== 0 && boundPorts.has(wanted)) return UV_EADDRINUSE;
+    const spaces = spacesOf(family, flags);
+    if (wanted !== 0 && spaces.some(space => space.has(wanted))) return UV_EADDRINUSE;
     if (wanted !== 0 && ephemeralPorts.has(wanted)) return UV_EADDRINUSE;
     const bound = wanted === 0 ? allocatePort() : wanted;
-    if (this.local && boundPorts.get(this.local.port) === this) boundPorts.delete(this.local.port);
+    if (this.local) for (const space of [v4Ports, v6Ports]) if (space.get(this.local.port) === this) space.delete(this.local.port);
     this.local = { address, family, port: bound };
-    boundPorts.set(bound, this);
-    this.onLastReferenceClose(() => { if (boundPorts.get(bound) === this) boundPorts.delete(bound); });
+    for (const space of spaces) space.set(bound, this);
+    this.onLastReferenceClose(() => { for (const space of spaces) if (space.get(bound) === this) space.delete(bound); });
     return 0;
   }
 
@@ -174,7 +188,7 @@ export class TCP extends LibuvStreamWrap {
     // `afterConnect` turns into the socket's `ECONNREFUSED` error.
     queueMicrotask(() => {
       if (this.closed) return;
-      const server = reachable ? listenerOnPort(target) : undefined;
+      const server = reachable ? listenerOnPort(target, family) : undefined;
       if (!server) {
         req.oncomplete?.(UV_ECONNREFUSED, this, req, true, true);
         return;
