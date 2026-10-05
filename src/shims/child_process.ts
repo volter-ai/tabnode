@@ -168,6 +168,15 @@ type RunStdin = {
  * a watch (it arrived with an abort handle) and never ended, and its parent's
  * output went down the child's channel.
  */
+/** Node options whose value may follow as the next word (`-r ./hook.js`, `--import tsx`). */
+const NODE_VALUE_OPTIONS = new Set([
+  '-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--input-type', '--title',
+  '--inspect-port', '--debug-port', '--env-file', '--env-file-if-exists', '--redirect-warnings', '--diagnostic-dir',
+  '--report-dir', '--report-directory', '--cpu-prof-dir', '--heap-prof-dir', '--experimental-default-type', '--watch-path',
+  '--disable-warning', '--secure-heap', '--secure-heap-min', '--icu-data-dir', '--openssl-config', '--tls-cipher-list',
+  '--unhandled-rejections', '--dns-result-order', '--trace-event-categories', '--trace-event-file-pattern',
+]);
+
 export interface RunStreams {
   stdinStream?: AsyncIterable<Uint8Array>;
   terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
@@ -477,13 +486,11 @@ export function initChildProcess(vfs: VirtualFS): void {
     // engine took the first option for the script and died on
     // "Cannot find module '--turbo-fast-api-calls'".
     //
-    // An option may also take its value as the next word, and the engine
-    // cannot know which do: `node --conditions node child.js` gave `node` as
-    // the script. So the script is the first argument that NAMES A FILE, and
-    // everything before it is `execArgv` -- which is what Node's own option
-    // parser arrives at, by knowing its options rather than by looking. A
-    // command line that names no file at all keeps the first word after the
-    // options, so `node missing.js` still says which module it cannot find.
+    // An option may also take its value as the next word (`node --conditions
+    // node child.js`); NODE_VALUE_OPTIONS names those, so the option loop
+    // consumes the value and the script is the first word after the options,
+    // as Node's parser has it. `node missing.js` says which module it cannot
+    // find.
     //
     // The path on a `node` command line is a path, and it is resolved as
     // `require` resolves one: the file itself, then `.js`, `.mjs`, `.cjs`,
@@ -517,6 +524,12 @@ export function initChildProcess(vfs: VirtualFS): void {
         first += 2;
         break;
       }
+      // An option that takes its value as the next word consumes it here, as Node's option parser does.
+      if (NODE_VALUE_OPTIONS.has(option) && first + 1 < args.length) {
+        execArgv.push(option, args[first + 1]!);
+        first += 2;
+        continue;
+      }
       execArgv.push(option);
       first += 1;
     }
@@ -528,13 +541,10 @@ export function initChildProcess(vfs: VirtualFS): void {
       if (found !== null && tree.existsSync(found)) return found;
       return tree.existsSync(requested) ? requested : null;
     };
-    let script = first;
-    let resolvedPath: string | null = null;
-    for (let index = first; evaluated === null && index < args.length; index += 1) {
-      const found = fileNamed(args[index]!);
-      if (found !== null) { script = index; resolvedPath = found; break; }
-    }
-    if (evaluated === null) for (let index = first; index < script; index += 1) execArgv.push(args[index]!);
+    // The script is the first word after the options, as in Node; a later word that happens to name a file is an
+    // argument (`node <next-bin> start apps/web` ran the directory apps/web when the bin did not resolve).
+    const script = first;
+    const resolvedPath: string | null = evaluated === null && args[script] ? fileNamed(args[script]!) : null;
     if (evaluated === null && !args[script]) {
       return { stdout: '', stderr: 'Usage: node <script.js> [args...]\n', exitCode: 1 };
     }

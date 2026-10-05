@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `node` takes the first word after its options as the script, as Node does, with value-taking options (`-r`, `--import`, `--conditions`, ...) consuming their value: it used to run the first later word that named a file, so `node <next-bin> start apps/web` ran the directory `apps/web` (EISDIR) when the bin did not resolve.
+
 ## v0.5.60 — 2026-10-05
 
 - `crypto.webcrypto` and `crypto.subtle` exist, as in Node (the page's Web Crypto): Tailwind's oxide and lightningcss native hooks read `require('crypto').webcrypto` and found `undefined`.
