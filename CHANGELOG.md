@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.69 — 2026-10-05
+
 - Replace the partial historical fixture measure with the complete Node v24.21.0
   parallel/WASI file list. Retain raw failures, native-read inventory, recursive
   public export comparisons, four completion counts, and an objective capability
