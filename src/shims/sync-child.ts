@@ -275,7 +275,7 @@ export function syncChildRefusal(): string | null {
  * initialized in a realm whose worker cannot start inside a synchronous call,
  * and by a call that finds none.
  */
-export function warmSyncChild(): void {
+export function warmSyncChild(required = false): void {
   // A thread that is itself running a synchronous child is not given one of
   // its own before it needs it: a realm warms one thread, not one per child.
   if ((globalThis as Record<string, unknown>).__substrateSyncChildThread === true) return;
@@ -289,7 +289,17 @@ export function warmSyncChild(): void {
   const url = inBrowser && typeof Blob === 'function' && typeof URL.createObjectURL === 'function'
     ? URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
     : new URL(`data:text/javascript,${encodeURIComponent(source)}`);
-  const worker = new WorkerClass(url, { type: 'module' });
+  // Warming is speculative. A confined thread may load this builtin without
+  // authority to create a native worker; that must not abort its own entry.
+  // An actual synchronous-child request still receives the constructor's
+  // original refusal, rather than a stub or a successful child result.
+  let worker: SyncService['worker'];
+  try { worker = new WorkerClass(url, { type: 'module' }); }
+  catch (cause) {
+    if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url);
+    if (required) throw cause;
+    return;
+  }
   const started: SyncService = { control, toParent, toWorker, worker };
   const failed = (event: unknown) => { started.failure = String((event as { message?: unknown } | null)?.message ?? event); };
   if (typeof worker.on === 'function') worker.on('error', failed);
@@ -405,7 +415,7 @@ export function runSyncChild(request: SyncChildRequest): SyncChildResult {
   const refusal = syncChildRefusal();
   if (refusal !== null) throw new Error(refusal);
   if (hostVfs === null) throw new Error('the engine has no filesystem for a child to run on');
-  if (!service) warmSyncChild();
+  if (!service) warmSyncChild(true);
   const active = service!;
   if (Atomics.load(active.control, STARTED) !== 1) {
     Atomics.wait(active.control, STARTED, 0, START_WAIT_MS);

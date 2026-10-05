@@ -56,6 +56,7 @@ import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
 import { PUNYCODE_SOURCE } from './punycode-source';
 import * as perfHooksShim from './shims/perf_hooks';
 import * as workerThreadsShim from './shims/worker_threads';
+import { guestMessageGlobals, guestMessageModule } from './guest-message-ports';
 import * as esbuildShim from './shims/esbuild';
 import * as rollupShim from './shims/rollup';
 import * as v8Shim from './shims/v8';
@@ -276,7 +277,13 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     Worker: { value: undefined, writable: true, configurable: true, enumerable: true },
     self: { value: undefined, writable: true, configurable: true, enumerable: true },
   });
-  const isLocalGlobal = (key: string | symbol) => ['Promise', 'navigator', 'Navigator', 'Worker', 'self'].includes(key as string);
+  // Browser worker messaging is host authority, not a Node global. A guest's
+  // adapter may define its own names without hijacking the host transport.
+  const browserTransportGlobals = ['postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent'];
+  for (const key of browserTransportGlobals) Object.defineProperty(localGlobals, key, {
+    value: undefined, writable: true, configurable: true, enumerable: true,
+  });
+  const isLocalGlobal = (key: string | symbol) => ['Promise', 'navigator', 'Navigator', 'Worker', 'self', ...browserTransportGlobals].includes(key as string);
   guest = new Proxy(localGlobals, {
     get(target, key) {
       if (["document", "window", "location"].includes(key as string)) return undefined;
@@ -286,6 +293,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       if (isLocalGlobal(key)) return Reflect.get(target, key, guest);
       if (key === "globalThis" || key === "global") return guest;
       if (shadowed(target, key)) return Reflect.get(target, key, guest);
+      if (key === "MessageChannel" || key === "MessagePort") return guestMessageGlobals(process)[key];
       const value = Reflect.get(host, key, host);
       if (["setTimeout", "clearTimeout", "setInterval", "clearInterval"].includes(key as string) && typeof value === "function") {
         // The guest's timers, counted for it; rebuilt if the host's own change.
@@ -2182,7 +2190,7 @@ function createRequire(
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${__substrateSourceURL(resolvedPath)}`;
 
@@ -2380,7 +2388,7 @@ function createRequire(
     if (id === 'worker_threads') {
       const bridge = (globalThis as Record<symbol, unknown>)[Symbol.for("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown) => unknown } | undefined;
       const module = bridge && typeof bridge.module === "function" ? bridge.module(vfs, process, builtinModules.worker_threads) : undefined;
-      if (module) return module;
+      return guestMessageModule(process, (module ?? workerThreadsShim) as Record<string, unknown>, !module);
     }
     if (id === 'module') {
       return __substrateModule();
@@ -2744,7 +2752,7 @@ export class Runtime {
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${__substrateSourceURL(filename)}`;
 
@@ -2821,8 +2829,13 @@ export class Runtime {
     // `.bin` entry resolved `../lib` beside `.bin` and found nothing.
     let real = filename;
     try { real = this.vfs.realpathSync(filename) as string; } catch { /* the read below reports it */ }
-    const code = this.vfs.readFileSync(real, 'utf8');
-    return this.execute(code, real);
+    // File entries take the same prepared-body and main-module path as require.
+    // Evaluating raw source here recompiled worker dependencies in the tab.
+    const require = createRequire(this.vfs, this.fsShim, this.process,
+      pathShim.dirname(real), this.moduleCache, this.options, this.processedCodeCache);
+    if (!(this.process as any).mainModule) (this.process as any).__substrateMainPending = real;
+    const exports = require(real);
+    return { exports, module: this.moduleCache[real] };
   }
 
   /**

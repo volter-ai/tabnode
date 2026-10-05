@@ -62,7 +62,7 @@ from .58.
 | `tls` | the page's TLS relay is the transport (Article 4); on the loopback a TLS server listens as a net server and a TLS connect pairs with it, with no wire to protect |
 | `dns` | IP literals and local loopback; the World owns routed names. No external resolver or DNS record service. |
 | `vm` | V8 contexts; the engine's guest-global scoping is the tab's `vm` |
-| `worker_threads` | Web Workers |
+| `worker_threads` | Node’s ports are native. Runtime guests use the real host or installed thread transport with per-process listener/ref/unref/close lifetime (ADR-0004); unsupported worker execution still refuses |
 | `module` | the loader itself, entangled with the engine's transforms and its ESM lowering. Its customization hooks are Node's own file, above. |
 | `process` | the bootstrap, one per run |
 | `dgram`, `cluster`, `http2`, `inspector`, `v8`, `trace_events`, `repl` | refusing stubs: no UDP, no fork-and-share, no nghttp2, no inspector in a tab. Each refusal names why at its site. |

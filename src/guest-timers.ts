@@ -1,24 +1,27 @@
+import { pendingGuestPorts, stopGuestPorts } from './guest-message-ports';
 import { __reportUncaughtException } from './shims/process';
 import { nodeTimeout, timerHandleOf } from './node-lib/timers';
 
 /**
- * The timers a guest process has pending: what Node's loop counts to decide
+ * Referenced timers and message ports: what Node's loop counts to decide
  * a program is done. A timer the guest sets through its globals or module is
  * held here until it fires, is cleared, or is unref'd, and the `node`
  * command's end-of-program rule asks how many remain.
  */
 const __substratePendingTimers = new WeakMap<object, Set<unknown>>();
 export function pendingGuestTimers(process: object): number {
-  return __substratePendingTimers.get(process)?.size ?? 0;
+  return (__substratePendingTimers.get(process)?.size ?? 0) + pendingGuestPorts(process);
 }
 /**
- * Clear every timer a guest still holds, as ending a Node process clears the
+ * Close this process's message ports and clear every timer it still holds.
+ * Ending a Node process clears the
  * ones its loop was waiting on. The ids were made by the host's own
  * `setTimeout`/`setInterval` through the guest's global view, so the host's
  * own clears end them; a `Timeout` is cleared by either in Node, and either
  * refusing an id of the other kind is not an error here.
  */
 export function stopGuestTimers(process: object): void {
+  stopGuestPorts(process);
   const held = __substratePendingTimers.get(process);
   if (!held) return;
   const host = globalThis as unknown as Record<string, unknown>;

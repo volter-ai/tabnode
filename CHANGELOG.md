@@ -4,6 +4,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Browser worker messaging globals stay guest-local; trusted host transports retain their native methods. File entries use the normal image-prepared module loader and keep Node main-module identity (ADR-0004).
+
+- A thread whose native Worker authority is withheld can initialize the child_process builtin; speculative synchronous-child warming no longer aborts its entry. An actual synchronous spawn retains the original constructor refusal.
+- Give global and worker_threads MessagePorts real per-process loop references: the first message listener refs/starts its real transport, unref releases its hold, and close/process teardown releases and closes it (ADR-0004).
+
 ## v0.5.65 — 2026-10-05
 
 ### Fixed
