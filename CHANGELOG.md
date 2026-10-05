@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Development prohibits incidental verification locally and remotely. Requested
+  measurements run locally; GitHub Actions requires explicit authorization for
+  the remote run and no longer starts measurements automatically on a push.
+
 - Replace the partial historical fixture measure with the complete Node v24.21.0
   parallel/WASI file list. Retain raw failures, native-read inventory, recursive
   public export comparisons, four completion counts, and an objective capability

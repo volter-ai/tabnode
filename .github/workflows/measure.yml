@@ -1,8 +1,7 @@
-# Objective Node 24 baseline. No score or threshold gates a release.
+# Explicitly requested remote measurement only. Development does not trigger
+# incidental testing; requested baselines run locally by default.
 name: measure
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
