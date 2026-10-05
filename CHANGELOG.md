@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.62 — 2026-10-05
+
 - Guest-created `Worker` and `self` globals are process-local bare bindings in module wrappers and guest eval/Function scopes; browser worker authority stays hidden. Sharp's upstream pthread glue assigns `global.Worker` then calls bare `new Worker`, and assigns `globalThis.self` then reads bare `self`.
 
 ## v0.5.61 — 2026-10-05
