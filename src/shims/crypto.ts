@@ -1188,10 +1188,15 @@ return {
   createPublicKey,
   createPrivateKey,
   generateKeyPair,
+  // Node's Web Crypto: the same object globalThis.crypto is in Node, and its SubtleCrypto
+  webcrypto: crypto,
+  subtle: crypto.subtle,
 };
 
 }
 const cryptoModule = createCryptoModule();
+export const webcrypto = cryptoModule.webcrypto;
+export const subtle = cryptoModule.subtle;
 export const { Cipheriv, Decipheriv, createCipheriv, createDecipheriv, randomBytes, randomFillSync, randomFill, randomUUID, randomInt, getRandomValues, unsupported, createHash, createHmac, hash, pbkdf2Sync, pbkdf2, sign, verify, createSign, createVerify, KeyObject, createSecretKey, createPublicKey, createPrivateKey, generateKeyPair, timingSafeEqual, getCiphers, getHashes } = cryptoModule;
 export type KeyObject = InstanceType<typeof KeyObject>;
 export default cryptoModule;
