@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.60 — 2026-10-05
+
 - `crypto.webcrypto` and `crypto.subtle` exist, as in Node (the page's Web Crypto): Tailwind's oxide and lightningcss native hooks read `require('crypto').webcrypto` and found `undefined`.
 
 ## v0.5.59 — 2026-10-05
