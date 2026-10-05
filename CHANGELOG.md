@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.70 — 2026-10-05
+
 - Development prohibits incidental verification locally and remotely. Requested
   measurements run locally; GitHub Actions requires explicit authorization for
   the remote run and no longer starts measurements automatically on a push.
