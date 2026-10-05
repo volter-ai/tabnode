@@ -262,9 +262,13 @@ export class TCP extends LibuvStreamWrap {
   }
 
   /** There is no idle connection to probe: a pairing is alive while both ends are. */
-  setKeepAlive(_enable: boolean, _delay: number): number {
+  setKeepAlive(_enable: boolean, _delay: number, _interval?: number, _count?: number): number {
     return 0;
   }
+
+  /** In-realm streams carry bytes, not IP packet headers. */
+  setTypeOfService(_tos: number): number { return UV_ENOTSUP; }
+  getTypeOfService(): number { return UV_ENOTSUP; }
 
   setSimultaneousAccepts(_enable: boolean): number {
     return 0;

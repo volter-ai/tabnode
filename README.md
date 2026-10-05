@@ -4,7 +4,7 @@
 
 **Node's own library, in a browser tab.**
 
-tabnode runs Node programs in the browser. Its builtins are Node's own files, vendored unmodified from Node v24.5.0, on a binding layer that answers what libuv and V8's C++ would have answered: sockets, children, files, TTYs, the HTTP parser, zlib. Node's own test suite measures each module, and the numbers are in [`BUILTINS.md`](BUILTINS.md). Where Node's own module is native and the tab has no twin, the module is the engine's, with the reason at its site.
+tabnode runs Node programs in the browser. Its builtins are Node's own files, vendored unmodified from Node v24.21.0, on a binding layer that answers what libuv and V8's C++ would have answered: sockets, children, files, TTYs, the HTTP parser, zlib. Node's own test suite measures each module, and the numbers are in [`BUILTINS.md`](BUILTINS.md). Where Node's own module is native and the tab has no twin, the module is the engine's, with the reason at its site.
 
 It is the Node engine of [`volter-ai/browser-substrate`](https://github.com/volter-ai/browser-substrate), the host it is built for, which installs it from npm by version.
 

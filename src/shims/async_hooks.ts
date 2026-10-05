@@ -46,6 +46,17 @@ const withFrame = <R>(frame: ContextFrame, callback: () => R): R => {
 };
 
 export class AsyncLocalStorage<T> {
+  private readonly defaultValue: T | undefined;
+  private readonly storageName: string;
+  constructor(options: { defaultValue?: T; name?: unknown } = {}) {
+    if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+      throw Object.assign(new TypeError('The "options" argument must be of type object.'), { code: 'ERR_INVALID_ARG_TYPE' });
+    }
+    this.defaultValue = options.defaultValue;
+    this.storageName = options.name === undefined ? '' : `${options.name}`;
+  }
+  get name(): string { return this.storageName; }
+
   static snapshot() {
     const captured = currentFrame;
     return (callback: (...args: unknown[]) => unknown, ...args: unknown[]) => withFrame(captured, () => callback(...args));
@@ -63,7 +74,9 @@ export class AsyncLocalStorage<T> {
   }
 
   getStore(): T | undefined {
-    return currentFrame.get(this as AsyncLocalStorage<unknown>) as T | undefined;
+    return currentFrame.has(this as AsyncLocalStorage<unknown>)
+      ? currentFrame.get(this as AsyncLocalStorage<unknown>) as T | undefined
+      : this.defaultValue;
   }
 
   run<R>(store: T, callback: (...args: unknown[]) => R, ...args: unknown[]): R {
@@ -72,10 +85,25 @@ export class AsyncLocalStorage<T> {
     return withFrame(next, () => callback(...args));
   }
 
-  exit<R>(callback: () => R): R {
+  exit<R>(callback: (...args: unknown[]) => R, ...args: unknown[]): R {
     const next = new Map(currentFrame);
-    next.delete(this as AsyncLocalStorage<unknown>);
-    return withFrame(next, callback);
+    next.set(this as AsyncLocalStorage<unknown>, undefined);
+    return withFrame(next, () => callback(...args));
+  }
+
+  withScope(store: T) {
+    const previous = this.getStore();
+    this.enterWith(store);
+    let disposed = false;
+    const scope = {
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        this.enterWith(previous as T);
+      },
+      [Symbol.dispose]() { scope.dispose(); },
+    };
+    return scope;
   }
 
   enterWith(store: T): void {

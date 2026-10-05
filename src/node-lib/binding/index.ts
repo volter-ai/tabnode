@@ -11,6 +11,8 @@
  * are `net.js`'s and `child_process.js`'s, and both are vendored.
  */
 import uvBinding from './uv';
+import ipcSerdesBinding from './ipc_serdes';
+import { createDiagnosticsChannelBinding } from './diagnostics_channel';
 import streamWrapBinding from './stream_wrap';
 import tcpWrapBinding from './tcp_wrap';
 import pipeWrapBinding from './pipe_wrap';
@@ -42,6 +44,8 @@ var __table: Record<string, () => unknown> | undefined;
 export function nodeLibBinding(name: string): (() => unknown) | undefined {
   __table ??= {
   uv: () => uvBinding,
+  ipc_serdes: () => ipcSerdesBinding,
+  diagnostics_channel: () => createDiagnosticsChannelBinding(),
   stream_wrap: () => streamWrapBinding,
   tcp_wrap: () => tcpWrapBinding,
   pipe_wrap: () => pipeWrapBinding,

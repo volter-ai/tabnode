@@ -16,6 +16,9 @@ const {
   SafePromisePrototypeFinally,
   Symbol,
   SymbolAsyncDispose,
+  SymbolAsyncIterator,
+  SymbolDispose,
+  SymbolIterator,
   Uint8Array,
   uncurryThis,
 } = primordials;
@@ -43,6 +46,8 @@ const {
     ERR_INVALID_ARG_VALUE,
     ERR_INVALID_STATE,
     ERR_METHOD_NOT_IMPLEMENTED,
+    ERR_OPERATION_FAILED,
+    ERR_OUT_OF_RANGE,
   },
 } = require('internal/errors');
 const { isArrayBufferView } = require('internal/util/types');
@@ -62,15 +67,19 @@ const {
   getStatFsFromBinding,
   getStatsFromBinding,
   getValidatedPath,
+  getReadFileBuffer,
+  getReadFileBufferByteLengthName,
   preprocessSymlinkDestination,
   stringToFlags,
   stringToSymlinkType,
   toUnixTimestamp,
+  handleErrorFromBinding: handleSyncErrorFromBinding,
   validateBufferArray,
   validateCpOptions,
   validateOffsetLengthRead,
   validateOffsetLengthWrite,
   validatePosition,
+  validateReadFileBufferOptions,
   validateRmOptions,
   validateRmdirOptions,
   validateStringAfterArrayBufferView,
@@ -89,8 +98,6 @@ const {
   kValidateObjectAllowNullable,
 } = require('internal/validators');
 const pathModule = require('path');
-const { isAbsolute } = pathModule;
-const { toPathIfFileURL } = require('internal/url');
 const {
   getLazy,
   kEmptyObject,
@@ -99,6 +106,7 @@ const {
   isWindows,
   isMacOS,
 } = require('internal/util');
+const { getOptionValue } = require('internal/options');
 const EventEmitter = require('events');
 const { StringDecoder } = require('string_decoder');
 const { kFSWatchStart, watch } = require('internal/fs/watchers');
@@ -112,11 +120,13 @@ const kHandle = Symbol('kHandle');
 const kFd = Symbol('kFd');
 const kRefs = Symbol('kRefs');
 const kClosePromise = Symbol('kClosePromise');
+const kCloseReason = Symbol('kCloseReason');
 const kCloseResolve = Symbol('kCloseResolve');
 const kCloseReject = Symbol('kCloseReject');
 const kRef = Symbol('kRef');
 const kUnref = Symbol('kUnref');
 const kLocked = Symbol('kLocked');
+const kCloseSync = Symbol('kCloseSync');
 
 const { kUsePromises } = binding;
 const { Interface } = require('internal/readline/interface');
@@ -144,6 +154,24 @@ const lazyReadableStream = getLazy(() =>
   require('internal/webstreams/readablestream').ReadableStream,
 );
 
+// Lazy loaded to avoid circular dependency with new streams.
+let newStreamsPull;
+let newStreamsPullSync;
+let newStreamsParsePullArgs;
+let newStreamsToUint8Array;
+let newStreamsConvertChunks;
+function lazyNewStreams() {
+  if (newStreamsPull === undefined) {
+    const pullModule = require('internal/streams/iter/pull');
+    newStreamsPull = pullModule.pull;
+    newStreamsPullSync = pullModule.pullSync;
+    const utils = require('internal/streams/iter/utils');
+    newStreamsParsePullArgs = utils.parsePullArgs;
+    newStreamsToUint8Array = utils.toUint8Array;
+    newStreamsConvertChunks = utils.convertChunks;
+  }
+}
+
 // By the time the C++ land creates an error for a promise rejection (likely from a
 // libuv callback), there is already no JS frames on the stack. So we need to
 // wait until V8 resumes execution back to JS land before we have enough information
@@ -154,6 +182,12 @@ function handleErrorFromBinding(error) {
 }
 
 class FileHandle extends EventEmitter {
+  #brandCheck = undefined;
+
+  static isFileHandle(value) {
+    return (value != null && typeof value === 'object' && #brandCheck in value);
+  }
+
   /**
    * @param {InternalFSBinding.FileHandle | undefined} filehandle
    */
@@ -270,6 +304,16 @@ class FileHandle extends EventEmitter {
     this.emit('close');
     return this[kClosePromise];
   };
+
+  [kCloseSync]() {
+    if (this[kFd] === -1) return;
+    if (this[kClosePromise]) {
+      throw new ERR_INVALID_STATE('The FileHandle is closing');
+    }
+    this[kFd] = -1;
+    this[kHandle].closeSync();
+    this.emit('close');
+  }
 
   async [SymbolAsyncDispose]() {
     await this.close();
@@ -390,6 +434,7 @@ class FileHandle extends EventEmitter {
 
     const handle = this[kHandle];
     this[kFd] = -1;
+    this[kCloseReason] = 'The FileHandle has been transferred';
     this[kHandle] = null;
     this[kRefs] = 0;
 
@@ -425,6 +470,612 @@ class FileHandle extends EventEmitter {
   }
 }
 
+if (getOptionValue('--experimental-stream-iter')) {
+  const kNullPrototo = { __proto__: null };
+  const kDefaultChunkSize = 131072;
+  const kNone = -1;
+  /**
+   * Return the file contents as an AsyncIterable<Uint8Array[]> using the
+   * new streams pull model. Optional transforms and options (including
+   * AbortSignal) may be provided as trailing arguments, mirroring the
+   * Stream.pull() signature.
+   * @param {...(Function|object)} args - Optional transforms and/or options
+   * @returns {AsyncIterable<Uint8Array[]>}
+   */
+  FileHandle.prototype.pull = function pull(...args) {
+    if (this[kFd] === kNone)
+      throw new ERR_INVALID_STATE('The FileHandle is closed');
+    if (this[kClosePromise])
+      throw new ERR_INVALID_STATE('The FileHandle is closing');
+    if (this[kLocked])
+      throw new ERR_INVALID_STATE('The FileHandle is locked');
+
+    lazyNewStreams();
+    const { transforms, options = kNullPrototo } = newStreamsParsePullArgs(args);
+
+    const {
+      autoClose = false,
+      chunkSize: readSize = kDefaultChunkSize,
+      signal,
+    } = options;
+    let {
+      start: pos = kNone,
+      limit: remaining = kNone,
+    } = options;
+
+    const handle = this;
+    const fd = this[kFd];
+
+    validateBoolean(autoClose, 'options.autoClose');
+
+    if (pos !== kNone) {
+      validateInteger(pos, 'options.start', 0);
+    }
+    if (remaining !== kNone) {
+      validateInteger(remaining, 'options.limit', 1);
+    }
+    if (readSize !== undefined) {
+      validateInteger(readSize, 'options.chunkSize', 1);
+    }
+    if (signal !== undefined) {
+      validateAbortSignal(signal, 'options.signal');
+    }
+
+    this[kLocked] = true;
+
+    const source = {
+      __proto__: null,
+      async *[SymbolAsyncIterator]() {
+        handle[kRef]();
+        try {
+          if (signal) {
+            // Signal-aware path
+            while (remaining !== 0) {
+              if (signal.aborted) {
+                throw signal.reason ??
+                      lazyDOMException('The operation was aborted',
+                                       'AbortError');
+              }
+              const toRead = remaining > 0 ?
+                MathMin(readSize, remaining) : readSize;
+              const buf = Buffer.allocUnsafe(toRead);
+              let bytesRead;
+              try {
+                bytesRead =
+                  (await binding.read(fd, buf, 0,
+                                      toRead, pos, kUsePromises)) || 0;
+              } catch (err) {
+                ErrorCaptureStackTrace(err, handleErrorFromBinding);
+                throw err;
+              }
+              if (bytesRead === 0) break;
+              if (pos >= 0) pos += bytesRead;
+              if (remaining > 0) remaining -= bytesRead;
+              yield [bytesRead < toRead ? buf.subarray(0, bytesRead) : buf];
+            }
+          } else {
+            // Fast path - no signal check per iteration
+            while (remaining !== 0) {
+              const toRead = remaining > 0 ?
+                MathMin(readSize, remaining) : readSize;
+              const buf = Buffer.allocUnsafe(toRead);
+              let bytesRead;
+              try {
+                bytesRead =
+                  (await binding.read(fd, buf, 0,
+                                      toRead, pos, kUsePromises)) || 0;
+              } catch (err) {
+                ErrorCaptureStackTrace(err, handleErrorFromBinding);
+                throw err;
+              }
+              if (bytesRead === 0) break;
+              if (pos >= 0) pos += bytesRead;
+              if (remaining > 0) remaining -= bytesRead;
+              yield [bytesRead < toRead ? buf.subarray(0, bytesRead) : buf];
+            }
+          }
+        } finally {
+          handle[kLocked] = false;
+          handle[kUnref]();
+          if (autoClose) {
+            await handle.close();
+          }
+        }
+      },
+    };
+
+    // If transforms provided, wrap with pull pipeline
+    if (transforms.length > 0) {
+      const pullArgs = [...transforms];
+      if (options) {
+        ArrayPrototypePush(pullArgs, options);
+      }
+      return newStreamsPull(source, ...pullArgs);
+    }
+    return source;
+  };
+
+  /**
+   * Return the file contents as an Iterable<Uint8Array[]> using synchronous
+   * reads. Optional transforms and options may be provided as trailing
+   * arguments, mirroring the Stream.pullSync() signature.
+   * @param {...(Function|object)} args - Optional transforms and/or options
+   * @returns {Iterable<Uint8Array[]>}
+   */
+  FileHandle.prototype.pullSync = function pullSync(...args) {
+    if (this[kFd] === kNone)
+      throw new ERR_INVALID_STATE('The FileHandle is closed');
+    if (this[kClosePromise])
+      throw new ERR_INVALID_STATE('The FileHandle is closing');
+    if (this[kLocked])
+      throw new ERR_INVALID_STATE('The FileHandle is locked');
+
+    lazyNewStreams();
+    const { transforms, options = kNullPrototo } = newStreamsParsePullArgs(args);
+
+    const {
+      autoClose = false,
+      chunkSize: readSize = kDefaultChunkSize,
+    } = options;
+    let {
+      start: pos = kNone,
+      limit: remaining = kNone,
+    } = options;
+
+    const handle = this;
+    const fd = this[kFd];
+
+    validateBoolean(autoClose, 'options.autoClose');
+
+    if (pos !== kNone) {
+      validateInteger(pos, 'options.start', 0);
+    }
+    if (remaining !== kNone) {
+      validateInteger(remaining, 'options.limit', 1);
+    }
+    if (readSize !== undefined) {
+      validateInteger(readSize, 'options.chunkSize', 1);
+    }
+
+    this[kLocked] = true;
+
+    handle[kRef]();
+
+    function cleanup() {
+      handle[kLocked] = false;
+      handle[kUnref]();
+      if (autoClose) {
+        handle[kCloseSync]();
+      }
+    }
+
+    const source = {
+      __proto__: null,
+      [SymbolIterator]() {
+        let done = false;
+        return {
+          __proto__: null,
+          next() {
+            if (done || remaining === 0) {
+              if (!done) {
+                done = true;
+                cleanup();
+              }
+              return { value: undefined, done: true };
+            }
+            const toRead = remaining > 0 ?
+              MathMin(readSize, remaining) : readSize;
+            const buf = Buffer.allocUnsafe(toRead);
+            let bytesRead;
+            try {
+              bytesRead = binding.read(fd, buf, 0, toRead, pos) || 0;
+            } catch (err) {
+              done = true;
+              cleanup();
+              throw err;
+            }
+            if (bytesRead === 0) {
+              done = true;
+              cleanup();
+              return { value: undefined, done: true };
+            }
+            if (pos >= 0) pos += bytesRead;
+            if (remaining > 0) remaining -= bytesRead;
+            const chunk = bytesRead < toRead ?
+              buf.subarray(0, bytesRead) : buf;
+            return { value: [chunk], done: false };
+          },
+          return() {
+            if (!done) {
+              done = true;
+              cleanup();
+            }
+            return { value: undefined, done: true };
+          },
+        };
+      },
+    };
+
+    if (transforms.length > 0) {
+      return newStreamsPullSync(source, ...transforms);
+    }
+    return source;
+  };
+
+  /**
+   * Return a new-streams Writer backed by this file handle.
+   * The writer uses direct binding.writeBuffer / binding.writeBuffers
+   * calls, bypassing the FileHandle.write() validation chain.
+   *
+   * Supports writev() for batch writes (single syscall per batch).
+   * Handles EAGAIN with retry (up to 5 attempts), matching WriteStream.
+   * @param {{
+   *   autoClose?: boolean;
+   *   start?: number;
+   * }} [options]
+   * @returns {{ write, writev, end, fail }}
+   */
+  FileHandle.prototype.writer = function writer(options = kNullPrototo) {
+    if (this[kFd] === kNone)
+      throw new ERR_INVALID_STATE('The FileHandle is closed');
+    if (this[kClosePromise])
+      throw new ERR_INVALID_STATE('The FileHandle is closing');
+    if (this[kLocked])
+      throw new ERR_INVALID_STATE('The FileHandle is locked');
+
+    lazyNewStreams();
+
+    validateObject(options, 'options');
+    const {
+      autoClose = false,
+      chunkSize: syncWriteThreshold = kDefaultChunkSize,
+    } = options;
+    let {
+      start: pos = kNone,
+      limit: bytesRemaining = kNone,
+    } = options;
+
+    const handle = this;
+    const fd = this[kFd];
+    let totalBytesWritten = 0;
+    let closed = false;
+    let closing = false;
+    let pendingEndPromise = null;
+    let error = null;
+    let asyncPending = false;
+
+    validateBoolean(autoClose, 'options.autoClose');
+
+    if (pos !== kNone) {
+      validateInteger(pos, 'options.start', 0);
+    }
+    if (bytesRemaining !== kNone) {
+      validateInteger(bytesRemaining, 'options.limit', 1);
+    }
+    if (syncWriteThreshold !== undefined) {
+      validateInteger(syncWriteThreshold, 'options.chunkSize', 1);
+    }
+
+    this[kLocked] = true;
+    handle[kRef]();
+
+    // Write a single buffer with EAGAIN retry (up to 5 retries).
+    async function writeAll(buf, offset, length, position, signal) {
+      asyncPending = true;
+      try {
+        let retries = 0;
+        while (length > 0) {
+          const bytesWritten = (await PromisePrototypeThen(
+            binding.writeBuffer(fd, buf, offset, length, position,
+                                kUsePromises),
+            undefined,
+            handleErrorFromBinding,
+          )) || 0;
+
+          signal?.throwIfAborted();
+
+          if (bytesWritten === 0) {
+            if (++retries > 5) {
+              throw new ERR_OPERATION_FAILED('write failed after retries');
+            }
+          } else {
+            retries = 0;
+          }
+
+          totalBytesWritten += bytesWritten;
+          offset += bytesWritten;
+          length -= bytesWritten;
+          if (position >= 0) position += bytesWritten;
+        }
+      } finally {
+        asyncPending = false;
+      }
+    }
+
+    // Writev with EAGAIN retry. On partial write, concatenates remaining
+    // buffers and falls back to writeAll (same approach as WriteStream).
+    async function writevAll(buffers, position, signal) {
+      asyncPending = true;
+      try {
+        let totalSize = 0;
+        for (let i = 0; i < buffers.length; i++) {
+          totalSize += buffers[i].byteLength;
+        }
+
+        let retries = 0;
+        while (totalSize > 0) {
+          const bytesWritten = (await PromisePrototypeThen(
+            binding.writeBuffers(fd, buffers, position, kUsePromises),
+            undefined,
+            handleErrorFromBinding,
+          )) || 0;
+
+          signal?.throwIfAborted();
+
+          if (bytesWritten === 0) {
+            if (++retries > 5) {
+              throw new ERR_OPERATION_FAILED('writev failed after retries');
+            }
+          } else {
+            retries = 0;
+          }
+
+          totalBytesWritten += bytesWritten;
+          totalSize -= bytesWritten;
+          if (position >= 0) position += bytesWritten;
+
+          if (totalSize > 0) {
+            // Partial write - concatenate remaining and use writeAll.
+            const remaining = Buffer.concat(buffers);
+            const wrote = bytesWritten;
+            // writeAll is already inside asyncPending = true, but
+            // writeAll sets it again - that's fine (idempotent).
+            await writeAll(remaining, wrote, remaining.length - wrote,
+                           position, signal);
+            return;
+          }
+        }
+      } finally {
+        asyncPending = false;
+      }
+    }
+
+    // Synchronous write with EAGAIN retry. Throws on I/O error.
+    // Used by writeSync for the full write, and by writevSync for
+    // completing a partial writev.
+    function writeSyncAll(buf, offset, length, position) {
+      let retries = 0;
+      while (length > 0) {
+        const ctx = {};
+        const bytesWritten = binding.writeBuffer(
+          fd, buf, offset, length, position, undefined, ctx) || 0;
+        if (ctx.errno !== undefined) {
+          handleSyncErrorFromBinding(ctx);
+        }
+        if (bytesWritten === 0) {
+          if (++retries > 5) {
+            throw new ERR_OPERATION_FAILED('write failed after retries');
+          }
+        } else {
+          retries = 0;
+        }
+        totalBytesWritten += bytesWritten;
+        offset += bytesWritten;
+        length -= bytesWritten;
+        if (position >= 0) position += bytesWritten;
+      }
+    }
+
+    async function cleanup() {
+      if (closed) return;
+      closed = true;
+      handle[kLocked] = false;
+      handle[kUnref]();
+      if (autoClose) {
+        await handle.close();
+      }
+    }
+
+    return {
+      __proto__: null,
+      write(chunk, options = kNullPrototo) {
+        if (error) {
+          return PromiseReject(error);
+        }
+        if (closed) {
+          return PromiseReject(
+            new ERR_INVALID_STATE.TypeError('The writer is closed'));
+        }
+        validateObject(options, 'options');
+        const {
+          signal,
+        } = options;
+        if (signal !== undefined) {
+          validateAbortSignal(signal, 'options.signal');
+          if (signal.aborted) {
+            return PromiseReject(signal.reason);
+          }
+        }
+        chunk = newStreamsToUint8Array(chunk);
+        if (bytesRemaining >= 0 && chunk.byteLength > bytesRemaining) {
+          return PromiseReject(
+            new ERR_OUT_OF_RANGE('write', `<= ${bytesRemaining} bytes`,
+                                 chunk.byteLength));
+        }
+        if (bytesRemaining > 0) bytesRemaining -= chunk.byteLength;
+        const position = pos;
+        if (pos >= 0) pos += chunk.byteLength;
+        return writeAll(chunk, 0, chunk.byteLength, position, signal);
+      },
+
+      writev(chunks, options = kNullPrototo) {
+        if (error) {
+          return PromiseReject(error);
+        }
+        if (closed) {
+          return PromiseReject(
+            new ERR_INVALID_STATE.TypeError('The writer is closed'));
+        }
+        validateObject(options, 'options');
+        const {
+          signal,
+        } = options;
+        if (signal !== undefined) {
+          validateAbortSignal(signal, 'options.signal');
+          if (signal?.aborted) {
+            return PromiseReject(signal.reason);
+          }
+        }
+        chunks = newStreamsConvertChunks(chunks);
+        let totalSize = 0;
+        for (let i = 0; i < chunks.length; i++) {
+          totalSize += chunks[i].byteLength;
+        }
+        if (bytesRemaining >= 0 && totalSize > bytesRemaining) {
+          return PromiseReject(
+            new ERR_OUT_OF_RANGE('writev', `<= ${bytesRemaining} bytes`,
+                                 totalSize));
+        }
+        if (bytesRemaining > 0) bytesRemaining -= totalSize;
+        const position = pos;
+        if (pos >= 0) pos += totalSize;
+        return writevAll(chunks, position, signal);
+      },
+
+      writeSync(chunk) {
+        if (error || closed || asyncPending) return false;
+        chunk = newStreamsToUint8Array(chunk);
+        const length = chunk.byteLength;
+        if (length > syncWriteThreshold) return false;
+        if (length === 0) return true;
+        if (bytesRemaining >= 0 && length > bytesRemaining) return false;
+        const position = pos;
+        // First attempt - if this fails with zero bytes written,
+        // return false so pipeTo can fall back to async write().
+        const ctx = {};
+        const bytesWritten = binding.writeBuffer(
+          fd, chunk, 0, length, position, undefined, ctx) || 0;
+        if (ctx.errno !== undefined) return false;
+        totalBytesWritten += bytesWritten;
+        if (position >= 0) {
+          pos = position + bytesWritten;
+        }
+        if (bytesWritten === length) {
+          if (bytesRemaining > 0) bytesRemaining -= length;
+          return true;
+        }
+        // Partial write - bytes are on disk. Must complete or throw.
+        // Cannot return false here because pipeTo would re-send the
+        // full chunk, causing duplicate data on disk.
+        writeSyncAll(chunk, bytesWritten, length - bytesWritten,
+                     position >= 0 ? position + bytesWritten : -1);
+        if (bytesRemaining > 0) bytesRemaining -= length;
+        return true;
+      },
+
+      writevSync(chunks) {
+        if (error || closed || asyncPending) return false;
+        chunks = newStreamsConvertChunks(chunks);
+        let totalSize = 0;
+        for (let i = 0; i < chunks.length; i++) {
+          totalSize += chunks[i].byteLength;
+        }
+        if (totalSize > syncWriteThreshold) return false;
+        if (totalSize === 0) return true;
+        if (bytesRemaining >= 0 && totalSize > bytesRemaining) return false;
+        const position = pos;
+        // writeBuffers throws on error (zero bytes written) - safe
+        // to catch and return false for async fallback.
+        let bytesWritten;
+        try {
+          bytesWritten = binding.writeBuffers(fd, chunks, position) || 0;
+        } catch {
+          return false;
+        }
+        totalBytesWritten += bytesWritten;
+        if (position >= 0) {
+          pos = position + bytesWritten;
+        }
+        if (bytesWritten === totalSize) {
+          if (bytesRemaining > 0) bytesRemaining -= totalSize;
+          return true;
+        }
+        // Partial writev - bytes are on disk. Must complete or throw.
+        const rest = Buffer.concat(chunks);
+        writeSyncAll(rest, bytesWritten,
+                     rest.byteLength - bytesWritten,
+                     position >= 0 ? position + bytesWritten : -1);
+        if (bytesRemaining > 0) bytesRemaining -= totalSize;
+        return true;
+      },
+
+      end(options = kNullPrototo) {
+        if (error) {
+          return PromiseReject(error);
+        }
+        if (closed) {
+          return PromiseResolve(totalBytesWritten);
+        }
+        if (closing) {
+          return pendingEndPromise;
+        }
+        validateObject(options, 'options');
+        const {
+          signal,
+        } = options;
+        if (signal !== undefined) {
+          validateAbortSignal(signal, 'options.signal');
+          if (signal.aborted) {
+            return PromiseReject(signal.reason);
+          }
+        }
+        closing = true;
+        pendingEndPromise = PromisePrototypeThen(
+          cleanup(), () => totalBytesWritten);
+        return pendingEndPromise;
+      },
+
+      endSync() {
+        if (error) return -1;
+        if (closed) return totalBytesWritten;
+        if (asyncPending) return -1;
+        closed = true;
+        handle[kLocked] = false;
+        handle[kUnref]();
+        if (autoClose) {
+          handle[kCloseSync]();
+        }
+        return totalBytesWritten;
+      },
+
+      fail(reason) {
+        if (closed || error) return;
+        error = reason ?? new ERR_INVALID_STATE('Failed');
+        closed = true;
+        handle[kLocked] = false;
+        handle[kUnref]();
+        if (autoClose) {
+          handle[kCloseSync]();
+        }
+      },
+
+      [SymbolAsyncDispose]() {
+        if (closing) {
+          return pendingEndPromise ?? PromiseResolve();
+        }
+        if (!closed && !error) {
+          this.fail();
+        }
+        return PromiseResolve();
+      },
+
+      [SymbolDispose]() {
+        this.fail();
+      },
+    };
+  };
+}
+
 async function handleFdClose(fileOpPromise, closeFunc) {
   return PromisePrototypeThen(
     fileOpPromise,
@@ -456,7 +1107,7 @@ async function fsCall(fn, handle, ...args) {
 
   if (handle.fd === -1) {
     // eslint-disable-next-line no-restricted-syntax
-    const err = new Error('file closed');
+    const err = new Error(handle[kCloseReason] ?? 'file closed');
     err.code = 'EBADF';
     err.syscall = fn.name;
     throw err;
@@ -510,6 +1161,56 @@ async function writeFileHandle(filehandle, data, signal, encoding) {
   } while (remaining > 0);
 }
 
+async function readFileHandleWithUserBuffer(filehandle, options, size) {
+  const signal = options?.signal;
+  const encoding = options?.encoding;
+  const buffer = getReadFileBuffer(options, size);
+  const byteLengthName = getReadFileBufferByteLengthName(options);
+  let totalRead = 0;
+
+  while (totalRead < buffer.byteLength) {
+    checkAborted(signal);
+
+    const length = size === 0 ?
+      buffer.byteLength - totalRead :
+      MathMin(size - totalRead, kReadFileBufferLength);
+
+    const bytesRead = (await PromisePrototypeThen(
+      binding.read(filehandle.fd, buffer, totalRead, length, -1, kUsePromises),
+      undefined,
+      handleErrorFromBinding,
+    )) ?? 0;
+
+    totalRead += bytesRead;
+
+    if (bytesRead === 0 || totalRead === size) {
+      const result = buffer.subarray(0, totalRead);
+      return encoding ? result.toString(encoding) : result;
+    }
+  }
+
+  if (size === 0) {
+    checkAborted(signal);
+
+    const extraBuffer = Buffer.allocUnsafeSlow(1);
+    const bytesRead = (await PromisePrototypeThen(
+      binding.read(filehandle.fd, extraBuffer, 0, 1, -1, kUsePromises),
+      undefined,
+      handleErrorFromBinding,
+    )) ?? 0;
+
+    if (bytesRead !== 0) {
+      throw new ERR_INVALID_ARG_VALUE(
+        byteLengthName,
+        buffer.byteLength,
+        'is too small to contain the entire file',
+      );
+    }
+  }
+
+  return encoding ? buffer.toString(encoding) : buffer.subarray(0, totalRead);
+}
+
 async function readFileHandle(filehandle, options) {
   const signal = options?.signal;
   const encoding = options?.encoding;
@@ -537,6 +1238,10 @@ async function readFileHandle(filehandle, options) {
 
   if (size > kIoMaxLength)
     throw new ERR_FS_FILE_TOO_LARGE(size);
+
+  if (options.buffer !== undefined) {
+    return readFileHandleWithUserBuffer(filehandle, options, size);
+  }
 
   let totalRead = 0;
   const noSize = size === 0;
@@ -678,6 +1383,12 @@ async function read(handle, bufferOrParams, offset, length, position) {
 
   length ??= buffer.byteLength - offset;
 
+  if (position == null) {
+    position = -1;
+  } else {
+    validatePosition(position, 'position', length);
+  }
+
   if (length === 0)
     return { __proto__: null, bytesRead: length, buffer };
 
@@ -687,12 +1398,6 @@ async function read(handle, bufferOrParams, offset, length, position) {
   }
 
   validateOffsetLengthRead(offset, length, buffer.byteLength);
-
-  if (position == null) {
-    position = -1;
-  } else {
-    validatePosition(position, 'position', length);
-  }
 
   const bytesRead = (await PromisePrototypeThen(
     binding.read(handle.fd, buffer, offset, length, position, kUsePromises),
@@ -990,16 +1695,11 @@ async function symlink(target, path, type) {
     }
   }
 
-  if (permission.isEnabled()) {
-    // The permission model's security guarantees fall apart in the presence of
-    // relative symbolic links. Thus, we have to prevent their creation.
-    if (BufferIsBuffer(target)) {
-      if (!isAbsolute(BufferToString(target))) {
-        throw new ERR_ACCESS_DENIED('relative symbolic link target');
-      }
-    } else if (typeof target !== 'string' || !isAbsolute(toPathIfFileURL(target))) {
-      throw new ERR_ACCESS_DENIED('relative symbolic link target');
-    }
+  // Due to the nature of Node.js runtime, symlinks has different edge cases that can bypass
+  // the permission model security guarantees. Thus, this API is disabled unless fs.read
+  // and fs.write permission has been given.
+  if (permission.isEnabled() && !permission.has('fs')) {
+    throw new ERR_ACCESS_DENIED('fs.symlink API requires full fs.read and fs.write permissions.');
   }
 
   target = getValidatedPath(target, 'target');
@@ -1026,26 +1726,35 @@ async function fstat(handle, options = { bigint: false }) {
 }
 
 async function lstat(path, options = { bigint: false }) {
+  path = getValidatedPath(path);
+  if (permission.isEnabled() && !permission.has('fs.read', path)) {
+    const resource = pathModule.toNamespacedPath(BufferIsBuffer(path) ? BufferToString(path) : path);
+    throw new ERR_ACCESS_DENIED('Access to this API has been restricted', 'FileSystemRead', resource);
+  }
   const result = await PromisePrototypeThen(
-    binding.lstat(getValidatedPath(path), options.bigint, kUsePromises),
+    binding.lstat(path, options.bigint, kUsePromises),
     undefined,
     handleErrorFromBinding,
   );
   return getStatsFromBinding(result);
 }
 
-async function stat(path, options = { bigint: false }) {
+async function stat(path, options = { bigint: false, throwIfNoEntry: true }) {
   const result = await PromisePrototypeThen(
-    binding.stat(getValidatedPath(path), options.bigint, kUsePromises),
+    binding.stat(getValidatedPath(path), options.bigint, kUsePromises, options.throwIfNoEntry),
     undefined,
     handleErrorFromBinding,
   );
+
+  // Binding will resolve undefined if UV_ENOENT or UV_ENOTDIR and throwIfNoEntry is false
+  if (!options.throwIfNoEntry && result === undefined) return undefined;
+
   return getStatsFromBinding(result);
 }
 
 async function statfs(path, options = { bigint: false }) {
   const result = await PromisePrototypeThen(
-    binding.statfs(path, options.bigint, kUsePromises),
+    binding.statfs(getValidatedPath(path), options.bigint, kUsePromises),
     undefined,
     handleErrorFromBinding,
   );
@@ -1071,6 +1780,9 @@ async function unlink(path) {
 }
 
 async function fchmod(handle, mode) {
+  if (permission.isEnabled()) {
+    throw new ERR_ACCESS_DENIED('fchmod API is disabled when Permission Model is enabled.');
+  }
   mode = parseFileMode(mode, 'mode');
   return await PromisePrototypeThen(
     binding.fchmod(handle.fd, mode, kUsePromises),
@@ -1111,6 +1823,9 @@ async function lchown(path, uid, gid) {
 async function fchown(handle, uid, gid) {
   validateInteger(uid, 'uid', -1, kMaxUserId);
   validateInteger(gid, 'gid', -1, kMaxUserId);
+  if (permission.isEnabled()) {
+    throw new ERR_ACCESS_DENIED('fchown API is disabled when Permission Model is enabled.');
+  }
   return await PromisePrototypeThen(
     binding.fchown(handle.fd, uid, gid, kUsePromises),
     undefined,
@@ -1144,6 +1859,9 @@ async function utimes(path, atime, mtime) {
 }
 
 async function futimes(handle, atime, mtime) {
+  if (permission.isEnabled()) {
+    throw new ERR_ACCESS_DENIED('futimes API is disabled when Permission Model is enabled.');
+  }
   atime = toUnixTimestamp(atime, 'atime');
   mtime = toUnixTimestamp(mtime, 'mtime');
   return await PromisePrototypeThen(
@@ -1267,6 +1985,7 @@ async function appendFile(path, data, options) {
 
 async function readFile(path, options) {
   options = getOptions(options, { flag: 'r' });
+  validateReadFileBufferOptions(options);
   const flag = options.flag || 'r';
 
   if (path instanceof FileHandle)
@@ -1342,6 +2061,8 @@ module.exports = {
   },
 
   FileHandle,
+  kHandle,
+  kLocked,
   kRef,
   kUnref,
 };

@@ -93,13 +93,18 @@ function isLoopback(host) {
   return (
     hostLower === 'localhost' ||
     hostLower.startsWith('127.') ||
-    hostLower.startsWith('[::1]') ||
-    hostLower.startsWith('[0:0:0:0:0:0:0:1]')
+    hostLower === '[::1]' ||
+    hostLower === '[0:0:0:0:0:0:0:1]'
   );
 }
 
 module.exports = {
   kReinitializeHandle: Symbol('kReinitializeHandle'),
+  kSetNoDelay: Symbol('kSetNoDelay'),
+  kSetKeepAlive: Symbol('kSetKeepAlive'),
+  kSetKeepAliveInitialDelay: Symbol('kSetKeepAliveInitialDelay'),
+  kSetKeepAliveInterval: Symbol('kSetKeepAliveInterval'),
+  kSetKeepAliveCount: Symbol('kSetKeepAliveCount'),
   isIP,
   isIPv4,
   isIPv6,

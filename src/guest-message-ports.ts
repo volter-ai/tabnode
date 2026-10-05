@@ -1,6 +1,7 @@
 /** Real transports; Node loop references belong to the process using a port. */
 import { __reportUncaughtException } from './shims/process';
 import { withGuestExecution } from './guest-loop';
+import { markUntransferable, isUntransferable, validateTransferList } from './transfer-ownership';
 
 type Port = Record<string, any>;
 type PortState = { port: Port; referenced: boolean; closed: boolean; close: () => void };
@@ -33,6 +34,10 @@ function track(process: object, port: Port): Port {
   collection.add(state);
   const release = () => { state.closed = true; state.referenced = false; collection.delete(state); };
   const define = (key: string, value: unknown) => Object.defineProperty(port, key, { value, writable: true, configurable: true });
+  define('postMessage', (value: unknown, transfer?: unknown[] | { transfer?: unknown[] }) => {
+    validateTransferList(Array.isArray(transfer) ? transfer : transfer?.transfer);
+    return original.postMessage(value, transfer);
+  });
   define('ref', () => { if (!state.closed) { state.referenced = true; return original.ref?.(); } });
   define('unref', () => { state.referenced = false; return original.unref?.(); });
   define('hasRef', () => state.closed ? undefined : state.referenced);
@@ -148,7 +153,7 @@ function classes(process: object, Channel: any, PortConstructor: any) {
   // Borrowed native prototype calls (including emnapi's calls on received
   // ports) get this guest's ownership without changing the host prototype.
   MessagePort.prototype = Object.create(PortConstructor.prototype);
-  for (const name of ['ref', 'unref', 'hasRef', 'close', 'on', 'once', 'addListener', 'off', 'removeListener', 'removeAllListeners', 'addEventListener', 'removeEventListener']) {
+  for (const name of ['ref', 'unref', 'hasRef', 'postMessage', 'close', 'on', 'once', 'addListener', 'off', 'removeListener', 'removeAllListeners', 'addEventListener', 'removeEventListener']) {
     Object.defineProperty(MessagePort.prototype, name, { configurable: true, writable: true, value: function(this: Port, ...args: unknown[]) { return track(process, this)[name](...args); } });
   }
   MessageChannel.prototype = Channel.prototype;
@@ -171,6 +176,25 @@ export function guestMessageModule(process: object, original: Port, hostTranspor
   let result = cache.get(original);
   if (!result) {
     result = { ...original, ...(hostTransport ? guestMessageGlobals(process) : classes(process, original.MessageChannel, original.MessagePort)) };
+    (result as Port).markAsUntransferable = markUntransferable;
+    (result as Port).isMarkedAsUntransferable = isUntransferable;
+    if (typeof original.Worker === 'function') {
+      const Worker = function(this: unknown, ...args: unknown[]) {
+        if (!new.target) throw new TypeError('Worker must be constructed with new');
+        const worker = Reflect.construct(original.Worker, args) as Port;
+        const post = worker.postMessage.bind(worker);
+        Object.defineProperty(worker, 'postMessage', { configurable: true, writable: true,
+          value(value: unknown, transfer?: unknown[]) {
+            validateTransferList(transfer);
+            return post(value, transfer);
+          },
+        });
+        return worker;
+      };
+      Worker.prototype = original.Worker.prototype;
+      Object.setPrototypeOf(Worker, original.Worker);
+      (result as Port).Worker = Worker;
+    }
     (result as Port).default = result;
     cache.set(original, result);
   }

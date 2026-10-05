@@ -17,14 +17,15 @@ const {
   },
 } = require('internal/errors');
 const { getValidatedPath } = require('internal/fs/utils');
-const { kFSWatchStart, StatWatcher } = require('internal/fs/watchers');
+const { createIgnoreMatcher, kFSWatchStart, StatWatcher } = require('internal/fs/watchers');
 const { kEmptyObject } = require('internal/util');
-const { validateBoolean, validateAbortSignal } = require('internal/validators');
+const { validateBoolean, validateAbortSignal, validateIgnoreOption } = require('internal/validators');
 const {
   basename: pathBasename,
   join: pathJoin,
   relative: pathRelative,
   resolve: pathResolve,
+  sep: pathSep,
 } = require('path');
 
 let internalSync;
@@ -44,13 +45,15 @@ class FSWatcher extends EventEmitter {
   #symbolicFiles = new SafeSet();
   #rootPath = pathResolve();
   #watchingFile = false;
+  #ignoreMatcher = null;
 
   constructor(options = kEmptyObject) {
     super();
 
     assert(typeof options === 'object');
 
-    const { persistent, recursive, signal, encoding } = options;
+    const { persistent, recursive, signal, encoding, ignore } = options;
+    let { throwIfNoEntry } = options;
 
     // TODO(anonrig): Add non-recursive support to non-native-watcher for IBMi & AIX support.
     if (recursive != null) {
@@ -65,6 +68,12 @@ class FSWatcher extends EventEmitter {
       validateAbortSignal(signal, 'options.signal');
     }
 
+    if (throwIfNoEntry != null) {
+      validateBoolean(throwIfNoEntry, 'options.throwIfNoEntry');
+    } else {
+      throwIfNoEntry = true;
+    }
+
     if (encoding != null) {
       // This is required since on macOS and Windows it throws ERR_INVALID_ARG_VALUE
       if (typeof encoding !== 'string') {
@@ -72,7 +81,10 @@ class FSWatcher extends EventEmitter {
       }
     }
 
-    this.#options = { persistent, recursive, signal, encoding };
+    validateIgnoreOption(ignore, 'options.ignore');
+    this.#ignoreMatcher = createIgnoreMatcher(ignore);
+
+    this.#options = { persistent, recursive, signal, encoding, throwIfNoEntry };
   }
 
   close() {
@@ -95,8 +107,10 @@ class FSWatcher extends EventEmitter {
   #unwatchFiles(file) {
     this.#symbolicFiles.delete(file);
 
+    const childPrefix = file + pathSep;
     for (const filename of this.#files.keys()) {
-      if (StringPrototypeStartsWith(filename, file)) {
+      if (filename === file ||
+          StringPrototypeStartsWith(filename, childPrefix)) {
         this.#files.delete(filename);
         this.#watchers.get(filename)?.close();
         this.#watchers.delete(filename);
@@ -118,9 +132,15 @@ class FSWatcher extends EventEmitter {
         }
 
         const f = pathJoin(folder, file.name);
+        const relativePath = pathRelative(this.#rootPath, f);
+
+        // Skip watching ignored paths entirely to avoid kernel resource pressure
+        if (this.#ignoreMatcher?.(relativePath)) {
+          continue;
+        }
 
         if (!this.#files.has(f)) {
-          this.emit('change', 'rename', pathRelative(this.#rootPath, f));
+          this.emit('change', 'rename', relativePath);
 
           if (file.isSymbolicLink()) {
             this.#symbolicFiles.add(f);
@@ -140,7 +160,9 @@ class FSWatcher extends EventEmitter {
         }
       }
     } catch (error) {
-      this.emit('error', error);
+      if (error.code !== 'ENOENT') {
+        this.emit('error', error);
+      }
     }
   }
 
@@ -212,7 +234,7 @@ class FSWatcher extends EventEmitter {
         this.#watchFolder(filename);
       }
     } catch (error) {
-      if (error.code === 'ENOENT') {
+      if (!this.#options.throwIfNoEntry && error.code === 'ENOENT') {
         error.filename = filename;
         throw error;
       }

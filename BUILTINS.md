@@ -49,7 +49,7 @@ from .58.
 `os`'s file is Node's own, and its two real defects, `tmpdir()` ignoring
 `TMPDIR` and `setPriority` not round-tripping, are fixed.
 
-The library now comes from Node v24.5.0 (ADR-0003). Existing suite numbers above describe their recorded Node22.18 fixture runs; no Node24 suite score is claimed by this migration.
+The library now comes from Node v24.21.0 (ADR-0003). Existing suite numbers above describe their recorded Node22.18 fixture runs; no Node24 suite score is claimed by this migration.
 
 ## Kind 2 -- the engine's own, with the reason
 
@@ -93,3 +93,14 @@ What remains of `src/shims/fs.ts` is sixty lines and is not an `fs`: it is
 `createFsShim`, which names a tree for the length of a call so that a caller
 with a tree but no run -- WASI, the substrate's rolldown build -- can use
 Node's own `fs` over it.
+
+The 24.21 native-contract migration keeps the advanced IPC mode explicit:
+V8 binary serialization is unavailable and throws ERR_UNSUPPORTED_OPERATION
+(capability ipc.v8-serialization) at use; default JSON IPC remains supported.
+Opaque native-key comparison has the same named capability refusal. Virtual
+TCP streams have no IP TOS or keepalive probe packets; TOS returns ENOTSUP.
+TTY mode changes remain ADR-0023's gap. Buffer pooled ArrayBuffers cannot be
+transferred through the engine's guest transfer doors; unsafe allocations
+are zeroed by the browser. Error-source expressions use actual captured
+frames and compiled script text, without source-map remapping. These are
+qualified browser-engine boundaries, not a full Node24 compatibility score.

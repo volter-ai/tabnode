@@ -6,6 +6,7 @@
  */
 
 import { VirtualFS } from './virtual-fs';
+import { rememberCompiledSource } from './error-source';
 import { startGuestLoop, withGuestExecution } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { guestFetch, rememberRequestBodySource } from './fetch-transport';
@@ -58,6 +59,7 @@ import { PUNYCODE_SOURCE } from './punycode-source';
 import * as perfHooksShim from './shims/perf_hooks';
 import * as workerThreadsShim from './shims/worker_threads';
 import { guestMessageGlobals, guestMessageModule } from './guest-message-ports';
+import { validateTransferList } from './transfer-ownership';
 import * as esbuildShim from './shims/esbuild';
 import * as rollupShim from './shims/rollup';
 import * as v8Shim from './shims/v8';
@@ -297,6 +299,16 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       if (key === "MessageChannel" || key === "MessagePort") return guestMessageGlobals(process)[key];
       if (key === "performance") return perfHooksShim.performance;
       const value = Reflect.get(host, key, host);
+      if (key === "structuredClone" && typeof value === "function") {
+        if (boundGlobals.get(key)?.original !== value) boundGlobals.set(key, {
+          original: value,
+          bound: (input: unknown, options?: { transfer?: unknown[] }) => {
+            validateTransferList(options?.transfer);
+            return value.call(host, input, options);
+          },
+        });
+        return boundGlobals.get(key)!.bound;
+      }
       if (["setTimeout", "clearTimeout", "setInterval", "clearInterval"].includes(key as string) && typeof value === "function") {
         // The guest's timers, counted for it; rebuilt if the host's own change.
         if (boundGlobals.get(key)?.original !== value) {
@@ -391,6 +403,10 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
 // compiled through this alias, which is an indirect eval: global scope, sloppy.
 // The guest helpers are then out of scope by name, so they are arguments.
 const __substrateSloppyEval = eval;
+function __substrateCompileBody(source: string, owner: object): any {
+  rememberCompiledSource(owner, source);
+  return __substrateSloppyEval(source);
+}
 // An ES module stays strict, as Node keeps one: the lowering marks its output.
 const __substrateModuleMarker = '/*__substrate_module__*/';
 
@@ -2203,7 +2219,7 @@ function createRequire(
       let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
       let fn;
       try {
-        fn = __substrateSloppyEval(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode);
+        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, process);
       } catch (evalError) {
         const msg = evalError instanceof Error ? evalError.message : String(evalError);
       // A module with top-level await runs. Node runs a `.js` file of a package
@@ -2213,7 +2229,7 @@ function createRequire(
       // an async function body instead.
         if (!(evalError instanceof SyntaxError)) throw evalError;
         bodyKind = 'async';
-        try { fn = __substrateSloppyEval(__substrateAsyncBody(wrappedCode)); }
+        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), process); }
         catch { throw new SyntaxError(`${msg} (in ${resolvedPath})`); }
       }
       // Create dynamic import function for this module context
@@ -2770,11 +2786,11 @@ export class Runtime {
       let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
       let fn;
       try {
-        fn = __substrateSloppyEval(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode);
+        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, this.process);
       } catch (syntaxError) {
         if (!(syntaxError instanceof SyntaxError)) throw syntaxError;
         bodyKind = 'async';
-        try { fn = __substrateSloppyEval(__substrateAsyncBody(wrappedCode)); }
+        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), this.process); }
         catch { throw syntaxError; }
       }
       const body = withGuestExecution(() => fn(

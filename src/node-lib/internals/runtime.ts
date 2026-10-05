@@ -1,4 +1,7 @@
 import { withGuestExecution } from '../../guest-loop';
+import { AsyncLocalStorage } from '../../shims/async_hooks';
+import { kCancelTimer } from '../../timer-cancellation';
+import { registerHandle, refHandle, unrefHandle, releaseHandle, currentOwner, __adoptHandle } from '../binding/handles';
 /**
  * The internals Node's `net` names that are neither vendored nor a binding:
  * async ids, timers, stream defaults, the option table, and the three
@@ -65,6 +68,7 @@ let nextAsyncResourceId = 1;
 export class AsyncResource {
   #asyncId: number;
   #triggerAsyncId: number;
+  #restore = AsyncLocalStorage.snapshot();
 
   constructor(_type: string, options?: { triggerAsyncId?: number; requireManualDestroy?: boolean }) {
     this.#asyncId = nextAsyncResourceId++;
@@ -72,7 +76,7 @@ export class AsyncResource {
   }
 
   runInAsyncScope<T>(fn: (...args: never[]) => T, thisArg?: unknown, ...args: never[]): T {
-    return withGuestExecution(() => fn.apply(thisArg, args));
+    return withGuestExecution(() => this.#restore(() => fn.apply(thisArg, args))) as T;
   }
 
   emitDestroy(): this { return this; }
@@ -80,7 +84,10 @@ export class AsyncResource {
   triggerAsyncId(): number { return this.#triggerAsyncId; }
 
   static bind<T extends (...args: never[]) => unknown>(fn: T, _type?: string): T {
-    return fn;
+    const restore = AsyncLocalStorage.snapshot();
+    return function(this: unknown, ...args: never[]) {
+      return withGuestExecution(() => restore(() => fn.apply(this, args)));
+    } as T;
   }
 }
 
@@ -115,29 +122,71 @@ function realmClearTimeout(id: unknown): void {
  */
 export class UnrefTimeout {
   private id: unknown = null;
-  private readonly onTimeout: () => void;
-  private readonly msecs: number;
+  private onTimeout: (arg?: unknown) => void;
+  private msecs: number;
+  private arg: unknown;
+  private readonly owner = currentOwner();
+  private referenced = false;
+  private restore = AsyncLocalStorage.snapshot();
+  _destroyed = false;
+  _repeat = null;
 
-  constructor(onTimeout: () => void, msecs: number) {
+  constructor(onTimeout: (arg?: unknown) => void, msecs: number, arg?: unknown) {
     this.onTimeout = onTimeout;
     this.msecs = msecs;
-    this.id = realmSetTimeout(() => { this.id = null; this.onTimeout(); }, msecs);
+    this.arg = arg;
+    this.arm(false);
+  }
+
+  private arm(referenced: boolean): void {
+    this.referenced = referenced;
+    this._destroyed = false;
+    registerHandle(this);
+    __adoptHandle(this, this.owner);
+    if (!referenced) unrefHandle(this);
+    this.id = realmSetTimeout(() => {
+      this.id = null;
+      this._destroyed = true;
+      releaseHandle(this);
+      withGuestExecution(() => this.restore(() => this.onTimeout(this.arg)));
+    }, this.msecs);
+    if (!referenced) (this.id as { unref?: () => void } | null)?.unref?.();
   }
 
   refresh(): this {
+    const referenced = this.referenced;
     if (this.id !== null) realmClearTimeout(this.id);
-    this.id = realmSetTimeout(() => { this.id = null; this.onTimeout(); }, this.msecs);
+    this.arm(referenced);
+    return this;
+  }
+
+  reuse(callback: (arg?: unknown) => void, msecs: number, arg?: unknown): this {
+    this.onTimeout = callback;
+    this.msecs = msecs;
+    this.arg = arg;
+    this.restore = AsyncLocalStorage.snapshot();
+    this.arm(false);
     return this;
   }
 
   stop(): void {
     if (this.id !== null) realmClearTimeout(this.id);
     this.id = null;
+    this._destroyed = true;
+    releaseHandle(this);
   }
 
-  ref(): this { return this; }
-  unref(): this { return this; }
-  hasRef(): boolean { return false; }
+  [kCancelTimer](): void { this.stop(); }
+
+  close(callback?: () => void): void {
+    this.stop();
+    releaseHandle(this);
+    callback?.();
+  }
+
+  ref(): this { this.referenced = true; refHandle(this); (this.id as { ref?: () => void } | null)?.ref?.(); return this; }
+  unref(): this { this.referenced = false; unrefHandle(this); (this.id as { unref?: () => void } | null)?.unref?.(); return this; }
+  hasRef(): boolean { return this.referenced; }
 }
 
 export const TIMEOUT_MAX = 2 ** 31 - 1;
@@ -145,6 +194,12 @@ export const TIMEOUT_MAX = 2 ** 31 - 1;
 export const internalTimers = {
   kTimeout,
   TIMEOUT_MAX,
+  reuseOrCreateUnrefTimeout(timer: unknown, callback: (arg?: unknown) => void, after: number, arg?: unknown): UnrefTimeout {
+    if (typeof callback !== 'function') throw Object.assign(new TypeError('callback must be a function'), { code: 'ERR_INVALID_ARG_TYPE' });
+    return timer instanceof UnrefTimeout && timer._destroyed
+      ? timer.reuse(callback, after, arg)
+      : new UnrefTimeout(callback, after, arg);
+  },
   setUnrefTimeout: (fn: () => void, msecs: number): UnrefTimeout => new UnrefTimeout(fn, msecs),
   /** Node's `getTimerDuration`: a number in range, and 1 for anything under it. */
   getTimerDuration(msecs: unknown, name: string): number {
@@ -236,6 +291,7 @@ const optionValues: Record<string, unknown> = {
   '--max-http-header-size': 16 * 1024,
   '--insecure-http-parser': false,
   '--enable-source-maps': false,
+  '--use-env-proxy': false,
   '--experimental-transform-types': false,
 };
 

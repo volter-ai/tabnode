@@ -1,3 +1,4 @@
+import { kCancelTimer } from '../timer-cancellation';
 /**
  * Node's `Timeout`, over whatever the realm's timers answer.
  *
@@ -10,7 +11,7 @@
  * vendored file requires, in `src/node-lib/public-modules.ts`. They must agree
  * on the shape, because a timer made through one is cleared through the other.
  *
- * This file imports nothing, so both can read it.
+ * The cancellation symbol is a leaf shared with internal timers.
  */
 
 /** Node's `Timeout` over a browser's numeric id; anything else is already a handle. */
@@ -29,6 +30,10 @@ export function nodeTimeout(id: unknown): unknown {
 
 /** The realm's own id inside a {@link nodeTimeout}, for the clear that takes one. */
 export function timerHandleOf(id: unknown): unknown {
+  if (id && typeof id === 'object' && typeof (id as any)[kCancelTimer] === 'function') {
+    (id as any)[kCancelTimer]();
+    return undefined;
+  }
   return id && typeof id === "object" && "_id" in (id as object) ? (id as { _id: unknown })._id : id;
 }
 

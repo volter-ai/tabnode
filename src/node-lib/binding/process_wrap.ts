@@ -42,7 +42,14 @@ export interface StdioEntry {
   writable?: boolean;
 }
 
-/** What `ChildProcess.prototype.spawn` hands `Process.spawn`. */
+/** Node24.21 src/process_wrap.cc's flags; these are not libuv's bit values. */
+export const constants = Object.freeze({
+  kProcessFlagDetached: 1 << 0,
+  kProcessFlagWindowsHide: 1 << 1,
+  kProcessFlagWindowsVerbatimArguments: 1 << 2,
+});
+
+/** What the engine's process runner receives after decoding the native call. */
 export interface ProcessSpawnOptions {
   file: string;
   args?: string[];
@@ -245,7 +252,14 @@ export class Process implements OwnedHandle {
    * one that could not, which is what `ChildProcess.prototype.spawn` turns
    * into an `error` event or a throw.
    */
-  spawn(options: ProcessSpawnOptions): number {
+  spawn(file: string, args: string[] | undefined, cwd: string | undefined,
+    envPairs: string[] | undefined, stdio: StdioEntry[], flags: number,
+    uid?: number, gid?: number): number {
+    const options: ProcessSpawnOptions = {
+      file, args, cwd, envPairs, stdio, uid, gid,
+      detached: (flags & constants.kProcessFlagDetached) !== 0,
+      windowsHide: (flags & constants.kProcessFlagWindowsHide) !== 0,
+    };
     if (!runner) return UV_ENOENT;
     const env = environmentOf(options.envPairs);
     this.stdio = options.stdio ?? [];
@@ -424,4 +438,4 @@ export class Process implements OwnedHandle {
   }
 }
 
-export default { Process };
+export default { Process, constants };

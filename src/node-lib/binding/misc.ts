@@ -246,6 +246,10 @@ export const messagingBinding = {
  * own process, which is the run's.
  */
 export const errorsBinding = {
+  getErrorSourcePositions(): never {
+    throw Object.assign(new Error('Source positions require a compiled guest process.'),
+      { code: 'ERR_UNSUPPORTED_OPERATION', capability: 'errors.source-position' });
+  },
   triggerUncaughtException: (error: unknown, fromPromise = false): void => {
     const realm = (globalThis as {
       process?: { emit?: (event: string, ...args: unknown[]) => boolean; listenerCount?: (event: string) => number };

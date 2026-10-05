@@ -50,6 +50,9 @@ const constants = {
   kRejected: 2,
 };
 
+// A real rejection handler marks the host promise handled; no invented state.
+const intrinsicThen = Promise.prototype.then;
+
 /** Whether a key is an array index, which `getOwnNonIndexProperties` leaves out. */
 function isIndexKey(key: string): boolean {
   const number = Number(key);
@@ -65,6 +68,18 @@ export const utilBinding = {
     transfer_mode_private_symbol: Symbol('transfer_mode_private_symbol'),
   },
   constants,
+  constructSharedArrayBuffer(length: number): SharedArrayBuffer {
+    if (typeof SharedArrayBuffer !== 'function') {
+      throw Object.assign(new Error('SharedArrayBuffer is unavailable in this execution realm.'), { code: 'ERR_UNSUPPORTED_OPERATION' });
+    }
+    return new SharedArrayBuffer(length);
+  },
+  markPromiseAsHandled(promise: Promise<unknown>): void {
+    intrinsicThen.call(promise, undefined, () => undefined);
+  },
+  arrayBufferViewHasBuffer(view: ArrayBufferView): boolean {
+    return view.buffer !== undefined;
+  },
 
   /** Node warns differently for a deprecation raised inside a dependency; nothing here is. */
   isInsideNodeModules: (): boolean => false,

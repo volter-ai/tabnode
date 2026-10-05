@@ -1,6 +1,6 @@
 # What tabnode is and must remain
 
-tabnode is Node in a browser tab: Node's own library files, vendored unmodified from v24.5.0, on a binding layer
+tabnode is Node in a browser tab: Node's own library files, vendored unmodified from v24.21.0, on a binding layer
 written once that answers what libuv and V8's C++ would, inside a loader with an in-memory virtual filesystem,
 npm installation, esbuild-wasm transformation and a service worker that answers a guest server's port. Where
 Node's own module is native and the tab has no twin, the module is the engine's, with its reason in `BUILTINS.md`.

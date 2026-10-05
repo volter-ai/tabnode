@@ -180,4 +180,8 @@ export function isTTY(fd: number): boolean {
   return stream?.isTTY === true;
 }
 
-export default { TTY, isTTY, openPty, resizePty };
+// Node24.21/libuv uv_tty_mode_t; endpoint mode refusals remain ADR-0023.
+export const UV_TTY_MODE_NORMAL = 0;
+export const UV_TTY_MODE_IO = 2;
+export const UV_TTY_MODE_RAW_VT = 3;
+export default { TTY, isTTY, openPty, resizePty, UV_TTY_MODE_NORMAL, UV_TTY_MODE_IO, UV_TTY_MODE_RAW_VT };

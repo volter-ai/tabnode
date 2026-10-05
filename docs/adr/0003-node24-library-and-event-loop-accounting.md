@@ -5,13 +5,30 @@ Status: Accepted
 Date: 2026-10-05. Orchestrator unit8a, approved assessment and steps1–2;
 engine invariants: Node at source, unchanged packages, done in the tab.
 
-The library is Node22.18.0 while the default guest identity is22.12.0.
-The approved first migration checkpoint is the unchanged Node24.5.0
+The engine now carries unchanged Node24.5.0 library files with the
+matching default guest identity. The first migration checkpoint is the unchanged Node24.5.0
 library, the minimum version the pinned Twenty manifest requires. Its
 existing vendor paths move together with their binding contracts and loader
 initializers. A version string alone is not an upgrade. DNS0.5.64 and
 process-group identity/signals remain part of the contract. The subsequent
-current-LTS24.21.0 work remains separate from this checkpoint.
+current-LTS24.21.0 work carries the same invariants. Move primordials and
+Buffer's public/internal pair together, adapting explicit buffer arguments,
+allocation and non-transferable pool ownership at the native binding. Carry
+util/errors/validators and timer/async-context contracts before completing
+the unchanged filesystem/stream and socket/process closure. New internal
+modules must resolve their actual engine binding; an empty native object
+cannot substitute for a required contract. Library/guest identity moves to
+24.21.0 only with that coherent closure. Keep DNS, detached groups and
+MessagePort ref/unref and delivery. Preserve process-owned contexts, file
+handles and existing World routing. Native operations without a browser
+capability retain an exact named failure, never a fabricated result.
+
+This current-LTS milestone is qualified by the actual prepared page and
+released registry artifact. Twenty's unchanged production server must then
+serve its own /healthz200 through the declared World infrastructure and
+complete supported teardown. That application reading is distinct from
+library compatibility and from authentication/worker/native profiling
+qualification. No library copy or version override establishes startup.
 
 Node's perf_hooks exposes GC-kind constants and eventLoopUtilization.
 The engine currently exposes neither the constants nor utilization; a
@@ -53,3 +70,31 @@ References: Node24.5.0 lib/internal/perf/event_loop_utilization.js,
 src/node_perf.h and the approved external node24-plan.md; substrate
 ADR-0094 Optional capability availability. No Node suite, standalone
 check, typecheck, lint or review runs while building this unit.
+
+Current-LTS native boundaries: advanced child IPC now calls ipc_serdes. The
+browser has no V8 binary wire codec; serialize/deserialize throw
+ERR_UNSUPPORTED_OPERATION with capability ipc.v8-serialization on use,
+while default JSON IPC retains its upstream protocol. Native key comparison
+likewise refuses synchronously rather than inventing key identity/bytes.
+TCP type-of-service returns UV_ENOTSUP because virtual streams have no IP
+packet headers. Keepalive accepts the new interval/count arguments but
+virtual in-realm/owner pairings still have no TCP probe packets; it does not
+configure OS idle probes. TTY enum values follow libuv; ADR-0023's actual
+terminal mode refusal remains. No Windows HANDLE can be imported on the
+engine's Linux platform.
+
+Diagnostics native links and subscriber counts belong to each process's
+builtin graph. Only actual engine-origin publications use those links; no
+GC or CPU events are manufactured. Assertions obtain their position from
+captured native call sites and the actual transformed script compiled by
+the engine. Positions describe that script; source-map remapping is not
+enabled. Missing compiled-source/native-frame information is the named
+errors.source-position capability failure, not an invented empty location.
+AsyncLocalStorage defaultValue/name/exit/withScope operate on real context
+frames. Internal timers own real native callbacks, release handles when
+fired/cancelled, and restore captured context. Unsafe Buffer allocations are
+zeroed browser ArrayBuffers; the detach key prevents transfers through the
+engine's MessagePort, Worker and structuredClone doors, not arbitrary host
+code that bypasses these doors. The amaro dependency matches Node24.21's
+actual 1.1.11 release; compiler assets selected by a prepared image remain
+separately qualified by the substrate.

@@ -4,6 +4,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Move the unchanged vendored library and primordials to Node24.21.0; adapt
+  Buffer allocation/encoding and transfer ownership, actual timer/context
+  accounting, diagnostics links, packed child spawn flags and TTY/TCP
+  contracts. Preserve DNS and detached process groups. Default JSON IPC
+  works; unavailable V8 binary IPC serialization fails explicitly at use.
+  Page readings qualify these contracts; no full Node24 suite score or
+  Twenty application startup is claimed.
+
+
 ## v0.5.67 — 2026-10-05
 
 - Move the unchanged vendored library to Node v24.5.0 with its filesystem removal, TypeScript cache-disabled binding and readline history contracts; report the implemented library version by default, preserving host-name and POSIX process-group semantics (ADR-0003).

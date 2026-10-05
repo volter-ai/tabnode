@@ -29,6 +29,7 @@ const {
   ArrayPrototypePush,
   BigIntPrototypeToString,
   Boolean,
+  FunctionPrototypeCall,
   MathMax,
   Number,
   ObjectDefineProperties,
@@ -62,7 +63,6 @@ const {
 } = constants;
 
 const pathModule = require('path');
-const { isAbsolute } = pathModule;
 const { isArrayBufferView } = require('internal/util/types');
 
 const binding = internalBinding('fs');
@@ -84,7 +84,6 @@ const {
 
 const {
   FSReqCallback,
-  statValues,
 } = binding;
 const { toPathIfFileURL } = require('internal/url');
 const {
@@ -116,6 +115,8 @@ const {
   handleErrorFromBinding,
   preprocessSymlinkDestination,
   Stats,
+  getReadFileBuffer,
+  getReadFileBufferByteLengthName,
   getStatFsFromBinding,
   getStatsFromBinding,
   realpathCacheKey,
@@ -128,6 +129,7 @@ const {
   validateOffsetLengthWrite,
   validatePath,
   validatePosition,
+  validateReadFileBufferOptions,
   validateRmOptions,
   validateRmOptionsSync,
   validateRmdirOptions,
@@ -170,6 +172,11 @@ let ReadFileContext;
 // monkeypatching.
 let FileReadStream;
 let FileWriteStream;
+let Utf8Stream;
+
+function lazyLoadUtf8Stream() {
+  Utf8Stream ??= require('internal/streams/fast-utf8-stream');
+}
 
 // Ensure that callbacks run in the global context. Only use this function
 // for callbacks that are passed to the binding layer, callbacks that are
@@ -188,6 +195,7 @@ function makeStatsCallback(cb) {
 
   return (err, stats) => {
     if (err) return cb(err);
+    if (stats === undefined && err === null) return cb(null, undefined);
     cb(err, getStatsFromBinding(stats));
   };
 }
@@ -258,7 +266,7 @@ function exists(path, callback) {
 
 ObjectDefineProperty(exists, kCustomPromisifiedSymbol, {
   __proto__: null,
-  value: function exists(path) { // eslint-disable-line func-name-matching
+  value: function exists(path) {
     return new Promise((resolve) => fs.exists(path, resolve));
   },
 });
@@ -318,13 +326,7 @@ function readFileAfterStat(err, stats) {
   }
 
   try {
-    if (size === 0) {
-      // TODO(BridgeAR): If an encoding is set, use the StringDecoder to concat
-      // the result and reuse the buffer instead of allocating a new one.
-      context.buffers = [];
-    } else {
-      context.buffer = Buffer.allocUnsafeSlow(size);
-    }
+    context.prepare();
   } catch (err) {
     return context.close(err);
   }
@@ -357,8 +359,9 @@ function readFile(path, options, callback) {
   callback ||= options;
   validateFunction(callback, 'cb');
   options = getOptions(options, { flag: 'r' });
+  validateReadFileBufferOptions(options);
   ReadFileContext ??= require('internal/fs/read/context');
-  const context = new ReadFileContext(callback, options.encoding);
+  const context = new ReadFileContext(callback, options);
   context.isUserFd = isFd(path); // File descriptor ownership
 
   if (options.signal) {
@@ -366,7 +369,7 @@ function readFile(path, options, callback) {
   }
   if (context.isUserFd) {
     process.nextTick(function tick(context) {
-      ReflectApply(readFileAfterOpen, { context }, [null, path]);
+      FunctionPrototypeCall(readFileAfterOpen, { context }, null, path);
     }, context);
     return;
   }
@@ -404,6 +407,18 @@ function tryCreateBuffer(size, fd, isUserFd) {
   return buffer;
 }
 
+function tryGetReadFileBuffer(options, size, fd, isUserFd) {
+  let threw = true;
+  let buffer;
+  try {
+    buffer = getReadFileBuffer(options, size);
+    threw = false;
+  } finally {
+    if (threw && !isUserFd) fs.closeSync(fd);
+  }
+  return buffer;
+}
+
 function tryReadSync(fd, isUserFd, buffer, pos, len) {
   let threw = true;
   let bytesRead;
@@ -414,6 +429,36 @@ function tryReadSync(fd, isUserFd, buffer, pos, len) {
     if (threw && !isUserFd) fs.closeSync(fd);
   }
   return bytesRead;
+}
+
+function tryReadSyncWithUserBuffer(fd, isUserFd, buffer, byteLengthName) {
+  let pos = 0;
+  let bytesRead = 0;
+
+  while (pos < buffer.byteLength) {
+    bytesRead = tryReadSync(fd, isUserFd, buffer, pos, buffer.byteLength - pos);
+    pos += bytesRead;
+
+    if (bytesRead === 0) {
+      return pos;
+    }
+  }
+
+  const extraBuffer = tryCreateBuffer(1, fd, isUserFd);
+  bytesRead = tryReadSync(fd, isUserFd, extraBuffer, 0, 1);
+
+  if (bytesRead !== 0) {
+    if (!isUserFd) {
+      fs.closeSync(fd);
+    }
+    throw new ERR_INVALID_ARG_VALUE(
+      byteLengthName,
+      buffer.byteLength,
+      'is too small to contain the entire file',
+    );
+  }
+
+  return pos;
 }
 
 /**
@@ -427,8 +472,11 @@ function tryReadSync(fd, isUserFd, buffer, pos, len) {
  */
 function readFileSync(path, options) {
   options = getOptions(options, { flag: 'r' });
+  validateReadFileBufferOptions(options);
+  const hasUserBuffer = options.buffer !== undefined;
 
-  if (options.encoding === 'utf8' || options.encoding === 'utf-8') {
+  if ((options.encoding === 'utf8' || options.encoding === 'utf-8') &&
+      !hasUserBuffer) {
     if (!isInt32(path)) {
       path = getValidatedPath(path);
     }
@@ -444,7 +492,9 @@ function readFileSync(path, options) {
   let buffer; // Single buffer with file data
   let buffers; // List for when size is unknown
 
-  if (size === 0) {
+  if (hasUserBuffer) {
+    buffer = tryGetReadFileBuffer(options, size, fd, isUserFd);
+  } else if (size === 0) {
     buffers = [];
   } else {
     buffer = tryCreateBuffer(size, fd, isUserFd);
@@ -452,7 +502,21 @@ function readFileSync(path, options) {
 
   let bytesRead;
 
-  if (size !== 0) {
+  if (hasUserBuffer) {
+    if (size !== 0) {
+      do {
+        bytesRead = tryReadSync(fd, isUserFd, buffer, pos, size - pos);
+        pos += bytesRead;
+      } while (bytesRead !== 0 && pos < size);
+    } else {
+      pos = tryReadSyncWithUserBuffer(
+        fd,
+        isUserFd,
+        buffer,
+        getReadFileBufferByteLengthName(options),
+      );
+    }
+  } else if (size !== 0) {
     do {
       bytesRead = tryReadSync(fd, isUserFd, buffer, pos, size - pos);
       pos += bytesRead;
@@ -473,7 +537,9 @@ function readFileSync(path, options) {
   if (!isUserFd)
     fs.closeSync(fd);
 
-  if (size === 0) {
+  if (hasUserBuffer) {
+    buffer = buffer.subarray(0, pos);
+  } else if (size === 0) {
     // Data was collected into the buffers list.
     buffer = Buffer.concat(buffers, pos);
   } else if (pos < size) {
@@ -597,7 +663,6 @@ function openAsBlob(path, options = kEmptyObject) {
  */
 function read(fd, buffer, offsetOrOptions, length, position, callback) {
   fd = getValidatedFd(fd);
-
   let offset = offsetOrOptions;
   let params = null;
   if (arguments.length <= 4) {
@@ -641,6 +706,12 @@ function read(fd, buffer, offsetOrOptions, length, position, callback) {
 
   length |= 0;
 
+  if (position == null) {
+    position = -1;
+  } else {
+    validatePosition(position, 'position', length);
+  }
+
   if (length === 0) {
     return process.nextTick(function tick() {
       callback(null, 0, buffer);
@@ -653,12 +724,6 @@ function read(fd, buffer, offsetOrOptions, length, position, callback) {
   }
 
   validateOffsetLengthRead(offset, length, buffer.byteLength);
-
-  if (position == null) {
-    position = -1;
-  } else {
-    validatePosition(position, 'position', length);
-  }
 
   function wrapper(err, bytesRead) {
     // Retain a reference to buffer so that it can't be GC'ed too soon.
@@ -689,8 +754,6 @@ ObjectDefineProperty(read, kCustomPromisifyArgsSymbol,
  * @returns {number}
  */
 function readSync(fd, buffer, offsetOrOptions, length, position) {
-  fd = getValidatedFd(fd);
-
   validateBuffer(buffer);
 
   let offset = offsetOrOptions;
@@ -714,6 +777,12 @@ function readSync(fd, buffer, offsetOrOptions, length, position) {
 
   length |= 0;
 
+  if (position == null) {
+    position = -1;
+  } else {
+    validatePosition(position, 'position', length);
+  }
+
   if (length === 0) {
     return 0;
   }
@@ -724,12 +793,6 @@ function readSync(fd, buffer, offsetOrOptions, length, position) {
   }
 
   validateOffsetLengthRead(offset, length, buffer.byteLength);
-
-  if (position == null) {
-    position = -1;
-  } else {
-    validatePosition(position, 'position', length);
-  }
 
   return binding.read(fd, buffer, offset, length, position);
 }
@@ -779,7 +842,6 @@ ObjectDefineProperty(readv, kCustomPromisifyArgsSymbol,
  * @returns {number}
  */
 function readvSync(fd, buffers, position) {
-  fd = getValidatedFd(fd);
   validateBufferArray(buffers);
 
   if (typeof position !== 'number')
@@ -809,7 +871,6 @@ function write(fd, buffer, offsetOrOptions, length, position, callback) {
   }
 
   fd = getValidatedFd(fd);
-
   let offset = offsetOrOptions;
   if (isArrayBufferView(buffer)) {
     callback ||= position || length || offset;
@@ -880,7 +941,6 @@ ObjectDefineProperty(write, kCustomPromisifyArgsSymbol,
  * @returns {number}
  */
 function writeSync(fd, buffer, offsetOrOptions, length, position) {
-  fd = getValidatedFd(fd);
   const ctx = {};
   let result;
 
@@ -970,7 +1030,6 @@ ObjectDefineProperty(writev, kCustomPromisifyArgsSymbol, {
  * @returns {number}
  */
 function writevSync(fd, buffers, position) {
-  fd = getValidatedFd(fd);
   validateBufferArray(buffers);
 
   if (buffers.length === 0) {
@@ -1114,11 +1173,7 @@ function lazyLoadRimraf() {
 /**
  * Asynchronously removes a directory.
  * @param {string | Buffer | URL} path
- * @param {{
- *   maxRetries?: number;
- *   recursive?: boolean;
- *   retryDelay?: number;
- *   }} [options]
+ * @param {object} [options]
  * @param {(err?: Error) => any} callback
  * @returns {void}
  */
@@ -1162,11 +1217,7 @@ function rmdir(path, options, callback) {
 /**
  * Synchronously removes a directory.
  * @param {string | Buffer | URL} path
- * @param {{
- *   maxRetries?: number;
- *   recursive?: boolean;
- *   retryDelay?: number;
- *   }} [options]
+ * @param {object} [options]
  * @returns {void}
  */
 function rmdirSync(path, options) {
@@ -1242,6 +1293,11 @@ function rmSync(path, options) {
 function fdatasync(fd, callback) {
   const req = new FSReqCallback();
   req.oncomplete = makeCallback(callback);
+
+  if (permission.isEnabled()) {
+    callback(new ERR_ACCESS_DENIED('fdatasync API is disabled when Permission Model is enabled.'));
+    return;
+  }
   binding.fdatasync(fd, req);
 }
 
@@ -1253,6 +1309,9 @@ function fdatasync(fd, callback) {
  * @returns {void}
  */
 function fdatasyncSync(fd) {
+  if (permission.isEnabled()) {
+    throw new ERR_ACCESS_DENIED('fdatasync API is disabled when Permission Model is enabled.');
+  }
   binding.fdatasync(fd);
 }
 
@@ -1266,6 +1325,10 @@ function fdatasyncSync(fd) {
 function fsync(fd, callback) {
   const req = new FSReqCallback();
   req.oncomplete = makeCallback(callback);
+  if (permission.isEnabled()) {
+    callback(new ERR_ACCESS_DENIED('fsync API is disabled when Permission Model is enabled.'));
+    return;
+  }
   binding.fsync(fd, req);
 }
 
@@ -1276,6 +1339,9 @@ function fsync(fd, callback) {
  * @returns {void}
  */
 function fsyncSync(fd) {
+  if (permission.isEnabled()) {
+    throw new ERR_ACCESS_DENIED('fsync API is disabled when Permission Model is enabled.');
+  }
   binding.fsync(fd);
 }
 
@@ -1625,23 +1691,31 @@ function lstat(path, options = { bigint: false }, callback) {
 /**
  * Asynchronously gets the stats of a file.
  * @param {string | Buffer | URL} path
- * @param {{ bigint?: boolean; }} [options]
+ * @param {{ bigint?: boolean, signal?: AbortSignal }} [options]
  * @param {(
  *   err?: Error,
  *   stats?: Stats
  *   ) => any} callback
  * @returns {void}
  */
-function stat(path, options = { bigint: false }, callback) {
+function stat(path, options = { bigint: false, throwIfNoEntry: true }, callback) {
   if (typeof options === 'function') {
     callback = options;
     options = kEmptyObject;
+  } else if (options === null || typeof options !== 'object') {
+    options = kEmptyObject;
+  } else {
+    options = getOptions(options, { bigint: false });
   }
+
   callback = makeStatsCallback(callback);
+  path = getValidatedPath(path);
+
+  if (checkAborted(options.signal, callback)) return;
 
   const req = new FSReqCallback(options.bigint);
   req.oncomplete = callback;
-  binding.stat(getValidatedPath(path), options.bigint, req);
+  binding.stat(getValidatedPath(path), options.bigint, req, options.throwIfNoEntry);
 }
 
 function statfs(path, options = { bigint: false }, callback) {
@@ -1659,7 +1733,7 @@ function statfs(path, options = { bigint: false }, callback) {
 
     callback(err, getStatFsFromBinding(stats));
   };
-  binding.statfs(getValidatedPath(path), options.bigint, req);
+  binding.statfs(path, options.bigint, req);
 }
 
 /**
@@ -1694,7 +1768,7 @@ function lstatSync(path, options = { bigint: false, throwIfNoEntry: true }) {
     throw new ERR_ACCESS_DENIED('Access to this API has been restricted', 'FileSystemRead', resource);
   }
   const stats = binding.lstat(
-    getValidatedPath(path),
+    path,
     options.bigint,
     undefined,
     options.throwIfNoEntry,
@@ -1781,18 +1855,12 @@ function symlink(target, path, type, callback) {
     validateOneOf(type, 'type', ['dir', 'file', 'junction', null, undefined]);
   }
 
-  if (permission.isEnabled()) {
-    // The permission model's security guarantees fall apart in the presence of
-    // relative symbolic links. Thus, we have to prevent their creation.
-    if (BufferIsBuffer(target)) {
-      if (!isAbsolute(BufferToString(target))) {
-        callback(new ERR_ACCESS_DENIED('relative symbolic link target'));
-        return;
-      }
-    } else if (typeof target !== 'string' || !isAbsolute(toPathIfFileURL(target))) {
-      callback(new ERR_ACCESS_DENIED('relative symbolic link target'));
-      return;
-    }
+  // Due to the nature of Node.js runtime, symlinks has different edge cases that can bypass
+  // the permission model security guarantees. Thus, this API is disabled unless fs.read
+  // and fs.write permission has been given.
+  if (permission.isEnabled() && !permission.has('fs')) {
+    callback(new ERR_ACCESS_DENIED('fs.symlink API requires full fs.read and fs.write permissions.'));
+    return;
   }
 
   target = getValidatedPath(target, 'target');
@@ -1856,16 +1924,11 @@ function symlinkSync(target, path, type) {
     }
   }
 
-  if (permission.isEnabled()) {
-    // The permission model's security guarantees fall apart in the presence of
-    // relative symbolic links. Thus, we have to prevent their creation.
-    if (BufferIsBuffer(target)) {
-      if (!isAbsolute(BufferToString(target))) {
-        throw new ERR_ACCESS_DENIED('relative symbolic link target');
-      }
-    } else if (typeof target !== 'string' || !isAbsolute(toPathIfFileURL(target))) {
-      throw new ERR_ACCESS_DENIED('relative symbolic link target');
-    }
+  // Due to the nature of Node.js runtime, symlinks has different edge cases that can bypass
+  // the permission model security guarantees. Thus, this API is disabled unless fs.read
+  // and fs.write permission has been given.
+  if (permission.isEnabled() && !permission.has('fs')) {
+    throw new ERR_ACCESS_DENIED('fs.symlink API requires full fs.read and fs.write permissions.');
   }
 
   target = getValidatedPath(target, 'target');
@@ -2206,6 +2269,11 @@ function futimes(fd, atime, mtime, callback) {
   mtime = toUnixTimestamp(mtime, 'mtime');
   callback = makeCallback(callback);
 
+  if (permission.isEnabled()) {
+    callback(new ERR_ACCESS_DENIED('futimes API is disabled when Permission Model is enabled.'));
+    return;
+  }
+
   const req = new FSReqCallback();
   req.oncomplete = callback;
   binding.futimes(fd, atime, mtime, req);
@@ -2221,6 +2289,10 @@ function futimes(fd, atime, mtime, callback) {
  * @returns {void}
  */
 function futimesSync(fd, atime, mtime) {
+  if (permission.isEnabled()) {
+    throw new ERR_ACCESS_DENIED('futimes API is disabled when Permission Model is enabled.');
+  }
+
   binding.futimes(
     fd,
     toUnixTimestamp(atime, 'atime'),
@@ -2500,6 +2572,7 @@ function appendFileSync(path, data, options) {
  *   recursive?: boolean;
  *   encoding?: string;
  *   signal?: AbortSignal;
+ *   throwIfNoEntry?: boolean;
  *   }} [options]
  * @param {(
  *   eventType?: string,
@@ -2518,6 +2591,7 @@ function watch(filename, options, listener) {
 
   if (options.persistent === undefined) options.persistent = true;
   if (options.recursive === undefined) options.recursive = false;
+  if (options.throwIfNoEntry === undefined) options.throwIfNoEntry = true;
 
   let watcher;
   const watchers = require('internal/fs/watchers');
@@ -2534,7 +2608,9 @@ function watch(filename, options, listener) {
     watcher[watchers.kFSWatchStart](path,
                                     options.persistent,
                                     options.recursive,
-                                    options.encoding);
+                                    options.encoding,
+                                    options.ignore,
+                                    options.throwIfNoEntry);
   }
 
   if (listener) {
@@ -2640,12 +2716,21 @@ function unwatchFile(filename, listener) {
 
 
 let splitRoot;
+let getRealpathRootLstatPath;
 if (isWindows) {
   // Regex to find the device root on Windows (e.g. 'c:\\'), including trailing
   // slash.
   const splitRootRe = /^(?:[a-zA-Z]:|[\\/]{2}[^\\/]+[\\/][^\\/]+)?[\\/]*/;
+  const namespacedDriveRootRe = /^\\\\\?\\([a-zA-Z]:\\)$/;
   splitRoot = function splitRoot(str) {
     return SideEffectFreeRegExpPrototypeExec(splitRootRe, str)[0];
+  };
+
+  // The root probe is the only use of this path. Passing a namespaced drive
+  // root to the binding would lose its trailing separator during resolution.
+  getRealpathRootLstatPath = function getRealpathRootLstatPath(path) {
+    const match = SideEffectFreeRegExpPrototypeExec(namespacedDriveRootRe, path);
+    return match === null ? path : match[1];
   };
 } else {
   splitRoot = function splitRoot(str) {
@@ -2655,6 +2740,7 @@ if (isWindows) {
     }
     return str;
   };
+
 }
 
 function encodeRealpathResult(result, options) {
@@ -2710,6 +2796,11 @@ function realpathSync(p, options) {
   const seenLinks = new SafeMap();
   const knownHard = new SafeSet();
   const original = p;
+  // Whether the symlink this walk resolved last pointed at a pipe or a
+  // socket, which is where the walk stops. It cannot be read back from the
+  // shared stat buffer, which holds the last stat made anywhere in the
+  // process rather than the last one made here.
+  let reachedPipeOrSocket = false;
 
   // Current character position in p
   let pos;
@@ -2726,7 +2817,8 @@ function realpathSync(p, options) {
 
   // On windows, check that the root exists. On unix there is no need.
   if (isWindows) {
-    const out = binding.lstat(base, false, undefined, true /* throwIfNoEntry */);
+    const out = binding.lstat(
+      getRealpathRootLstatPath(base), false, undefined, true /* throwIfNoEntry */);
     if (out === undefined) {
       return;
     }
@@ -2753,8 +2845,7 @@ function realpathSync(p, options) {
 
     // Continue if not a symlink, break if a pipe/socket
     if (knownHard.has(base) || cache?.get(base) === base) {
-      if (isFileType(statValues, S_IFIFO) ||
-          isFileType(statValues, S_IFSOCK)) {
+      if (reachedPipeOrSocket) {
         break;
       }
       continue;
@@ -2792,7 +2883,9 @@ function realpathSync(p, options) {
         }
       }
       if (linkTarget === null) {
-        binding.stat(base, false, undefined, true);
+        const targetStats = binding.stat(base, false, undefined, true);
+        reachedPipeOrSocket = isFileType(targetStats, S_IFIFO) ||
+          isFileType(targetStats, S_IFSOCK);
         linkTarget = binding.readlink(base, undefined);
       }
       resolvedLink = pathModule.resolve(previous, linkTarget);
@@ -2810,7 +2903,8 @@ function realpathSync(p, options) {
 
     // On windows, check that the root exists. On unix there is no need.
     if (isWindows && !knownHard.has(base)) {
-      const out = binding.lstat(base, false, undefined, true /* throwIfNoEntry */);
+      const out = binding.lstat(
+        getRealpathRootLstatPath(base), false, undefined, true /* throwIfNoEntry */);
       if (out === undefined) {
         return;
       }
@@ -2864,6 +2958,11 @@ function realpath(p, options, callback) {
 
   const seenLinks = new SafeMap();
   const knownHard = new SafeSet();
+  // Whether the symlink this walk resolved last pointed at a pipe or a
+  // socket, which is where the walk stops. It cannot be read back from the
+  // shared stat buffer, which holds the last stat made anywhere in the
+  // process rather than the last one made here.
+  let reachedPipeOrSocket = false;
 
   // Current character position in p
   let pos;
@@ -2879,7 +2978,7 @@ function realpath(p, options, callback) {
 
   // On windows, check that the root exists. On unix there is no need.
   if (isWindows && !knownHard.has(base)) {
-    fs.lstat(base, (err) => {
+    fs.lstat(getRealpathRootLstatPath(base), (err) => {
       if (err) return callback(err);
       knownHard.add(base);
       LOOP();
@@ -2912,8 +3011,7 @@ function realpath(p, options, callback) {
 
     // Continue if not a symlink, break if a pipe/socket
     if (knownHard.has(base)) {
-      if (isFileType(statValues, S_IFIFO) ||
-          isFileType(statValues, S_IFSOCK)) {
+      if (reachedPipeOrSocket) {
         return callback(null, encodeRealpathResult(p, options));
       }
       return process.nextTick(LOOP);
@@ -2943,8 +3041,10 @@ function realpath(p, options, callback) {
         return gotTarget(null, seenLinks.get(id));
       }
     }
-    fs.stat(base, (err) => {
+    fs.stat(base, (err, targetStats) => {
       if (err) return callback(err);
+
+      reachedPipeOrSocket = targetStats.isFIFO() || targetStats.isSocket();
 
       fs.readlink(base, (err, target) => {
         if (!isWindows) seenLinks.set(id, target);
@@ -2967,7 +3067,7 @@ function realpath(p, options, callback) {
 
     // On windows, check that the root exists. On unix there is no need.
     if (isWindows && !knownHard.has(base)) {
-      fs.lstat(base, (err) => {
+      fs.lstat(getRealpathRootLstatPath(base), (err) => {
         if (err) return callback(err);
         knownHard.add(base);
         LOOP();
@@ -3351,6 +3451,11 @@ module.exports = fs = {
 
   set FileWriteStream(val) {
     FileWriteStream = val;
+  },
+
+  get Utf8Stream() {
+    lazyLoadUtf8Stream();
+    return Utf8Stream;
   },
 
   // For tests

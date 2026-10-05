@@ -48,6 +48,7 @@ const {
   StringPrototypeEndsWith,
   StringPrototypeIncludes,
   StringPrototypeIndexOf,
+  StringPrototypeRepeat,
   StringPrototypeSlice,
   StringPrototypeSplit,
   StringPrototypeStartsWith,
@@ -1124,6 +1125,8 @@ E('ERR_AMBIGUOUS_ARGUMENT', 'The "%s" argument is ambiguous. %s', TypeError);
 E('ERR_ARG_NOT_ITERABLE', '%s must be iterable', TypeError);
 E('ERR_ASSERTION', '%s', Error);
 E('ERR_ASYNC_CALLBACK', '%s must be a function', TypeError);
+E('ERR_ASYNC_LOADER_REQUEST_NEVER_SETTLED',
+  'Async loader request never settled', Error);
 E('ERR_ASYNC_TYPE', 'Invalid name for async "type": %s', TypeError);
 E('ERR_BROTLI_INVALID_PARAM', '%s is not a valid Brotli parameter', RangeError);
 E('ERR_BUFFER_OUT_OF_BOUNDS',
@@ -1148,7 +1151,9 @@ E('ERR_CHILD_PROCESS_STDIO_MAXBUFFER', '%s maxBuffer length exceeded',
   RangeError);
 E('ERR_CONSOLE_WRITABLE_STREAM',
   'Console expects a writable stream instance for %s', TypeError);
+E('ERR_CONSTRUCT_CALL_REQUIRED', 'Class constructor %s cannot be invoked without `new`', TypeError);
 E('ERR_CONTEXT_NOT_INITIALIZED', 'context used is not initialized', Error);
+E('ERR_CRYPTO_ARGON2_NOT_SUPPORTED', 'Argon2 algorithm not supported', Error);
 E('ERR_CRYPTO_CUSTOM_ENGINE_NOT_SUPPORTED',
   'Custom engines not supported by this OpenSSL', Error);
 E('ERR_CRYPTO_ECDH_INVALID_FORMAT', 'Invalid ECDH format: %s', TypeError);
@@ -1169,12 +1174,18 @@ E('ERR_CRYPTO_INVALID_JWK', 'Invalid JWK data', TypeError);
 E('ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE',
   'Invalid key object type %s, expected %s.', TypeError);
 E('ERR_CRYPTO_INVALID_STATE', 'Invalid state for operation %s', Error);
+E('ERR_CRYPTO_KEM_NOT_SUPPORTED', 'KEM is not supported', Error);
 E('ERR_CRYPTO_PBKDF2_ERROR', 'PBKDF2 error', Error);
 E('ERR_CRYPTO_SCRYPT_NOT_SUPPORTED', 'Scrypt algorithm not supported', Error);
 // Switch to TypeError. The current implementation does not seem right.
 E('ERR_CRYPTO_SIGN_KEY_REQUIRED', 'No key provided to sign', Error);
 E('ERR_DEBUGGER_ERROR', '%s', Error);
-E('ERR_DEBUGGER_STARTUP_ERROR', '%s', Error);
+E('ERR_DEBUGGER_STARTUP_ERROR', function(message, details = undefined) {
+  if (details !== undefined) {
+    ObjectAssign(this, details);
+  }
+  return message;
+}, Error);
 E('ERR_DIR_CLOSED', 'Directory handle was closed', Error);
 E('ERR_DIR_CONCURRENT_OPERATION',
   'Cannot do synchronous work on directory handle with concurrent ' +
@@ -1313,6 +1324,8 @@ E('ERR_HTTP2_STREAM_SELF_DEPENDENCY',
 E('ERR_HTTP2_TOO_MANY_CUSTOM_SETTINGS',
   'Number of custom settings exceeds MAX_ADDITIONAL_SETTINGS', Error);
 E('ERR_HTTP2_TOO_MANY_INVALID_FRAMES', 'Too many invalid HTTP/2 frames', Error);
+E('ERR_HTTP2_TOO_MANY_ORIGINS',
+  'The server sent more ORIGIN frames than the allowed number of %s', Error);
 E('ERR_HTTP2_TRAILERS_ALREADY_SENT',
   'Trailing headers have already been sent', Error);
 E('ERR_HTTP2_TRAILERS_NOT_READY',
@@ -1473,7 +1486,10 @@ E('ERR_INVALID_FD',
 E('ERR_INVALID_FD_TYPE', 'Unsupported fd type: %s', TypeError);
 E('ERR_INVALID_FILE_URL_HOST',
   'File URL host must be "localhost" or empty on %s', TypeError);
-E('ERR_INVALID_FILE_URL_PATH', 'File URL path %s', TypeError);
+E('ERR_INVALID_FILE_URL_PATH', function(reason, input) {
+  this.input = input;
+  return `File URL path ${reason}`;
+}, TypeError);
 E('ERR_INVALID_HANDLE_TYPE', 'This handle type cannot be sent', TypeError);
 E('ERR_INVALID_HTTP_TOKEN', '%s must be a valid HTTP token ["%s"]', TypeError, HideStackFramesError);
 E('ERR_INVALID_IP_ADDRESS', 'Invalid IP address: %s', TypeError);
@@ -1586,6 +1602,7 @@ E('ERR_MISSING_ARGS',
     return `${msg} must be specified`;
   }, TypeError);
 E('ERR_MISSING_OPTION', '%s is required', TypeError);
+E('ERR_MODULE_LINK_MISMATCH', '%s', TypeError);
 E('ERR_MODULE_NOT_FOUND', function(path, base, exactUrl) {
   if (exactUrl) {
     lazyInternalUtil().setOwnProperty(this, 'url', `${exactUrl}`);
@@ -1639,6 +1656,15 @@ E('ERR_PACKAGE_IMPORT_NOT_DEFINED', (specifier, packagePath, base) => {
   return `Package import specifier "${specifier}" is not defined${packagePath ?
     ` in package ${packagePath}package.json` : ''} imported from ${base}`;
 }, TypeError);
+E('ERR_PACKAGE_MAP_EXTERNAL_FILE', (specifier, parentPath, configPath) => {
+  return `Cannot resolve "${specifier}" from "${parentPath}": file is not within any package defined in ${configPath}`;
+}, Error);
+E('ERR_PACKAGE_MAP_INVALID', (configPath, reason) => {
+  return `Invalid package-map.json at "${configPath}": ${reason}`;
+}, SyntaxError);
+E('ERR_PACKAGE_MAP_KEY_NOT_FOUND', (key, configPath) => {
+  return `Package key "${key}" referenced in dependencies but not defined in ${configPath}`;
+}, Error);
 E('ERR_PACKAGE_PATH_NOT_EXPORTED', (pkgPath, subpath, base = undefined) => {
   if (subpath === '.')
     return `No "exports" main defined in ${pkgPath}package.json${base ?
@@ -1660,21 +1686,49 @@ E('ERR_PERFORMANCE_INVALID_TIMESTAMP',
 E('ERR_PERFORMANCE_MEASURE_INVALID_OPTIONS', '%s', TypeError);
 E('ERR_PROXY_INVALID_CONFIG', '%s', Error);
 E('ERR_PROXY_TUNNEL', '%s', Error);
-E('ERR_QUIC_APPLICATION_ERROR', 'A QUIC application error occurred. %d [%s]', Error);
 E('ERR_QUIC_CONNECTION_FAILED', 'QUIC connection failed', Error);
 E('ERR_QUIC_ENDPOINT_CLOSED', 'QUIC endpoint closed: %s (%d)', Error);
 E('ERR_QUIC_OPEN_STREAM_FAILED', 'Failed to open QUIC stream', Error);
-E('ERR_QUIC_TRANSPORT_ERROR', 'A QUIC transport error occurred. %d [%s]', Error);
+E('ERR_QUIC_STREAM_ABORTED', '%s', Error);
+E('ERR_QUIC_STREAM_RESET',
+  'The QUIC stream was reset by the peer with error code %d', Error);
 E('ERR_QUIC_VERSION_NEGOTIATION_ERROR', 'The QUIC session requires version negotiation', Error);
-E('ERR_REQUIRE_ASYNC_MODULE', function(filename, parentFilename) {
-  let message = 'require() cannot be used on an ESM ' +
-  'graph with top-level await. Use import() instead. To see where the' +
-  ' top-level await comes from, use --experimental-print-required-tla.';
-  if (parentFilename) {
-    message += `\n  From ${parentFilename} `;
+E('ERR_REQUIRE_ASYNC_MODULE', function(filename, parent, locations) {
+  let message = 'require() cannot be used on an ESM graph with top-level await. Use import() instead.';
+  const { getOptionValue } = require('internal/options');
+  if (!getOptionValue('--experimental-print-required-tla')) {
+    message += ' To see where the top-level await comes from, use --experimental-print-required-tla.';
   }
   if (filename) {
-    message += `\n  Requiring ${filename} `;
+    message += `\nRequired module: ${filename}`;
+  }
+  if (parent) {
+    const { getRequireStack } = require('internal/modules/helpers');
+    const requireStack = getRequireStack(parent);
+    if (requireStack.length > 0) {
+      message += '\nRequire stack:\n- ' +
+                ArrayPrototypeJoin(requireStack, '\n- ');
+    }
+    ObjectDefineProperty(this, 'requireStack', {
+      __proto__: null,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+      value: requireStack,
+    });
+  }
+  if (locations && locations.length > 0) {
+    const { urlToFilename } = require('internal/modules/helpers');
+    const frames = ArrayPrototypeMap(locations, ({ url, line, column, sourceLine }) =>
+      `${urlToFilename(url)}:${line}\n\n${sourceLine}\n${StringPrototypeRepeat(' ', column - 1)}^\n`);
+    setArrowMessage(this, ArrayPrototypeJoin(frames, '\n'));
+    ObjectDefineProperty(this, 'topLevelAwaitLocations', {
+      __proto__: null,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+      value: locations,
+    });
   }
   return message;
 }, Error);
@@ -1708,6 +1762,15 @@ E('ERR_REQUIRE_ESM',
       'all ES modules instead).\n';
     return msg;
   }, Error);
+E('ERR_REQUIRE_ESM_RACE_CONDITION', (filename, parentFilename, isForAsyncLoaderHookWorker) => {
+  let raceMessage = `Cannot require() ES Module ${filename} because it is not yet fully loaded.\n`;
+  raceMessage += 'This may be caused by a race condition if the module is simultaneously dynamically ';
+  raceMessage += 'import()-ed via Promise.all().\n';
+  raceMessage += 'Try await-ing the import() sequentially in a loop instead.\n';
+  raceMessage += ` (From ${parentFilename ? `${parentFilename} in ` : ' '}`;
+  raceMessage += `${isForAsyncLoaderHookWorker ? 'loader hook worker thread' : 'non-loader-hook thread'})`;
+  return raceMessage;
+}, Error);
 E('ERR_SCRIPT_EXECUTION_INTERRUPTED',
   'Script execution was interrupted by `SIGINT`', Error);
 E('ERR_SERVER_ALREADY_LISTEN',
@@ -1738,6 +1801,8 @@ E('ERR_SOCKET_CONNECTION_TIMEOUT',
 E('ERR_SOCKET_DGRAM_IS_CONNECTED', 'Already connected', Error);
 E('ERR_SOCKET_DGRAM_NOT_CONNECTED', 'Not connected', Error);
 E('ERR_SOCKET_DGRAM_NOT_RUNNING', 'Not running', Error);
+E('ERR_SOCKET_HANDLE_ADOPTED',
+  'The bound socket has already been adopted by a server or socket', Error);
 E('ERR_SOURCE_MAP_CORRUPT', `The source map for '%s' does not exist or is corrupt.`, Error);
 E('ERR_SOURCE_MAP_MISSING_SOURCE', `Cannot find '%s' imported from the source map for '%s'`, Error);
 E('ERR_SRI_PARSE',
@@ -1748,6 +1813,8 @@ E('ERR_STREAM_ALREADY_FINISHED',
   Error);
 E('ERR_STREAM_CANNOT_PIPE', 'Cannot pipe, not readable', Error);
 E('ERR_STREAM_DESTROYED', 'Cannot call %s after a stream was destroyed', Error);
+E('ERR_STREAM_ITER_MISSING_FLAG',
+  'The stream/iter API requires the --experimental-stream-iter flag', TypeError);
 E('ERR_STREAM_NULL_VALUES', 'May not write null values to stream', TypeError);
 E('ERR_STREAM_PREMATURE_CLOSE', 'Premature close', Error);
 E('ERR_STREAM_PUSH_AFTER_EOF', 'stream.push() after EOF', Error);
@@ -1802,6 +1869,8 @@ E('ERR_TLS_PROTOCOL_VERSION_CONFLICT',
   'TLS protocol version %j conflicts with secureProtocol %j', TypeError);
 E('ERR_TLS_RENEGOTIATION_DISABLED',
   'TLS session renegotiation disabled for this socket', Error);
+E('ERR_TLS_RENEGOTIATION_UNSUPPORTED',
+  'TLS session renegotiation is unsupported by this TLS implementation', Error);
 
 // This should probably be a `TypeError`.
 E('ERR_TLS_REQUIRED_SERVER_NAME',
@@ -1883,7 +1952,14 @@ E('ERR_VM_MODULE_NOT_MODULE',
   'Provided module is not an instance of Module', Error);
 E('ERR_VM_MODULE_STATUS', 'Module status %s', Error);
 E('ERR_WASI_ALREADY_STARTED', 'WASI instance has already started', Error);
+E('ERR_WEBASSEMBLY_NOT_SUPPORTED',
+  'WebAssembly is not supported in this environment, but is required for %s',
+  Error);
 E('ERR_WEBASSEMBLY_RESPONSE', 'WebAssembly response %s', TypeError);
+E('ERR_WORKER_HANDLE_NOT_TRANSFERABLE',
+  '%s cannot be transferred in its current state; it must be a freshly ' +
+  'created or accepted handle that has not started reading and has no ' +
+  'pending writes', Error);
 E('ERR_WORKER_INIT_FAILED', 'Worker initialization failure: %s', Error);
 E('ERR_WORKER_INVALID_EXEC_ARGV', (errors, msg = 'invalid execArgv flags') =>
   `Initiated Worker with ${msg}: ${ArrayPrototypeJoin(errors, ', ')}`,

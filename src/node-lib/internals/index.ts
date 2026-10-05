@@ -11,6 +11,8 @@
  * arriving as `undefined` inside Node's code.
  */
 import { internalUtilTypes } from './util';
+import * as acorn from 'acorn';
+import { internalCryptoKeys } from './crypto-keys';
 import {
   internalConsoleGlobal, internalProcessExecution,
   internalProcessWarning, internalSourceMapCache, internalUndici, internalReadlineInterface, internalJsTransferable,
@@ -32,6 +34,18 @@ import { internalAmaro } from './amaro';
 // eslint-disable-next-line no-var, vars-on-top
 var __table: Record<string, () => unknown> | undefined;
 export function nodeLibInternal(name: string, require?: (name: string) => any, process?: any): (() => unknown) | undefined {
+  if (name === 'internal/crypto/keys') return () => internalCryptoKeys;
+  if (name === 'internal/deps/acorn/acorn/dist/acorn') return () => acorn;
+  if (name === 'internal/modules/helpers') return () => ({
+    getRequireStack(parent: any): string[] {
+      const stack: string[] = [];
+      const seen = new Set<object>();
+      for (let cursor = parent; cursor && !seen.has(cursor); cursor = cursor.parent) {
+        seen.add(cursor); stack.push(cursor.filename || cursor.id);
+      }
+      return stack;
+    },
+  });
   if (require && name === 'internal/webstreams/adapters') return () => createWebStreamsAdapters(require);
   if (process && name === 'internal/process/per_thread') return () => ({
     platform: process.platform, arch: process.arch, version: process.version,

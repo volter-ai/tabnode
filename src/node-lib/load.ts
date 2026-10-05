@@ -32,6 +32,9 @@ import { setLibRequire } from './require-hook';
 import { NODE_LTS_VERSION, nodeVersions } from './node-versions';
 import { createUtilBinding } from './binding/util';
 import { createFsBindings } from './binding/fs';
+import { createDiagnosticsChannelBinding } from './binding/diagnostics_channel';
+import { errorsBinding } from './binding/misc';
+import { errorSourcePositions } from '../error-source';
 import { stackOverrideMap } from '../stack-overrides';
 
 /**
@@ -358,6 +361,10 @@ class NodeLibScope {
         this.bindings.set('fs', fs.fsBinding);
         this.bindings.set('fs_dir', fs.fsDirBinding);
         this.bindings.set('fs_event_wrap', fs.fsEventWrapBinding);
+      } else if (name === 'errors') {
+        this.bindings.set(name, { ...errorsBinding, getErrorSourcePositions: (error: object) => errorSourcePositions(this.process, error) });
+      } else if (name === 'diagnostics_channel') {
+        this.bindings.set(name, createDiagnosticsChannelBinding());
       } else {
         this.bindings.set(name, name === 'util' ? createUtilBinding(this.require) : bindingSurface(internalBinding(name)));
       }
@@ -472,19 +479,7 @@ function bootstrapNodeLib(name: string, exports: unknown, process: object): void
     (exports as { initializeDebugEnv?: (value: string) => void }).initializeDebugEnv?.(env?.NODE_DEBUG ?? '');
     return;
   }
-  if (name === 'assert') {
-    // Node 23 hangs `Assert` off the module; the vendored 22.18 file does not.
-    const assert = exports as { Assert?: unknown; strictEqual?: (a: unknown, b: unknown) => void };
-    if (typeof assert.Assert !== 'function') {
-      class Assert {
-        diff: string;
-        constructor(options?: { diff?: string }) { this.diff = options?.diff ?? 'simple'; }
-        strictEqual(a: unknown, b: unknown): void { assert.strictEqual?.(a, b); }
-      }
-      (assert as { Assert: unknown }).Assert = Assert;
-    }
-    return;
-  }
+
 
 }
 
