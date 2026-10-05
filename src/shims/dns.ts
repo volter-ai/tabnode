@@ -7,6 +7,15 @@
 type LookupCallback = (err: Error | null, address?: string, family?: number) => void;
 type LookupAllCallback = (err: Error | null, addresses?: Array<{ address: string; family: number }>) => void;
 
+/** 4 or 6 for an IPv4 or IPv6 literal (brackets allowed), 0 for a name. */
+function literalFamily(hostname: string): 4 | 6 | 0 {
+  const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  if (/^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(bare)) return 4;
+  const host = bare.split('%')[0];
+  if (host.includes(':') && /^[0-9a-fA-F:.]+$/.test(host)) return 6;
+  return 0;
+}
+
 /**
  * Lookup a hostname - returns localhost in browser
  */
@@ -35,7 +44,15 @@ export function lookup(
   // In browser, we can't do real DNS lookups
   // Return localhost for localhost, or a fake IP for other hostnames
   setImmediate(() => {
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    // An IP literal is its own answer, in its own family, as Node's lookup short-circuits it: `::` must stay IPv6.
+    const family = literalFamily(hostname);
+    if (family) {
+      const address = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+      if (options.all) (cb as LookupAllCallback)(null, [{ address, family }]);
+      else (cb as LookupCallback)(null, address, family);
+      return;
+    }
+    if (hostname === 'localhost') {
       if (options.all) {
         (cb as LookupAllCallback)(null, [{ address: '127.0.0.1', family: 4 }]);
       } else {
