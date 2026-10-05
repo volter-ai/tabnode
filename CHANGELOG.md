@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Host lookup retains IP literals and resolves the engine’s loopback; names without a host route now report asynchronous ENOTFOUND instead of 0.0.0.0, which could connect to an unrelated local listener. Callback and Promise lookup share the behavior; unsupported DNS record and reverse queries also fail explicitly (ADR-0002, substrate Article 6).
+
 ## v0.5.63 — 2026-10-05
 
 - Detached children start private POSIX process groups; ordinary descendants inherit them, and negative-PID liveness and signals resolve every live member across worker realms, including after the leader exits. Older embedding hosts retain their existing PID operations. World teardown previously saw a live group while its SIGTERM and SIGKILL deliveries were refused.
