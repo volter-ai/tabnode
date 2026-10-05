@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+### Fixed
+
+- Spawned `env` wrappers preserve host package-bin dispatch, cwd and environment instead of losing their executable in the engine-private shell.
+
 ## v0.5.64 — 2026-10-05
 
 - Host lookup retains IP literals and resolves the engine’s loopback; names without a host route now report asynchronous ENOTFOUND instead of 0.0.0.0, which could connect to an unrelated local listener. Callback and Promise lookup share the behavior; unsupported DNS record and reverse queries also fail explicitly (ADR-0002, substrate Article 6).

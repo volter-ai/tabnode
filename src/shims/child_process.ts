@@ -1957,7 +1957,13 @@ function startChildRun(request: RunRequest): StartedRun {
     // the script's `node` found no name and was refused, and its `npx` was
     // not found at all.
     const shellChild = SHELL_PROGRAMS.has(engineProgramFor(request.file, request.cwd)) && hostExecutor() !== null;
-    const engineFirst = !hostTerminal && !shellChild && programExists(request.file, request.cwd, request.env);
+    // env executes another program. The host owns installed package-bin
+    // resolution, just as it owns shell dispatch; treating this wrapper as
+    // an engine-only utility strands its operand in the private shell and
+    // bypasses the admitted child-process door. Keep env's own interpreter
+    // and options in the host, with the original cwd and environment.
+    const environmentChild = engineProgramFor(request.file, request.cwd) === 'env' && hostExecutor() !== null;
+    const engineFirst = !hostTerminal && !shellChild && !environmentChild && programExists(request.file, request.cwd, request.env);
     liveInput = !hostTerminal && !admittedNode && request.stdinIsPipe && !engineFirst;
     if (liveInput) {
       pendingStdin.unshift(...initialStdin);
