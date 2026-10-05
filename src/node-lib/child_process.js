@@ -43,6 +43,7 @@ const {
   StringPrototypeIncludes,
   StringPrototypeSlice,
   StringPrototypeToUpperCase,
+  SymbolDispose,
 } = primordials;
 
 const {
@@ -51,7 +52,6 @@ const {
   getSystemErrorName,
   kEmptyObject,
   promisify,
-  SymbolDispose,
 } = require('internal/util');
 const { isArrayBufferView } = require('internal/util/types');
 let debug = require('internal/util/debuglog').debuglog(
@@ -563,6 +563,7 @@ function copyPermissionModelFlagsToEnv(env, key, args) {
   }
 }
 
+let emittedDEP0190Already = false;
 function normalizeSpawnArguments(file, args, options) {
   validateString(file, 'file');
   validateArgumentNullCheck(file, 'file');
@@ -639,6 +640,14 @@ function normalizeSpawnArguments(file, args, options) {
 
   if (options.shell) {
     validateArgumentNullCheck(options.shell, 'options.shell');
+    if (args.length > 0 && !emittedDEP0190Already) {
+      process.emitWarning(
+        'Passing args to a child process with shell option true can lead to security ' +
+        'vulnerabilities, as the arguments are not escaped, only concatenated.',
+        'DeprecationWarning',
+        'DEP0190');
+      emittedDEP0190Already = true;
+    }
     const command = ArrayPrototypeJoin([file, ...args], ' ');
     // Set the shell, switches, and commands.
     if (process.platform === 'win32') {

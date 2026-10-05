@@ -4,6 +4,7 @@
  */
 
 import { forGuestRealm, takeFromHost } from '../host-globals';
+import { withGuestExecution, resumeGuestTurn } from '../guest-loop';
 
 /**
  * The context a continuation runs in: every storage's store, as one frame.
@@ -29,6 +30,7 @@ let resetQueued = false;
 const resetFrame = (): void => { resetQueued = false; currentFrame = ROOT_FRAME; };
 /** A resumed continuation's frame, current until the turn it runs in ends. */
 const resumeFrame = (frame: ContextFrame): void => {
+  resumeGuestTurn();
   if (frame === currentFrame) return;
   currentFrame = frame;
   if (!resetQueued) { resetQueued = true; nativeQueueMicrotask(resetFrame); }
@@ -90,7 +92,7 @@ export class AsyncResource {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   runInAsyncScope<T>(fn: (...args: any[]) => T, thisArg?: unknown, ...args: any[]): T {
-    return withFrame(this.frame, () => fn.apply(thisArg, args));
+    return withGuestExecution(() => withFrame(this.frame, () => fn.apply(thisArg, args)));
   }
 
   emitDestroy(): this { return this; }
@@ -124,7 +126,7 @@ forGuestRealm(() => {
   const carried = <T>(callback: T): T => {
     if (typeof callback !== "function") return callback;
     const restore = AsyncLocalStorage.snapshot();
-    return function (this: unknown, ...args: unknown[]) { return restore(() => (callback as (...values: unknown[]) => unknown).apply(this, args)); } as T;
+    return function (this: unknown, ...args: unknown[]) { return withGuestExecution(() => restore(() => (callback as (...values: unknown[]) => unknown).apply(this, args))); } as T;
   };
   for (const name of ["setTimeout", "setInterval", "setImmediate", "queueMicrotask"]) {
     const original = (globalThis as unknown as Record<string, unknown>)[name];

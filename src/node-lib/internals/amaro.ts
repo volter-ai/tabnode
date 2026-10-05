@@ -1,8 +1,8 @@
 /**
  * `internal/deps/amaro/dist/index`: the type stripper Node carries.
  *
- * Node v22.18.0 runs a `.ts`, `.mts` or `.cts` file by erasing its types with
- * amaro 1.1.0 (swc's stripper, built to WebAssembly), vendored under
+ * Node v24.5.0 runs a `.ts`, `.mts` or `.cts` file by erasing its types with
+ * amaro 1.1.1 (swc's stripper, built to WebAssembly), vendored under
  * `deps/amaro`, and its own `lib/internal/modules/typescript.js` (vendored
  * here unmodified) is what calls it. amaro is not native: it is JavaScript and
  * WebAssembly, and this engine takes the same release as a dependency rather

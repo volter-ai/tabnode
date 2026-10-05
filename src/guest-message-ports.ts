@@ -1,5 +1,6 @@
 /** Real transports; Node loop references belong to the process using a port. */
 import { __reportUncaughtException } from './shims/process';
+import { withGuestExecution } from './guest-loop';
 
 type Port = Record<string, any>;
 type PortState = { port: Port; referenced: boolean; closed: boolean; close: () => void };
@@ -24,7 +25,7 @@ function track(process: object, port: Port): Port {
   if (!entries) { entries = new Set(); owned.set(process, entries); }
   const collection = entries;
   const original: Port = {};
-  for (const key of ['ref', 'unref', 'start', 'close', 'on', 'addListener', 'once', 'prependListener', 'prependOnceListener', 'removeListener', 'off', 'removeAllListeners', 'addEventListener', 'removeEventListener', 'postMessage']) {
+  for (const key of ['ref', 'unref', 'start', 'close', 'on', 'addListener', 'once', 'prependListener', 'prependOnceListener', 'removeListener', 'off', 'removeAllListeners', 'addEventListener', 'removeEventListener', 'postMessage', 'emit']) {
     if (typeof port[key] === 'function') original[key] = port[key].bind(port);
   }
   const state: PortState = { port, referenced: false, closed: false, close: () => port.close() };
@@ -54,6 +55,9 @@ function track(process: object, port: Port): Port {
     else if (previous > 0 && current === 0) port.unref();
   };
   if (original.on && typeof port.listenerCount === 'function') {
+    // Account the real delivery boundary without changing listeners or their
+    // remove/once identities on the thread host's actual EventEmitter.
+    if (original.emit) define('emit', (...args: unknown[]) => withGuestExecution(() => original.emit(...args)));
     // Preserve the thread host's actual EventEmitter and transport semantics.
     for (const name of ['on', 'addListener', 'once', 'prependListener', 'prependOnceListener', 'removeListener', 'off', 'removeAllListeners']) if (original[name]) {
       define(name, (...args: unknown[]) => {
@@ -94,8 +98,10 @@ function track(process: object, port: Port): Port {
       if (options?.once) remove(type, listener, capture);
       if (state.closed && type !== 'close') return;
       try {
-        if (typeof listener === 'function') listener.call(port, data ? event.data : event);
-        else listener.handleEvent?.(event);
+        withGuestExecution(() => {
+          if (typeof listener === 'function') listener.call(port, data ? event.data : event);
+          else listener.handleEvent?.(event);
+        });
       } catch (error) { if (!__reportUncaughtException(process, error)) throw error; }
     };
     records.push({ capture, invoke });

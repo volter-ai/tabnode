@@ -32,6 +32,7 @@ const {
   Promise,
   SafeSet,
   Symbol,
+  SymbolAsyncDispose,
   SymbolAsyncIterator,
   SymbolSpecies,
   TypedArrayPrototypeSet,
@@ -43,9 +44,6 @@ Readable.ReadableState = ReadableState;
 const EE = require('events');
 const { Stream, prependListener } = require('internal/streams/legacy');
 const { Buffer } = require('buffer');
-const {
-  SymbolAsyncDispose,
-} = require('internal/util');
 
 const {
   addAbortSignal,
@@ -1006,10 +1004,15 @@ Readable.prototype.pipe = function(dest, pipeOpts) {
   src.on('data', ondata);
   function ondata(chunk) {
     debug('ondata');
-    const ret = dest.write(chunk);
-    debug('dest.write', ret);
-    if (ret === false) {
-      pause();
+    try {
+      const ret = dest.write(chunk);
+      debug('dest.write', ret);
+
+      if (ret === false) {
+        pause();
+      }
+    } catch (error) {
+      dest.destroy(error);
     }
   }
 

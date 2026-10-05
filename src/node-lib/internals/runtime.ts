@@ -1,3 +1,4 @@
+import { withGuestExecution } from '../../guest-loop';
 /**
  * The internals Node's `net` names that are neither vendored nor a binding:
  * async ids, timers, stream defaults, the option table, and the three
@@ -71,7 +72,7 @@ export class AsyncResource {
   }
 
   runInAsyncScope<T>(fn: (...args: never[]) => T, thisArg?: unknown, ...args: never[]): T {
-    return fn.apply(thisArg, args);
+    return withGuestExecution(() => fn.apply(thisArg, args));
   }
 
   emitDestroy(): this { return this; }

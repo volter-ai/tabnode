@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Move the unchanged vendored library to Node v24.5.0 with its filesystem removal, TypeScript cache-disabled binding and readline history contracts; report the implemented library version by default, preserving host-name and POSIX process-group semantics (ADR-0003).
+
+- Restore perf_hooks GC-kind constants and event-loop utilization from monotonic guest execution intervals, including idle and snapshot differences, without inventing native CPU/GC observations (ADR-0003).
+
 ## v0.5.66 — 2026-10-05
 
 - Browser worker messaging globals stay guest-local; trusted host transports retain their native methods. File entries use the normal image-prepared module loader and keep Node main-module identity (ADR-0004).

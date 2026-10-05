@@ -26,6 +26,7 @@ import utilBinding from './util';
 import fsBinding, { fsDirBinding, fsEventWrapBinding } from './fs';
 import blobBinding from './blob';
 import zlibBinding from './zlib';
+import modulesBinding from './modules';
 import { AsyncResource } from '../internals/runtime';
 
 /**
@@ -66,6 +67,7 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   blob: () => blobBinding,
   async_wrap: () => ({ AsyncResource }),
   zlib: () => zlibBinding,
+  modules: () => modulesBinding,
   fs_dir: () => fsDirBinding,
   fs_event_wrap: () => fsEventWrapBinding,
 };;

@@ -29,6 +29,7 @@ const {
   ObjectSetPrototypeOf,
   ReflectApply,
   Symbol,
+  SymbolAsyncDispose,
   SymbolFor,
 } = primordials;
 
@@ -82,7 +83,6 @@ const {
   assignFunctionName,
   kEmptyObject,
   promisify,
-  SymbolAsyncDispose,
 } = require('internal/util');
 const {
   validateInteger,

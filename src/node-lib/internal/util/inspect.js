@@ -2082,20 +2082,15 @@ function formatProperty(ctx, value, recurseTimes, key, type, desc,
       SymbolPrototypeToString(key),
       escapeFn,
     );
-    name = `[${ctx.stylize(tmp, 'symbol')}]`;
-  } else if (key === '__proto__') {
-    name = "['__proto__']";
-  } else if (desc.enumerable === false) {
-    const tmp = RegExpPrototypeSymbolReplace(
-      strEscapeSequencesReplacer,
-      key,
-      escapeFn,
-    );
-    name = `[${tmp}]`;
+    name = ctx.stylize(tmp, 'symbol');
   } else if (RegExpPrototypeExec(keyStrRegExp, key) !== null) {
-    name = ctx.stylize(key, 'name');
+    name = key === '__proto__' ? "['__proto__']" : ctx.stylize(key, 'name');
   } else {
     name = ctx.stylize(strEscape(key), 'string');
+  }
+
+  if (desc.enumerable === false) {
+    name = `[${name}]`;
   }
   return `${name}:${extra}${str}`;
 }
@@ -2450,7 +2445,9 @@ if (internalBinding('config').hasIntl) {
   };
 } else {
   /**
-   * Returns the number of columns required to display the given string.
+   * @param {string} str
+   * @param {boolean} [removeControlChars]
+   * @returns {number} number of columns required to display the given string.
    */
   getStringWidth = function getStringWidth(str, removeControlChars = true) {
     let width = 0;
@@ -2473,6 +2470,8 @@ if (internalBinding('config').hasIntl) {
   /**
    * Returns true if the character represented by a given
    * Unicode code point is full-width. Otherwise returns false.
+   * @param {string} code
+   * @returns {boolean}
    */
   const isFullWidthCodePoint = (code) => {
     // Code points are partially derived from:
@@ -2516,6 +2515,8 @@ if (internalBinding('config').hasIntl) {
 
 /**
  * Remove all VT control characters. Use to estimate displayed string width.
+ * @param {string} str
+ * @returns {string}
  */
 function stripVTControlCharacters(str) {
   validateString(str, 'str');

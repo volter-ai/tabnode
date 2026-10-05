@@ -6,7 +6,9 @@ const {
   FunctionPrototypeBind,
   ObjectDefineProperties,
   PromiseReject,
+  SymbolAsyncDispose,
   SymbolAsyncIterator,
+  SymbolDispose,
 } = primordials;
 
 const pathModule = require('path');
@@ -24,8 +26,6 @@ const {
 const { FSReqCallback } = binding;
 const {
   promisify,
-  SymbolAsyncDispose,
-  SymbolDispose,
 } = require('internal/util');
 const {
   getDirent,
