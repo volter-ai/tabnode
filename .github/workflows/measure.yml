@@ -1,6 +1,4 @@
-# The measurement, on every push to main: the build, the type-check, the
-# engine's own checks, and Node's own suite module by module. It blocks
-# nothing; the numbers are read in the job summary, not passed.
+# Objective Node 24 baseline. No score or threshold gates a release.
 name: measure
 on:
   push:
@@ -15,32 +13,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24.21.0
           cache: npm
       - run: npm ci
       - run: npm run build:lib
-      - run: npm run type-check
-      - name: The engine's own checks
-        run: npm test
-        continue-on-error: true
-      - name: Node's test tree at v22.18.0
+      - name: Exact Node 24.21.0 test tree
         run: |
           git clone -q --filter=blob:none --no-checkout https://github.com/nodejs/node.git ../node-tests
           git -C ../node-tests sparse-checkout set test/common test/parallel test/fixtures test/wasi test/module-hooks test/es-module
-          git -C ../node-tests checkout -q v22.18.0
-      - name: Node's own tests, module by module
+          git -C ../node-tests checkout -q v24.21.0
+      - name: Enumerate native contracts
+        run: node scripts/native-surface.mjs --out measurement/native.json
+      - name: Compare public builtin shapes with real Node 24.21.0
+        run: node scripts/public-surface.mjs --out measurement/public.json
+      - name: Every Node 24 parallel and WASI test file
+        run: node scripts/node-tests.mjs --tests ../node-tests --all --report-json measurement/results.json
+      - name: Four counts, three lists, and capability ledger
         run: |
-          {
-            echo "## Node's own tests on ${GITHUB_SHA::7}"
-            echo
-            echo "| Suite | Passed |"
-            echo "|---|---|"
-            for m in path net child_process stream buffer events util assert querystring diagnostics_channel readline os tty http fs zlib; do
-              line=$(node scripts/node-tests.mjs --tests ../node-tests --match "test-$m-" | grep ' tests pass under ' || true)
-              echo "| \`test-$m-*\` | ${line%% tests pass*} |"
-            done
-            for d in wasi module-hooks; do
-              line=$(node scripts/node-tests.mjs --tests ../node-tests --dir "test/$d" --match test- | grep ' tests pass under ' || true)
-              echo "| \`test/$d\` | ${line%% tests pass*} |"
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
+          node scripts/node-test-report.mjs --out measurement --summary "$GITHUB_STEP_SUMMARY"
+          node scripts/capability-ledger.mjs --out measurement
+      - name: Retain every result and its evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node24-measurement-${{ github.sha }}
+          path: measurement/
+          if-no-files-found: error

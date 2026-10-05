@@ -81,7 +81,9 @@ Node's own fixtures drive the measurement (`scripts/node-tests.mjs`):
 each module's current number is in `BUILTINS.md`. Each fix closes a class (what Node answers, deprecated or not), never a
 fixture.
 Completion:
-- Node's `test/wasi` suite and its `test/parallel/test-child-process-*` tests pass in the engine, with every remaining failure recorded as an evidenced platform constraint.
+- Every file in Node v24.21.0's `test/parallel` and `test/wasi` passes, except failures named individually as the harness's own or an evidenced browser constraint in `LIMITATIONS.md`. Every other failure is an open defect.
+- `measure` reports zero unresolved native surface reads, zero unclassified native entries, zero unnamed test failures, and zero unattributed public export differences against real Node v24.21.0.
+- An independent non-author review confirms every limitation; an overturned limitation returns to open defects.
 
 ## synchronous-children: Signals, timeouts and buffer limits for synchronous children
 

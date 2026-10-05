@@ -36,6 +36,9 @@ const PRELUDE = argument("prelude", "");
 // Node keeps most of its tests in `test/parallel` and a module's own beside
 // it: `test/wasi` holds the WASI tests and the compiled fixtures they load.
 const DIR = argument("dir", "test/parallel");
+const ALL = process.argv.includes("--all");
+const REPORT = argument("report-json", "");
+const MANIFEST = JSON.parse(nodeFs.readFileSync(new URL("./node24-test-files.json", import.meta.url), "utf8"));
 const MOUNT = "/workspace/app";
 if (!TESTS) { console.error("usage: --tests <node checkout> [--engine <dist/index.mjs>] [--match <prefix>]"); process.exit(2); }
 
@@ -124,30 +127,57 @@ if (ONE) {
 }
 
 const { spawn } = await import("node:child_process");
-const files = nodeFs.readdirSync(resolve(TESTS, DIR)).filter((name) => name.startsWith(MATCH) && /\.m?js$/u.test(name)).sort();
+// The full measure has one immutable denominator, including unsupported
+// modules. Verify the checkout itself rather than silently measuring a subset.
+if (ALL && (PRELUDE || process.argv.includes("--match") || process.argv.includes("--dir"))) {
+  throw new Error("--all cannot be narrowed or combined with a diagnostic prelude");
+}
+const discovered = (dir) => nodeFs.readdirSync(resolve(TESTS, dir))
+  .filter((name) => name.startsWith("test-") && /\.(?:c?js|mjs)$/u.test(name))
+  .map((name) => `${dir}/${name}`).sort();
+if (ALL) {
+  const actual = MANIFEST.directories.flatMap(discovered).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(MANIFEST.files)) {
+    throw new Error(`Node ${MANIFEST.nodeVersion} test denominator differs from scripts/node24-test-files.json`);
+  }
+  const { execFileSync } = await import("node:child_process");
+  const commit = execFileSync("git", ["-C", TESTS, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  if (commit !== MANIFEST.nodeCommit) throw new Error(`test checkout is ${commit}, expected ${MANIFEST.nodeCommit}`);
+}
+const files = ALL ? MANIFEST.files : discovered(DIR).filter((path) => path.split("/").at(-1).startsWith(MATCH));
 const results = [];
 const started = Date.now();
 const runOne = (file) => new Promise((resolveRun) => {
-  const args = [process.argv[1], "--tests", TESTS, "--dir", DIR, "--one", file, "--engine", ENGINE, ...(PRELUDE ? ["--prelude", PRELUDE] : [])];
+  const args = [process.argv[1], "--tests", TESTS, "--dir", dirname(file), "--one", file.split("/").at(-1), "--engine", ENGINE, ...(PRELUDE ? ["--prelude", PRELUDE] : [])];
   const child = spawn(process.execPath, args, { stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += chunk; });
-  const timer = setTimeout(() => { child.kill("SIGKILL"); stderr += "\ntimeout"; }, TIMEOUT);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); stderr += "\ntimeout"; }, TIMEOUT);
+  child.on("error", (error) => { clearTimeout(timer); resolveRun({ file, passed: false, reason: error.message, lines: [error.message], stderr: error.stack, code: null, signal: null, timedOut }); });
   child.on("exit", (code, signal) => {
     clearTimeout(timer);
     const lines = stderr.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("at ") && !line.includes("cwd() called"));
     const passed = code === 0;
     const reason = passed ? "" : (lines.find((line) => /Error|error:|failed|timeout/u.test(line)) ?? lines[0] ?? `exit ${code ?? signal}`);
-    resolveRun({ file, passed, reason: reason.slice(0, 200), lines: lines.slice(0, 4) });
+    resolveRun({ file, passed, reason: reason.slice(0, 200), lines: lines.slice(0, 4), stderr, code, signal, timedOut });
   });
 });
 let next = 0;
 await Promise.all(Array.from({ length: Math.min(JOBS, files.length) }, async () => {
-  while (next < files.length) results.push(await runOne(files[next++]));
+  while (next < files.length) {
+    results.push(await runOne(files[next++]));
+    if (ALL && results.length % 100 === 0) hostOut(`Progress: ${results.length}/${files.length}\n`);
+  }
 }));
 results.sort((a, b) => a.file.localeCompare(b.file));
 const passed = results.filter((r) => r.passed).length;
-hostOut(`${passed} of ${results.length} ${MATCH}* tests pass under ${ENGINE} in ${((Date.now() - started) / 1000).toFixed(1)} s\n`);
+const durationSeconds = (Date.now() - started) / 1000;
+hostOut(`${passed} of ${results.length} ${ALL ? "Node " + MANIFEST.nodeVersion : MATCH + "*"} tests pass under ${ENGINE} in ${durationSeconds.toFixed(1)} s\n`);
+if (REPORT) {
+  nodeFs.mkdirSync(dirname(resolve(REPORT)), { recursive: true });
+  nodeFs.writeFileSync(REPORT, JSON.stringify({ nodeVersion: MANIFEST.nodeVersion, nodeCommit: MANIFEST.nodeCommit, engine: ENGINE, fullDenominator: ALL, timeoutMs: TIMEOUT, jobs: JOBS, durationSeconds, results }, null, 2) + "\n");
+}
 const reasons = new Map();
 for (const r of results) if (!r.passed) reasons.set(r.reason, (reasons.get(r.reason) ?? 0) + 1);
 for (const [reason, count] of [...reasons].sort((a, b) => b[1] - a[1]).slice(0, 12)) hostOut(`  ${String(count).padStart(4)}  ${reason}\n`);

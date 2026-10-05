@@ -16,3 +16,6 @@ Thumbs.db
 
 # Claude Code
 .claude/
+
+# Objective measurement artifacts are retained by the workflow.
+measurement/

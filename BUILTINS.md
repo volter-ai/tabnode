@@ -1,3 +1,15 @@
+<!-- node24-coverage:start -->
+tabnode is Node 24, except:
+
+- [Known limitations](LIMITATIONS.md): no Node 24 exceptions have been accepted yet.
+- and open defects not yet classified; the first full Node 24 measurement is pending, so their number is unknown.
+
+The exact behavior scope is 4,569 test files. The generated capability ledger
+records done / doing / todo / won't do and the four objective completion counts.
+See [the proof scope](scripts/NODE-TESTS.md). Host-run evidence does not establish
+browser-tab execution.
+<!-- node24-coverage:end -->
+
 # The engine's builtins, by kind
 
 The rule is the substrate's ADR-0021: a builtin is Node's own file unless
