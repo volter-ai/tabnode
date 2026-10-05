@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.58 — 2026-10-05
+
 - An `ipv6Only` listener can share a port number with an IPv4 one, and a dual-stack IPv6 bind holds both families, as on a host: the engine kept one port space, so a probe that binds `0.0.0.0` and then `::` with `ipv6Only` on the same port got `EADDRINUSE` every time (Volter World's port allocator gave up after 32 attempts in the tab).
 
 ## v0.5.57 — 2026-10-02
