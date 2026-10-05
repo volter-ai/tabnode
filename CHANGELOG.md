@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.65 — 2026-10-05
+
 ### Fixed
 
 - Spawned `env` wrappers preserve host package-bin dispatch, cwd and environment instead of losing their executable in the engine-private shell.
