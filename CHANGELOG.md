@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.59 — 2026-10-05
+
 - `dns.lookup` answers an IP literal with itself in its own family, as Node does: `::` stayed IPv4 `0.0.0.0`, so `listen({ host: '::', ipv6Only: true })` bound IPv4 and collided with the IPv4 listener on the same port (measured in the tab with `NODE_DEBUG=net`: `setupListenHandle 0.0.0.0 … 4`).
 
 ## v0.5.58 — 2026-10-05
