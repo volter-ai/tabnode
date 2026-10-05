@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A thread whose native Worker authority is withheld can initialize the child_process builtin; speculative synchronous-child warming no longer aborts its entry. An actual synchronous spawn retains the original constructor refusal.
+
+- Give global and worker_threads MessagePorts real per-process loop references: the first message listener refs/starts its real transport, unref releases its hold, and close/process teardown releases and closes it (ADR-0004).
+
 ## v0.5.64 — 2026-10-05
 
 - Host lookup retains IP literals and resolves the engine’s loopback; names without a host route now report asynchronous ENOTFOUND instead of 0.0.0.0, which could connect to an unrelated local listener. Callback and Promise lookup share the behavior; unsupported DNS record and reverse queries also fail explicitly (ADR-0002, substrate Article 6).
