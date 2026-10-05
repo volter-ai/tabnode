@@ -26,6 +26,14 @@ The directory it was started in: `/proc/<pid>/cwd`.
 
 ***
 
+### pgid?
+
+> `readonly` `optional` **pgid?**: `number`
+
+POSIX process group; optional for hosts predating group support.
+
+***
+
 ### pid
 
 > `readonly` **pid**: `number`

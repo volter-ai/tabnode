@@ -110,6 +110,28 @@ Ends this realm's registrations, including after abrupt worker death.
 
 ***
 
+### lookupGroup()?
+
+> `optional` **lookupGroup**(`pgid`): `boolean`
+
+A group may remain live after its leader exits.
+
+#### Parameters
+
+##### pgid
+
+`number`
+
+#### Returns
+
+`boolean`
+
+#### Inherited from
+
+[`ProcessRegistry`](ProcessRegistry.md).[`lookupGroup`](ProcessRegistry.md#lookupgroup)
+
+***
+
 ### publish()
 
 > **publish**(`token`, `identity`): `void`
@@ -177,3 +199,29 @@ any process of its user, including one its parent left behind.
 #### Inherited from
 
 [`ProcessRegistry`](ProcessRegistry.md).[`signal`](ProcessRegistry.md#signal)
+
+***
+
+### signalGroup()?
+
+> `optional` **signalGroup**(`pgid`, `signal`): `boolean`
+
+Deliver to every live group member; true when any member took it.
+
+#### Parameters
+
+##### pgid
+
+`number`
+
+##### signal
+
+`string`
+
+#### Returns
+
+`boolean`
+
+#### Inherited from
+
+[`ProcessRegistry`](ProcessRegistry.md).[`signalGroup`](ProcessRegistry.md#signalgroup)

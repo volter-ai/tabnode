@@ -56,6 +56,24 @@ Installed by the trusted embedding host before this realm starts runs.
 
 ***
 
+### lookupGroup()?
+
+> `optional` **lookupGroup**(`pgid`): `boolean`
+
+A group may remain live after its leader exits.
+
+#### Parameters
+
+##### pgid
+
+`number`
+
+#### Returns
+
+`boolean`
+
+***
+
 ### publish()
 
 > **publish**(`token`, `identity`): `void`
@@ -87,6 +105,28 @@ any process of its user, including one its parent left behind.
 #### Parameters
 
 ##### pid
+
+`number`
+
+##### signal
+
+`string`
+
+#### Returns
+
+`boolean`
+
+***
+
+### signalGroup()?
+
+> `optional` **signalGroup**(`pgid`, `signal`): `boolean`
+
+Deliver to every live group member; true when any member took it.
+
+#### Parameters
+
+##### pgid
 
 `number`
 

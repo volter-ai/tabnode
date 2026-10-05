@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.5.63 — 2026-10-05
+
 - Detached children start private POSIX process groups; ordinary descendants inherit them, and negative-PID liveness and signals resolve every live member across worker realms, including after the leader exits. Older embedding hosts retain their existing PID operations. World teardown previously saw a live group while its SIGTERM and SIGKILL deliveries were refused.
 
 ## v0.5.62 — 2026-10-05
