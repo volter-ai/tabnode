@@ -24,8 +24,7 @@ or the module is the engine itself.
 
 A number is not a score. Each row says what its remainder is made of; a third
 of it across the estate is the harness's own (`--expose-internals`, `node:test`,
-`process.getuid`) rather than the engine's. The `measure` workflow prints every
-row's number on each push to `main`.
+`process.getuid`) rather than the engine's. Local measurement prints every row's number when measurement is the requested task. The `measure` workflow may run only with explicit authorization for that remote run.
 
 A number measured before `v0.2.14-volter.49` counted some tests that were
 failing: the hand-written `EventEmitter` caught every listener's throw and

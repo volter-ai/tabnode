@@ -57,7 +57,7 @@ ledger explicitly prints `Scope enumeration finalized: no`; undiscovered
 members are not counted as zero. Test failures and public mismatches can still
 be measured while enumeration is incomplete.
 
-## Reproduce the workflow
+## Run the requested measurement locally
 
     git clone --filter=blob:none --no-checkout https://github.com/nodejs/node.git ../node-tests
     git -C ../node-tests sparse-checkout set test/common test/parallel test/fixtures test/wasi test/module-hooks test/es-module
@@ -70,8 +70,10 @@ be measured while enumeration is incomplete.
     node scripts/node-test-report.mjs --out measurement
     node scripts/capability-ledger.mjs --out measurement
 
-The workflow uploads the full ledger, raw results and graphs, and prints the
-passing, failing-named and failing-unnamed lists plus per-module counts. The
+The measurement retains the full ledger, raw results and graphs, and prints the
+passing, failing-named and failing-unnamed lists plus per-module counts. A remote
+workflow may run only with explicit user authorization for that remote run;
+it is manually dispatched and never triggered by a development push. The
 headline is the unnamed failure count. It retains four completion counts and
 the four ledger states; it does not gate publishing.
 
