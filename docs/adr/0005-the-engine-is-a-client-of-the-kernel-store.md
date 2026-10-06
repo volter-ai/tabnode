@@ -69,9 +69,52 @@ Each step ships alone, and each leaves every existing run working.
 
 1. **tabnode: the descriptor door.** The binding uses the tree's `openSync`/`readSync`/… when present, and asks the tree for fd numbers and for fstat. With `VirtualFS`, nothing changes. This is general to any tree; it names no host.
 2. **substrate: `KernelVirtualFS`.** It is given to the process kinds the kernel already runs: a `node` Bash execs under the kernel shell (`fix/catalog-shell-boot`). A run's tree is chosen when the run starts, by how it was started, not by a global switch. Dev servers and the toolchain stay on `PackedVirtualFS` until their reading on the kernel path is level with today's (§5).
-3. **substrate: the kernel becomes the store's writer** (§0, owner unassigned, after thread A's re-landing), with the clock. Node's clocked reads then follow the kernel's clock instead of the container's. A write by Bash is visible to Node's next read without a patch.
+3. **substrate: the kernel becomes the store's writer** (§0, owner unassigned, after thread A's re-landing), with the clock; file by file in §4a. Node's clocked reads then follow the kernel's clock instead of the container's. A write by Bash is visible to Node's next read without a patch.
 4. **substrate: the boot copy goes.** The image tree is the store's layers (ADR-0045/0048). Neither the engine nor the kernel copies it into a tree of its own at boot. `PackedVirtualFS`'s owner role and the container's write path are removed, and the patch publication between the kernel and the page becomes the clock.
 5. **Check (A4's own):** grep finds no client with its own process table, descriptor table or file copy. Proof is Node's test/parallel count (A1) on the kernel path, against the same count on `VirtualFS`.
+
+### 4a. Step 3 file by file: the kernel as the store's only writer, with the clock
+
+A plan; nothing in it is built. Owner: unassigned. It starts after thread A's re-landing. Names are browser-substrate paths at `fix/catalog-shell-boot` 37ef172a. **Read** marks what this record traced in the code. **(extrapolation)** marks a flow that was not traced end to end.
+
+**Today's writers.**
+- **Node's writes.** The execution worker's store holds them. **Read:** `packages/node/src/node-store-hold.ts` takes the project's lock (`holdProject`) and calls `createPackStore`. `PackedVirtualFS` writes into it with `applyNow` (`packed-virtual-filesystem.ts`).
+- **The kernel's writes.** **Read:** the filesystem host builds `SnapshotWaliFileSystem` over `openPackReader` (`packages/wali/src/filesystem-host-session.ts`, `initializeHost`). It keeps written bytes as dirty nodes and posts them on `updatePort` as `filesystem` patches (`publishUpdates`, about line 256). `worker-program.ts` hands those patches to the program's `onFilesystemCommit` (about line 1290). How that reaches the execution worker's store is **(extrapolation)**: through the page's filesystem and the container's `fs-apply`.
+- **A third store owner.** **Read:** `packages/runtime/src/browser-opfs-filesystem-worker.ts` also opens a pack store for a project. Whether it is ever the project's writer beside the execution worker on the kernel path is not traced **(extrapolation)**; step 3.1 settles it.
+
+Each step below ships alone, keeps every run working, and has its disproof.
+
+1. **One lock, one writer.** The kernel's filesystem worker takes the project's lock and opens the store as its writer (`createPackStore`), in place of a reader.
+   - **Files:** `packages/wali/src/kernel-filesystem.ts`, `kernel-filesystem-worker.ts` and `filesystem-host-session.ts` (initialize from `store.projectId` as the writer); `packages/node/src/node-store-hold.ts` (the execution worker stops creating the writer and opens a reader seeded by the kernel, `readerSeed`); `packages/runtime/src/browser-opfs-filesystem-worker.ts` (a reader, or gone, by what 3.1's reading shows).
+   - **The switch:** within one page there is only ever one writer. The move happens at a deploy, not behind a flag in a running page.
+   - **Disproof:**
+     - Two realms of one page holding the project as writer at once.
+     - An `applyNow` from any realm other than the kernel's filesystem worker. This is a grep of the call sites plus a counter at the store.
+2. **The kernel's writes are store writes.**
+   - **Upper layer:** `SnapshotWaliFileSystem`'s upper layer for paths under `PROJECT_ROOTS` becomes the store itself. A write, rename, unlink, chmod or utimes by any process is a store mutation applied on the kernel's thread when the syscall completes (`applyNow`, or `applyExtentsNow` for large bytes). It is made durable at `fsync` and at the store's own flush.
+   - **Outside the store:** paths outside `PROJECT_ROOTS` (`/tmp`, homes) stay in the kernel host's memory, which is the tmpfs ruling.
+   - **Files:** `packages/wali/src/snapshot-filesystem.ts` (dirty nodes to mutations), `shared-file-layer.ts` (the lower tree is the store's index), `filesystem-host-session.ts` (no `filesystem` patch for store paths).
+   - **Disproof:**
+     - After Bash's `write` returns, a pack reader opened elsewhere reads different bytes at that path.
+     - Any `filesystem` patch still carrying store-path bytes.
+3. **The kernel publishes the clock.**
+   - **Clock:** the writer's `clock()` and `readerSeed` are the kernel's.
+   - **Who follows it:**
+     - The execution worker's `storeReads` grants (`cross-origin-container-worker.ts` `storeReadsFor`, `node-invocation-filesystem.ts`).
+     - Node threads (ADR-0019).
+     - `KernelVirtualFS`, which gains the clocked read view: exists, stat, read, readdir and realpath answered from a reader in its realm while the epoch is the reader's. This is the 150,000-call path.
+   - **Files:** `kernel-filesystem.ts` (hands a seed and the clock to a realm that asks), `packages/node/src/kernel-virtual-filesystem.ts`, `node-invocation-filesystem.ts`, `cross-origin-container-worker.ts`.
+   - **Disproof:**
+     - A read served across an epoch change.
+     - The model editor's boot (ADR-0044's measurement) slower with node on the kernel's tree than on `PackedVirtualFS` for the same image.
+4. **The page follows the clock, not patches.**
+   - **Change:** the page's index of the tree reads the store's log, and the spawn patch flow (`patchAgainst`, `encodeProcessPatch` in `worker-program.ts`) and the execution worker's `installFilesystemForwarding` stop carrying store paths.
+   - **Files:** `packages/wali/src/worker-program.ts`, `packages/runtime/src/browser-filesystem.ts`, `browser-project-store.ts`, `packages/node/src/cross-origin-container-worker.ts`.
+   - **Disproof:**
+     - The page showing a tree older than a write that returned.
+     - Any patch with store-path bytes crossing a realm.
+5. **No second writer is left.** `PackedVirtualFS` loses its writer mode. Every Node run is on `KernelVirtualFS` (ADR step 4's check) or on a reader. The container's `fs-apply` and `fs-import` for store paths go.
+   - **Disproof:** grep finds `applyNow` or `applyExtentsNow` on a project store outside the kernel's filesystem worker, or a client keeping a file copy.
 
 ### 5. Performance risks
 
