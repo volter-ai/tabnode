@@ -132,7 +132,7 @@ function processStdinClass(ReadableClass: typeof Readable): new () => ProcessStd
      * Node's Readable calls itself (after a push, on resume); any other is
      * the program asking for bytes, and is recorded.
      */
-    read(size?: number): unknown {
+    read(size?: number): string | Uint8Array | null {
       if (size !== 0) this.__substrateGuestRead = true;
       return super.read(size);
     }
