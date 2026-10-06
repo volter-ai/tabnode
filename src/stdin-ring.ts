@@ -15,29 +15,38 @@
  *
  * The layout, which producer and consumer both read from here:
  *
- * - An `Int32Array` header over the buffer's first 16 bytes:
+ * - An `Int32Array` header over the buffer's first 32 bytes (eight words,
+ *   five used, the rest zero), so the data area starts aligned:
  *   - `[WRITE_INDEX]` bytes the producer has written, ever, modulo 2^32;
  *   - `[READ_INDEX]` bytes the consumer has taken, ever, modulo 2^32;
  *   - `[CLOSED]` 1 once the producer has written its last byte (EOF);
- *   - `[CAPACITY]` the data area's length in bytes, a power of two.
- * - The data area from byte 16: byte number `i` is at `16 + (i % capacity)`.
+ *   - `[CAPACITY]` the data area's length in bytes, a power of two;
+ *   - `[SIGNAL]` a counter the producer bumps with `Atomics.add` after every
+ *     write and at close: the word a reader waits on.
+ * - The data area from byte 32: byte number `i` is at `32 + (i % capacity)`.
  * - Bytes available to read: `(write - read) >>> 0`; room to write:
  *   `capacity - available`.
- * - The producer copies bytes in, then `Atomics.store`s WRITE_INDEX and
- *   `Atomics.notify`s it; at EOF it stores CLOSED = 1 and notifies
- *   WRITE_INDEX. With no room it waits on READ_INDEX.
+ * - The producer copies bytes in, `Atomics.store`s WRITE_INDEX, then
+ *   `Atomics.add`s SIGNAL and `Atomics.notify`s it; at EOF it stores
+ *   CLOSED = 1, then adds to and notifies SIGNAL. With no room it waits on
+ *   READ_INDEX, which every take changes.
  * - The consumer copies bytes out, then `Atomics.store`s READ_INDEX and
  *   `Atomics.notify`s it. With nothing to read and CLOSED 0 it waits on
- *   WRITE_INDEX: `Atomics.wait` for a blocking read, `Atomics.waitAsync` for
- *   the run's `process.stdin`.
+ *   SIGNAL with the value it read BEFORE it looked: `Atomics.wait` for a
+ *   blocking read, `Atomics.waitAsync` for the run's `process.stdin`. A wait
+ *   on WRITE_INDEX lost a close that landed between the look and the wait,
+ *   because close leaves WRITE_INDEX as it was; every event changes SIGNAL.
  */
 export const STDIN_RING = {
   WRITE_INDEX: 0,
   READ_INDEX: 1,
   CLOSED: 2,
   CAPACITY: 3,
+  SIGNAL: 4,
+  /** The header's words, used and reserved. */
+  HEADER_WORDS: 8,
   /** Where the data area begins, in bytes. */
-  HEADER_BYTES: 16,
+  HEADER_BYTES: 32,
 } as const;
 
 /** `Atomics.waitAsync` (ES2024), declared here because the build's library is ES2022. */
@@ -58,15 +67,15 @@ export function createStdinRing(capacity: number): SharedArrayBuffer {
     throw new RangeError('a stdin ring capacity is a power of two up to 2^30 bytes');
   }
   const buffer = new SharedArrayBuffer(STDIN_RING.HEADER_BYTES + capacity);
-  new Int32Array(buffer, 0, 4)[STDIN_RING.CAPACITY] = capacity;
+  new Int32Array(buffer, 0, STDIN_RING.HEADER_WORDS)[STDIN_RING.CAPACITY] = capacity;
   return buffer;
 }
 
 /** Why a buffer is not a stdin ring, or null when it is one. */
 export function stdinRingProblem(buffer: unknown): string | null {
   if (typeof SharedArrayBuffer !== 'function' || !(buffer instanceof SharedArrayBuffer)) return 'stdinShared must be a SharedArrayBuffer';
-  if (buffer.byteLength < STDIN_RING.HEADER_BYTES) return 'stdinShared is shorter than its 16-byte header';
-  const capacity = new Int32Array(buffer, 0, 4)[STDIN_RING.CAPACITY]!;
+  if (buffer.byteLength < STDIN_RING.HEADER_BYTES) return 'stdinShared is shorter than its 32-byte header';
+  const capacity = new Int32Array(buffer, 0, STDIN_RING.HEADER_WORDS)[STDIN_RING.CAPACITY]!;
   if (capacity <= 0 || (capacity & (capacity - 1)) !== 0) return 'stdinShared capacity must be a power of two';
   if (buffer.byteLength < STDIN_RING.HEADER_BYTES + capacity) return 'stdinShared is shorter than its header and capacity';
   return null;
@@ -79,7 +88,7 @@ export class StdinRingReader {
   private readonly capacity: number;
 
   constructor(buffer: SharedArrayBuffer) {
-    this.header = new Int32Array(buffer, 0, 4);
+    this.header = new Int32Array(buffer, 0, STDIN_RING.HEADER_WORDS);
     this.capacity = this.header[STDIN_RING.CAPACITY]!;
     this.data = new Uint8Array(buffer, STDIN_RING.HEADER_BYTES, this.capacity);
   }
@@ -121,18 +130,20 @@ export class StdinRingReader {
    */
   takeBlocking(into: Uint8Array, offset: number, length: number): number {
     for (;;) {
-      const written = Atomics.load(this.header, STDIN_RING.WRITE_INDEX);
+      // SIGNAL is read before looking, so a write or a close after the look
+      // has changed it and the wait returns at once.
+      const signal = Atomics.load(this.header, STDIN_RING.SIGNAL);
       const count = this.take(into, offset, length);
       if (count !== null) return count;
-      Atomics.wait(this.header, STDIN_RING.WRITE_INDEX, written);
+      Atomics.wait(this.header, STDIN_RING.SIGNAL, signal);
     }
   }
 
-  /** Resolves when WRITE_INDEX or CLOSED may have moved, without a timer. */
+  /** Resolves when the producer has written or closed since this was called, without a timer. */
   whenWritten(): Promise<void> {
-    const written = Atomics.load(this.header, STDIN_RING.WRITE_INDEX);
+    const signal = Atomics.load(this.header, STDIN_RING.SIGNAL);
     if (this.available() > 0 || this.closed()) return Promise.resolve();
-    const waiting = waitAsync!.call(Atomics, this.header, STDIN_RING.WRITE_INDEX, written);
+    const waiting = waitAsync!.call(Atomics, this.header, STDIN_RING.SIGNAL, signal);
     return waiting.async ? waiting.value.then(() => undefined) : Promise.resolve();
   }
 }
@@ -151,7 +162,7 @@ export class StdinRingWriter {
   constructor(buffer: SharedArrayBuffer) {
     const problem = stdinRingProblem(buffer);
     if (problem !== null) throw new TypeError(problem);
-    this.header = new Int32Array(buffer, 0, 4);
+    this.header = new Int32Array(buffer, 0, STDIN_RING.HEADER_WORDS);
     this.capacity = this.header[STDIN_RING.CAPACITY]!;
     this.data = new Uint8Array(buffer, STDIN_RING.HEADER_BYTES, this.capacity);
   }
@@ -167,7 +178,8 @@ export class StdinRingWriter {
   /** EOF: the reader takes what is left, then reads 0. */
   close(): void {
     Atomics.store(this.header, STDIN_RING.CLOSED, 1);
-    Atomics.notify(this.header, STDIN_RING.WRITE_INDEX);
+    Atomics.add(this.header, STDIN_RING.SIGNAL, 1);
+    Atomics.notify(this.header, STDIN_RING.SIGNAL);
   }
 
   private async put(bytes: Uint8Array): Promise<void> {
@@ -191,7 +203,8 @@ export class StdinRingWriter {
       this.data.set(bytes.subarray(offset, offset + first), at);
       if (count > first) this.data.set(bytes.subarray(offset + first, offset + count), 0);
       Atomics.store(this.header, STDIN_RING.WRITE_INDEX, (written + count) | 0);
-      Atomics.notify(this.header, STDIN_RING.WRITE_INDEX);
+      Atomics.add(this.header, STDIN_RING.SIGNAL, 1);
+      Atomics.notify(this.header, STDIN_RING.SIGNAL);
       offset += count;
     }
   }
