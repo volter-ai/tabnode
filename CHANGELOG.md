@@ -28,17 +28,28 @@ publishes.
     its own thread; `STDIN_RING` (the layout), `createStdinRing`,
     `stdinRingProblem` and the producer `StdinRingWriter` (`write(bytes)`
     waits with `Atomics.waitAsync` when the ring is full; `close()` is EOF)
-    are exported.
+    are exported. The header is eight Int32 words (32 bytes): `WRITE_INDEX`,
+    `READ_INDEX`, `CLOSED`, `CAPACITY` and `SIGNAL`, which the producer bumps
+    and notifies after every write and at close, and on which readers wait,
+    so a close between a reader's look and its wait still wakes it; three
+    words are reserved. A host writes the ring only through `StdinRingWriter`.
+  - `stdin` accepts bytes.
 - `@volter/tabnode/stdin-ring`: the ring's layout, producer and helpers alone,
   a module that imports nothing, for a page that writes a run's stdin without
   loading the engine. The engine's reader is the same module.
-  - `stdin` accepts bytes.
 - Types `StdioKind` exported. The host-executor request a page publishes
   (`Symbol.for('@volter/browser-runtime/child-process-executor')`) is offered
   `onStdoutBytes` / `onStderrBytes`; `NodeProcessLaunch.stdin` may be bytes.
+- Declarations say what the implementation already took: the engine's process
+  streams' `write` and a WASI host process's `write` accept `Uint8Array` as
+  well as strings, and the guest stdin's `read()` answers
+  `string | Uint8Array | null`, as `Readable`'s does.
 - `NodeProcessLaunch.argv0`: the process's own name, `argv[0]` of the vector
   it was started with. A Node process host starts the process with it as
-  `argv[0]`; `argv` stays the words after it.
+  `argv[0]`; `argv` stays the words after it. A host that rebuilt the vector
+  as `["node", ...argv]` gave every hosted process `process.argv0 === 'node'`
+  (a kernel's exec of a renamed executable reported `node`); it must use
+  `argv0`.
 
 ### Behaviour changes a consumer must know
 
@@ -93,6 +104,14 @@ publishes.
   streams, as libuv does: a terminal fd is `'TTY'` (so `new net.Socket({ fd })`
   on it fails as in Node), a file or character device `'FILE'`, a pipe
   `'PIPE'`; it was `'PIPE'` for all three.
+- A run's life and its stdin, as in Node. A program that reads fd 0 with
+  `fs.readSync(0)` or `/dev/stdin` and returns ends when its loop is empty,
+  whether or not the stdin writer has closed: those reads take what
+  `process.stdin` already holds and then read the ring, without starting the
+  stream (the run used to live until the ring closed, and forever if it never
+  did). A run whose program consumes `process.stdin` (a `'data'` or
+  `'readable'` listener, flowing mode, or its own `read()` call) is kept alive
+  until the stream ends; a bare `process.stdin.read()` used to let it end early.
 - A WASI guest's stdout/stderr are written as its bytes, not decoded text.
 - A background job (`cmd &`) writes its parent's byte sinks where the parent
   has them; its output was dropped when the parent took bytes only.
