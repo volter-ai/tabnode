@@ -31,6 +31,7 @@ import { createNodeError as vfsError } from '../../virtual-fs';
 import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner } from './handles';
 import { enterRun } from '../../process-tokens';
 import { allocateFd, handleForFd } from './fds';
+import { treeDescriptorsOf, type TreeDescriptors, type TreeDescriptorStats } from '../../tree-descriptors';
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
 import { errname } from './uv';
 
@@ -164,6 +165,24 @@ interface OpenFile {
 /** Every descriptor this engine has open, and the next number to hand out. */
 const openFiles = new Map<number, OpenFile>();
 
+/**
+ * Descriptors a tree owns (`tree-descriptors.ts`): the number is the tree's,
+ * and every operation on it is the tree's own call, so its offset, its
+ * O_APPEND and its sharing with other processes are the owner's. The engine
+ * keeps only which owner answers for the number.
+ */
+const ownedFds = new Map<number, TreeDescriptors>();
+
+/** The owner of a descriptor a tree opened, where the tree opened it. */
+function ownerOf(fd: number): TreeDescriptors | undefined {
+  return ownedFds.get(fd);
+}
+
+/** A position as the tree takes it: null for the description's own offset. */
+function positionOf(position: number | null | undefined): number | null {
+  return position === null || position === undefined || position < 0 ? null : position;
+}
+
 function fileFor(fd: number): OpenFile {
   const file = openFiles.get(fd);
   if (!file) throw createNodeError('EBADF', 'read', String(fd));
@@ -180,6 +199,15 @@ function fileFor(fd: number): OpenFile {
  * not a sink, and the child's output there goes nowhere, as `ignore` does.
  */
 export function descriptorWriter(fd: number): ((text: string) => void) | null {
+  // A description a tree owns is written through it: one offset, the
+  // owner's, shared with the parent's copy as a dup'd descriptor's is.
+  const owner = ownerOf(fd);
+  if (owner) {
+    return (text) => {
+      const bytes = new TextEncoder().encode(text);
+      try { owner.write(fd, bytes, 0, bytes.length, null); } catch { /* a closed description drops the child's output */ }
+    };
+  }
   const stream = handleForFd(fd);
   if (stream instanceof LibuvStreamWrap) {
     return (text) => { try { stream.writeBuffer(new WriteWrap(), new TextEncoder().encode(text)); } catch { /* a closed stream drops the child's output, as a closed pipe does */ } };
@@ -212,7 +240,7 @@ export function descriptorWriter(fd: number): ((text: string) => void) | null {
 const descriptorCursors = new WeakMap<object, { position: number }>();
 
 /** Node's stat array: eighteen numbers, with each time a second and a nanosecond. */
-function statArray(stats: VfsStats, bigint: boolean, path?: string): Float64Array | BigInt64Array {
+function statArray(stats: VfsStats | TreeDescriptorStats, bigint: boolean, path?: string): Float64Array | BigInt64Array {
   const mtime = stats.mtime instanceof Date ? stats.mtime.getTime() : Number(stats.mtimeMs ?? 0);
   const atime = stats.atime instanceof Date ? stats.atime.getTime() : Number(stats.atimeMs ?? mtime);
   const ctime = stats.ctime instanceof Date ? stats.ctime.getTime() : Number(stats.ctimeMs ?? mtime);
@@ -502,7 +530,17 @@ const fsEventWrapBinding = { FSEvent };
  */
 class FileHandle {
   constructor(public fd: number) {}
-  close(): Promise<void> { openFiles.delete(this.fd); return Promise.resolve(); }
+  close(): Promise<void> {
+    // A description a tree owns is closed by its owner, as `close` does.
+    const owner = ownedFds.get(this.fd);
+    if (owner) {
+      ownedFds.delete(this.fd);
+      try { owner.close(this.fd); } catch (error) { return Promise.reject(error); }
+      return Promise.resolve();
+    }
+    openFiles.delete(this.fd);
+    return Promise.resolve();
+  }
   release(): void { openFiles.delete(this.fd); }
   getAsyncId(): number { return this.fd; }
 }
@@ -523,6 +561,14 @@ const fsBinding = {
     return answer(req, () => {
       const name = asPath(path);
       const tree = vfs();
+      // A tree that owns its descriptions opens the file itself, flags and
+      // mode as given: the rules of open(2) are its own.
+      const owner = treeDescriptorsOf(tree);
+      if (owner) {
+        const fd = owner.open(name, flags, _mode);
+        ownedFds.set(fd, owner);
+        return fd;
+      }
       const bits = flagBits();
       const exists = tree.existsSync(name);
       if (exists && ((flags & 3) !== 0 || (flags & (bits.create | bits.truncate | bits.append)) !== 0)) {
@@ -547,6 +593,8 @@ const fsBinding = {
 
   close(fd: number, req?: FSReq): undefined {
     return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (owner) { ownedFds.delete(fd); owner.close(fd); return undefined; }
       const stream = handleForFd(fd);
       if (stream instanceof LibuvStreamWrap) { stream.close(); return undefined; }
       fileFor(fd); openFiles.delete(fd); return undefined;
@@ -556,6 +604,8 @@ const fsBinding = {
   // ---- reading ------------------------------------------------------------
   read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number, req?: FSReq): number | undefined {
     return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (owner) return owner.read(fd, buffer, offset, length, positionOf(position));
       const file = fileFor(fd);
       if ((file.flags & 3) === 1) throw createNodeError('EBADF', 'read', file.path);
       if (file.cached === undefined) file.cached = file.tree.readFileSync(file.path) as Uint8Array;
@@ -586,6 +636,24 @@ const fsBinding = {
     const owned = typeof path !== 'number';
     const fd = owned ? fsBinding.open(path, flags, 0o666) as number : path as number;
     try {
+      const owner = ownerOf(fd);
+      if (owner) {
+        // The size is the description's; a file still growing reads to its end.
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        for (let size = Math.max(owner.fstat(fd).size, 65536); ;) {
+          const chunk = new Uint8Array(size);
+          const read = owner.read(fd, chunk, 0, chunk.length, null);
+          if (read === 0) break;
+          chunks.push(chunk.subarray(0, read));
+          total += read;
+          size = 65536;
+        }
+        const whole = new Uint8Array(total);
+        let at = 0;
+        for (const chunk of chunks) { whole.set(chunk, at); at += chunk.length; }
+        return new TextDecoder().decode(whole);
+      }
       const file = fileFor(fd);
       const bytes = new Uint8Array(file.tree.statSync(file.path).size);
       const length = fsBinding.read(fd, bytes, 0, bytes.length, -1) as number;
@@ -604,6 +672,8 @@ const fsBinding = {
         if (status !== 0) throw createNodeError(errname(status), 'write', String(fd));
         return bytes.length;
       }
+      const owner = ownerOf(fd);
+      if (owner) return owner.write(fd, buffer, offset, length, positionOf(position));
       const file = fileFor(fd);
       if ((file.flags & 3) === 0) throw createNodeError('EBADF', 'write', file.path);
       const tree = file.tree;
@@ -731,6 +801,8 @@ const fsBinding = {
 
   fstat(fd: number, bigint: boolean, req?: FSReq): Float64Array | BigInt64Array | undefined {
     return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (owner) return statArray(owner.fstat(fd), bigint);
       const file = fileFor(fd);
       return statArray(file.tree.statSync(file.path), bigint, file.path);
     });
@@ -994,6 +1066,8 @@ const fsBinding = {
   },
   fchmod(fd: number, mode: number, req?: FSReq): undefined {
     return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (owner) { owner.fchmod(fd, mode); return undefined; }
       const file = fileFor(fd);
       file.tree.chmodSync(file.path, mode);
       return undefined;
@@ -1003,17 +1077,21 @@ const fsBinding = {
   fchown(_fd: number, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => unsupportedMetadata('fchown')); },
   lchown(_path: unknown, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => unsupportedMetadata('lchown')); },
   utimes(path: unknown, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => { vfs().utimesSync(asPath(path), new Date(atime * 1000), new Date(mtime * 1000)); return undefined; }); },
-  futimes(fd: number, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => { const file = fileFor(fd); file.tree.utimesSync(file.path, new Date(atime * 1000), new Date(mtime * 1000)); return undefined; }); },
+  futimes(fd: number, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => { const owner = ownerOf(fd); if (owner) { owner.futimes(fd, atime, mtime); return undefined; } const file = fileFor(fd); file.tree.utimesSync(file.path, new Date(atime * 1000), new Date(mtime * 1000)); return undefined; }); },
   lutimes(path: unknown, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => {
     if (treeHoldsLinks()) return unsupportedMetadata('lutimes');
     vfs().utimesSync(asPath(path), new Date(atime * 1000), new Date(mtime * 1000));
     return undefined;
   }); },
-  fsync(_fd: number, req?: FSReq): undefined { return answer(req, () => undefined); },
-  fdatasync(_fd: number, req?: FSReq): undefined { return answer(req, () => undefined); },
+  // The engine's own tree is memory, with nothing to flush; a tree that owns
+  // the description flushes it as its fsync(2) does.
+  fsync(fd: number, req?: FSReq): undefined { return answer(req, () => { ownerOf(fd)?.fsync(fd); return undefined; }); },
+  fdatasync(fd: number, req?: FSReq): undefined { return answer(req, () => { ownerOf(fd)?.fsync(fd); return undefined; }); },
 
   ftruncate(fd: number, length: number, req?: FSReq): undefined {
     return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (owner) { owner.ftruncate(fd, length); return undefined; }
       const file = fileFor(fd);
       if ((file.flags & 3) === 0) throw createNodeError('EBADF', 'ftruncate', file.path);
       const tree = file.tree;

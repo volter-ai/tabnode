@@ -4,6 +4,16 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A tree a host supplies may own its open file descriptions: one that offers
+  `TREE_DESCRIPTORS` (`open`, `close`, `read`, `write`, `fstat`, `ftruncate`,
+  `fsync`, `fchmod`, `futimes`, `reserve`, `release`) is asked for every
+  descriptor operation on a file it opened, with its own fd numbers, offsets
+  and `O_APPEND`, and gives the numbers of the engine's own pipes and sockets.
+  A tree without it, every `VirtualFS`, keeps the engine's descriptor table
+  as before (ADR-0005 step 1).
+- The engine writes no `/usr/local/bin/node` into a tree a host supplied; only
+  a tree it made itself gets one.
+
 ## v0.5.70 — 2026-10-05
 
 - Development prohibits incidental verification locally and remotely. Requested

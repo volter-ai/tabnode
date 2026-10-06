@@ -64,6 +64,8 @@ export { runPid, processByPid };
 export { createProcessRegistryScope, installProcessRegistry, ownerProcessRegistryScope, ownerProcessTable } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
+export { TREE_DESCRIPTORS } from './tree-descriptors';
+export type { TreeDescriptors, TreeDescriptorStats } from './tree-descriptors';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
