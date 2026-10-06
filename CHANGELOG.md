@@ -32,6 +32,16 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   (`container.runNode` on the child's thread) with its input and output as
   bytes, as `spawn` does; a shell line (`execSync`) is still the shell's text.
   `RunOptions.stdin` takes bytes, which `runNode` gives to Node as they are.
+- A background job carries its parent's byte sinks; its output is never
+  dropped when the parent took bytes only.
+- fd 1 and 2 are descriptors of every run: `fs.writeSync(1|2, …)` and writes
+  to `/dev/stdout`, `/dev/stderr`, `/dev/fd/1|2`, `/proc/self/fd/1|2` go to
+  the run's stdout/stderr in order with `process.stdout`, never EBADF.
+- A WASI guest's stdout/stderr are written as its bytes.
+- `fs.writeSync(fd, string, pos, encoding)` writes the string in that encoding.
+- The host executor request (`ChildProcessHostRequest`) and the Node process
+  host's streams offer `onStdoutBytes` / `onStderrBytes`; an fd a host streams
+  through them has an empty total and is never replayed.
 
 ## v0.5.70 — 2026-10-05
 

@@ -225,8 +225,20 @@ async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaun
       return { fd, handle: descriptor };
     });
     input = nodeProcessInput(streams);
-    return await host.run({ ...launch, identity: { ...runPid(token)! }, inherited,
+    // An fd the host streamed through its byte sink is whole already: its
+    // total is empty by the host's contract, and is never replayed. The host
+    // is handed this run's streams with the byte sinks watched; every other
+    // field, and the run's stdin accessor, is the run's own by delegation. A
+    // nested child shares its parent's streams object, so it is not changed.
+    let bytesOut = false;
+    let bytesErr = false;
+    const watched = streams === undefined ? undefined : Object.create(streams, {
+      ...(streams.onStdoutBytes ? { onStdoutBytes: { value: (bytes: Uint8Array) => { bytesOut = true; streams.onStdoutBytes!(bytes); } } } : {}),
+      ...(streams.onStderrBytes ? { onStderrBytes: { value: (bytes: Uint8Array) => { bytesErr = true; streams.onStderrBytes!(bytes); } } } : {}),
+    }) as RunStreams;
+    const result = await host.run({ ...launch, ...(watched ? { streams: watched } : {}), identity: { ...runPid(token)! }, inherited,
       ...(input.stream ? { stdinStream: input.stream } : {}) });
+    return { ...result, stdout: bytesOut ? '' : result.stdout, stderr: bytesErr ? '' : result.stderr };
   } finally {
     if (streams) streams.stdin = null;
     input?.dispose();
@@ -1571,6 +1583,14 @@ interface ChildProcessHostRequest {
   hold: { value: boolean };
   onStdout: (data: string) => void;
   onStderr: (data: string) => void;
+  /**
+   * fd 1 and fd 2 as the bytes the program wrote, where the caller takes
+   * bytes. A host that can, writes a program's output here; a text-only host
+   * keeps writing `onStdout`/`onStderr`. An fd that streamed any bytes here
+   * has an empty total in the result: nothing of it is replayed or decoded.
+   */
+  onStdoutBytes?: (bytes: Uint8Array) => void;
+  onStderrBytes?: (bytes: Uint8Array) => void;
   /** The child's pipes past fd 2, by number; only where it was started with any. */
   descriptors?: Record<number, ChildProcessHostDescriptor>;
 }
@@ -1622,6 +1642,9 @@ interface CommandRun {
   stdinStream?: AsyncIterable<Uint8Array>;
   terminal?: RunStreams['terminal'];
   signal?: AbortSignal;
+  /** fd 1 and fd 2 as bytes, for a host that streams them so. */
+  onStdoutBytes?: (bytes: Uint8Array) => void;
+  onStderrBytes?: (bytes: Uint8Array) => void;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
   vfs?: VirtualFS;
@@ -1664,6 +1687,14 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     let streamedErr = '';
     const onStdout = (data: string): void => { streamedOut += String(data); run.onStdout?.(String(data)); };
     const onStderr = (data: string): void => { streamedErr += String(data); run.onStderr?.(String(data)); };
+    // An fd the host streamed as bytes is whole already: its total is empty
+    // by the host's contract and is never replayed, whatever the host says.
+    let bytesOut = false;
+    let bytesErr = false;
+    const byteSinks = {
+      ...(run.onStdoutBytes ? { onStdoutBytes: (bytes: Uint8Array): void => { bytesOut = true; run.onStdoutBytes!(bytes); } } : {}),
+      ...(run.onStderrBytes ? { onStderrBytes: (bytes: Uint8Array): void => { bytesErr = true; run.onStderrBytes!(bytes); } } : {}),
+    };
     // This token routes the engine's own shell, not a program's environment.
     // If a host shell inherits it, a later Node launch can override its new
     // stream identity with the ancestor's and deliver output to both runs.
@@ -1684,14 +1715,15 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
         hold: { value: true },
         onStdout,
         onStderr,
+        ...byteSinks,
         ...(opened.length > 0
           ? { descriptors: Object.fromEntries(opened.map(({ fd, descriptor }) => [fd, descriptor])) }
           : {}),
       });
-      const stdout = result.stdout || streamedOut;
-      const stderr = result.stderr || streamedErr;
-      if (!streamedOut && result.stdout) run.onStdout?.(result.stdout);
-      if (!streamedErr && result.stderr) run.onStderr?.(result.stderr);
+      const stdout = bytesOut ? '' : result.stdout || streamedOut;
+      const stderr = bytesErr ? '' : result.stderr || streamedErr;
+      if (!bytesOut && !streamedOut && result.stdout) run.onStdout?.(result.stdout);
+      if (!bytesErr && !streamedErr && result.stderr) run.onStderr?.(result.stderr);
       return { stdout, stderr, exitCode: result.exitCode };
     } finally {
       if (bridge.parentSignal) bridge.parentSignal.removeEventListener('abort', abortWithParent);
@@ -2126,6 +2158,8 @@ function startChildRun(request: RunRequest): StartedRun {
           signal: controller.signal,
           onStdout: streams.onStdout,
           onStderr: streams.onStderr,
+          onStdoutBytes: streams.onStdoutBytes,
+          onStderrBytes: streams.onStderrBytes,
           descriptors: request.descriptors,
         }));
       } catch (error) {
