@@ -1,6 +1,6 @@
 # ADR-0005: The engine is a client of the kernel's store
 
-Status: Proposed (design only; nothing here is built)
+Status: Accepted (2026-10-06, with the rulings below written in; nothing here is built)
 
 Date: 2026-10-06. TRACKER A4 "one owner", part 4 (consolidation): "done when no client keeps its own process table, descriptor table or file copy (grep-checked)". Owner's aim, as relayed: a file Node writes is the file Bash reads, with no second VFS and no boot-time copy.
 
@@ -24,9 +24,11 @@ So today one project has two writers: the container's `PackStore`, which holds N
 
 ## Decision
 
-### 0. The one owner (a prerequisite this record depends on; thread A's)
+### 0. The one owner (a prerequisite this record depends on)
 
-**(extrapolation)** The kernel's filesystem host becomes the project store's only writer. Its tree's upper layer is the `PackStore` itself (`applyNow`, publishing the ADR-0044 clock), not dirty nodes published by patch. The container stops owning the store. Every client follows the kernel's clock. None of this is tabnode code. Everything below assumes it, and works without it only in the degraded sense that the engine's writes reach the kernel's tree and the kernel publishes them as it publishes Bash's.
+Owner: unassigned, after thread A's re-landing of the kernel shell switch. It is not part of step 2 (§4).
+
+**(extrapolation)** The kernel's filesystem host becomes the project store's only writer. Its tree's upper layer is the `PackStore` itself (`applyNow`, publishing the ADR-0044 clock), not dirty nodes published by patch. The container stops owning the store. The writer publishes the clock, so the kernel's tree publishes it, and every client follows the kernel's clock. None of this is tabnode code. Everything below assumes it, and works without it only in the degraded sense that the engine's writes reach the kernel's tree and the kernel publishes them as it publishes Bash's.
 
 ### 1. Which engine operations become kernel requests, over which channel, on which thread
 
@@ -50,8 +52,8 @@ A second store is state that can answer a read with something the owner does not
 
 - **The clocked read view (ADR-0044, kept).** Existence, stat, read, readdir and realpath on store-backed paths are answered from a pack reader in the process's realm while the kernel's clock says that reader is current. Anything else asks the kernel. This is the only way to keep the 150k-call boot off the round trip. It holds no writes and no state of its own: a stale epoch sends the read to the kernel.
 - **Resolution caches.** ADR-0001's positive module-path cache (`Module._pathCache` semantics, per process) and the resolver's package-manifest reads stay per process, as Node keeps them on Linux.
-- **The module cache and compiled code.** These are the CommonJS cache (`require.cache`), the lowered-ESM cache (`processedCodeCache`), the image's prepared modules (`PREPARED_MODULES_DIR`, ADR-0048's installed host trees) and the esbuild transform cache. They are derived from file bytes and keyed by path and content. Node keeps the first one too. Whether the others need the kernel's clock in their key is open **(extrapolation)**: a module re-read after another process rewrote it must not be served from a stale transform.
-- **Nothing else.** The descriptor `cached` copy in `openFiles` goes for kernel-owned descriptors: a read is a `pread`, and the kernel answers from its page of the file. `/proc` comes from the kernel (emscripten-map §4 item 10), not from a `MountedTree`. `/tmp` and every path outside `PROJECT_ROOTS` are the kernel's like any other path; `PackedVirtualFS`'s in-memory overlay does not survive this.
+- **The module cache and compiled code.** These are the CommonJS cache (`require.cache`), the lowered-ESM cache (`processedCodeCache`), the image's prepared modules (`PREPARED_MODULES_DIR`, ADR-0048's installed host trees) and the esbuild transform cache. Every derived artifact is keyed by the digest of the bytes it was derived from, not by path and clock. A content key is correct by construction and needs no clock: a module re-read after another process rewrote it has a new digest and misses. Node keeps `require.cache` per process too, by path, as on Linux.
+- **Nothing else.** The descriptor `cached` copy in `openFiles` goes for kernel-owned descriptors: a read is a `pread`, and the kernel answers from its page of the file. `/proc` comes from the kernel (emscripten-map §4 item 10), not from a `MountedTree`. `/tmp`'s bytes live in the kernel host's memory, as Linux's tmpfs keeps them: not in the store, and not in `PackedVirtualFS`'s overlay, which does not survive this.
 
 ### 3. Open file descriptions
 
@@ -67,7 +69,7 @@ Each step ships alone, and each leaves every existing run working.
 
 1. **tabnode: the descriptor door.** The binding uses the tree's `openSync`/`readSync`/… when present, and asks the tree for fd numbers and for fstat. With `VirtualFS`, nothing changes. This is general to any tree; it names no host.
 2. **substrate: `KernelVirtualFS`.** It is given to the process kinds the kernel already runs: a `node` Bash execs under the kernel shell (`fix/catalog-shell-boot`). A run's tree is chosen when the run starts, by how it was started, not by a global switch. Dev servers and the toolchain stay on `PackedVirtualFS` until their reading on the kernel path is level with today's (§5).
-3. **substrate: the kernel becomes the store's writer** (§0), with the clock. Node's clocked reads then follow the kernel's clock instead of the container's. A write by Bash is visible to Node's next read without a patch.
+3. **substrate: the kernel becomes the store's writer** (§0, owner unassigned, after thread A's re-landing), with the clock. Node's clocked reads then follow the kernel's clock instead of the container's. A write by Bash is visible to Node's next read without a patch.
 4. **substrate: the boot copy goes.** The image tree is the store's layers (ADR-0045/0048). Neither the engine nor the kernel copies it into a tree of its own at boot. `PackedVirtualFS`'s owner role and the container's write path are removed, and the patch publication between the kernel and the page becomes the clock.
 5. **Check (A4's own):** grep finds no client with its own process table, descriptor table or file copy. Proof is Node's test/parallel count (A1) on the kernel path, against the same count on `VirtualFS`.
 
@@ -85,8 +87,6 @@ The operations that matter:
 
 ## What is not decided here
 
-- Who owns `/tmp`'s bytes, if not the store: memory in the kernel host, or a scratch store.
-- Whether the kernel's tree, rather than the page's, publishes the store's clock.
 - When Pyodide and PGlite (WasmFS backends) follow. Their client is the same channel; the backend is a WasmFS backend over `WaliFilesystemClient`, which is A4 part 1's WasmFS-in-the-kernel trial's other side.
 
-Disproof: a read by Node that answers a byte Bash wrote over, after Bash's write returned; a boot slower on the kernel path than on `PackedVirtualFS` for the same image; a descriptor offset not shared across a fork; any client keeping a file copy past step 4.
+Disproof: a read by Node that answers a byte Bash wrote over, after Bash's write returned; a boot slower on the kernel path than on `PackedVirtualFS` for the same image; a descriptor offset not shared across a fork; any client keeping a file copy past step 4; a Node realm writing to a path where the kernel holds a file the realm cannot see; a derived artifact served after the content it was derived from changed.
