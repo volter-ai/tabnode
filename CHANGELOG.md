@@ -18,14 +18,20 @@ publishes.
   is built and no shell runs. `env` is the whole environment; `cwd` defaults
   to `/`.
 - `RunOptions` (for `run` and `runNode`):
-  - `stdioKind: ['tty'|'pipe'|'file', x3]` says what each of fds 0, 1, 2 is;
+  - `stdioKind: ['tty'|'pipe'|'file'|'char', x3]` says what each of fds 0, 1,
+    2 is ('char' is a character device that is not a terminal, `/dev/null`);
     `stdioIsTTY: [b, b, b]` says only which is a terminal (used where
     `stdioKind` is absent). Each fd is a terminal or not on its own.
   - `onStdoutBytes` / `onStderrBytes(Uint8Array)` take fd 1 / fd 2 as the
     bytes the program wrote, before any decode.
   - `stdinShared: SharedArrayBuffer` gives fd 0 as a ring a host writes from
-    its own thread; `STDIN_RING` (the layout), `createStdinRing` and
-    `stdinRingProblem` are exported.
+    its own thread; `STDIN_RING` (the layout), `createStdinRing`,
+    `stdinRingProblem` and the producer `StdinRingWriter` (`write(bytes)`
+    waits with `Atomics.waitAsync` when the ring is full; `close()` is EOF)
+    are exported.
+- `@volter/tabnode/stdin-ring`: the ring's layout, producer and helpers alone,
+  a module that imports nothing, for a page that writes a run's stdin without
+  loading the engine. The engine's reader is the same module.
   - `stdin` accepts bytes.
 - Types `StdioKind` exported. The host-executor request a page publishes
   (`Symbol.for('@volter/browser-runtime/child-process-executor')`) is offered
@@ -65,10 +71,12 @@ publishes.
   `process.stdin` (EBADF before). A blocking read with the writer open and
   nothing buffered waits on `stdinShared` where the run has one, and is
   otherwise refused as `ERR_STDIN_BLOCKING_READ`; an `O_NONBLOCK` descriptor
-  gets EAGAIN. `fs.fstat(0|1|2)` is a character device, a FIFO or a regular
-  file by the fd's kind. `tty.isatty(fd)` and `guessHandleType(fd)` answer from
-  the asking run's own streams (a terminal fd is now `'TTY'`, so
-  `new net.Socket({ fd })` on it fails as in Node).
+  gets EAGAIN. `fs.fstat(0|1|2)` is a terminal (pts), a FIFO, a regular file
+  or a non-terminal character device (0666, device 1,3) by the fd's kind.
+  `tty.isatty(fd)` and `guessHandleType(fd)` answer from the asking run's own
+  streams, as libuv does: a terminal fd is `'TTY'` (so `new net.Socket({ fd })`
+  on it fails as in Node), a file or character device `'FILE'`, a pipe
+  `'PIPE'`; it was `'PIPE'` for all three.
 - A WASI guest's stdout/stderr are written as its bytes, not decoded text.
 - A background job (`cmd &`) writes its parent's byte sinks where the parent
   has them; its output was dropped when the parent took bytes only.

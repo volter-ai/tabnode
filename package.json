@@ -37,6 +37,10 @@
     "./port-bridge": {
       "types": "./dist/port-bridge.d.ts",
       "default": "./dist/port-bridge.mjs"
+    },
+    "./stdin-ring": {
+      "types": "./dist/stdin-ring.d.ts",
+      "default": "./dist/stdin-ring.mjs"
     }
   },
   "files": [

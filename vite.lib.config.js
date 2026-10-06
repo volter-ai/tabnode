@@ -57,6 +57,10 @@ export default defineConfig({
         // The page's side of the service worker alone, with none of Node's
         // library: a page whose engine runs in a worker imports this.
         'port-bridge': resolve(__dirname, 'src/port-bridge.ts'),
+        // A run's fd 0 as a shared ring: the producer a page runs and the
+        // layout, with nothing else of the engine. The engine's own reader
+        // imports this same module.
+        'stdin-ring': resolve(__dirname, 'src/stdin-ring.ts'),
       },
       name: 'Tabnode',
       formats: ['es'],

@@ -197,7 +197,7 @@ function stdioOf(fd: number): StdioFd | null {
   return (fd === 0 || fd === 1 || fd === 2) && !openFiles.has(fd) ? fd : null;
 }
 
-/** Where a run's process carries what each of its fds 0, 1 and 2 is: 'tty', 'pipe' or 'file'. */
+/** Where a run's process carries what each of its fds 0, 1 and 2 is: 'tty', 'pipe', 'file' or 'char'. */
 export const kStdioKinds = Symbol.for('tabnode.run.stdioKinds');
 
 /** What a run's standard streams are, as the fs binding reads them. */
@@ -228,10 +228,12 @@ function stdioStat(stream: StdioFd, bigint: boolean): Float64Array | BigInt64Arr
   const now = Date.now();
   const seconds = Math.floor(now / 1000);
   const nanos = Math.floor((now % 1000) * 1e6);
-  const mode = kind === 'tty' ? S_IFCHR | 0o620 : kind === 'file' ? S_IFREG | 0o644 : S_IFIFO | 0o600;
+  // A character device that is not a terminal is /dev/null's shape: 0666, device 1,3.
+  const mode = kind === 'tty' ? S_IFCHR | 0o620 : kind === 'char' ? S_IFCHR | 0o666
+    : kind === 'file' ? S_IFREG | 0o644 : S_IFIFO | 0o600;
   const values = [
     0, mode, 1,
-    0, 0, kind === 'tty' ? 136 << 8 : 0,
+    0, 0, kind === 'tty' ? 136 << 8 : kind === 'char' ? (1 << 8) | 3 : 0,
     4096, stream + 1, 0, 0,
     seconds, nanos, seconds, nanos, seconds, nanos, seconds, nanos,
   ];

@@ -65,7 +65,7 @@ export { createProcessRegistryScope, installProcessRegistry, ownerProcessRegistr
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
-export { STDIN_RING, createStdinRing, stdinRingProblem } from './stdin-ring';
+export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter } from './stdin-ring';
 import { stdinRingProblem, stdinRingWaitsAsync } from './stdin-ring';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
@@ -124,9 +124,11 @@ export interface RunOptions {
   stdioIsTTY?: readonly [boolean, boolean, boolean];
   /**
    * What each of the guest Node's fds 0, 1 and 2 is, as the kernel's
-   * description says: a terminal, a pipe, or a file (a `<` or `>` redirect).
-   * `fstat` answers a character device, a FIFO or a regular file by it, and a
-   * 'tty' fd is a terminal to `isatty`. Where given, `stdioIsTTY` is not read.
+   * description says: a terminal, a pipe, a file (a `<` or `>` redirect), or
+   * a character device that is not a terminal ('char', `/dev/null`). `fstat`
+   * answers by it, only a 'tty' fd is a terminal to `isatty`, and
+   * `guessHandleType` answers as libuv does ('TTY', 'PIPE', or 'FILE' for a
+   * file or a character device). Where given, `stdioIsTTY` is not read.
    */
   stdioKind?: readonly [StdioKind, StdioKind, StdioKind];
   /** AbortSignal to cancel long-running commands */
@@ -237,8 +239,8 @@ export function createContainer(options?: ContainerOptions): {
       }
     }
     const kind = runOptions?.stdioKind;
-    if (kind !== undefined && (!Array.isArray(kind) || kind.length !== 3 || kind.some((value) => value !== 'tty' && value !== 'pipe' && value !== 'file'))) {
-      throw new TypeError("stdioKind must be [stdin, stdout, stderr], each 'tty', 'pipe' or 'file'");
+    if (kind !== undefined && (!Array.isArray(kind) || kind.length !== 3 || kind.some((value) => value !== 'tty' && value !== 'pipe' && value !== 'file' && value !== 'char'))) {
+      throw new TypeError("stdioKind must be [stdin, stdout, stderr], each 'tty', 'pipe', 'file' or 'char'");
     }
     // If signal is already aborted, resolve immediately
     if (runOptions?.signal?.aborted) return { stdout: '', stderr: '', exitCode: 130 };

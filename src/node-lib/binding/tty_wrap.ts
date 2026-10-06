@@ -185,6 +185,18 @@ export function isTTY(fd: number): boolean {
   return stream?.isTTY === true;
 }
 
+/**
+ * What the asking run's fd 0, 1 or 2 is, as the run said (`stdioKind`, kept on
+ * its process), else a terminal or a pipe by its stream's `isTTY`.
+ */
+export function stdioKindOf(fd: 0 | 1 | 2): 'tty' | 'pipe' | 'file' | 'char' {
+  const token = currentOwner();
+  const own = token === null ? undefined : __runFor(token)?.process as unknown as Record<symbol, unknown> | undefined;
+  const proc = own ?? (globalThis as unknown as { process?: Record<symbol, unknown> }).process;
+  const kinds = proc?.[Symbol.for('tabnode.run.stdioKinds')] as readonly ('tty' | 'pipe' | 'file' | 'char')[] | undefined;
+  return kinds?.[fd] ?? (isTTY(fd) ? 'tty' : 'pipe');
+}
+
 // Node24.21/libuv uv_tty_mode_t; endpoint mode refusals remain ADR-0023.
 export const UV_TTY_MODE_NORMAL = 0;
 export const UV_TTY_MODE_IO = 2;

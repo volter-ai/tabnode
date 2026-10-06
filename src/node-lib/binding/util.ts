@@ -35,7 +35,7 @@
  * every promise, settled or not. A program that needs to know awaits it.
  */
 import { guessHandleTypeOfFd } from './fds';
-import { isTTY } from './tty_wrap';
+import { stdioKindOf } from './tty_wrap';
 import { nodeLibInternalRequire } from '../load';
 
 /** Node's `propertyFilter` and promise-state constants, by their own values. */
@@ -162,10 +162,16 @@ export const utilBinding = {
 
   /**
    * What kind of thing a descriptor is, out of the engine's own table; a
-   * standard fd the run was given as a terminal is one, so this agrees with
-   * `tty.isatty` and `fstat` per fd.
+   * standard fd is what the run was given on it, as libuv's
+   * `uv_guess_handle` answers: a terminal 'TTY', a regular file or a
+   * character device 'FILE', a pipe 'PIPE'. It agrees with `tty.isatty` and
+   * `fstat` per fd.
    */
-  guessHandleType: (fd: number) => (fd >= 0 && fd <= 2 && isTTY(fd) ? 'TTY' : guessHandleTypeOfFd(fd)),
+  guessHandleType: (fd: number) => {
+    if (fd !== 0 && fd !== 1 && fd !== 2) return guessHandleTypeOfFd(fd);
+    const kind = stdioKindOf(fd);
+    return kind === 'tty' ? 'TTY' : kind === 'file' || kind === 'char' ? 'FILE' : guessHandleTypeOfFd(fd);
+  },
 
   /**
    * Node's `defineLazyProperties`: each key becomes a getter that requires

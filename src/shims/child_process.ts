@@ -178,8 +178,11 @@ const NODE_VALUE_OPTIONS = new Set([
   '--unhandled-rejections', '--dns-result-order', '--trace-event-categories', '--trace-event-file-pattern',
 ]);
 
-/** What a run's standard fd is: a terminal, a pipe, or a file (a `<` or `>` redirect). */
-export type StdioKind = 'tty' | 'pipe' | 'file';
+/**
+ * What a run's standard fd is: a terminal, a pipe, a file (a `<` or `>`
+ * redirect), or a character device that is not a terminal (`/dev/null`).
+ */
+export type StdioKind = 'tty' | 'pipe' | 'file' | 'char';
 
 export interface RunStreams {
   stdinStream?: AsyncIterable<Uint8Array>;
