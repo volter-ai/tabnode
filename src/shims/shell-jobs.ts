@@ -207,6 +207,19 @@ function signalName(spec: string): string | null {
   return __substrateSignals[name] !== undefined ? name : null;
 }
 
+/**
+ * A job's output, on its parent run's fd: as bytes where the parent takes
+ * bytes, else as text. A parent that gave only byte sinks gets a builtin's
+ * text as its UTF-8 bytes; it is never dropped for want of a text sink.
+ */
+function toRun(streams: RunStreams | undefined, fd: 1 | 2, chunk: string | Uint8Array): void {
+  if (!streams) return;
+  const bytes = fd === 1 ? streams.onStdoutBytes : streams.onStderrBytes;
+  if (bytes) { bytes(typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk); return; }
+  const text = fd === 1 ? streams.onStdout : streams.onStderr;
+  text?.(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+}
+
 function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script: Node, sourceText: string): Job {
   const token: ProcessToken = `job-${nextJob++}`;
   const parent = host.runTokenOf(ctx);
@@ -218,8 +231,12 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
   let streamedErr: string[] = [];
   const live = (): RunStreams | undefined => (parent === null ? undefined : host.runStreamsFor(parent));
   host.registerRunStreams(token, {
-    onStdout: (data: string) => { streamedOut.push(data); live()?.onStdout?.(data); },
-    onStderr: (data: string) => { streamedErr.push(data); live()?.onStderr?.(data); },
+    onStdout: (data: string) => { streamedOut.push(data); toRun(live(), 1, data); },
+    onStderr: (data: string) => { streamedErr.push(data); toRun(live(), 2, data); },
+    // A `node` of the job writes the parent's fds as bytes where the parent
+    // takes bytes, as a `node` of the parent's own shell does.
+    onStdoutBytes: (bytes: Uint8Array) => { toRun(live(), 1, bytes); },
+    onStderrBytes: (bytes: Uint8Array) => { toRun(live(), 2, bytes); },
     signal: controller.signal,
     held: false,
   });
@@ -278,8 +295,8 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
       const stderr = result.stderr ?? '';
       const restOut = unstreamedOutput(stdout, streamedOut);
       const restErr = unstreamedOutput(stderr, streamedErr);
-      if (restOut) live()?.onStdout?.(restOut);
-      if (restErr) live()?.onStderr?.(restErr);
+      if (restOut) toRun(live(), 1, restOut);
+      if (restErr) toRun(live(), 2, restErr);
       hold(stdout, 'pendingOut');
       hold(stderr, 'pendingErr');
       streamedOut = [];
@@ -289,7 +306,7 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
     (error: unknown) => {
       handoff.delete(token);
       const text = `${error instanceof Error ? error.message : String(error)}\n`;
-      live()?.onStderr?.(text);
+      toRun(live(), 2, text);
       hold(text, 'pendingErr');
       end(1);
     },
