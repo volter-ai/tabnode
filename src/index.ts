@@ -81,8 +81,12 @@ export interface RunOptions {
   cwd?: string;
   /** The environment the command runs in, as `child_process.exec` takes it. */
   env?: Record<string, string>;
-  /** What the shell reads on stdin, so a builtin reads what was piped to it. */
-  stdin?: string;
+  /**
+   * What is on fd 0 when the run begins, so a builtin reads what was piped to
+   * it. `runNode` gives bytes to Node as they are; `run`'s shell reads its
+   * input as text, and bytes given to it are read as UTF-8.
+   */
+  stdin?: string | Uint8Array;
   stdinStream?: AsyncIterable<Uint8Array>;
   terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
   /** Callback for streaming stdout chunks as they arrive (for long-running commands like vitest watch) */
@@ -253,14 +257,14 @@ export function createContainer(options?: ContainerOptions): {
       // without its stdin: the run dropped it before exec, and exec dropped
       // it before the shell. Both forward it, so a builtin reads what was
       // piped, as it does in a Node shell.
-      runCommand(command, { cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : undefined, processToken, vfs }, (error, stdout, stderr) => {
+      runCommand(command, { cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs }, (error, stdout, stderr) => {
         resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
       });
     })),
     runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {
       cwd: runOptions?.cwd,
       env: runOptions?.env,
-      ...(typeof runOptions?.stdin === 'string' ? { stdin: runOptions.stdin } : {}),
+      ...(runOptions?.stdin !== undefined ? { stdin: runOptions.stdin } : {}),
       processToken,
       vfs,
     })),

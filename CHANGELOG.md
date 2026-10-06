@@ -28,6 +28,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   parent's pipe, inherited stdio or descriptor; binary through a pipe between
   guest processes arrives byte-exact, and Node's own `child_process` decides
   Buffer or string by the encoding option.
+- `spawnSync` / `execFileSync` of the engine's Node run it from its argv
+  (`container.runNode` on the child's thread) with its input and output as
+  bytes, as `spawn` does; a shell line (`execSync`) is still the shell's text.
+  `RunOptions.stdin` takes bytes, which `runNode` gives to Node as they are.
 
 ## v0.5.70 — 2026-10-05
 

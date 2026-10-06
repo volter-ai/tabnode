@@ -56,7 +56,7 @@ import { UV_ESRCH } from '../node-lib/binding/uv';
 import { loadNodeLibFor } from '../node-lib/load';
 import type { ChildProcessModule } from '../node-lib/child-process-module';
 import { getCommandNames } from 'just-bash';
-import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateShellLine, setProgramResolver } from './command-line';
+import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateShellLine, __substrateRunsNode, setProgramResolver } from './command-line';
 
 import { __substrateChildren, __onUncaughtException, __reportUncaughtException } from './process';
 
@@ -1806,7 +1806,7 @@ export interface NodeRunOptions {
   /** The process's whole environment, as `execve` takes it; empty when absent. */
   env?: Record<string, string>;
   /** Bytes already on fd 0 when the process begins. */
-  stdin?: string;
+  stdin?: string | Uint8Array;
   /** The run's name, under which the host registered its streams and signal. */
   processToken: string;
   /** The tree the process runs on. */
@@ -1837,7 +1837,7 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
     argv: [...argv],
     cwd: options.cwd ?? '/',
     env,
-    ...(typeof options.stdin === 'string' ? { stdin: options.stdin } : {}),
+    ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
     token: options.processToken,
   });
 }
@@ -1881,16 +1881,6 @@ function engineProgramFor(file: string, cwd?: string): string {
   if (existsInTree(__resolvePath(cwd ?? '/', name))) return name;
   const bare = name.slice(name.lastIndexOf('/') + 1);
   return shellCommandNames().has(bare) ? bare : name;
-}
-
-/**
- * Whether a program a guest spawns is the engine's Node: `node` by name, or
- * the path `process.execPath` names, which is how `fork` and every program
- * that re-runs itself spawns it.
- */
-function isEngineNode(file: string, cwd?: string): boolean {
-  if (engineProgramFor(file, cwd) === 'node') return true;
-  return __resolvePath(cwd ?? '/', __substrateProgramName(file)) === __substrateExecPath;
 }
 
 /** Whether the engine's shell can find a program under this name. */
@@ -1959,8 +1949,8 @@ function startChildRun(request: RunRequest): StartedRun {
   const pendingStdin: Array<Uint8Array | null> = [];
   // A host terminal consumes input incrementally. The old string-only
   // route dropped every keystroke that arrived after a child was launched.
-  const nodeChild = isEngineNode(request.file, request.cwd);
-  const admittedNode = nodeProcessHostInstalled() && engineProgramFor(request.file, request.cwd) === 'node';
+  const nodeChild = __substrateRunsNode(request.file, request.cwd);
+  const admittedNode = nodeProcessHostInstalled() && nodeChild;
   const hostTerminal = request.terminal !== undefined && hostExecutor() !== null && !admittedNode;
   // A `node` child the engine runs itself is started from its argv by the one
   // Node launch, as `execve` starts it, and is the run itself: its pid is the

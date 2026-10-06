@@ -13,7 +13,7 @@
 import { libRequire } from '../require-hook';
 import { UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS } from './uv';
 import { runSyncChild, syncChildRefusal } from '../../shims/sync-child';
-import { __substrateLineFor, __substrateShellLine } from '../../shims/command-line';
+import { __substrateLineFor, __substrateRunsNode, __substrateShellLine } from '../../shims/command-line';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio(stdio, true)` builds it. */
 interface SyncStdioEntry {
@@ -55,15 +55,15 @@ function environmentOf(envPairs: string[] | undefined): Record<string, string> |
   return env;
 }
 
-/** The program a caller can still write to: the engine's own stdout and stderr. */
-function inheritedWriter(fd: number): ((text: string) => void) | undefined {
+/** The program a caller can still write to: the engine's own stdout and stderr, given the child's bytes. */
+function inheritedWriter(fd: number): ((bytes: Uint8Array) => void) | undefined {
   const realm = (globalThis as unknown as {
-    process?: { stdout?: { write(text: string): unknown }; stderr?: { write(text: string): unknown } };
+    process?: { stdout?: { write(chunk: Uint8Array): unknown }; stderr?: { write(chunk: Uint8Array): unknown } };
   }).process;
   const stream = fd === 1 ? realm?.stdout : realm?.stderr;
   if (!stream || typeof stream.write !== 'function') return undefined;
-  return (text: string) => {
-    try { stream.write(text); } catch { /* a stream that refuses still lets the child run */ }
+  return (bytes: Uint8Array) => {
+    try { stream.write(bytes); } catch { /* a stream that refuses still lets the child run */ }
   };
 }
 
@@ -90,11 +90,15 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
   const realm = (globalThis as unknown as { process?: { cwd?: () => string; env?: Record<string, string> } }).process;
   let answer;
   try {
+    // A child that is the engine's Node goes by its argv, as `spawn` starts
+    // one, and its fds are bytes both ways; the input is the bytes Node's
+    // `spawnSync` was given, whatever their encoding.
     answer = runSyncChild({
       command: __substrateLineFor(options.file, argv, options.cwd),
+      ...(__substrateRunsNode(options.file, options.cwd) ? { argv } : {}),
       cwd: options.cwd ?? (typeof realm?.cwd === 'function' ? realm.cwd() : undefined),
       env: environmentOf(options.envPairs) ?? (realm?.env ? { ...realm.env } : undefined),
-      input: input === undefined ? undefined : Buffer.from(input).toString('utf8'),
+      ...(input === undefined ? {} : { input: new Uint8Array(input) }),
       onStdout: stdio[1]?.type === 'inherit' ? inheritedWriter(1) : undefined,
       onStderr: stdio[2]?.type === 'inherit' ? inheritedWriter(2) : undefined,
     });
@@ -107,10 +111,11 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
   // is the shell's 126 and Node's EACCES. Only a caller that named a program
   // can say so: a `-c` line is the shell's own, and its 127 is the line's.
   const named = __substrateShellLine(options.file, argv) === null;
-  if (named && answer.status === 127 && /command not found|No such file or directory/u.test(answer.stderr)) {
+  const said = named && (answer.status === 127 || answer.status === 126) ? new TextDecoder().decode(answer.stderr) : '';
+  if (named && answer.status === 127 && /command not found|No such file or directory/u.test(said)) {
     return nothing(UV_ENOENT);
   }
-  if (named && answer.status === 126 && /Permission denied|not executable/u.test(answer.stderr)) {
+  if (named && answer.status === 126 && /Permission denied|not executable/u.test(said)) {
     return nothing(UV_EACCES);
   }
 
@@ -119,8 +124,8 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
   // over what it read, which is why Node's own test says "we can have buffers
   // larger than maxBuffer".
   const limit = typeof options.maxBuffer === 'number' && options.maxBuffer >= 0 ? options.maxBuffer : Infinity;
-  const stdout = Buffer.from(answer.stdout, 'utf8');
-  const stderr = Buffer.from(answer.stderr, 'utf8');
+  const stdout = Buffer.from(answer.stdout);
+  const stderr = Buffer.from(answer.stderr);
   const overflowed = stdout.length > limit || stderr.length > limit;
   const output: Array<Uint8Array | null> = [null];
   for (let index = 1; index < Math.max(3, stdio.length); index += 1) {

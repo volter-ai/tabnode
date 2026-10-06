@@ -39,22 +39,29 @@ export function setSyncChildVfs(vfs: VirtualFS): void { hostVfs = vfs; }
 /** The host's `process`, taken before a guest's takes the global name. */
 const hostProcess = typeof process !== 'undefined' && process !== null ? (process as unknown as { getBuiltinModule?: (name: string) => unknown }) : null;
 
-/** What a synchronous child answers when it has ended. */
+/** What a synchronous child answers when it has ended: each fd's bytes, as libuv reads them. */
 export interface SyncChildResult {
   status: number | null;
   signal: string | null;
-  stdout: string;
-  stderr: string;
+  stdout: Uint8Array;
+  stderr: Uint8Array;
 }
 
-/** What a caller asks for. */
+/**
+ * What a caller asks for. A child that is the engine's Node is given by its
+ * `argv` and started by the Node launch, as `spawn` starts one, with its
+ * fds as bytes; any other is a `command` line for the engine's shell, which
+ * reads and writes text.
+ */
 export interface SyncChildRequest {
   command: string;
+  argv?: readonly string[];
   cwd?: string;
   env?: Record<string, string>;
-  input?: string;
-  onStdout?: (text: string) => void;
-  onStderr?: (text: string) => void;
+  /** The bytes the parent put on the child's fd 0. */
+  input?: Uint8Array;
+  onStdout?: (bytes: Uint8Array) => void;
+  onStderr?: (bytes: Uint8Array) => void;
 }
 
 const CONTROL_BYTES = 32;
@@ -223,9 +230,17 @@ function workerSource(): string {
     "    ]);",
     "    const vfs = new (proxyOf(engine.VirtualFS))();",
     "    const container = engine.createContainer({ vfs, cwd: message.cwd, env: message.env });",
-    "    const result = await container.run(message.command, {",
+    // A Node child runs from its argv with its fds as bytes; a shell line
+    // runs in the shell, which reads and writes text.
+    "    const input = message.input ? toBytes(message.input.b64) : undefined;",
+    "    const result = Array.isArray(message.argv) ? await container.runNode(message.argv, {",
     "      cwd: message.cwd, env: message.env,",
-    "      ...(typeof message.input === 'string' ? { stdin: message.input } : {}),",
+    "      ...(input ? { stdin: input } : {}),",
+    "      onStdoutBytes: (bytes) => send(JSON.stringify({ t: 'out', s: 1, b64: fromBytes(bytes) })),",
+    "      onStderrBytes: (bytes) => send(JSON.stringify({ t: 'out', s: 2, b64: fromBytes(bytes) })),",
+    "    }) : await container.run(message.command, {",
+    "      cwd: message.cwd, env: message.env,",
+    "      ...(input ? { stdin: decoder.decode(input) } : {}),",
     "      onStdout: (text) => send(JSON.stringify({ t: 'out', s: 1, d: String(text) })),",
     "      onStderr: (text) => send(JSON.stringify({ t: 'out', s: 2, d: String(text) })),",
     "    });",
@@ -399,6 +414,14 @@ function base64(value: Uint8Array): string {
   for (let i = 0; i < value.length; i += 0x8000) raw += String.fromCharCode.apply(null, Array.from(value.subarray(i, i + 0x8000)));
   return btoa(raw);
 }
+function joinBytes(chunks: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const chunk of chunks) total += chunk.length;
+  const joined = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) { joined.set(chunk, at); at += chunk.length; }
+  return joined;
+}
 function bytes(b64: string): Uint8Array {
   const raw = atob(b64);
   const out = new Uint8Array(raw.length);
@@ -429,15 +452,15 @@ export function runSyncChild(request: SyncChildRequest): SyncChildResult {
   active.worker.postMessage({
     type: 'run',
     command: request.command,
+    ...(request.argv ? { argv: [...request.argv] } : {}),
     cwd: request.cwd,
     env: request.env,
-    input: request.input,
+    ...(request.input ? { input: { b64: base64(request.input) } } : {}),
     engineURL: engineModuleURL(),
     loadWaitMs: ENGINE_LOAD_WAIT_MS,
     holdsLinks: (hostVfs as unknown as { holdsLinks?: boolean }).holdsLinks === true,
   });
-  let stdout = '';
-  let stderr = '';
+  const streamed: Record<1 | 2, Uint8Array[]> = { 1: [], 2: [] };
   // The first message of a run is the thread's `begin`, and it is waited for
   // on the short bound; everything after it is the child's own work on the
   // long one.
@@ -446,7 +469,7 @@ export function runSyncChild(request: SyncChildRequest): SyncChildResult {
     const message = JSON.parse(receiveFromWorker(active, waitMs)) as
       | { t: 'begin' }
       | { t: 'fs'; m: string; a: unknown[] }
-      | { t: 'out'; s: 1 | 2; d: string }
+      | { t: 'out'; s: 1 | 2; d?: string; b64?: string }
       | { t: 'done'; stdout: string; stderr: string; status: number }
       | { t: 'failed'; message: string };
     waitMs = RUN_WAIT_MS;
@@ -462,18 +485,26 @@ export function runSyncChild(request: SyncChildRequest): SyncChildResult {
       continue;
     }
     if (message.t === 'out') {
-      if (message.s === 1) { stdout += message.d; request.onStdout?.(message.d); }
-      else { stderr += message.d; request.onStderr?.(message.d); }
+      // A Node child's chunk is its bytes; a shell's is its text.
+      const chunk = typeof message.b64 === 'string' ? bytes(message.b64) : encoder.encode(message.d ?? '');
+      streamed[message.s].push(chunk);
+      (message.s === 1 ? request.onStdout : request.onStderr)?.(chunk);
       continue;
     }
     if (message.t === 'failed') throw new Error(message.message);
     // The run's own totals win over what was streamed, as they are what the
-    // command reports; a stream that already carried them is not doubled.
+    // command reports; a stream that already carried them is not doubled. A
+    // Node child keeps no text of its fds, so its totals are what it streamed.
+    const totalOf = (reported: string, chunks: Uint8Array[]): Uint8Array => {
+      const own = encoder.encode(reported);
+      const sent = joinBytes(chunks);
+      return own.length >= sent.length ? own : sent;
+    };
     return {
       status: message.status,
       signal: null,
-      stdout: message.stdout.length >= stdout.length ? message.stdout : stdout,
-      stderr: message.stderr.length >= stderr.length ? message.stderr : stderr,
+      stdout: totalOf(message.stdout, streamed[1]),
+      stderr: totalOf(message.stderr, streamed[2]),
     };
   }
 }

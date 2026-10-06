@@ -68,6 +68,16 @@ export function setProgramResolver(resolve: (file: string, cwd?: string) => stri
 }
 
 /**
+ * Whether a program a caller names is the engine's Node -- `node`, the path
+ * `process.execPath` names, any `.../node` the tree does not carry -- as the
+ * engine resolves it. Such a child is started from its argv by the Node
+ * launch, with byte stdio, by `spawn` and `spawnSync` alike.
+ */
+export function __substrateRunsNode(file: string, cwd?: string): boolean {
+  return resolveProgram(file, cwd) === 'node';
+}
+
+/**
  * The line a run of `file` with `argv` is, where argv[0] is the file as Node
  * builds it. A shell invocation is its own `-c` line; anything else is the
  * program and its words, each quoted.
