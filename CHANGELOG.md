@@ -39,6 +39,13 @@ publishes.
 
 ### Behaviour changes a consumer must know
 
+- `VirtualFS` emits an event for every mutation: `change` for an entry created
+  or changed (bytes, mode, times, a directory, a link; a file's carries its
+  text, others none) and `delete` for one that went. `chmodSync`, `utimesSync`,
+  `symlinkSync`, `mkdirSync` (and the directories a write or a rename makes),
+  `rmdirSync` and `renameSync` emitted nothing; a rename now reports every
+  path of the moved subtree gone at the old name and made at the new.
+
 - File modes are real. The shell's filesystem reports each file's own mode and
   its `chmod` sets it; the `/node_modules/.bin/` rule that made only those
   files executable is gone. A host that writes an executable must write it
