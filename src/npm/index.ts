@@ -268,6 +268,9 @@ export class PackageManager {
                 // A bin is a program, executable as npm's own bin-links makes it;
                 // the shell's PATH lookup reads the stub's mode.
                 this.vfs.chmodSync(stubPath, 0o755);
+                // bin-links makes the bin's own file executable too, so it
+                // runs by its path and its shebang as well as through the stub.
+                if (this.vfs.existsSync(targetPath)) this.vfs.chmodSync(targetPath, this.vfs.statSync(targetPath).mode | 0o111);
               }
             }
           } catch {
