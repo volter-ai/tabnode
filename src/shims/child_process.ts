@@ -2045,8 +2045,12 @@ function programExists(file: string, cwd: string | undefined, env: Record<string
  * program`), for a caller that checks the path exists or walks PATH. The stub
  * is the page's program, not a script of this engine's: it is relayed to the
  * host, whose process host maps the pathname to the program by its basename.
+ * The substrate's host executable (its ADR-0122 binfmt: a NUL, the format
+ * line, then the handle's `sha256:` identity) is the same kind of file: as
+ * `execve` would, it goes to the host that holds the handle, never to this
+ * engine's shell, which read it as a script and ran its two lines as commands.
  */
-const REGISTERED_PROGRAM_STUB = /^#!\/bin\/sh\n# [\w.+-]+: runtime-registered program\n/u;
+const REGISTERED_PROGRAM_STUB = /^(?:#!\/bin\/sh\n# [\w.+-]+: runtime-registered program\n|\0Volter-host-executable-v1\nsha256:[a-f0-9]{64}\n)/u;
 function isRegisteredProgramStub(path: string): boolean {
   if (!currentVfs) return false;
   try {
