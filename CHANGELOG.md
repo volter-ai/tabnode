@@ -36,6 +36,9 @@ publishes.
 - Types `StdioKind` exported. The host-executor request a page publishes
   (`Symbol.for('@volter/browser-runtime/child-process-executor')`) is offered
   `onStdoutBytes` / `onStderrBytes`; `NodeProcessLaunch.stdin` may be bytes.
+- `NodeProcessLaunch.argv0`: the process's own name, `argv[0]` of the vector
+  it was started with. A Node process host starts the process with it as
+  `argv[0]`; `argv` stays the words after it.
 
 ### Behaviour changes a consumer must know
 

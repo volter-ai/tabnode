@@ -7,6 +7,8 @@ import type { VirtualFS } from './virtual-fs';
 export interface NodeProcessLaunch {
   token: string;
   identity: ProcessIdentity;
+  /** The process's own name, `argv[0]` as `execve` was given it: what `process.argv0` reports. */
+  argv0: string;
   /** Arguments after the Node executable, preserving each parsed word. */
   argv: readonly string[];
   cwd: string;

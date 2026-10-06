@@ -226,7 +226,7 @@ const _runStreams = new Map<ProcessToken, RunStreams>();
 /** Submit before returning to a spawning parent; completion remains async. */
 async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaunch, 'identity' | 'inherited' | 'stdinStream'>): Promise<CommandOutcome> {
   const { token, streams } = launch;
-  if (!runPid(token)) setRunPid(token, mintPid(), 0, { argv: ['node', ...launch.argv], cwd: launch.cwd });
+  if (!runPid(token)) setRunPid(token, mintPid(), 0, { argv: [launch.argv0, ...launch.argv], cwd: launch.cwd });
   let input: ReturnType<typeof nodeProcessInput> | undefined;
   try {
     streams?.signal?.throwIfAborted();
@@ -484,7 +484,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     if (!nested) hostedNodes.add(runToken);
     try {
       return await runHostedNode(processHost, {
-        token: runToken, argv: [...args], cwd: launch.cwd, filesystem: tree, env: { ...launch.env },
+        token: runToken, argv0: launch.argv[0] ?? 'node', argv: [...args], cwd: launch.cwd, filesystem: tree, env: { ...launch.env },
         ...(launch.stdin !== undefined ? { stdin: launch.stdin } : {}), ...(streams ? { streams } : {}),
       });
     } finally {
@@ -2221,7 +2221,7 @@ function startChildRun(request: RunRequest): StartedRun {
         const env = { ...request.env };
         delete env[PROCESS_TOKEN_ENV];
         outcome = processHost ? await runHostedNode(processHost, {
-          token, argv: request.args.slice(1), cwd: request.cwd ?? '/',
+          token, argv0: request.args[0] ?? request.file, argv: request.args.slice(1), cwd: request.cwd ?? '/',
           filesystem: currentVfs!, env, streams, ...(stdinBytes !== undefined ? { stdin: stdinBytes } : {}),
         }) : directNode ? await enterRun(token, () => launchNode(treeForRun() ?? currentVfs!, {
           argv: request.args.length > 0 ? request.args : [request.file],
