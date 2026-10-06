@@ -125,14 +125,16 @@ export class VirtualFSAdapter implements IFileSystem {
       }
     }
 
-    // Files in .bin/ directories need execute permission for just-bash PATH resolution
-    const isExecutable = isFile && path.includes('/node_modules/.bin/');
-
+    // The file's own permission bits, as `stat(2)` reports them: a program
+    // written 0755 is executable to the shell's PATH lookup, and one written
+    // 0644 is not. Every regular file read 0644 here except under
+    // `/node_modules/.bin/`, so an executable a host wrote with its mode was
+    // not one to the engine.
     return {
       isFile,
       isDirectory,
       isSymbolicLink: false,
-      mode: isDirectory ? 0o755 : (isExecutable ? 0o755 : 0o644),
+      mode: stats.mode & 0o7777,
       size,
       mtime: new Date(),
     };
@@ -344,14 +346,11 @@ export class VirtualFSAdapter implements IFileSystem {
   }
 
   /**
-   * Change file/directory permissions (no-op - VFS doesn't track permissions)
+   * Change file/directory permissions. The tree keeps them, and `stat` above
+   * reports them, so a shell's `chmod +x` makes a program it can then run.
    */
-  async chmod(_path: string, _mode: number): Promise<void> {
-    // VFS doesn't track permissions, but we verify the path exists
-    if (!this.vfs.existsSync(_path)) {
-      throw createNodeError('ENOENT', 'chmod', _path);
-    }
-    // No-op
+  async chmod(path: string, mode: number): Promise<void> {
+    this.vfs.chmodSync(path, mode);
   }
 
   /**

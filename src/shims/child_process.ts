@@ -1039,6 +1039,9 @@ export function initChildProcess(vfs: VirtualFS): void {
       tree.mkdirSync(__substrateExecPath.slice(0, __substrateExecPath.lastIndexOf('/')), { recursive: true });
       tree.writeFileSync(__substrateExecPath, 'node "$@"\n');
     }
+    // A program, so the shell's lookup by mode finds it; a tree kept from
+    // before modes were read gets its bits here too.
+    if ((tree.statSync(__substrateExecPath).mode & 0o111) === 0) tree.chmodSync(__substrateExecPath, 0o755);
   } catch { /* a tree that refuses the write keeps the command under its plain name */ }
   if (typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined' || typeof (globalThis as Record<string, unknown>).document !== 'undefined') warmSyncChild();
   vfsAdapter = new VirtualFSAdapter(tree);

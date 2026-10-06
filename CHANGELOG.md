@@ -9,6 +9,9 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   `node` command uses (`launchNode`); no command line is built and no shell
   runs. A kernel that execs `node` reached the engine's shell before, which
   answered `node: command not found`.
+- The shell's filesystem reports each file's own mode, and its `chmod` sets it:
+  every regular file read 0644 except under `/node_modules/.bin/`. Install
+  stubs and the `execPath` stub are written 0755.
 
 ## v0.5.70 — 2026-10-05
 
