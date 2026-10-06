@@ -30,6 +30,7 @@
 import { createNodeError as vfsError } from '../../virtual-fs';
 import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner } from './handles';
 import { enterRun, __runFor, type ProcessToken } from '../../process-tokens';
+import { kStdinRing, type StdinRingReader } from '../../stdin-ring';
 import { allocateFd, handleForFd } from './fds';
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
 import { errname } from './uv';
@@ -249,8 +250,10 @@ function stdioStat(stream: StdioFd, bigint: boolean): Float64Array | BigInt64Arr
  * receive arrives through this realm's own loop (a host's `stdinStream`, its
  * `sendInput`, a parent guest's pipe write), and a thread blocked in this
  * read would hold that loop and never receive it -- a wait here is a
- * deadlock, not a slow read. It is refused by name rather than with an
- * EAGAIN the program did not ask for.
+ * deadlock, not a slow read. A run given a shared ring (`stdin-ring.ts`)
+ * is written from another thread, and its read waits on the ring. Any other
+ * run's is refused by name rather than with an EAGAIN the program did not
+ * ask for.
  */
 function readStdin(fd: number, buffer: Uint8Array, offset: number, length: number): number {
   const stdin = stdioProcess()?.stdin;
@@ -259,11 +262,29 @@ function readStdin(fd: number, buffer: Uint8Array, offset: number, length: numbe
   const chunk = stdin.read();
   if (chunk === null || chunk === undefined) {
     if (stdin.readableEnded === true || stdin._readableState?.ended === true) return 0;
+    // A run whose fd 0 is a shared ring written from another thread can wait
+    // for it, as Linux waits on a blocking pipe: after the bytes the stream
+    // already holds (none, here), the ring's next ones, or 0 at its end.
+    const ring = (stdioProcess() as Record<symbol, unknown> | undefined)?.[kStdinRing] as StdinRingReader | undefined;
+    if (ring) {
+      if (nonblockingAliases.has(fd)) {
+        const taken = ring.take(buffer, offset, length);
+        if (taken === null) throw createNodeError('EAGAIN', 'read', String(fd));
+        return taken;
+      }
+      try { return ring.takeBlocking(buffer, offset, length); } catch (cause) {
+        throw Object.assign(new Error(
+          `read(${fd}): this realm refuses to block (${cause instanceof Error ? cause.message : String(cause)}), `
+          + 'as a page\'s main thread does, so a blocking read of stdin cannot wait here. Run the program in a worker.'), {
+          code: 'ERR_STDIN_BLOCKING_READ', syscall: 'read', fd,
+        });
+      }
+    }
     if (nonblockingAliases.has(fd)) throw createNodeError('EAGAIN', 'read', String(fd));
     throw Object.assign(new Error(
       `read(${fd}): this run's stdin is still open and holds no bytes yet, and a blocking read cannot wait for them: `
       + 'they arrive on this realm\'s own event loop, which a blocked read would hold. Read it asynchronously '
-      + '(process.stdin), or give the run its whole stdin before it starts.'), {
+      + '(process.stdin), give the run its whole stdin before it starts, or give it a shared ring (stdinShared).'), {
       code: 'ERR_STDIN_BLOCKING_READ', syscall: 'read', fd,
     });
   }

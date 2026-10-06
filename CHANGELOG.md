@@ -47,6 +47,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 - A blocking read of fd 0 with the writer open and nothing buffered is refused
   as `ERR_STDIN_BLOCKING_READ` (it cannot wait in its own realm); a descriptor
   opened `O_NONBLOCK` gets EAGAIN.
+- `RunOptions.stdinShared` gives a run's fd 0 as a shared ring a host writes
+  from its own thread (`STDIN_RING` is the layout, `createStdinRing` makes
+  one): a blocking `fs.readSync(0)` waits on it as Linux waits on a pipe, and
+  `process.stdin` drains it through `Atomics.waitAsync`.
 - A WASI guest's stdout/stderr are written as its bytes.
 - `fs.writeSync(fd, string, pos, encoding)` writes the string in that encoding.
 - The host executor request (`ChildProcessHostRequest`) and the Node process

@@ -45,6 +45,7 @@ import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-modul
 import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
+import { StdinRingReader, kStdinRing } from '../stdin-ring';
 import { nodeProcessHostFor, nodeProcessHostInstalled, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import { Pipe, constants as pipeConstants } from '../node-lib/binding/pipe_wrap';
@@ -182,6 +183,8 @@ export type StdioKind = 'tty' | 'pipe' | 'file';
 
 export interface RunStreams {
   stdinStream?: AsyncIterable<Uint8Array>;
+  /** fd 0 as a shared ring a host writes from another thread (`stdin-ring.ts`); where given, fd 0's only source. */
+  stdinShared?: SharedArrayBuffer;
   terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
   /** Which of fds 0, 1 and 2 is a terminal; absent, a held or terminal run is a terminal on all three. */
   stdioIsTTY?: readonly [boolean, boolean, boolean];
@@ -579,6 +582,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // what the program has written on either fd, which is how the loop below
   // tells a program that printed from one still quiet.
   let printed = 0;
+  const stdinRing = streams?.stdinShared ? new StdinRingReader(streams.stdinShared) : undefined;
   const stdoutBytes = streams?.onStdoutBytes;
   const stderrBytes = streams?.onStderrBytes;
   const outputEncoder = new TextEncoder();
@@ -646,8 +650,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // left of a pipe, or the `stdin` a host gave `container.run`. A held run
     // (one the host streams and can still feed with `sendStdin`) leaves it
     // open, as a pipe whose writer has not closed.
-    stdin: launch.stdin ?? '',
-    ...(streams?.held || streams?.stdinOpen ? { stdinHeld: true } : {}),
+    // A run given a shared ring reads fd 0 from it alone.
+    stdin: stdinRing ? '' : launch.stdin ?? '',
+    ...(stdinRing || streams?.held || streams?.stdinOpen ? { stdinHeld: true } : {}),
     ...(ttyFds.some(Boolean) ? { tty: ttyFds } : {}),
     // The numbers this run was started with, so the guest's `process.pid`
     // is the one its parent's handle carries.
@@ -725,7 +730,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // Whoever writes to this run's fd 0 writes here: a person typing at a held
   // run's prompt, through `sendStdin`, or a parent writing to the stdin pipe
   // of a child it spawned.
-  if (streams) streams.stdin = proc.stdin;
+  // A run whose fd 0 is a shared ring has no other writer.
+  if (streams && !stdinRing) streams.stdin = proc.stdin;
+  if (stdinRing) (proc as unknown as Record<symbol, unknown>)[kStdinRing] = stdinRing;
 
   // For long-running commands (watch mode), report as TTY so tools like
   // vitest set up interactive features (file watching, stdin commands). A
@@ -816,7 +823,32 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   try {
   // The host's pipe delivers bytes after the entry has attached its reader.
   // EOF closes that same run's stream, never the most recently started run.
-  if (streams?.stdinStream) {
+  // A shared ring is drained into the guest's stdin when the stream asks for
+  // more (its `_read`), and waits for the producer with `Atomics.waitAsync`:
+  // no timer, and nothing read that the guest has not asked for. A blocking
+  // `fs.readSync(0)` takes from the same ring, after what the stream holds.
+  if (stdinRing) {
+    const ring = stdinRing;
+    let draining = false;
+    const push = (chunk: Uint8Array | null): boolean => (runToken === null ? proc.stdin.push(chunk) : enterRun(runToken, () => proc.stdin.push(chunk)));
+    const drain = async (): Promise<void> => {
+      if (draining) return;
+      draining = true;
+      try {
+        for (;;) {
+          if (!inputActive || streams?.signal?.aborted) return;
+          const chunk = ring.takeAll();
+          if (chunk === null) { await ring.whenWritten(); continue; }
+          if (chunk.length === 0) { push(null); if (streams) streams.stdinOpen = false; return; }
+          if (!push(chunk)) return;
+        }
+      } catch (error) {
+        if (inputActive) onUncaughtException(error);
+      } finally { draining = false; }
+    };
+    (proc.stdin as unknown as { _read(): void })._read = () => { void drain(); };
+  }
+  if (streams?.stdinStream && !stdinRing) {
     inputIterator = streams.stdinStream[Symbol.asyncIterator]();
     const input = inputIterator;
     void (async () => {

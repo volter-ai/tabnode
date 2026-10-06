@@ -65,6 +65,8 @@ export { createProcessRegistryScope, installProcessRegistry, ownerProcessRegistr
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
+export { STDIN_RING, createStdinRing, stdinRingProblem } from './stdin-ring';
+import { stdinRingProblem, stdinRingWaitsAsync } from './stdin-ring';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
@@ -89,6 +91,15 @@ export interface RunOptions {
    */
   stdin?: string | Uint8Array;
   stdinStream?: AsyncIterable<Uint8Array>;
+  /**
+   * The guest Node's fd 0 as a shared ring a host writes from a thread of its
+   * own (`STDIN_RING` says the layout; `createStdinRing` makes one). Where
+   * given it is fd 0's only source: `stdin`, `stdinStream` and `sendInput` are
+   * not read for the run, a blocking `fs.readSync(0)` waits on it, and
+   * `process.stdin` drains it through `Atomics.waitAsync`, which the realm
+   * must have.
+   */
+  stdinShared?: SharedArrayBuffer;
   terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
   /** Callback for streaming stdout chunks as they arrive (for long-running commands like vitest watch) */
   onStdout?: (data: string) => void;
@@ -218,6 +229,13 @@ export function createContainer(options?: ContainerOptions): {
     if (tty !== undefined && (!Array.isArray(tty) || tty.length !== 3 || tty.some((value) => typeof value !== 'boolean'))) {
       throw new TypeError('stdioIsTTY must be [stdin, stdout, stderr] booleans');
     }
+    if (runOptions?.stdinShared !== undefined) {
+      const problem = stdinRingProblem(runOptions.stdinShared);
+      if (problem !== null) throw new TypeError(problem);
+      if (!stdinRingWaitsAsync()) {
+        throw Object.assign(new Error('stdinShared needs Atomics.waitAsync, which this realm does not have, to drain the ring into process.stdin without a timer'), { code: 'ERR_STDIN_RING_UNSUPPORTED' });
+      }
+    }
     const kind = runOptions?.stdioKind;
     if (kind !== undefined && (!Array.isArray(kind) || kind.length !== 3 || kind.some((value) => value !== 'tty' && value !== 'pipe' && value !== 'file'))) {
       throw new TypeError("stdioKind must be [stdin, stdout, stderr], each 'tty', 'pipe' or 'file'");
@@ -235,7 +253,8 @@ export function createContainer(options?: ContainerOptions): {
       signal: runOptions?.signal,
       held: runOptions?.held === true,
       stdinStream: runOptions?.stdinStream,
-      stdinOpen: runOptions?.stdinStream !== undefined,
+      stdinOpen: runOptions?.stdinStream !== undefined || runOptions?.stdinShared !== undefined,
+      ...(runOptions?.stdinShared ? { stdinShared: runOptions.stdinShared } : {}),
       terminal: runOptions?.terminal,
       ...(runOptions?.stdioIsTTY ? { stdioIsTTY: runOptions.stdioIsTTY } : {}),
       ...(runOptions?.stdioKind ? { stdioKind: runOptions.stdioKind } : {}),
