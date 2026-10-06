@@ -94,6 +94,19 @@ process to kill; the browser path is written but unproven.
 Completion:
 - `spawnSync` and `execSync` honour `timeout`, `killSignal` and `maxBuffer` as Node does, proven on Node's fixtures in the tab.
 
+## synchronous-children-in-process-realms: A synchronous child from a Node process's own realm
+
+Status: planned
+In the substrate's tab, a Node process runs in a realm of its own (a confined worker over the kernel's tree).
+There `execFileSync(process.execPath, ['-e', …])` and `spawnSync` of `node` fail at once with
+`spawnSync /usr/local/bin/node ENOSYS` (readings-061, browser-substrate on 0.6.1), while an async `spawn` from the
+same realm runs. The refusal is `syncChildRefusal()` (`src/shims/sync-child.ts`): which of its conditions holds
+there (no `Worker` in the realm, or no engine module URL a thread can load) is not yet measured. It is a separate
+cause from the process numbers, which 0.7.0 unified with the kernel's.
+Completion:
+- `execFileSync` and `spawnSync` of `node` from a process realm run the child to its end and answer its status,
+  output and pid, read in the tab over the kernel's shell.
+
 ## linear-module-edits: Assemble module edits once (t_9360174c / t_e24fccae)
 
 Status: active
