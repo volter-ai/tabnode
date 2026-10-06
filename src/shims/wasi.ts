@@ -118,8 +118,9 @@ export interface WasiHostFs {
 /** The process members the binding reaches: the guest's own. */
 export interface WasiHostProcess {
   pid: number;
-  stdout: { write(data: string): unknown };
-  stderr: { write(data: string): unknown };
+  /** The guest's fd 1 and 2, which take the bytes it wrote (the engine's process streams do). */
+  stdout: { write(data: string | Uint8Array): unknown };
+  stderr: { write(data: string | Uint8Array): unknown };
   stdin: { read?: (size?: number) => string | Uint8Array | null };
   exit(code?: number): never;
   kill(pid: number, signal?: string | number): boolean;
