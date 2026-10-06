@@ -60,7 +60,7 @@ interface ProcessStream {
 }
 
 interface ProcessWritableStream extends ProcessStream {
-  write: (data: string | Buffer, ...rest: unknown[]) => boolean;
+  write: (data: string | Uint8Array, ...rest: unknown[]) => boolean;
   end?: (...args: unknown[]) => void;
 }
 
@@ -302,7 +302,7 @@ function createProcessStream(
       return stream;
     },
     // Default write implementation (no-op for readable streams)
-    write(_data: string | Buffer, ...rest: unknown[]) {
+    write(_data: string | Uint8Array, ...rest: unknown[]) {
       const callback = trailingCallback(rest);
       if (callback) queueMicrotask(callback);
       return true;
@@ -329,7 +329,7 @@ function createProcessStream(
     // The chunk goes on as the program wrote it, bytes or a string with its
     // encoding (`write(chunk[, encoding][, callback])`); the sink decides
     // whether it wants text or bytes.
-    stream.write = (data: string | Buffer, ...rest: unknown[]) => {
+    stream.write = (data: string | Uint8Array, ...rest: unknown[]) => {
       const result = writeImpl(data, typeof rest[0] === 'string' ? rest[0] : undefined);
       const callback = trailingCallback(rest);
       if (callback) queueMicrotask(callback);
