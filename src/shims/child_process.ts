@@ -764,6 +764,14 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const readableInput = proc.stdin as unknown as { listenerCount(event: string): number; readableLength: number; readableHighWaterMark: number; readableFlowing: boolean | null; _readableState?: { reading?: boolean; needReadable?: boolean } };
   const inputReading = () => readableInput.readableFlowing === true || readableInput._readableState?.reading === true
     || readableInput._readableState?.needReadable === true || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0;
+  // Whether the guest is consuming its stdin stream, which keeps a Node
+  // process alive until the stream ends: a 'data' or 'readable' listener, or
+  // flowing mode. A read the engine began (a drain parked for bytes) is not
+  // the guest's: `fs.readSync(0)` never touches process.stdin in Node, and a
+  // program that read its input that way and returned is done, whether or
+  // not the writer has closed.
+  const inputConsumed = () => readableInput.readableFlowing === true
+    || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0;
 
   // A child started with a channel wires its own end of it before its
   // module runs, which is what `lib/internal/process/pre_execution.js` does
@@ -964,7 +972,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // handle is one socket back to the server that forked it and which sets no
   // timer — as idle, with exit 0, three times over.
   const __ownsHandles = () => runToken !== null && (__ownedServerPorts(runToken).length > 0 || __ownedHandleCount(runToken) > 0);
-  const __printedThenWorking = () => (streams?.stdinOpen === true && inputReading()) || pendingGuestTimers(proc) > 0 || heldWork().count > 0 || __ownsHandles();
+  const __printedThenWorking = () => (streams?.stdinOpen === true && inputConsumed()) || pendingGuestTimers(proc) > 0 || heldWork().count > 0 || __ownsHandles();
   if (printed > 0 && !__printedThenWorking()) {
     // Settling the command is host work. Killing guest timers must not
     // cancel this continuation and leave the command's promise unresolved.
@@ -1013,7 +1021,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     let idleMs = 0;
     // A timer the guest still holds is work in Node's loop, whether or not
     // the program has printed; so is a handle it has open.
-    const stillWorking = (): boolean => (streams?.stdinOpen === true && inputReading()) || pendingGuestTimers(proc) > 0 || __ownsHandles();
+    const stillWorking = (): boolean => (streams?.stdinOpen === true && inputConsumed()) || pendingGuestTimers(proc) > 0 || __ownsHandles();
 
     // When an abort signal is present (e.g. watch mode), don't apply idle timeout —
     // only exit when aborted or process.exit is called.

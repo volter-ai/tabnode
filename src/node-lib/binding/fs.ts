@@ -202,7 +202,7 @@ export const kStdioKinds = Symbol.for('tabnode.run.stdioKinds');
 
 /** What a run's standard streams are, as the fs binding reads them. */
 interface StdioStreams {
-  stdin?: { isTTY?: boolean; read(): unknown; unshift(chunk: Uint8Array): void; readableEnded?: boolean; _readableState?: { ended?: boolean } };
+  stdin?: { isTTY?: boolean; read(size?: number): unknown; unshift(chunk: Uint8Array): void; readableEnded?: boolean; readableLength?: number; _readableState?: { ended?: boolean } };
   stdout?: { isTTY?: boolean };
   stderr?: { isTTY?: boolean };
 }
@@ -212,6 +212,41 @@ function stdioProcess(token: ProcessToken | null = currentOwner()): StdioStreams
   const run = token === null ? undefined : __runFor(token);
   if (run) return run.process as unknown as StdioStreams;
   return (globalThis as unknown as { process?: StdioStreams }).process;
+}
+
+/**
+ * A read of fd 0 for a run whose stdin is a shared ring written from another
+ * thread, as Linux reads a blocking pipe: the bytes the guest's stream
+ * already holds first (taken without asking the stream for more, which would
+ * start its drain from the ring: `fs.readSync(0)` never touches
+ * process.stdin in Node), then the ring's next ones, waiting for them, or 0
+ * at its end. An O_NONBLOCK descriptor gets EAGAIN instead of a wait.
+ */
+function readStdinRing(fd: number, stdin: NonNullable<StdioStreams['stdin']>, ring: StdinRingReader, buffer: Uint8Array, offset: number, length: number): number {
+  const buffered = stdin.readableLength ?? 0;
+  if (buffered > 0) {
+    const chunk = stdin.read(Math.min(length, buffered));
+    if (chunk !== null && chunk !== undefined) {
+      const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk as Uint8Array;
+      const count = Math.min(length, bytes.length);
+      buffer.set(bytes.subarray(0, count), offset);
+      if (count < bytes.length) stdin.unshift(bytes.slice(count));
+      return count;
+    }
+  }
+  if (stdin.readableEnded === true || stdin._readableState?.ended === true) return 0;
+  if (nonblockingAliases.has(fd)) {
+    const taken = ring.take(buffer, offset, length);
+    if (taken === null) throw createNodeError('EAGAIN', 'read', String(fd));
+    return taken;
+  }
+  try { return ring.takeBlocking(buffer, offset, length); } catch (cause) {
+    throw Object.assign(new Error(
+      `read(${fd}): this realm refuses to block (${cause instanceof Error ? cause.message : String(cause)}), `
+      + 'as a page\'s main thread does, so a blocking read of stdin cannot wait here. Run the program in a worker.'), {
+      code: 'ERR_STDIN_BLOCKING_READ', syscall: 'read', fd,
+    });
+  }
 }
 
 /**
@@ -261,27 +296,11 @@ function readStdin(fd: number, buffer: Uint8Array, offset: number, length: numbe
   const stdin = stdioProcess()?.stdin;
   if (!stdin || typeof stdin.read !== 'function') throw createNodeError('EBADF', 'read', '0');
   if (length <= 0) return 0;
+  const ring = (stdioProcess() as Record<symbol, unknown> | undefined)?.[kStdinRing] as StdinRingReader | undefined;
+  if (ring) return readStdinRing(fd, stdin, ring, buffer, offset, length);
   const chunk = stdin.read();
   if (chunk === null || chunk === undefined) {
     if (stdin.readableEnded === true || stdin._readableState?.ended === true) return 0;
-    // A run whose fd 0 is a shared ring written from another thread can wait
-    // for it, as Linux waits on a blocking pipe: after the bytes the stream
-    // already holds (none, here), the ring's next ones, or 0 at its end.
-    const ring = (stdioProcess() as Record<symbol, unknown> | undefined)?.[kStdinRing] as StdinRingReader | undefined;
-    if (ring) {
-      if (nonblockingAliases.has(fd)) {
-        const taken = ring.take(buffer, offset, length);
-        if (taken === null) throw createNodeError('EAGAIN', 'read', String(fd));
-        return taken;
-      }
-      try { return ring.takeBlocking(buffer, offset, length); } catch (cause) {
-        throw Object.assign(new Error(
-          `read(${fd}): this realm refuses to block (${cause instanceof Error ? cause.message : String(cause)}), `
-          + 'as a page\'s main thread does, so a blocking read of stdin cannot wait here. Run the program in a worker.'), {
-          code: 'ERR_STDIN_BLOCKING_READ', syscall: 'read', fd,
-        });
-      }
-    }
     if (nonblockingAliases.has(fd)) throw createNodeError('EAGAIN', 'read', String(fd));
     throw Object.assign(new Error(
       `read(${fd}): this run's stdin is still open and holds no bytes yet, and a blocking read cannot wait for them: `
