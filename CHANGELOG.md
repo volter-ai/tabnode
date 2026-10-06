@@ -2,7 +2,30 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## Unreleased
+## v0.6.1
+
+A host's tree may own a run's open file descriptions and stand in for the
+container's tree in one run (ADR-0005 steps 1 and 2); with `VirtualFS`
+nothing changes. Released as v0.6.1; the workflow dates this section when it
+publishes.
+
+- `RunOptions.filesystem` (for `runNode`): the tree one run's Node reads and
+  writes, in place of the container's, while it keeps the container's port
+  space and process table (ADR-0005 step 2). A synchronous child reads its
+  parent run's tree.
+- A stat keeps an entry's full file type: the type bits a tree's mode
+  carries, else every kind its stat answers (a character or block device, a
+  FIFO, a socket as well as a directory or a link). A host tree's
+  `/dev/null` stat'ed by path is a character device, as its fstat says;
+  `VirtualFS` answers no device kinds and is unchanged.
+- A tree a host supplies may own its open file descriptions: one that offers
+  `TREE_DESCRIPTORS` (`open`, `close`, `read`, `write`, `fstat`, `ftruncate`,
+  `fsync`, `fchmod`, `futimes`, `reserve`, `release`) is asked for every
+  descriptor operation on a file it opened, with its own fd numbers, offsets
+  and `O_APPEND`, and gives the numbers of the engine's own pipes and sockets.
+  A tree without it, every `VirtualFS`, keeps the engine's descriptor table
+  as before (ADR-0005 step 1). `TreeDescriptorStats` may answer
+  `isCharacterDevice`, `isBlockDevice`, `isFIFO` and `isSocket`.
 
 ## v0.6.0 — 2026-10-06
 
