@@ -565,12 +565,15 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const stdoutBytes = streams?.onStdoutBytes;
   const stderrBytes = streams?.onStderrBytes;
   const outputEncoder = new TextEncoder();
-  const outputDecoder = new TextDecoder();
+  // One decoder per fd, streaming: a character whose bytes arrive in two
+  // writes reaches a text sink whole.
+  const stdoutDecoder = new TextDecoder();
+  const stderrDecoder = new TextDecoder();
   const appendStdout = (data: string | Uint8Array) => {
     if (exitCalled) return;
     printed += data.length;
     if (stdoutBytes) { stdoutBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
-    const text = typeof data === 'string' ? data : outputDecoder.decode(data);
+    const text = typeof data === 'string' ? data : stdoutDecoder.decode(data, { stream: true });
     stdout += text;
     streams?.onStdout?.(text);
   };
@@ -578,7 +581,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     if (exitCalled) return;
     printed += data.length;
     if (stderrBytes) { stderrBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
-    const text = typeof data === 'string' ? data : outputDecoder.decode(data);
+    const text = typeof data === 'string' ? data : stderrDecoder.decode(data, { stream: true });
     stderr += text;
     streams?.onStderr?.(text);
   };

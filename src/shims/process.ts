@@ -346,11 +346,6 @@ function createProcessStream(
   return stream;
 }
 
-/** A chunk's text: bytes, a Buffer's or a plain Uint8Array's, are UTF-8. */
-function textOf(data: string | Uint8Array): string {
-  return typeof data === 'string' ? data : new TextDecoder().decode(data);
-}
-
 /**
  * Node's `write(chunk[, encoding][, callback])` and `end([chunk][, encoding][, callback])`:
  * the callback is whichever argument is a function. `stdout.write('', done)`
@@ -378,10 +373,14 @@ function bytesOf(owner: object, data: string | Uint8Array, encoding?: string): U
   return new Uint8Array(NodeBuffer.from(data, encoding));
 }
 
-/** A written chunk as text for a text sink: a string written in another encoding is its bytes, read as UTF-8. */
-function chunkText(owner: object, data: string | Uint8Array, encoding?: string): string {
+/**
+ * A written chunk as text for a text sink: a string written in another
+ * encoding is its bytes, read as UTF-8 by the fd's own streaming decoder, so
+ * a character whose bytes arrive in two writes reaches the sink whole.
+ */
+function chunkText(owner: object, decoder: TextDecoder, data: string | Uint8Array, encoding?: string): string {
   if (typeof data === 'string' && (encoding === undefined || encoding === 'utf8' || encoding === 'utf-8')) return data;
-  return textOf(bytesOf(owner, data, encoding));
+  return decoder.decode(bytesOf(owner, data, encoding), { stream: true });
 }
 
 /** Whether a run's fd is a terminal, from one flag for all three or one per fd. */
@@ -546,6 +545,8 @@ export function createProcess(options?: {
   // Nothing more can arrive unless the runner says it holds the input open.
   let stdinStream: ProcessStdin | undefined;
 
+  const stdoutDecoder = new TextDecoder();
+  const stderrDecoder = new TextDecoder();
   const proc: Process = {
     env,
     // Node exposes a writable title even before application code sets it.
@@ -733,9 +734,9 @@ export function createProcess(options?: {
       if (options?.onStdoutBytes) {
         options.onStdoutBytes(bytesOf(proc, data, encoding));
       } else if (options?.onStdout) {
-        options.onStdout(chunkText(proc, data, encoding));
+        options.onStdout(chunkText(proc, stdoutDecoder, data, encoding));
       } else {
-        console.log(chunkText(proc, data, encoding));
+        console.log(chunkText(proc, stdoutDecoder, data, encoding));
       }
       return true;
     }) as ProcessWritableStream,
@@ -744,9 +745,9 @@ export function createProcess(options?: {
       if (options?.onStderrBytes) {
         options.onStderrBytes(bytesOf(proc, data, encoding));
       } else if (options?.onStderr) {
-        options.onStderr(chunkText(proc, data, encoding));
+        options.onStderr(chunkText(proc, stderrDecoder, data, encoding));
       } else {
-        console.error(chunkText(proc, data, encoding));
+        console.error(chunkText(proc, stderrDecoder, data, encoding));
       }
       return true;
     }) as ProcessWritableStream,
