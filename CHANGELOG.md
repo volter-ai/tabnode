@@ -42,6 +42,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   arrived, 0 at its end). `fs.fstat(0|1|2)` is a character device where the
   run gave that fd a terminal, else a FIFO; `tty.isatty` and `guessHandleType`
   answer per fd from the asking run's own streams.
+- `RunOptions.stdioKind: ['tty'|'pipe'|'file', ×3]` says what each fd is;
+  `fstat` answers a character device, a FIFO or a regular file by it.
+- A blocking read of fd 0 with the writer open and nothing buffered is refused
+  as `ERR_STDIN_BLOCKING_READ` (it cannot wait in its own realm); a descriptor
+  opened `O_NONBLOCK` gets EAGAIN.
 - A WASI guest's stdout/stderr are written as its bytes.
 - `fs.writeSync(fd, string, pos, encoding)` writes the string in that encoding.
 - The host executor request (`ChildProcessHostRequest`) and the Node process

@@ -125,13 +125,14 @@ function callingCwd(): string {
  * the wrong bit and answered ENOENT for a file it was being asked to create.
  * One table, one answer.
  */
-function flagBits(): { create: number; excl: number; truncate: number; append: number } {
+function flagBits(): { create: number; excl: number; truncate: number; append: number; nonblock: number } {
   const fs = (constantsBinding as unknown as { fs?: Record<string, number> }).fs ?? {};
   return {
     create: fs.O_CREAT ?? 0o100,
     excl: fs.O_EXCL ?? 0o200,
     truncate: fs.O_TRUNC ?? 0o1000,
     append: fs.O_APPEND ?? 0o2000,
+    nonblock: fs.O_NONBLOCK ?? 0o4000,
   };
 }
 
@@ -185,6 +186,8 @@ const STDIO_PATHS = new Map<string, StdioFd>([
   ['/proc/self/fd/0', 0], ['/proc/self/fd/1', 1], ['/proc/self/fd/2', 2],
 ]);
 const stdioAliases = new Map<number, StdioFd>();
+/** Descriptors on a standard stream that were opened O_NONBLOCK: a read with nothing there is EAGAIN. */
+const nonblockingAliases = new Set<number>();
 
 /** The standard stream a descriptor names, where it names one. */
 function stdioOf(fd: number): StdioFd | null {
@@ -192,6 +195,9 @@ function stdioOf(fd: number): StdioFd | null {
   if (alias !== undefined) return alias;
   return (fd === 0 || fd === 1 || fd === 2) && !openFiles.has(fd) ? fd : null;
 }
+
+/** Where a run's process carries what each of its fds 0, 1 and 2 is: 'tty', 'pipe' or 'file'. */
+export const kStdioKinds = Symbol.for('tabnode.run.stdioKinds');
 
 /** What a run's standard streams are, as the fs binding reads them. */
 interface StdioStreams {
@@ -208,20 +214,23 @@ function stdioProcess(token: ProcessToken | null = currentOwner()): StdioStreams
 }
 
 /**
- * `fstat` of a standard stream, as Linux answers it: a terminal is a
- * character device (a pts, major 136), anything else the run was given is a
- * pipe. The run says which by its per-fd terminals (`stdioIsTTY`); a run has
- * no way yet to say an fd is a file, and is a pipe then.
+ * `fstat` of a standard stream, as Linux answers it for what the run was
+ * given on that fd (`stdioKind`, else its terminals): a terminal is a
+ * character device (a pts, major 136), a file a regular file, anything else
+ * a pipe. A file's size is not one the run supplies, and is 0.
  */
 function stdioStat(stream: StdioFd, bigint: boolean): Float64Array | BigInt64Array {
   const proc = stdioProcess();
+  const kinds = (proc as Record<symbol, unknown> | undefined)?.[kStdioKinds] as readonly string[] | undefined;
   const tty = (stream === 0 ? proc?.stdin : stream === 1 ? proc?.stdout : proc?.stderr)?.isTTY === true;
+  const kind = kinds?.[stream] ?? (tty ? 'tty' : 'pipe');
   const now = Date.now();
   const seconds = Math.floor(now / 1000);
   const nanos = Math.floor((now % 1000) * 1e6);
+  const mode = kind === 'tty' ? S_IFCHR | 0o620 : kind === 'file' ? S_IFREG | 0o644 : S_IFIFO | 0o600;
   const values = [
-    0, tty ? S_IFCHR | 0o620 : S_IFIFO | 0o600, 1,
-    0, 0, tty ? 136 << 8 : 0,
+    0, mode, 1,
+    0, 0, kind === 'tty' ? 136 << 8 : 0,
     4096, stream + 1, 0, 0,
     seconds, nanos, seconds, nanos, seconds, nanos, seconds, nanos,
   ];
@@ -231,17 +240,32 @@ function stdioStat(stream: StdioFd, bigint: boolean): Float64Array | BigInt64Arr
 /**
  * A read of the run's fd 0: the bytes its `process.stdin` holds, taken from
  * that same stream so the two read in order, the rest left for the next
- * read. With nothing there yet the answer is EAGAIN, as a non-blocking pipe
- * gives (a tab cannot block on a writer); at the writer's end it is 0.
+ * read; at the writer's end, 0. That covers every stdin a run is given
+ * whole (`stdin`, a `<` file, a pipe whose writer finished first).
+ *
+ * With nothing there and the writer still open, Linux blocks a blocking fd
+ * and answers EAGAIN on an O_NONBLOCK one. The second is answered. The
+ * first cannot be, in this realm: every byte a run's stdin can still
+ * receive arrives through this realm's own loop (a host's `stdinStream`, its
+ * `sendInput`, a parent guest's pipe write), and a thread blocked in this
+ * read would hold that loop and never receive it -- a wait here is a
+ * deadlock, not a slow read. It is refused by name rather than with an
+ * EAGAIN the program did not ask for.
  */
-function readStdin(buffer: Uint8Array, offset: number, length: number): number {
+function readStdin(fd: number, buffer: Uint8Array, offset: number, length: number): number {
   const stdin = stdioProcess()?.stdin;
   if (!stdin || typeof stdin.read !== 'function') throw createNodeError('EBADF', 'read', '0');
   if (length <= 0) return 0;
   const chunk = stdin.read();
   if (chunk === null || chunk === undefined) {
     if (stdin.readableEnded === true || stdin._readableState?.ended === true) return 0;
-    throw createNodeError('EAGAIN', 'read', '0');
+    if (nonblockingAliases.has(fd)) throw createNodeError('EAGAIN', 'read', String(fd));
+    throw Object.assign(new Error(
+      `read(${fd}): this run's stdin is still open and holds no bytes yet, and a blocking read cannot wait for them: `
+      + 'they arrive on this realm\'s own event loop, which a blocked read would hold. Read it asynchronously '
+      + '(process.stdin), or give the run its whole stdin before it starts.'), {
+      code: 'ERR_STDIN_BLOCKING_READ', syscall: 'read', fd,
+    });
   }
   const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk as Uint8Array;
   const count = Math.min(length, bytes.length);
@@ -636,6 +660,7 @@ const fsBinding = {
       if (standard !== undefined) {
         const fd = allocateFd();
         stdioAliases.set(fd, standard);
+        if ((flags & flagBits().nonblock) !== 0) nonblockingAliases.add(fd);
         return fd;
       }
       const tree = vfs();
@@ -665,7 +690,7 @@ const fsBinding = {
     return answer(req, () => {
       const stream = handleForFd(fd);
       if (stream instanceof LibuvStreamWrap) { stream.close(); return undefined; }
-      if (stdioOf(fd) !== null) { stdioAliases.delete(fd); return undefined; }
+      if (stdioOf(fd) !== null) { stdioAliases.delete(fd); nonblockingAliases.delete(fd); return undefined; }
       fileFor(fd); openFiles.delete(fd); return undefined;
     });
   },
@@ -678,7 +703,7 @@ const fsBinding = {
         // fd 1 and 2 are the write ends the run was given.
         if (standard !== 0) throw createNodeError('EBADF', 'read', String(fd));
         if (position !== null && position !== undefined && position >= 0) throw createNodeError('ESPIPE', 'read', String(fd));
-        return readStdin(buffer, offset, length);
+        return readStdin(fd, buffer, offset, length);
       }
       const file = fileFor(fd);
       if ((file.flags & 3) === 1) throw createNodeError('EBADF', 'read', file.path);

@@ -177,11 +177,16 @@ const NODE_VALUE_OPTIONS = new Set([
   '--unhandled-rejections', '--dns-result-order', '--trace-event-categories', '--trace-event-file-pattern',
 ]);
 
+/** What a run's standard fd is: a terminal, a pipe, or a file (a `<` or `>` redirect). */
+export type StdioKind = 'tty' | 'pipe' | 'file';
+
 export interface RunStreams {
   stdinStream?: AsyncIterable<Uint8Array>;
   terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
   /** Which of fds 0, 1 and 2 is a terminal; absent, a held or terminal run is a terminal on all three. */
   stdioIsTTY?: readonly [boolean, boolean, boolean];
+  /** What each of fds 0, 1 and 2 is; where given it decides, and `stdioIsTTY` is not read. */
+  stdioKind?: readonly [StdioKind, StdioKind, StdioKind];
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
   /** fd 1 and fd 2 as the bytes the program wrote; where given, that fd is neither decoded nor kept as text. */
@@ -597,11 +602,15 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     stderr += text;
     streams?.onStderr?.(text);
   };
-  // Which of fds 0, 1 and 2 is a terminal. A host that says per fd is taken
-  // at its word (`node x > out.log` at a terminal: fd 1 is a file); a held or
-  // terminal run without it is a terminal on all three, as it was.
-  const ttyFds: readonly [boolean, boolean, boolean] = streams?.stdioIsTTY
-    ?? (streams?.held || streams?.terminal ? [true, true, true] : [false, false, false]);
+  // What each of fds 0, 1 and 2 is. A host that says per fd is taken at its
+  // word (`node x > out.log` at a terminal: fd 1 is a file), by kind, else by
+  // terminal; a held or terminal run that says neither is a terminal on all
+  // three, as it was, and any other run a pipe on all three.
+  const stdioKinds: readonly [StdioKind, StdioKind, StdioKind] = streams?.stdioKind
+    ?? (streams?.stdioIsTTY
+      ? [streams.stdioIsTTY[0] ? 'tty' : 'pipe', streams.stdioIsTTY[1] ? 'tty' : 'pipe', streams.stdioIsTTY[2] ? 'tty' : 'pipe']
+      : streams?.held || streams?.terminal ? ['tty', 'tty', 'tty'] : ['pipe', 'pipe', 'pipe']);
+  const ttyFds: readonly [boolean, boolean, boolean] = [stdioKinds[0] === 'tty', stdioKinds[1] === 'tty', stdioKinds[2] === 'tty'];
 
   // A child started with an IPC channel is told its descriptor in its
   // environment, exactly as Node tells one; the variables are taken out
@@ -647,6 +656,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
 
   // Override process.exit to resolve the completion promise
   const proc = runtime.getProcess();
+  // What fds 0, 1 and 2 are, where the fs binding's fstat reads them (the
+  // symbol is the binding's `kStdioKinds`, named here so this file does not
+  // import the fs binding).
+  (proc as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.run.stdioKinds')] = stdioKinds;
   // This run's numbers, recorded under its name: a child it spawns reads
   // them for its own `ppid`, and `process.kill(pid, 0)` asks this registry
   // whether a pid is a live process.

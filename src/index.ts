@@ -53,7 +53,7 @@ import { VirtualFS } from './virtual-fs';
 import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
-import { runCommand, runNode, registerRunStreams, releaseRunStreams, sendStdin } from './shims/child_process';
+import { runCommand, runNode, registerRunStreams, releaseRunStreams, sendStdin, type StdioKind } from './shims/child_process';
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/handles';
 import { listenerOnPort } from './node-lib/binding/tcp_wrap';
@@ -64,6 +64,7 @@ export { runPid, processByPid };
 export { createProcessRegistryScope, installProcessRegistry, ownerProcessRegistryScope, ownerProcessTable } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
+export type { StdioKind } from './shims/child_process';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
@@ -110,6 +111,13 @@ export interface RunOptions {
    * reaches the output fds that are terminals.
    */
   stdioIsTTY?: readonly [boolean, boolean, boolean];
+  /**
+   * What each of the guest Node's fds 0, 1 and 2 is, as the kernel's
+   * description says: a terminal, a pipe, or a file (a `<` or `>` redirect).
+   * `fstat` answers a character device, a FIFO or a regular file by it, and a
+   * 'tty' fd is a terminal to `isatty`. Where given, `stdioIsTTY` is not read.
+   */
+  stdioKind?: readonly [StdioKind, StdioKind, StdioKind];
   /** AbortSignal to cancel long-running commands */
   signal?: AbortSignal;
   /**
@@ -210,6 +218,10 @@ export function createContainer(options?: ContainerOptions): {
     if (tty !== undefined && (!Array.isArray(tty) || tty.length !== 3 || tty.some((value) => typeof value !== 'boolean'))) {
       throw new TypeError('stdioIsTTY must be [stdin, stdout, stderr] booleans');
     }
+    const kind = runOptions?.stdioKind;
+    if (kind !== undefined && (!Array.isArray(kind) || kind.length !== 3 || kind.some((value) => value !== 'tty' && value !== 'pipe' && value !== 'file'))) {
+      throw new TypeError("stdioKind must be [stdin, stdout, stderr], each 'tty', 'pipe' or 'file'");
+    }
     // If signal is already aborted, resolve immediately
     if (runOptions?.signal?.aborted) return { stdout: '', stderr: '', exitCode: 130 };
     // Every run has a name, because what the host gave this run is kept under
@@ -226,6 +238,7 @@ export function createContainer(options?: ContainerOptions): {
       stdinOpen: runOptions?.stdinStream !== undefined,
       terminal: runOptions?.terminal,
       ...(runOptions?.stdioIsTTY ? { stdioIsTTY: runOptions.stdioIsTTY } : {}),
+      ...(runOptions?.stdioKind ? { stdioKind: runOptions.stdioKind } : {}),
       ...(runOptions?.onStdoutBytes ? { onStdoutBytes: runOptions.onStdoutBytes } : {}),
       ...(runOptions?.onStderrBytes ? { onStderrBytes: runOptions.onStderrBytes } : {}),
     });
