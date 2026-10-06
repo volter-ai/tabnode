@@ -2,10 +2,11 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## v0.6.2
+## v0.7.0 — 2026-10-06
 
-The container's processes and a kernel's are one pid space. Released as
-v0.6.2; the workflow dates this section when it publishes.
+The container's processes and a kernel's are one pid space. A minor
+release: the exported surface gained `installProcessIdAllocator` and
+`RunOptions.process`.
 
 - `installProcessIdAllocator(allocate)` (container owner): every process
   number is taken from the host's own pid counter from then on, so a guest's
