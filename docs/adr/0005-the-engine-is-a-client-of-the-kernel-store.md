@@ -114,7 +114,7 @@ Each step ships alone, and each leaves every existing run working.
 
 ### 4a. Step 3 file by file: the kernel as the store's only writer, with the clock
 
-A plan; nothing in it is built. Owner: unassigned. It starts after thread A's re-landing. Names are browser-substrate paths at `fix/catalog-shell-boot` 37ef172a. **Read** marks what this record traced in the code. **(extrapolation)** marks a flow that was not traced end to end.
+Step 3.1 is written, unbuilt and unread, on browser-substrate `feat/kernel-store-owner` (0c2bdd63 to 027b16c5, a1923f68). It compiles in `tsc` against a local engine (§4c). Steps 3.2 to 3.5 are a plan. Owner: this lane. Nothing more is written before the re-landing and §4c's sequence. Names are browser-substrate paths at `fix/catalog-shell-boot` 37ef172a. **Read** marks what this record traced in the code. **(extrapolation)** marks a flow that was not traced end to end.
 
 **Today's writers.**
 - **Node's writes.** The execution worker's store holds them. **Read:** `packages/node/src/node-store-hold.ts` takes the project's lock (`holdProject`) and calls `createPackStore`. `PackedVirtualFS` writes into it with `applyNow` (`packed-virtual-filesystem.ts`).
@@ -179,6 +179,45 @@ A plan; no code. It lands after 0.6.0 is on tabnode main, as two merges in this 
      - The fd number is one the kernel's table holds; `/proc/<pid>/fd` lists it while the process runs.
 
 The substrate's `feat/kernel-virtual-fs` (step 2) and `feat/kernel-store-owner` (step 3.1) pin 0.6.1 and land after it. Both compile against a local build of these two merges (`build:packages` clean in tsc; the shell bundle refused only by the engine pin).
+
+### 4c. Integration after the re-landing: one sequence
+
+What exists, where, and the order it lands in once thread A's re-landing is merged. Heads were read on 2026-10-06. Nothing below has been built in a page or read on the owner's surface. "Compiles" means `build:lib`/`build:packages` `tsc` against a local engine, nothing more.
+
+**tabnode** (`volter-ai/tabnode`, main at v0.5.70 f4abdc5):
+
+| # | Branch @ head | What it is | Base, and its merge |
+|---|---|---|---|
+| T1 | `feat/argv-node-entry-and-modes` @ 177cd3d | 0.6.0: `runNode`, modes, per-fd kinds, byte stdio, the stdin ring, VFS events, argv0 | Fast-forward of main. Publishing is its merge. |
+| T2 | `feat/run-filesystem` @ 72cf0e0 | `RunOptions.filesystem`; a spawnSync child on its parent's tree; statArray's full type | Cut from T1 (a529c11, 3631ed9 merged in). Merges onto T1 clean (`git merge-tree`). |
+| T3 | `feat/descriptor-door` @ 6d508bc | `TREE_DESCRIPTORS` (step 1) and its stat predicates | Cut from main. Conflicts with T1 in `fs.ts`, `index.ts`, `child_process.ts` and `CHANGELOG.md`. The resolution is §4b's, compiled once in a scratch tree (77fe510, not pushed). |
+
+T2 and T3 are release 0.6.1 (§4b). Each needs §4b's reading before its merge.
+
+**browser-substrate**:
+
+| # | Branch @ head | What it is | Base, and its merge |
+|---|---|---|---|
+| S1 | `feat/kernel-virtual-fs` @ 02c7dc45 | `KernelVirtualFS` (step 2); channel retirement; the wali-before-node build order | 922c2ed3 (an older re-landing). Merges onto the re-landing (5f5cd86a) clean. Needs tabnode 0.6.1 pinned. |
+| S2 | `feat/kernel-store-owner` @ a1923f68 | Step 3.1 (§4a): one lock, one writer, the execution worker a seeded reader | Contains S1 at 832efaa1. 02c7dc45 is a cherry-pick of a1923f68, so the two merge to the same tree. Clean onto the re-landing. |
+| S3 | `fix/wali-network-fd-parity` @ 7e1782d9 | §3a: one number space, fstat/dup of network fds, local blocking reads, the readiness word that ends the 2 ms rescans | c4f1b8a9 (the re-landing at its cut). Two conflicts with the re-landing's head, listed below. |
+
+S3's conflicts with the re-landing's head, both small:
+- **`filesystem-protocol.ts`:** the re-landing's `LinkTarget = 39` and S3's `ReserveNetworkDescriptor = 39` take the same number. S3's becomes 40.
+- **`filesystem.ts` `virtualStat`:** the re-landing's `anonymousPipeStat` (8b5aa622) replaces the inline pipe stat. Keep it, and put S3's network branch after it.
+
+S3 onto S2 conflicts in `ARCHITECTURE.md`, `ROADMAP.md`, `filesystem-protocol.ts` and `runtime.ts`. That is the same enum number and neighbouring document lines, so the merge is read, not guessed.
+
+**The order**, each step after the one before is merged, with the one reading that admits it:
+1. **T1 → tabnode main, published as 0.6.0.** The substrate pins 0.6.0. Reading: the re-landing's own fixture run on 0.6.0.
+2. **T2, then T3 → 0.6.1, published.** The readings are §4b's.
+3. **S1 with the 0.6.1 pin → substrate.** Reading: a kernel-shell `node -e` reads a file Bash wrote and writes one Bash reads, with no patch between.
+4. **S2 → substrate.** Reading: §4a step 1's disproof. One writer per page (a counter at the store); a Node write visible to Bash's next read; the editor's boot not slower.
+5. **S3 → substrate**, with its two conflicts resolved as above. Readings:
+   - §3a's: `dup2(sock, 1)` reaching the peer; one socket read by both sides of a fork; `/proc/self/fd` in one numbering.
+   - The readiness word's: a local-mode `poll`/`epoll_wait` waking on a pipe from another process before its timeout, and an `epoll_wait` with no event using no CPU.
+
+**Disproof of the sequence:** a step merged before its predecessor's reading; a substrate merge whose pin names an engine without the door it uses; a conflict resolved by taking one side whole.
 
 ### 5. Performance risks
 
