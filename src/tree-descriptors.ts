@@ -22,6 +22,11 @@ export interface TreeDescriptorStats {
   isFile(): boolean;
   isDirectory(): boolean;
   isSymbolicLink(): boolean;
+  /** The other kinds of file, where the tree has them; a mode's type bits answer first. */
+  isCharacterDevice?(): boolean;
+  isBlockDevice?(): boolean;
+  isFIFO?(): boolean;
+  isSocket?(): boolean;
   size: number;
   mode: number;
   mtimeMs?: number;
