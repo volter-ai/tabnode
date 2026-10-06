@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.6.0 — 2026-10-06
+
 The host API gains an argv entry for the engine's Node, per-fd standard
 streams (kind, terminal, bytes) and a shared-memory stdin, and a guest's
 processes and files carry bytes and modes as Linux does. Released as v0.6.0
