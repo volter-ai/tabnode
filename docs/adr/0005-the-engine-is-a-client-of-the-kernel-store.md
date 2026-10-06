@@ -63,6 +63,45 @@ A second store is state that can answer a read with something the owner does not
 - **Fork and exec.** A Node child spawned by Bash arrives by `execve` with its inherited table (`CopyForExec` with `stdio`), so its fds 3+ are the shell's redirections, shared offsets included. A child spawned by Node (`child_process.spawn` of anything) becomes a kernel spawn with the same inheritance. That is A4's process step; until then the engine's `startChildRun` keeps its route. `close-on-exec` and `dup` semantics are the kernel's.
 - **Locks.** `flock`/`fcntl` locks are the kernel's coherent locks (`coherent-file-locks.ts`). The engine has none today.
 
+### 3a. One number space: the kernel's descriptors and sockets (the descriptors-and-sockets step)
+
+Names are browser-substrate paths on `fix/wali-network-fd-parity` (off `fix/catalog-shell-boot` c4f1b8a9).
+
+**Read: how it works today.**
+- A WALI process has two descriptor tables, split by number.
+- Files, pipes, stdio and the local specials are in the process's `WaliProcessDescriptorTable` (`descriptors.ts`). The kernel's filesystem host owns that table. Its entries and its description metadata are SharedArrayBuffers every realm of the family reads (`sharedPipes.table`, `sharedPipes.descriptions`).
+- Sockets, epoll sets, eventfds, timerfds and pidfds are in the network session's own maps (`network-host.ts` `sockets`, `epolls`, `children`), numbered from `NETWORK_FD_MIN` = 20000 (`network-protocol.ts`, `takeFd`).
+- The guest tells the two apart by number alone: `network.ts` `isNetworkFd(fd) = fd >= NETWORK_FD_MIN`.
+- So a socket can never be fd 0, 1 or 2, `dup2(sock, 5)` lands in the file table and answers EBADF, and no file can sit at 20000 or above. Linux has one table, and none of these rules.
+
+**Decision.**
+- **One table, one allocator.** Every descriptor of a process is an entry of its `WaliProcessDescriptorTable`. Its allocator hands out every number, lowest free first, as Linux's `alloc_fd`.
+- **A network description is a description of the table.** A socket, epoll set, eventfd, timerfd or pidfd is registered in the table's registry as kind `"network"`, whose value names the session's description. The session keeps the object (the socket, the epoll set) and its readiness. The table keeps the number, `FD_CLOEXEC`, and the reference count that `dup` and `fork` share.
+- **Routing by kind, never by range.** The description metadata (`registry.pipeMetadata`, per description id) gains a kind mark that the guest's layers read for an fd, as they read a pipe's entry today. `isNetworkFd(fd)` asks that mark, and `NETWORK_FD_MIN` and range checks go.
+- **Who allocates.** The realm that owns the table: the kernel's filesystem host, or a local run's own table. The guest drives both sides, because it is the only realm with a channel to each.
+  - **socket(2):** the guest asks the table for a number reserved as `"network"`, then asks the session to create the object at that number.
+  - **close:** the session releases the object when the table's description goes, so the table's release callback is where the session hears it. The guest's close goes to the table.
+  - **dup, dup2, dup3, F_DUPFD:** the table's own operation on the description. The session learns the new number for routing its calls, through the description id.
+- **Fork and exec.** The table's `copy()` and `exec()` already carry `"network"` entries with their flags, so close-on-exec is the table's rule. `CaptureDescriptors` keeps carrying the session's objects by token, keyed by description id rather than by number.
+- **What does not change.** The session still answers every socket operation. Readiness still comes from the session, and the family's readiness word (`readiness.ts`) still wakes waits. A host image (Node) still refuses an inherited socket (gap 6).
+
+**Order of the code.** One commit each:
+1. The kind mark in the description metadata, and `"network"` descriptions with a session-object id.
+2. Allocation through the table for `socket`, `socketpair`, `accept`, `epoll_create`, `eventfd`, `timerfd_create`, `pidfd_open`.
+3. Routing by kind in `network.ts`, `runtime.ts` and `thread-worker.ts`, with `NETWORK_FD_MIN` removed.
+4. dup, close, fork and exec through the table.
+5. The handoff keyed by description id.
+
+**Where the evidence stops.**
+- Everything under "Read" was traced in the code at c4f1b8a9.
+- The decision is extrapolation: no build or run has measured it. In particular, that a socket at fd 1 survives `exec` into a WALI image, and that `accept`'s new number is the table's lowest free one, are claims for the reading.
+- The reading:
+  - `exec 3<>/dev/tcp/…` style redirection, and `dup2(sock, 1)`, then a write to fd 1 reaching the peer;
+  - after `fork`, both processes reading the same socket (one description);
+  - `ls -l /proc/self/fd` showing every descriptor in one numbering.
+
+**Disproof:** a guest call routed by a number's range; a socket number the file table did not allocate; two descriptions sharing one number across the two tables.
+
 ### 4. Migration with no flag day
 
 Each step ships alone, and each leaves every existing run working.
