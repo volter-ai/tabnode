@@ -61,7 +61,7 @@ import { nativeStreamHandles, nativeStreamOwnerPid, type NativeStreamHandleView 
 
 import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
 export { runPid, processByPid };
-export { createProcessRegistryScope, installProcessRegistry, ownerProcessRegistryScope, ownerProcessTable } from './process-tokens';
+export { createProcessRegistryScope, installProcessRegistry, installProcessIdAllocator, ownerProcessRegistryScope, ownerProcessTable } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
@@ -111,6 +111,14 @@ export interface RunOptions {
    * into it on its own account. `runNode` only.
    */
   filesystem?: VirtualFS;
+  /**
+   * The numbers a host that numbers processes already gave this run: a
+   * kernel's pid for a `node` its shell exec'd, and the pid of the process
+   * that exec'd it. The run is that process (`process.pid`, `process.ppid`)
+   * and its children are numbered as the kernel's (`installProcessIdAllocator`).
+   * Container owner and `runNode` only.
+   */
+  process?: { pid: number; ppid: number };
   terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
   /** Callback for streaming stdout chunks as they arrive (for long-running commands like vitest watch) */
   onStdout?: (data: string) => void;
@@ -309,6 +317,7 @@ export function createContainer(options?: ContainerOptions): {
     })),
     runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {
       ...(runOptions?.filesystem ? { filesystem: runOptions.filesystem } : {}),
+      ...(runOptions?.process ? { process: { pid: runOptions.process.pid, ppid: runOptions.process.ppid } } : {}),
       cwd: runOptions?.cwd,
       env: runOptions?.env,
       ...(runOptions?.stdin !== undefined ? { stdin: runOptions.stdin } : {}),

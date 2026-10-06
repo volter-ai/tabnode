@@ -220,6 +220,29 @@ export function installProcessRegistry(registry: ProcessRegistry, initial?: Init
   registryInstalled = true;
 }
 
+/**
+ * Trusted container owner only: the number every process of this container
+ * is given from now on, from a kernel's own pid counter, so a guest's
+ * `process.pid`, its child's `process.ppid` and the kernel's `/proc` name the
+ * same process. Installed when the kernel first starts a `node`; a number the
+ * engine handed out before stays its holder's.
+ */
+export function installProcessIdAllocator(allocate: () => number): void {
+  if (registryInstalled) throw new Error('This realm is a process registry client, not the container owner.');
+  processRegistryOwner.installAllocator(allocate);
+}
+
+/**
+ * Trusted container owner only: start a named run at the number its embedder
+ * already gave it, a kernel process's own pid, with that process's parent.
+ */
+export function claimRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string }): void {
+  if (registryInstalled) throw new Error('This realm is a process registry client, not the container owner.');
+  if (!Number.isSafeInteger(ppid) || ppid < 0 || ppid > 0x7fffffff) throw new Error('Invalid parent process identifier.');
+  (processRegistry as ProcessRegistryScope).claim(pid);
+  setRunPid(token, pid, ppid, started);
+}
+
 /** The next process number this engine hands out. */
 export function mintPid(): number {
   registryUsed = true;
