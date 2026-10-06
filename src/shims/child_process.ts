@@ -1107,6 +1107,19 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   }
 }
 
+/**
+ * The trees the engine made itself (`createContainer` with no `vfs`). A tree a
+ * host hands the engine is the host's: what is at a path in it is the host's
+ * to put there, and the engine writes nothing into it on its own account.
+ */
+const engineTrees = new WeakSet<VirtualFS>();
+
+/** Record a tree the engine made, which it may furnish as a machine is furnished. */
+export function adoptEngineTree<T extends VirtualFS>(tree: T): T {
+  engineTrees.add(tree);
+  return tree;
+}
+
 export function initChildProcess(vfs: VirtualFS): void {
   const existing = shells.get(vfs);
   if (existing) {
@@ -1130,18 +1143,27 @@ export function initChildProcess(vfs: VirtualFS): void {
   // re-runs itself, and every one of Node's own tests that spawns a child,
   // writes the path rather than the name — `execSync('"' + process.execPath +
   // '" file')` — and the engine's shell answered "No such file or directory",
-  // because its node was a command with no file anywhere. The engine's node is
-  // placed where its execPath says it is: a line of shell that runs the
-  // command under its plain name.
-  try {
-    if (!tree.existsSync(__substrateExecPath)) {
-      tree.mkdirSync(__substrateExecPath.slice(0, __substrateExecPath.lastIndexOf('/')), { recursive: true });
-      tree.writeFileSync(__substrateExecPath, 'node "$@"\n');
-    }
-    // A program, so the shell's lookup by mode finds it; a tree kept from
-    // before modes were read gets its bits here too.
-    if ((tree.statSync(__substrateExecPath).mode & 0o111) === 0) tree.chmodSync(__substrateExecPath, 0o755);
-  } catch { /* a tree that refuses the write keeps the command under its plain name */ }
+  // because its node was a command with no file anywhere. The shell runs its
+  // own `node` for a path whose file exists and is named `node`, so a file at
+  // execPath is all it needs.
+  //
+  // In a tree the engine made, the engine puts one there, executable. A tree a
+  // host supplied is the host's: the engine creates and changes nothing in it,
+  // and a host whose tree has no program at execPath answers "No such file or
+  // directory" by that path, which is the host's to fix. Written into a host's
+  // tree, the engine's line replaced what the host's own owner kept at the path
+  // (the kernel's executable marker for `node` became a 10-byte 0644 file after
+  // the first `node app.js`, whenever a realm did not see the kernel's file,
+  // and the next lookup was EACCES).
+  if (engineTrees.has(tree)) {
+    try {
+      if (!tree.existsSync(__substrateExecPath)) {
+        tree.mkdirSync(__substrateExecPath.slice(0, __substrateExecPath.lastIndexOf('/')), { recursive: true });
+        tree.writeFileSync(__substrateExecPath, 'node "$@"\n');
+        tree.chmodSync(__substrateExecPath, 0o755);
+      }
+    } catch { /* a tree that refuses the write keeps the command under its plain name */ }
+  }
   if (typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined' || typeof (globalThis as Record<string, unknown>).document !== 'undefined') warmSyncChild();
   vfsAdapter = new VirtualFSAdapter(tree);
 

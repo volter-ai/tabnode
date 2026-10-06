@@ -45,7 +45,13 @@ publishes.
   0755 (or `chmodSync` it); a 0644 file is not found on PATH or run by path.
   The engine's own writers set modes: npm install keeps each archive entry's
   mode (`(mode | 0666) & ~022`, directories `| 0777`), makes each bin target
-  and its `.bin` stub executable, and `/usr/local/bin/node` is 0755.
+  and its `.bin` stub executable.
+- The engine writes nothing into a tree a host supplied (`createContainer({ vfs })`):
+  the `/usr/local/bin/node` (`process.execPath`) file it used to create in any
+  tree that lacked one is created, 0755, only in a tree the engine made itself.
+  A host's tree carries its own program at `process.execPath` (any file there
+  named `node` runs the engine's `node` from the shell); without one, a shell
+  line naming the path gets "No such file or directory".
 - A guest's `node` child (`spawn`/`execFile`/`fork` of `node` or of
   `process.execPath`, and `spawnSync`/`execFileSync` of them) starts from its
   argv through the Node launch, not as a line for the engine's shell. It is one
