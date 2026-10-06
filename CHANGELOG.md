@@ -4,58 +4,82 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
-- `container.runNode(argv, options)` starts the engine's Node from an argv
-  vector with `run`'s options and answer, through the same launch the shell's
-  `node` command uses (`launchNode`); no command line is built and no shell
-  runs. A kernel that execs `node` reached the engine's shell before, which
-  answered `node: command not found`.
-- The shell's filesystem reports each file's own mode, and its `chmod` sets it:
-  every regular file read 0644 except under `/node_modules/.bin/`. Install
-  stubs and the `execPath` stub are written 0755.
-- Package files keep their archive's mode at install, as npm extracts them
-  (at least 0666/0777 under umask 022), and each bin's own file is executable.
-- `RunOptions.stdioIsTTY: [stdin, stdout, stderr]` makes each of a Node run's
-  fds a terminal or not on its own (`node x > out.log` at a terminal); `held`
-  and `terminal` without it are still a terminal on all three.
-- `RunOptions.onStdoutBytes` / `onStderrBytes` carry fd 1 and fd 2 as the
-  bytes the program wrote, before any decode; that fd is not kept as text.
-  A string written with an encoding (`write('ff', 'hex')`) is written as its
-  bytes, as Node writes it.
-- A guest's `node` child (`spawn`, `execFile`, `exec`'s `node`, `fork`, by name
-  or by `process.execPath`) starts through the one Node launch from its argv
-  rather than as a line for the engine's shell, as its own run with the pid its
-  parent holds. Its stdin, stdout and stderr carry bytes end to end, into the
-  parent's pipe, inherited stdio or descriptor; binary through a pipe between
-  guest processes arrives byte-exact, and Node's own `child_process` decides
-  Buffer or string by the encoding option.
-- `spawnSync` / `execFileSync` of the engine's Node run it from its argv
-  (`container.runNode` on the child's thread) with its input and output as
-  bytes, as `spawn` does; a shell line (`execSync`) is still the shell's text.
-  `RunOptions.stdin` takes bytes, which `runNode` gives to Node as they are.
-- A background job carries its parent's byte sinks; its output is never
-  dropped when the parent took bytes only.
-- fd 1 and 2 are descriptors of every run: `fs.writeSync(1|2, …)` and writes
-  to `/dev/stdout`, `/dev/stderr`, `/dev/fd/1|2`, `/proc/self/fd/1|2` go to
-  the run's stdout/stderr in order with `process.stdout`, never EBADF.
-- fd 0 is a descriptor of every run too: `fs.readSync(0, …)` and `/dev/stdin`
-  read the run's stdin in order with `process.stdin` (EAGAIN while nothing has
-  arrived, 0 at its end). `fs.fstat(0|1|2)` is a character device where the
-  run gave that fd a terminal, else a FIFO; `tty.isatty` and `guessHandleType`
-  answer per fd from the asking run's own streams.
-- `RunOptions.stdioKind: ['tty'|'pipe'|'file', ×3]` says what each fd is;
-  `fstat` answers a character device, a FIFO or a regular file by it.
-- A blocking read of fd 0 with the writer open and nothing buffered is refused
-  as `ERR_STDIN_BLOCKING_READ` (it cannot wait in its own realm); a descriptor
-  opened `O_NONBLOCK` gets EAGAIN.
-- `RunOptions.stdinShared` gives a run's fd 0 as a shared ring a host writes
-  from its own thread (`STDIN_RING` is the layout, `createStdinRing` makes
-  one): a blocking `fs.readSync(0)` waits on it as Linux waits on a pipe, and
-  `process.stdin` drains it through `Atomics.waitAsync`.
-- A WASI guest's stdout/stderr are written as its bytes.
-- `fs.writeSync(fd, string, pos, encoding)` writes the string in that encoding.
-- The host executor request (`ChildProcessHostRequest`) and the Node process
-  host's streams offer `onStdoutBytes` / `onStderrBytes`; an fd a host streams
-  through them has an empty total and is never replayed.
+The host API gains an argv entry for the engine's Node, per-fd standard
+streams (kind, terminal, bytes) and a shared-memory stdin, and a guest's
+processes and files carry bytes and modes as Linux does. Released as v0.6.0
+(the exported surface changed); the workflow dates this section when it
+publishes.
+
+### New API
+
+- `container.runNode(argv, options)`: the engine's Node started from an
+  `execve`-style vector (`argv[0]` is `process.argv0`), with `run`'s options
+  and answer, through the same launch the shell's `node` uses; no command line
+  is built and no shell runs. `env` is the whole environment; `cwd` defaults
+  to `/`.
+- `RunOptions` (for `run` and `runNode`):
+  - `stdioKind: ['tty'|'pipe'|'file', x3]` says what each of fds 0, 1, 2 is;
+    `stdioIsTTY: [b, b, b]` says only which is a terminal (used where
+    `stdioKind` is absent). Each fd is a terminal or not on its own.
+  - `onStdoutBytes` / `onStderrBytes(Uint8Array)` take fd 1 / fd 2 as the
+    bytes the program wrote, before any decode.
+  - `stdinShared: SharedArrayBuffer` gives fd 0 as a ring a host writes from
+    its own thread; `STDIN_RING` (the layout), `createStdinRing` and
+    `stdinRingProblem` are exported.
+  - `stdin` accepts bytes.
+- Types `StdioKind` exported. The host-executor request a page publishes
+  (`Symbol.for('@volter/browser-runtime/child-process-executor')`) is offered
+  `onStdoutBytes` / `onStderrBytes`; `NodeProcessLaunch.stdin` may be bytes.
+
+### Behaviour changes a consumer must know
+
+- File modes are real. The shell's filesystem reports each file's own mode and
+  its `chmod` sets it; the `/node_modules/.bin/` rule that made only those
+  files executable is gone. A host that writes an executable must write it
+  0755 (or `chmodSync` it); a 0644 file is not found on PATH or run by path.
+  The engine's own writers set modes: npm install keeps each archive entry's
+  mode (`(mode | 0666) & ~022`, directories `| 0777`), makes each bin target
+  and its `.bin` stub executable, and `/usr/local/bin/node` is 0755.
+- A guest's `node` child (`spawn`/`execFile`/`fork` of `node` or of
+  `process.execPath`, and `spawnSync`/`execFileSync` of them) starts from its
+  argv through the Node launch, not as a line for the engine's shell. It is one
+  process whose pid is the one its parent's handle holds (there is no shell
+  process between), and its environment is exactly the one it was spawned with
+  (the shell's own HOME/USER/PATH defaults are not added). A shell line
+  (`exec`, `execSync`, `{ shell: true }`) is unchanged.
+- Child stdio carries bytes: a Node child's fd 0/1/2 reach the parent's pipe,
+  inherited stdio or descriptor as bytes, and Node's `child_process` returns a
+  Buffer or a string by its encoding option, as on Linux. Output that was
+  invalid UTF-8 used to arrive with replacement characters.
+- A run given `onStdoutBytes`/`onStderrBytes` gets that fd only as bytes:
+  `onStdout`/`onStderr` are not called for it and `RunResult.stdout`/`stderr`
+  is empty for it. Text callbacks now decode with one streaming decoder per fd,
+  so a character split across two writes arrives whole.
+- `process.stdout.write(string, encoding)` writes the string in that encoding
+  (`'ff', 'hex'` is one byte); the encoding was ignored. `fs.writeSync(fd,
+  string, pos, encoding)` likewise (every non-UTF-8 encoding was latin1).
+- fd 0, 1 and 2 are descriptors of every run. `fs.writeSync(1|2)` and writes to
+  `/dev/stdout`, `/dev/stderr`, `/dev/fd/1|2`, `/proc/self/fd/1|2` go to the
+  run's stdout/stderr in order with `process.stdout` (they were EBADF);
+  `fs.readSync(0)` and `/dev/stdin` read the run's stdin in order with
+  `process.stdin` (EBADF before). A blocking read with the writer open and
+  nothing buffered waits on `stdinShared` where the run has one, and is
+  otherwise refused as `ERR_STDIN_BLOCKING_READ`; an `O_NONBLOCK` descriptor
+  gets EAGAIN. `fs.fstat(0|1|2)` is a character device, a FIFO or a regular
+  file by the fd's kind. `tty.isatty(fd)` and `guessHandleType(fd)` answer from
+  the asking run's own streams (a terminal fd is now `'TTY'`, so
+  `new net.Socket({ fd })` on it fails as in Node).
+- A WASI guest's stdout/stderr are written as its bytes, not decoded text.
+- A background job (`cmd &`) writes its parent's byte sinks where the parent
+  has them; its output was dropped when the parent took bytes only.
+- A host's totals: an fd a host executor or a Node process host streamed
+  through its byte sink has an empty total, and is never replayed through the
+  text callbacks. A host that streamed no bytes is read as before. The Node
+  process host is handed a view of the run's streams (its fields read through
+  to the run's own object), not the object itself.
+- A Node entry whose top-level `await` fails prints its error on stderr (it was
+  only appended to the result); a run's idle detection counts what was
+  printed, by length, in either form.
 
 ## v0.5.70 — 2026-10-05
 
