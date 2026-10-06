@@ -58,6 +58,26 @@ Trusted owner handoff before the destination worker starts; not a guest operatio
 
 ***
 
+### claim()
+
+> **claim**(`pid`): `void`
+
+Trusted owner only: a run the embedder already numbered, as a kernel
+numbers a `node` its shell exec'd. Its parent is the embedder's process,
+which this registry need not hold.
+
+#### Parameters
+
+##### pid
+
+`number`
+
+#### Returns
+
+`void`
+
+***
+
 ### dispose()
 
 > **dispose**(): `void`

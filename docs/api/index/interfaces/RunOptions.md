@@ -120,6 +120,26 @@ is empty: nothing of it is kept as text.
 
 ***
 
+### process?
+
+> `optional` **process?**: `object`
+
+The numbers a host that numbers processes already gave this run: a
+kernel's pid for a `node` its shell exec'd, and the pid of the process
+that exec'd it. The run is that process (`process.pid`, `process.ppid`)
+and its children are numbered as the kernel's (`installProcessIdAllocator`).
+Container owner and `runNode` only.
+
+#### pid
+
+> **pid**: `number`
+
+#### ppid
+
+> **ppid**: `number`
+
+***
+
 ### processToken?
 
 > `optional` **processToken?**: `string`

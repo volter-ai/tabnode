@@ -114,6 +114,7 @@
 - [installHttpClientTransport](functions/installHttpClientTransport.md)
 - [installNativeStreamTransport](functions/installNativeStreamTransport.md)
 - [installNodeProcessHost](functions/installNodeProcessHost.md)
+- [installProcessIdAllocator](functions/installProcessIdAllocator.md)
 - [installProcessRegistry](functions/installProcessRegistry.md)
 - [nativeStreamDescriptor](functions/nativeStreamDescriptor.md)
 - [nodeProcessHostInstalled](functions/nodeProcessHostInstalled.md)
