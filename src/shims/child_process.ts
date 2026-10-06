@@ -2058,9 +2058,24 @@ function isRegisteredProgramStub(path: string): boolean {
   if (!currentVfs) return false;
   try {
     const stat = currentVfs.statSync(path);
-    if (!stat.isFile() || stat.size > 256) return false;
-    return REGISTERED_PROGRAM_STUB.test(String(currentVfs.readFileSync(path, 'utf8')));
+    if (!stat.isFile()) return false;
+    if (stat.size <= 256 && REGISTERED_PROGRAM_STUB.test(String(currentVfs.readFileSync(path, 'utf8')))) return true;
+    return isBinaryImage(currentVfs.readFileSync(path) as Uint8Array);
   } catch { return false; }
+}
+
+/**
+ * A binary image (a NUL among its first bytes: WebAssembly's `\0asm`, ELF's
+ * header, the host-executable format) is a program for `execve`, never a
+ * script: this engine's shell parsed a 2.6 MB BusyBox image as one and
+ * refused it ("Parse error at 1:1: Input too large"), where Linux's kernel
+ * runs it. The host that holds the kernel runs it here too. Linux's
+ * binfmt_script reads a script's first line; a NUL there is not a script.
+ */
+function isBinaryImage(bytes: Uint8Array): boolean {
+  const head = Math.min(bytes.byteLength, 128);
+  for (let index = 0; index < head; index += 1) if (bytes[index] === 0) return true;
+  return false;
 }
 
 /** The runs a `Process` handle started, so a later name never lands on a live one. */
