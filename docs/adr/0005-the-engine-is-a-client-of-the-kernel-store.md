@@ -97,6 +97,9 @@ Each step below ships alone, keeps every run working, and has its disproof.
    - **Disproof:**
      - After Bash's `write` returns, a pack reader opened elsewhere reads different bytes at that path.
      - Any `filesystem` patch still carrying store-path bytes.
+2b. **Every WALI run reads through the one store; no run carries a copy.** **Read** (thread A's finding, verified at 37ef172a): `worker-program.ts` (about lines 342 to 372) prepares each run by snapshotting the page's filesystem. When that filesystem has no local store (`localBrowserFileSystemStore` is undefined), it copies the files' bytes into a SharedArrayBuffer layer (`createSharedFileLayer`, `shared-file-layer.ts` about line 97). The layer is cached only for a filesystem with `fileContentVersionSync`. The kernel shell's takeover filesystem has none, so every command copied the whole tree (about 320 MB, inferred), and the renderer crashed after a few commands (fixture8: `CRASHED page`, error 5, SIGTRAP; isolate heap from 206 MB to 8115 MB in 6 s). The interim fix, the content-version door on that filesystem, belongs to the re-landing. The fix of the class is here: a run's tree is the kernel's store, read in place (ADR-0048's reader), and `createSharedFileLayer` is never asked for store bytes.
+   - **Files:** `packages/wali/src/worker-program.ts` (the run's image is the store's metadata, always), `shared-file-layer.ts` (a layer only for a tree that has no store, which after step 2 is none of the project's), `filesystem-host-session.ts` (the run reads the store).
+   - **Disproof:** any SharedArrayBuffer that carries store bytes allocated per run (count `createSharedFileLayer` calls with store paths, and the bytes they copy); the renderer's summed backing store growing with the number of commands run.
 3. **The kernel publishes the clock.**
    - **Clock:** the writer's `clock()` and `readerSeed` are the kernel's.
    - **Who follows it:**
