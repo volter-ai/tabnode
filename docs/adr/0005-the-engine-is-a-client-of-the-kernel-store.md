@@ -119,6 +119,28 @@ Each step below ships alone, keeps every run working, and has its disproof.
 5. **No second writer is left.** `PackedVirtualFS` loses its writer mode. Every Node run is on `KernelVirtualFS` (ADR step 4's check) or on a reader. The container's `fs-apply` and `fs-import` for store paths go.
    - **Disproof:** grep finds `applyNow` or `applyExtentsNow` on a project store outside the kernel's filesystem worker, or a client keeping a file copy.
 
+### 4b. Release 0.6.1: steps 1 and 2's engine doors on top of 0.6.0
+
+A plan; no code. It lands after 0.6.0 is on tabnode main, as two merges in this order. Each claim of "no change for a current caller" is read in the code, not measured; the reading named under each is what measures it.
+
+1. **`feat/run-filesystem`** (922f069, 7b9216f; 72cf0e0 merges 0.6.0's 3631ed9). It goes first because it is cut from the release branch and merges onto 0.6.0 without conflict.
+   - **`RunOptions.filesystem`**: a run's own tree. A caller that does not pass it runs on the container's tree, as before.
+   - **A synchronous child runs on its parent run's tree** (the `tabnode.run.vfs` the runtime sets on every run), not on the last tree the engine was given. For a host with one tree, nothing changes. For a host with several containers in one realm, a `spawnSync` now runs on its parent's tree; before, it ran on whichever tree was initialised last. This is a fix, and it is the one change a `VirtualFS` caller can see.
+   - **`statArray`** keeps a tree's S_IFMT type bits, or derives them from every stat predicate. `VirtualFS` modes carry no type bits apart from links, which carry `0o120777`, and it has no devices, FIFOs or sockets. Its file, directory and link answers are therefore what they were.
+   - **Reading:** the substrate's kernel shell runs `node -e` with `filesystem` set to the run's `KernelVirtualFS`. The node writes a file, and Bash's `cat` of it in the same line prints it. A fixture without the option prints what build 17 printed.
+2. **`feat/descriptor-door`** (d777ab7, 6d508bc; a4d27e9 is already 0.6.0's cabed5a).
+   - **The merge conflicts** in `fs.ts`, `index.ts`, `CHANGELOG.md` and the face comment in `child_process.ts`. The resolution keeps both sides:
+     - The tree owner's check comes before the standard-stream check in `read`, `write`, `fstat` and `descriptorWriter`.
+     - `stdioOf` excludes owned descriptors, so an owned fd numbered 0, 1 or 2 is never taken for a run's stream.
+     - It was compiled once, in a scratch tree; `build:lib` ran clean there.
+   - **`TREE_DESCRIPTORS`** is offered by a tree, never by `VirtualFS`, so a current caller keeps the engine's descriptor table, its `allocateFd` from 20, and its offsets.
+   - **`TreeDescriptorStats` gains four optional predicates** (6d508bc): a type-only, additive change.
+   - **Reading:** a kernel-shell `node -e` opens `/tmp/a` with `'a'`, writes `x` and `y`, and prints `fstatSync(fd).size` and `fd`. Both of the following must hold:
+     - It prints `2`.
+     - The fd number is one the kernel's table holds; `/proc/<pid>/fd` lists it while the process runs.
+
+The substrate's `feat/kernel-virtual-fs` (step 2) and `feat/kernel-store-owner` (step 3.1) pin 0.6.1 and land after it. Both compile against a local build of these two merges (`build:packages` clean in tsc; the shell bundle refused only by the engine pin).
+
 ### 5. Performance risks
 
 The operations that matter:
