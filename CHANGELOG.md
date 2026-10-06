@@ -37,6 +37,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 - fd 1 and 2 are descriptors of every run: `fs.writeSync(1|2, …)` and writes
   to `/dev/stdout`, `/dev/stderr`, `/dev/fd/1|2`, `/proc/self/fd/1|2` go to
   the run's stdout/stderr in order with `process.stdout`, never EBADF.
+- fd 0 is a descriptor of every run too: `fs.readSync(0, …)` and `/dev/stdin`
+  read the run's stdin in order with `process.stdin` (EAGAIN while nothing has
+  arrived, 0 at its end). `fs.fstat(0|1|2)` is a character device where the
+  run gave that fd a terminal, else a FIFO; `tty.isatty` and `guessHandleType`
+  answer per fd from the asking run's own streams.
 - A WASI guest's stdout/stderr are written as its bytes.
 - `fs.writeSync(fd, string, pos, encoding)` writes the string in that encoding.
 - The host executor request (`ChildProcessHostRequest`) and the Node process

@@ -12,6 +12,8 @@
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
 import { guessHandleTypeOfFd, handleForFd, registerFd, releaseFd } from './fds';
 import { UV_EBADF, UV_EIO, UV_ENOTSUP } from './uv';
+import { currentOwner } from './handles';
+import { __runFor } from '../../process-tokens';
 
 export interface TerminalState {
   columns: number;
@@ -173,10 +175,13 @@ export function resizePty(fd: number, columns: number, rows: number): void {
 /** libuv's `uv_guess_handle(fd) === UV_TTY`, as the running program sees it. */
 export function isTTY(fd: number): boolean {
   if (fd !== 0 && fd !== 1 && fd !== 2) return guessHandleTypeOfFd(fd) === 'TTY';
-  const realm = (globalThis as unknown as {
-    process?: { stdin?: { isTTY?: boolean }; stdout?: { isTTY?: boolean }; stderr?: { isTTY?: boolean } };
-  }).process;
-  const stream = fd === 0 ? realm?.stdin : fd === 1 ? realm?.stdout : realm?.stderr;
+  // The asking run's own streams, which carry its per-fd terminals: in a
+  // realm several guests share, the global `process` is whichever ran last.
+  type Streams = { stdin?: { isTTY?: boolean }; stdout?: { isTTY?: boolean }; stderr?: { isTTY?: boolean } };
+  const token = currentOwner();
+  const own = token === null ? undefined : __runFor(token)?.process as unknown as Streams | undefined;
+  const proc = own ?? (globalThis as unknown as { process?: Streams }).process;
+  const stream = fd === 0 ? proc?.stdin : fd === 1 ? proc?.stdout : proc?.stderr;
   return stream?.isTTY === true;
 }
 

@@ -35,6 +35,7 @@
  * every promise, settled or not. A program that needs to know awaits it.
  */
 import { guessHandleTypeOfFd } from './fds';
+import { isTTY } from './tty_wrap';
 import { nodeLibInternalRequire } from '../load';
 
 /** Node's `propertyFilter` and promise-state constants, by their own values. */
@@ -159,8 +160,12 @@ export const utilBinding = {
   /** A pointer's value, printed for an external. A tab has no externals. */
   getExternalValue: (): bigint => BigInt(0),
 
-  /** What kind of thing a descriptor is, out of the engine's own table. */
-  guessHandleType: guessHandleTypeOfFd,
+  /**
+   * What kind of thing a descriptor is, out of the engine's own table; a
+   * standard fd the run was given as a terminal is one, so this agrees with
+   * `tty.isatty` and `fstat` per fd.
+   */
+  guessHandleType: (fd: number) => (fd >= 0 && fd <= 2 && isTTY(fd) ? 'TTY' : guessHandleTypeOfFd(fd)),
 
   /**
    * Node's `defineLazyProperties`: each key becomes a getter that requires

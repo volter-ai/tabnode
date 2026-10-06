@@ -42,7 +42,9 @@ import { errname } from './uv';
 function createNodeError(code: string, syscall: string, path: string): Error {
   const known = ['EEXIST', 'EINVAL', 'EISDIR', 'ENOENT', 'ENOTDIR', 'ENOTEMPTY', 'ELOOP', 'EROFS'];
   if (known.includes(code)) return vfsError(code as 'ENOENT', syscall, path);
-  return Object.assign(new Error(`${code}: ${syscall} '${path}'`), { code, syscall, path, errno: -9 });
+  // Linux's numbers for the stream errors a descriptor answers.
+  const errno = ({ EAGAIN: -11, ESPIPE: -29, EPIPE: -32 } as Record<string, number>)[code] ?? -9;
+  return Object.assign(new Error(`${code}: ${syscall} '${path}'`), { code, syscall, path, errno });
 }
 
 /**
@@ -137,6 +139,8 @@ function flagBits(): { create: number; excl: number; truncate: number; append: n
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
 const S_IFLNK = 0o120000;
+const S_IFCHR = 0o020000;
+const S_IFIFO = 0o010000;
 
 interface OpenFile {
   path: string;
@@ -165,26 +169,85 @@ interface OpenFile {
 const openFiles = new Map<number, OpenFile>();
 
 /**
- * fd 1 and fd 2 are descriptors of every process, as on Linux: a program
+ * fd 0, 1 and 2 are descriptors of every process, as on Linux: a program
  * that writes its output through `fs.writeSync(1, buf)`, or opens
  * `/dev/stdout`, `/dev/fd/1` or `/proc/self/fd/1` and writes there, writes
  * the bytes its `process.stdout` writes, to the same place and in the same
- * order. The engine registered no such descriptors, so those writes were
- * EBADF and the output was lost. A path of these opens a new descriptor
- * that names the stream, as open(2) on it does.
+ * order; one that reads `fs.readSync(0, buf)` or `/dev/stdin` reads what its
+ * `process.stdin` reads; `fstat` of each says what it is. The engine
+ * registered no such descriptors, so all of it was EBADF. A path of these
+ * opens a new descriptor that names the stream, as open(2) on it does.
  */
-const STDIO_PATHS = new Map<string, 1 | 2>([
-  ['/dev/stdout', 1], ['/dev/stderr', 2],
-  ['/dev/fd/1', 1], ['/dev/fd/2', 2],
-  ['/proc/self/fd/1', 1], ['/proc/self/fd/2', 2],
+type StdioFd = 0 | 1 | 2;
+const STDIO_PATHS = new Map<string, StdioFd>([
+  ['/dev/stdin', 0], ['/dev/stdout', 1], ['/dev/stderr', 2],
+  ['/dev/fd/0', 0], ['/dev/fd/1', 1], ['/dev/fd/2', 2],
+  ['/proc/self/fd/0', 0], ['/proc/self/fd/1', 1], ['/proc/self/fd/2', 2],
 ]);
-const stdioAliases = new Map<number, 1 | 2>();
+const stdioAliases = new Map<number, StdioFd>();
 
 /** The standard stream a descriptor names, where it names one. */
-function stdioOf(fd: number): 1 | 2 | null {
+function stdioOf(fd: number): StdioFd | null {
   const alias = stdioAliases.get(fd);
   if (alias !== undefined) return alias;
-  return (fd === 1 || fd === 2) && !openFiles.has(fd) ? fd : null;
+  return (fd === 0 || fd === 1 || fd === 2) && !openFiles.has(fd) ? fd : null;
+}
+
+/** What a run's standard streams are, as the fs binding reads them. */
+interface StdioStreams {
+  stdin?: { isTTY?: boolean; read(): unknown; unshift(chunk: Uint8Array): void; readableEnded?: boolean; _readableState?: { ended?: boolean } };
+  stdout?: { isTTY?: boolean };
+  stderr?: { isTTY?: boolean };
+}
+
+/** The asking run's process -- its own, not whichever guest holds the realm's name. */
+function stdioProcess(token: ProcessToken | null = currentOwner()): StdioStreams | undefined {
+  const run = token === null ? undefined : __runFor(token);
+  if (run) return run.process as unknown as StdioStreams;
+  return (globalThis as unknown as { process?: StdioStreams }).process;
+}
+
+/**
+ * `fstat` of a standard stream, as Linux answers it: a terminal is a
+ * character device (a pts, major 136), anything else the run was given is a
+ * pipe. The run says which by its per-fd terminals (`stdioIsTTY`); a run has
+ * no way yet to say an fd is a file, and is a pipe then.
+ */
+function stdioStat(stream: StdioFd, bigint: boolean): Float64Array | BigInt64Array {
+  const proc = stdioProcess();
+  const tty = (stream === 0 ? proc?.stdin : stream === 1 ? proc?.stdout : proc?.stderr)?.isTTY === true;
+  const now = Date.now();
+  const seconds = Math.floor(now / 1000);
+  const nanos = Math.floor((now % 1000) * 1e6);
+  const values = [
+    0, tty ? S_IFCHR | 0o620 : S_IFIFO | 0o600, 1,
+    0, 0, tty ? 136 << 8 : 0,
+    4096, stream + 1, 0, 0,
+    seconds, nanos, seconds, nanos, seconds, nanos, seconds, nanos,
+  ];
+  return bigint ? BigInt64Array.from(values, (value) => BigInt(value)) : Float64Array.from(values);
+}
+
+/**
+ * A read of the run's fd 0: the bytes its `process.stdin` holds, taken from
+ * that same stream so the two read in order, the rest left for the next
+ * read. With nothing there yet the answer is EAGAIN, as a non-blocking pipe
+ * gives (a tab cannot block on a writer); at the writer's end it is 0.
+ */
+function readStdin(buffer: Uint8Array, offset: number, length: number): number {
+  const stdin = stdioProcess()?.stdin;
+  if (!stdin || typeof stdin.read !== 'function') throw createNodeError('EBADF', 'read', '0');
+  if (length <= 0) return 0;
+  const chunk = stdin.read();
+  if (chunk === null || chunk === undefined) {
+    if (stdin.readableEnded === true || stdin._readableState?.ended === true) return 0;
+    throw createNodeError('EAGAIN', 'read', '0');
+  }
+  const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk as Uint8Array;
+  const count = Math.min(length, bytes.length);
+  buffer.set(bytes.subarray(0, count), offset);
+  if (count < bytes.length) stdin.unshift(bytes.slice(count));
+  return count;
 }
 
 /**
@@ -223,7 +286,7 @@ export function descriptorWriter(fd: number): ((chunk: string | Uint8Array) => v
   // the child writes the parent's stream, read against the parent, whose
   // code is the code running now.
   const standard = stdioOf(fd);
-  if (standard !== null && handleForFd(fd) === undefined) {
+  if (standard !== null && standard !== 0 && handleForFd(fd) === undefined) {
     const parent = currentOwner();
     return (chunk) => { try { writeStdio(standard, bytesOf(chunk), parent); } catch { /* a closed stream drops the child's output */ } };
   }
@@ -610,6 +673,13 @@ const fsBinding = {
   // ---- reading ------------------------------------------------------------
   read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number, req?: FSReq): number | undefined {
     return answer(req, () => {
+      const standard = handleForFd(fd) === undefined ? stdioOf(fd) : null;
+      if (standard !== null) {
+        // fd 1 and 2 are the write ends the run was given.
+        if (standard !== 0) throw createNodeError('EBADF', 'read', String(fd));
+        if (position !== null && position !== undefined && position >= 0) throw createNodeError('ESPIPE', 'read', String(fd));
+        return readStdin(buffer, offset, length);
+      }
       const file = fileFor(fd);
       if ((file.flags & 3) === 1) throw createNodeError('EBADF', 'read', file.path);
       if (file.cached === undefined) file.cached = file.tree.readFileSync(file.path) as Uint8Array;
@@ -660,6 +730,8 @@ const fsBinding = {
       }
       const standard = stdioOf(fd);
       if (standard !== null) {
+        // fd 0 is the read end the run was given.
+        if (standard === 0) throw createNodeError('EBADF', 'write', String(fd));
         // A stream has no position, as a pipe or a terminal has none.
         if (position !== null && position !== undefined && position >= 0) throw createNodeError('ESPIPE', 'write', String(fd));
         const bytes = buffer.subarray(offset, offset + length);
@@ -797,6 +869,8 @@ const fsBinding = {
 
   fstat(fd: number, bigint: boolean, req?: FSReq): Float64Array | BigInt64Array | undefined {
     return answer(req, () => {
+      const standard = handleForFd(fd) === undefined ? stdioOf(fd) : null;
+      if (standard !== null) return stdioStat(standard, bigint);
       const file = fileFor(fd);
       return statArray(file.tree.statSync(file.path), bigint, file.path);
     });
