@@ -4,6 +4,16 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `RunOptions.filesystem` (for `runNode`): the tree one run's Node reads and
+  writes, in place of the container's, while it keeps the container's port
+  space and process table (ADR-0005 step 2). A synchronous child reads its
+  parent run's tree.
+- A stat keeps an entry's full file type: the type bits a tree's mode
+  carries, else every kind its stat answers (a character or block device, a
+  FIFO, a socket as well as a directory or a link). A host tree's
+  `/dev/null` stat'ed by path is a character device, as its fstat says;
+  `VirtualFS` answers no device kinds and is unchanged.
+
 ## v0.6.0 — 2026-10-06
 
 The host API gains an argv entry for the engine's Node, per-fd standard

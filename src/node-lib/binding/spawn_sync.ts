@@ -87,13 +87,16 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
   if (syncChildRefusal() !== null) return nothing(UV_ENOSYS);
 
   const input = stdio[0]?.input;
-  const realm = (globalThis as unknown as { process?: { cwd?: () => string; env?: Record<string, string> } }).process;
+  const realm = (globalThis as unknown as { process?: { cwd?: () => string; env?: Record<string, string> } & Record<symbol, unknown> }).process;
+  // The tree of the run that asks, which a host may have given that run alone.
+  const runTree = realm?.[Symbol.for('tabnode.run.vfs')] as Parameters<typeof runSyncChild>[0]['tree'];
   let answer;
   try {
     // A child that is the engine's Node goes by its argv, as `spawn` starts
     // one, and its fds are bytes both ways; the input is the bytes Node's
     // `spawnSync` was given, whatever their encoding.
     answer = runSyncChild({
+      ...(runTree ? { tree: runTree } : {}),
       command: __substrateLineFor(options.file, argv, options.cwd),
       ...(__substrateRunsNode(options.file, options.cwd) ? { argv } : {}),
       cwd: options.cwd ?? (typeof realm?.cwd === 'function' ? realm.cwd() : undefined),

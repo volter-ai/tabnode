@@ -1925,8 +1925,27 @@ export interface NodeRunOptions {
   stdin?: string | Uint8Array;
   /** The run's name, under which the host registered its streams and signal. */
   processToken: string;
-  /** The tree the process runs on. */
+  /** The container's tree. */
   vfs: VirtualFS;
+  /** The tree this run's process reads and writes instead, where the host gives one. */
+  filesystem?: VirtualFS;
+}
+
+/**
+ * The shell over a tree one run was given (`RunOptions.filesystem`), made as
+ * a container's is, without making that tree the container's: the module's
+ * notion of the current tree, and the tree a synchronous child of a run
+ * without its own falls back to, are what they were.
+ */
+function shellForRunTree(tree: VirtualFS): void {
+  const before = { vfs: currentVfs, bash: bashInstance, adapter: vfsAdapter };
+  initChildProcess(tree);
+  if (before.vfs) {
+    currentVfs = before.vfs;
+    bashInstance = before.bash;
+    vfsAdapter = before.adapter;
+    setSyncChildVfs(before.vfs);
+  }
 }
 
 /**
@@ -1941,7 +1960,8 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
   if (!Array.isArray(argv) || argv.length === 0 || argv.some((word) => typeof word !== 'string')) {
     throw new TypeError('runNode: argv must be a non-empty array of strings');
   }
-  const tree = options.vfs;
+  const tree = options.filesystem ?? options.vfs;
+  if (options.filesystem && !shells.has(options.filesystem)) shellForRunTree(options.filesystem);
   const shell = shells.get(tree);
   if (!shell) throw new Error('child_process not initialized for this tree');
   currentVfs = tree;

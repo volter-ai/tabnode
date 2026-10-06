@@ -100,6 +100,15 @@ export interface RunOptions {
    * must have.
    */
   stdinShared?: SharedArrayBuffer;
+  /**
+   * The tree this run's Node reads and writes, in place of the container's
+   * own: a host's tree for one process (a kernel's, for a `node` its shell
+   * exec'd), chosen per run, while the run keeps the container's one port
+   * space, process table and servers, as a process on Linux keeps its
+   * network namespace whatever filesystem it sees. The engine writes nothing
+   * into it on its own account. `runNode` only.
+   */
+  filesystem?: VirtualFS;
   terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
   /** Callback for streaming stdout chunks as they arrive (for long-running commands like vitest watch) */
   onStdout?: (data: string) => void;
@@ -297,6 +306,7 @@ export function createContainer(options?: ContainerOptions): {
       });
     })),
     runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {
+      ...(runOptions?.filesystem ? { filesystem: runOptions.filesystem } : {}),
       cwd: runOptions?.cwd,
       env: runOptions?.env,
       ...(runOptions?.stdin !== undefined ? { stdin: runOptions.stdin } : {}),

@@ -146,6 +146,9 @@ const S_IFDIR = 0o040000;
 const S_IFLNK = 0o120000;
 const S_IFCHR = 0o020000;
 const S_IFIFO = 0o010000;
+const S_IFBLK = 0o060000;
+const S_IFSOCK = 0o140000;
+const S_IFMT = 0o170000;
 
 interface OpenFile {
   path: string;
@@ -404,11 +407,18 @@ function statArray(stats: VfsStats, bigint: boolean, path?: string): Float64Arra
   const birth = stats.birthtime instanceof Date ? stats.birthtime.getTime() : Number(stats.birthtimeMs ?? mtime);
   const seconds = (ms: number): number => Math.floor(ms / 1000);
   const nanos = (ms: number): number => Math.floor((ms % 1000) * 1e6);
-  // The tree keeps permissions but not the type bits; `Stats.isFile()` is
-  // `mode & S_IFMT`, so the type the tree does know is put where Node looks.
+  // `Stats.isFile()` is `mode & S_IFMT`, so the entry's type goes where Node
+  // looks: the type bits a tree's mode carries, else every kind its stat
+  // answers -- a directory, a link, a character or block device, a FIFO, a
+  // socket -- and a regular file only when it is none of them. Deriving only
+  // dir/link/reg made a kernel's character device (/dev/null) a regular file
+  // through a path stat while fstat of its descriptor said S_IFCHR.
   // `chmod` stores what it set; a path it has not touched keeps the tree's.
   const permissions = Number(stats.mode ?? (stats.isDirectory?.() ? 0o755 : 0o644)) & 0o7777;
-  const type = stats.isDirectory?.() ? S_IFDIR : stats.isSymbolicLink?.() ? S_IFLNK : S_IFREG;
+  const type = (Number(stats.mode ?? 0) & S_IFMT)
+    || (stats.isDirectory?.() ? S_IFDIR : stats.isSymbolicLink?.() ? S_IFLNK
+      : stats.isCharacterDevice?.() ? S_IFCHR : stats.isBlockDevice?.() ? S_IFBLK
+        : stats.isFIFO?.() ? S_IFIFO : stats.isSocket?.() ? S_IFSOCK : S_IFREG);
   const values = [
     Number(stats.dev ?? 0), type | permissions, Number(stats.nlink ?? 1),
     Number(stats.uid ?? 0), Number(stats.gid ?? 0), Number(stats.rdev ?? 0),
