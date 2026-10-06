@@ -55,6 +55,8 @@ export interface SyncChildResult {
  */
 export interface SyncChildRequest {
   command: string;
+  /** The tree of the run that asks; the last tree given to the engine where it has none. */
+  tree?: VirtualFS;
   argv?: readonly string[];
   cwd?: string;
   env?: Record<string, string>;
@@ -375,8 +377,8 @@ function receiveFromWorker(active: SyncService, waitMs: number): string {
 }
 
 /** The tree's answer to one call the child made, in the shape JSON carries. */
-function answerFilesystem(method: string, args: unknown[]): unknown {
-  const vfs = hostVfs as unknown as Record<string, (...rest: unknown[]) => unknown>;
+function answerFilesystem(tree: VirtualFS, method: string, args: unknown[]): unknown {
+  const vfs = tree as unknown as Record<string, (...rest: unknown[]) => unknown>;
   const plain = args.map((value) => (value === null ? undefined : value));
   if (method === 'statSync' || method === 'lstatSync') {
     const stats = vfs[method]!(plain[0]) as { size: number; mode: number; mtime: Date | number; atime: Date | number; ctime: Date | number; birthtime: Date | number; isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean };
@@ -397,7 +399,7 @@ function answerFilesystem(method: string, args: unknown[]): unknown {
   }
   const answer = vfs[method];
   if (typeof answer !== 'function') throw Object.assign(new Error(`ENOSYS: the tree answers no ${method}`), { code: 'ENOSYS' });
-  return answer.apply(hostVfs, plain) ?? null;
+  return answer.apply(tree, plain) ?? null;
 }
 
 /** A file's identity, stable for as long as the parent's tree holds it. */
@@ -437,7 +439,10 @@ function bytes(b64: string): Uint8Array {
 export function runSyncChild(request: SyncChildRequest): SyncChildResult {
   const refusal = syncChildRefusal();
   if (refusal !== null) throw new Error(refusal);
-  if (hostVfs === null) throw new Error('the engine has no filesystem for a child to run on');
+  // The child runs on its parent's tree: the asking run's own, as a host gave
+  // it for that run, else the last tree the engine was given.
+  const tree = request.tree ?? hostVfs;
+  if (tree === null) throw new Error('the engine has no filesystem for a child to run on');
   if (!service) warmSyncChild(true);
   const active = service!;
   if (Atomics.load(active.control, STARTED) !== 1) {
@@ -458,7 +463,7 @@ export function runSyncChild(request: SyncChildRequest): SyncChildResult {
     ...(request.input ? { input: { b64: base64(request.input) } } : {}),
     engineURL: engineModuleURL(),
     loadWaitMs: ENGINE_LOAD_WAIT_MS,
-    holdsLinks: (hostVfs as unknown as { holdsLinks?: boolean }).holdsLinks === true,
+    holdsLinks: (tree as unknown as { holdsLinks?: boolean }).holdsLinks === true,
   });
   const streamed: Record<1 | 2, Uint8Array[]> = { 1: [], 2: [] };
   // The first message of a run is the thread's `begin`, and it is waited for
@@ -476,7 +481,7 @@ export function runSyncChild(request: SyncChildRequest): SyncChildResult {
     if (message.t === 'begin') continue;
     if (message.t === 'fs') {
       let answer: string;
-      try { answer = JSON.stringify({ ok: true, v: answerFilesystem(message.m, message.a) }); }
+      try { answer = JSON.stringify({ ok: true, v: answerFilesystem(tree, message.m, message.a) }); }
       catch (error) {
         const failure = error as { message?: string; code?: string; errno?: number; syscall?: string; path?: string };
         answer = JSON.stringify({ ok: false, e: { message: String(failure?.message ?? error), code: failure?.code, errno: failure?.errno, syscall: failure?.syscall, path: failure?.path } });

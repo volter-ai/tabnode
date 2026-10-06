@@ -4,6 +4,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `RunOptions.filesystem` (for `runNode`): the tree one run's Node reads and
+  writes, in place of the container's, while it keeps the container's port
+  space and process table (ADR-0005 step 2). A synchronous child reads its
+  parent run's tree.
+
 The host API gains an argv entry for the engine's Node, per-fd standard
 streams (kind, terminal, bytes) and a shared-memory stdin, and a guest's
 processes and files carry bytes and modes as Linux does. Released as v0.6.0
