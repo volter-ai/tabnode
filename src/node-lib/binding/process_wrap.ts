@@ -81,10 +81,14 @@ export interface RunRequest {
   cwd?: string;
   env: Record<string, string>;
   detached: boolean;
-  /** Where the child's fd 1 goes; null where nothing reads it. */
-  stdout: ((text: string) => void) | null;
+  /**
+   * Where the child's fd 1 goes; null where nothing reads it. A pipe is a
+   * byte stream: a chunk the child wrote as bytes arrives as those bytes, and
+   * text only where the program that ran it produced text.
+   */
+  stdout: ((chunk: string | Uint8Array) => void) | null;
   /** Where the child's fd 2 goes; null where nothing reads it. */
-  stderr: ((text: string) => void) | null;
+  stderr: ((chunk: string | Uint8Array) => void) | null;
   /**
    * True when fd 2 is a pipe the parent holds. A run that ends uncaught or
    * with a nonzero `process.exit` on that pipe writes one receipt to the
@@ -175,7 +179,7 @@ function signalNameOf(signal: number | string): string {
 // replaying stderr into its own closed IPC-backed stream (write EBADF).
 function parentProcess(token: ProcessToken | null) {
   return token !== null ? __runFor(token)?.process
-    : (globalThis as unknown as { process?: { cwd?: () => string; stdout?: { write(text: string): unknown }; stderr?: { write(text: string): unknown } } }).process;
+    : (globalThis as unknown as { process?: { cwd?: () => string; stdout?: { write(chunk: string | Uint8Array): unknown }; stderr?: { write(chunk: string | Uint8Array): unknown } } }).process;
 }
 
 function spawningDirectory(token: ProcessToken | null): string | undefined {
@@ -185,7 +189,7 @@ function spawningDirectory(token: ProcessToken | null): string | undefined {
 }
 
 /** Where an `inherit` entry's bytes go: the spawning program's own stream. */
-function inheritedWriter(fd: number, token: ProcessToken | null): ((text: string) => void) | null {
+function inheritedWriter(fd: number, token: ProcessToken | null): ((chunk: string | Uint8Array) => void) | null {
   // a descriptor of the parent's own (a log file it opened) is written as the file
   if (fd !== 1 && fd !== 2) return descriptorWriter(fd);
   // Inherit the descriptor's original sink, not a guest replacement of
@@ -197,8 +201,8 @@ function inheritedWriter(fd: number, token: ProcessToken | null): ((text: string
   const realm = parentProcess(token);
   const stream = fd === 1 ? realm?.stdout : realm?.stderr;
   if (!stream || typeof stream.write !== 'function') return null;
-  return (text: string) => {
-    try { stream.write(text); } catch { /* a stream that refuses still lets the child run */ }
+  return (chunk: string | Uint8Array) => {
+    try { stream.write(chunk); } catch { /* a stream that refuses still lets the child run */ }
   };
 }
 
@@ -293,8 +297,8 @@ export class Process implements OwnedHandle {
           this.terminalEnds.set(index, inherited);
           request.terminal = inherited.terminal;
           if (index === 0) { stdinFar = inherited; request.stdinIsPipe = true; }
-          else if (index === 1) request.stdout = text => this.toPipe(index, text);
-          else request.stderr = text => this.toPipe(index, text);
+          else if (index === 1) request.stdout = chunk => this.toPipe(index, chunk);
+          else request.stderr = chunk => this.toPipe(index, chunk);
           continue;
         }
       }
@@ -322,7 +326,7 @@ export class Process implements OwnedHandle {
       }
       if (far) {
         const to = index;
-        const write = (text: string): void => { this.toPipe(to, text); };
+        const write = (chunk: string | Uint8Array): void => { this.toPipe(to, chunk); };
         if (index === 1) request.stdout = write;
         else {
           request.stderr = write;
@@ -395,10 +399,11 @@ export class Process implements OwnedHandle {
   }
 
   /** The child wrote to fd `index`; the parent's handle reads it. */
-  private toPipe(index: number, text: string): void {
+  private toPipe(index: number, chunk: string | Uint8Array): void {
     const far = this.farEndAt(index);
     if (!far || far.closed) return;
-    far.writeUtf8String(new WriteWrap(), text);
+    if (typeof chunk === 'string') far.writeUtf8String(new WriteWrap(), chunk);
+    else far.writeBuffer(new WriteWrap(), chunk);
   }
 
   /** Bytes the parent writes reach the child's fd 0; the parent's EOF ends it. */

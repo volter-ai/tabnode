@@ -179,10 +179,12 @@ function fileFor(fd: number): OpenFile {
  * is a stream (a socket, a pipe) is written as a stream. Anything else is
  * not a sink, and the child's output there goes nowhere, as `ignore` does.
  */
-export function descriptorWriter(fd: number): ((text: string) => void) | null {
+export function descriptorWriter(fd: number): ((chunk: string | Uint8Array) => void) | null {
+  // A descriptor takes bytes; a chunk a child wrote as bytes goes on as them.
+  const bytesOf = (chunk: string | Uint8Array): Uint8Array => typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
   const stream = handleForFd(fd);
   if (stream instanceof LibuvStreamWrap) {
-    return (text) => { try { stream.writeBuffer(new WriteWrap(), new TextEncoder().encode(text)); } catch { /* a closed stream drops the child's output, as a closed pipe does */ } };
+    return (chunk) => { try { stream.writeBuffer(new WriteWrap(), bytesOf(chunk)); } catch { /* a closed stream drops the child's output, as a closed pipe does */ } };
   }
   const file = openFiles.get(fd);
   if (!file || file.directory || (file.flags & 3) === 0) return null;
@@ -194,8 +196,8 @@ export function descriptorWriter(fd: number): ((text: string) => void) | null {
   let cursor = descriptorCursors.get(file);
   if (!cursor) { cursor = { position: file.position }; descriptorCursors.set(file, cursor); }
   const offset = cursor;
-  return (text) => {
-    const bytes = new TextEncoder().encode(text);
+  return (chunk) => {
+    const bytes = bytesOf(chunk);
     // the parent's copy, while it is open, holds the file's bytes as it last wrote them
     const shared = openFiles.get(fd) === file ? file : null;
     if (shared) offset.position = shared.position;

@@ -13,7 +13,8 @@ export interface NodeProcessLaunch {
   /** This entry's filesystem view, including any host-prepared entry wrapper. */
   filesystem: VirtualFS;
   env: Record<string, string>;
-  stdin?: string;
+  /** Bytes already on fd 0 when the process begins; a parent's pipe carries bytes. */
+  stdin?: string | Uint8Array;
   stdinStream?: AsyncIterable<Uint8Array>;
   streams?: RunStreams;
   inherited: readonly { fd: number; handle: NativeStreamDescriptor }[];

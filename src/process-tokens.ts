@@ -29,8 +29,9 @@ export const PROCESS_TOKEN_ENV = '__TABNODE_PROCESS_TOKEN';
 export interface OwnedRun {
   /** The guest whose cwd and inherited streams belong to this run. */
   process: Process;
-  stdout(text: string): void;
-  stderr(text: string): void;
+  /** The run's fd 1 and fd 2: a chunk is text, or bytes as a program wrote them. */
+  stdout(chunk: string | Uint8Array): void;
+  stderr(chunk: string | Uint8Array): void;
   /** The timers the run's guest still holds, as Node's loop counts them. */
   pendingTimers(): number;
   /** Clear those timers, as ending the process clears them. */

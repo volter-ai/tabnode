@@ -21,6 +21,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   bytes the program wrote, before any decode; that fd is not kept as text.
   A string written with an encoding (`write('ff', 'hex')`) is written as its
   bytes, as Node writes it.
+- A guest's `node` child (`spawn`, `execFile`, `exec`'s `node`, `fork`, by name
+  or by `process.execPath`) starts through the one Node launch from its argv
+  rather than as a line for the engine's shell, as its own run with the pid its
+  parent holds. Its stdin, stdout and stderr carry bytes end to end, into the
+  parent's pipe, inherited stdio or descriptor; binary through a pipe between
+  guest processes arrives byte-exact, and Node's own `child_process` decides
+  Buffer or string by the encoding option.
 
 ## v0.5.70 — 2026-10-05
 

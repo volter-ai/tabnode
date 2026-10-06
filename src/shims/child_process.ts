@@ -424,8 +424,8 @@ export interface NodeLaunch {
   cwd: string;
   /** The process's environment, exactly; nothing of the engine's is added. */
   env: Record<string, string>;
-  /** Bytes already on fd 0 when the process begins. */
-  stdin?: string;
+  /** Bytes already on fd 0 when the process begins: a shell's text, or a parent's pipe's bytes. */
+  stdin?: string | Uint8Array;
   /** The run this process is, or the run whose shell started it; its streams and signal are registered under it. */
   token: ProcessToken | null;
 }
@@ -462,7 +462,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     try {
       return await runHostedNode(processHost, {
         token: runToken, argv: [...args], cwd: launch.cwd, filesystem: tree, env: { ...launch.env },
-        ...(typeof launch.stdin === 'string' ? { stdin: launch.stdin } : {}), ...(streams ? { streams } : {}),
+        ...(launch.stdin !== undefined ? { stdin: launch.stdin } : {}), ...(streams ? { streams } : {}),
       });
     } finally {
       if (nested) releaseRunStreams(runToken);
@@ -622,7 +622,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // left of a pipe, or the `stdin` a host gave `container.run`. A held run
     // (one the host streams and can still feed with `sendStdin`) leaves it
     // open, as a pipe whose writer has not closed.
-    stdin: typeof launch.stdin === 'string' ? launch.stdin : '',
+    stdin: launch.stdin ?? '',
     ...(streams?.held || streams?.stdinOpen ? { stdinHeld: true } : {}),
     ...(ttyFds.some(Boolean) ? { tty: ttyFds } : {}),
     // The numbers this run was started with, so the guest's `process.pid`
@@ -1883,6 +1883,16 @@ function engineProgramFor(file: string, cwd?: string): string {
   return shellCommandNames().has(bare) ? bare : name;
 }
 
+/**
+ * Whether a program a guest spawns is the engine's Node: `node` by name, or
+ * the path `process.execPath` names, which is how `fork` and every program
+ * that re-runs itself spawns it.
+ */
+function isEngineNode(file: string, cwd?: string): boolean {
+  if (engineProgramFor(file, cwd) === 'node') return true;
+  return __resolvePath(cwd ?? '/', __substrateProgramName(file)) === __substrateExecPath;
+}
+
 /** Whether the engine's shell can find a program under this name. */
 function programExists(file: string, cwd: string | undefined, env: Record<string, string>): boolean {
   const name = __substrateProgramName(file);
@@ -1949,9 +1959,17 @@ function startChildRun(request: RunRequest): StartedRun {
   const pendingStdin: Array<Uint8Array | null> = [];
   // A host terminal consumes input incrementally. The old string-only
   // route dropped every keystroke that arrived after a child was launched.
+  const nodeChild = isEngineNode(request.file, request.cwd);
   const admittedNode = nodeProcessHostInstalled() && engineProgramFor(request.file, request.cwd) === 'node';
-  if (!admittedNode) shellRuns.add(token);
   const hostTerminal = request.terminal !== undefined && hostExecutor() !== null && !admittedNode;
+  // A `node` child the engine runs itself is started from its argv by the one
+  // Node launch, as `execve` starts it, and is the run itself: its pid is the
+  // one its parent's handle carries, its fds are the ones registered under
+  // it, and its fd 0, 1 and 2 are bytes. Rebuilt into a command line for the
+  // engine's shell, it was a second process under a shell run, and every
+  // chunk it wrote was decoded to text on the way to its parent's pipe.
+  const directNode = nodeChild && !admittedNode && !hostTerminal;
+  if (!admittedNode && !directNode) shellRuns.add(token);
   let wakeInput: (() => void) | undefined;
   /**
    * A piped fd 0 that stays open for a program the host runs (a program pack,
@@ -2003,9 +2021,14 @@ function startChildRun(request: RunRequest): StartedRun {
 
   const streamedOut: string[] = [];
   const streamedErr: string[] = [];
+  // A Node child's fd 1 and 2 reach the parent's pipe as the bytes it wrote,
+  // with no text kept of them; a program that writes text (a shell builtin,
+  // a host program) still arrives through the text sinks.
   const streams: RunStreams = {
     onStdout: (data: string) => { streamedOut.push(data); request.stdout?.(data); },
     onStderr: (data: string) => { streamedErr.push(data); request.stderr?.(data); },
+    onStdoutBytes: (bytes: Uint8Array) => { request.stdout?.(bytes); },
+    onStderrBytes: (bytes: Uint8Array) => { request.stderr?.(bytes); },
     signal: controller.signal,
     held: false,
     stdinOpen: request.stdinIsPipe,
@@ -2075,12 +2098,15 @@ function startChildRun(request: RunRequest): StartedRun {
     // and options in the host, with the original cwd and environment.
     const environmentChild = engineProgramFor(request.file, request.cwd) === 'env' && hostExecutor() !== null;
     const engineFirst = !hostTerminal && !shellChild && !environmentChild && programExists(request.file, request.cwd, request.env);
-    liveInput = !hostTerminal && !admittedNode && request.stdinIsPipe && !engineFirst;
+    liveInput = !hostTerminal && !admittedNode && !directNode && request.stdinIsPipe && !engineFirst;
     if (liveInput) {
       pendingStdin.unshift(...initialStdin);
       initialStdin.length = 0;
     }
-    const stdin = initialStdin.length > 0 ? Buffer.concat(initialStdin).toString('utf8') : undefined;
+    // What the parent wrote before the command began: bytes for a Node child,
+    // text only for the engine's shell, which reads its input as a string.
+    const stdinBytes = initialStdin.length > 0 ? new Uint8Array(Buffer.concat(initialStdin)) : undefined;
+    const stdin = stdinBytes !== undefined ? Buffer.from(stdinBytes).toString('utf8') : undefined;
     void (async () => {
       let outcome: CommandOutcome;
       try {
@@ -2090,8 +2116,14 @@ function startChildRun(request: RunRequest): StartedRun {
         delete env[PROCESS_TOKEN_ENV];
         outcome = processHost ? await runHostedNode(processHost, {
           token, argv: request.args.slice(1), cwd: request.cwd ?? '/',
-          filesystem: currentVfs!, env, streams, ...(stdin !== undefined ? { stdin } : {}),
-        }) : await enterRun(token, () => routeCommand({
+          filesystem: currentVfs!, env, streams, ...(stdinBytes !== undefined ? { stdin: stdinBytes } : {}),
+        }) : directNode ? await enterRun(token, () => launchNode(treeForRun() ?? currentVfs!, {
+          argv: request.args.length > 0 ? request.args : [request.file],
+          cwd: request.cwd ?? '/',
+          env,
+          ...(stdinBytes !== undefined ? { stdin: stdinBytes } : {}),
+          token,
+        })) : await enterRun(token, () => routeCommand({
           command: __substrateLineFor(request.file, request.args, request.cwd),
           engineFirst,
           cwd: request.cwd,

@@ -496,7 +496,7 @@ export function createProcess(options?: {
   onStdoutBytes?: (bytes: Uint8Array) => void;
   onStderrBytes?: (bytes: Uint8Array) => void;
   /** What the runner put on the guest's fd 0, as a shell puts the left of a pipe there. */
-  stdin?: string;
+  stdin?: string | Uint8Array;
   /**
    * The runner can still write to the guest's fd 0 (a held run fed with
    * `sendStdin`), so standard input does not end when the guest starts. Node's
@@ -754,7 +754,7 @@ export function createProcess(options?: {
     get stdin() {
       if (!stdinStream) {
         stdinStream = new (processStdinClass(loadNodeLibFor(proc, 'stream').Readable))();
-        if (typeof options?.stdin === 'string') stdinStream.__substrateStdinWrite(options.stdin);
+        if (options?.stdin !== undefined) stdinStream.__substrateStdinWrite(options.stdin);
         if (!options?.stdinHeld) stdinStream.__substrateStdinEnd();
       }
       return stdinStream;

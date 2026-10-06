@@ -1024,7 +1024,7 @@ export interface RuntimeOptions {
   onStdoutBytes?: (bytes: Uint8Array) => void;
   onStderrBytes?: (bytes: Uint8Array) => void;
   /** What is on the guest's fd 0, the way a shell puts the left of a pipe there. */
-  stdin?: string;
+  stdin?: string | Uint8Array;
   /** The runner can still write to fd 0, so standard input has not ended. */
   stdinHeld?: boolean;
   /** The run was given a TTY, on all three fds or per fd as `[stdin, stdout, stderr]`; a pipe child is not one. */
@@ -2642,7 +2642,7 @@ export class Runtime {
       onStderr: options.onStderr,
       ...(options.onStdoutBytes ? { onStdoutBytes: options.onStdoutBytes } : {}),
       ...(options.onStderrBytes ? { onStderrBytes: options.onStderrBytes } : {}),
-      ...(typeof options.stdin === 'string' ? { stdin: options.stdin } : {}),
+      ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
       ...(options.stdinHeld ? { stdinHeld: true } : {}),
       ...(options.tty ? { tty: options.tty } : {}),
       ...(typeof options.pid === 'number' ? { pid: options.pid } : {}),
