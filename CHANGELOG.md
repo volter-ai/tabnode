@@ -4,6 +4,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `container.runNode(argv, options)` starts the engine's Node from an argv
+  vector with `run`'s options and answer, through the same launch the shell's
+  `node` command uses (`launchNode`); no command line is built and no shell
+  runs. A kernel that execs `node` reached the engine's shell before, which
+  answered `node: command not found`.
+
 ## v0.5.70 — 2026-10-05
 
 - Development prohibits incidental verification locally and remotely. Requested

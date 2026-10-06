@@ -53,7 +53,7 @@ import { VirtualFS } from './virtual-fs';
 import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
-import { runCommand, registerRunStreams, releaseRunStreams, sendStdin } from './shims/child_process';
+import { runCommand, runNode, registerRunStreams, releaseRunStreams, sendStdin } from './shims/child_process';
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/handles';
 import { listenerOnPort } from './node-lib/binding/tcp_wrap';
@@ -126,6 +126,14 @@ export function createContainer(options?: ContainerOptions): {
   execute: (code: string, filename?: string) => { exports: unknown };
   runFile: (filename: string) => { exports: unknown };
   run: (command: string, options?: RunOptions) => Promise<RunResult>;
+  /**
+   * Start the engine's Node from an argv vector, as `execve` starts a program:
+   * `argv[0]` is the program's name (`process.argv0`), then Node's options,
+   * the script or `-e` source, and its arguments. No command line is built and
+   * no shell runs; `env` is the whole environment. The options and the answer
+   * are `run`'s.
+   */
+  runNode: (argv: readonly string[], options?: RunOptions) => Promise<RunResult>;
   pendingTimers: (token: string) => number;
   processPorts: (token: string) => number[];
   /** The pid of the process listening on a port of this engine, where a guest process is: `/proc`'s socket owner. */
@@ -167,6 +175,48 @@ export function createContainer(options?: ContainerOptions): {
     onServerReady: options?.onServerReady,
   });
 
+  /**
+   * One named run of this container: what the host gave it -- its streams, its
+   * signal, whether it is held -- registered under its name before the program
+   * starts, released when it ends, and its outcome read the way the host reads
+   * any run's. `run` starts a command line in it and `runNode` an argv vector.
+   */
+  const startRun = async (
+    runOptions: RunOptions | undefined,
+    start: (processToken: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>,
+  ): Promise<RunResult> => {
+    // If signal is already aborted, resolve immediately
+    if (runOptions?.signal?.aborted) return { stdout: '', stderr: '', exitCode: 130 };
+    // Every run has a name, because what the host gave this run is kept under
+    // that name and not in a module global a child's run would overwrite.
+    const processToken = typeof runOptions?.processToken === 'string' && runOptions.processToken.length > 0
+      ? runOptions.processToken
+      : `run-${__nextRunName++}`;
+    registerRunStreams(processToken, {
+      onStdout: runOptions?.onStdout,
+      onStderr: runOptions?.onStderr,
+      signal: runOptions?.signal,
+      held: runOptions?.held === true,
+      stdinStream: runOptions?.stdinStream,
+      stdinOpen: runOptions?.stdinStream !== undefined,
+      terminal: runOptions?.terminal,
+    });
+    let outcome: { stdout: string; stderr: string; exitCode: number };
+    let terminatedBy: string | undefined;
+    try {
+      outcome = await start(processToken);
+    } finally {
+      releaseRunStreams(processToken);
+      terminatedBy = __takeTermination(processToken);
+    }
+    return {
+      stdout: outcome.stdout,
+      stderr: outcome.stderr,
+      exitCode: runOptions?.signal?.aborted ? 143 : outcome.exitCode,
+      ...(terminatedBy ? { signal: terminatedBy } : {}),
+    };
+  };
+
   return {
     vfs,
     runtime,
@@ -174,45 +224,22 @@ export function createContainer(options?: ContainerOptions): {
     serverBridge,
     execute: (code: string, filename?: string) => runtime.execute(code, filename),
     runFile: (filename: string) => runtime.runFile(filename),
-    run: (command: string, runOptions?: RunOptions): Promise<RunResult> => {
-      // If signal is already aborted, resolve immediately
-      if (runOptions?.signal?.aborted) {
-        return Promise.resolve({ stdout: '', stderr: '', exitCode: 130 });
-      }
-
-      // Every run has a name, because what the host gave this run — its
-      // streams, its signal, whether it is held — is kept under that name and
-      // not in a module global a child's run would overwrite.
-      const processToken = typeof runOptions?.processToken === 'string' && runOptions.processToken.length > 0
-        ? runOptions.processToken
-        : `run-${__nextRunName++}`;
-      registerRunStreams(processToken, {
-        onStdout: runOptions?.onStdout,
-        onStderr: runOptions?.onStderr,
-        signal: runOptions?.signal,
-        held: runOptions?.held === true,
-        stdinStream: runOptions?.stdinStream,
-        stdinOpen: runOptions?.stdinStream !== undefined,
-        terminal: runOptions?.terminal,
+    run: (command: string, runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => new Promise((resolve) => {
+      // `container.run("cat", { stdin })` used to reach the engine's shell
+      // without its stdin: the run dropped it before exec, and exec dropped
+      // it before the shell. Both forward it, so a builtin reads what was
+      // piped, as it does in a Node shell.
+      runCommand(command, { cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : undefined, processToken, vfs }, (error, stdout, stderr) => {
+        resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
       });
-
-      return new Promise((resolve) => {
-        // `container.run("cat", { stdin })` used to reach the engine's shell
-        // without its stdin: the run dropped it before exec, and exec dropped
-        // it before the shell. Both forward it, so a builtin reads what was
-        // piped, as it does in a Node shell.
-        runCommand(command, { cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : undefined, processToken, vfs }, (error, stdout, stderr) => {
-          releaseRunStreams(processToken);
-          const terminatedBy = __takeTermination(processToken);
-          resolve({
-            stdout: String(stdout),
-            stderr: String(stderr),
-            exitCode: runOptions?.signal?.aborted ? 143 : error ? (error.code ?? 1) : 0,
-            ...(terminatedBy ? { signal: terminatedBy } : {}),
-          });
-        });
-      });
-    },
+    })),
+    runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {
+      cwd: runOptions?.cwd,
+      env: runOptions?.env,
+      ...(typeof runOptions?.stdin === 'string' ? { stdin: runOptions.stdin } : {}),
+      processToken,
+      vfs,
+    })),
     // What a host that named a run can ask about it, and the one thing it can
     // do to it. A run nobody named, and a name nothing runs under, answer as
     // an absent process does: no timers, no ports, and a stop that does

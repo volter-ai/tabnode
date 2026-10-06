@@ -63,6 +63,8 @@ container.vfs.writeFileSync('/hello.js', `
   console.log(fs.readFileSync('/out.txt', 'utf8'));
 `);
 const { stdout, exitCode } = await container.run('node /hello.js');
+// A host that already holds an argv vector starts Node with it, no shell between:
+await container.runNode(['node', '/hello.js'], { cwd: '/', env: { HOME: '/home/user' } });
 ```
 
 A guest server is reached through the bridge, at `/__virtual__/{port}/`, once the page has registered the service worker this package ships as `dist/__sw__.js`. A Vite host gets that route from the plugin:

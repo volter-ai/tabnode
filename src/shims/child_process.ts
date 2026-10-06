@@ -372,6 +372,642 @@ forGuestRealm(() => {
   });
 });
 
+/**
+ * Hears a realm's unhandled promise rejections for the length of a run and
+ * answers a detach. A browser realm raises `unhandledrejection` on its
+ * global (the default, a console line, is prevented: the run reports it);
+ * a Node host has no such event and reports through its own `process`,
+ * the one the host had before any guest's took the global name.
+ *
+ * Both surfaces carry the promise that rejected, and the report is given it:
+ * Node's `unhandledRejection` listener is called `(reason, promise)`, and a
+ * listener that uses its second argument is ordinary. openvscode-server's
+ * own (`out/server-main.js`) keeps the promise and calls `promise.catch` a
+ * second later; under an engine that handed it `undefined` every rejection
+ * of the server's became `TypeError: Cannot read properties of undefined
+ * (reading 'catch')` inside a timer, 59 of them in one boot.
+ */
+const __listenForUnhandledRejections = (owner: object, report: (reason: unknown, promise?: Promise<unknown>) => void, ownsRealm: boolean): (() => void) => {
+  if (typeof globalThis.addEventListener === 'function') {
+    const target = globalThis as unknown as EventTarget;
+    const listener = (event: Event) => {
+      const rejection = event as PromiseRejectionEvent;
+      // An admitted process worker has exactly one Node owner. Shared
+      // embeddings still require provenance and never broadcast failures.
+      if (!ownsRealm && promiseOwner(rejection.promise) !== owner) return;
+      event.preventDefault();
+      report(rejection.reason, rejection.promise);
+    };
+    target.addEventListener('unhandledrejection', listener);
+    return () => target.removeEventListener('unhandledrejection', listener);
+  }
+  const host = __hostProcess;
+  if (host) {
+    const listener = (reason: unknown, promise?: Promise<unknown>) => {
+      if (ownsRealm || promiseOwner(promise) === owner) report(reason, promise);
+    };
+    host.on('unhandledRejection', listener);
+    return () => host.off('unhandledRejection', listener);
+  }
+  return () => {};
+};
+
+/** One start of the engine's Node, however it was asked for. */
+export interface NodeLaunch {
+  /** The whole vector, as `execve` takes it: `argv[0]` is the program's own name (`process.argv0`), and Node's options, the script and its arguments follow. */
+  argv: readonly string[];
+  cwd: string;
+  /** The process's environment, exactly; nothing of the engine's is added. */
+  env: Record<string, string>;
+  /** Bytes already on fd 0 when the process begins. */
+  stdin?: string;
+  /** The run this process is, or the run whose shell started it; its streams and signal are registered under it. */
+  token: ProcessToken | null;
+}
+
+/**
+ * The engine's Node, started from an argv vector: Node's option parser, the
+ * process host's admission where a page installed one, and the guest's
+ * bootstrap, its loop and its exit. The shell's `node` command is one caller
+ * and a host's `container.runNode` is the other, so a kernel that has already
+ * decided to exec `node` reaches the same process a shell line does without a
+ * command string being rebuilt from the vector and parsed again by a shell
+ * that does not have the program in its tree.
+ */
+async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandOutcome> {
+  const args = launch.argv.slice(1);
+  // Capture this run's name, streams and cancellation before another Node
+  // entry can start. Forks and shell entries reach this same dispatch seam.
+  const parentToken = launch.token;
+  // A `node` a shell runs is a process of its own unless it is the run
+  // itself: the first `node` of a run that is not a shell's child is the
+  // run (the CMD `node server.js`, the page's `node -e`), and every other
+  // one, a line of a start script, the second command of a `-c` line, a
+  // step of a `sh file` child, gets a child token under the run's pid,
+  // the run's streams, and its own admission at the host. Admitted under
+  // the shell's own token, its exit was read as the shell's: a script
+  // ended at its first `node` line with nothing after it (measured
+  // 2026-09-28: `sh start.sh` printed its first step and stopped).
+  const nested = parentToken !== null && (shellRuns.has(parentToken) || hostedNodes.has(parentToken));
+  const runToken = nested ? nestedNodeToken(parentToken!, args, launch.cwd) : parentToken;
+  const streams = runToken === null ? undefined : runStreamsFor(runToken);
+  const processHost = nodeProcessHostFor(runToken);
+  if (processHost && runToken !== null) {
+    if (!nested) hostedNodes.add(runToken);
+    try {
+      return await runHostedNode(processHost, {
+        token: runToken, argv: [...args], cwd: launch.cwd, filesystem: tree, env: { ...launch.env },
+        ...(typeof launch.stdin === 'string' ? { stdin: launch.stdin } : {}), ...(streams ? { streams } : {}),
+      });
+    } finally {
+      if (nested) releaseRunStreams(runToken);
+    }
+  }
+
+  // Node reads its own options before the script: `node --turbo-fast-api-calls
+  // file.js a b` runs file.js with `a b`, and the options it were given are
+  // its `execArgv`. Node's own suite spawns children that way, and the
+  // engine took the first option for the script and died on
+  // "Cannot find module '--turbo-fast-api-calls'".
+  //
+  // An option may also take its value as the next word (`node --conditions
+  // node child.js`); NODE_VALUE_OPTIONS names those, so the option loop
+  // consumes the value and the script is the first word after the options,
+  // as Node's parser has it. `node missing.js` says which module it cannot
+  // find.
+  //
+  // The path on a `node` command line is a path, and it is resolved as
+  // `require` resolves one: the file itself, then `.js`, `.mjs`, `.cjs`,
+  // `.json`, then a directory's `package.json` `main` or its `index.js`.
+  // `fork` used to do this for itself; `fork` is Node's own file now and
+  // hands the module path straight to `node`, so the resolution belongs
+  // where a path on a command line is read. Opened literally, the path
+  // openvscode-server forks its pty host with, `<server>/out/bootstrap-fork`
+  // for the file `bootstrap-fork.js`, was ENOENT and the pty host died at
+  // its first fork.
+  const execArgv: string[] = [];
+  let first = 0;
+  // `-e`/`--eval` and `-p`/`--print` carry the program itself as their
+  // value: there is no script, and every word after the source is the
+  // program's argument. Taken for an option, the source was read as the
+  // script's path ("Cannot find module '/workspace/console.log(1+1)'").
+  let evaluated: { source: string; print: boolean } | null = null;
+  while (first < args.length && args[first]!.startsWith('-') && args[first] !== '-' && args[first] !== '--') {
+    const option = args[first]!;
+    const inline = /^(--eval|--print)=([\s\S]*)$/.exec(option);
+    if (inline) {
+      evaluated = { source: inline[2]!, print: inline[1] === '--print' };
+      execArgv.push(option);
+      first += 1;
+      break;
+    }
+    if (option === '-e' || option === '--eval' || option === '-p' || option === '--print' || option === '-pe') {
+      if (first + 1 >= args.length) return { stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 };
+      evaluated = { source: args[first + 1]!, print: option.includes('p') };
+      execArgv.push(option, args[first + 1]!);
+      first += 2;
+      break;
+    }
+    // An option that takes its value as the next word consumes it here, as Node's option parser does.
+    if (NODE_VALUE_OPTIONS.has(option) && first + 1 < args.length) {
+      execArgv.push(option, args[first + 1]!);
+      first += 2;
+      continue;
+    }
+    execArgv.push(option);
+    first += 1;
+  }
+  if (args[first] === '--') first += 1;
+  const resolver = __nodeResolverFor(tree, 'runtime');
+  const fileNamed = (word: string): string | null => {
+    const requested = __resolvePath(launch.cwd, word);
+    const found = resolver.resolve(requested, launch.cwd);
+    if (found !== null && tree.existsSync(found)) return found;
+    return tree.existsSync(requested) ? requested : null;
+  };
+  // The script is the first word after the options, as in Node; a later word that happens to name a file is an
+  // argument (`node <next-bin> start apps/web` ran the directory apps/web when the bin did not resolve).
+  const script = first;
+  const resolvedPath: string | null = evaluated === null && args[script] ? fileNamed(args[script]!) : null;
+  if (evaluated === null && !args[script]) {
+    return { stdout: '', stderr: 'Usage: node <script.js> [args...]\n', exitCode: 1 };
+  }
+  if (evaluated === null && resolvedPath === null) {
+    return { stdout: '', stderr: `Error: Cannot find module '${__resolvePath(launch.cwd, args[script]!)}'\n`, exitCode: 1 };
+  }
+
+  let stdout = '';
+  let stderr = '';
+
+  // Track whether process.exit() was called
+  let exitCalled = false;
+  let exitCode = 0;
+  let syncExecution = true;
+  let exitResolve: ((code: number) => void) | null = null;
+  const exitPromise = new Promise<number>((resolve) => { exitResolve = resolve; });
+
+  // Helper to append to stdout, also streaming if configured
+  // A process that has exited writes nothing more, as Node's cannot: a
+  // continuation of the guest that runs on after its exit keeps its output
+  // to itself.
+  const appendStdout = (data: string) => {
+    if (exitCalled) return;
+    stdout += data;
+    streams?.onStdout?.(data);
+  };
+  const appendStderr = (data: string) => {
+    if (exitCalled) return;
+    stderr += data;
+    streams?.onStderr?.(data);
+  };
+
+  // A child started with an IPC channel is told its descriptor in its
+  // environment, exactly as Node tells one; the variables are taken out
+  // before the guest sees them, as Node's own bootstrap deletes them, so a
+  // grandchild does not inherit a channel that is not its own.
+  const guestEnv = { ...launch.env };
+  const channelFd = Number.parseInt(guestEnv.NODE_CHANNEL_FD ?? '', 10);
+  const channelSerialization = guestEnv.NODE_CHANNEL_SERIALIZATION_MODE || 'json';
+  delete guestEnv.NODE_CHANNEL_FD;
+  delete guestEnv.NODE_CHANNEL_SERIALIZATION_MODE;
+
+  // Create a runtime with output capture for both console.log AND process.stdout.write
+  const runtime = new Runtime(tree, {
+    cwd: launch.cwd,
+    env: guestEnv,
+    onConsole: (method, consoleArgs) => {
+      const msg = consoleArgs.map(a => String(a)).join(' ') + '\n';
+      if (method === 'error') {
+        appendStderr(msg);
+      } else {
+        appendStdout(msg);
+      }
+    },
+    onStdout: (data: string) => {
+      appendStdout(data);
+    },
+    onStderr: (data: string) => {
+      appendStderr(data);
+    },
+    // The guest's standard input is what the shell put on its fd 0: the text
+    // left of a pipe, or the `stdin` a host gave `container.run`. A held run
+    // (one the host streams and can still feed with `sendStdin`) leaves it
+    // open, as a pipe whose writer has not closed.
+    stdin: typeof launch.stdin === 'string' ? launch.stdin : '',
+    ...(streams?.held || streams?.stdinOpen ? { stdinHeld: true } : {}),
+    ...(streams?.held || streams?.terminal ? { tty: true } : {}),
+    // The numbers this run was started with, so the guest's `process.pid`
+    // is the one its parent's handle carries.
+    ...(runPid(runToken) ? { pid: runPid(runToken)!.pid, ppid: runPid(runToken)!.ppid } : {}),
+  });
+
+  // Override process.exit to resolve the completion promise
+  const proc = runtime.getProcess();
+  // This run's numbers, recorded under its name: a child it spawns reads
+  // them for its own `ppid`, and `process.kill(pid, 0)` asks this registry
+  // whether a pid is a live process.
+  if (runToken !== null) setRunPid(runToken, proc.pid, proc.ppid, { argv: [...launch.argv], cwd: launch.cwd });
+  const releaseRun = runToken === null ? null : __recordRun(runToken, {
+    process: proc,
+    stdout: appendStdout,
+    stderr: appendStderr,
+    pendingTimers: () => pendingGuestTimers(proc),
+    stopTimers: () => stopGuestTimers(proc),
+    reportUncaught: (error: unknown) => __reportUncaughtException(proc, error),
+  });
+  const launchedBefore = __lastLaunchedToken;
+  if (runToken !== null) __setLastLaunchedToken(runToken);
+  let hostReceiptWritten = false;
+  let lastUncaught: unknown;
+  const writeHostReceipt = (kind: 'uncaught' | number, error?: unknown): void => {
+    if (hostReceiptWritten || streams?.stderrIsPipe !== true) return;
+    hostReceiptWritten = true;
+    writePipedEndReceipt(proc.pid, proc.argv0 || 'node', proc.argv[1] ?? '', kind, error);
+  };
+  proc.exit = ((code = 0) => {
+    if (!exitCalled) {
+      exitCalled = true;
+      // As Node takes one: a string from a command line becomes its number.
+      exitCode = __substrateExitCode(code);
+      code = exitCode;
+      // A handled uncaught that then `process.exit(1)` is a normal exit
+      // with code 1. The receipt still names the error the handler saw:
+      // VS Code's host installs `uncaughtException` and exits 1, and the
+      // previous line was `ended 1` with no reason.
+      if (exitCode !== 0) writeHostReceipt(exitCode, lastUncaught);
+      // Node runs a program's `exit` listeners while everything it holds is
+      // still open, and closes the loop's handles after them. Releasing
+      // first closed a forked child's IPC channel before its own exit
+      // listeners ran, and VS Code's file-watcher child -- which pipes its
+      // console over `process.send` and dies of a failed require -- wrote on
+      // the closed channel and took `write EBADF` as its last act.
+      proc.emit('exit', code);
+      exitResolve!(code);
+    }
+    // `process.exit()` ends a Node process and everything it holds; a named
+    // run's servers and timers go with it.
+    if (runToken !== null) { __releaseOwnedServers(runToken); __releaseOwnedHandles(runToken); }
+    // In sync context, throw to stop execution (like real process.exit)
+    // In async context, return silently to avoid unhandled rejections
+    if (syncExecution) {
+      throw new Error(`Process exited with code ${code}`);
+    }
+  }) as (code?: number) => never;
+
+  // Set up process.argv for the script. Node fills argv[0] with the
+  // executable's path, the same value `process.execPath` reports; `argv0`
+  // keeps the original argv[0], the plain word.
+  // An evaluated program has no script: its argv is the executable and the
+  // words after the source, as Node's is.
+  proc.argv = evaluated !== null
+    ? [__substrateExecPath, ...args.slice(first)]
+    : [__substrateExecPath, resolvedPath!, ...args.slice(script + 1)];
+  proc.argv0 = launch.argv[0] ?? 'node';
+  proc.execArgv = execArgv;
+
+  // Whoever writes to this run's fd 0 writes here: a person typing at a held
+  // run's prompt, through `sendStdin`, or a parent writing to the stdin pipe
+  // of a child it spawned.
+  if (streams) streams.stdin = proc.stdin;
+
+  // For long-running commands (watch mode), report as TTY so tools like
+  // vitest set up interactive features (file watching, stdin commands). A
+  // spawned child's stdio is a pipe, as Node's is, and gets none of this.
+  if (streams?.held || streams?.terminal) {
+    proc.stdout.isTTY = true;
+    proc.stderr.isTTY = true;
+    proc.stdin.isTTY = true;
+    proc.stdin.setRawMode = () => proc.stdin;
+  }
+  const terminal = streams?.terminal;
+  const resize = (columns: number, rows: number): void => {
+    for (const stream of [proc.stdout, proc.stderr]) {
+      stream.columns = columns;
+      stream.rows = rows;
+      stream.emit('resize');
+    }
+  };
+  let stopResize: (() => void) | undefined;
+  let inputActive = true;
+  let inputIterator: AsyncIterator<Uint8Array> | undefined;
+  const readableInput = proc.stdin as unknown as { listenerCount(event: string): number; readableLength: number; readableHighWaterMark: number; readableFlowing: boolean | null; _readableState?: { reading?: boolean; needReadable?: boolean } };
+  const inputReading = () => readableInput.readableFlowing === true || readableInput._readableState?.reading === true
+    || readableInput._readableState?.needReadable === true || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0;
+
+  // A child started with a channel wires its own end of it before its
+  // module runs, which is what `lib/internal/process/pre_execution.js` does
+  // in Node and `_forkChild` is the body of. Inside the run, so the pipe is
+  // this run's handle and the descriptor is read against this run's table.
+  if (Number.isInteger(channelFd) && channelFd >= 0 && runToken !== null) {
+    enterRun(runToken, () => { attachChannel(proc, channelFd, channelSerialization); });
+  }
+
+  // A promise rejection nobody handles ends the program, as it ends one in
+  // Node (since 15 an unhandled rejection is an uncaught exception): a guest
+  // listener for `unhandledRejection` on its process takes it, else one for
+  // `uncaughtException` with origin 'unhandledRejection', else the error is
+  // printed to stderr and the program exits 1. It was reported only while
+  // the runner waited on a quiet program, only through a realm's
+  // `unhandledrejection` event (a Node host has none; it reports through
+  // `process`), and never ended the program: vue-pure-admin's mock loader
+  // died in a rejection and the program ended silently with exit 0, where
+  // Node prints the error and exits 1. The report is attached for the whole
+  // run, on whichever surface the realm has.
+  const onUnhandledRejection = (reason: unknown, promise?: Promise<unknown>): void => {
+    if (reason instanceof Error && reason.message.startsWith('Process exited with code')) return;
+    lastUncaught = reason;
+    if (proc.listenerCount('unhandledRejection') > 0) { proc.emit('unhandledRejection', reason, promise); return; }
+    if (proc.listenerCount('uncaughtException') > 0) { proc.emit('uncaughtException', reason, 'unhandledRejection'); return; }
+    const errorMsg = reason instanceof Error ? `${reason.message}\n${reason.stack || ''}` : String(reason);
+    appendStderr(`Error: ${errorMsg}\n`);
+    writeHostReceipt('uncaught', reason);
+    if (exitCalled) return;
+    const wasSync = syncExecution;
+    syncExecution = false;
+    try { proc.exit(1); } finally { syncExecution = wasSync; }
+  };
+  const detachRejections = __listenForUnhandledRejections(proc, onUnhandledRejection,
+    runToken !== null && nodeProcessRealmToken() === runToken);
+
+  // An exception nobody caught ends the program it was thrown in, as it ends
+  // one in Node: a guest listener for `uncaughtException` on its process
+  // takes it, else the stack is printed to this program's stderr and the
+  // program exits 1. Nothing of it reaches the realm. Unreported, a throw
+  // from a timer callback of openvscode-server's reached the worker's global
+  // `error` event, the substrate's container read that as a dead host and
+  // disposed the worker, and every run's writes failed from then on.
+  const onUncaughtException = (error: unknown): void => {
+    if (error instanceof Error && error.message.startsWith('Process exited with code')) return;
+    lastUncaught = error;
+    // A program that set a capture callback takes every uncaught exception
+    // itself, before any listener, which is Node's own order.
+    const capture = __substrateUncaughtCapture();
+    if (capture) { capture(error); return; }
+    if (proc.listenerCount('uncaughtException') > 0) { proc.emit('uncaughtException', error, 'uncaughtException'); return; }
+    appendStderr(`${error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error)}\n`);
+    writeHostReceipt('uncaught', error);
+    if (exitCalled) return;
+    const wasSync = syncExecution;
+    syncExecution = false;
+    try { proc.exit(1); } finally { syncExecution = wasSync; }
+  };
+  const detachUncaught = __onUncaughtException(proc, onUncaughtException);
+  try {
+  // The host's pipe delivers bytes after the entry has attached its reader.
+  // EOF closes that same run's stream, never the most recently started run.
+  if (streams?.stdinStream) {
+    inputIterator = streams.stdinStream[Symbol.asyncIterator]();
+    const input = inputIterator;
+    void (async () => {
+      const push = (chunk: Uint8Array | null) => {
+        if (runToken === null) proc.stdin.push(chunk);
+        else enterRun(runToken, () => proc.stdin.push(chunk));
+      };
+      try {
+        while (inputActive && !streams.signal?.aborted) {
+          // A pipe is read on demand. Bound queued bytes by the Readable's
+          // high-water mark and do not pull a producer nobody consumes.
+          while (inputActive && !streams.signal?.aborted && (!inputReading()
+            || readableInput.readableLength >= readableInput.readableHighWaterMark)) {
+            await new Promise(resolve => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, resolve, 10));
+          }
+          if (!inputActive || streams.signal?.aborted) break;
+          const next = await input.next();
+          if (next.done) break;
+          if (!inputActive || streams.signal?.aborted) break;
+          push(next.value);
+        }
+        if (inputActive && !streams.signal?.aborted) push(null);
+      } catch (error) {
+        if (inputActive) onUncaughtException(error);
+      } finally { streams.stdinOpen = false; }
+    })();
+  }
+  if (terminal) resize(terminal.columns, terminal.rows);
+  stopResize = terminal?.onResize?.((columns, rows) => {
+    if (runToken === null) resize(columns, rows);
+    else enterRun(runToken, () => resize(columns, rows));
+  });
+
+  let entrySettling: Promise<unknown> | undefined;
+  try {
+    // Run the script (synchronous part)
+    // The entry runs AS this run: the token a `spawn` inside it reads is
+    // this program's, not whichever run started last. The engine's storage
+    // carries it into the timers, microtasks and `then` callbacks the entry
+    // schedules from here, so a child spawned later still names its parent.
+    // `-p` prints the completion value of the source, which a direct `eval`
+    // in the module body yields with the body's own `require` in scope.
+    const runEntry = () => evaluated !== null
+      ? runtime.evaluate(
+        evaluated.print ? `console.log(eval(${JSON.stringify(evaluated.source)}));` : evaluated.source,
+        __resolvePath(launch.cwd, '[eval]'),
+      )
+      : runtime.runFile(resolvedPath!);
+    entrySettling = __substratePendingOf(
+      (runToken === null ? runEntry() : enterRun(runToken, runEntry)).exports,
+    );
+  } catch (error) {
+    // process.exit() throws to stop sync execution — this is expected
+    if (error instanceof Error && error.message.startsWith('Process exited with code')) {
+      return { stdout, stderr, exitCode };
+    }
+    // A throw out of the entry is this program's uncaught exception and
+    // goes through the same door as any other: the guest's own
+    // `uncaughtException` listeners, else its stderr and exit 1 -- which
+    // runs its `exit` listeners. Returning a result straight from here
+    // skipped them, and VS Code's file-watcher child, which pipes its
+    // console over IPC and dies of a failed require, never sent the lines
+    // that say why.
+    syncExecution = false;
+    onUncaughtException(error);
+    return { stdout, stderr, exitCode: exitCalled ? exitCode : 1 };
+  } finally {
+    // After runFile returns, switch to async mode (no more throwing from process.exit)
+    syncExecution = false;
+  }
+
+  // If process.exit was called synchronously (but didn't throw for some reason), return
+  if (exitCalled) {
+    return { stdout, stderr, exitCode };
+  }
+
+  // An entry still settling, a top-level `await` in it or in what it
+  // imports, has run when it has settled; one that fails there fails the
+  // program, as Node prints the error and exits 1.
+  // The program may exit before the entry settles, by `process.exit` or a
+  // fatal rejection in the meantime; the run ends at the exit, as Node's
+  // does, and what the entry does after is its own.
+  if (entrySettling) {
+    const settling = entrySettling;
+    try { await Promise.race([settling, exitPromise]); }
+    catch (error) {
+      if (error instanceof Error && error.message.startsWith('Process exited with code')) return { stdout, stderr, exitCode };
+      const errorMsg = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
+      return { stdout, stderr: stderr + `Error: ${errorMsg}\n`, exitCode: 1 };
+    }
+    if (exitCalled) { settling.catch(() => {}); return { stdout, stderr, exitCode }; }
+  }
+
+  // Script returned without calling process.exit().
+  // Heuristic: if we already captured output, the script likely finished synchronously
+  // (e.g. a simple "console.log('hello')" script). Return immediately.
+  // A program that printed and still holds a timer, or a build, is working:
+  // the timers are the engine's own count for this guest, where this asked
+  // an adapter that is gone through an ambient name nothing ever installed.
+  // An active handle keeps Node's loop alive, so a run that owns one is not
+  // idle however long it has been quiet. The engine registers a guest's
+  // servers under this run's name as it opens them, and releases them when
+  // the run ends; counting them here is what a `vite` a guest spawned needs,
+  // which listened, printed, and was cut half a second later with its server
+  // still up. A connected socket is such a handle too, and counting only the
+  // listening ones settled VS Code's extension host — a program whose only
+  // handle is one socket back to the server that forked it and which sets no
+  // timer — as idle, with exit 0, three times over.
+  const __ownsHandles = () => runToken !== null && (__ownedServerPorts(runToken).length > 0 || __ownedHandleCount(runToken) > 0);
+  const __printedThenWorking = () => (streams?.stdinOpen === true && inputReading()) || pendingGuestTimers(proc) > 0 || heldWork().count > 0 || __ownsHandles();
+  if ((stdout.length > 0 || stderr.length > 0) && !__printedThenWorking()) {
+    // Settling the command is host work. Killing guest timers must not
+    // cancel this continuation and leave the command's promise unresolved.
+    await settlePrintedEntry();
+    // Work that began during that tick is the program's still: a build
+    // reached through a dynamic import's chain, a timer the entry set.
+    // vue-pure-admin's mock loader, `import('bundle-import').then(...)`
+    // after one printed line, was cut here with exit 0 before its build
+    // began, where Node's loop runs until nothing is left. Such a program
+    // waits below with the others.
+    if (exitCalled) return { stdout, stderr, exitCode };
+    // A run a host holds under a signal is the host's to end: it reads the
+    // program's servers and work through doors of its own and keeps the
+    // program open by them. Such a run reports settled here, as it did,
+    // once nothing is held; holding it for a pending timer instead made
+    // the substrate's loop take a `vite` quiet during its start for a
+    // finished run and abort it before it listened. A run nobody holds
+    // waits for its timers below, as Node's loop does.
+    if (streams?.held || (!__printedThenWorking() && pendingGuestTimers(proc) === 0)) {
+      return { stdout, stderr, exitCode: typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0 };
+    }
+  }
+
+  // No output yet — script likely has async work (e.g. vitest test runner).
+  // Wait for process.exit() or until output stabilizes.
+
+  // Listen for forked child exits to shorten the idle timeout.
+  // Many CLI tools (vitest, jest, etc.) fork workers and exit shortly after
+  // all children complete. We use a shorter timeout once children are done.
+  let childrenExited = false;
+  const prevChildExitHandler = _onForkedChildExit;
+  _onForkedChildExit = () => {
+    if (_activeForkedChildren <= 0) childrenExited = true;
+    prevChildExitHandler?.();
+  };
+
+  try {
+    // Poll until process.exit is called, output stabilizes, or we time out
+    const MAX_TOTAL_MS = 60000;
+    const IDLE_TIMEOUT_MS = 500;
+    const SILENT_IDLE_TIMEOUT_MS = 2000;
+    const POST_CHILD_EXIT_IDLE_MS = 100; // short timeout after children finish
+    const CHECK_MS = 50;
+    const startTime = Date.now();
+    let lastOutputLen = stdout.length + stderr.length;
+    let idleMs = 0;
+    // A timer the guest still holds is work in Node's loop, whether or not
+    // the program has printed; so is a handle it has open.
+    const stillWorking = (): boolean => (streams?.stdinOpen === true && inputReading()) || pendingGuestTimers(proc) > 0 || __ownsHandles();
+
+    // When an abort signal is present (e.g. watch mode), don't apply idle timeout —
+    // only exit when aborted or process.exit is called.
+    const isLongRunning = !!streams?.held;
+
+    while (!exitCalled) {
+      // Check abort signal for long-running commands (watch mode)
+      if (streams?.signal?.aborted) break;
+
+      // Check if exitPromise resolved (non-blocking)
+      const raceResult = await Promise.race([
+        exitPromise.then(() => 'exit' as const),
+        new Promise<'tick'>(r => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, () => r('tick'), CHECK_MS)),
+      ]);
+
+      if (raceResult === 'exit' || exitCalled) break;
+      if (streams?.signal?.aborted) break;
+
+      const currentLen = stdout.length + stderr.length;
+      if (currentLen > lastOutputLen) {
+        // New output — reset idle timer
+        lastOutputLen = currentLen;
+        idleMs = 0;
+      } else {
+        idleMs += CHECK_MS;
+      }
+
+      // Use shorter idle timeout once all forked children have exited
+      // Skip idle timeout for long-running commands (watch mode)
+      if (!isLongRunning) {
+        const effectiveIdle = childrenExited ? POST_CHILD_EXIT_IDLE_MS : IDLE_TIMEOUT_MS;
+        if (heldWork().count > 0) idleMs = 0;
+        // A program ends when its loop has nothing left, in Node whether or
+        // not it printed. The break waited for output, so a program that
+        // wrote nothing, a passing test of Node's own suite, waited the
+        // whole minute. A silent program that has been idle for a while,
+        // with no build held and no timer of its own pending, is done; the
+        // longer wait is for a start that is quiet while it fetches, which
+        // the engine cannot yet see as work.
+        const silentIdle = SILENT_IDLE_TIMEOUT_MS;
+        if (lastOutputLen > 0 && !stillWorking() && idleMs >= effectiveIdle) break;
+        if (lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) break;
+      }
+
+      // The hard timeout is for a program whose work the engine cannot see:
+      // a start that is quiet while it fetches, a loop with nothing in the
+      // engine's own registries. A run that still holds a handle or a timer
+      // is not that -- Node's loop runs while one is open, for as long as it
+      // is open -- and cutting it at a minute ended a forked child that was
+      // a server, which is every extension host and every pty host. Work the
+      // host holds for it (a build, a pre-bundle) is seen work too: a dev
+      // server whose start passed a minute mid pre-bundle was cut with exit 0.
+      if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) break;
+    }
+
+    return { stdout, stderr, exitCode: exitCalled ? exitCode : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
+  } finally {
+    if (streams) streams.stdin = null;
+    _onForkedChildExit = prevChildExitHandler;
+  }
+  } finally {
+    detachRejections();
+    detachUncaught();
+    inputActive = false;
+    try { void Promise.resolve(inputIterator?.return?.()).catch(() => {}); } catch { /* producer cleanup cannot prevent process cleanup */ }
+    try { stopResize?.(); } catch { /* host cleanup cannot prevent handle release */ }
+    // A process that ends releases its listening sockets, whatever ended it:
+    // a return from the entry, a throw, an exit. Only `process.exit` released
+    // them here, so `vite --host` — which opened 5173 and then died at startup
+    // with an ESLint error, exit 1 — left 5173 in the registry with nothing
+    // behind it, and the page went on previewing a port no process held.
+    // Safe twice: a run that exited already emptied its own entries.
+    if (runToken !== null) { __releaseOwnedServers(runToken, false); __releaseOwnedHandles(runToken); }
+    // A run that has ended is no longer a process: the number it wrote into
+    // a lock file answers ESRCH from here on, which is how a stale lock is
+    // stolen rather than waited on.
+    if (runToken !== null) forgetRunPid(runToken);
+    // A program that has ended holds no timers, as an ended Node process
+    // holds none. `process.exit` asked for them to be stopped on a tick of
+    // its own, and the run was taken out of the registry here before that
+    // tick came, so the stop found nothing: an `setInterval` whose callback
+    // threw ended its program and then went on firing forever, into a run
+    // that no longer had anywhere to report an exception, and out to the
+    // realm. The run's own timers stop here, while the process is still in
+    // hand; the scheduled stop then finds nothing left to do.
+    stopGuestTimers(proc);
+    releaseRun?.();
+    // A run that has ended owns nothing more: a server a later, unnamed run
+    // opens is nobody's, not the last named run's.
+    if (runToken !== null && __lastLaunchedToken === runToken) __setLastLaunchedToken(launchedBefore);
+  }
+}
+
 export function initChildProcess(vfs: VirtualFS): void {
   const existing = shells.get(vfs);
   if (existing) {
@@ -407,622 +1043,15 @@ export function initChildProcess(vfs: VirtualFS): void {
   if (typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined' || typeof (globalThis as Record<string, unknown>).document !== 'undefined') warmSyncChild();
   vfsAdapter = new VirtualFSAdapter(tree);
 
-  // Create custom 'node' command that runs JS files using the Runtime
-  /**
-   * Hears a realm's unhandled promise rejections for the length of a run and
-   * answers a detach. A browser realm raises `unhandledrejection` on its
-   * global (the default, a console line, is prevented: the run reports it);
-   * a Node host has no such event and reports through its own `process`,
-   * the one the host had before any guest's took the global name.
-   *
-   * Both surfaces carry the promise that rejected, and the report is given it:
-   * Node's `unhandledRejection` listener is called `(reason, promise)`, and a
-   * listener that uses its second argument is ordinary. openvscode-server's
-   * own (`out/server-main.js`) keeps the promise and calls `promise.catch` a
-   * second later; under an engine that handed it `undefined` every rejection
-   * of the server's became `TypeError: Cannot read properties of undefined
-   * (reading 'catch')` inside a timer, 59 of them in one boot.
-   */
-  const __listenForUnhandledRejections = (owner: object, report: (reason: unknown, promise?: Promise<unknown>) => void, ownsRealm: boolean): (() => void) => {
-    if (typeof globalThis.addEventListener === 'function') {
-      const target = globalThis as unknown as EventTarget;
-      const listener = (event: Event) => {
-        const rejection = event as PromiseRejectionEvent;
-        // An admitted process worker has exactly one Node owner. Shared
-        // embeddings still require provenance and never broadcast failures.
-        if (!ownsRealm && promiseOwner(rejection.promise) !== owner) return;
-        event.preventDefault();
-        report(rejection.reason, rejection.promise);
-      };
-      target.addEventListener('unhandledrejection', listener);
-      return () => target.removeEventListener('unhandledrejection', listener);
-    }
-    const host = __hostProcess;
-    if (host) {
-      const listener = (reason: unknown, promise?: Promise<unknown>) => {
-        if (ownsRealm || promiseOwner(promise) === owner) report(reason, promise);
-      };
-      host.on('unhandledRejection', listener);
-      return () => host.off('unhandledRejection', listener);
-    }
-    return () => {};
-  };
-  const nodeCommand = defineCommand('node', async (args, ctx) => {
-    if (!tree) {
-      return { stdout: '', stderr: 'VFS not initialized\n', exitCode: 1 };
-    }
-
-    // Capture this run's name, streams and cancellation before another Node
-    // entry can start. Forks and shell entries reach this same dispatch seam.
-    const parentToken = runTokenOf(ctx);
-    // A `node` a shell runs is a process of its own unless it is the run
-    // itself: the first `node` of a run that is not a shell's child is the
-    // run (the CMD `node server.js`, the page's `node -e`), and every other
-    // one, a line of a start script, the second command of a `-c` line, a
-    // step of a `sh file` child, gets a child token under the run's pid,
-    // the run's streams, and its own admission at the host. Admitted under
-    // the shell's own token, its exit was read as the shell's: a script
-    // ended at its first `node` line with nothing after it (measured
-    // 2026-09-28: `sh start.sh` printed its first step and stopped).
-    const nested = parentToken !== null && (shellRuns.has(parentToken) || hostedNodes.has(parentToken));
-    const runToken = nested ? nestedNodeToken(parentToken!, args, ctx.cwd) : parentToken;
-    const streams = runToken === null ? undefined : runStreamsFor(runToken);
-    const processHost = nodeProcessHostFor(runToken);
-    if (processHost && runToken !== null) {
-      if (!nested) hostedNodes.add(runToken);
-      try {
-        return await runHostedNode(processHost, {
-          token: runToken, argv: [...args], cwd: ctx.cwd, filesystem: tree, env: guestEnvironmentOf(ctx),
-          ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}), ...(streams ? { streams } : {}),
-        });
-      } finally {
-        if (nested) releaseRunStreams(runToken);
-      }
-    }
-
-    // Node reads its own options before the script: `node --turbo-fast-api-calls
-    // file.js a b` runs file.js with `a b`, and the options it were given are
-    // its `execArgv`. Node's own suite spawns children that way, and the
-    // engine took the first option for the script and died on
-    // "Cannot find module '--turbo-fast-api-calls'".
-    //
-    // An option may also take its value as the next word (`node --conditions
-    // node child.js`); NODE_VALUE_OPTIONS names those, so the option loop
-    // consumes the value and the script is the first word after the options,
-    // as Node's parser has it. `node missing.js` says which module it cannot
-    // find.
-    //
-    // The path on a `node` command line is a path, and it is resolved as
-    // `require` resolves one: the file itself, then `.js`, `.mjs`, `.cjs`,
-    // `.json`, then a directory's `package.json` `main` or its `index.js`.
-    // `fork` used to do this for itself; `fork` is Node's own file now and
-    // hands the module path straight to `node`, so the resolution belongs
-    // where a path on a command line is read. Opened literally, the path
-    // openvscode-server forks its pty host with, `<server>/out/bootstrap-fork`
-    // for the file `bootstrap-fork.js`, was ENOENT and the pty host died at
-    // its first fork.
-    const execArgv: string[] = [];
-    let first = 0;
-    // `-e`/`--eval` and `-p`/`--print` carry the program itself as their
-    // value: there is no script, and every word after the source is the
-    // program's argument. Taken for an option, the source was read as the
-    // script's path ("Cannot find module '/workspace/console.log(1+1)'").
-    let evaluated: { source: string; print: boolean } | null = null;
-    while (first < args.length && args[first]!.startsWith('-') && args[first] !== '-' && args[first] !== '--') {
-      const option = args[first]!;
-      const inline = /^(--eval|--print)=([\s\S]*)$/.exec(option);
-      if (inline) {
-        evaluated = { source: inline[2]!, print: inline[1] === '--print' };
-        execArgv.push(option);
-        first += 1;
-        break;
-      }
-      if (option === '-e' || option === '--eval' || option === '-p' || option === '--print' || option === '-pe') {
-        if (first + 1 >= args.length) return { stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 };
-        evaluated = { source: args[first + 1]!, print: option.includes('p') };
-        execArgv.push(option, args[first + 1]!);
-        first += 2;
-        break;
-      }
-      // An option that takes its value as the next word consumes it here, as Node's option parser does.
-      if (NODE_VALUE_OPTIONS.has(option) && first + 1 < args.length) {
-        execArgv.push(option, args[first + 1]!);
-        first += 2;
-        continue;
-      }
-      execArgv.push(option);
-      first += 1;
-    }
-    if (args[first] === '--') first += 1;
-    const resolver = __nodeResolverFor(tree, 'runtime');
-    const fileNamed = (word: string): string | null => {
-      const requested = __resolvePath(ctx.cwd, word);
-      const found = resolver.resolve(requested, ctx.cwd);
-      if (found !== null && tree.existsSync(found)) return found;
-      return tree.existsSync(requested) ? requested : null;
-    };
-    // The script is the first word after the options, as in Node; a later word that happens to name a file is an
-    // argument (`node <next-bin> start apps/web` ran the directory apps/web when the bin did not resolve).
-    const script = first;
-    const resolvedPath: string | null = evaluated === null && args[script] ? fileNamed(args[script]!) : null;
-    if (evaluated === null && !args[script]) {
-      return { stdout: '', stderr: 'Usage: node <script.js> [args...]\n', exitCode: 1 };
-    }
-    if (evaluated === null && resolvedPath === null) {
-      return { stdout: '', stderr: `Error: Cannot find module '${__resolvePath(ctx.cwd, args[script]!)}'\n`, exitCode: 1 };
-    }
-
-    let stdout = '';
-    let stderr = '';
-
-    // Track whether process.exit() was called
-    let exitCalled = false;
-    let exitCode = 0;
-    let syncExecution = true;
-    let exitResolve: ((code: number) => void) | null = null;
-    const exitPromise = new Promise<number>((resolve) => { exitResolve = resolve; });
-
-    // Helper to append to stdout, also streaming if configured
-    // A process that has exited writes nothing more, as Node's cannot: a
-    // continuation of the guest that runs on after its exit keeps its output
-    // to itself.
-    const appendStdout = (data: string) => {
-      if (exitCalled) return;
-      stdout += data;
-      streams?.onStdout?.(data);
-    };
-    const appendStderr = (data: string) => {
-      if (exitCalled) return;
-      stderr += data;
-      streams?.onStderr?.(data);
-    };
-
-    // A child started with an IPC channel is told its descriptor in its
-    // environment, exactly as Node tells one; the variables are taken out
-    // before the guest sees them, as Node's own bootstrap deletes them, so a
-    // grandchild does not inherit a channel that is not its own.
-    const guestEnv = guestEnvironmentOf(ctx);
-    const channelFd = Number.parseInt(guestEnv.NODE_CHANNEL_FD ?? '', 10);
-    const channelSerialization = guestEnv.NODE_CHANNEL_SERIALIZATION_MODE || 'json';
-    delete guestEnv.NODE_CHANNEL_FD;
-    delete guestEnv.NODE_CHANNEL_SERIALIZATION_MODE;
-
-    // Create a runtime with output capture for both console.log AND process.stdout.write
-    const runtime = new Runtime(tree, {
-      cwd: ctx.cwd,
-      env: guestEnv,
-      onConsole: (method, consoleArgs) => {
-        const msg = consoleArgs.map(a => String(a)).join(' ') + '\n';
-        if (method === 'error') {
-          appendStderr(msg);
-        } else {
-          appendStdout(msg);
-        }
-      },
-      onStdout: (data: string) => {
-        appendStdout(data);
-      },
-      onStderr: (data: string) => {
-        appendStderr(data);
-      },
-      // The guest's standard input is what the shell put on its fd 0: the text
-      // left of a pipe, or the `stdin` a host gave `container.run`. A held run
-      // (one the host streams and can still feed with `sendStdin`) leaves it
-      // open, as a pipe whose writer has not closed.
-      stdin: typeof ctx.stdin === 'string' ? ctx.stdin : '',
-      ...(streams?.held || streams?.stdinOpen ? { stdinHeld: true } : {}),
-      ...(streams?.held || streams?.terminal ? { tty: true } : {}),
-      // The numbers this run was started with, so the guest's `process.pid`
-      // is the one its parent's handle carries.
-      ...(runPid(runToken) ? { pid: runPid(runToken)!.pid, ppid: runPid(runToken)!.ppid } : {}),
-    });
-
-    // Override process.exit to resolve the completion promise
-    const proc = runtime.getProcess();
-    // This run's numbers, recorded under its name: a child it spawns reads
-    // them for its own `ppid`, and `process.kill(pid, 0)` asks this registry
-    // whether a pid is a live process.
-    if (runToken !== null) setRunPid(runToken, proc.pid, proc.ppid, { argv: ['node', ...args], cwd: ctx.cwd });
-    const releaseRun = runToken === null ? null : __recordRun(runToken, {
-      process: proc,
-      stdout: appendStdout,
-      stderr: appendStderr,
-      pendingTimers: () => pendingGuestTimers(proc),
-      stopTimers: () => stopGuestTimers(proc),
-      reportUncaught: (error: unknown) => __reportUncaughtException(proc, error),
-    });
-    const launchedBefore = __lastLaunchedToken;
-    if (runToken !== null) __setLastLaunchedToken(runToken);
-    let hostReceiptWritten = false;
-    let lastUncaught: unknown;
-    const writeHostReceipt = (kind: 'uncaught' | number, error?: unknown): void => {
-      if (hostReceiptWritten || streams?.stderrIsPipe !== true) return;
-      hostReceiptWritten = true;
-      writePipedEndReceipt(proc.pid, proc.argv0 || 'node', proc.argv[1] ?? '', kind, error);
-    };
-    proc.exit = ((code = 0) => {
-      if (!exitCalled) {
-        exitCalled = true;
-        // As Node takes one: a string from a command line becomes its number.
-        exitCode = __substrateExitCode(code);
-        code = exitCode;
-        // A handled uncaught that then `process.exit(1)` is a normal exit
-        // with code 1. The receipt still names the error the handler saw:
-        // VS Code's host installs `uncaughtException` and exits 1, and the
-        // previous line was `ended 1` with no reason.
-        if (exitCode !== 0) writeHostReceipt(exitCode, lastUncaught);
-        // Node runs a program's `exit` listeners while everything it holds is
-        // still open, and closes the loop's handles after them. Releasing
-        // first closed a forked child's IPC channel before its own exit
-        // listeners ran, and VS Code's file-watcher child -- which pipes its
-        // console over `process.send` and dies of a failed require -- wrote on
-        // the closed channel and took `write EBADF` as its last act.
-        proc.emit('exit', code);
-        exitResolve!(code);
-      }
-      // `process.exit()` ends a Node process and everything it holds; a named
-      // run's servers and timers go with it.
-      if (runToken !== null) { __releaseOwnedServers(runToken); __releaseOwnedHandles(runToken); }
-      // In sync context, throw to stop execution (like real process.exit)
-      // In async context, return silently to avoid unhandled rejections
-      if (syncExecution) {
-        throw new Error(`Process exited with code ${code}`);
-      }
-    }) as (code?: number) => never;
-
-    // Set up process.argv for the script. Node fills argv[0] with the
-    // executable's path, the same value `process.execPath` reports; `argv0`
-    // keeps the original argv[0], the plain word.
-    // An evaluated program has no script: its argv is the executable and the
-    // words after the source, as Node's is.
-    proc.argv = evaluated !== null
-      ? [__substrateExecPath, ...args.slice(first)]
-      : [__substrateExecPath, resolvedPath!, ...args.slice(script + 1)];
-    proc.argv0 = 'node';
-    proc.execArgv = execArgv;
-
-    // Whoever writes to this run's fd 0 writes here: a person typing at a held
-    // run's prompt, through `sendStdin`, or a parent writing to the stdin pipe
-    // of a child it spawned.
-    if (streams) streams.stdin = proc.stdin;
-
-    // For long-running commands (watch mode), report as TTY so tools like
-    // vitest set up interactive features (file watching, stdin commands). A
-    // spawned child's stdio is a pipe, as Node's is, and gets none of this.
-    if (streams?.held || streams?.terminal) {
-      proc.stdout.isTTY = true;
-      proc.stderr.isTTY = true;
-      proc.stdin.isTTY = true;
-      proc.stdin.setRawMode = () => proc.stdin;
-    }
-    const terminal = streams?.terminal;
-    const resize = (columns: number, rows: number): void => {
-      for (const stream of [proc.stdout, proc.stderr]) {
-        stream.columns = columns;
-        stream.rows = rows;
-        stream.emit('resize');
-      }
-    };
-    let stopResize: (() => void) | undefined;
-    let inputActive = true;
-    let inputIterator: AsyncIterator<Uint8Array> | undefined;
-    const readableInput = proc.stdin as unknown as { listenerCount(event: string): number; readableLength: number; readableHighWaterMark: number; readableFlowing: boolean | null; _readableState?: { reading?: boolean; needReadable?: boolean } };
-    const inputReading = () => readableInput.readableFlowing === true || readableInput._readableState?.reading === true
-      || readableInput._readableState?.needReadable === true || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0;
-
-    // A child started with a channel wires its own end of it before its
-    // module runs, which is what `lib/internal/process/pre_execution.js` does
-    // in Node and `_forkChild` is the body of. Inside the run, so the pipe is
-    // this run's handle and the descriptor is read against this run's table.
-    if (Number.isInteger(channelFd) && channelFd >= 0 && runToken !== null) {
-      enterRun(runToken, () => { attachChannel(proc, channelFd, channelSerialization); });
-    }
-
-    // A promise rejection nobody handles ends the program, as it ends one in
-    // Node (since 15 an unhandled rejection is an uncaught exception): a guest
-    // listener for `unhandledRejection` on its process takes it, else one for
-    // `uncaughtException` with origin 'unhandledRejection', else the error is
-    // printed to stderr and the program exits 1. It was reported only while
-    // the runner waited on a quiet program, only through a realm's
-    // `unhandledrejection` event (a Node host has none; it reports through
-    // `process`), and never ended the program: vue-pure-admin's mock loader
-    // died in a rejection and the program ended silently with exit 0, where
-    // Node prints the error and exits 1. The report is attached for the whole
-    // run, on whichever surface the realm has.
-    const onUnhandledRejection = (reason: unknown, promise?: Promise<unknown>): void => {
-      if (reason instanceof Error && reason.message.startsWith('Process exited with code')) return;
-      lastUncaught = reason;
-      if (proc.listenerCount('unhandledRejection') > 0) { proc.emit('unhandledRejection', reason, promise); return; }
-      if (proc.listenerCount('uncaughtException') > 0) { proc.emit('uncaughtException', reason, 'unhandledRejection'); return; }
-      const errorMsg = reason instanceof Error ? `${reason.message}\n${reason.stack || ''}` : String(reason);
-      appendStderr(`Error: ${errorMsg}\n`);
-      writeHostReceipt('uncaught', reason);
-      if (exitCalled) return;
-      const wasSync = syncExecution;
-      syncExecution = false;
-      try { proc.exit(1); } finally { syncExecution = wasSync; }
-    };
-    const detachRejections = __listenForUnhandledRejections(proc, onUnhandledRejection,
-      runToken !== null && nodeProcessRealmToken() === runToken);
-
-    // An exception nobody caught ends the program it was thrown in, as it ends
-    // one in Node: a guest listener for `uncaughtException` on its process
-    // takes it, else the stack is printed to this program's stderr and the
-    // program exits 1. Nothing of it reaches the realm. Unreported, a throw
-    // from a timer callback of openvscode-server's reached the worker's global
-    // `error` event, the substrate's container read that as a dead host and
-    // disposed the worker, and every run's writes failed from then on.
-    const onUncaughtException = (error: unknown): void => {
-      if (error instanceof Error && error.message.startsWith('Process exited with code')) return;
-      lastUncaught = error;
-      // A program that set a capture callback takes every uncaught exception
-      // itself, before any listener, which is Node's own order.
-      const capture = __substrateUncaughtCapture();
-      if (capture) { capture(error); return; }
-      if (proc.listenerCount('uncaughtException') > 0) { proc.emit('uncaughtException', error, 'uncaughtException'); return; }
-      appendStderr(`${error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error)}\n`);
-      writeHostReceipt('uncaught', error);
-      if (exitCalled) return;
-      const wasSync = syncExecution;
-      syncExecution = false;
-      try { proc.exit(1); } finally { syncExecution = wasSync; }
-    };
-    const detachUncaught = __onUncaughtException(proc, onUncaughtException);
-    try {
-    // The host's pipe delivers bytes after the entry has attached its reader.
-    // EOF closes that same run's stream, never the most recently started run.
-    if (streams?.stdinStream) {
-      inputIterator = streams.stdinStream[Symbol.asyncIterator]();
-      const input = inputIterator;
-      void (async () => {
-        const push = (chunk: Uint8Array | null) => {
-          if (runToken === null) proc.stdin.push(chunk);
-          else enterRun(runToken, () => proc.stdin.push(chunk));
-        };
-        try {
-          while (inputActive && !streams.signal?.aborted) {
-            // A pipe is read on demand. Bound queued bytes by the Readable's
-            // high-water mark and do not pull a producer nobody consumes.
-            while (inputActive && !streams.signal?.aborted && (!inputReading()
-              || readableInput.readableLength >= readableInput.readableHighWaterMark)) {
-              await new Promise(resolve => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, resolve, 10));
-            }
-            if (!inputActive || streams.signal?.aborted) break;
-            const next = await input.next();
-            if (next.done) break;
-            if (!inputActive || streams.signal?.aborted) break;
-            push(next.value);
-          }
-          if (inputActive && !streams.signal?.aborted) push(null);
-        } catch (error) {
-          if (inputActive) onUncaughtException(error);
-        } finally { streams.stdinOpen = false; }
-      })();
-    }
-    if (terminal) resize(terminal.columns, terminal.rows);
-    stopResize = terminal?.onResize?.((columns, rows) => {
-      if (runToken === null) resize(columns, rows);
-      else enterRun(runToken, () => resize(columns, rows));
-    });
-
-    let entrySettling: Promise<unknown> | undefined;
-    try {
-      // Run the script (synchronous part)
-      // The entry runs AS this run: the token a `spawn` inside it reads is
-      // this program's, not whichever run started last. The engine's storage
-      // carries it into the timers, microtasks and `then` callbacks the entry
-      // schedules from here, so a child spawned later still names its parent.
-      // `-p` prints the completion value of the source, which a direct `eval`
-      // in the module body yields with the body's own `require` in scope.
-      const runEntry = () => evaluated !== null
-        ? runtime.evaluate(
-          evaluated.print ? `console.log(eval(${JSON.stringify(evaluated.source)}));` : evaluated.source,
-          __resolvePath(ctx.cwd, '[eval]'),
-        )
-        : runtime.runFile(resolvedPath!);
-      entrySettling = __substratePendingOf(
-        (runToken === null ? runEntry() : enterRun(runToken, runEntry)).exports,
-      );
-    } catch (error) {
-      // process.exit() throws to stop sync execution — this is expected
-      if (error instanceof Error && error.message.startsWith('Process exited with code')) {
-        return { stdout, stderr, exitCode };
-      }
-      // A throw out of the entry is this program's uncaught exception and
-      // goes through the same door as any other: the guest's own
-      // `uncaughtException` listeners, else its stderr and exit 1 -- which
-      // runs its `exit` listeners. Returning a result straight from here
-      // skipped them, and VS Code's file-watcher child, which pipes its
-      // console over IPC and dies of a failed require, never sent the lines
-      // that say why.
-      syncExecution = false;
-      onUncaughtException(error);
-      return { stdout, stderr, exitCode: exitCalled ? exitCode : 1 };
-    } finally {
-      // After runFile returns, switch to async mode (no more throwing from process.exit)
-      syncExecution = false;
-    }
-
-    // If process.exit was called synchronously (but didn't throw for some reason), return
-    if (exitCalled) {
-      return { stdout, stderr, exitCode };
-    }
-
-    // An entry still settling, a top-level `await` in it or in what it
-    // imports, has run when it has settled; one that fails there fails the
-    // program, as Node prints the error and exits 1.
-    // The program may exit before the entry settles, by `process.exit` or a
-    // fatal rejection in the meantime; the run ends at the exit, as Node's
-    // does, and what the entry does after is its own.
-    if (entrySettling) {
-      const settling = entrySettling;
-      try { await Promise.race([settling, exitPromise]); }
-      catch (error) {
-        if (error instanceof Error && error.message.startsWith('Process exited with code')) return { stdout, stderr, exitCode };
-        const errorMsg = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
-        return { stdout, stderr: stderr + `Error: ${errorMsg}\n`, exitCode: 1 };
-      }
-      if (exitCalled) { settling.catch(() => {}); return { stdout, stderr, exitCode }; }
-    }
-
-    // Script returned without calling process.exit().
-    // Heuristic: if we already captured output, the script likely finished synchronously
-    // (e.g. a simple "console.log('hello')" script). Return immediately.
-    // A program that printed and still holds a timer, or a build, is working:
-    // the timers are the engine's own count for this guest, where this asked
-    // an adapter that is gone through an ambient name nothing ever installed.
-    // An active handle keeps Node's loop alive, so a run that owns one is not
-    // idle however long it has been quiet. The engine registers a guest's
-    // servers under this run's name as it opens them, and releases them when
-    // the run ends; counting them here is what a `vite` a guest spawned needs,
-    // which listened, printed, and was cut half a second later with its server
-    // still up. A connected socket is such a handle too, and counting only the
-    // listening ones settled VS Code's extension host — a program whose only
-    // handle is one socket back to the server that forked it and which sets no
-    // timer — as idle, with exit 0, three times over.
-    const __ownsHandles = () => runToken !== null && (__ownedServerPorts(runToken).length > 0 || __ownedHandleCount(runToken) > 0);
-    const __printedThenWorking = () => (streams?.stdinOpen === true && inputReading()) || pendingGuestTimers(proc) > 0 || heldWork().count > 0 || __ownsHandles();
-    if ((stdout.length > 0 || stderr.length > 0) && !__printedThenWorking()) {
-      // Settling the command is host work. Killing guest timers must not
-      // cancel this continuation and leave the command's promise unresolved.
-      await settlePrintedEntry();
-      // Work that began during that tick is the program's still: a build
-      // reached through a dynamic import's chain, a timer the entry set.
-      // vue-pure-admin's mock loader, `import('bundle-import').then(...)`
-      // after one printed line, was cut here with exit 0 before its build
-      // began, where Node's loop runs until nothing is left. Such a program
-      // waits below with the others.
-      if (exitCalled) return { stdout, stderr, exitCode };
-      // A run a host holds under a signal is the host's to end: it reads the
-      // program's servers and work through doors of its own and keeps the
-      // program open by them. Such a run reports settled here, as it did,
-      // once nothing is held; holding it for a pending timer instead made
-      // the substrate's loop take a `vite` quiet during its start for a
-      // finished run and abort it before it listened. A run nobody holds
-      // waits for its timers below, as Node's loop does.
-      if (streams?.held || (!__printedThenWorking() && pendingGuestTimers(proc) === 0)) {
-        return { stdout, stderr, exitCode: typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0 };
-      }
-    }
-
-    // No output yet — script likely has async work (e.g. vitest test runner).
-    // Wait for process.exit() or until output stabilizes.
-
-    // Listen for forked child exits to shorten the idle timeout.
-    // Many CLI tools (vitest, jest, etc.) fork workers and exit shortly after
-    // all children complete. We use a shorter timeout once children are done.
-    let childrenExited = false;
-    const prevChildExitHandler = _onForkedChildExit;
-    _onForkedChildExit = () => {
-      if (_activeForkedChildren <= 0) childrenExited = true;
-      prevChildExitHandler?.();
-    };
-
-    try {
-      // Poll until process.exit is called, output stabilizes, or we time out
-      const MAX_TOTAL_MS = 60000;
-      const IDLE_TIMEOUT_MS = 500;
-      const SILENT_IDLE_TIMEOUT_MS = 2000;
-      const POST_CHILD_EXIT_IDLE_MS = 100; // short timeout after children finish
-      const CHECK_MS = 50;
-      const startTime = Date.now();
-      let lastOutputLen = stdout.length + stderr.length;
-      let idleMs = 0;
-      // A timer the guest still holds is work in Node's loop, whether or not
-      // the program has printed; so is a handle it has open.
-      const stillWorking = (): boolean => (streams?.stdinOpen === true && inputReading()) || pendingGuestTimers(proc) > 0 || __ownsHandles();
-
-      // When an abort signal is present (e.g. watch mode), don't apply idle timeout —
-      // only exit when aborted or process.exit is called.
-      const isLongRunning = !!streams?.held;
-
-      while (!exitCalled) {
-        // Check abort signal for long-running commands (watch mode)
-        if (streams?.signal?.aborted) break;
-
-        // Check if exitPromise resolved (non-blocking)
-        const raceResult = await Promise.race([
-          exitPromise.then(() => 'exit' as const),
-          new Promise<'tick'>(r => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, () => r('tick'), CHECK_MS)),
-        ]);
-
-        if (raceResult === 'exit' || exitCalled) break;
-        if (streams?.signal?.aborted) break;
-
-        const currentLen = stdout.length + stderr.length;
-        if (currentLen > lastOutputLen) {
-          // New output — reset idle timer
-          lastOutputLen = currentLen;
-          idleMs = 0;
-        } else {
-          idleMs += CHECK_MS;
-        }
-
-        // Use shorter idle timeout once all forked children have exited
-        // Skip idle timeout for long-running commands (watch mode)
-        if (!isLongRunning) {
-          const effectiveIdle = childrenExited ? POST_CHILD_EXIT_IDLE_MS : IDLE_TIMEOUT_MS;
-          if (heldWork().count > 0) idleMs = 0;
-          // A program ends when its loop has nothing left, in Node whether or
-          // not it printed. The break waited for output, so a program that
-          // wrote nothing, a passing test of Node's own suite, waited the
-          // whole minute. A silent program that has been idle for a while,
-          // with no build held and no timer of its own pending, is done; the
-          // longer wait is for a start that is quiet while it fetches, which
-          // the engine cannot yet see as work.
-          const silentIdle = SILENT_IDLE_TIMEOUT_MS;
-          if (lastOutputLen > 0 && !stillWorking() && idleMs >= effectiveIdle) break;
-          if (lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) break;
-        }
-
-        // The hard timeout is for a program whose work the engine cannot see:
-        // a start that is quiet while it fetches, a loop with nothing in the
-        // engine's own registries. A run that still holds a handle or a timer
-        // is not that -- Node's loop runs while one is open, for as long as it
-        // is open -- and cutting it at a minute ended a forked child that was
-        // a server, which is every extension host and every pty host. Work the
-        // host holds for it (a build, a pre-bundle) is seen work too: a dev
-        // server whose start passed a minute mid pre-bundle was cut with exit 0.
-        if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) break;
-      }
-
-      return { stdout, stderr, exitCode: exitCalled ? exitCode : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
-    } finally {
-      if (streams) streams.stdin = null;
-      _onForkedChildExit = prevChildExitHandler;
-    }
-    } finally {
-      detachRejections();
-      detachUncaught();
-      inputActive = false;
-      try { void Promise.resolve(inputIterator?.return?.()).catch(() => {}); } catch { /* producer cleanup cannot prevent process cleanup */ }
-      try { stopResize?.(); } catch { /* host cleanup cannot prevent handle release */ }
-      // A process that ends releases its listening sockets, whatever ended it:
-      // a return from the entry, a throw, an exit. Only `process.exit` released
-      // them here, so `vite --host` — which opened 5173 and then died at startup
-      // with an ESLint error, exit 1 — left 5173 in the registry with nothing
-      // behind it, and the page went on previewing a port no process held.
-      // Safe twice: a run that exited already emptied its own entries.
-      if (runToken !== null) { __releaseOwnedServers(runToken, false); __releaseOwnedHandles(runToken); }
-      // A run that has ended is no longer a process: the number it wrote into
-      // a lock file answers ESRCH from here on, which is how a stale lock is
-      // stolen rather than waited on.
-      if (runToken !== null) forgetRunPid(runToken);
-      // A program that has ended holds no timers, as an ended Node process
-      // holds none. `process.exit` asked for them to be stopped on a tick of
-      // its own, and the run was taken out of the registry here before that
-      // tick came, so the stop found nothing: an `setInterval` whose callback
-      // threw ended its program and then went on firing forever, into a run
-      // that no longer had anywhere to report an exception, and out to the
-      // realm. The run's own timers stop here, while the process is still in
-      // hand; the scheduled stop then finds nothing left to do.
-      stopGuestTimers(proc);
-      releaseRun?.();
-      // A run that has ended owns nothing more: a server a later, unnamed run
-      // opens is nobody's, not the last named run's.
-      if (runToken !== null && __lastLaunchedToken === runToken) __setLastLaunchedToken(launchedBefore);
-    }
-  });
+  // The shell's `node` is the engine's Node started from the words the shell
+  // parsed; `launchNode` is the one start, which `container.runNode` shares.
+  const nodeCommand = defineCommand('node', (args, ctx) => launchNode(tree, {
+    argv: ['node', ...args],
+    cwd: ctx.cwd,
+    env: guestEnvironmentOf(ctx),
+    ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}),
+    token: runTokenOf(ctx),
+  }));
 
   // Create custom 'npm' command that runs scripts from package.json
   const npmCommand = defineCommand('npm', async (args, ctx) => {
@@ -1731,6 +1760,49 @@ export function runCommand(command: string, options: ExecOptions, callback?: Exe
   })();
 }
 
+/** What a host gives one argv start of the engine's Node. */
+export interface NodeRunOptions {
+  /** The process's working directory; `/` when absent, as the shell's. */
+  cwd?: string;
+  /** The process's whole environment, as `execve` takes it; empty when absent. */
+  env?: Record<string, string>;
+  /** Bytes already on fd 0 when the process begins. */
+  stdin?: string;
+  /** The run's name, under which the host registered its streams and signal. */
+  processToken: string;
+  /** The tree the process runs on. */
+  vfs: VirtualFS;
+}
+
+/**
+ * The host's door onto the engine's Node by argv: `["node", "server.js"]`
+ * starts the process `node server.js` names, through `launchNode` as the
+ * shell's `node` does, with no command line and no shell between. A kernel
+ * that resolved `node` itself and execs it has a vector, not a line; handed
+ * to `runCommand` the line went to the engine's shell, which looked the
+ * program up in its own tree and answered "node: command not found".
+ */
+export async function runNode(argv: readonly string[], options: NodeRunOptions): Promise<CommandOutcome> {
+  if (!Array.isArray(argv) || argv.length === 0 || argv.some((word) => typeof word !== 'string')) {
+    throw new TypeError('runNode: argv must be a non-empty array of strings');
+  }
+  const tree = options.vfs;
+  const shell = shells.get(tree);
+  if (!shell) throw new Error('child_process not initialized for this tree');
+  currentVfs = tree;
+  bashInstance = shell.bash;
+  vfsAdapter = shell.adapter;
+  const env = { ...(options.env ?? {}) };
+  delete env[PROCESS_TOKEN_ENV];
+  return launchNode(tree, {
+    argv: [...argv],
+    cwd: options.cwd ?? '/',
+    env,
+    ...(typeof options.stdin === 'string' ? { stdin: options.stdin } : {}),
+    token: options.processToken,
+  });
+}
+
 /**
  * The engine's own names for the programs it carries, for the one question
  * libuv answers before a child exists: is there such a program at all?
@@ -2069,5 +2141,6 @@ export default {
   registerRunStreams,
   releaseRunStreams,
   runCommand,
+  runNode,
   sendStdin,
 };
