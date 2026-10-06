@@ -29,7 +29,7 @@
  */
 import { createNodeError as vfsError } from '../../virtual-fs';
 import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner } from './handles';
-import { enterRun } from '../../process-tokens';
+import { enterRun, __runFor, type ProcessToken } from '../../process-tokens';
 import { allocateFd, handleForFd } from './fds';
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
 import { errname } from './uv';
@@ -164,6 +164,43 @@ interface OpenFile {
 /** Every descriptor this engine has open, and the next number to hand out. */
 const openFiles = new Map<number, OpenFile>();
 
+/**
+ * fd 1 and fd 2 are descriptors of every process, as on Linux: a program
+ * that writes its output through `fs.writeSync(1, buf)`, or opens
+ * `/dev/stdout`, `/dev/fd/1` or `/proc/self/fd/1` and writes there, writes
+ * the bytes its `process.stdout` writes, to the same place and in the same
+ * order. The engine registered no such descriptors, so those writes were
+ * EBADF and the output was lost. A path of these opens a new descriptor
+ * that names the stream, as open(2) on it does.
+ */
+const STDIO_PATHS = new Map<string, 1 | 2>([
+  ['/dev/stdout', 1], ['/dev/stderr', 2],
+  ['/dev/fd/1', 1], ['/dev/fd/2', 2],
+  ['/proc/self/fd/1', 1], ['/proc/self/fd/2', 2],
+]);
+const stdioAliases = new Map<number, 1 | 2>();
+
+/** The standard stream a descriptor names, where it names one. */
+function stdioOf(fd: number): 1 | 2 | null {
+  const alias = stdioAliases.get(fd);
+  if (alias !== undefined) return alias;
+  return (fd === 1 || fd === 2) && !openFiles.has(fd) ? fd : null;
+}
+
+/**
+ * Bytes on the asking run's fd 1 or 2: the run's own stream sink, which is
+ * what its `process.stdout`/`stderr` writes into -- not a guest's replacement
+ * of `process.stdout.write`, which a write to the descriptor never calls.
+ */
+function writeStdio(stream: 1 | 2, bytes: Uint8Array, token: ProcessToken | null = currentOwner()): void {
+  const run = token === null ? undefined : __runFor(token);
+  if (run) { (stream === 1 ? run.stdout : run.stderr)(bytes.slice()); return; }
+  const realm = (globalThis as unknown as { process?: { stdout?: { write(chunk: Uint8Array): unknown }; stderr?: { write(chunk: Uint8Array): unknown } } }).process;
+  const sink = stream === 1 ? realm?.stdout : realm?.stderr;
+  if (!sink || typeof sink.write !== 'function') throw createNodeError('EBADF', 'write', String(stream));
+  sink.write(bytes.slice());
+}
+
 function fileFor(fd: number): OpenFile {
   const file = openFiles.get(fd);
   if (!file) throw createNodeError('EBADF', 'read', String(fd));
@@ -182,6 +219,14 @@ function fileFor(fd: number): OpenFile {
 export function descriptorWriter(fd: number): ((chunk: string | Uint8Array) => void) | null {
   // A descriptor takes bytes; a chunk a child wrote as bytes goes on as them.
   const bytesOf = (chunk: string | Uint8Array): Uint8Array => typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
+  // The parent's own fd 1 or 2 (or a descriptor it opened on /dev/stdout):
+  // the child writes the parent's stream, read against the parent, whose
+  // code is the code running now.
+  const standard = stdioOf(fd);
+  if (standard !== null && handleForFd(fd) === undefined) {
+    const parent = currentOwner();
+    return (chunk) => { try { writeStdio(standard, bytesOf(chunk), parent); } catch { /* a closed stream drops the child's output */ } };
+  }
   const stream = handleForFd(fd);
   if (stream instanceof LibuvStreamWrap) {
     return (chunk) => { try { stream.writeBuffer(new WriteWrap(), bytesOf(chunk)); } catch { /* a closed stream drops the child's output, as a closed pipe does */ } };
@@ -524,6 +569,12 @@ const fsBinding = {
   open(path: unknown, flags: number, _mode: number, req?: FSReq): number | undefined {
     return answer(req, () => {
       const name = asPath(path);
+      const standard = STDIO_PATHS.get(name);
+      if (standard !== undefined) {
+        const fd = allocateFd();
+        stdioAliases.set(fd, standard);
+        return fd;
+      }
       const tree = vfs();
       const bits = flagBits();
       const exists = tree.existsSync(name);
@@ -551,6 +602,7 @@ const fsBinding = {
     return answer(req, () => {
       const stream = handleForFd(fd);
       if (stream instanceof LibuvStreamWrap) { stream.close(); return undefined; }
+      if (stdioOf(fd) !== null) { stdioAliases.delete(fd); return undefined; }
       fileFor(fd); openFiles.delete(fd); return undefined;
     });
   },
@@ -604,6 +656,14 @@ const fsBinding = {
         const bytes = buffer.subarray(offset, offset + length);
         const status = stream.writeBuffer(new WriteWrap(), bytes);
         if (status !== 0) throw createNodeError(errname(status), 'write', String(fd));
+        return bytes.length;
+      }
+      const standard = stdioOf(fd);
+      if (standard !== null) {
+        // A stream has no position, as a pipe or a terminal has none.
+        if (position !== null && position !== undefined && position >= 0) throw createNodeError('ESPIPE', 'write', String(fd));
+        const bytes = buffer.subarray(offset, offset + length);
+        writeStdio(standard, bytes);
         return bytes.length;
       }
       const file = fileFor(fd);
