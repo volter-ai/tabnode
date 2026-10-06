@@ -68,6 +68,8 @@
 - [RunResult](interfaces/RunResult.md)
 - [RuntimeOptions](interfaces/RuntimeOptions.md)
 - [Stats](interfaces/Stats.md)
+- [TreeDescriptors](interfaces/TreeDescriptors.md)
+- [TreeDescriptorStats](interfaces/TreeDescriptorStats.md)
 - [VFSSnapshot](interfaces/VFSSnapshot.md)
 
 ## Type Aliases
@@ -92,6 +94,7 @@
 - [PREPARED\_MODULES\_DIR](variables/PREPARED_MODULES_DIR.md)
 - [STDIN\_RING](variables/STDIN_RING.md)
 - [stream](variables/stream.md)
+- [TREE\_DESCRIPTORS](variables/TREE_DESCRIPTORS.md)
 - [util](variables/util.md)
 
 ## Functions
