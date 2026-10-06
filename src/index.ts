@@ -53,7 +53,7 @@ import { VirtualFS } from './virtual-fs';
 import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
-import { runCommand, registerRunStreams, releaseRunStreams, sendStdin } from './shims/child_process';
+import { runCommand, registerRunStreams, releaseRunStreams, sendStdin, adoptEngineTree } from './shims/child_process';
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/handles';
 import { listenerOnPort } from './node-lib/binding/tcp_wrap';
@@ -154,7 +154,8 @@ export function createContainer(options?: ContainerOptions): {
   // with no way to hand it another left the worker that owns the origin's store
   // unable to give it one that keeps the index in memory and the bytes in the
   // pack.
-  const vfs = (options && options.vfs) || new VirtualFS();
+  // A tree the caller gives is the caller's; one made here is the engine's to furnish.
+  const vfs = (options && options.vfs) || adoptEngineTree(new VirtualFS());
   const runtime = new Runtime(vfs, options);
   const npmManager = new PackageManager(vfs);
   // A container owns its servers. One process-wide bridge meant two runtimes in

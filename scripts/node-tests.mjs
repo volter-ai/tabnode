@@ -114,6 +114,12 @@ if (ONE) {
   const file = ONE;
   const cwd = `${MOUNT}/${DIR}`;
   const vfs = new DiskVFS();
+  // This harness supplies the tree, so the program at process.execPath is its
+  // to put there: Node's tests spawn `"${process.execPath}" file` through the
+  // shell, which runs its own `node` for that path once a file is there.
+  vfs.mkdirSync("/usr/local/bin", { recursive: true });
+  vfs.writeFileSync("/usr/local/bin/node", 'node "$@"\n');
+  vfs.chmodSync("/usr/local/bin/node", 0o755);
   if (PRELUDE) {
     vfs.writeFileSync(`${MOUNT}/.prelude.cjs`, nodeFs.readFileSync(PRELUDE, "utf8"));
     vfs.writeFileSync(`${cwd}/.run-${file}.cjs`, `require(${JSON.stringify(`${MOUNT}/.prelude.cjs`)});\nrequire("module")._load(${JSON.stringify(`${cwd}/${file}`)}, null, true);\n`);
