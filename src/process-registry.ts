@@ -49,6 +49,12 @@ export interface ProcessRegistry {
 export interface ProcessRegistryScope extends ProcessRegistry {
   /** Trusted owner only: how this realm answers a signal sent to one of its processes. */
   receiveSignals(handler: (pid: number, signal: string) => boolean): void;
+  /**
+   * Trusted owner only: a run the embedder already numbered, as a kernel
+   * numbers a `node` its shell exec'd. Its parent is the embedder's process,
+   * which this registry need not hold.
+   */
+  claim(pid: number): void;
   /** Trusted owner handoff before the destination worker starts; not a guest operation. */
   adoptRun(source: ProcessRegistryScope, sourceToken: string, token: string, parentPid?: number): ProcessIdentity;
   /** Ends this realm's registrations, including after abrupt worker death. */
@@ -60,19 +66,35 @@ export interface ProcessRegistryScope extends ProcessRegistry {
  * so identical local run tokens cannot overwrite or release another realm's
  * process. Allocation alone does not announce a live process.
  */
-export function createProcessRegistryOwner(): { createScope(): ProcessRegistryScope; table(): ProcessIdentity[] } {
+export function createProcessRegistryOwner(): {
+  createScope(): ProcessRegistryScope;
+  table(): ProcessIdentity[];
+  /**
+   * The numbers come from here from now on: a kernel's own pid counter, so
+   * the container's processes and the kernel's are one pid space, and a
+   * child's `process.ppid` is the parent its kernel names. A number still
+   * held here is passed over.
+   */
+  installAllocator(allocate: () => number): void;
+} {
   let nextPid = 1000 + Math.floor(Math.random() * 30000);
+  let allocator: (() => number) | undefined;
+  // Every number a scope holds, allocated or claimed, so no two runs share one.
+  const held = new Set<number>();
   const live = new Map<number, ProcessIdentity>();
   // Which realm's scope answers for each live pid, including after handoff.
   const receivers = new Map<number, { handler?: (pid: number, signal: string) => boolean }>();
   const scopes = new WeakMap<ProcessRegistryScope, {
     allocated: Set<number>;
+    claimed: Set<number>;
     runs: Map<string, ProcessIdentity>;
     active(): void;
   }>();
   return {
     createScope() {
       const allocated = new Set<number>();
+      // The numbers the embedder gave, whose parents are the embedder's.
+      const claimed = new Set<number>();
       const runs = new Map<string, ProcessIdentity>();
       let disposed = false;
       const receiver: { handler?: (pid: number, signal: string) => boolean } = {};
@@ -101,6 +123,7 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
           // Old-scope disposal/forget cannot remove the child's new ownership.
           parent.runs.delete(sourceToken);
           parent.allocated.delete(identity.pid);
+          if (parent.claimed.delete(identity.pid)) claimed.add(identity.pid);
           allocated.add(identity.pid);
           runs.set(token, identity);
           receivers.set(identity.pid, receiver);
@@ -108,10 +131,23 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
         },
         allocate() {
           active();
-          if (nextPid > 0x7fffffff) throw new Error('Process identifier space exhausted.');
-          const pid = nextPid++;
+          for (;;) {
+            if (!allocator && nextPid > 0x7fffffff) throw new Error('Process identifier space exhausted.');
+            const pid = allocator ? allocator() : nextPid++;
+            if (!Number.isSafeInteger(pid) || pid < 2 || pid > 0x7fffffff) throw new Error('Process identifier space exhausted.');
+            if (held.has(pid) || live.has(pid)) continue;
+            allocated.add(pid);
+            held.add(pid);
+            return pid;
+          }
+        },
+        claim(pid) {
+          active();
+          if (!Number.isSafeInteger(pid) || pid < 2 || pid > 0x7fffffff) throw new Error('Invalid process identifier.');
+          if (held.has(pid) || live.has(pid)) throw new Error('Process identifier is already held.');
           allocated.add(pid);
-          return pid;
+          claimed.add(pid);
+          held.add(pid);
         },
         publish(token, identity) {
           active();
@@ -127,7 +163,7 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
             throw new Error('Invalid parent process identifier.');
           }
           const parent = Array.from(runs.values()).find(parent => parent.pid === identity.ppid);
-          if (identity.ppid !== 0 && !parent) {
+          if (identity.ppid !== 0 && !parent && !claimed.has(identity.pid)) {
             throw new Error('Parent process is not owned by this realm.');
           }
           const inherited = parent?.pgid ?? parent?.pid ?? identity.pid;
@@ -148,6 +184,8 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
           live.delete(entry.pid);
           receivers.delete(entry.pid);
           allocated.delete(entry.pid);
+          claimed.delete(entry.pid);
+          held.delete(entry.pid);
         },
         lookup(pid) { active(); return live.get(pid); },
         signal(pid, signal) {
@@ -179,17 +217,23 @@ export function createProcessRegistryOwner(): { createScope(): ProcessRegistrySc
           if (disposed) return;
           disposed = true;
           for (const entry of runs.values()) { live.delete(entry.pid); receivers.delete(entry.pid); }
+          for (const pid of allocated) held.delete(pid);
           receiver.handler = undefined;
           runs.clear();
           allocated.clear();
+          claimed.clear();
         },
       };
-      scopes.set(scope, { allocated, runs, active });
+      scopes.set(scope, { allocated, claimed, runs, active });
       return scope;
     },
     /** Every live process of the container, in pid order: what `/proc` lists. */
     table() {
       return [...live.values()].sort((a, b) => a.pid - b.pid);
+    },
+    installAllocator(allocate) {
+      if (typeof allocate !== 'function') throw new TypeError('A process identifier allocator is a function.');
+      allocator = allocate;
     },
   };
 }

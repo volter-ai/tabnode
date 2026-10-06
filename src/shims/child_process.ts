@@ -61,7 +61,7 @@ import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __subs
 
 import { __substrateChildren, __onUncaughtException, __reportUncaughtException } from './process';
 
-import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __lastLaunchedToken, __setLastLaunchedToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, runPid, forgetRunPid, signalPid, type ProcessToken } from '../process-tokens';
+import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __lastLaunchedToken, __setLastLaunchedToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, forgetRunPid, signalPid, type ProcessToken } from '../process-tokens';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
 const __hostProcess: { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown } | null =
   typeof process !== 'undefined' && process !== null && typeof (process as { on?: unknown }).on === 'function' && typeof (process as { off?: unknown }).off === 'function'
@@ -1929,6 +1929,8 @@ export interface NodeRunOptions {
   vfs: VirtualFS;
   /** The tree this run's process reads and writes instead, where the host gives one. */
   filesystem?: VirtualFS;
+  /** The numbers the host already gave this process, a kernel's. */
+  process?: { pid: number; ppid: number };
 }
 
 /**
@@ -1969,6 +1971,7 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
   vfsAdapter = shell.adapter;
   const env = { ...(options.env ?? {}) };
   delete env[PROCESS_TOKEN_ENV];
+  if (options.process) claimRunPid(options.processToken, options.process.pid, options.process.ppid, { argv: [...argv], cwd: options.cwd ?? '/' });
   return launchNode(tree, {
     argv: [...argv],
     cwd: options.cwd ?? '/',
