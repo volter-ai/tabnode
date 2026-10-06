@@ -1020,12 +1020,15 @@ export interface RuntimeOptions {
   onConsole?: (method: string, args: unknown[]) => void;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
+  /** fd 1 and fd 2 as the bytes the program wrote; where given, the text sink of that fd is not called. */
+  onStdoutBytes?: (bytes: Uint8Array) => void;
+  onStderrBytes?: (bytes: Uint8Array) => void;
   /** What is on the guest's fd 0, the way a shell puts the left of a pipe there. */
   stdin?: string;
   /** The runner can still write to fd 0, so standard input has not ended. */
   stdinHeld?: boolean;
-  /** The run was given a TTY; a pipe child is not one. */
-  tty?: boolean;
+  /** The run was given a TTY, on all three fds or per fd as `[stdin, stdout, stderr]`; a pipe child is not one. */
+  tty?: boolean | readonly [boolean, boolean, boolean];
   /** This run's process number and its parent's; minted where neither is given. */
   pid?: number;
   ppid?: number;
@@ -2637,9 +2640,11 @@ export class Runtime {
       env: options.env,
       onStdout: options.onStdout,
       onStderr: options.onStderr,
+      ...(options.onStdoutBytes ? { onStdoutBytes: options.onStdoutBytes } : {}),
+      ...(options.onStderrBytes ? { onStderrBytes: options.onStderrBytes } : {}),
       ...(typeof options.stdin === 'string' ? { stdin: options.stdin } : {}),
       ...(options.stdinHeld ? { stdinHeld: true } : {}),
-      ...(options.tty ? { tty: true } : {}),
+      ...(options.tty ? { tty: options.tty } : {}),
       ...(typeof options.pid === 'number' ? { pid: options.pid } : {}),
       ...(typeof options.ppid === 'number' ? { ppid: options.ppid } : {}),
     });

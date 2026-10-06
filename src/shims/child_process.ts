@@ -180,8 +180,13 @@ const NODE_VALUE_OPTIONS = new Set([
 export interface RunStreams {
   stdinStream?: AsyncIterable<Uint8Array>;
   terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
+  /** Which of fds 0, 1 and 2 is a terminal; absent, a held or terminal run is a terminal on all three. */
+  stdioIsTTY?: readonly [boolean, boolean, boolean];
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
+  /** fd 1 and fd 2 as the bytes the program wrote; where given, that fd is neither decoded nor kept as text. */
+  onStdoutBytes?: (bytes: Uint8Array) => void;
+  onStderrBytes?: (bytes: Uint8Array) => void;
   signal?: AbortSignal;
   /** The host keeps this run open; a run that is not held ends when its loop has nothing left. */
   held: boolean;
@@ -550,16 +555,38 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // A process that has exited writes nothing more, as Node's cannot: a
   // continuation of the guest that runs on after its exit keeps its output
   // to itself.
-  const appendStdout = (data: string) => {
+  //
+  // A host that takes an fd as bytes gets each write's bytes as the program
+  // wrote them, as a file or a pipe on that fd would, and nothing of that fd
+  // is decoded or kept as text: the run answers it empty. `printed` counts
+  // what the program has written on either fd, which is how the loop below
+  // tells a program that printed from one still quiet.
+  let printed = 0;
+  const stdoutBytes = streams?.onStdoutBytes;
+  const stderrBytes = streams?.onStderrBytes;
+  const outputEncoder = new TextEncoder();
+  const outputDecoder = new TextDecoder();
+  const appendStdout = (data: string | Uint8Array) => {
     if (exitCalled) return;
-    stdout += data;
-    streams?.onStdout?.(data);
+    printed += data.length;
+    if (stdoutBytes) { stdoutBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
+    const text = typeof data === 'string' ? data : outputDecoder.decode(data);
+    stdout += text;
+    streams?.onStdout?.(text);
   };
-  const appendStderr = (data: string) => {
+  const appendStderr = (data: string | Uint8Array) => {
     if (exitCalled) return;
-    stderr += data;
-    streams?.onStderr?.(data);
+    printed += data.length;
+    if (stderrBytes) { stderrBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
+    const text = typeof data === 'string' ? data : outputDecoder.decode(data);
+    stderr += text;
+    streams?.onStderr?.(text);
   };
+  // Which of fds 0, 1 and 2 is a terminal. A host that says per fd is taken
+  // at its word (`node x > out.log` at a terminal: fd 1 is a file); a held or
+  // terminal run without it is a terminal on all three, as it was.
+  const ttyFds: readonly [boolean, boolean, boolean] = streams?.stdioIsTTY
+    ?? (streams?.held || streams?.terminal ? [true, true, true] : [false, false, false]);
 
   // A child started with an IPC channel is told its descriptor in its
   // environment, exactly as Node tells one; the variables are taken out
@@ -589,13 +616,15 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     onStderr: (data: string) => {
       appendStderr(data);
     },
+    ...(stdoutBytes ? { onStdoutBytes: (bytes: Uint8Array) => appendStdout(bytes) } : {}),
+    ...(stderrBytes ? { onStderrBytes: (bytes: Uint8Array) => appendStderr(bytes) } : {}),
     // The guest's standard input is what the shell put on its fd 0: the text
     // left of a pipe, or the `stdin` a host gave `container.run`. A held run
     // (one the host streams and can still feed with `sendStdin`) leaves it
     // open, as a pipe whose writer has not closed.
     stdin: typeof launch.stdin === 'string' ? launch.stdin : '',
     ...(streams?.held || streams?.stdinOpen ? { stdinHeld: true } : {}),
-    ...(streams?.held || streams?.terminal ? { tty: true } : {}),
+    ...(ttyFds.some(Boolean) ? { tty: ttyFds } : {}),
     // The numbers this run was started with, so the guest's `process.pid`
     // is the one its parent's handle carries.
     ...(runPid(runToken) ? { pid: runPid(runToken)!.pid, ppid: runPid(runToken)!.ppid } : {}),
@@ -673,15 +702,19 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // For long-running commands (watch mode), report as TTY so tools like
   // vitest set up interactive features (file watching, stdin commands). A
   // spawned child's stdio is a pipe, as Node's is, and gets none of this.
-  if (streams?.held || streams?.terminal) {
-    proc.stdout.isTTY = true;
-    proc.stderr.isTTY = true;
+  // Each fd is a terminal only where the host said so.
+  if (ttyFds[0]) {
     proc.stdin.isTTY = true;
     proc.stdin.setRawMode = () => proc.stdin;
   }
+  if (ttyFds[1]) proc.stdout.isTTY = true;
+  if (ttyFds[2]) proc.stderr.isTTY = true;
   const terminal = streams?.terminal;
+  // A window change reaches the output streams that are the terminal; one
+  // redirected to a file has no size.
   const resize = (columns: number, rows: number): void => {
     for (const stream of [proc.stdout, proc.stderr]) {
+      if (!stream.isTTY) continue;
       stream.columns = columns;
       stream.rows = rows;
       stream.emit('resize');
@@ -844,7 +877,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     catch (error) {
       if (error instanceof Error && error.message.startsWith('Process exited with code')) return { stdout, stderr, exitCode };
       const errorMsg = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
-      return { stdout, stderr: stderr + `Error: ${errorMsg}\n`, exitCode: 1 };
+      // Printed on the program's stderr, as Node prints it, so a host that
+      // reads the fd (as text or as bytes) sees why the program ended.
+      appendStderr(`Error: ${errorMsg}\n`);
+      return { stdout, stderr, exitCode: 1 };
     }
     if (exitCalled) { settling.catch(() => {}); return { stdout, stderr, exitCode }; }
   }
@@ -866,7 +902,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // timer — as idle, with exit 0, three times over.
   const __ownsHandles = () => runToken !== null && (__ownedServerPorts(runToken).length > 0 || __ownedHandleCount(runToken) > 0);
   const __printedThenWorking = () => (streams?.stdinOpen === true && inputReading()) || pendingGuestTimers(proc) > 0 || heldWork().count > 0 || __ownsHandles();
-  if ((stdout.length > 0 || stderr.length > 0) && !__printedThenWorking()) {
+  if (printed > 0 && !__printedThenWorking()) {
     // Settling the command is host work. Killing guest timers must not
     // cancel this continuation and leave the command's promise unresolved.
     await settlePrintedEntry();
@@ -910,7 +946,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     const POST_CHILD_EXIT_IDLE_MS = 100; // short timeout after children finish
     const CHECK_MS = 50;
     const startTime = Date.now();
-    let lastOutputLen = stdout.length + stderr.length;
+    let lastOutputLen = printed;
     let idleMs = 0;
     // A timer the guest still holds is work in Node's loop, whether or not
     // the program has printed; so is a handle it has open.
@@ -933,7 +969,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       if (raceResult === 'exit' || exitCalled) break;
       if (streams?.signal?.aborted) break;
 
-      const currentLen = stdout.length + stderr.length;
+      const currentLen = printed;
       if (currentLen > lastOutputLen) {
         // New output — reset idle timer
         lastOutputLen = currentLen;

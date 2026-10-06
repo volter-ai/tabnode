@@ -89,6 +89,23 @@ export interface RunOptions {
   onStdout?: (data: string) => void;
   /** Callback for streaming stderr chunks as they arrive */
   onStderr?: (data: string) => void;
+  /**
+   * The guest Node's fd 1 as bytes: each write's bytes exactly as the program
+   * wrote them, before any decode, as a file or pipe on fd 1 receives them.
+   * Where given, `onStdout` is not called for that fd and `RunResult.stdout`
+   * is empty: nothing of it is kept as text.
+   */
+  onStdoutBytes?: (bytes: Uint8Array) => void;
+  /** fd 2 as bytes, as `onStdoutBytes` is fd 1. */
+  onStderrBytes?: (bytes: Uint8Array) => void;
+  /**
+   * Which of the guest Node's fds 0, 1 and 2 is a terminal, as `isatty` answers
+   * for each: `node x > out.log` at a terminal is `[true, false, true]`. Absent,
+   * a `held` run or one given a `terminal` is a terminal on all three, and
+   * any other is a pipe on all three. `terminal` still gives the size, which
+   * reaches the output fds that are terminals.
+   */
+  stdioIsTTY?: readonly [boolean, boolean, boolean];
   /** AbortSignal to cancel long-running commands */
   signal?: AbortSignal;
   /**
@@ -185,6 +202,10 @@ export function createContainer(options?: ContainerOptions): {
     runOptions: RunOptions | undefined,
     start: (processToken: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>,
   ): Promise<RunResult> => {
+    const tty = runOptions?.stdioIsTTY;
+    if (tty !== undefined && (!Array.isArray(tty) || tty.length !== 3 || tty.some((value) => typeof value !== 'boolean'))) {
+      throw new TypeError('stdioIsTTY must be [stdin, stdout, stderr] booleans');
+    }
     // If signal is already aborted, resolve immediately
     if (runOptions?.signal?.aborted) return { stdout: '', stderr: '', exitCode: 130 };
     // Every run has a name, because what the host gave this run is kept under
@@ -200,6 +221,9 @@ export function createContainer(options?: ContainerOptions): {
       stdinStream: runOptions?.stdinStream,
       stdinOpen: runOptions?.stdinStream !== undefined,
       terminal: runOptions?.terminal,
+      ...(runOptions?.stdioIsTTY ? { stdioIsTTY: runOptions.stdioIsTTY } : {}),
+      ...(runOptions?.onStdoutBytes ? { onStdoutBytes: runOptions.onStdoutBytes } : {}),
+      ...(runOptions?.onStderrBytes ? { onStderrBytes: runOptions.onStderrBytes } : {}),
     });
     let outcome: { stdout: string; stderr: string; exitCode: number };
     let terminatedBy: string | undefined;

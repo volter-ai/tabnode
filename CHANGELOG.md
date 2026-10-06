@@ -12,6 +12,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 - The shell's filesystem reports each file's own mode, and its `chmod` sets it:
   every regular file read 0644 except under `/node_modules/.bin/`. Install
   stubs and the `execPath` stub are written 0755.
+- Package files keep their archive's mode at install, as npm extracts them
+  (at least 0666/0777 under umask 022), and each bin's own file is executable.
+- `RunOptions.stdioIsTTY: [stdin, stdout, stderr]` makes each of a Node run's
+  fds a terminal or not on its own (`node x > out.log` at a terminal); `held`
+  and `terminal` without it are still a terminal on all three.
+- `RunOptions.onStdoutBytes` / `onStderrBytes` carry fd 1 and fd 2 as the
+  bytes the program wrote, before any decode; that fd is not kept as text.
+  A string written with an encoding (`write('ff', 'hex')`) is written as its
+  bytes, as Node writes it.
 
 ## v0.5.70 — 2026-10-05
 

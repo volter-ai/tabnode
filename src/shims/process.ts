@@ -223,7 +223,7 @@ export interface Process {
 // readable stream, as Node's is, and is built by `ProcessStdin` above.
 function createProcessStream(
   isWritable: boolean,
-  writeImpl?: (data: string) => boolean
+  writeImpl?: (data: string | Uint8Array, encoding?: string) => boolean
 ): ProcessWritableStream {
   const emitter = new EventEmitter();
 
@@ -326,15 +326,18 @@ function createProcessStream(
 
   // Override write for actual writable streams
   if (isWritable && writeImpl) {
+    // The chunk goes on as the program wrote it, bytes or a string with its
+    // encoding (`write(chunk[, encoding][, callback])`); the sink decides
+    // whether it wants text or bytes.
     stream.write = (data: string | Buffer, ...rest: unknown[]) => {
-      const result = writeImpl(textOf(data));
+      const result = writeImpl(data, typeof rest[0] === 'string' ? rest[0] : undefined);
       const callback = trailingCallback(rest);
       if (callback) queueMicrotask(callback);
       return result;
     };
     stream.end = (...args: unknown[]) => {
       const data = args[0];
-      if (typeof data === 'string' || data instanceof Uint8Array) writeImpl(textOf(data));
+      if (typeof data === 'string' || data instanceof Uint8Array) writeImpl(data, typeof args[1] === 'string' ? args[1] : undefined);
       const callback = trailingCallback(args);
       if (callback) queueMicrotask(callback);
     };
@@ -360,6 +363,30 @@ function trailingCallback(args: readonly unknown[]): (() => void) | undefined {
     if (typeof value === 'function') return value as () => void;
   }
   return undefined;
+}
+
+/**
+ * A written chunk's bytes, as the fd receives them: a string in the encoding
+ * it was written with (`write('ff', 'hex')` is one byte), bytes copied, so a
+ * program that reuses its buffer after the write does not change what was
+ * written.
+ */
+function bytesOf(owner: object, data: string | Uint8Array, encoding?: string): Uint8Array {
+  if (typeof data !== 'string') return new Uint8Array(data);
+  if (encoding === undefined || encoding === 'utf8' || encoding === 'utf-8') return new TextEncoder().encode(data);
+  const { Buffer: NodeBuffer } = loadNodeLibFor(owner, 'buffer') as { Buffer: { from(text: string, encoding: string): Uint8Array } };
+  return new Uint8Array(NodeBuffer.from(data, encoding));
+}
+
+/** A written chunk as text for a text sink: a string written in another encoding is its bytes, read as UTF-8. */
+function chunkText(owner: object, data: string | Uint8Array, encoding?: string): string {
+  if (typeof data === 'string' && (encoding === undefined || encoding === 'utf8' || encoding === 'utf-8')) return data;
+  return textOf(bytesOf(owner, data, encoding));
+}
+
+/** Whether a run's fd is a terminal, from one flag for all three or one per fd. */
+export function ttyOfFd(tty: boolean | readonly [boolean, boolean, boolean] | undefined, fd: 0 | 1 | 2): boolean {
+  return Array.isArray(tty) ? tty[fd] === true : tty === true;
 }
 
 /** The signal numbers a guest sees, and the signals a tab must ignore. */
@@ -461,6 +488,13 @@ export function createProcess(options?: {
   onExit?: (code: number) => void;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
+  /**
+   * fd 1 and fd 2 as bytes: every write's chunk exactly as the program wrote
+   * it, before any decode, as a file or pipe receives it. Where given, the
+   * text sink of the same fd is not called.
+   */
+  onStdoutBytes?: (bytes: Uint8Array) => void;
+  onStderrBytes?: (bytes: Uint8Array) => void;
   /** What the runner put on the guest's fd 0, as a shell puts the left of a pipe there. */
   stdin?: string;
   /**
@@ -474,8 +508,12 @@ export function createProcess(options?: {
    * held) is not one: Node does not inherit FORCE_COLOR onto a pipe, and
    * `util.inspect` of an Error would colorize a stack and then ask
    * `BuiltinModule.exists` of every `node:` frame.
+   *
+   * One flag for all three, or one per fd as `[stdin, stdout, stderr]`:
+   * `node x > out.log` at a terminal has fd 1 a file and fd 0 and 2 the
+   * terminal.
    */
-  tty?: boolean;
+  tty?: boolean | readonly [boolean, boolean, boolean];
 }): Process {
   let currentDir = options?.cwd || '/';
   // Node sets no NODE_ENV and neither does the `node` image, so an app that
@@ -496,7 +534,8 @@ export function createProcess(options?: {
   // not, and a cell that printed a number would wrap it in CSI 33m. stdin
   // being held open is a pipe whose writer has not closed, not a TTY --
   // child_process tests hand pipes to children that way.
-  if (!options?.tty) {
+  // Per fd, the colour that matters is fd 1's: `console.log` writes there.
+  if (!ttyOfFd(options?.tty, 1)) {
     delete env.FORCE_COLOR;
   }
 
@@ -690,20 +729,24 @@ export function createProcess(options?: {
       queueMicrotask(() => { emitter.emit('warning', raised); });
     },
 
-    stdout: createProcessStream(true, (data: string) => {
-      if (options?.onStdout) {
-        options.onStdout(data);
+    stdout: createProcessStream(true, (data, encoding) => {
+      if (options?.onStdoutBytes) {
+        options.onStdoutBytes(bytesOf(proc, data, encoding));
+      } else if (options?.onStdout) {
+        options.onStdout(chunkText(proc, data, encoding));
       } else {
-        console.log(data);
+        console.log(chunkText(proc, data, encoding));
       }
       return true;
     }) as ProcessWritableStream,
 
-    stderr: createProcessStream(true, (data: string) => {
-      if (options?.onStderr) {
-        options.onStderr(data);
+    stderr: createProcessStream(true, (data, encoding) => {
+      if (options?.onStderrBytes) {
+        options.onStderrBytes(bytesOf(proc, data, encoding));
+      } else if (options?.onStderr) {
+        options.onStderr(chunkText(proc, data, encoding));
       } else {
-        console.error(data);
+        console.error(chunkText(proc, data, encoding));
       }
       return true;
     }) as ProcessWritableStream,
