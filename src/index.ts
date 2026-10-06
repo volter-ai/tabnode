@@ -67,6 +67,8 @@ export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
 export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter } from './stdin-ring';
 import { stdinRingProblem, stdinRingWaitsAsync } from './stdin-ring';
+export { TREE_DESCRIPTORS } from './tree-descriptors';
+export type { TreeDescriptors, TreeDescriptorStats } from './tree-descriptors';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
