@@ -742,9 +742,13 @@ const fsBinding = {
   },
 
   writeString(fd: number, value: string, position: number | null, encoding: string | undefined, req?: FSReq): number | undefined {
+    // The string's bytes in the encoding it was written with, as Node's own
+    // Buffer makes them: `writeSync(fd, 'ff', null, 'hex')` is one byte. Every
+    // encoding but UTF-8 was taken as latin1, so hex, base64 and utf16le
+    // wrote their text's characters instead.
     const bytes = encoding === 'utf8' || encoding === undefined || encoding === 'utf-8'
       ? new TextEncoder().encode(value)
-      : Uint8Array.from(value, (character) => character.charCodeAt(0) & 0xff);
+      : new Uint8Array(Bytes().from(value, encoding as BufferEncoding));
     return fsBinding.writeBuffer(fd, bytes, 0, bytes.length, position ?? null, req);
   },
 
