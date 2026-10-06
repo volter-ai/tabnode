@@ -761,7 +761,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   let stopResize: (() => void) | undefined;
   let inputActive = true;
   let inputIterator: AsyncIterator<Uint8Array> | undefined;
-  const readableInput = proc.stdin as unknown as { listenerCount(event: string): number; readableLength: number; readableHighWaterMark: number; readableFlowing: boolean | null; _readableState?: { reading?: boolean; needReadable?: boolean } };
+  const readableInput = proc.stdin as unknown as { listenerCount(event: string): number; readableLength: number; readableHighWaterMark: number; readableFlowing: boolean | null; readableEnded?: boolean; _readableState?: { reading?: boolean; needReadable?: boolean } };
   const inputReading = () => readableInput.readableFlowing === true || readableInput._readableState?.reading === true
     || readableInput._readableState?.needReadable === true || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0;
   // Whether the guest is consuming its stdin stream, which keeps a Node
@@ -770,8 +770,11 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // the guest's: `fs.readSync(0)` never touches process.stdin in Node, and a
   // program that read its input that way and returned is done, whether or
   // not the writer has closed.
+  // A guest's own `read()` counts as well: Node starts reading fd 0 then and
+  // the process lives until the stream ends. The engine's reads do not.
   const inputConsumed = () => readableInput.readableFlowing === true
-    || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0;
+    || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0
+    || ((proc.stdin as unknown as { __substrateGuestRead?: boolean }).__substrateGuestRead === true && readableInput.readableEnded !== true);
 
   // A child started with a channel wires its own end of it before its
   // module runs, which is what `lib/internal/process/pre_execution.js` does

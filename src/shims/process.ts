@@ -91,9 +91,22 @@ interface ProcessWritableStream extends ProcessStream {
  * the superclass at class-definition time, which is before the loader that
  * builds it exists. See `node-lib/lazy.ts`.
  */
+/**
+ * A read of the guest's stdin stream by the engine itself (a `fs.readSync(0)`,
+ * a WASI guest's fd 0): it takes what the stream holds and is not the program
+ * asking its stream for bytes, so it does not keep the process alive.
+ */
+export const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
+
 export interface ProcessStdin extends Readable {
   readonly fd: number;
   isTTY: boolean;
+  /**
+   * The program has called `read()` on this stream. Node starts reading fd 0
+   * then, with its handle ref'd, so the process lives until the stream ends.
+   */
+  readonly __substrateGuestRead: boolean;
+  [kEngineStdinRead](size?: number): unknown;
   setRawMode(mode: boolean): ProcessStdin;
   __substrateStdinWrite(data: string | Uint8Array): void;
   __substrateStdinEnd(): void;
@@ -111,6 +124,23 @@ function processStdinClass(ReadableClass: typeof Readable): new () => ProcessStd
 
     /** Node's `Readable` asks for this; the engine pushes, so there is nothing to pull. */
     _read(): void {}
+
+    __substrateGuestRead = false;
+
+    /**
+     * The program's `read()`. `read(0)` is the stream's own refresh, which
+     * Node's Readable calls itself (after a push, on resume); any other is
+     * the program asking for bytes, and is recorded.
+     */
+    read(size?: number): unknown {
+      if (size !== 0) this.__substrateGuestRead = true;
+      return super.read(size);
+    }
+
+    /** A read the engine makes, which is not the program's. */
+    [kEngineStdinRead](size?: number): unknown {
+      return super.read(size);
+    }
     /** False: there is no terminal in a tab. A runner that drives an interactive program sets it. */
     isTTY = false;
 

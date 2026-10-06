@@ -31,6 +31,9 @@ import { createNodeError as vfsError } from '../../virtual-fs';
 import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner } from './handles';
 import { enterRun, __runFor, type ProcessToken } from '../../process-tokens';
 import { kStdinRing, type StdinRingReader } from '../../stdin-ring';
+// The guest stdin stream's engine-side read (shims/process.ts `kEngineStdinRead`),
+// named here so this binding does not import the process shim.
+const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
 import { allocateFd, handleForFd } from './fds';
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
 import { errname } from './uv';
@@ -202,9 +205,15 @@ export const kStdioKinds = Symbol.for('tabnode.run.stdioKinds');
 
 /** What a run's standard streams are, as the fs binding reads them. */
 interface StdioStreams {
-  stdin?: { isTTY?: boolean; read(size?: number): unknown; unshift(chunk: Uint8Array): void; readableEnded?: boolean; readableLength?: number; _readableState?: { ended?: boolean } };
+  stdin?: { isTTY?: boolean; read(size?: number): unknown; [kEngineStdinRead]?: (size?: number) => unknown; unshift(chunk: Uint8Array): void; readableEnded?: boolean; readableLength?: number; _readableState?: { ended?: boolean } };
   stdout?: { isTTY?: boolean };
   stderr?: { isTTY?: boolean };
+}
+
+/** A read of the guest's stdin by the engine, not counted as the program reading its stream. */
+function engineRead(stdin: NonNullable<StdioStreams['stdin']>, size?: number): unknown {
+  const own = stdin[kEngineStdinRead];
+  return typeof own === 'function' ? own.call(stdin, size) : stdin.read(size);
 }
 
 /** The asking run's process -- its own, not whichever guest holds the realm's name. */
@@ -225,7 +234,7 @@ function stdioProcess(token: ProcessToken | null = currentOwner()): StdioStreams
 function readStdinRing(fd: number, stdin: NonNullable<StdioStreams['stdin']>, ring: StdinRingReader, buffer: Uint8Array, offset: number, length: number): number {
   const buffered = stdin.readableLength ?? 0;
   if (buffered > 0) {
-    const chunk = stdin.read(Math.min(length, buffered));
+    const chunk = engineRead(stdin, Math.min(length, buffered));
     if (chunk !== null && chunk !== undefined) {
       const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk as Uint8Array;
       const count = Math.min(length, bytes.length);
@@ -298,7 +307,7 @@ function readStdin(fd: number, buffer: Uint8Array, offset: number, length: numbe
   if (length <= 0) return 0;
   const ring = (stdioProcess() as Record<symbol, unknown> | undefined)?.[kStdinRing] as StdinRingReader | undefined;
   if (ring) return readStdinRing(fd, stdin, ring, buffer, offset, length);
-  const chunk = stdin.read();
+  const chunk = engineRead(stdin);
   if (chunk === null || chunk === undefined) {
     if (stdin.readableEnded === true || stdin._readableState?.ended === true) return 0;
     if (nonblockingAliases.has(fd)) throw createNodeError('EAGAIN', 'read', String(fd));

@@ -48,6 +48,8 @@
  * spin where it may not), as uvwasi blocks on its loop.
  */
 import NODE_WASI_SOURCE from '../node-lib/wasi.js?raw';
+// The guest stdin stream's engine-side read (process.ts `kEngineStdinRead`).
+const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
 import {
   ERR_INVALID_ARG_TYPE,
   ERR_INVALID_ARG_VALUE,
@@ -620,7 +622,11 @@ function bindingClassFor(fs: WasiHostFs, process: WasiHostProcess): BindingClass
   /** What the guest's stdin has to give: whatever its stream yields now; then EOF. */
   const readStdin = (state: WrapState, into: Uint8Array): number => {
     if (state.stdinPending.length === 0 && !state.stdinEnded) {
-      const chunk = typeof process.stdin.read === 'function' ? process.stdin.read() : null;
+      // The guest's fd 0 read, which is not the stream's reader: taken with
+      // the engine's own read, so it does not keep the process alive.
+      const engineRead = (process.stdin as { [kEngineStdinRead]?: () => unknown })[kEngineStdinRead];
+      const chunk = (typeof engineRead === 'function' ? engineRead.call(process.stdin)
+        : typeof process.stdin.read === 'function' ? process.stdin.read() : null) as string | Uint8Array | null | undefined;
       if (chunk === null || chunk === undefined) state.stdinEnded = true;
       else state.stdinPending = typeof chunk === 'string' ? encoder.encode(chunk) : new Uint8Array(chunk);
     }
