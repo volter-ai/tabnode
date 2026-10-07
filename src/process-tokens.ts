@@ -279,6 +279,16 @@ export function runPid(token: ProcessToken | null | undefined): { pid: number; p
   return token === null || token === undefined ? undefined : pidsOfRuns.get(token);
 }
 
+/** exit_group for a child this realm ran itself: its end goes to the process table. */
+export function exitRunProcess(pid: number, parentPid: number, code: number, signal: string | null): void {
+  processRegistry.exit(pid, parentPid, code, signal);
+}
+
+/** wait4 for a child whose run has ended: the end the process table holds, which its parent reports. */
+export function reapRunProcess(pid: number, parentPid: number, code: number, signal: string | null): { code: number; signal: string | null } {
+  return processRegistry.reap(pid, parentPid, code, signal);
+}
+
 /** A run that has ended is no longer a process; its number is nobody's. */
 export function forgetRunPid(token: ProcessToken): void {
   processRegistry.forget(token);

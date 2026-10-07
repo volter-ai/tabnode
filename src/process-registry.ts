@@ -43,6 +43,17 @@ export interface ProcessRegistry {
    * does not hold answers loudly. Every other pid this realm publishes is one its `allocate` made.
    */
   exec(token: string, identity: ProcessIdentity): void;
+  /**
+   * exit_group for `pid`, a child forked under `parentPid` whose image this realm ran itself (an engine run): ended
+   * with `code`, or by `signal`. A child another realm or the host runs reports its own exit.
+   */
+  exit(pid: number, parentPid: number, code: number, signal: string | null): void;
+  /**
+   * wait4 for `pid`, a child forked under `parentPid`, once its run has ended: the end its parent reports (Node's
+   * 'exit' code and signal). A registry over a kernel answers with the zombie's status and reaps it; tabnode's own,
+   * which is its own kernel, answers with the end its run gave.
+   */
+  reap(pid: number, parentPid: number, code: number, signal: string | null): { code: number; signal: string | null };
   forget(token: string): void;
   lookup(pid: number): ProcessIdentity | undefined;
   /**
@@ -164,6 +175,8 @@ export function createProcessRegistryOwner(): {
           this.claim(identity.pid);
           this.publish(token, identity);
         },
+        exit() {},
+        reap(_pid, _parentPid, code, signal) { return { code, signal }; },
         publish(token, identity) {
           active();
           const previous = runs.get(token);
