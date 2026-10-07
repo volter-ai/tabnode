@@ -13,6 +13,8 @@
 // hands the host's own globals back. See `host-globals.ts`.
 export { restoreHostGlobals, guestRealmInstalled } from './host-globals';
 export { VirtualFS } from './virtual-fs';
+// The realm's loop, busy or idle, for a host that shows it as a process's state.
+export { observeGuestLoop } from './guest-loop';
 export type { FSNode, MountedTree, Stats, FSWatcher, WatchListener, WatchEventType } from './virtual-fs';
 export { Runtime, execute, prepareModuleForImage, preparedModuleKey, PREPARED_MODULES_DIR } from './runtime';
 export type { Module, RuntimeOptions, RequireFunction } from './runtime';

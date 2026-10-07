@@ -8,6 +8,9 @@
  * the engine's dispatch boundaries is not observable here.
  *
  * No observer, sampling timer or handle is created. Importing starts nothing.
+ * A host may watch the loop's edges (`observeGuestLoop`): busy when guest work
+ * starts from idle, idle when the last of it ends, as an OS shows a process
+ * running or asleep in its poll.
  */
 let clock: (() => number) | undefined;
 let started = 0;
@@ -16,6 +19,17 @@ let activeSince = 0;
 let depth = 0;
 let continuation = false;
 const enqueue = globalThis.queueMicrotask.bind(globalThis);
+const edges = new Set<(busy: boolean) => void>();
+
+/** The host's view of this realm's loop: called with true when guest work starts from idle, false when it ends. */
+export function observeGuestLoop(listener: (busy: boolean) => void): () => void {
+  edges.add(listener);
+  return () => { edges.delete(listener); };
+}
+
+function edge(busy: boolean): void {
+  for (const listener of edges) listener(busy);
+}
 
 export function startGuestLoop(): void {
   if (clock) return;
@@ -26,13 +40,18 @@ export function startGuestLoop(): void {
 
 function begin(): void {
   startGuestLoop();
-  if (depth === 0 && !continuation) activeSince = clock!();
+  const idle = depth === 0 && !continuation;
+  if (idle) activeSince = clock!();
   depth++;
+  if (idle) edge(true);
 }
 
 function end(): void {
   depth--;
-  if (depth === 0 && !continuation) active += clock!() - activeSince;
+  if (depth === 0 && !continuation) {
+    active += clock!() - activeSince;
+    edge(false);
+  }
 }
 
 export function withGuestExecution<T>(fn: () => T): T {
@@ -44,11 +63,16 @@ export function withGuestExecution<T>(fn: () => T): T {
 export function resumeGuestTurn(): void {
   if (continuation) return;
   startGuestLoop();
-  if (depth === 0) activeSince = clock!();
+  const idle = depth === 0;
+  if (idle) activeSince = clock!();
   continuation = true;
+  if (idle) edge(true);
   enqueue(() => {
     continuation = false;
-    if (depth === 0) active += clock!() - activeSince;
+    if (depth === 0) {
+      active += clock!() - activeSince;
+      edge(false);
+    }
   });
 }
 
