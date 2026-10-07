@@ -17,7 +17,7 @@
 
 import type { Process } from './shims/process';
 import { AsyncLocalStorage } from './shims/async_hooks';
-import { createProcessRegistryOwner, type ProcessIdentity, type ProcessRegistry, type ProcessRegistryScope, type InitialProcessRegistration } from './process-registry';
+import { createProcessRegistryOwner, type ProcessIdentity, type ProcessRegistry, type ProcessRegistryScope, type ProcessRegistryOwner, type InitialProcessRegistration } from './process-registry';
 
 /** Whatever the embedding runtime uses to name one guest process. */
 export type ProcessToken = string;
@@ -173,16 +173,32 @@ export function __signalOwnedProcess(token: ProcessToken, signal: string): boole
  * every extension in the tab sat at "Activating..." and `vscode.git` never
  * started at all.
  */
-const processRegistryOwner = createProcessRegistryOwner();
-const localProcessRegistry = processRegistryOwner.createScope();
-localProcessRegistry.receiveSignals((pid, signal) => {
+let processRegistryOwner: ProcessRegistryOwner = createProcessRegistryOwner();
+const answerOwnedSignals = (pid: number, signal: string): boolean => {
   const token = tokenOfPid(pid);
   return token !== null && __signalOwnedProcess(token, signal);
-});
+};
+let localProcessRegistry = processRegistryOwner.createScope();
+localProcessRegistry.receiveSignals(answerOwnedSignals);
 let processRegistry: ProcessRegistry = localProcessRegistry;
 let registryInstalled = false;
 let registryUsed = false;
 const pidsOfRuns = new Map<ProcessToken, { pid: number; ppid: number; pgid?: number }>();
+
+/**
+ * Trusted container owner only, before any process exists: the authority this container's processes are
+ * registered with, in place of tabnode's standalone one. An embedder with a kernel installs a view of the
+ * kernel's process table, so a pid, a claim (an exec on the kernel's process) and `/proc` are the kernel's
+ * (browser-substrate ADR-0129: one process table).
+ */
+export function installProcessRegistryOwner(owner: ProcessRegistryOwner): void {
+  if (registryInstalled) throw new Error('This realm is a process registry client, not the container owner.');
+  if (registryUsed) throw new Error('The process registry owner must be installed before any process is created.');
+  processRegistryOwner = owner;
+  localProcessRegistry = owner.createScope();
+  localProcessRegistry.receiveSignals(answerOwnedSignals);
+  processRegistry = localProcessRegistry;
+}
 
 /** Each child realm gets its own registration authority in this container. */
 export function createProcessRegistryScope(): ProcessRegistryScope {
