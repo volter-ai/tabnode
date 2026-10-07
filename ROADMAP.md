@@ -9,6 +9,20 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## host-spawn-argv: A spawn without a shell reaches the host as its argv, not a shell line
+
+Status: planned
+`spawn(file, args)` without `shell` is `execvp(file, args)` in Node: one process, the exact argv. A child
+the engine routes to its host instead crosses as a command line (`routeCommand` with `__substrateLineFor`,
+src/shims/child_process.ts and src/shims/command-line.ts), which the host runs as `/bin/sh -c`. Rallly's
+exec-form CMD `["./docker-start.sh"]`, spawned by `volter-world attach`, ran as `sh -c ./docker-start.sh` and
+then `sh ./docker-start.sh` (browser-substrate Rallly run 39): an extra shell as the CMD's parent and PID,
+its words re-quoted through a shell, and signals going to the shell.
+Completion:
+- A non-shell spawn the engine routes to its host carries `file` and `argv`, and the host execs exactly that
+  argv; `/bin/sh -c` is used only for `shell: true` (and a line a program spawns through a shell itself).
+- browser-substrate's container match for an image's CMD goes back to comparing argvs.
+
 ## rejection-ownership: Deliver native promise failures to their process
 
 Card t_94bcd252, task t_41f48f39, substrate Article 6: the accepted cold/repeat
