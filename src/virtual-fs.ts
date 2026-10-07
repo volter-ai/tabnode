@@ -145,6 +145,8 @@ export function createNodeError(
     EEXIST: -17,
     ENOTEMPTY: -39,
     EROFS: -30,
+    ELOOP: -40,
+    EINVAL: -22,
   };
 
   const messages: Record<string, string> = {
@@ -154,6 +156,8 @@ export function createNodeError(
     EEXIST: 'file already exists',
     ENOTEMPTY: 'directory not empty',
     EROFS: 'read-only file system',
+    ELOOP: 'too many symbolic links encountered',
+    EINVAL: 'invalid argument',
   };
 
   const err = new Error(
@@ -561,7 +565,12 @@ export class VirtualFS {
    * Check if path exists
    */
   existsSync(path: string): boolean {
-    return this.getNode(path) !== undefined;
+    // Node's existsSync is an access() check: false on any failure that is an errno (ELOOP included), never a throw.
+    try { return this.getNode(path) !== undefined; }
+    catch (cause) {
+      if (typeof (cause as { errno?: unknown } | null)?.errno === 'number') return false;
+      throw cause;
+    }
   }
 
   /**
