@@ -2033,13 +2033,42 @@ function programExists(file: string, cwd: string | undefined, env: Record<string
   if (shellCommandNames().has(bare)) return true;
   if (name.includes('/')) {
     const path = __resolvePath(cwd ?? '/', name);
-    return existsInTree(path) && !isRegisteredProgramStub(path);
+    return existsInTree(path) && runsInEngine(path);
   }
   for (const dir of (env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin').split(':')) {
     const path = `${dir}/${name}`.replace(/\/+/gu, '/');
-    if (dir.length > 0 && existsInTree(path) && !isRegisteredProgramStub(path)) return true;
+    if (dir.length > 0 && existsInTree(path) && runsInEngine(path)) return true;
   }
   return false;
+}
+
+/**
+ * Whether a file in the tree is this engine's to run when a host could run it.
+ * Linux's execve runs a script through the interpreter its `#!` line names and
+ * a binary through its loader. This engine's own interpreters are Node (its
+ * `node` command) and just-bash; a Node script stays here, where its `node` is
+ * the engine's. Any other file goes to the host, whose kernel execs it: a shell
+ * script spawned by path (Prisma's execa spawning a wrapper) ran in just-bash,
+ * whose `exec node` found the host's `node` stub on PATH and ran the stub as
+ * a script ("bash: \0Volter-host-executable-v1: command not found"). With no
+ * host, every file but a registered stub stays here, as before.
+ */
+function runsInEngine(path: string): boolean {
+  if (hostExecutor() === null) return !isRegisteredProgramStub(path);
+  return isNodeScript(path);
+}
+
+/** A script whose `#!` line names node (directly, or through env): what npm's bins are. */
+const NODE_INTERPRETER = /^#![ \t]*(?:\S*\/)?(?:env[ \t]+(?:-S[ \t]+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*)?node(?:[ \t]|$)/u;
+function isNodeScript(path: string): boolean {
+  if (!currentVfs) return false;
+  try {
+    if (!currentVfs.statSync(path).isFile()) return false;
+    const bytes = currentVfs.readFileSync(path) as Uint8Array;
+    const end = bytes.indexOf(10);
+    const line = new TextDecoder().decode(bytes.subarray(0, end < 0 ? Math.min(bytes.byteLength, 256) : Math.min(end, 256)));
+    return NODE_INTERPRETER.test(line);
+  } catch { return false; }
 }
 
 /**
