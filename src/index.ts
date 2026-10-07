@@ -59,7 +59,7 @@ import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/han
 import { listenerOnPort } from './node-lib/binding/tcp_wrap';
 import { nativeStreamHandles, nativeStreamOwnerPid, type NativeStreamHandleView } from './native-stream-owner';
 
-import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
+import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid, installRunRegistry, claimRunPid } from './process-tokens';
 export { runPid, processByPid };
 export { createProcessRegistryScope, installProcessRegistry, installProcessIdAllocator, ownerProcessRegistryScope, ownerProcessTable } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
@@ -116,12 +116,12 @@ export interface RunOptions {
    * The numbers a host that numbers processes already gave this run: a
    * kernel's pid for a `node` its shell exec'd, and the pid of the process
    * that exec'd it, as its own pid namespace numbers them. The run is that
-   * process (`process.pid`, `process.ppid`). `runNode` only.
+   * process (`process.pid`, `process.ppid`).
    */
   process?: { pid: number; ppid: number };
   /**
    * The run's process registry, where its process has a kernel connection of its own: its numbers, its children,
-   * kill and lookup go through it (`installRunRegistry`). `runNode` only.
+   * kill and lookup go through it (`installRunRegistry`).
    */
   registry?: ProcessRegistry;
   terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
@@ -312,6 +312,9 @@ export function createContainer(options?: ContainerOptions): {
     execute: (code: string, filename?: string) => runtime.execute(code, filename),
     runFile: (filename: string) => runtime.runFile(filename),
     run: (command: string, runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => new Promise((resolve) => {
+      // A run that is a process of a kernel's (its own connection): its registry and its numbers, as runNode's.
+      if (runOptions?.registry) installRunRegistry(processToken, runOptions.registry);
+      if (runOptions?.process) claimRunPid(processToken, runOptions.process.pid, runOptions.process.ppid, { argv: ['sh', '-c', command], cwd: runOptions.cwd ?? '/' });
       // `container.run("cat", { stdin })` used to reach the engine's shell
       // without its stdin: the run dropped it before exec, and exec dropped
       // it before the shell. Both forward it, so a builtin reads what was
