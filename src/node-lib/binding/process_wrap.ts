@@ -29,7 +29,7 @@ import {
 } from './handles';
 import { __runFor, mintPid, type ProcessToken } from '../../process-tokens';
 import { handleForFd } from './fds';
-import { descriptorWriter } from './fs';
+import { descriptorWriter, type DescriptorWriter } from './fs';
 import { TTY, type TerminalState } from './tty_wrap';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio` builds it. */
@@ -189,7 +189,7 @@ function spawningDirectory(token: ProcessToken | null): string | undefined {
 }
 
 /** Where an `inherit` entry's bytes go: the spawning program's own stream. */
-function inheritedWriter(fd: number, token: ProcessToken | null): ((chunk: string | Uint8Array) => void) | null {
+function inheritedWriter(fd: number, token: ProcessToken | null): DescriptorWriter | null {
   // a descriptor of the parent's own (a log file it opened) is written as the file
   if (fd !== 1 && fd !== 2) return descriptorWriter(fd);
   // Inherit the descriptor's original sink, not a guest replacement of
@@ -229,6 +229,8 @@ export class Process implements OwnedHandle {
   /** The stdio entries this run was started with, and their far ends. */
   private stdio: StdioEntry[] = [];
   private terminalEnds = new Map<number, TTY>();
+  /** Writers holding their own reference to a parent's description (fd stdio), released at the child's end. */
+  private heldDescriptions: DescriptorWriter[] = [];
   private readonly asyncId = nextAsyncId++;
 
   constructor() {
@@ -334,6 +336,7 @@ export class Process implements OwnedHandle {
         }
       } else if (entry.type === 'inherit' || entry.type === 'fd') {
         const inherited = inheritedWriter(entry.fd ?? index, ownerOf(this));
+        if (inherited?.release) this.heldDescriptions.push(inherited);
         if (index === 1) request.stdout = inherited;
         else request.stderr = inherited;
       }
@@ -391,6 +394,8 @@ export class Process implements OwnedHandle {
   }
 
   private closeFarEnds(): void {
+    // The child's own references to the parent's descriptions it wrote (fd stdio) end with it.
+    for (const writer of this.heldDescriptions.splice(0)) writer.release?.();
     for (let index = 0; index < this.stdio.length; index += 1) {
       const far = this.farEndAt(index);
       if (!far) continue;

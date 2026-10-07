@@ -376,17 +376,36 @@ function fileFor(fd: number): OpenFile {
  * is a stream (a socket, a pipe) is written as a stream. Anything else is
  * not a sink, and the child's output there goes nowhere, as `ignore` does.
  */
-export function descriptorWriter(fd: number): ((chunk: string | Uint8Array) => void) | null {
+export type DescriptorWriter = ((chunk: string | Uint8Array) => void) & {
+  /** The child has ended: its own reference to the description goes (a dup the tree made). */
+  release?(): void;
+};
+
+export function descriptorWriter(fd: number): DescriptorWriter | null {
   // A descriptor takes bytes; a chunk a child wrote as bytes goes on as them.
   const bytesOf = (chunk: string | Uint8Array): Uint8Array => typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
   // A description a tree owns is written through it: one offset, the
   // owner's, shared with the parent's copy as a dup'd descriptor's is.
   const owner = ownerOf(fd);
   if (owner) {
-    return (chunk) => {
+    // The child's own number for the description, taken now, while the parent's is open: the parent
+    // closing (or reusing) its number then changes nothing for the child (fork's copy plus dup2).
+    let own: number | undefined;
+    try { own = owner.dup?.(fd); } catch { own = undefined; }
+    const target = own ?? fd;
+    const writer: DescriptorWriter = (chunk) => {
       const bytes = bytesOf(chunk);
-      try { owner.write(fd, bytes, 0, bytes.length, null); } catch { /* a closed description drops the child's output */ }
+      try { owner.write(target, bytes, 0, bytes.length, null); } catch { /* a closed description drops the child's output */ }
     };
+    if (own !== undefined) {
+      let released = false;
+      writer.release = () => {
+        if (released) return;
+        released = true;
+        try { owner.close(own!); } catch { /* the tree has already let it go */ }
+      };
+    }
+    return writer;
   }
   // The parent's own fd 1 or 2 (or a descriptor it opened on /dev/stdout):
   // the child writes the parent's stream, read against the parent, whose
