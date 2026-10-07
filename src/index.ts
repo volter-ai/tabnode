@@ -61,7 +61,7 @@ import { nativeStreamHandles, nativeStreamOwnerPid, type NativeStreamHandleView 
 
 import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid } from './process-tokens';
 export { runPid, processByPid };
-export { createProcessRegistryScope, installProcessRegistry, installProcessIdAllocator, ownerProcessRegistryScope, ownerProcessTable } from './process-tokens';
+export { createProcessRegistryScope, installProcessRegistry, installProcessIdAllocator, installProcessRegistryOwner, ownerProcessRegistryScope, ownerProcessTable } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
@@ -69,7 +69,7 @@ export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter } from '
 import { stdinRingProblem, stdinRingWaitsAsync } from './stdin-ring';
 export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats } from './tree-descriptors';
-export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
+export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, ProcessRegistryOwner, InitialProcessRegistration } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
 export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport, NativeStreamHandleView } from './native-stream-owner';

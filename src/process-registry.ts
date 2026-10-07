@@ -66,17 +66,25 @@ export interface ProcessRegistryScope extends ProcessRegistry {
  * so identical local run tokens cannot overwrite or release another realm's
  * process. Allocation alone does not announce a live process.
  */
-export function createProcessRegistryOwner(): {
+/**
+ * The container's process authority: what every realm's scope is made from and what `/proc` lists. tabnode's own
+ * (`createProcessRegistryOwner`) is the standalone implementation, for a library user with no kernel; an embedder
+ * with a kernel installs its own (`installProcessRegistryOwner`), a view of the kernel's process table, so the
+ * container has one process table (browser-substrate ADR-0129).
+ */
+export interface ProcessRegistryOwner {
   createScope(): ProcessRegistryScope;
   table(): ProcessIdentity[];
   /**
    * The numbers come from here from now on: a kernel's own pid counter, so
    * the container's processes and the kernel's are one pid space, and a
    * child's `process.ppid` is the parent its kernel names. A number still
-   * held here is passed over.
+   * held here is passed over. An owner that is the kernel's view has no counter of its own and may refuse.
    */
   installAllocator(allocate: () => number): void;
-} {
+}
+
+export function createProcessRegistryOwner(): ProcessRegistryOwner {
   let nextPid = 1000 + Math.floor(Math.random() * 30000);
   let allocator: (() => number) | undefined;
   // Every number a scope holds, allocated or claimed, so no two runs share one.
