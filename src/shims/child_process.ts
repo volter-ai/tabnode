@@ -260,8 +260,8 @@ async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaun
     return { ...result, stdout: bytesOut ? '' : result.stdout, stderr: bytesErr ? '' : result.stderr,
       ...(ended ? { exitCode: ended.code, ...(ended.signal ? { signal: ended.signal } : {}) } : {}) };
   } finally {
-    // A run that never ran exits here, unstarted, and is reaped.
-    if (forked && !ran) { exitRunProcess(own.pid, own.ppid, 1, null); reapRunProcess(own.pid, own.ppid, 1, null); }
+    // A run the host failed to run (the runtime's failure, thrown to the caller) is killed, and reaped.
+    if (forked && !ran) { exitRunProcess(own.pid, own.ppid, 137, 'SIGKILL'); reapRunProcess(own.pid, own.ppid, 137, 'SIGKILL'); }
     if (streams) streams.stdin = null;
     input?.dispose();
     // Adoption moves owner registration; only the source-local lookup remains.
@@ -1115,12 +1115,13 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // behind it, and the page went on previewing a port no process held.
     // Safe twice: a run that exited already emptied its own entries.
     if (runToken !== null) { __releaseOwnedServers(runToken, false); __releaseOwnedHandles(runToken); }
-    // A run this realm forked for itself exits with its end (1 for one that threw) and, its end being its parent's
-    // wait, is reaped.
+    // A run this realm forked for itself exits with its end and, its end being its parent's wait, is reaped. One whose
+    // launch threw (the runtime's failure, thrown to the caller) passed no code: it is killed.
     if (forkedHere) {
       const own = runPid(runToken)!;
-      exitRunProcess(own.pid, own.ppid, runEnd ?? 1, null);
-      reapRunProcess(own.pid, own.ppid, runEnd ?? 1, null);
+      const [code, signal] = runEnd === undefined ? [137, 'SIGKILL'] : [runEnd, null];
+      exitRunProcess(own.pid, own.ppid, code, signal);
+      reapRunProcess(own.pid, own.ppid, code, signal);
     }
     // A run that has ended is no longer a process: the number it wrote into
     // a lock file answers ESRCH from here on, which is how a stale lock is
