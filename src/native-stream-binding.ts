@@ -161,7 +161,9 @@ export class NativeStreamDriver {
    */
   private drainForExit(): void {
     const writeAtExit = this.channel.writeAtExit?.bind(this.channel);
-    if (!writeAtExit || this.closing || stopped || this.writeEnded) return;
+    // A stream whose write side ended still owes the reader what was queued before end() (`stdout.end(data);
+    // process.exit()`): end() adds no write of its own, only the shutdown that follows the queue.
+    if (!writeAtExit || this.closing || stopped) return;
     const maximum = this.channel.limits.maxReadChunkBytes;
     for (const write of this.writes) {
       // A write carrying a descriptor (an IPC handle) cannot be handed over without its owner's answer.
