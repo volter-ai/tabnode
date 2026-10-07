@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.7.3 — 2026-10-07
+
 - A spawn tells a file's kind from its first 256 bytes, not the whole file:
   a Node script's `#!` line and a binary image's first bytes are read
   through the tree's own descriptors where it offers them, so spawning a
