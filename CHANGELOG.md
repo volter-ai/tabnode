@@ -2,6 +2,20 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## Unreleased
+
+- A spawn tells a file's kind from its first 256 bytes, not the whole file:
+  a Node script's `#!` line and a binary image's first bytes are read
+  through the tree's own descriptors where it offers them, so spawning a
+  multi-megabyte binary by path no longer reads all of it.
+- `process.dlopen` of a missing file fails as Node's does, with
+  `ERR_DLOPEN_FAILED` and the dynamic linker's message, not require's
+  `MODULE_NOT_FOUND`; loaders such as Prisma's report on that code.
+- A child's fd stdio holds its own reference to the parent's description
+  (`TreeDescriptors.dup`), as fork and dup2 give it on Linux: a parent that
+  hands a log file to a long-lived child and closes its fd (twin-world's
+  pgliteUp) no longer cuts the child's output.
+
 ## v0.7.0 — 2026-10-06
 
 The container's processes and a kernel's are one pid space. A minor
