@@ -66,6 +66,15 @@ export interface TreeDescriptors {
   fchmod(fd: number, mode: number): void;
   /** futimens(2), in seconds. */
   futimes(fd: number, atime: number, mtime: number): void;
+  /**
+   * fcntl(fd, F_DUPFD_CLOEXEC, 0): a second number for the SAME open description (one offset, its
+   * `O_APPEND`), which `close` releases; the description lives while either number does. The engine
+   * holds one for a child whose stdio names this descriptor, as fork's copy and dup2 give a Linux
+   * child its own reference: the parent may close its number at once (`spawn` then `closeSync`), and
+   * the child still writes the file. A tree without it leaves such a child writing by the parent's
+   * number, which a close drops and a reuse misdirects.
+   */
+  dup?(fd: number): number;
   /** A number for a handle of the engine's own (a pipe, a socket), held until `release`. */
   reserve(): number;
   release(fd: number): void;
