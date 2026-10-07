@@ -2160,7 +2160,7 @@ function startChildRun(request: RunRequest): StartedRun {
   // In a process realm the admitted guest is always the spawning parent.
   // Async bookkeeping for a routed child must not make that child its parent.
   const parentPid = runPid(nodeProcessRealmToken() ?? __currentProcessToken() ?? __lastLaunchedToken)?.pid ?? 0;
-  const pid = mintPid(parentPid);
+  const pid = mintPid(parentPid, request.detached === true);
   setRunPid(token, pid, parentPid,
     { detached: request.detached, argv: request.args.length ? request.args : [request.file], ...(request.cwd ? { cwd: request.cwd } : {}) });
   const controller = new AbortController();

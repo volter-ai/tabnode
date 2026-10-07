@@ -244,9 +244,9 @@ export function claimRunPid(token: ProcessToken, pid: number, ppid: number, star
 }
 
 /** The next process number this engine hands out. */
-export function mintPid(parentPid?: number): number {
+export function mintPid(parentPid?: number, newSession = false): number {
   registryUsed = true;
-  return processRegistry.allocate(parentPid !== undefined && parentPid > 0 ? parentPid : undefined);
+  return processRegistry.allocate(parentPid !== undefined && parentPid > 0 ? parentPid : undefined, newSession);
 }
 
 /** Record the numbers a named run was started with, for the run to read back. */
