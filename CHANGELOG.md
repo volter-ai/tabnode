@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.7.4 — 2026-10-07
+
 ## Unreleased
 
 - `kill()` on a child the host runs (a program pack, a WALI image) sends the
