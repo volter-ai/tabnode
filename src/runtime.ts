@@ -9,6 +9,7 @@ import { VirtualFS } from './virtual-fs';
 import { rememberCompiledSource } from './error-source';
 import { startGuestLoop, withGuestExecution } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
+import { importPendingTrace, type ImportPendingTrace } from './import-pending-trace';
 import { guestFetch, rememberRequestBodySource } from './fetch-transport';
 import { installNodeResponse } from './node-response';
 import { withNodeRequestBody } from './node-body';
@@ -839,13 +840,16 @@ export function __substratePendingOf(value: unknown): Promise<void> | undefined 
  * nobody awaits fails as an unhandled rejection, which a program's runner
  * reports, where Node prints the error and exits 1.
  */
-function __substrateKeepPending(module: Module, body: Promise<unknown>, forget: () => void): void {
+function __substrateKeepPending(module: Module, body: Promise<unknown>, forget: () => void, process: Process): void {
+  const trace = importPendingTrace(process);
+  const traceId = trace.start('async-module', module.filename, module.parent?.filename, module);
   const exports = module.exports as Record<symbol, unknown>;
   const holds = exports !== null && (typeof exports === 'object' || typeof exports === 'function');
   const settled: Promise<void> = body.then(
-    () => { module.loaded = true; if (holds) delete exports[__substratePending]; },
-    (error: unknown) => { forget(); if (holds) delete exports[__substratePending]; throw error; },
+    () => { module.loaded = true; if (holds) delete exports[__substratePending]; trace.settled(traceId, 'fulfilled'); },
+    (error: unknown) => { forget(); if (holds) delete exports[__substratePending]; trace.settled(traceId, 'rejected'); throw error; },
   );
+  trace.modulePromise(traceId, settled);
   if (holds) Object.defineProperty(exports, __substratePending, { value: settled, configurable: true, enumerable: false, writable: true });
 }
 const __substrateAwaitMarker = '/*__substrate_await__*/(';
@@ -873,17 +877,19 @@ function __substrateAsyncBody(wrappedCode: string): string {
  * body is done; an async body's promise is its own. Returns what is still
  * settling, or undefined when the body ran through.
  */
-function __substrateDriveBody(kind: 'sync' | 'generator' | 'async', body: unknown, module: Module): Promise<unknown> | undefined {
+function __substrateDriveBody(kind: 'sync' | 'generator' | 'async', body: unknown, module: Module, process: Process): Promise<unknown> | undefined {
   if (kind === 'sync') return undefined;
   if (kind === 'async') return (module as { __substrateBodyDone?: boolean }).__substrateBodyDone ? undefined : body as Promise<unknown>;
   const iterator = body as Iterator<unknown>;
   let step: IteratorResult<unknown> = withGuestExecution(() => iterator.next());
   while (!step.done && !step.value) step = withGuestExecution(() => iterator.next());
   if (step.done) return undefined;
+  const trace = importPendingTrace(process);
   return (async () => {
     let current: IteratorResult<unknown> = step;
     while (!current.done) {
-      await current.value;
+      trace.bodyWaiting(module, current.value);
+      try { await current.value; } finally { trace.bodyWaiting(module, undefined); }
       current = withGuestExecution(() => iterator.next());
       while (!current.done && !current.value) current = withGuestExecution(() => iterator.next());
     }
@@ -904,6 +910,8 @@ async function __substrateImportThroughHooks(
   id: string,
   parentURL: string | undefined,
   moduleRequire: RequireFunction,
+  trace: ImportPendingTrace,
+  traceId: number | undefined,
 ): Promise<unknown> {
   // A run with a module resolution outstanding is not idle. The chain can
   // wait on anything -- VS Code's hook asks the main thread over a
@@ -915,7 +923,7 @@ async function __substrateImportThroughHooks(
   const held = heldWork();
   held.count += 1;
   try {
-    return await __substrateImportChain(hooks, id, parentURL, moduleRequire);
+    return await __substrateImportChain(hooks, id, parentURL, moduleRequire, trace, traceId);
   } finally {
     held.count -= 1;
   }
@@ -926,20 +934,25 @@ async function __substrateImportChain(
   id: string,
   parentURL: string | undefined,
   moduleRequire: RequireFunction,
+  trace: ImportPendingTrace,
+  traceId: number | undefined,
 ): Promise<unknown> {
   const doors = moduleRequire as unknown as {
     __resolveToURL: (specifier: string) => string;
     __loadFromURL: (url: string, format?: string, source?: string | ArrayBuffer | ArrayBufferView | null) => unknown;
     __readFromURL: (url: string) => string | null;
   };
+  trace.waiting(traceId, hooks.hasAsyncResolve ? 'async resolve hook' : 'module load');
   const resolved = hooks.hasAsyncResolve
     ? await hooks.resolve(id, parentURL, void 0, (specifier: string) => ({ url: doors.__resolveToURL(specifier) }))
     : { url: doors.__resolveToURL(id), format: void 0 as string | undefined };
+  trace.waiting(traceId, hooks.hasAsyncLoad ? 'async load hook' : 'module load');
   if (!hooks.hasAsyncLoad) return doors.__loadFromURL(resolved.url, resolved.format);
   const loaded = await hooks.load(resolved.url, resolved.format, void 0, (url: string, context: { format?: string }) => ({
     source: doors.__readFromURL(url),
     format: context.format,
   }));
+  trace.waiting(traceId, 'module load');
   return doors.__loadFromURL(resolved.url, loaded.format ?? resolved.format, loaded.source ?? void 0);
 }
 
@@ -965,7 +978,9 @@ function createImportMeta(moduleRequire: RequireFunction, url: string, dirname: 
 }
 
 function createDynamicImport(moduleRequire: RequireFunction, process: Process, parentURL?: string): (specifier: unknown) => Promise<unknown> {
+  const trace = importPendingTrace(process);
   return async (specifier: unknown): Promise<unknown> => {
+    let traceId: number | undefined;
     try {
       // The specifier of `import()` undergoes ToString, as Node's does. ESLint's
       // `loadFormatter` imports `pathToFileURL(formatterPath)` — a URL object —
@@ -974,6 +989,7 @@ function createDynamicImport(moduleRequire: RequireFunction, process: Process, p
       // `initializeESLint` with "id4.startsWith is not a function". A value whose
       // conversion throws rejects the import, which is Node's answer too.
       const id = typeof specifier === 'string' ? specifier : String(specifier);
+      traceId = trace.start('dynamic-import', id, parentURL);
       // A dynamic import of a `file://` URL loads the file. Node takes a file
       // URL in `import()`, and Vite loads a project's config by bundling it to
       // a file beside it and importing that file by URL; handing the URL to
@@ -981,11 +997,11 @@ function createDynamicImport(moduleRequire: RequireFunction, process: Process, p
       // href, so a URL object arrives at that branch as the same `file://` string.
       const hooks = (moduleRequire as unknown as { __moduleHooks?: () => RunModuleHooks | undefined }).__moduleHooks?.();
       const mod = hooks && (hooks.hasAsyncResolve || hooks.hasAsyncLoad)
-        ? await __substrateImportThroughHooks(hooks, id, parentURL, moduleRequire)
+        ? await __substrateImportThroughHooks(hooks, id, parentURL, moduleRequire, trace, traceId)
         : moduleRequire(id.startsWith('file://') ? decodeURIComponent(new URL(id).pathname) : id);
       // A module still settling settles the import, as Node's does.
       const pending = __substratePendingOf(mod);
-      if (pending) await pending;
+      if (pending) { trace.waiting(traceId, 'module body', pending); await pending; }
 
       // A lowered ES module already carries its named exports and `__esModule`.
       // A CommonJS builtin does not: Node's ESM namespace is built from the
@@ -993,10 +1009,14 @@ function createDynamicImport(moduleRequire: RequireFunction, process: Process, p
       // proxy copied none of those keys, so `(await import("https")).request`
       // was undefined.
       if (mod && typeof mod === 'object' && '__esModule' in (mod as object)) {
+        trace.settled(traceId, 'fulfilled');
         return mod;
       }
-      return esmNamespaceOf(mod, process);
+      const namespace = esmNamespaceOf(mod, process);
+      trace.settled(traceId, 'fulfilled');
+      return namespace;
     } catch (error) {
+      trace.settled(traceId, 'rejected');
       // Re-throw as a rejected promise (which is what dynamic import does)
       throw error;
     }
@@ -2252,8 +2272,8 @@ function createRequire(
         __substrateGuestConstructor
       ));
 
-      const settling = __substrateDriveBody(bodyKind, body, module);
-      if (settling) __substrateKeepPending(module, settling, () => { delete moduleCache[resolvedPath]; });
+      const settling = __substrateDriveBody(bodyKind, body, module, process);
+      if (settling) __substrateKeepPending(module, settling, () => { delete moduleCache[resolvedPath]; }, process);
       else module.loaded = true;
     } catch (error) {
       // Remove from cache on error
@@ -2845,8 +2865,8 @@ export class Runtime {
         __substrateGuestConstructor
       ));
 
-      const settling = __substrateDriveBody(bodyKind, body, module);
-      if (settling) __substrateKeepPending(module, settling, () => { delete this.moduleCache[filename]; });
+      const settling = __substrateDriveBody(bodyKind, body, module, this.process);
+      if (settling) __substrateKeepPending(module, settling, () => { delete this.moduleCache[filename]; }, this.process);
       else module.loaded = true;
     } catch (error) {
       delete this.moduleCache[filename];
