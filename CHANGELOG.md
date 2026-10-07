@@ -4,6 +4,34 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.8.0 — 2026-10-07
+
+One process table (browser-substrate ADR-0129 step 1): a host whose kernel
+owns its processes gives each run that kernel's numbers, and tabnode keeps no
+second table for it. The exported surface changed, hence a minor release.
+
+- A run can carry its own process registry (`RunOptions.registry`, for
+  `runNode` and `container.run`): a run whose process has a kernel connection
+  of its own takes its pid, its children, `kill`, liveness and group lookups
+  from that registry, in the run's own pid namespace. Every other run, and the
+  realm's own process, use the realm's registry as before.
+- `ProcessRegistry` gains `exec`, `exit` and `reap`, and `allocate` takes the
+  parent pid and whether the child leads a session of its own. A pid is made
+  only at a fork. An image that starts in a process another forked (a
+  kernel's shell exec'ing `node`) is an `exec` and keeps its pid, so it is no
+  longer refused with "Process identifier is already held." An embedder that
+  implements `ProcessRegistry` adds the three methods; tabnode's own registry
+  stays the standalone implementation, where `exec` is the claim it was.
+- A child's end is the status its zombie holds, which its parent's wait reaps;
+  a run the runtime failed to run is killed (`SIGKILL`) rather than given an
+  exit code it never passed, and a killed run ends with its signal and no exit
+  code, libuv's pair.
+- A run is attributed by its scope, never by which run launched last: a
+  binding's callbacks run inside the run that owns the binding, as Node's
+  MakeCallback runs them, and a throw from a timer, immediate or microtask is
+  the uncaught exception of the run that scheduled it. A child's parent is the
+  run whose `Process` handle spawned it.
+
 ## v0.7.4 — 2026-10-07
 
 ## Unreleased
