@@ -60,7 +60,7 @@ import type { ChildProcessModule } from '../node-lib/child-process-module';
 import { getCommandNames } from 'just-bash';
 import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateShellLine, __substrateRunsNode, setProgramResolver } from './command-line';
 
-import { __substrateChildren, __onUncaughtException, __reportUncaughtException } from './process';
+import { __substrateChildren, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
 
 import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __lastLaunchedToken, __setLastLaunchedToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, forgetRunPid, signalPid, type ProcessToken } from '../process-tokens';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
@@ -1638,6 +1638,8 @@ interface ChildProcessHostResult {
   stdout?: string;
   stderr?: string;
   exitCode: number;
+  /** The signal that ended the program, where one did (a name, or its Linux number). */
+  signal?: string | number;
 }
 
 /**
@@ -1732,6 +1734,8 @@ interface CommandRun {
   vfs?: VirtualFS;
   /** The child's ends of its pipes past fd 2, for a host that runs it. */
   descriptors?: { fd: number; pipe: Pipe }[];
+  /** Told when the host's process host takes the run: its end is then the host's, not the engine's. */
+  onHostRun?: () => void;
 }
 
 /**
@@ -1765,6 +1769,7 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
       if (bridge.parentSignal.aborted) abortWithParent();
       else bridge.parentSignal.addEventListener('abort', abortWithParent, { once: true });
     }
+    run.onHostRun?.();
     let streamedOut = '';
     let streamedErr = '';
     const onStdout = (data: string): void => { streamedOut += String(data); run.onStdout?.(String(data)); };
@@ -1806,7 +1811,8 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
       const stderr = bytesErr ? '' : result.stderr || streamedErr;
       if (!bytesOut && !streamedOut && result.stdout) run.onStdout?.(result.stdout);
       if (!bytesErr && !streamedErr && result.stderr) run.onStderr?.(result.stderr);
-      return { stdout, stderr, exitCode: result.exitCode };
+      const signal = typeof result.signal === 'number' ? __substrateSignalNames[result.signal] : result.signal;
+      return { stdout, stderr, exitCode: result.exitCode, ...(signal ? { signal } : {}) };
     } finally {
       if (bridge.parentSignal) bridge.parentSignal.removeEventListener('abort', abortWithParent);
       for (const { release } of opened) release();
@@ -2198,6 +2204,8 @@ function startChildRun(request: RunRequest): StartedRun {
   let killedBy: string | null = null;
   // Whether the child runs on the process host, in a realm of its own.
   let hosted = false;
+  /** The host's process host runs this child (a program pack, a WALI image): it says when the child ends. */
+  let hostRun = false;
   /** What the parent wrote to the child's fd 0 before the command began. */
   const initialStdin: Uint8Array[] = [];
 
@@ -2336,6 +2344,7 @@ function startChildRun(request: RunRequest): StartedRun {
           onStdoutBytes: streams.onStdoutBytes,
           onStderrBytes: streams.onStderrBytes,
           descriptors: request.descriptors,
+          onHostRun: () => { hostRun = true; },
         }));
       } catch (error) {
         outcome = { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
@@ -2366,6 +2375,13 @@ function startChildRun(request: RunRequest): StartedRun {
       // it ends by its own outcome. Only when nothing there receives it does
       // the parent end it here.
       if (hosted && signal !== 'SIGKILL' && signal !== 'SIGSTOP' && signalPid(pid, signal)) return 0;
+      // A child the host runs takes the signal there (the abort carries it) and ends when the program does,
+      // as a Linux child stays live and waitable until it exits: a postmaster's SIGINT is its fast shutdown,
+      // which still writes a checkpoint, and a handler may survive the signal. Its end is the host's result.
+      if (hostRun) {
+        controller.abort(signal);
+        return 0;
+      }
       killedBy = signal;
       controller.abort(signal);
       __releaseOwnedServers(token, false);
