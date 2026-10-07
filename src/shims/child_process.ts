@@ -1657,6 +1657,8 @@ interface ChildProcessHostDescriptor {
 
 /** How a command is handed to that host. */
 interface ChildProcessHostRequest {
+  /** The exact argv of a spawn without a shell, which the host execs as given (`CommandRun.argv`). */
+  __browserRuntimeSpawnArgs?: string[];
   cwd?: string;
   env?: Record<string, string>;
   /** Bytes already on fd 0 when the command begins, as Node delivers them. */
@@ -1707,6 +1709,11 @@ interface CommandOutcome {
 /** What a caller gives one run of a command line. */
 interface CommandRun {
   command: string;
+  /**
+   * The argv a spawn without a shell exec's (execvp(file, args)), which a host runs as given: one process, the
+   * exact words, no shell between. Absent for a shell's line (shell: true, or `sh -c`), which the host's shell reads.
+   */
+  argv?: readonly string[];
   /**
    * Whether the engine's own shell answers for this command before the host's
    * process host is asked. A run the HOST asked for is the host's first: that
@@ -1793,6 +1800,7 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     const opened = (run.descriptors ?? []).map(({ fd, pipe }) => ({ fd, ...descriptorOver(pipe) }));
     try {
       const result = await bridge.run(run.command, {
+        ...(run.argv ? { __browserRuntimeSpawnArgs: [...run.argv] } : {}),
         cwd: run.cwd,
         env: hostEnv,
         ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
@@ -2333,6 +2341,8 @@ function startChildRun(request: RunRequest): StartedRun {
           token,
         })) : await enterRun(token, () => routeCommand({
           command: __substrateLineFor(request.file, request.args, request.cwd),
+          // Node's spawn without a shell is execvp: the host runs this argv as given, the line is for display.
+          ...(__substrateShellLine(request.file, request.args) === null ? { argv: [request.file, ...request.args.slice(1)] } : {}),
           engineFirst,
           cwd: request.cwd,
           env: { ...request.env, [PROCESS_TOKEN_ENV]: token },
