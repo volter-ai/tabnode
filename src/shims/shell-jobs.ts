@@ -224,8 +224,9 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
   const token: ProcessToken = `job-${nextJob++}`;
   const parent = host.runTokenOf(ctx);
   const parentPid = runPid(parent)?.pid;
-  const pid = mintPid();
-  setRunPid(token, pid, parentPid !== undefined && pidIsLive(parentPid) ? parentPid : 0, { argv: ['sh', '-c', sourceText], cwd: ctx.cwd });
+  const liveParent = parentPid !== undefined && pidIsLive(parentPid) ? parentPid : 0;
+  const pid = mintPid(liveParent);
+  setRunPid(token, pid, liveParent, { argv: ['sh', '-c', sourceText], cwd: ctx.cwd });
   const controller = new AbortController();
   let streamedOut: string[] = [];
   let streamedErr: string[] = [];

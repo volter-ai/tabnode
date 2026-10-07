@@ -318,7 +318,8 @@ const hostedNodes = new Set<ProcessToken>();
 /** A child identity for a `node` a run's shell runs: its own token and pid under the run's, on the run's streams. */
 function nestedNodeToken(parentToken: ProcessToken, args: readonly string[], cwd: string | undefined): ProcessToken {
   const token: ProcessToken = `child-${__nextChildRun++}`;
-  setRunPid(token, mintPid(), runPid(parentToken)?.pid ?? 0, { argv: ['node', ...args], ...(cwd ? { cwd } : {}) });
+  const parentPid = runPid(parentToken)?.pid ?? 0;
+  setRunPid(token, mintPid(parentPid), parentPid, { argv: ['node', ...args], ...(cwd ? { cwd } : {}) });
   const parentStreams = runStreamsFor(parentToken);
   if (parentStreams) registerRunStreams(token, parentStreams);
   return token;
@@ -2156,10 +2157,11 @@ function startChildRun(request: RunRequest): StartedRun {
   // the handle and the child itself reports as `process.pid`; `ppid` is the
   // number of the run that spawned it. `src/process-tokens.ts` says what
   // reads them.
-  const pid = mintPid();
   // In a process realm the admitted guest is always the spawning parent.
   // Async bookkeeping for a routed child must not make that child its parent.
-  setRunPid(token, pid, runPid(nodeProcessRealmToken() ?? __currentProcessToken() ?? __lastLaunchedToken)?.pid ?? 0,
+  const parentPid = runPid(nodeProcessRealmToken() ?? __currentProcessToken() ?? __lastLaunchedToken)?.pid ?? 0;
+  const pid = mintPid(parentPid);
+  setRunPid(token, pid, parentPid,
     { detached: request.detached, argv: request.args.length ? request.args : [request.file], ...(request.cwd ? { cwd: request.cwd } : {}) });
   const controller = new AbortController();
   const pendingStdin: Array<Uint8Array | null> = [];

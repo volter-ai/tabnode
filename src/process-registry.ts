@@ -30,7 +30,11 @@ export interface InitialProcessRegistration {
 
 /** Installed by the trusted embedding host before this realm starts runs. */
 export interface ProcessRegistry {
-  allocate(): number;
+  /**
+   * A new process's number. `parentPid` is the process that starts it, where the caller knows it: a registry over a
+   * kernel makes the process there and then, as fork does (browser-substrate ADR-0129); tabnode's own ignores it.
+   */
+  allocate(parentPid?: number): number;
   publish(token: string, identity: ProcessIdentity): void;
   forget(token: string): void;
   lookup(pid: number): ProcessIdentity | undefined;
