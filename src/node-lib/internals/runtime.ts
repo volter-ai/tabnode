@@ -1,4 +1,4 @@
-import { withGuestExecution } from '../../guest-loop';
+import { withGuestExecution, withGuestCallback, drainGuestNextTicks } from '../../guest-loop';
 import { AsyncLocalStorage } from '../../shims/async_hooks';
 import { kCancelTimer } from '../../timer-cancellation';
 import { registerHandle, refHandle, unrefHandle, releaseHandle, currentOwner, __adoptHandle } from '../binding/handles';
@@ -148,7 +148,7 @@ export class UnrefTimeout {
       this.id = null;
       this._destroyed = true;
       releaseHandle(this);
-      withGuestExecution(() => this.restore(() => this.onTimeout(this.arg)));
+      withGuestCallback(() => this.restore(() => this.onTimeout(this.arg)));
     }, this.msecs);
     if (!referenced) (this.id as { unref?: () => void } | null)?.unref?.();
   }
@@ -221,11 +221,11 @@ export const internalStreamsState = {
   setDefaultHighWaterMark: (): void => {},
 };
 
-/** `internal/process/task_queues`: the realm's own microtask queue. */
+/** `internal/process/task_queues`: ticks precede the native microtask queue. */
 export const internalTaskQueues = {
   queueMicrotask: (fn: () => void): void => queueMicrotask(fn),
   setHasTickScheduled: (): void => {},
-  runNextTicks: (): void => {},
+  runNextTicks: drainGuestNextTicks,
 };
 
 /** `internal/event_target`: the one symbol `abort_listener.js` reads. */

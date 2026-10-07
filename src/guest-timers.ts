@@ -1,6 +1,6 @@
 import { pendingGuestPorts, stopGuestPorts } from './guest-message-ports';
 import { __reportUncaughtException } from './shims/process';
-import { withGuestExecution } from './guest-loop';
+import { withGuestCallback } from './guest-loop';
 import { nodeTimeout, timerHandleOf } from './node-lib/timers';
 
 /**
@@ -63,7 +63,7 @@ export function guestTimerFunctions(process: object, host: Record<string, unknow
   // A callback with no owning program (the engine imported as a library) is
   // rethrown, so the host reports it as it always did.
   const inProcess = (fn: (...a: unknown[]) => void) => (...args: unknown[]): void => {
-    try { withGuestExecution(() => fn(...args)); }
+    try { withGuestCallback(() => fn(...args)); }
     catch (error) { if (!__reportUncaughtException(process, error)) throw error; }
   };
   const track = (id: unknown): unknown => {

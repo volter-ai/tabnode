@@ -4,7 +4,7 @@
  */
 
 import { forGuestRealm, takeFromHost } from '../host-globals';
-import { withGuestExecution, resumeGuestTurn } from '../guest-loop';
+import { withGuestExecution, withGuestCallback, resumeGuestTurn } from '../guest-loop';
 
 /**
  * The context a continuation runs in: every storage's store, as one frame.
@@ -160,12 +160,13 @@ forGuestRealm(() => {
   if ((globalThis as unknown as Record<string, unknown>).__substrateCarried) return;
   // `task`: a timer, immediate or microtask, whose throw is its run's uncaught exception; a `then` callback's throw
   // rejects its promise instead, and is left to.
-  const carried = <T>(callback: T, task = false): T => {
+  const carried = <T>(callback: T, task = false, bindingCallback = false): T => {
     if (typeof callback !== "function") return callback;
     const restore = AsyncLocalStorage.snapshot();
     const call = callback as (...values: unknown[]) => unknown;
+    const enter = bindingCallback ? withGuestCallback : withGuestExecution;
     return function (this: unknown, ...args: unknown[]) {
-      return withGuestExecution(() => restore(() => {
+      return enter(() => restore(() => {
         if (!task) return call.apply(this, args);
         try { return call.apply(this, args); }
         catch (error) { if (routeUncaught?.(error)) return undefined; throw error; }
@@ -175,7 +176,7 @@ forGuestRealm(() => {
   for (const name of ["setTimeout", "setInterval", "setImmediate", "queueMicrotask"]) {
     const original = (globalThis as unknown as Record<string, unknown>)[name];
     if (typeof original !== "function") continue;
-    const wrapped = function (this: unknown, callback: unknown, ...rest: unknown[]) { return original.call(this, carried(callback, true), ...rest); };
+    const wrapped = function (this: unknown, callback: unknown, ...rest: unknown[]) { return original.call(this, carried(callback, true, name !== 'queueMicrotask'), ...rest); };
     Object.defineProperty(wrapped, "name", { value: name });
     takeFromHost(globalThis, name, wrapped);
   }

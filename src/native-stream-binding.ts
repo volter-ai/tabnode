@@ -1,4 +1,5 @@
 /** Worker-side libuv delegation. The capability channel never becomes a handle property. */
+import { withGuestCallback } from './guest-loop';
 import type { NativeStreamDescriptor, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport } from './native-stream-owner';
 import type { TCP } from './node-lib/binding/tcp_wrap';
 import type { Pipe } from './node-lib/binding/pipe_wrap';
@@ -186,7 +187,7 @@ export class NativeStreamDriver {
   complete(operation: NativeStreamOperation, callback: (status: number) => void): number {
     if (!('request' in operation)) throw new Error('Native completion requires a request ID.');
     const release = holdRequest(this.handle);
-    this.completions.set(operation.request, status => { try { callback(status); } finally { release(); } });
+    this.completions.set(operation.request, status => { try { withGuestCallback(() => callback(status)); } finally { release(); } });
     try {
       const status = this.call(operation).status;
       if (status !== 0) { this.completions.delete(operation.request); release(); }
@@ -211,7 +212,7 @@ export class NativeStreamDriver {
     const complete = (status: number): void => {
       if (completed) return;
       completed = true;
-      try { callback(status); } finally { release(); }
+      try { withGuestCallback(() => callback(status)); } finally { release(); }
     };
     this.pendingShutdown = () => {
       if (this.closing || stopped) { queueMicrotask(() => complete(UV_ECANCELED)); return; }
@@ -308,7 +309,7 @@ export class NativeStreamDriver {
     } finally { write.sent = undefined; }
     // A Node callback throws as a native callback, not as a rejection of this
     // bridge's private async function.
-    queueMicrotask(() => { try { write.request.oncomplete?.(status); } finally { write.release(); } });
+    queueMicrotask(() => { try { withGuestCallback(() => write.request.oncomplete?.(status)); } finally { write.release(); } });
   }
 
   close(callback?: () => void, reset = false): number {
@@ -350,7 +351,7 @@ export class NativeStreamDriver {
     this.closeLocal(() => {
       const failures: unknown[] = [];
       try {
-        for (const callback of callbacks) { try { callback(); } catch (cause) { failures.push(cause); } }
+        for (const callback of callbacks) { try { withGuestCallback(callback); } catch (cause) { failures.push(cause); } }
       } finally { this.releaseClose?.(); this.releaseClose = undefined; }
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, 'Native close callbacks failed.');
@@ -367,7 +368,7 @@ export class NativeStreamDriver {
     } else if (event.type === 'connection') {
       if (this.closing || !this.handle.onconnection) { if (event.handle) closeDescriptor(event.handle.id); return; }
       const accepted = event.handle ? adopt(event.handle, this.handle) : undefined;
-      (this.handle.onconnection as (status: number, handle?: Stream) => void)(event.status, accepted);
+      withGuestCallback(() => (this.handle.onconnection as (status: number, handle?: Stream) => void)(event.status, accepted));
     } else {
       const complete = this.completions.get(event.request);
       this.completions.delete(event.request);

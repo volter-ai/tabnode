@@ -16,6 +16,56 @@ let activeSince = 0;
 let depth = 0;
 let continuation = false;
 const enqueue = globalThis.queueMicrotask.bind(globalThis);
+const ticks: Array<() => void> = [];
+let tickDrainScheduled = false;
+let drainingTicks = false;
+let callbackDepth = 0;
+
+/**
+ * Node drains its FIFO, including ticks queued by ticks, before returning to
+ * promises. One browser microtask per tick let a promise continuation run
+ * between a stream's destroy tick and its nested close tick.
+ */
+export function queueGuestNextTick(callback: () => void): void {
+  ticks.push(callback);
+  scheduleTickDrain();
+}
+
+function scheduleTickDrain(): void {
+  if (tickDrainScheduled || drainingTicks || ticks.length === 0) return;
+  tickDrainScheduled = true;
+  // Native-await continuations have no engine callback scope. Their ticks
+  // still get one drain, rather than one microtask for each queued tick.
+  enqueue(() => {
+    tickDrainScheduled = false;
+    withGuestExecution(drainGuestNextTicks);
+  });
+}
+
+export function drainGuestNextTicks(): void {
+  if (drainingTicks) return;
+  drainingTicks = true;
+  let taken = 0;
+  try {
+    while (taken < ticks.length) ticks[taken++]();
+  } finally {
+    ticks.splice(0, taken);
+    drainingTicks = false;
+    scheduleTickDrain();
+  }
+}
+
+/** Node's outermost successful MakeCallback drains ticks before returning. */
+export function withGuestCallback<T>(fn: () => T): T {
+  return withGuestExecution(() => {
+    callbackDepth++;
+    try {
+      const result = fn();
+      if (callbackDepth === 1) drainGuestNextTicks();
+      return result;
+    } finally { callbackDepth--; }
+  });
+}
 
 export function startGuestLoop(): void {
   if (clock) return;
