@@ -11,7 +11,7 @@ import { Readable } from '../node-lib/stream-module';
 import { loadNodeLibFor } from '../node-lib/load';
 import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
-import { mintPid, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination } from '../process-tokens';
+import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, type ProcessToken } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeVersions } from '../node-lib/node-versions';
 import { freemem as osFreemem } from './os';
 
@@ -433,7 +433,18 @@ const __substrateIgnoredSignals = new Set(["SIGCHLD", "SIGCONT", "SIGURG", "SIGW
  * children's pids and asks whether they still run judged every live child dead.
  * src/shims/child_process.ts fills this table as it spawns.
  */
-export const __substrateChildren = new Map<number, { exitCode: number | null; signalCode: string | null; kill(signal?: string): boolean }>();
+/** A child a run spawned, as its parent's handle holds it. */
+export interface SubstrateChild { exitCode: number | null; signalCode: string | null; kill(signal?: string): boolean }
+const childrenByParent = new Map<ProcessToken | null, Map<number, SubstrateChild>>();
+/**
+ * The children one run spawned, by the pid it numbers them by: its own, never another run's (a pid in one run's pid
+ * namespace may name another process in another's). `parent` null is the realm process's own.
+ */
+export function __substrateChildrenOf(parent: ProcessToken | null): Map<number, SubstrateChild> {
+  let children = childrenByParent.get(parent);
+  if (!children) { children = new Map(); childrenByParent.set(parent, children); }
+  return children;
+}
 
 /**
  * A guest's `process.version` is the version its image names. The engine said
@@ -578,6 +589,8 @@ export function createProcess(options?: {
 
   const stdoutDecoder = new TextDecoder();
   const stderrDecoder = new TextDecoder();
+  // A process object no run names is the realm's own process, never a second one forked for it.
+  const own = options?.pid === undefined ? ownProcessIdentity() : undefined;
   const proc: Process = {
     env,
     // Node exposes a writable title even before application code sets it.
@@ -638,8 +651,8 @@ export function createProcess(options?: {
     // Every process has its own number, and `ppid` names the one that
     // started it: `src/process-tokens.ts` says what reads them and what it
     // cost when they were 1 and 0 for everyone.
-    pid: options?.pid ?? mintPid(),
-    ppid: options?.ppid ?? 0,
+    pid: options?.pid ?? own!.pid,
+    ppid: options?.ppid ?? (options?.pid === undefined ? own!.ppid : 0),
 
     exit(code: number | string | null | undefined = 0) {
       code = __substrateExitCode(code);
@@ -662,7 +675,7 @@ export function createProcess(options?: {
       // former abs(pid) probe succeeded while both termination signals failed.
       // Keep the legacy path only for hosts without the optional operations.
       if (pid < 0) {
-        const result = signal === 0 ? groupIsLive(-pid) : signalGroup(-pid, name);
+        const result = signal === 0 ? groupIsLive(-pid, __tokenForProcess(proc)) : signalGroup(-pid, name, __tokenForProcess(proc));
         if (result === true) return true;
         if (result === false) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
       }
@@ -671,17 +684,17 @@ export function createProcess(options?: {
       // handles, other live processes of the container through the process
       // registry, and every other pid is ESRCH rather than a silent success.
       if (pid !== proc.pid) {
-        const child = __substrateChildren.get(Math.abs(pid));
+        const child = __substrateChildrenOf(__tokenForProcess(proc)).get(Math.abs(pid));
         if (child === void 0 || child.exitCode !== null || child.signalCode !== null) {
           // Signal 0 is the question "is that process there?", and a program
           // asks it about processes that are not its own children: a pid out
           // of a lock file, a parent's. A live run answers yes and carries no
           // signal; anything else is `ESRCH`, as it is on a machine.
-          if (signal === 0 && pidIsLive(Math.abs(pid))) return true;
+          if (signal === 0 && pidIsLive(Math.abs(pid), __tokenForProcess(proc))) return true;
           // Any other live process of the container takes the signal too,
           // including one whose parent has exited; otherwise nothing could
           // ever end it.
-          if (signal !== 0 && child === void 0 && pid > 0 && signalPid(pid, name)) return true;
+          if (signal !== 0 && child === void 0 && pid > 0 && signalPid(pid, name, __tokenForProcess(proc))) return true;
           throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
         }
         if (signal === 0) return true;

@@ -25,9 +25,9 @@ import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { UV_ENOENT, UV_ESRCH } from './uv';
 import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
-  ownerOf, type OwnedHandle,
+  ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
 } from './handles';
-import { __runFor, mintPid, type ProcessToken } from '../../process-tokens';
+import { __runFor, type ProcessToken } from '../../process-tokens';
 import { handleForFd } from './fds';
 import { descriptorWriter, type DescriptorWriter } from './fs';
 import { TTY, type TerminalState } from './tty_wrap';
@@ -74,6 +74,8 @@ export interface RunChannel {
 
 /** What the binding asks the engine's process model to run. */
 export interface RunRequest {
+  /** The run whose `Process` handle spawns it: its parent (the handle's NodeLibScope's process), or null for none. */
+  owner: ProcessToken | null;
   /** The program, as the caller named it: a path, a name, or the shell. */
   file: string;
   /** argv, the file first, as Node builds it. */
@@ -115,8 +117,8 @@ export interface RunRequest {
 export interface StartedRun {
   /** The run's own name, so a handle it holds is counted as its own. */
   token: ProcessToken | null;
-  /** The run's process number, which is what its own `process.pid` reports. */
-  pid?: number;
+  /** The run's process number, made at its fork, which is what its own `process.pid` reports. */
+  pid: number;
   /** libuv's `uv_process_kill`: 0, or `UV_ESRCH` for a run already over. */
   kill(signal: string): number;
   /** Bytes the parent wrote to the child's fd 0. */
@@ -271,6 +273,7 @@ export class Process implements OwnedHandle {
     this.stdio = options.stdio ?? [];
 
     const request: RunRequest = {
+      owner: ownerOfInstance(this),
       file: options.file,
       args: options.args ?? [options.file],
       cwd: options.cwd ?? spawningDirectory(ownerOf(this)),
@@ -349,8 +352,8 @@ export class Process implements OwnedHandle {
 
     this.run = runner.start(request);
     // The number the parent reads off the handle is the child's own
-    // `process.pid`, as it is in Node; a runner that names none is given one.
-    this.pid = this.run.pid ?? mintPid();
+    // `process.pid`, made at its fork, as it is in Node.
+    this.pid = this.run.pid;
     if (stdinFar) this.readStdinFrom(stdinFar);
     return 0;
   }
@@ -442,9 +445,8 @@ export class Process implements OwnedHandle {
     if (this.ended) return;
     this.ended = true;
     this.closeFarEnds();
-    const report = this.onexit;
     this.run = null;
-    if (report) report(code, signal);
+    invokeOwned(this, 'onexit', code, signal);
   }
 }
 

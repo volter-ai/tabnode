@@ -30,8 +30,30 @@ export interface InitialProcessRegistration {
 
 /** Installed by the trusted embedding host before this realm starts runs. */
 export interface ProcessRegistry {
-  allocate(): number;
+  /**
+   * A new process's number. `parentPid` is the process that starts it, where the caller knows it, and `newSession`
+   * says it leads a session of its own (a detached spawn): a registry over a kernel makes the process there and then,
+   * as fork (and setsid) do (browser-substrate ADR-0129); tabnode's own ignores both.
+   */
+  allocate(parentPid?: number, newSession?: boolean): number;
   publish(token: string, identity: ProcessIdentity): void;
+  /**
+   * execve(2) into a process forked elsewhere: an image starts in this realm in a process whose fork already made it
+   * (a kernel shell's child exec'ing `node`), keeping its pid and parent. No process is made here; a pid the registry
+   * does not hold answers loudly. Every other pid this realm publishes is one its `allocate` made.
+   */
+  exec(token: string, identity: ProcessIdentity): void;
+  /**
+   * exit_group for `pid`, a child forked under `parentPid` whose image this realm ran itself (an engine run): ended
+   * with `code`, or by `signal`. A child another realm or the host runs reports its own exit.
+   */
+  exit(pid: number, parentPid: number, code: number, signal: string | null): void;
+  /**
+   * wait4 for `pid`, a child forked under `parentPid`, once its run has ended: the end its parent reports (Node's
+   * 'exit' code and signal). A registry over a kernel answers with the zombie's status and reaps it; tabnode's own,
+   * which is its own kernel, answers with the end its run gave.
+   */
+  reap(pid: number, parentPid: number, code: number, signal: string | null): { code: number; signal: string | null };
   forget(token: string): void;
   lookup(pid: number): ProcessIdentity | undefined;
   /**
@@ -157,6 +179,12 @@ export function createProcessRegistryOwner(): ProcessRegistryOwner {
           claimed.add(pid);
           held.add(pid);
         },
+        exec(token, identity) {
+          this.claim(identity.pid);
+          this.publish(token, identity);
+        },
+        exit() {},
+        reap(_pid, _parentPid, code, signal) { return { code, signal }; },
         publish(token, identity) {
           active();
           const previous = runs.get(token);

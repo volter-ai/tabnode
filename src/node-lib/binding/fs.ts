@@ -28,8 +28,8 @@
  * own tree.
  */
 import { createNodeError as vfsError } from '../../virtual-fs';
-import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner } from './handles';
-import { enterRun, __runFor, type ProcessToken } from '../../process-tokens';
+import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner, ownedRun, ownerOfInstance } from './handles';
+import { __runFor, type ProcessToken } from '../../process-tokens';
 import { kStdinRing, type StdinRingReader } from '../../stdin-ring';
 // The guest stdin stream's engine-side read (shims/process.ts `kEngineStdinRead`),
 // named here so this binding does not import the process shim.
@@ -532,10 +532,12 @@ function answer<T>(req: FSReq | undefined, work: () => T): T | undefined {
   // properties of undefined (reading 'context')` at `node:fs:297:24`.
   const request = req as FSReq;
   const complete = request.oncomplete!;
+  // Called as MakeCallback calls it: in the request's owner's run, its throw that run's uncaught exception.
+  const owner = ownerOfInstance(request as object);
   onNextTick(() => {
     let value: T;
-    try { value = run(); } catch (error) { complete.call(request, error as Error); return; }
-    complete.call(request, null, value as unknown);
+    try { value = run(); } catch (error) { ownedRun(owner, () => complete.call(request, error as Error), true); return; }
+    ownedRun(owner, () => complete.call(request, null, value as unknown), true);
   });
   return undefined;
 }
@@ -670,8 +672,7 @@ class FSEvent {
           // libuv encodes the filename at this binding, including Buffer
           // when requested. Node's FSWatcher forwards it without conversion.
           this.onchange?.(0, event === 'rename' ? 'rename' : 'change', encodeFsName(filename ?? '', encoding))));
-        if (owner === null) notify();
-        else enterRun(owner, notify);
+        ownedRun(owner, notify, true);
       }) as never) as unknown as { close(): void };
       this.initialized = true;
       registerHandle(this);

@@ -148,18 +148,34 @@ export class AsyncResource {
  * `setTimeout` and `Promise.prototype.then`; it now waits for the first
  * runtime, and `restoreHostGlobals()` puts them back.
  */
+/**
+ * Where an exception a task callback threw goes while its frame is still current: the run that scheduled it, as Node
+ * reports an exception in a timer to that process (process-tokens.ts installs it). True when a run took it.
+ */
+let routeUncaught: ((error: unknown) => boolean) | undefined;
+export function routeUncaughtExceptions(route: (error: unknown) => boolean): void { routeUncaught = route; }
+
 forGuestRealm(() => {
   // Wrapped once: a second pass would carry through a carrier.
   if ((globalThis as unknown as Record<string, unknown>).__substrateCarried) return;
-  const carried = <T>(callback: T): T => {
+  // `task`: a timer, immediate or microtask, whose throw is its run's uncaught exception; a `then` callback's throw
+  // rejects its promise instead, and is left to.
+  const carried = <T>(callback: T, task = false): T => {
     if (typeof callback !== "function") return callback;
     const restore = AsyncLocalStorage.snapshot();
-    return function (this: unknown, ...args: unknown[]) { return withGuestExecution(() => restore(() => (callback as (...values: unknown[]) => unknown).apply(this, args))); } as T;
+    const call = callback as (...values: unknown[]) => unknown;
+    return function (this: unknown, ...args: unknown[]) {
+      return withGuestExecution(() => restore(() => {
+        if (!task) return call.apply(this, args);
+        try { return call.apply(this, args); }
+        catch (error) { if (routeUncaught?.(error)) return undefined; throw error; }
+      }));
+    } as T;
   };
   for (const name of ["setTimeout", "setInterval", "setImmediate", "queueMicrotask"]) {
     const original = (globalThis as unknown as Record<string, unknown>)[name];
     if (typeof original !== "function") continue;
-    const wrapped = function (this: unknown, callback: unknown, ...rest: unknown[]) { return original.call(this, carried(callback), ...rest); };
+    const wrapped = function (this: unknown, callback: unknown, ...rest: unknown[]) { return original.call(this, carried(callback, true), ...rest); };
     Object.defineProperty(wrapped, "name", { value: name });
     takeFromHost(globalThis, name, wrapped);
   }
