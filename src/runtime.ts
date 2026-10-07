@@ -2656,6 +2656,28 @@ export class Runtime {
     // Create fs shim with cwd getter for relative path resolution
     this.fsShim = createFsShim(vfs, () => this.process.cwd());
     this.options = options;
+    // Node's `process.dlopen(module, filename[, flags])`, which a loader calls
+    // in place of `require` when it wants its own flags: Prisma's library
+    // engine loads `libquery_engine-*.node` this way. A tab runs no native
+    // code, so the load is the one a `require` of that path makes: through
+    // the run's resolve hooks, where an image's binding map answers the
+    // addon with its prepared export, and otherwise to ERR_DLOPEN_FAILED as
+    // Node's dlopen fails. The flags name dynamic-linker modes and have
+    // nothing to act on here.
+    Object.defineProperty(this.process, 'dlopen', {
+      configurable: true, enumerable: true, writable: true,
+      value: (target: { exports?: unknown }, filename: string, _flags?: number): void => {
+        if (target === null || typeof target !== 'object') {
+          throw Object.assign(new TypeError('The "module" argument must be of type object'), { code: 'ERR_INVALID_ARG_TYPE' });
+        }
+        if (typeof filename !== 'string') {
+          throw Object.assign(new TypeError('The "filename" argument must be of type string'), { code: 'ERR_INVALID_ARG_TYPE' });
+        }
+        const file = pathShim.resolve(this.process.cwd(), filename);
+        const load = createRequire(this.vfs, this.fsShim, this.process, pathShim.dirname(file), this.moduleCache, this.options, this.processedCodeCache);
+        target.exports = load(file);
+      },
+    });
 
     // Initialize child_process with VFS for bash command support
     initChildProcess(vfs);
