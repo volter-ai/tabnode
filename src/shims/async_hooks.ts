@@ -4,7 +4,7 @@
  */
 
 import { forGuestRealm, takeFromHost } from '../host-globals';
-import { withGuestExecution, resumeGuestTurn } from '../guest-loop';
+import { withGuestExecution, withGuestCallback, resumeGuestTurn } from '../guest-loop';
 
 /**
  * The context a continuation runs in: every storage's store, as one frame.
@@ -151,15 +151,16 @@ export class AsyncResource {
 forGuestRealm(() => {
   // Wrapped once: a second pass would carry through a carrier.
   if ((globalThis as unknown as Record<string, unknown>).__substrateCarried) return;
-  const carried = <T>(callback: T): T => {
+  const carried = <T>(callback: T, bindingCallback = false): T => {
     if (typeof callback !== "function") return callback;
     const restore = AsyncLocalStorage.snapshot();
-    return function (this: unknown, ...args: unknown[]) { return withGuestExecution(() => restore(() => (callback as (...values: unknown[]) => unknown).apply(this, args))); } as T;
+    const enter = bindingCallback ? withGuestCallback : withGuestExecution;
+    return function (this: unknown, ...args: unknown[]) { return enter(() => restore(() => (callback as (...values: unknown[]) => unknown).apply(this, args))); } as T;
   };
   for (const name of ["setTimeout", "setInterval", "setImmediate", "queueMicrotask"]) {
     const original = (globalThis as unknown as Record<string, unknown>)[name];
     if (typeof original !== "function") continue;
-    const wrapped = function (this: unknown, callback: unknown, ...rest: unknown[]) { return original.call(this, carried(callback), ...rest); };
+    const wrapped = function (this: unknown, callback: unknown, ...rest: unknown[]) { return original.call(this, carried(callback, name !== 'queueMicrotask'), ...rest); };
     Object.defineProperty(wrapped, "name", { value: name });
     takeFromHost(globalThis, name, wrapped);
   }

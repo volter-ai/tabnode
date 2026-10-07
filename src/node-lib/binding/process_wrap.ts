@@ -28,6 +28,7 @@ import {
   ownerOf, type OwnedHandle,
 } from './handles';
 import { __runFor, mintPid, type ProcessToken } from '../../process-tokens';
+import { withGuestCallback } from '../../guest-loop';
 import { handleForFd } from './fds';
 import { descriptorWriter, type DescriptorWriter } from './fs';
 import { TTY, type TerminalState } from './tty_wrap';
@@ -371,7 +372,7 @@ export class Process implements OwnedHandle {
       this.closed = true;
       releaseHandle(this);
     }
-    if (callback) queueMicrotask(callback);
+    if (callback) queueMicrotask(() => withGuestCallback(callback));
   }
 
   /**
@@ -444,7 +445,7 @@ export class Process implements OwnedHandle {
     this.closeFarEnds();
     const report = this.onexit;
     this.run = null;
-    if (report) report(code, signal);
+    if (report) withGuestCallback(() => report(code, signal));
   }
 }
 

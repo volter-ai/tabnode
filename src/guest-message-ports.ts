@@ -1,6 +1,6 @@
 /** Real transports; Node loop references belong to the process using a port. */
 import { __reportUncaughtException } from './shims/process';
-import { withGuestExecution } from './guest-loop';
+import { withGuestCallback } from './guest-loop';
 import { markUntransferable, isUntransferable, validateTransferList } from './transfer-ownership';
 
 type Port = Record<string, any>;
@@ -62,7 +62,7 @@ function track(process: object, port: Port): Port {
   if (original.on && typeof port.listenerCount === 'function') {
     // Account the real delivery boundary without changing listeners or their
     // remove/once identities on the thread host's actual EventEmitter.
-    if (original.emit) define('emit', (...args: unknown[]) => withGuestExecution(() => original.emit(...args)));
+    if (original.emit) define('emit', (...args: unknown[]) => withGuestCallback(() => original.emit(...args)));
     // Preserve the thread host's actual EventEmitter and transport semantics.
     for (const name of ['on', 'addListener', 'once', 'prependListener', 'prependOnceListener', 'removeListener', 'off', 'removeAllListeners']) if (original[name]) {
       define(name, (...args: unknown[]) => {
@@ -103,7 +103,7 @@ function track(process: object, port: Port): Port {
       if (options?.once) remove(type, listener, capture);
       if (state.closed && type !== 'close') return;
       try {
-        withGuestExecution(() => {
+        withGuestCallback(() => {
           if (typeof listener === 'function') listener.call(port, data ? event.data : event);
           else listener.handleEvent?.(event);
         });

@@ -5,6 +5,7 @@
  */
 
 import { runExitDrains } from '../exit-drains';
+import { queueGuestNextTick } from '../guest-loop';
 import { EventEmitter } from '../node-lib/events-module';
 import type { EventListener } from '../node-lib/events-module';
 import { Readable } from '../node-lib/stream-module';
@@ -727,7 +728,7 @@ export function createProcess(options?: {
       // A throw from a tick callback is this process's uncaught exception in
       // Node. Out of a microtask it would be the realm's instead, and in the
       // tab the worker's, which the substrate takes for a dead host.
-      queueMicrotask(() => {
+      queueGuestNextTick(() => {
         try { run(...args); }
         catch (error) { if (!__reportUncaughtException(proc, error)) throw error; }
       });

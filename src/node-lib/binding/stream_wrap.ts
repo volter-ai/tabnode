@@ -32,6 +32,7 @@ import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, stopHandle,
   type OwnedHandle,
 } from './handles';
+import { withGuestCallback } from '../../guest-loop';
 
 /** The four slots libuv's `StreamBase` reports a read or a write through. */
 export const kReadBytesOrError = 0;
@@ -193,7 +194,7 @@ export class LibuvStreamWrap implements OwnedHandle {
     const native = nativeStreamFor(this);
     if (native) return native.shutdown(status => req.oncomplete?.(status));
     this.sendEof();
-    queueMicrotask(() => { req.oncomplete?.(0); });
+    queueMicrotask(() => withGuestCallback(() => { req.oncomplete?.(0); }));
     return 0;
   }
 
@@ -291,7 +292,7 @@ export class LibuvStreamWrap implements OwnedHandle {
     // The native close completion comes afterward. One microtask here ran the
     // close listener first, so ClientRequest replaced the actual policy denial
     // with ECONNRESET ("socket hang up"). Leave that tick ahead of completion.
-    if (callback) queueMicrotask(() => queueMicrotask(callback));
+    if (callback) queueMicrotask(() => queueMicrotask(() => withGuestCallback(callback)));
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, 'Native stream cleanup failed.');
   }
@@ -500,13 +501,13 @@ export class LibuvStreamWrap implements OwnedHandle {
           if (taken < bytes.byteLength) this.inbound.unshift({ bytes: bytes.subarray(taken) });
           streamBaseState[kReadBytesOrError] = taken;
           streamBaseState[kArrayBufferOffset] = 0;
-          try { this.onread?.(null); } finally { this.streamEndpoint.capacityChanged(); }
+          try { withGuestCallback(() => this.onread?.(null)); } finally { this.streamEndpoint.capacityChanged(); }
           continue;
         }
         streamBaseState[kReadBytesOrError] = bytes.byteLength;
         this.bytesRead += bytes.byteLength;
         streamBaseState[kArrayBufferOffset] = bytes.byteOffset;
-        try { this.onread?.(bytes.buffer as ArrayBuffer); } finally { this.streamEndpoint.capacityChanged(); }
+        try { withGuestCallback(() => this.onread?.(bytes.buffer as ArrayBuffer)); } finally { this.streamEndpoint.capacityChanged(); }
       }
       if (this.reading && !this.closed && this.inbound.length === 0 && !this.eofDelivered &&
           (this.inboundError !== null || this.inboundEof)) {
@@ -517,7 +518,7 @@ export class LibuvStreamWrap implements OwnedHandle {
         stopHandle(this);
         streamBaseState[kReadBytesOrError] = this.inboundError ?? UV_EOF;
         streamBaseState[kArrayBufferOffset] = 0;
-        this.onread?.(null);
+        withGuestCallback(() => this.onread?.(null));
       }
     } finally {
       nativeStreamFor(this)?.readFlushed(this.inbound.length === 0, this.eofDelivered);

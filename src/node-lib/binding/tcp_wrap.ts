@@ -13,6 +13,7 @@
  * does on Linux, so `connect('127.0.0.1')` reaches a server that bound `::`.
  */
 import { LibuvStreamWrap } from './stream_wrap';
+import { withGuestCallback } from '../../guest-loop';
 import { __adoptHandle, ownerOf } from './handles';
 import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
 import { UV_EADDRINUSE, UV_ECONNREFUSED, UV_EINVAL, UV_ENOTSUP, UV_EBADF } from './uv';
@@ -190,7 +191,7 @@ export class TCP extends LibuvStreamWrap {
       if (this.closed) return;
       const server = reachable ? listenerOnPort(target, family) : undefined;
       if (!server) {
-        req.oncomplete?.(UV_ECONNREFUSED, this, req, true, true);
+        withGuestCallback(() => req.oncomplete?.(UV_ECONNREFUSED, this, req, true, true));
         return;
       }
       const accepted = new (server.constructor as typeof TCP)(constants.SOCKET);
@@ -202,8 +203,8 @@ export class TCP extends LibuvStreamWrap {
       // the connecting run alive until the server closed it.
       __adoptHandle(accepted, ownerOf(server));
       LibuvStreamWrap.pair(this, accepted);
-      server.onconnection?.(0, accepted);
-      req.oncomplete?.(0, this, req, true, true);
+      withGuestCallback(() => server.onconnection?.(0, accepted));
+      withGuestCallback(() => req.oncomplete?.(0, this, req, true, true));
     });
     return 0;
   }
