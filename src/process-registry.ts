@@ -37,6 +37,12 @@ export interface ProcessRegistry {
    */
   allocate(parentPid?: number, newSession?: boolean): number;
   publish(token: string, identity: ProcessIdentity): void;
+  /**
+   * execve(2) into a process forked elsewhere: an image starts in this realm in a process whose fork already made it
+   * (a kernel shell's child exec'ing `node`), keeping its pid and parent. No process is made here; a pid the registry
+   * does not hold answers loudly. Every other pid this realm publishes is one its `allocate` made.
+   */
+  exec(token: string, identity: ProcessIdentity): void;
   forget(token: string): void;
   lookup(pid: number): ProcessIdentity | undefined;
   /**
@@ -153,6 +159,10 @@ export function createProcessRegistryOwner(): {
           allocated.add(pid);
           claimed.add(pid);
           held.add(pid);
+        },
+        exec(token, identity) {
+          this.claim(identity.pid);
+          this.publish(token, identity);
         },
         publish(token, identity) {
           active();

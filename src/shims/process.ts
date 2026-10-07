@@ -10,7 +10,7 @@ import { Readable } from '../node-lib/stream-module';
 import { loadNodeLibFor } from '../node-lib/load';
 import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
-import { mintPid, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination } from '../process-tokens';
+import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeVersions } from '../node-lib/node-versions';
 import { freemem as osFreemem } from './os';
 
@@ -577,6 +577,8 @@ export function createProcess(options?: {
 
   const stdoutDecoder = new TextDecoder();
   const stderrDecoder = new TextDecoder();
+  // A process object no run names is the realm's own process, never a second one forked for it.
+  const own = options?.pid === undefined ? ownProcessIdentity() : undefined;
   const proc: Process = {
     env,
     // Node exposes a writable title even before application code sets it.
@@ -637,8 +639,8 @@ export function createProcess(options?: {
     // Every process has its own number, and `ppid` names the one that
     // started it: `src/process-tokens.ts` says what reads them and what it
     // cost when they were 1 and 0 for everyone.
-    pid: options?.pid ?? mintPid(),
-    ppid: options?.ppid ?? 0,
+    pid: options?.pid ?? own!.pid,
+    ppid: options?.ppid ?? (options?.pid === undefined ? own!.ppid : 0),
 
     exit(code: number | string | null | undefined = 0) {
       code = __substrateExitCode(code);

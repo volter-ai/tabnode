@@ -182,6 +182,8 @@ localProcessRegistry.receiveSignals((pid, signal) => {
 let processRegistry: ProcessRegistry = localProcessRegistry;
 let registryInstalled = false;
 let registryUsed = false;
+/** This realm's own process, where it was started as one (installProcessRegistry's initial registration). */
+let initialIdentity: { pid: number; ppid: number } | undefined;
 const pidsOfRuns = new Map<ProcessToken, { pid: number; ppid: number; pgid?: number }>();
 
 /** Each child realm gets its own registration authority in this container. */
@@ -215,6 +217,7 @@ export function installProcessRegistry(registry: ProcessRegistry, initial?: Init
       ...(initial.identity.pgid !== undefined ? { pgid: initial.identity.pgid } : {}) });
     registry.publish(initial.token, identity);
     pidsOfRuns.set(initial.token, identity);
+    initialIdentity = identity;
   }
   processRegistry = registry;
   registryInstalled = true;
@@ -233,14 +236,25 @@ export function installProcessIdAllocator(allocate: () => number): void {
 }
 
 /**
- * Trusted container owner only: start a named run at the number its embedder
- * already gave it, a kernel process's own pid, with that process's parent.
+ * A named run that is the image a process forked elsewhere exec's (execve keeps the pid): a kernel process's own pid,
+ * with that process's parent. The registry is told it is an exec, never a new process.
  */
 export function claimRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string }): void {
-  if (registryInstalled) throw new Error('This realm is a process registry client, not the container owner.');
   if (!Number.isSafeInteger(ppid) || ppid < 0 || ppid > 0x7fffffff) throw new Error('Invalid parent process identifier.');
-  (processRegistry as ProcessRegistryScope).claim(pid);
-  setRunPid(token, pid, ppid, started);
+  registryUsed = true;
+  const pgid = pidsOfRuns.get(token)?.pgid ?? processRegistry.lookup(ppid)?.pgid ?? pid;
+  processRegistry.exec(token, { pid, ppid, pgid, ...(started ?? {}), startedAt: Date.now() });
+  pidsOfRuns.set(token, { pid, ppid, pgid });
+}
+
+/**
+ * The pid of a process object no run names: the realm's own process where this realm was started as one (its
+ * initial registration), else a new process of this container's owner. A realm's own runtime is its process and is
+ * never forked a second one.
+ */
+export function ownProcessIdentity(): { pid: number; ppid: number } {
+  if (initialIdentity) return { pid: initialIdentity.pid, ppid: initialIdentity.ppid };
+  return { pid: mintPid(), ppid: 0 };
 }
 
 /** The next process number this engine hands out. */

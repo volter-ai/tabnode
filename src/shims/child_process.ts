@@ -631,6 +631,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   delete guestEnv.NODE_CHANNEL_FD;
   delete guestEnv.NODE_CHANNEL_SERIALIZATION_MODE;
 
+  // A named run not yet numbered is a process its realm forks now (as runHostedNode's is); only a run nobody names
+  // is the realm's own process.
+  if (runToken !== null && !runPid(runToken)) setRunPid(runToken, mintPid(), 0, { argv: [...launch.argv], cwd: launch.cwd });
   // Create a runtime with output capture for both console.log AND process.stdout.write
   const runtime = new Runtime(tree, {
     cwd: launch.cwd,

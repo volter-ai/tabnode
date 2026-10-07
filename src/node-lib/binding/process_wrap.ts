@@ -27,7 +27,7 @@ import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
   ownerOf, type OwnedHandle,
 } from './handles';
-import { __runFor, mintPid, type ProcessToken } from '../../process-tokens';
+import { __runFor, type ProcessToken } from '../../process-tokens';
 import { handleForFd } from './fds';
 import { descriptorWriter, type DescriptorWriter } from './fs';
 import { TTY, type TerminalState } from './tty_wrap';
@@ -115,8 +115,8 @@ export interface RunRequest {
 export interface StartedRun {
   /** The run's own name, so a handle it holds is counted as its own. */
   token: ProcessToken | null;
-  /** The run's process number, which is what its own `process.pid` reports. */
-  pid?: number;
+  /** The run's process number, made at its fork, which is what its own `process.pid` reports. */
+  pid: number;
   /** libuv's `uv_process_kill`: 0, or `UV_ESRCH` for a run already over. */
   kill(signal: string): number;
   /** Bytes the parent wrote to the child's fd 0. */
@@ -349,8 +349,8 @@ export class Process implements OwnedHandle {
 
     this.run = runner.start(request);
     // The number the parent reads off the handle is the child's own
-    // `process.pid`, as it is in Node; a runner that names none is given one.
-    this.pid = this.run.pid ?? mintPid();
+    // `process.pid`, made at its fork, as it is in Node.
+    this.pid = this.run.pid;
     if (stdinFar) this.readStdinFrom(stdinFar);
     return 0;
   }
