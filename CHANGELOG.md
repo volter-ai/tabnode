@@ -4,6 +4,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## Unreleased
+
+- `kill()` on a child the host runs (a program pack, a WALI image) sends the
+  signal and lets the host's result end the run: 'exit' and 'close' fire when
+  the program exits, with the signal it ended by, as Linux keeps a signalled
+  child live until it exits. Children the engine runs itself are unchanged.
+  Ships with browser-substrate's host-child identity (the abort carries the
+  signal number); neither is consistent alone.
+
 ## v0.7.3 — 2026-10-07
 
 - A spawn tells a file's kind from its first 256 bytes, not the whole file:
