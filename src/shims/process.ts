@@ -672,7 +672,7 @@ export function createProcess(options?: {
       // former abs(pid) probe succeeded while both termination signals failed.
       // Keep the legacy path only for hosts without the optional operations.
       if (pid < 0) {
-        const result = signal === 0 ? groupIsLive(-pid) : signalGroup(-pid, name);
+        const result = signal === 0 ? groupIsLive(-pid, __tokenForProcess(proc)) : signalGroup(-pid, name, __tokenForProcess(proc));
         if (result === true) return true;
         if (result === false) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
       }
@@ -687,11 +687,11 @@ export function createProcess(options?: {
           // asks it about processes that are not its own children: a pid out
           // of a lock file, a parent's. A live run answers yes and carries no
           // signal; anything else is `ESRCH`, as it is on a machine.
-          if (signal === 0 && pidIsLive(Math.abs(pid))) return true;
+          if (signal === 0 && pidIsLive(Math.abs(pid), __tokenForProcess(proc))) return true;
           // Any other live process of the container takes the signal too,
           // including one whose parent has exited; otherwise nothing could
           // ever end it.
-          if (signal !== 0 && child === void 0 && pid > 0 && signalPid(pid, name)) return true;
+          if (signal !== 0 && child === void 0 && pid > 0 && signalPid(pid, name, __tokenForProcess(proc))) return true;
           throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
         }
         if (signal === 0) return true;

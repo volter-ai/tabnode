@@ -37,7 +37,7 @@
 import { defineCommand } from 'just-bash';
 import type { Bash, CommandContext } from 'just-bash';
 import {
-  PROCESS_TOKEN_ENV, enterRun, mintPid, setRunPid, runPid, forgetRunPid, pidIsLive, signalPid,
+  PROCESS_TOKEN_ENV, enterRun, mintPid, setRunPid, runPid, forgetRunPid, pidIsLive, signalPid, exitRunProcess, reapRunProcess,
   tokenOfPid, __signalOwnedProcess, __stopOwnedProcess, type ProcessToken,
 } from '../process-tokens';
 import { __substrateChildrenOf, __substrateSignals, __substrateSignalNames } from './process';
@@ -224,9 +224,9 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
   const token: ProcessToken = `job-${nextJob++}`;
   const parent = host.runTokenOf(ctx);
   const parentPid = runPid(parent)?.pid;
-  const liveParent = parentPid !== undefined && pidIsLive(parentPid) ? parentPid : 0;
-  const pid = mintPid(liveParent);
-  setRunPid(token, pid, liveParent, { argv: ['sh', '-c', sourceText], cwd: ctx.cwd });
+  const liveParent = parentPid !== undefined && pidIsLive(parentPid, parent) ? parentPid : 0;
+  const pid = mintPid(liveParent, false, parent);
+  setRunPid(token, pid, liveParent, { argv: ['sh', '-c', sourceText], cwd: ctx.cwd }, parent);
   const controller = new AbortController();
   let streamedOut: string[] = [];
   let streamedErr: string[] = [];
@@ -252,7 +252,7 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
       // A `node` of the job, here or in a realm of its own, takes the signal
       // as a process does: its listeners, else its default action, which ends
       // the job with it.
-      if (__signalOwnedProcess(token, signal) || signalPid(pid, signal)) return true;
+      if (__signalOwnedProcess(token, signal) || signalPid(pid, signal, parent)) return true;
       if (IGNORED_BY_DEFAULT.has(signal)) return true;
       // Nothing of the job's receives signals (a builtin, `sleep`): it ends
       // now, as a killed child's run ends, and reports the signal.
@@ -268,6 +268,9 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
     if (job.status !== null) return;
     job.status = status;
     host.releaseRunStreams(token);
+    // The job ran in this realm's shell: it exits with its status, and its end is its shell's wait.
+    exitRunProcess(pid, liveParent, status, null, parent);
+    reapRunProcess(pid, liveParent, status, null, parent);
     forgetRunPid(token);
     __substrateChildrenOf(parent).delete(pid);
     settle(status);
@@ -534,9 +537,9 @@ function deliver(caller: ProcessToken | null, pid: number, signal: string): bool
   // The calling shell's own children are found among its own; any other pid goes to the kernel's kill.
   const child = __substrateChildrenOf(caller).get(pid);
   const childLive = child !== undefined && child.exitCode === null && child.signalCode === null;
-  if (signal === '0') return childLive || pidIsLive(pid);
+  if (signal === '0') return childLive || pidIsLive(pid, caller);
   if (childLive) return child.kill(signal);
   const token = tokenOfPid(pid);
   if (token !== null && __signalOwnedProcess(token, signal)) return true;
-  return signalPid(pid, signal);
+  return signalPid(pid, signal, caller);
 }

@@ -70,6 +70,7 @@ import { stdinRingProblem, stdinRingWaitsAsync } from './stdin-ring';
 export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats } from './tree-descriptors';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
+import type { ProcessRegistry } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
 export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport, NativeStreamHandleView } from './native-stream-owner';
@@ -114,11 +115,15 @@ export interface RunOptions {
   /**
    * The numbers a host that numbers processes already gave this run: a
    * kernel's pid for a `node` its shell exec'd, and the pid of the process
-   * that exec'd it. The run is that process (`process.pid`, `process.ppid`)
-   * and its children are numbered as the kernel's (`installProcessIdAllocator`).
-   * Container owner and `runNode` only.
+   * that exec'd it, as its own pid namespace numbers them. The run is that
+   * process (`process.pid`, `process.ppid`). `runNode` only.
    */
   process?: { pid: number; ppid: number };
+  /**
+   * The run's process registry, where its process has a kernel connection of its own: its numbers, its children,
+   * kill and lookup go through it (`installRunRegistry`). `runNode` only.
+   */
+  registry?: ProcessRegistry;
   terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
   /** Callback for streaming stdout chunks as they arrive (for long-running commands like vitest watch) */
   onStdout?: (data: string) => void;
@@ -318,6 +323,7 @@ export function createContainer(options?: ContainerOptions): {
     runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {
       ...(runOptions?.filesystem ? { filesystem: runOptions.filesystem } : {}),
       ...(runOptions?.process ? { process: { pid: runOptions.process.pid, ppid: runOptions.process.ppid } } : {}),
+      ...(runOptions?.registry ? { registry: runOptions.registry } : {}),
       cwd: runOptions?.cwd,
       env: runOptions?.env,
       ...(runOptions?.stdin !== undefined ? { stdin: runOptions.stdin } : {}),

@@ -235,14 +235,30 @@ export function installProcessIdAllocator(allocate: () => number): void {
 }
 
 /**
+ * Each run's process registry: its own kernel connection's, for a run whose process has one (ADR-0129: a run is a
+ * process, and its numbers are its pid namespace's); a child the run forks without a connection of its own is numbered
+ * by its parent's. Every other run, and the realm's own process, use the realm's.
+ */
+const runRegistries = new Map<ProcessToken, ProcessRegistry>();
+/** The registry a run's numbers and calls go through: its own, else the realm's. `run` null is the realm process. */
+export function registryFor(run: ProcessToken | null | undefined): ProcessRegistry {
+  return (run === null || run === undefined ? undefined : runRegistries.get(run)) ?? processRegistry;
+}
+/** Trusted host only: run `token`'s process has a kernel connection of its own, whose registry answers for it. */
+export function installRunRegistry(token: ProcessToken, registry: ProcessRegistry): void {
+  runRegistries.set(token, registry);
+}
+
+/**
  * A named run that is the image a process forked elsewhere exec's (execve keeps the pid): a kernel process's own pid,
- * with that process's parent. The registry is told it is an exec, never a new process.
+ * with that process's parent, through the run's own registry. The registry is told it is an exec, never a new process.
  */
 export function claimRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string }): void {
   if (!Number.isSafeInteger(ppid) || ppid < 0 || ppid > 0x7fffffff) throw new Error('Invalid parent process identifier.');
   registryUsed = true;
-  const pgid = pidsOfRuns.get(token)?.pgid ?? processRegistry.lookup(ppid)?.pgid ?? pid;
-  processRegistry.exec(token, { pid, ppid, pgid, ...(started ?? {}), startedAt: Date.now() });
+  const registry = registryFor(token);
+  const pgid = pidsOfRuns.get(token)?.pgid ?? registry.lookup(ppid)?.pgid ?? pid;
+  registry.exec(token, { pid, ppid, pgid, ...(started ?? {}), startedAt: Date.now() });
   pidsOfRuns.set(token, { pid, ppid, pgid });
 }
 
@@ -256,20 +272,25 @@ export function ownProcessIdentity(): { pid: number; ppid: number } {
   return { pid: mintPid(), ppid: 0 };
 }
 
-/** The next process number this engine hands out. */
-export function mintPid(parentPid?: number, newSession = false): number {
+/** fork: a new process numbered by `parent`'s registry (the run that forks it; null for the realm process). */
+export function mintPid(parentPid?: number, newSession = false, parent: ProcessToken | null = null): number {
   registryUsed = true;
-  return processRegistry.allocate(parentPid !== undefined && parentPid > 0 ? parentPid : undefined, newSession);
+  return registryFor(parent).allocate(parentPid !== undefined && parentPid > 0 ? parentPid : undefined, newSession);
 }
 
-/** Record the numbers a named run was started with, for the run to read back. */
-export function setRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string; detached?: boolean }): void {
+/**
+ * Record the numbers a named run was started with, for the run to read back, in the registry of `parent`, the run
+ * that forked it (whose registry the run's own calls then go through).
+ */
+export function setRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string; detached?: boolean }, parent: ProcessToken | null = null): void {
   registryUsed = true;
+  const registry = registryFor(parent);
+  if (registry !== processRegistry && !runRegistries.has(token)) runRegistries.set(token, registry);
   // Node's detached spawn starts a private group. Every other child inherits
   // its parent's, and a second publication preserves an adopted group.
-  const pgid = pidsOfRuns.get(token)?.pgid ?? (started?.detached ? pid : processRegistry.lookup(ppid)?.pgid ?? pid);
+  const pgid = pidsOfRuns.get(token)?.pgid ?? (started?.detached ? pid : registry.lookup(ppid)?.pgid ?? pid);
   const { detached: _detached, ...description } = started ?? {};
-  processRegistry.publish(token, { pid, ppid, pgid, ...description, startedAt: Date.now() });
+  registryFor(token).publish(token, { pid, ppid, pgid, ...description, startedAt: Date.now() });
   pidsOfRuns.set(token, { pid, ppid, pgid });
 }
 
@@ -278,19 +299,20 @@ export function runPid(token: ProcessToken | null | undefined): { pid: number; p
   return token === null || token === undefined ? undefined : pidsOfRuns.get(token);
 }
 
-/** exit_group for a child this realm ran itself: its end goes to the process table. */
-export function exitRunProcess(pid: number, parentPid: number, code: number, signal: string | null): void {
-  processRegistry.exit(pid, parentPid, code, signal);
+/** exit_group for a child `parent` ran itself: its end goes to the process table through `parent`'s registry. */
+export function exitRunProcess(pid: number, parentPid: number, code: number, signal: string | null, parent: ProcessToken | null = null): void {
+  registryFor(parent).exit(pid, parentPid, code, signal);
 }
 
-/** wait4 for a child whose run has ended: the end the process table holds, which its parent reports. */
-export function reapRunProcess(pid: number, parentPid: number, code: number, signal: string | null): { code: number; signal: string | null } {
-  return processRegistry.reap(pid, parentPid, code, signal);
+/** wait4 by `parent` for a child whose run has ended: the end the process table holds, which the parent reports. */
+export function reapRunProcess(pid: number, parentPid: number, code: number, signal: string | null, parent: ProcessToken | null = null): { code: number; signal: string | null } {
+  return registryFor(parent).reap(pid, parentPid, code, signal);
 }
 
 /** A run that has ended is no longer a process; its number is nobody's. */
 export function forgetRunPid(token: ProcessToken): void {
-  processRegistry.forget(token);
+  registryFor(token).forget(token);
+  runRegistries.delete(token);
   pidsOfRuns.delete(token);
 }
 
@@ -300,25 +322,25 @@ export function tokenOfPid(pid: number): ProcessToken | null {
   return null;
 }
 
-/** Whether a live run carries this number, which is what `kill(pid, 0)` asks. */
-export function pidIsLive(pid: number): boolean {
-  return processRegistry.lookup(pid) !== undefined;
+/** Whether a live process carries this number, as `caller`'s namespace numbers it: what `kill(pid, 0)` asks. */
+export function pidIsLive(pid: number, caller: ProcessToken | null): boolean {
+  return registryFor(caller).lookup(pid) !== undefined;
 }
 
-/** `kill(pid, signal)` to another realm's live process; whether one took it. */
-export function signalPid(pid: number, signal: string): boolean {
-  return processRegistry.signal(pid, signal);
+/** `kill(pid, signal)` by `caller` to another live process; whether one took it. */
+export function signalPid(pid: number, signal: string, caller: ProcessToken | null): boolean {
+  return registryFor(caller).signal(pid, signal);
 }
 
 /** Undefined means the embedding host predates process-group operations. */
-export function groupIsLive(pgid: number): boolean | undefined {
-  return processRegistry.lookupGroup?.(pgid);
+export function groupIsLive(pgid: number, caller: ProcessToken | null): boolean | undefined {
+  return registryFor(caller).lookupGroup?.(pgid);
 }
-export function signalGroup(pgid: number, signal: string): boolean | undefined {
-  return processRegistry.signalGroup?.(pgid, signal);
+export function signalGroup(pgid: number, signal: string, caller: ProcessToken | null): boolean | undefined {
+  return registryFor(caller).signalGroup?.(pgid, signal);
 }
 
-/** The numbers a live process carries, looked up by its own pid. */
-export function processByPid(pid: number): { pid: number; ppid: number } | undefined {
-  return processRegistry.lookup(pid);
+/** The numbers a live process carries, as `caller`'s namespace numbers it. */
+export function processByPid(pid: number, caller: ProcessToken | null = null): { pid: number; ppid: number } | undefined {
+  return registryFor(caller).lookup(pid);
 }
