@@ -40,6 +40,7 @@ import { EventEmitter } from '../node-lib/events-module';
 import { __substrateExitCode, __substrateUncaughtCapture } from './process';
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
+import { treeDescriptorsOf } from '../tree-descriptors';
 import { VirtualFSAdapter } from './vfs-adapter';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
 import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
@@ -2064,11 +2065,32 @@ function isNodeScript(path: string): boolean {
   if (!currentVfs) return false;
   try {
     if (!currentVfs.statSync(path).isFile()) return false;
-    const bytes = currentVfs.readFileSync(path) as Uint8Array;
+    const bytes = fileHead(path);
     const end = bytes.indexOf(10);
-    const line = new TextDecoder().decode(bytes.subarray(0, end < 0 ? Math.min(bytes.byteLength, 256) : Math.min(end, 256)));
-    return NODE_INTERPRETER.test(line);
+    return NODE_INTERPRETER.test(new TextDecoder().decode(end < 0 ? bytes : bytes.subarray(0, end)));
   } catch { return false; }
+}
+
+/** What a spawn reads to tell a file's kind (Linux's binfmt reads a bounded first block too). */
+const FILE_HEAD_BYTES = 256;
+
+/**
+ * A file's first bytes, and no more: through the tree's own descriptors where
+ * it has them (the kernel's tree, where a whole read is a read of every
+ * byte), otherwise from the tree's file, which an in-memory tree holds whole.
+ * Reading the whole file to see its first line read a multi-megabyte binary
+ * on every spawn by path.
+ */
+function fileHead(path: string): Uint8Array {
+  const door = treeDescriptorsOf(currentVfs);
+  if (door) {
+    const fd = door.open(path, 0, 0);
+    try {
+      const head = new Uint8Array(FILE_HEAD_BYTES);
+      return head.subarray(0, door.read(fd, head, 0, FILE_HEAD_BYTES, 0));
+    } finally { door.close(fd); }
+  }
+  return (currentVfs!.readFileSync(path) as Uint8Array).subarray(0, FILE_HEAD_BYTES);
 }
 
 /**
@@ -2088,8 +2110,9 @@ function isRegisteredProgramStub(path: string): boolean {
   try {
     const stat = currentVfs.statSync(path);
     if (!stat.isFile()) return false;
-    if (stat.size <= 256 && REGISTERED_PROGRAM_STUB.test(String(currentVfs.readFileSync(path, 'utf8')))) return true;
-    return isBinaryImage(currentVfs.readFileSync(path) as Uint8Array);
+    const head = fileHead(path);
+    if (stat.size <= FILE_HEAD_BYTES && REGISTERED_PROGRAM_STUB.test(new TextDecoder().decode(head))) return true;
+    return isBinaryImage(head);
   } catch { return false; }
 }
 
