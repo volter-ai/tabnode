@@ -144,7 +144,11 @@ export function createProcessRegistryOwner(): {
         claim(pid) {
           active();
           if (!Number.isSafeInteger(pid) || pid < 2 || pid > 0x7fffffff) throw new Error('Invalid process identifier.');
-          if (held.has(pid) || live.has(pid)) throw new Error('Process identifier is already held.');
+          // A number the embedder (the kernel) gives is the kernel's process. Held here already, it is the same
+          // process taking a new image: execve keeps the pid (POSIX), so a shell that execs a host program in
+          // place (`sh -c "/opt/programs/bin/schema-engine …"`) hands that program its own pid. The publication
+          // below takes the live entry over (Rallly run 45: "Process identifier is already held." was the
+          // schema engine's whole answer, and prisma's "Schema engine error:" came out empty).
           allocated.add(pid);
           claimed.add(pid);
           held.add(pid);
@@ -156,17 +160,19 @@ export function createProcessRegistryOwner(): {
             if (identity.pgid !== undefined && identity.pgid !== previous.pgid) throw new Error('Process group identity cannot change at publication.');
             return;
           }
-          if (previous || !allocated.has(identity.pid) || live.has(identity.pid)) {
+          // A claimed pid that is live is an exec'd process: its new image takes the entry over, in its group.
+          const execed = claimed.has(identity.pid) ? live.get(identity.pid) : undefined;
+          if (previous || !allocated.has(identity.pid) || (live.has(identity.pid) && !execed)) {
             throw new Error('Process identity is not owned by this run.');
           }
           if (!Number.isInteger(identity.ppid) || identity.ppid < 0 || identity.ppid > 0x7fffffff) {
             throw new Error('Invalid parent process identifier.');
           }
           const parent = Array.from(runs.values()).find(parent => parent.pid === identity.ppid);
-          if (identity.ppid !== 0 && !parent && !claimed.has(identity.pid)) {
+          if (identity.ppid !== 0 && !parent && !claimed.has(identity.pid) && !execed) {
             throw new Error('Parent process is not owned by this realm.');
           }
-          const inherited = parent?.pgid ?? parent?.pid ?? identity.pid;
+          const inherited = execed?.pgid ?? parent?.pgid ?? parent?.pid ?? identity.pid;
           const pgid = identity.pgid ?? inherited;
           if (!Number.isInteger(pgid) || pgid < 1 || pgid > 0x7fffffff || (pgid !== identity.pid && pgid !== inherited)) {
             throw new Error('Invalid or unowned process group identifier.');
@@ -181,10 +187,12 @@ export function createProcessRegistryOwner(): {
           const entry = runs.get(token);
           if (!entry) return;
           runs.delete(token);
-          live.delete(entry.pid);
-          receivers.delete(entry.pid);
           allocated.delete(entry.pid);
           claimed.delete(entry.pid);
+          // Only while the pid is still this run's image: after an exec, the new image holds it.
+          if (live.get(entry.pid) !== entry) return;
+          live.delete(entry.pid);
+          receivers.delete(entry.pid);
           held.delete(entry.pid);
         },
         lookup(pid) { active(); return live.get(pid); },
@@ -216,8 +224,8 @@ export function createProcessRegistryOwner(): {
         dispose() {
           if (disposed) return;
           disposed = true;
-          for (const entry of runs.values()) { live.delete(entry.pid); receivers.delete(entry.pid); }
-          for (const pid of allocated) held.delete(pid);
+          for (const entry of runs.values()) if (live.get(entry.pid) === entry) { live.delete(entry.pid); receivers.delete(entry.pid); }
+          for (const pid of allocated) if (!live.has(pid)) held.delete(pid);
           receiver.handler = undefined;
           runs.clear();
           allocated.clear();
