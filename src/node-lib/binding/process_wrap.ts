@@ -25,7 +25,7 @@ import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { UV_ENOENT, UV_ESRCH } from './uv';
 import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
-  ownerOf, type OwnedHandle,
+  ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
 } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
 import { handleForFd } from './fds';
@@ -74,6 +74,8 @@ export interface RunChannel {
 
 /** What the binding asks the engine's process model to run. */
 export interface RunRequest {
+  /** The run whose `Process` handle spawns it: its parent (the handle's NodeLibScope's process), or null for none. */
+  owner: ProcessToken | null;
   /** The program, as the caller named it: a path, a name, or the shell. */
   file: string;
   /** argv, the file first, as Node builds it. */
@@ -271,6 +273,7 @@ export class Process implements OwnedHandle {
     this.stdio = options.stdio ?? [];
 
     const request: RunRequest = {
+      owner: ownerOfInstance(this),
       file: options.file,
       args: options.args ?? [options.file],
       cwd: options.cwd ?? spawningDirectory(ownerOf(this)),
@@ -442,9 +445,8 @@ export class Process implements OwnedHandle {
     if (this.ended) return;
     this.ended = true;
     this.closeFarEnds();
-    const report = this.onexit;
     this.run = null;
-    if (report) report(code, signal);
+    invokeOwned(this, 'onexit', code, signal);
   }
 }
 

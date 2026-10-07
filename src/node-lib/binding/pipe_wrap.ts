@@ -14,7 +14,7 @@
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
 import { UV_EADDRINUSE, UV_ENOENT, UV_EBADF } from './uv';
 import { handleForFd, registerFd, releaseFd } from './fds';
-import { __adoptHandle, ownerOf } from './handles';
+import { __adoptHandle, ownerOf, invokeOwned } from './handles';
 import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
 
 /** libuv's `uv_pipe_t` flavours, and the two chmod bits `listen` reads. */
@@ -79,13 +79,13 @@ export class Pipe extends LibuvStreamWrap {
 
   connect(req: PipeConnectWrap, path: string): number {
     const native = nativeStreamFor(this);
-    if (native) return native.connect(path, undefined, false, status => req.oncomplete?.(status, this, req, true, true));
+    if (native) return native.connect(path, undefined, false, status => invokeOwned(req, 'oncomplete', status, this, req, true, true));
     // libuv answers a connect through the request, never from the call.
     queueMicrotask(() => {
       if (this.closed) return;
       const server = listenerOnPath(path);
       if (!server) {
-        req.oncomplete?.(UV_ENOENT, this, req, true, true);
+        invokeOwned(req, 'oncomplete', UV_ENOENT, this, req, true, true);
         return;
       }
       const accepted = new (server.constructor as typeof Pipe)(server.type === constants.IPC ? constants.IPC : constants.SOCKET);
@@ -93,8 +93,8 @@ export class Pipe extends LibuvStreamWrap {
       // The serving run owns what it accepted, not the connecting one.
       __adoptHandle(accepted, ownerOf(server));
       LibuvStreamWrap.pair(this, accepted);
-      server.onconnection?.(0, accepted);
-      req.oncomplete?.(0, this, req, true, true);
+      invokeOwned(server, 'onconnection', 0, accepted);
+      invokeOwned(req, 'oncomplete', 0, this, req, true, true);
     });
     return 0;
   }

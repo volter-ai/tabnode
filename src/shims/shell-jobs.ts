@@ -40,7 +40,7 @@ import {
   PROCESS_TOKEN_ENV, enterRun, mintPid, setRunPid, runPid, forgetRunPid, pidIsLive, signalPid,
   tokenOfPid, __signalOwnedProcess, __stopOwnedProcess, type ProcessToken,
 } from '../process-tokens';
-import { __substrateChildren, __substrateSignals, __substrateSignalNames } from './process';
+import { __substrateChildrenOf, __substrateSignals, __substrateSignalNames } from './process';
 import { __releaseOwnedServers, __releaseOwnedHandles } from '../node-lib/net-module';
 import type { RunStreams } from './child_process';
 import { unstreamedOutput } from './streamed-output';
@@ -269,7 +269,7 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
     job.status = status;
     host.releaseRunStreams(token);
     forgetRunPid(token);
-    __substrateChildren.delete(pid);
+    __substrateChildrenOf(parent).delete(pid);
     settle(status);
   };
   const hold = (text: string, key: 'pendingOut' | 'pendingErr'): void => {
@@ -281,7 +281,7 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
   delete env[SHELL_VAR];
   env[PROCESS_TOKEN_ENV] = token;
   handoff.set(token, script);
-  __substrateChildren.set(pid, {
+  __substrateChildrenOf(parent).set(pid, {
     get exitCode() { return job.status; },
     signalCode: null,
     kill: (signal = 'SIGTERM') => job.kill(signal),
@@ -476,7 +476,7 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
     return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', exitCode: result.exitCode ?? 0 };
   }));
 
-  bash.registerCommand(defineCommand('kill', async (args) => {
+  bash.registerCommand(defineCommand('kill', async (args, ctx) => {
     let signal = 'SIGTERM';
     let index = 0;
     if (args[0] === '-l' || args[0] === '-L') {
@@ -509,7 +509,7 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
       if (target.startsWith('%')) { stderr += `bash: kill: ${target}: no such job\n`; status = 1; continue; }
       if (!/^-?\d+$/u.test(target)) { stderr += `bash: kill: ${target}: arguments must be process or job IDs\n`; status = 1; continue; }
       const pid = Math.abs(Number(target));
-      if (!deliver(pid, signal)) { stderr += `bash: kill: (${target}) - No such process\n`; status = 1; }
+      if (!deliver(host.runTokenOf(ctx), pid, signal)) { stderr += `bash: kill: (${target}) - No such process\n`; status = 1; }
     }
     return { stdout: '', stderr, exitCode: status };
   }));
@@ -530,8 +530,9 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
  * take it through their handle; any other run of the engine through its
  * process, or through the realm that holds it.
  */
-function deliver(pid: number, signal: string): boolean {
-  const child = __substrateChildren.get(pid);
+function deliver(caller: ProcessToken | null, pid: number, signal: string): boolean {
+  // The calling shell's own children are found among its own; any other pid goes to the kernel's kill.
+  const child = __substrateChildrenOf(caller).get(pid);
   const childLive = child !== undefined && child.exitCode === null && child.signalCode === null;
   if (signal === '0') return childLive || pidIsLive(pid);
   if (childLive) return child.kill(signal);

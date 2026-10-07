@@ -16,7 +16,7 @@
  */
 
 import type { Process } from './shims/process';
-import { AsyncLocalStorage } from './shims/async_hooks';
+import { AsyncLocalStorage, routeUncaughtExceptions } from './shims/async_hooks';
 import { createProcessRegistryOwner, type ProcessIdentity, type ProcessRegistry, type ProcessRegistryScope, type InitialProcessRegistration } from './process-registry';
 
 /** Whatever the embedding runtime uses to name one guest process. */
@@ -106,16 +106,15 @@ export function __runFor(token: ProcessToken): OwnedRun | undefined {
 }
 
 /**
- * The run now launching a guest, for a handle or a server the guest opens
- * after its entry has returned, when no run is the current one any more.
- * `enterRun`'s async-local value covers the guest's own turn and everything
- * scheduled from inside it; a listen that lands after a native `await`
- * continuation is attributed here.
+ * A run is attributed by its scope, never by which run last set a global: a guest's own `process` object, the Node
+ * library and bindings its NodeLibScope gave it (each binding instance owned by that scope's process, its callbacks
+ * run inside its owner's run, as Node's MakeCallback restores a wrap's context), and the frame its timers and promise
+ * continuations carry. An exception a task callback throws goes to the run whose frame it ran in.
  */
-export let __lastLaunchedToken: ProcessToken | null = null;
-export function __setLastLaunchedToken(token: ProcessToken | null): void {
-  __lastLaunchedToken = token;
-}
+routeUncaughtExceptions((error) => {
+  const token = executing.getStore();
+  return token !== undefined && runs.get(token)?.reportUncaught(error) === true;
+});
 
 /** The run a guest is being launched under, where the host named one. */
 export function __currentProcessToken(): ProcessToken | null {

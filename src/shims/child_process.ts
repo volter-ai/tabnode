@@ -60,9 +60,9 @@ import type { ChildProcessModule } from '../node-lib/child-process-module';
 import { getCommandNames } from 'just-bash';
 import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateShellLine, __substrateRunsNode, setProgramResolver } from './command-line';
 
-import { __substrateChildren, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
+import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
 
-import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __lastLaunchedToken, __setLastLaunchedToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, type ProcessToken } from '../process-tokens';
+import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, type ProcessToken } from '../process-tokens';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
 const __hostProcess: { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown } | null =
   typeof process !== 'undefined' && process !== null && typeof (process as { on?: unknown }).on === 'function' && typeof (process as { off?: unknown }).off === 'function'
@@ -404,7 +404,9 @@ forGuestRealm(() => {
   if (typeof globalThis.addEventListener !== 'function') return;
   __backstopInstalled = true;
   globalThis.addEventListener('error', (event: Event) => {
-    const token = nodeProcessRealmToken() ?? __currentProcessToken() ?? __lastLaunchedToken;
+    // A task's or an owned callback's throw was reported to its own run already (process-tokens.ts); what reaches here
+    // is the realm process's own, or the run whose frame is current.
+    const token = nodeProcessRealmToken() ?? __currentProcessToken();
     if (token === null) return;
     const raised = event as ErrorEvent;
     const error = raised.error ?? new Error(raised.message || 'uncaught exception');
@@ -697,8 +699,6 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     stopTimers: () => stopGuestTimers(proc),
     reportUncaught: (error: unknown) => __reportUncaughtException(proc, error),
   });
-  const launchedBefore = __lastLaunchedToken;
-  if (runToken !== null) __setLastLaunchedToken(runToken);
   let hostReceiptWritten = false;
   let lastUncaught: unknown;
   const writeHostReceipt = (kind: 'uncaught' | number, error?: unknown): void => {
@@ -1137,9 +1137,6 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // hand; the scheduled stop then finds nothing left to do.
     stopGuestTimers(proc);
     releaseRun?.();
-    // A run that has ended owns nothing more: a server a later, unnamed run
-    // opens is nobody's, not the last named run's.
-    if (runToken !== null && __lastLaunchedToken === runToken) __setLastLaunchedToken(launchedBefore);
   }
 }
 
@@ -2182,7 +2179,9 @@ function startChildRun(request: RunRequest): StartedRun {
   // reads them.
   // In a process realm the admitted guest is always the spawning parent.
   // Async bookkeeping for a routed child must not make that child its parent.
-  const parentPid = runPid(nodeProcessRealmToken() ?? __currentProcessToken() ?? __lastLaunchedToken)?.pid ?? 0;
+  // The parent is the run whose `Process` handle spawned it (its NodeLibScope's process, the request's owner), never a
+  // frame or a global; a spawn no run owns is the realm process's own.
+  const parentPid = runPid(nodeProcessRealmToken() ?? request.owner)?.pid ?? 0;
   const pid = mintPid(parentPid, request.detached === true);
   setRunPid(token, pid, parentPid,
     { detached: request.detached, argv: request.args.length ? request.args : [request.file], ...(request.cwd ? { cwd: request.cwd } : {}) });
@@ -2302,7 +2301,7 @@ function startChildRun(request: RunRequest): StartedRun {
     const ended = reapRunProcess(pid, parentPid, code, signal);
     // A run that has ended is no longer a process: its number answers ESRCH.
     forgetRunPid(token);
-    __substrateChildren.delete(pid);
+    __substrateChildrenOf(request.owner).delete(pid);
     _onForkedChildExit?.();
     request.exit(ended.code, ended.signal);
   };
@@ -2446,7 +2445,7 @@ function startChildRun(request: RunRequest): StartedRun {
   };
   // A pid is signalable before spawn returns, including cancellation in
   // the same turn. A diagnostics-channel microtask registered it too late.
-  __substrateChildren.set(pid, {
+  __substrateChildrenOf(request.owner).set(pid, {
     exitCode: null, signalCode: null,
     kill: (signal = 'SIGTERM') => control.kill(signal) === 0,
   });

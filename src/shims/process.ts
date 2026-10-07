@@ -10,7 +10,7 @@ import { Readable } from '../node-lib/stream-module';
 import { loadNodeLibFor } from '../node-lib/load';
 import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
-import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination } from '../process-tokens';
+import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, type ProcessToken } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeVersions } from '../node-lib/node-versions';
 import { freemem as osFreemem } from './os';
 
@@ -432,7 +432,18 @@ const __substrateIgnoredSignals = new Set(["SIGCHLD", "SIGCONT", "SIGURG", "SIGW
  * children's pids and asks whether they still run judged every live child dead.
  * src/shims/child_process.ts fills this table as it spawns.
  */
-export const __substrateChildren = new Map<number, { exitCode: number | null; signalCode: string | null; kill(signal?: string): boolean }>();
+/** A child a run spawned, as its parent's handle holds it. */
+export interface SubstrateChild { exitCode: number | null; signalCode: string | null; kill(signal?: string): boolean }
+const childrenByParent = new Map<ProcessToken | null, Map<number, SubstrateChild>>();
+/**
+ * The children one run spawned, by the pid it numbers them by: its own, never another run's (a pid in one run's pid
+ * namespace may name another process in another's). `parent` null is the realm process's own.
+ */
+export function __substrateChildrenOf(parent: ProcessToken | null): Map<number, SubstrateChild> {
+  let children = childrenByParent.get(parent);
+  if (!children) { children = new Map(); childrenByParent.set(parent, children); }
+  return children;
+}
 
 /**
  * A guest's `process.version` is the version its image names. The engine said
@@ -670,7 +681,7 @@ export function createProcess(options?: {
       // handles, other live processes of the container through the process
       // registry, and every other pid is ESRCH rather than a silent success.
       if (pid !== proc.pid) {
-        const child = __substrateChildren.get(Math.abs(pid));
+        const child = __substrateChildrenOf(__tokenForProcess(proc)).get(Math.abs(pid));
         if (child === void 0 || child.exitCode !== null || child.signalCode !== null) {
           // Signal 0 is the question "is that process there?", and a program
           // asks it about processes that are not its own children: a pid out
