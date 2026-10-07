@@ -2675,7 +2675,18 @@ export class Runtime {
         }
         const file = pathShim.resolve(this.process.cwd(), filename);
         const load = createRequire(this.vfs, this.fsShim, this.process, pathShim.dirname(file), this.moduleCache, this.options, this.processedCodeCache);
-        target.exports = load(file);
+        try {
+          target.exports = load(file);
+        } catch (error) {
+          // Node's dlopen of a missing file fails as the dynamic linker
+          // reports it (the engine is linux to its guests), under
+          // ERR_DLOPEN_FAILED, which loaders read; require's MODULE_NOT_FOUND
+          // is a different failure. An addon that exists and cannot load
+          // already fails as ERR_DLOPEN_FAILED, and a prepared refusal keeps
+          // its own named reason.
+          if ((error as { code?: unknown } | null)?.code !== 'MODULE_NOT_FOUND') throw error;
+          throw Object.assign(new Error(file + ': cannot open shared object file: No such file or directory'), { code: 'ERR_DLOPEN_FAILED' });
+        }
       },
     });
 
