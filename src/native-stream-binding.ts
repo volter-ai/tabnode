@@ -1,4 +1,5 @@
 /** Worker-side libuv delegation. The capability channel never becomes a handle property. */
+import { registerExitDrain } from './exit-drains';
 import type { NativeStreamDescriptor, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport } from './native-stream-owner';
 import type { TCP } from './node-lib/binding/tcp_wrap';
 import type { Pipe } from './node-lib/binding/pipe_wrap';
@@ -119,6 +120,10 @@ interface PendingWrite {
   bytes: number;
   sent?: number;
   ended: boolean;
+  /** Bytes of this write already handed to the channel. */
+  posted?: number;
+  /** Handed over whole at a process's exit (drainForExit): the pump posts none of it again. */
+  drained?: boolean;
   release(): void;
 }
 interface LocalEndpoint { handles: Set<Stream>; peer?: LocalEndpoint }
@@ -136,6 +141,7 @@ export class NativeStreamDriver {
   private releaseClose: (() => void) | undefined;
   private writeEnded = false;
   private pendingShutdown: (() => void) | undefined;
+  private readonly unregisterDrain: () => void;
 
   constructor(
     private readonly handle: Stream,
@@ -143,7 +149,35 @@ export class NativeStreamDriver {
     private readonly channel: NativeStreamTransport,
     private readonly closeLocal: (callback?: () => void) => void,
     private readonly flushLocal: () => void,
-  ) { this.endpoint = { handles: new Set([handle]) }; }
+  ) {
+    this.endpoint = { handles: new Set([handle]) };
+    this.unregisterDrain = registerExitDrain(() => this.drainForExit());
+  }
+
+  /**
+   * What this stream still owes its reader when the process exits: the rest of the write in flight and every
+   * queued one, handed over now, in order, as a blocking stdio pipe would have taken them before the exit
+   * (Rallly run 36: a seam's last stderr line, written before process.exit(1), never reached its parent).
+   */
+  private drainForExit(): void {
+    const writeAtExit = this.channel.writeAtExit?.bind(this.channel);
+    if (!writeAtExit || this.closing || stopped || this.writeEnded) return;
+    const maximum = this.channel.limits.maxReadChunkBytes;
+    for (const write of this.writes) {
+      // A write carrying a descriptor (an IPC handle) cannot be handed over without its owner's answer.
+      if (write.ended || write.sent !== undefined) continue;
+      let skip = write.posted ?? 0;
+      for (const part of write.parts) {
+        if (skip >= part.byteLength) { skip -= part.byteLength; continue; }
+        for (let offset = skip; offset < part.byteLength; offset += maximum) {
+          writeAtExit(this.descriptor.id, part.slice(offset, Math.min(part.byteLength, offset + maximum)));
+        }
+        skip = 0;
+      }
+      write.posted = write.bytes;
+      write.drained = true;
+    }
+  }
 
   get peer(): LibuvStreamWrap | null {
     for (const handle of this.endpoint.peer?.handles ?? []) if (!handle.closed) return handle;
@@ -283,7 +317,10 @@ export class NativeStreamDriver {
       outer: for (const part of write.parts) {
         for (let offset = 0; offset < part.byteLength; offset += this.channel.limits.maxReadChunkBytes) {
           if (this.closing || stopped) { status = UV_ECANCELED; break outer; }
+          // Handed over at exit already (drainForExit): nothing of it is posted twice.
+          if (write.drained) break outer;
           const chunk = part.subarray(offset, offset + this.channel.limits.maxReadChunkBytes);
+          write.posted = (write.posted ?? 0) + chunk.byteLength;
           status = await this.channel.write(this.descriptor.id, chunk, write.sent);
           if (write.sent !== undefined) { closeDescriptor(write.sent); write.sent = undefined; }
           if (status !== 0) break outer;
@@ -335,6 +372,7 @@ export class NativeStreamDriver {
   }
 
   private finishClose(): void {
+    this.unregisterDrain();
     if (!handles.has(this.descriptor.id)) return;
     handles.delete(this.descriptor.id);
     drivers.delete(this.handle);

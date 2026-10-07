@@ -35,6 +35,8 @@ export interface NativeStreamTransport {
   readonly limits: Readonly<NativeStreamLimits>;
   call(operation: NativeStreamOperation): NativeStreamReply;
   write(id: number, bytes: Uint8Array, handle?: number): Promise<number>;
+  /** A write handed over at the process's exit, its answer awaited by no one (exit-drains.ts). */
+  writeAtExit?(id: number, bytes: Uint8Array): void;
   onEvent(listener: (event: NativeStreamEvent) => void): () => void;
 }
 

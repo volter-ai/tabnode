@@ -4,6 +4,7 @@
  * Process is an EventEmitter in Node.js
  */
 
+import { runExitDrains } from '../exit-drains';
 import { EventEmitter } from '../node-lib/events-module';
 import type { EventListener } from '../node-lib/events-module';
 import { Readable } from '../node-lib/stream-module';
@@ -643,6 +644,8 @@ export function createProcess(options?: {
     exit(code: number | string | null | undefined = 0) {
       code = __substrateExitCode(code);
       emitter.emit('exit', code);
+      // What the program wrote before exiting reaches its readers first, as a blocking stdio pipe's does (exit-drains.ts).
+      runExitDrains();
       if (options?.onExit) {
         options.onExit(code);
       }
