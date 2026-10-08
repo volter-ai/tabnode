@@ -254,6 +254,8 @@ const __substrateHeldNamespaces: Record<string, readonly string[]> = {
   WebAssembly: ['compile', 'compileStreaming', 'instantiate', 'instantiateStreaming'],
 };
 
+/** The names `for (const name in globalThis)` gives in Node v24.21.0, measured (`node -e` of that loop), less the module wrapper's five. */
+const NODE_ENUMERABLE_GLOBALS = new Set(['global', 'clearImmediate', 'setImmediate', 'clearInterval', 'clearTimeout', 'setInterval', 'setTimeout', 'queueMicrotask', 'structuredClone', 'atob', 'btoa', 'performance', 'fetch', 'crypto', 'navigator']);
 function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   let guest = __substrateGuestGlobals.get(process);
   if (guest) return guest;
@@ -264,11 +266,13 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   // this file stands for the class until the loader has built it, and a guest
   // that compared the two found two objects.
   let buffer: unknown;
+  let performance: unknown, performanceSet = false;
   const boundGlobals = new Map<string | symbol, { original: unknown; bound: unknown }>();
   // A key the guest defined that the host would not take (a name the host
   // holds non-configurable, `navigator` under a worker's authority) lives on
   // the proxy's own target, and is this guest's from then on.
   const shadowed = (target: object, key: string | symbol): boolean => Reflect.getOwnPropertyDescriptor(target, key) !== undefined;
+  const hostAtStart = new Set<string | symbol>(Reflect.ownKeys(host));
   const localGlobals = Object.create(null);
   Object.defineProperty(localGlobals, "Promise", { value: intrinsicPromise, writable: true, configurable: true, enumerable: false });
   // Node's own navigator, scoped to this process; never expose WorkerNavigator.
@@ -285,14 +289,17 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   // Assigning global.Worker/globalThis.self must create the corresponding
   // bare binding without exposing or mutating the browser worker authority.
   Object.defineProperties(localGlobals, {
-    Worker: { value: undefined, writable: true, configurable: true, enumerable: true },
-    self: { value: undefined, writable: true, configurable: true, enumerable: true },
+    Worker: { value: undefined, writable: true, configurable: true, enumerable: false },
+    self: { value: undefined, writable: true, configurable: true, enumerable: false },
   });
+  // These stand-ins are how the realm's own names are kept from a guest, and are no globals of Node's: they are not
+  // enumerated. One a guest assigns becomes its global and is enumerated from then on (the `set` trap below).
+  const guestAssigned = new Set<string | symbol>();
   // Browser worker messaging is host authority, not a Node global. A guest's
   // adapter may define its own names without hijacking the host transport.
   const browserTransportGlobals = ['postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent'];
   for (const key of browserTransportGlobals) Object.defineProperty(localGlobals, key, {
-    value: undefined, writable: true, configurable: true, enumerable: true,
+    value: undefined, writable: true, configurable: true, enumerable: false,
   });
   const isLocalGlobal = (key: string | symbol) => ['Promise', 'navigator', 'Navigator', 'Worker', 'self', ...browserTransportGlobals].includes(key as string);
   guest = new Proxy(localGlobals, {
@@ -305,7 +312,8 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       if (key === "globalThis" || key === "global") return guest;
       if (shadowed(target, key)) return Reflect.get(target, key, guest);
       if (key === "MessageChannel" || key === "MessagePort") return guestMessageGlobals(process)[key];
-      if (key === "performance") return perfHooksShim.performance;
+      // `perf_hooks`'s own object, until the guest assigns another: the name is writable in Node (an accessor with a setter).
+      if (key === "performance") return performanceSet ? performance : perfHooksShim.performance;
       const value = Reflect.get(host, key, host);
       if (key === "structuredClone" && typeof value === "function") {
         if (boundGlobals.get(key)?.original !== value) boundGlobals.set(key, {
@@ -342,16 +350,24 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
         }
         return boundGlobals.get(key)!.bound;
       }
-      if (["atob", "btoa", "structuredClone", "queueMicrotask"].includes(key as string) && typeof value === "function") {
+      // `atob` and `btoa` are the `buffer` module's own, as in Node, where the global IS `require('buffer').atob`:
+      // a program that compares the two (Node's test/common does, to know its globals) found two functions.
+      if ((key === "atob" || key === "btoa") && !shadowed(target, key)) return (loadNodeLibFor(process, 'buffer') as Record<string, unknown>)[key];
+      if (["structuredClone", "queueMicrotask"].includes(key as string) && typeof value === "function") {
         if (boundGlobals.get(key)?.original !== value) boundGlobals.set(key, { original: value, bound: value.bind(host) });
         return boundGlobals.get(key)!.bound;
       }
       return value;
     },
     set(target, key, value) {
+      if (isLocalGlobal(key) && !guestAssigned.has(key) && (key === 'Worker' || key === 'self' || browserTransportGlobals.includes(key as string))) {
+        guestAssigned.add(key);
+        return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
+      }
       if (isLocalGlobal(key)) return Reflect.set(target, key, value, target);
       if (key === "fetch") { fetch = value; return true; }
       if (key === "Buffer") { buffer = value; return true; }
+      if (key === "performance") { performance = value; performanceSet = true; return true; }
       if (shadowed(target, key)) return Reflect.set(target, key, value, target);
       if (Reflect.set(host, key, value, host)) return true;
       // A global the host holds read-only (a confined realm's \`WebSocket\`) is
@@ -369,13 +385,22 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     getOwnPropertyDescriptor(target, key) {
       if (isLocalGlobal(key)) return Reflect.getOwnPropertyDescriptor(target, key);
       if (key === "fetch") return { value: fetch, writable: true, configurable: true, enumerable: true };
-      if (key === "Buffer") return { value: buffer ?? loadNodeLibFor(process, 'buffer').Buffer, writable: true, configurable: true, enumerable: true };
+      if (key === "performance") return { get: () => (performanceSet ? performance : perfHooksShim.performance), set: (value: unknown) => { performance = value; performanceSet = true; }, configurable: true, enumerable: true };
+      // An accessor and not enumerable, as Node's own `Buffer` global is.
+      if (key === "Buffer") return { get: () => buffer ?? loadNodeLibFor(process, 'buffer').Buffer, set: (value: unknown) => { buffer = value; }, configurable: true, enumerable: false };
+      if (key === "atob" || key === "btoa") return { value: (loadNodeLibFor(process, 'buffer') as Record<string, unknown>)[key], writable: true, configurable: true, enumerable: true };
       // A key the guest defined non-configurable lives on the proxy's own
       // target as well, and is reported from there, as the proxy's
       // invariants require.
       const own = Reflect.getOwnPropertyDescriptor(target, key);
       if (own) return own;
       const descriptor = Reflect.getOwnPropertyDescriptor(host, key);
+      // What the realm had before this guest (a worker's `self`, `postMessage`, `onmessage`, the engine's own names)
+      // is reachable and is not ENUMERATED unless Node enumerates that name: `for (const name in global)` in a
+      // guest gave Node's fifteen names and eleven of the realm's. A program that walks its globals to find what it
+      // leaked found those (Node's own test/common does at every exit: 186 of its files failed on that alone once
+      // `exit` was emitted when a loop drains). A global the guest itself adds is enumerable as it defined it.
+      if (descriptor && descriptor.enumerable && hostAtStart.has(key) && !(typeof key === 'string' && NODE_ENUMERABLE_GLOBALS.has(key))) return { ...descriptor, configurable: true, enumerable: false };
       return descriptor ? { ...descriptor, configurable: true } : undefined;
     },
     defineProperty(target, key, descriptor) {
@@ -2491,7 +2516,7 @@ function createRequire(
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${__substrateSourceURL(resolvedPath)}`;
 
@@ -3124,7 +3149,7 @@ export class Runtime {
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${__substrateSourceURL(filename)}`;
 
