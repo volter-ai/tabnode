@@ -4,10 +4,88 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
-- `installHostNames(names)`: a host supplies the names that are this host
+## v0.9.0 — 2026-10-08
+
+The engine answers more of Node 24.21.0's surface and several things every
+guest meets changed. The exported surface changed and one export answers
+differently for the same input, hence a minor release.
+
+**Breaking for a consumer that keeps prepared module bodies.**
+`preparedModuleKey` names the same file differently: the format id moved from
+`tabnode-prepared-3` to `tabnode-prepared-4` (e86c6e2). The key was a hash the
+engine computed over each source in JavaScript; it is now text made of the
+format id, the kind and the plain SHA-256 of the file's bytes, so a tree that
+already holds a file's digest gives the key with no read and no hash (Rallly
+spent 1.78 s of a 4.4 s start hashing sources, and 0.45 s reading them only to
+hash them). Bodies prepared under `tabnode-prepared-3` are not found by this
+engine. Nothing fails: each module is prepared again in the tab on first use,
+which is slow and silent. A consumer rebuilds its images when it moves the pin.
+
+Added
+
+- A second entry point, `@volter/tabnode/prepared-key`: the prepared body's
+  key derivation with no import of the engine, for a host that builds an image
+  and a page that reads one. From the index too: `preparedModuleKeyOf`,
+  `preparedModuleKind`, `isPreparedModuleKey`, `PREPARED_MODULES_FORMAT`,
+  `PREPARED_MODULES_KEPT`.
+- `VirtualFS` may answer `contentDigest(path)`; a tree that does lets a
+  prepared body be taken without reading its source.
+- `NativeStreamTransport` gains an optional `post(operation)`: a read grant and
+  a shutdown are sent without waiting for the stream owner's thread where the
+  transport offers it; a refusal arrives as the handle's failed read or the
+  shutdown's completion. A stream that stops reading takes an outstanding grant
+  back with a `readStop` call, so an owner never reads ahead for a socket its
+  realm has paused. Without `post` every operation is a call, as before.
+- `dist/surface.json`, made by `npm run build:surface`: every builtin's exports
+  against Node 24.21.0's (same, differs, wrong type, missing) and the binding
+  members Node's library asks for, measured from the built engine.
+- A runtime dependency, `@noble/curves` 2.3.0, for the curves below.
+- `node:crypto`: every export name Node 24.21.0 has is present; `hkdf`,
+  `hkdfSync`, `scrypt`, `scryptSync` and synchronous EC (P-256, P-384, P-521)
+  and Ed25519 key pairs, their PEM, DER and JWK encodings, `sign` and `verify`
+  are implemented; what is not implemented throws by name at the call.
+  `createPrivateKey` and `createPublicKey` refuse what is not a key.
+- `navigator.locks` (one process's lock manager), `buffer.transcode`,
+  `process.release`, `process.getuid`/`geteuid`/`getgid`/`getegid`/`getgroups`,
+  `process.versions.acorn`, `process.features.typescript`.
+- Instrument lines on the realm's console, each one line of JSON:
+  `[boot-trace] node-line`, `[boot-trace] stat-window`, the resolver's probe
+  counts on the `prepared-bodies` counts line, `[stream-calls]` and
+  `[rows-used]` at a process's end.
+- - `installHostNames(names)`: a host supplies the names that are this host
   besides `localhost` (ADR-0002). `dns.lookup` resolves a held name to the
   loopback in the caller's family, and `dns.resolve4`/`resolve6` answer its
   loopback records. With no host table installed nothing changes.
+
+Changed, for every guest
+
+- `process.version` is the `NODE_VERSION` its environment names; the library is
+  Node 24.21.0's whatever it says. On line 20 an `import()` that first runs an
+  ES module settles after a loop turn, as Node 20's does (ADR-0005).
+- A process whose loop drains emits `exit`, with `process.exitCode || 0`; only
+  `process.exit()` did. `beforeExit` is still not emitted.
+- Resolution asks the tree what Node asks: an entry's body runs at require
+  depth 0 (`Module._load` no longer counts as a `require` call), so the stat
+  cache Node keeps for that body exists; a level with no `node_modules`
+  directory is one probe; a path is asked once in one resolution; a package's
+  self-reference reads the nearest `package.json` only, as Node's does (an
+  outer package of the same name with `exports` no longer answers).
+- `fs.watchFile`'s listener gets the new stat and the old one (it got the same
+  one twice). `os.release()` and `os.version()` are no longer swapped;
+  `os.networkInterfaces()` gives `family` as `IPv4`/`IPv6`; `fs.statfs` has its
+  eight fields in Node's order.
+- `process.memoryUsage()` is the realm's own heap where the realm reports one
+  (`performance.memory`); elsewhere the fixed figures it always gave.
+- `--enable-source-maps` and `process.setSourceMapsEnabled` keep the switch and
+  warn once (`TABNODE_SOURCE_MAPS_NOT_APPLIED`): stacks are not remapped.
+- `Function.prototype.toString` makes a function's written source once.
+
+Fixed
+
+- A default export's expression keeps its parentheses when lowered.
+- `node`'s refusals go where its stderr goes when fd 2 is taken as bytes.
+- crypto: a base64 signature verifies; the legacy names `pseudoRandomBytes`,
+  `prng` and `rng` are accessors as in Node.
 
 ## v0.8.0 — 2026-10-07
 
