@@ -25,6 +25,31 @@ import { cryptoConstants as constants } from './crypto-constants';
 import { cipherNames, createCipherClasses } from './crypto-cipher';
 import type { NodeCryptoExport, NodeCryptoUnavailable } from './crypto-exports';
 import * as asymmetric from './crypto-ec';
+import { heldWork } from '../host-globals';
+
+/**
+ * The host's WebCrypto, with each call counted as held work while its promise is outstanding. Node runs these
+ * operations on its thread pool, and a request there keeps the process alive until its callback; here they are
+ * promises of the browser's, which the end-of-program rule cannot see, so a program whose last act was an
+ * asynchronous `generateKeyPair`, `sign` or `verify` was a candidate to be ended before its callback ran. The count is
+ * the one the engine's other host work uses (host-globals.ts, runtime.ts __substrateHeldAsync). Each call is made on
+ * the host's own `subtle`, which a method of it requires as its receiver.
+ */
+const heldSubtle: SubtleCrypto = new Proxy({} as SubtleCrypto, {
+  get(_target, name) {
+    const subtle = crypto.subtle as unknown as Record<string | symbol, unknown>;
+    const member = subtle[name];
+    if (typeof member !== 'function') return member;
+    return (...args: unknown[]): Promise<unknown> => {
+      const held = heldWork();
+      held.count += 1;
+      let work: unknown;
+      try { work = (member as (...values: unknown[]) => unknown).apply(crypto.subtle, args); }
+      catch (error) { held.count -= 1; throw error; }
+      return Promise.resolve(work).finally(() => { held.count -= 1; });
+    };
+  },
+});
 import type { AsymmetricKey, DsaEncoding, KeyEncodingType } from './crypto-ec';
 export { constants };
 
@@ -1120,12 +1145,12 @@ function encodedKey(der: ArrayBuffer, encoding: KeyEncoding, kind: 'public' | 'p
 
 async function generateKeyPairAsync(type: string, options: KeyPairOptions): Promise<{ publicKey: KeyObject | string | Buffer; privateKey: KeyObject | string | Buffer }> {
   const algorithm = keyPairAlgorithm(type, options);
-  const pair = await crypto.subtle.generateKey(algorithm.generate as AlgorithmIdentifier, true, algorithm.usages) as CryptoKeyPair;
+  const pair = await heldSubtle.generateKey(algorithm.generate as AlgorithmIdentifier, true, algorithm.usages) as CryptoKeyPair;
   const publicKey = options.publicKeyEncoding
-    ? encodedKey(await crypto.subtle.exportKey('spki', pair.publicKey), options.publicKeyEncoding, 'public')
+    ? encodedKey(await heldSubtle.exportKey('spki', pair.publicKey), options.publicKeyEncoding, 'public')
     : new KeyObject('public', pair.publicKey, algorithm.name);
   const privateKey = options.privateKeyEncoding
-    ? encodedKey(await crypto.subtle.exportKey('pkcs8', pair.privateKey), options.privateKeyEncoding, 'private')
+    ? encodedKey(await heldSubtle.exportKey('pkcs8', pair.privateKey), options.privateKeyEncoding, 'private')
     : new KeyObject('private', pair.privateKey, algorithm.name);
   return { publicKey, privateKey };
 }
@@ -1417,7 +1442,7 @@ async function signAsync(algorithm: string, data: Uint8Array, keyInfo: KeyInfo):
     : { name: webCryptoAlg.name };
 
   const dataBuffer = new Uint8Array(data).buffer as ArrayBuffer;
-  const signature = await crypto.subtle.sign(signatureAlg, cryptoKey, dataBuffer);
+  const signature = await heldSubtle.sign(signatureAlg, cryptoKey, dataBuffer);
   return Buffer.from(signature);
 }
 
@@ -1440,7 +1465,7 @@ async function verifyAsync(
   // Convert to ArrayBuffer for WebCrypto compatibility
   const sigBuffer = new Uint8Array(signature).buffer as ArrayBuffer;
   const dataBuffer = new Uint8Array(data).buffer as ArrayBuffer;
-  return await crypto.subtle.verify(verifyAlg, cryptoKey, sigBuffer, dataBuffer);
+  return await heldSubtle.verify(verifyAlg, cryptoKey, sigBuffer, dataBuffer);
 }
 
 // Synchronous asymmetric signing has no browser primitive: WebCrypto's
@@ -1485,7 +1510,7 @@ async function importKey(
           ? { name: 'Ed25519' }
           : { name: algorithm.name, hash: algorithm.hash || 'SHA-256' };
 
-    return await crypto.subtle.importKey(
+    return await heldSubtle.importKey(
       format,
       keyBuffer,
       importAlg,
@@ -1496,7 +1521,7 @@ async function importKey(
 
   // For raw/secret keys, use raw import
   if (keyInfo.type === 'secret') {
-    return await crypto.subtle.importKey(
+    return await heldSubtle.importKey(
       'raw',
       keyBuffer,
       { name: algorithm.name, hash: algorithm.hash },
