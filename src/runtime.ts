@@ -827,14 +827,14 @@ function transformEsmToCjsAst(code: string, filename: string): string {
 /**
  * Regex-based fallback for ESM to CJS transform (when acorn can't parse).
  */
-function transformEsmToCjsRegexFallback(code: string, filename: string): string {
+function transformEsmToCjsRegexFallback(code: string, _filename: string): string {
   let transformed = code;
 
-  // Replace import.meta (regex — may match in strings, but this is the fallback)
-  transformed = transformed.replace(/\bimport\.meta\.url\b/g, `"file://${filename}"`);
-  transformed = transformed.replace(/\bimport\.meta\.dirname\b/g, `"${pathShim.dirname(filename)}"`);
-  transformed = transformed.replace(/\bimport\.meta\.filename\b/g, `"${filename}"`);
-  transformed = transformed.replace(/\bimport\.meta\b/g, `({ url: "file://${filename}", dirname: "${pathShim.dirname(filename)}", filename: "${filename}" })`);
+  // Replace import.meta (regex — may match in strings, but this is the fallback) with the variable the module's
+  // wrapper supplies when the body runs, as the syntax-tree lowering does. A body holds nothing of the path it was
+  // made at: bodies are named by content and shared by every file with that content, and this wrote the path in
+  // (`"file://<path>"`), so a file lowered here would have answered another file's `import.meta`.
+  transformed = transformed.replace(/\bimport\.meta\b/g, 'import_meta');
 
   // Replace dynamic imports
   transformed = transformDynamicImportsRegex(transformed);
