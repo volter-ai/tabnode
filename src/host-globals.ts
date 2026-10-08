@@ -119,3 +119,41 @@ forGuestRealm(() => {
   const realm = globalThis as { __browserRuntimeHeldWork?: { count: number } };
   if (!realm.__browserRuntimeHeldWork) takeFromHost(globalThis, '__browserRuntimeHeldWork', ownHeldWork);
 });
+
+/**
+ * WebCrypto's asynchronous calls are held work, for whoever makes them.
+ *
+ * Node runs a key generation, a signature or a digest on its thread pool, and a request there keeps the process
+ * alive until its callback. Here each is a promise of the browser's, which the end-of-program rule cannot see. Two
+ * callers reach them: `node:crypto`'s asynchronous functions (src/shims/crypto.ts awaits `crypto.subtle`), and a
+ * guest's own `crypto.subtle.digest(...)`, `globalThis.crypto` being the realm's `Crypto`.
+ *
+ * Both are counted in one place, where both pass: the methods of `SubtleCrypto.prototype`. The guest's `crypto` and
+ * `crypto.subtle` stay the realm's own objects, which their methods require as receivers and which a program may
+ * compare (`require('crypto').webcrypto === globalThis.crypto`); only the function a method name answers is the
+ * engine's, calling the realm's on the same receiver with the same arguments and counting until its promise
+ * settles. Every method the prototype has is taken, by walking it: a list here would miss the next one the
+ * platform adds.
+ */
+const heldSubtleMethod = Symbol.for('tabnode.held-subtle-method');
+forGuestRealm(() => {
+  const prototype = (globalThis as { SubtleCrypto?: { prototype?: object } }).SubtleCrypto?.prototype;
+  if (!prototype) return;
+  for (const name of Object.getOwnPropertyNames(prototype)) {
+    const original = Object.getOwnPropertyDescriptor(prototype, name)?.value as ((...args: unknown[]) => unknown) & { [heldSubtleMethod]?: true } | undefined;
+    if (name === 'constructor' || typeof original !== 'function' || original[heldSubtleMethod]) continue;
+    // A method, so `this` is the caller's receiver and the function has the method's own name.
+    const held = { [name](this: unknown, ...args: unknown[]): unknown {
+      const work = heldWork();
+      work.count += 1;
+      let answer: unknown;
+      try { answer = Reflect.apply(original, this, args); }
+      catch (error) { work.count -= 1; throw error; }
+      if (!(answer instanceof Promise)) { work.count -= 1; return answer; }
+      return answer.finally(() => { work.count -= 1; });
+    } }[name]!;
+    Object.defineProperty(held, 'length', { value: original.length, configurable: true });
+    Object.defineProperty(held, heldSubtleMethod, { value: true });
+    takeFromHost(prototype, name, held);
+  }
+});
