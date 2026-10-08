@@ -53,13 +53,13 @@ import { VirtualFS } from './virtual-fs';
 import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
-import { runCommand, runNode, registerRunStreams, releaseRunStreams, sendStdin, adoptEngineTree, type StdioKind } from './shims/child_process';
+import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, type StdioKind } from './shims/child_process';
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/handles';
 import { listenerOnPort } from './node-lib/binding/tcp_wrap';
 import { nativeStreamHandles, nativeStreamOwnerPid, type NativeStreamHandleView } from './native-stream-owner';
 
-import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid, installRunRegistry, claimRunPid } from './process-tokens';
+import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid, installRunRegistry, claimRunPid, forgetRunPid } from './process-tokens';
 export { runPid, processByPid };
 export { createProcessRegistryScope, installProcessRegistry, installProcessIdAllocator, ownerProcessRegistryScope, ownerProcessTable } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
@@ -312,18 +312,30 @@ export function createContainer(options?: ContainerOptions): {
     serverBridge,
     execute: (code: string, filename?: string) => runtime.execute(code, filename),
     runFile: (filename: string) => runtime.runFile(filename),
-    run: (command: string, runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => new Promise((resolve) => {
-      // A run that is a process of a kernel's (its own connection): its registry and its numbers, as runNode's.
-      if (runOptions?.registry) installRunRegistry(processToken, runOptions.registry);
-      if (runOptions?.process) claimRunPid(processToken, runOptions.process.pid, runOptions.process.ppid, { argv: ['sh', '-c', command], cwd: runOptions.cwd ?? '/' });
-      // `container.run("cat", { stdin })` used to reach the engine's shell
-      // without its stdin: the run dropped it before exec, and exec dropped
-      // it before the shell. Both forward it, so a builtin reads what was
-      // piped, as it does in a Node shell.
-      runCommand(command, { cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs }, (error, stdout, stderr) => {
-        resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
-      });
-    })),
+    run: (command: string, runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, async (processToken) => {
+      const numbered = runOptions?.registry !== undefined || runOptions?.process !== undefined;
+      try {
+        // A run that is a process of a kernel's (its own connection): its registry and its numbers, as runNode's.
+        if (runOptions?.registry) installRunRegistry(processToken, runOptions.registry);
+        if (runOptions?.process) claimRunPid(processToken, runOptions.process.pid, runOptions.process.ppid, { argv: ['sh', '-c', command], cwd: runOptions.cwd ?? '/' });
+        // That process is a shell: each `node` its line runs is its child, numbered through its registry, and the line
+        // is forgotten only here, at its own end (below).
+        if (numbered) holdShellRun(processToken);
+        // `container.run("cat", { stdin })` used to reach the engine's shell
+        // without its stdin: the run dropped it before exec, and exec dropped
+        // it before the shell. Both forward it, so a builtin reads what was
+        // piped, as it does in a Node shell.
+        return await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
+          runCommand(command, { cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs }, (error, stdout, stderr) => {
+            resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
+          });
+        });
+      } finally {
+        // A shell line that has ended is no longer a process, as a node run that has ended is not (launchNode): its
+        // number goes back, so the next run given it is not refused, and its registry and numbers are dropped.
+        if (numbered) forgetRunPid(processToken);
+      }
+    }),
     runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {
       ...(runOptions?.filesystem ? { filesystem: runOptions.filesystem } : {}),
       ...(runOptions?.process ? { process: { pid: runOptions.process.pid, ppid: runOptions.process.ppid } } : {}),

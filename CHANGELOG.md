@@ -25,8 +25,16 @@ second table for it. The exported surface changed, hence a minor release.
   only at a fork. An image that starts in a process another forked (a
   kernel's shell exec'ing `node`) is an `exec` and keeps its pid, so it is no
   longer refused with "Process identifier is already held." An embedder that
-  implements `ProcessRegistry` adds the three methods; tabnode's own registry
-  stays the standalone implementation, where `exec` is the claim it was.
+  implements `ProcessRegistry` adds the three methods (one on the old
+  interface fails at its first child's exit, not only at an exec); tabnode's
+  own registry stays the standalone implementation, where `exec` is the claim
+  it was.
+- `runNode` and `container.run` given `process` in a realm that is a registry
+  client no longer throw "This realm is a process registry client": the run is
+  an exec in its registry. A `container.run` line given `process` or
+  `registry` is a kernel's shell process: each `node` it runs is that shell's
+  child, numbered through its registry, and the line gives its pid back when it
+  ends.
 - A child's end is the status its zombie holds, which its parent's wait reaps;
   a run the runtime failed to run is killed (`SIGKILL`) rather than given an
   exit code it never passed, and a killed run ends with its signal and no exit

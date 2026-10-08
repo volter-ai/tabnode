@@ -126,9 +126,8 @@ is empty: nothing of it is kept as text.
 
 The numbers a host that numbers processes already gave this run: a
 kernel's pid for a `node` its shell exec'd, and the pid of the process
-that exec'd it. The run is that process (`process.pid`, `process.ppid`)
-and its children are numbered as the kernel's (`installProcessIdAllocator`).
-Container owner and `runNode` only.
+that exec'd it, as its own pid namespace numbers them. The run is that
+process (`process.pid`, `process.ppid`).
 
 #### pid
 
@@ -147,6 +146,15 @@ Container owner and `runNode` only.
 A name for this run. The `node` command records the guest process it
 creates under it for the run's lifetime, and the container answers
 `pendingTimers`, `processPorts` and `stopProcess` about that name.
+
+***
+
+### registry?
+
+> `optional` **registry?**: [`ProcessRegistry`](ProcessRegistry.md)
+
+The run's process registry, where its process has a kernel connection of its own: its numbers, its children,
+kill and lookup go through it (`installRunRegistry`).
 
 ***
 

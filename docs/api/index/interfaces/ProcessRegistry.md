@@ -16,11 +16,80 @@ Installed by the trusted embedding host before this realm starts runs.
 
 ### allocate()
 
-> **allocate**(): `number`
+> **allocate**(`parentPid?`, `newSession?`): `number`
+
+A new process's number. `parentPid` is the process that starts it, where the caller knows it, and `newSession`
+says it leads a session of its own (a detached spawn): a registry over a kernel makes the process there and then,
+as fork (and setsid) do (browser-substrate ADR-0129); tabnode's own ignores both.
+
+#### Parameters
+
+##### parentPid?
+
+`number`
+
+##### newSession?
+
+`boolean`
 
 #### Returns
 
 `number`
+
+***
+
+### exec()
+
+> **exec**(`token`, `identity`): `void`
+
+execve(2) into a process forked elsewhere: an image starts in this realm in a process whose fork already made it
+(a kernel shell's child exec'ing `node`), keeping its pid and parent. No process is made here; a pid the registry
+does not hold answers loudly. Every other pid this realm publishes is one its `allocate` made.
+
+#### Parameters
+
+##### token
+
+`string`
+
+##### identity
+
+[`ProcessIdentity`](ProcessIdentity.md)
+
+#### Returns
+
+`void`
+
+***
+
+### exit()
+
+> **exit**(`pid`, `parentPid`, `code`, `signal`): `void`
+
+exit_group for `pid`, a child forked under `parentPid` whose image this realm ran itself (an engine run): ended
+with `code`, or by `signal`. A child another realm or the host runs reports its own exit.
+
+#### Parameters
+
+##### pid
+
+`number`
+
+##### parentPid
+
+`number`
+
+##### code
+
+`number`
+
+##### signal
+
+`string` \| `null`
+
+#### Returns
+
+`void`
 
 ***
 
@@ -91,6 +160,46 @@ A group may remain live after its leader exits.
 #### Returns
 
 `void`
+
+***
+
+### reap()
+
+> **reap**(`pid`, `parentPid`, `code`, `signal`): `object`
+
+wait4 for `pid`, a child forked under `parentPid`, once its run has ended: the end its parent reports (Node's
+'exit' code and signal). A registry over a kernel answers with the zombie's status and reaps it; tabnode's own,
+which is its own kernel, answers with the end its run gave.
+
+#### Parameters
+
+##### pid
+
+`number`
+
+##### parentPid
+
+`number`
+
+##### code
+
+`number`
+
+##### signal
+
+`string` \| `null`
+
+#### Returns
+
+`object`
+
+##### code
+
+> **code**: `number`
+
+##### signal
+
+> **signal**: `string` \| `null`
 
 ***
 

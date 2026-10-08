@@ -326,6 +326,15 @@ const shellRuns = new Set<ProcessToken>();
 /** Runs that are themselves a hosted `node`: a further `node` under them is a child. */
 const hostedNodes = new Set<ProcessToken>();
 
+/**
+ * A run that is a kernel's shell process (`sh -c` over its line, its pid and registry the kernel's): every `node` its
+ * line runs is the shell's child, forked through its registry, and only the run's own end forgets the run. Left to be
+ * the run, its first `node` forgot the line at that node's end, and the next was numbered by the realm's table.
+ */
+export function holdShellRun(token: ProcessToken): void {
+  shellRuns.add(token);
+}
+
 /** A child identity for a `node` a run's shell runs: its own token and pid under the run's, on the run's streams. */
 function nestedNodeToken(parentToken: ProcessToken, args: readonly string[], cwd: string | undefined): ProcessToken {
   const token: ProcessToken = `child-${__nextChildRun++}`;
