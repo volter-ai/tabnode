@@ -100,8 +100,10 @@ function end(): void {
 /**
  * How long this realm's guest code has not run, in ms: zero while it is running, undefined before any has. It is
  * what the engine can see of a program's activity: the loader and dispatch paths, a binding's callback, and the turn
- * a compiled `await` resumes in. A reaction a guest attached with `then` to a promise the host settles is not
- * bracketed and is not seen. A run's end-of-run line reads it beside the time since the program's last output: a
+ * a compiled `await` resumes in. Two entries are not bracketed and are not seen: a reaction a guest attached with
+ * `then` to a promise the host settles, and a listener the realm itself enters on one of its own event targets (an
+ * AbortSignal's timeout, a message port, a BroadcastChannel) where no dispatch path of the engine made the call.
+ * So a quiet reading does not prove a program idle. A run's end-of-run line reads it beside the time since the program's last output: a
  * program the end-of-program rule waited on, whose guest code ran during that wait, was still working through a
  * door the rule does not count.
  */
