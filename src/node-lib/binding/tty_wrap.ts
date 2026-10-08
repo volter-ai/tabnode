@@ -9,6 +9,7 @@
  * when the running program's own `process.stdout.isTTY` says so -- which is
  * what a held run gets, and what a program reads to decide on colour.
  */
+import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
 import { guessHandleTypeOfFd, handleForFd, registerFd, releaseFd } from './fds';
 import { UV_EBADF, UV_EIO, UV_ENOTSUP } from './uv';
@@ -34,7 +35,7 @@ class TerminalEndpoint {
   pump(): void {
     if (this.scheduled) return;
     this.scheduled = true;
-    queueMicrotask(() => {
+    queueBindingTask(() => {
       this.scheduled = false;
       while (this.input.length) {
         const reader = [...this.readers].find(handle => handle.reading && !handle.closed && !handle.descriptor.closed);

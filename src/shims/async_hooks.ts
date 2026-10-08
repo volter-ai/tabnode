@@ -4,7 +4,7 @@
  */
 
 import { forGuestRealm, takeFromHost } from '../host-globals';
-import { withGuestExecution, withGuestCallback, resumeGuestTurn } from '../guest-loop';
+import { withGuestExecution, withGuestCallback, resumeGuestTurn, isBindingTask } from '../guest-loop';
 
 /**
  * The context a continuation runs in: every storage's store, as one frame.
@@ -164,7 +164,8 @@ forGuestRealm(() => {
     if (typeof callback !== "function") return callback;
     const restore = AsyncLocalStorage.snapshot();
     const call = callback as (...values: unknown[]) => unknown;
-    const enter = bindingCallback ? withGuestCallback : withGuestExecution;
+    // The engine's own deferred work for a binding is not program code: it takes no bracket here (guest-loop.ts).
+    const enter = bindingCallback ? withGuestCallback : isBindingTask(callback) ? (<R>(run: () => R): R => run()) : withGuestExecution;
     return function (this: unknown, ...args: unknown[]) {
       return enter(() => restore(() => {
         if (!task) return call.apply(this, args);

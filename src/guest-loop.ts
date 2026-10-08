@@ -84,6 +84,27 @@ export function withGuestCallback<T>(fn: () => T): T {
   });
 }
 
+/**
+ * The engine's own deferred work on a binding's behalf: a connect answered through its request, bytes that arrived
+ * handed to `onread`, a write's completion. libuv does each from the loop, with no program code on the stack, and
+ * the callback it makes is outermost. The realm's `queueMicrotask` brackets every callback it is given as guest
+ * execution (async_hooks.ts), which is right for a program's own callback and wrong for these: inside that bracket
+ * the callback a binding then makes took the engine's bracket for program code still running, and left the ticks it
+ * queued undrained until some later microtask. An HTTP request dumped by its response (`res.end()` with the body
+ * still arriving) resumes on such a tick; the socket's end, delivered by the same kind of task, came first, and a
+ * `data` listener the program added on `resume` was never called (Node's test-http-dump-req-when-res-ends).
+ *
+ * A task queued here is run by the realm's wrapper with no bracket of its own; the callback it makes brackets itself.
+ */
+const bindingTasks = new WeakSet<object>();
+export function queueBindingTask(task: () => void): void {
+  bindingTasks.add(task);
+  globalThis.queueMicrotask(task);
+}
+export function isBindingTask(task: unknown): boolean {
+  return typeof task === 'function' && bindingTasks.has(task);
+}
+
 export function startGuestLoop(): void {
   if (clock) return;
   // Capture the host clock before a guest can replace its performance view.

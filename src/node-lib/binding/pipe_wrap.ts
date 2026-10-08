@@ -11,6 +11,7 @@
  * handle, which is set on the peer before the peer's read, and that is how
  * `setupChannel` in `internal/child_process.js` receives a sent socket.
  */
+import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
 import { UV_EADDRINUSE, UV_ENOENT, UV_EBADF } from './uv';
 import { handleForFd, registerFd, releaseFd } from './fds';
@@ -81,7 +82,7 @@ export class Pipe extends LibuvStreamWrap {
     const native = nativeStreamFor(this);
     if (native) return native.connect(path, undefined, false, status => invokeOwned(req, 'oncomplete', status, this, req, true, true));
     // libuv answers a connect through the request, never from the call.
-    queueMicrotask(() => {
+    queueBindingTask(() => {
       if (this.closed) return;
       const server = listenerOnPath(path);
       if (!server) {

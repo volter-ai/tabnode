@@ -1,5 +1,5 @@
 /** Worker-side libuv delegation. The capability channel never becomes a handle property. */
-import { withGuestCallback } from './guest-loop';
+import { withGuestCallback, queueBindingTask } from './guest-loop';
 import type { NativeStreamDescriptor, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport } from './native-stream-owner';
 import type { TCP } from './node-lib/binding/tcp_wrap';
 import type { Pipe } from './node-lib/binding/pipe_wrap';
@@ -308,11 +308,11 @@ export class NativeStreamDriver {
       try { withGuestCallback(() => callback(status)); } finally { release(); }
     };
     this.pendingShutdown = () => {
-      if (this.closing || stopped) { queueMicrotask(() => complete(UV_ECANCELED)); return; }
+      if (this.closing || stopped) { queueBindingTask(() => complete(UV_ECANCELED)); return; }
       try {
         const status = this.complete(operation, complete);
-        if (status !== 0) queueMicrotask(() => complete(status));
-      } catch { queueMicrotask(() => complete(UV_ECANCELED)); }
+        if (status !== 0) queueBindingTask(() => complete(status));
+      } catch { queueBindingTask(() => complete(UV_ECANCELED)); }
     };
     return 0;
   }
@@ -402,7 +402,7 @@ export class NativeStreamDriver {
     } finally { write.sent = undefined; }
     // A Node callback throws as a native callback, not as a rejection of this
     // bridge's private async function.
-    queueMicrotask(() => { try { withGuestCallback(() => write.request.oncomplete?.(status)); } finally { write.release(); } });
+    queueBindingTask(() => { try { withGuestCallback(() => write.request.oncomplete?.(status)); } finally { write.release(); } });
   }
 
   close(callback?: () => void, reset = false): number {

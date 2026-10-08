@@ -29,7 +29,7 @@ import {
   ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
 } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
-import { withGuestCallback } from '../../guest-loop';
+import { withGuestCallback, queueBindingTask } from '../../guest-loop';
 import { handleForFd } from './fds';
 import { descriptorWriter, type DescriptorWriter } from './fs';
 import { TTY, type TerminalState } from './tty_wrap';
@@ -399,7 +399,7 @@ export class Process implements OwnedHandle {
       this.closed = true;
       releaseHandle(this);
     }
-    if (callback) queueMicrotask(() => withGuestCallback(callback));
+    if (callback) queueBindingTask(() => withGuestCallback(callback));
   }
 
   /**

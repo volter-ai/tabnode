@@ -108,6 +108,27 @@ async function entered(name, listen) {
     });
     say('after a hand-emitted exit: ' + after.join(', '));
   }
+  // 5. What a socket's callback queues runs before the socket's next callback: bytes arrive, the tick their
+  //    listener queued runs, and only then does the end of the stream (`data, tick, end`). The same for a pipe to
+  //    a child: its output's tick before its close.
+  {
+    const seen = [];
+    await new Promise((done) => {
+      const server = net.createServer((peer) => {
+        peer.on('data', () => { seen.push('data'); process.nextTick(() => seen.push('tick')); });
+        peer.on('end', () => { seen.push('end'); peer.end(); server.close(() => done()); });
+      }).listen(0, () => { net.connect(server.address().port).end('x'); });
+    });
+    say('a socket: ' + seen.join(', '));
+    const piped = [];
+    await new Promise((done) => {
+      const started = spawn(process.execPath, ['-e', 'process.stdout.write("x")']);
+      started.stdout.on('data', () => { piped.push('data'); process.nextTick(() => piped.push('tick')); });
+      started.stdout.on('end', () => piped.push('end'));
+      started.on('close', () => done());
+    });
+    say("a child's output: " + piped.join(', '));
+  }
   clearInterval(alive);
   console.log('ORDER ' + out.join(' | '));
 })();
