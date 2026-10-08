@@ -16,7 +16,7 @@ import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-ve
 import { freemem as osFreemem, userInfo as osUserInfo } from './os';
 import { version as acornVersion } from 'acorn';
 import { ERR_INVALID_ARG_TYPE } from '../node-internals';
-import { internalSourceMapCache } from '../node-lib/internals/events-util';
+import { setSourceMapsSupportOf, sourceMapsSupportOf } from '../node-lib/internals/events-util';
 
 export interface ProcessEnv {
   [key: string]: string | undefined;
@@ -648,9 +648,9 @@ export function createProcess(options?: {
     // as Node's does. It remaps nothing here (see the cache's note).
     setSourceMapsEnabled(enabled: unknown): void {
       if (typeof enabled !== 'boolean') throw new ERR_INVALID_ARG_TYPE('enabled', 'boolean', enabled);
-      internalSourceMapCache.setSourceMapsSupport(enabled, { nodeModules: enabled, generatedCode: enabled });
+      setSourceMapsSupportOf(this, enabled, { nodeModules: enabled, generatedCode: enabled });
     },
-    get sourceMapsEnabled(): boolean { return internalSourceMapCache.getSourceMapsSupport().enabled; },
+    get sourceMapsEnabled(): boolean { return sourceMapsSupportOf(this).enabled; },
     arch: 'x64',
 
     // `process.report.getReport()`: what a program reads to learn the C library it runs on (detect-libc, and
@@ -890,7 +890,8 @@ export function createProcess(options?: {
       }
     ),
 
-    memoryUsage() {
+    // Node's `process.memoryUsage` is a function with a function on it, `rss()`, for the one number alone.
+    memoryUsage: Object.assign(function memoryUsage() {
       // Return mock values since we can't access real memory in browser
       return {
         rss: 50 * 1024 * 1024,
@@ -899,7 +900,7 @@ export function createProcess(options?: {
         external: 1 * 1024 * 1024,
         arrayBuffers: 0,
       };
-    },
+    }, { rss: (): number => 50 * 1024 * 1024 }),
 
     /**
      * Node's `process.constrainedMemory`, which reports a cgroup's limit on

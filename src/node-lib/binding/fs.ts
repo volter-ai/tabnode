@@ -1073,11 +1073,11 @@ const fsBinding = {
    * a disk: a block size, and a count no program can exhaust.
    */
   statfs(_path: unknown, bigint: boolean, req?: FSReq): Float64Array | BigInt64Array | undefined {
-    // The order Node's `getStatFsFromBinding` reads: type, bsize, blocks,
-    // bfree, bavail, files, ffree. `fs.statfs` and `fs.promises.statfs` pass
-    // their flavour here like every other call, and it was read as nothing.
+    // The order Node's `getStatFsFromBinding` reads (v24.21.0, eight fields): type, bsize, frsize, blocks,
+    // bfree, bavail, files, ffree. Seven were handed, without frsize, so every field after bsize was read one
+    // place early: frsize as the block count, bavail as the file count, ffree as undefined.
     return answer(req, () => {
-      const values = [0, 4096, 2 ** 31, 2 ** 31, 2 ** 31, 2 ** 20, 2 ** 20];
+      const values = [0, 4096, 4096, 2 ** 31, 2 ** 31, 2 ** 31, 2 ** 20, 2 ** 20];
       return bigint ? BigInt64Array.from(values.map((value) => BigInt(value))) : Float64Array.from(values);
     });
   },

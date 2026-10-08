@@ -50,21 +50,56 @@ export const internalProcessWarning = {
  * the engine's own error stacks. Each name answers the way Node's does with
  * source maps switched off.
  */
-/** The switch Node keeps for source-map support: whether it is on, and for which code. */
-const sourceMapsSupport = { enabled: false, nodeModules: false, generatedCode: false };
+/**
+ * The switch Node keeps for source-map support, per process: whether it is on, and for which code. It starts on
+ * for a process started with `--enable-source-maps` (its own arguments or NODE_OPTIONS), as Node's does.
+ *
+ * What it switches is NOT here: no stack of this engine is remapped through a source map, on or off. So the first
+ * time it is on for a process, by the flag or by a call, the process is warned once, by a code a program can
+ * filter on, that positions stay the generated file's. Vendoring Node's own cache and stack preparation is what
+ * would make the switch do its work.
+ */
+interface SourceMapsSupport { enabled: boolean; nodeModules: boolean; generatedCode: boolean }
+type SourceMapsProcess = { execArgv?: unknown; env?: Record<string, unknown>; emitWarning?: (warning: string, options?: { type?: string; code?: string }) => void };
+const sourceMapsByProcess = new WeakMap<object, SourceMapsSupport>();
+const sourceMapsWarned = new WeakSet<object>();
+export const SOURCE_MAPS_NOT_APPLIED = 'TABNODE_SOURCE_MAPS_NOT_APPLIED';
+function warnSourceMapsNotApplied(process: SourceMapsProcess): void {
+  if (sourceMapsWarned.has(process)) return;
+  sourceMapsWarned.add(process);
+  try { process.emitWarning?.('Source maps are not applied to stack traces in this engine: positions are the generated file\'s.', { type: 'Warning', code: SOURCE_MAPS_NOT_APPLIED }); }
+  catch { /* a process that cannot warn is no reason to fail the switch */ }
+}
+export function sourceMapsSupportOf(process: SourceMapsProcess): SourceMapsSupport {
+  let state = sourceMapsByProcess.get(process);
+  if (!state) {
+    const option = '--enable-source-maps';
+    const flagged = (Array.isArray(process.execArgv) && process.execArgv.includes(option))
+      || (typeof process.env?.NODE_OPTIONS === 'string' && process.env.NODE_OPTIONS.split(/\s+/u).includes(option));
+    state = { enabled: flagged, nodeModules: flagged, generatedCode: flagged };
+    sourceMapsByProcess.set(process, state);
+    if (flagged) warnSourceMapsNotApplied(process);
+  }
+  return state;
+}
+export function setSourceMapsSupportOf(process: SourceMapsProcess, enabled: boolean, options: { nodeModules?: boolean; generatedCode?: boolean } = {}): void {
+  const state = sourceMapsSupportOf(process);
+  state.enabled = enabled;
+  state.nodeModules = enabled && options.nodeModules === true;
+  state.generatedCode = enabled && options.generatedCode === true;
+  if (enabled) warnSourceMapsNotApplied(process);
+}
+
+/**
+ * `internal/source_map/source_map_cache` as Node's own lib files ask for it: they read whether support is on to
+ * decide whether to look a position up, and nothing is ever looked up here, so it answers off.
+ */
 export const internalSourceMapCache = {
   findSourceMap: (): undefined => void 0,
   maybeCacheSourceMap: (): void => {},
   sourceMapCacheToObject: (): undefined => void 0,
-  getSourceMapsSupport: (): { enabled: boolean; nodeModules: boolean; generatedCode: boolean } => ({ ...sourceMapsSupport }),
-  // Node's `setSourceMapsSupport(enabled, options)` (lib/internal/source_map/source_map_cache.js): the switch is
-  // kept and read back as Node keeps it. What it switches is NOT here: no stack of this engine is remapped
-  // through a source map, on or off, so a program that turns it on reads `true` and still sees generated positions.
-  setSourceMapsSupport: (enabled: boolean, options: { nodeModules?: boolean; generatedCode?: boolean } = {}): void => {
-    sourceMapsSupport.enabled = enabled;
-    sourceMapsSupport.nodeModules = enabled && options.nodeModules === true;
-    sourceMapsSupport.generatedCode = enabled && options.generatedCode === true;
-  },
+  getSourceMapsSupport: (): SourceMapsSupport => ({ enabled: false, nodeModules: false, generatedCode: false }),
+  setSourceMapsSupport: (): void => {},
   rekeySourceMap: (): void => {},
   // Asked of a source map that was found; none ever is, so there is no line to give.
   getSourceLine: (): undefined => void 0,
