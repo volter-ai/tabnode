@@ -584,11 +584,17 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // argument (`node <next-bin> start apps/web` ran the directory apps/web when the bin did not resolve).
   const script = first;
   const resolvedPath: string | null = evaluated === null && args[script] ? fileNamed(args[script]!) : null;
-  if (evaluated === null && !args[script]) {
-    return { stdout: '', stderr: 'Usage: node <script.js> [args...]\n', exitCode: 1 };
-  }
+  // What node says when it starts nothing goes where its stderr goes. A host that takes fd 2 as bytes is answered
+  // an empty text total by contract (below), and its holders drop the total they are handed, so a refusal returned
+  // only as text was written nowhere: `node dist/x.js` from the wrong directory exited 1 with nothing said.
+  const refused = (text: string): CommandOutcome => {
+    if (!streams?.onStderrBytes) return { stdout: '', stderr: text, exitCode: 1 };
+    streams.onStderrBytes(new TextEncoder().encode(text));
+    return { stdout: '', stderr: '', exitCode: 1 };
+  };
+  if (evaluated === null && !args[script]) return refused('Usage: node <script.js> [args...]\n');
   if (evaluated === null && resolvedPath === null) {
-    return { stdout: '', stderr: `Error: Cannot find module '${__resolvePath(launch.cwd, args[script]!)}'\n`, exitCode: 1 };
+    return refused(`Error: Cannot find module '${__resolvePath(launch.cwd, args[script]!)}'\n`);
   }
 
   let stdout = '';
