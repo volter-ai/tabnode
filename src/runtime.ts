@@ -1858,6 +1858,31 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
       current = current.slice(0, current.lastIndexOf("/")) || "/";
     }
   };
+  // The rest of Node's CommonJS surface that is a few lines over what is here (lib/internal/modules/cjs/loader.js,
+  // run_main.js). Each was absent, and a program that reads one found `undefined` where Node has a function.
+  // `Module.runMain(main)`: run a file as the entry, which is what ts-node does once it has registered itself.
+  Module.runMain = (main: string = (process as any).argv[1]) => Module._load(main, null, true);
+  // `Module._resolveLookupPaths(request, parent)`: where a lookup would search; `require.resolve.paths` is over it.
+  Module._resolveLookupPaths = (request: string, parent: any) => requireFor(parent || new Module()).resolve.paths(request);
+  // `Module._findPath(request, paths)`: the file `request` is under the first of `paths` that has it, or false.
+  Module._findPath = (request: string, paths: string[]) => {
+    for (const from of pathShim.isAbsolute(request) ? [""] : paths ?? []) {
+      try { return requireFor(new Module()).__resolveRaw(pathShim.resolve(from || "/", request)); } catch { /* the next directory */ }
+    }
+    return false;
+  };
+  // Node recomputes its global folders from HOME and NODE_PATH here; this engine's are fixed (`globalPaths`).
+  Module._initPaths = () => undefined;
+  Module._preloadModules = (requests: string[] | undefined) => { for (const request of requests ?? []) Module._load(request, new Module("internal/preload"), false); };
+  Module._debug = () => undefined;
+  // `module.load(filename)`: Node's own body, the extension's handler run on this module.
+  Module.prototype.load = function (this: any, filename: string) {
+    this.filename = filename;
+    this.paths = Module._nodeModulePaths(pathShim.dirname(filename));
+    const extension = pathShim.extname(filename);
+    (Module._extensions[extension] ?? Module._extensions[".js"])(this, filename);
+    this.loaded = true;
+  };
   Module.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
   Module.wrap = (code: string) => Module.wrapper[0] + code + Module.wrapper[1];
   Module.createRequire = (filenameOrUrl: string) => {
@@ -2084,6 +2109,12 @@ function createRequire(
       paths: [],
       parent: parentModule || null,
     };
+    // A module is an instance of Module, as Node's is: `module.require`, `module._compile` and `module.load` are the
+    // class's, `module.path` is its directory and `module.paths` where its own requires look. Made as a bare object
+    // it had none of them ("mod.require is not a function": source-map-support's `dynamicRequire(module, 'fs')`).
+    Object.setPrototypeOf(module, __substrateModule().prototype);
+    (module as Module & { path: string }).path = pathShim.dirname(resolvedPath);
+    module.paths = __substrateModule()._nodeModulePaths(pathShim.dirname(resolvedPath));
     if (parentModule && Array.isArray(parentModule.children)) parentModule.children.push(module);
 
     // Cache before loading to handle circular dependencies
@@ -2784,6 +2815,11 @@ export class Runtime {
       children: [],
       paths: [],
     };
+    // The entry is an instance of Module too (see loadModule).
+    const moduleClass = require('module') as { prototype: object; _nodeModulePaths(directory: string): string[] };
+    Object.setPrototypeOf(module, moduleClass.prototype);
+    (module as Module & { path: string }).path = dirname;
+    module.paths = moduleClass._nodeModulePaths(dirname);
 
     // Cache the module
     this.moduleCache[filename] = module;
