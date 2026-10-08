@@ -16,6 +16,7 @@
  * and closing it gives it up.
  */
 import { __currentProcessToken, __runFor, enterRun, type ProcessToken } from '../../process-tokens';
+import { withGuestCallback } from '../../guest-loop';
 
 /** What the count needs of a handle: a way to close it when its run ends. */
 export interface OwnedHandle {
@@ -58,7 +59,8 @@ export function ownerOfInstance(instance: object): ProcessToken | null {
 export function ownedRun<T>(owner: ProcessToken | null, fn: () => T, callback = false): T | undefined {
   const call = (): T | undefined => {
     if (!callback) return fn();
-    try { return fn(); }
+    // Drain ticks before leaving the owning run, as MakeCallback does.
+    try { return withGuestCallback(fn); }
     catch (error) { if (owner !== null && __runFor(owner)?.reportUncaught(error)) return undefined; throw error; }
   };
   return owner === null || __currentProcessToken() === owner ? call() : enterRun(owner, call);

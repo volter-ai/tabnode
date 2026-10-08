@@ -21,6 +21,17 @@ fabricating wildcard, IPv6 loopback or localhost records.
 
 The World owns vendor/name routing and its injector can wrap the process's
 DNS door. The engine contains no vendor table or World-specific names.
+
+The host that owns the tab's loopback can hold more names as this host than
+`localhost`: the services of a stack it runs, its own host name. The engine
+still keeps no table. The host installs its one at realm bootstrap
+(`installHostNames`, the door `installNativeStreamTransport` is), and
+`dns.lookup` asks it on every call: a held name resolves as `localhost` does,
+to the loopback in the caller's family. `resolve`/`resolve4` and `resolve6`
+answer a held name's loopback records (127.0.0.1, ::1), as the host's
+resolver answers the same name to every other program in the tab; for every
+other name, `localhost` included, record queries still fail. A name the host
+does not hold is ENOTFOUND as before.
 Raw TCP crosses native stream channels to the shared tab loopback; HTTP/fetch
 crosses the substrate broker and World injector/proxy. A browser Fetch's own
 external resolution does not grant the engine an external DNS service.

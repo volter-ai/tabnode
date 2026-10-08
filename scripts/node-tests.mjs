@@ -125,10 +125,15 @@ if (ONE) {
     vfs.writeFileSync(`${cwd}/.run-${file}.cjs`, `require(${JSON.stringify(`${MOUNT}/.prelude.cjs`)});\nrequire("module")._load(${JSON.stringify(`${cwd}/${file}`)}, null, true);\n`);
   }
   const container = createContainer({ vfs });
-  let streamed = "";
-  const result = await container.run(`node ${PRELUDE ? `${cwd}/.run-${file}.cjs` : `${cwd}/${file}`}`, { cwd, onStderr: (text) => { streamed += text; hostErr(text); }, onStdout: () => {} });
-  // What the run reports at its end and did not stream: an uncaught error's text.
+  let streamed = "", printed = "";
+  // `--with-flags`: the file run as test/common would re-run it, with its own `// Flags:` on the command line and
+  // the re-run switched off, so that what the INNER run prints is this run's. A diagnostic, never the judged run.
+  const withFlags = argument("with-flags", null);
+  const result = await container.run(`node ${withFlags ?? ""} ${PRELUDE ? `${cwd}/.run-${file}.cjs` : `${cwd}/${file}`}`, { cwd, ...(withFlags !== null ? { env: { NODE_SKIP_FLAG_CHECK: "1" } } : {}),
+    onStderr: (text) => { streamed += text; hostErr(text); }, onStdout: (text) => { printed += text; hostOut(text); } });
+  // What the run reports at its end and did not stream: an uncaught error's text, and what it printed.
   if (result.stderr && !streamed.includes(result.stderr.trim().slice(0, 80))) hostErr(result.stderr);
+  if (result.stdout && !printed.includes(String(result.stdout).trim().slice(0, 80))) hostOut(String(result.stdout));
   hostExit(result.exitCode);
 }
 
@@ -153,11 +158,34 @@ if (ALL) {
 const files = ALL ? MANIFEST.files : discovered(DIR).filter((path) => path.split("/").at(-1).startsWith(MATCH));
 const results = [];
 const started = Date.now();
+// What is kept of a run's output: its end, bounded. The judgement below reads none of it.
+const KEPT_BYTES = 2000;
+const tail = (text) => (text.length > KEPT_BYTES ? text.slice(-KEPT_BYTES) : text);
+const linesOf = (text) => text.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("at ") && !line.includes("cwd() called") && !/^\[(boot-trace|rows-used|stream-calls)\]/u.test(line) && !/"(?:event|pid|at)":/u.test(line));
+/**
+ * A file with a `// Flags:` line is re-run by test/common as a child of itself, and exits with that child's status;
+ * the child's own words do not reach this runner, so such a file's failure was recorded as "exit 1" and nothing
+ * else (about thirty files, and how an unencrypted key export stayed unread for a day). A file that fails saying
+ * nothing is run once more with its flags on its own command line and the re-run switched off, to RECORD what the
+ * inner run says. That second run judges nothing: `passed` is the first run's status, as before.
+ */
+const flagsOf = (file) => { try { return /^\/\/ Flags:(.*)$/mu.exec(nodeFs.readFileSync(resolve(TESTS, file), "utf8"))?.[1].trim() ?? null; } catch { return null; } };
+const said = (file, flags) => new Promise((resolveSaid) => {
+  const args = [process.argv[1], "--tests", TESTS, "--dir", dirname(file), "--one", file.split("/").at(-1), "--engine", ENGINE, "--with-flags", flags];
+  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", (chunk) => { stdout = tail(stdout + chunk); });
+  child.stderr.on("data", (chunk) => { stderr = tail(stderr + chunk); });
+  const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT);
+  child.on("error", (error) => { clearTimeout(timer); resolveSaid({ flags, code: null, lines: [error.message] }); });
+  child.on("exit", (code) => { clearTimeout(timer); resolveSaid({ flags, code, lines: [...linesOf(stderr), ...linesOf(stdout)].slice(0, 6) }); });
+});
 const runOne = (file) => new Promise((resolveRun) => {
   const args = [process.argv[1], "--tests", TESTS, "--dir", dirname(file), "--one", file.split("/").at(-1), "--engine", ENGINE, ...(PRELUDE ? ["--prelude", PRELUDE] : [])];
-  const child = spawn(process.execPath, args, { stdio: ["ignore", "ignore", "pipe"] });
-  let stderr = "";
+  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "", stdout = "";
   child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.stdout.on("data", (chunk) => { stdout = tail(stdout + chunk); });
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); stderr += "\ntimeout"; }, TIMEOUT);
   child.on("error", (error) => { clearTimeout(timer); resolveRun({ file, passed: false, reason: error.message, lines: [error.message], stderr: error.stack, code: null, signal: null, timedOut }); });
@@ -166,7 +194,14 @@ const runOne = (file) => new Promise((resolveRun) => {
     const lines = stderr.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("at ") && !line.includes("cwd() called"));
     const passed = code === 0;
     const reason = passed ? "" : (lines.find((line) => /Error|error:|failed|timeout/u.test(line)) ?? lines[0] ?? `exit ${code ?? signal}`);
-    resolveRun({ file, passed, reason: reason.slice(0, 200), lines: lines.slice(0, 4), stderr, code, signal, timedOut });
+    const record = { file, passed, reason: reason.slice(0, 200), lines: lines.slice(0, 4), stderr, stdout: linesOf(stdout).slice(-6), code, signal, timedOut };
+    // A failure that said nothing on stderr, in a file test/common re-runs: record what its inner run says.
+    const flags = !passed && !timedOut && lines.length === 0 ? flagsOf(file) : null;
+    if (flags === null) { resolveRun(record); return; }
+    void said(file, flags).then((inner) => {
+      const line = inner.lines.find((text) => /Error|error:|failed|Mismatched|timeout/u.test(text)) ?? inner.lines[0];
+      resolveRun({ ...record, inner, ...(line ? { reason: `exit ${code}; re-run with its flags it says: ${line}`.slice(0, 200) } : {}) });
+    });
   });
 });
 let next = 0;

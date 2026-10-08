@@ -1,6 +1,6 @@
 {
   "name": "@volter/tabnode",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Node's own library, in a browser tab.",
   "type": "module",
   "license": "MIT",
@@ -41,6 +41,10 @@
     "./stdin-ring": {
       "types": "./dist/stdin-ring.d.ts",
       "default": "./dist/stdin-ring.mjs"
+    },
+    "./prepared-key": {
+      "types": "./dist/prepared-key.d.ts",
+      "default": "./dist/prepared-key.mjs"
     }
   },
   "files": [
@@ -54,12 +58,14 @@
   },
   "scripts": {
     "build:lib": "vite build --config vite.lib.config.js && tsc -p tsconfig.build.json",
+    "build:surface": "node scripts/native-surface.mjs --out measurement/native.json && node scripts/public-surface.mjs --out measurement/public.json && node scripts/native-probe.mjs --inventory measurement/native.json --out measurement/native-probe.json && node scripts/surface-file.mjs",
     "docs:api": "typedoc",
     "test": "vitest run",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.3.0",
     "@noble/hashes": "2.3.0",
     "acorn": "^8.15.0",
     "amaro": "1.1.11",

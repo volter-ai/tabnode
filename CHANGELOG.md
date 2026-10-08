@@ -4,6 +4,242 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- To follow, not yet changed: four optional members added in v0.9.0 and before
+  are second paths that only an embedder without them takes (the stream
+  transport's `post`, a started run's `setRef`, the host request's
+  `hold.changed`, the tree's `contentDigest`). Once browser-substrate
+  implements all four they become required, and the paths without them go.
+
+## v0.9.0 — 2026-10-08
+
+The engine answers more of Node 24.21.0's surface and several things every
+guest meets changed. The exported surface changed and one export answers
+differently for the same input, hence a minor release.
+
+**Breaking for a consumer that keeps prepared module bodies.**
+`preparedModuleKey` names the same file differently: the format id moved from
+`tabnode-prepared-3` to `tabnode-prepared-4` (e86c6e2). The key was a hash the
+engine computed over each source in JavaScript; it is now text made of the
+format id, the kind and the plain SHA-256 of the file's bytes, so a tree that
+already holds a file's digest gives the key with no read and no hash (Rallly
+spent 1.78 s of a 4.4 s start hashing sources, and 0.45 s reading them only to
+hash them). Bodies prepared under `tabnode-prepared-3` are not found by this
+engine. Nothing fails: each module is prepared again in the tab on first use,
+which is slow and silent. A consumer rebuilds its images when it moves the pin.
+
+Added
+
+- A second entry point, `@volter/tabnode/prepared-key`: the prepared body's
+  key derivation with no import of the engine, for a host that builds an image
+  and a page that reads one. From the index too: `preparedModuleKeyOf`,
+  `preparedModuleKind`, `isPreparedModuleKey`, `PREPARED_MODULES_FORMAT`,
+  `PREPARED_MODULES_KEPT`.
+- `VirtualFS` may answer `contentDigest(path)`; a tree that does lets a
+  prepared body be taken without reading its source.
+- `NativeStreamTransport` gains an optional `post(operation)`: a read grant and
+  a shutdown are sent without waiting for the stream owner's thread where the
+  transport offers it; a refusal arrives as the handle's failed read or the
+  shutdown's completion. A stream that stops reading takes an outstanding grant
+  back with a `readStop` call, so an owner never reads ahead for a socket its
+  realm has paused. Without `post` every operation is a call, as before.
+- `dist/surface.json`, made by `npm run build:surface`: every builtin's exports
+  against Node 24.21.0's (same, differs, wrong type, missing) and the binding
+  members Node's library asks for, measured from the built engine.
+- A runtime dependency, `@noble/curves` 2.3.0, for the curves below.
+- `node:crypto`: every export name Node 24.21.0 has is present; `hkdf`,
+  `hkdfSync`, `scrypt`, `scryptSync` and synchronous EC (P-256, P-384, P-521)
+  and Ed25519 key pairs, their PEM, DER and JWK encodings, `sign` and `verify`
+  are implemented; what is not implemented throws by name at the call.
+  `createPrivateKey` and `createPublicKey` refuse what is not a key.
+  No option of a key's encoding is dropped: each is read or refused by name.
+  A private key asked for with `cipher` and `passphrase` (from
+  `KeyObject.export`, `generateKeyPair` or `generateKeyPairSync`) is refused,
+  `ERR_CRYPTO_UNSUPPORTED_OPERATION`: this engine encrypts no key, and it does
+  not hand back the clear one. An encrypted key on the way in is refused as
+  encrypted (`ERR_MISSING_PASSPHRASE` with no passphrase, unsupported with
+  one). See "Where node:crypto's keys differ from Node's" below.
+- `navigator.locks` (one process's lock manager), `buffer.transcode`,
+  `process.release`, `process.getuid`/`geteuid`/`getgid`/`getegid`/`getgroups`,
+  `process.versions.acorn`, `process.features.typescript`.
+- Instrument lines on the realm's console, each one line of JSON:
+  `[boot-trace] node-line`, `[boot-trace] stat-window`, the resolver's probe
+  counts on the `prepared-bodies` counts line, `[stream-calls]` and
+  `[rows-used]` at a process's end.
+- `installHostNames(names)`: a host supplies the names that are this host
+  besides `localhost` (ADR-0002). `dns.lookup` resolves a held name to the
+  loopback in the caller's family, and `dns.resolve4`/`resolve6` answer its
+  loopback records. With no host table installed nothing changes.
+
+Changed, for every guest
+
+- `process.version` is the `NODE_VERSION` its environment names; the library is
+  Node 24.21.0's whatever it says. On line 20 an `import()` that first runs an
+  ES module settles after a loop turn, as Node 20's does (ADR-0005).
+- A process whose loop drains emits `exit`, with `process.exitCode || 0`; only
+  `process.exit()` did. `beforeExit` is still not emitted. A listener that
+  calls `process.exit(n)` while `exit` is being emitted ends the process with
+  `n`, as Node does, whether the process was draining or exiting (the code was
+  dropped: a test runner that reports its failures that way read as passed).
+- Resolution asks the tree what Node asks: an entry's body runs at require
+  depth 0 (`Module._load` no longer counts as a `require` call), so the stat
+  cache Node keeps for that body exists; a level with no `node_modules`
+  directory is one probe; a path is asked once in one resolution; a package's
+  self-reference reads the nearest `package.json` only, as Node's does (an
+  outer package of the same name with `exports` no longer answers).
+- `fs.watchFile`'s listener gets the new stat and the old one (it got the same
+  one twice). `os.release()` and `os.version()` are no longer swapped;
+  `os.networkInterfaces()` gives `family` as `IPv4`/`IPv6`; `fs.statfs` has its
+  eight fields in Node's order.
+- `process.features.typescript` follows the line: absent for a guest told it
+  is Node 20 (Node 20.20.2 has no such property), `"strip"` otherwise.
+- `process.memoryUsage()` is the realm's own heap where the realm reports one
+  (`performance.memory`); elsewhere the fixed figures it always gave.
+- `--enable-source-maps` and `process.setSourceMapsEnabled` keep the switch and
+  warn once (`TABNODE_SOURCE_MAPS_NOT_APPLIED`): stacks are not remapped.
+- `Function.prototype.toString` makes a function's written source once.
+
+Where node:crypto's keys differ from Node's
+
+Measured with one script of 131 cases (`scripts/crypto-keys-compare.mjs`),
+hostile inputs among them, on Node v24.21.0 and in a guest: 85 answer the
+same, and in 20 more both refuse with different error codes (OpenSSL's own
+codes are not reproduced). The rest:
+
+- Not carried, refused by name where Node does it: encrypting a private key on
+  export; reading an encrypted key (with a passphrase offered the answer is
+  "unsupported" whatever the passphrase, right or wrong: none is tried);
+  `paramEncoding: 'explicit'`; curves other
+  than P-256, P-384 and P-521 (secp256k1 among them); signing or hashing with
+  SHA-512/224, SHA-512/256 or SHA-3 (`sha512-256` was read as SHA-512).
+- Stricter than Node, which accepts each of these and this engine refuses: a
+  DER length not in its shortest form, and bytes after the key; a SEC1 key
+  whose version is not 1; a public key's bit string with unused bits; a
+  private key whose stated public half is not its own (OpenSSL keeps the
+  stated one: it signs with one key and exports another's public half); a
+  private value of zero or beyond the curve's order; a PKCS#8 key that names
+  one curve outside and another inside; a JWK whose `d` is not the private
+  value of its `x` and `y` (EC) or `x` (Ed25519). None of these depends on a
+  key's value, and no tool writes them; one that does is the finding.
+- Read as Node reads them, because a correct tool writes them for some keys:
+  a JWK member without its leading zero bytes (one key in 128 a coordinate),
+  or with one more, or in the standard base64 alphabet; an EC public point in
+  compressed or hybrid form (`openssl ec -conv_form`), written back in the
+  form it was read; a private value shorter than its curve's width; the first
+  key among several PEM blocks, the `EC PARAMETERS` block that `openssl
+  ecparam -genkey` writes before the key among them.
+- The same as Node, and not the curve library's default: Ed25519 verification
+  without the cofactor, refusing small-order keys and `R`; of the twelve
+  vectors of "Taming the many EdDSAs" both accept one. Against Node at volume
+  (`scripts/crypto-ed25519-volume.mjs`): 3,000 generated keys and messages,
+  both directions, with flipped bits in signature, message and key, and RFC
+  8032's first three vectors: 18,018 checks, none differing.
+- A caller's DER is copied when a key is read; zeroing the buffer afterwards
+  does not change the key.
+
+- A guest's global object is the guest's own, with Node's names and shapes.
+  `for (name in globalThis)` gives Node's fifteen names and none of the
+  realm's; `Buffer` and `performance` are accessors with a setter, `crypto`
+  one without, the rest writable values; `atob`, `btoa`, `Buffer` and
+  `performance` are the objects their modules export. What a program assigns,
+  defines or deletes there is its own and is what every later read, walk and
+  descriptor answers: before, an assignment to a timer, `queueMicrotask` or
+  `structuredClone` changed the realm's global for every program in it.
+  The realm's `window`, `document` and `location` are absent until a program
+  makes them, and then are its own: `globalThis.window = dom.window` reads
+  back, and a bare `document` in any module finds what was assigned. `process`
+  is answered ahead of the guest's own properties, because the engine finds
+  the run that is asking by the realm's `process`. A guest may delete it or
+  assign another object, which it then reads back; neither reaches the
+  realm (an assignment used to be written there, where it stood in the
+  engine's way: every filesystem call after it found no run). The next
+  module's start puts the run's own process back. `scripts/guest-globals.cjs`
+  assigns, defines (whole, attributes only, `writable` only), deletes,
+  restores and fixes each name under Node and in a guest: 73 rows.
+- A process emits `exit` when its loop has drained, and what "drained" means
+  here is the engine's rule for ending a run, which this release does not
+  change: the entry has returned and, with nothing the engine counts still
+  pending (timers, ports, handles, a read stdin, held work), no output for
+  half a second, or two seconds for a program that printed nothing. Work the
+  engine does not count does not hold a run: WebCrypto and asynchronous
+  `node:crypto` jobs, DNS, asynchronous zlib, a pending filesystem request, a
+  `fetch` with no host transport, any other promise of the host's. A program
+  whose last act is one of those is ended by that rule, as it was on v0.8.0,
+  and its `exit` listeners now run at that moment, where before they did not
+  run at all. A tick the process had queued, or queues from an `exit` listener,
+  does not run once `exit` is being emitted, as in Node, where the process is
+  gone by then. A program that emits `'exit'` itself has only called its own
+  listeners and goes on running, ticks included.
+- `process.nextTick` callbacks queued by a callback the loop entered run when
+  that callback returns, before any promise it queued, and ticks they queue
+  run with them (`cb, tick, promise`, as Node). A callback made while other
+  code is still running does not drain them, bracketed by the engine or not.
+  What a stream's callback queues runs before that stream's next callback
+  (`scripts/callback-ticks.cjs`, a request dumped by its response).
+- A child whose `stdio` names a descriptor the caller does not hold fails to
+  start with `EBADF` (`spawnSync`: `error.code`, no pid, no output; `spawn`
+  throws), as Node's does. Its output was dropped in silence.
+
+Known cost
+
+- A stream that stops reading while a read grant is with its owner makes one
+  synchronous call to take it back. Under heavy back-pressure (a reader that
+  pauses and resumes at every chunk) that is a call per pause; how often it
+  happens in a real server is not measured, and the `[stream-calls]` line
+  counts it (`readStop`).
+
+Known differences from Node, for a guest's globals and its ticks
+
+- A bare name reads the value the global had when its module began, for
+  `global`, `Buffer`, `atob`, `btoa`, `queueMicrotask`, `structuredClone` and
+  the six timer functions, and `crypto` reads the realm's: after
+  `globalThis.setTimeout = mine`, `globalThis.setTimeout` is `mine` and a bare
+  `setTimeout` in the same module is still the first. After a delete, a bare
+  name is `undefined` or its first value where Node throws a ReferenceError.
+  The property, the walk and the descriptor are Node's in every case
+  (`scripts/guest-globals.cjs`, the `bare` column). Not new in this release:
+  v0.8.0 binds the same names the same way.
+- The six timer globals are not the functions `require('timers')` exports
+  (the same script, `is-owner's`).
+- `child.kill()` emits the child's `exit` before it returns (`exit, after,
+  tick` where Node gives `after, tick, exit`), for code entered any way. The
+  same on v0.8.0 (`scripts/callback-ticks.cjs`, section 3).
+- A tick queued from a promise reaction runs before a promise queued after it
+  in the same reaction (`fs.promises.readFile(f).then(cb)`: `cb, tick,
+  promise`); Node finishes the promises first (`cb, promise, tick`). The same
+  on v0.8.0 (`scripts/callback-ticks.cjs`, the one row that differs).
+
+Known differences from Node, for a synchronous child's `stdio`
+(`scripts/sync-child-stdio-differences.cjs`, each line read under Node
+v24.21.0 and as a guest)
+
+- The child's fd 0 given as a descriptor of the caller's (a file opened for
+  reading, or `'inherit'`): the child reads an empty stdin and ends; Node's
+  reads the file (`"child read \"from a file\""`, here `"child read \"\""`).
+  Only `input` reaches a synchronous child's stdin.
+- An entry past fd 2 (`stdio[3]` as `'pipe'` or as a file's descriptor): the
+  child has no fd 3 and its write fails with `EBADF`; `output[3]` is `null`
+  and the file stays empty. Node gives the child the descriptor and answers
+  `output[3]`.
+- `process.stdout` or `process.stderr` itself as an entry throws
+  `ERR_INVALID_ARG_VALUE` from Node's own `getValidStdio`: the guest's stream
+  carries neither a descriptor nor a handle Node recognises. Node passes it
+  on. A stream that carries a descriptor (`fs.createWriteStream`) is passed on
+  here as there.
+
+Fixed
+
+- A default export's expression keeps its parentheses when lowered.
+- `node`'s refusals go where its stderr goes when fd 2 is taken as bytes.
+- A synchronous child's output goes to the caller's own descriptor when
+  `stdio` names one by number, which is what `stdio: 'inherit'` is by the time
+  it reaches the binding: `spawnSync`/`execSync` with `'inherit'` printed
+  nothing and returned the bytes as `stdout`/`stderr` instead, a descriptor of
+  an open file stayed empty, and passed-on bytes counted toward `maxBuffer`.
+  Both paths (a child the engine runs, a child the host runs) go by the rule an
+  asynchronous child's stdio goes by (`scripts/sync-child-stdio.cjs`).
+- crypto: a base64 signature verifies; the legacy names `pseudoRandomBytes`,
+  `prng` and `rng` are accessors as in Node.
+
 ## v0.8.0 — 2026-10-07
 
 One process table (browser-substrate ADR-0129 step 1): a host whose kernel

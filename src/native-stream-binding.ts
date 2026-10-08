@@ -1,4 +1,5 @@
 /** Worker-side libuv delegation. The capability channel never becomes a handle property. */
+import { withGuestCallback, queueBindingTask } from './guest-loop';
 import type { NativeStreamDescriptor, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport } from './native-stream-owner';
 import type { TCP } from './node-lib/binding/tcp_wrap';
 import type { Pipe } from './node-lib/binding/pipe_wrap';
@@ -27,9 +28,72 @@ function requestId(): number {
   return nextRequest++;
 }
 
+/**
+ * An instrument: what this realm asked of its stream owner. Per operation, the calls, the milliseconds this thread
+ * was blocked in them (a call is synchronous: it returns when the owner's thread has answered) and the longest one;
+ * per write, the bytes and the milliseconds until the owner said it was written; per event the owner sent, the count.
+ * A single call that blocks past `SLOW_CALL_MS` is said at once, so a stall is named even by a process that never exits.
+ */
+/** `over`: how many took at least 1, 4, 16, 64 and 250 ms, so a few long waits are told from many short ones. */
+interface StreamCount { calls: number; ms: number; max: number; over: number[]; bytes?: number }
+const OVER_MS = [1, 4, 16, 64, 250];
+const streamCounts = new Map<string, StreamCount>();
+const streamEvents = new Map<string, number>();
+const SLOW_CALL_MS = 250;
+let streamCountsSaid = 0;
+function tally(operation: string, ms: number, bytes?: number): void {
+  let count = streamCounts.get(operation);
+  if (!count) streamCounts.set(operation, count = { calls: 0, ms: 0, max: 0, over: OVER_MS.map(() => 0) });
+  count.calls += 1; count.ms += ms; if (ms > count.max) count.max = ms;
+  for (let at = 0; at < OVER_MS.length && ms >= OVER_MS[at]!; at++) count.over[at]! += 1;
+  if (bytes !== undefined) count.bytes = (count.bytes ?? 0) + bytes;
+}
+function counting(next: NativeStreamTransport): NativeStreamTransport {
+  return {
+    limits: next.limits,
+    call(operation) {
+      const from = performance.now();
+      try { return next.call(operation); }
+      finally {
+        const ms = performance.now() - from;
+        tally(operation.operation, ms);
+        if (ms >= SLOW_CALL_MS) console.log('[stream-calls]', JSON.stringify({ event: 'slow', at: Date.now(), operation: operation.operation, id: 'id' in operation ? operation.id : null, blockedMs: Math.round(ms) }));
+      }
+    },
+    ...(next.post ? { post(operation: Parameters<NonNullable<NativeStreamTransport['post']>>[0]): void { tally(`post:${operation.operation}`, 0); next.post!(operation); } } : {}),
+    write(id, bytes, handle) {
+      const from = performance.now();
+      const size = bytes.byteLength;
+      const written = next.write(id, bytes, handle);
+      const done = (): void => tally('write', performance.now() - from, size);
+      written.then(done, done);
+      return written;
+    },
+    onEvent(listener) {
+      return next.onEvent(event => {
+        const kind = event.type === 'read' ? (event.bytes ? 'read' : event.handle ? 'read-handle' : `read-status-${event.status}`) : event.type;
+        streamEvents.set(kind, (streamEvents.get(kind) ?? 0) + 1);
+        if (event.type === 'read' && event.bytes) streamEvents.set('read-bytes', (streamEvents.get('read-bytes') ?? 0) + event.bytes.byteLength);
+        listener(event);
+      });
+    },
+  };
+}
+/** Says the counts so far, once per change: a process says them at its exit. */
+export function sayNativeStreamCounts(pid: number | null, when: string): void {
+  let total = 0;
+  for (const count of streamCounts.values()) total += count.calls;
+  if (total === streamCountsSaid) return;
+  streamCountsSaid = total;
+  const operations = [...streamCounts].sort((a, b) => b[1].ms - a[1].ms)
+    .map(([operation, count]) => [operation, count.calls, Math.round(count.ms), Math.round(count.max), count.over, ...(count.bytes === undefined ? [] : [count.bytes])]);
+  console.log('[stream-calls]', JSON.stringify({ event: when, at: Date.now(), pid, columns: ['operation', 'calls', 'blockedMs', 'maxMs', `over ${OVER_MS.join('/')} ms`, 'bytes'], operations, events: Object.fromEntries(streamEvents) }));
+}
+
 /** Host bootstrap only, before any TCP/Pipe exists in this process realm. */
 export function installNativeStreamTransport(next: NativeStreamTransport): void {
   if (transport || allocated) throw new Error('Native stream transport must be installed before stream construction.');
+  next = counting(next);
   transport = next;
   next.onEvent(event => {
     if (event.type === 'closed') {
@@ -161,6 +225,21 @@ export class NativeStreamDriver {
     return this.closing || stopped ? { status: UV_EBADF } : this.channel.call(operation);
   }
 
+  /**
+   * The realm stopped reading: a grant still outstanding is taken back at the
+   * owner, as a call, so it reads nothing more for this realm until asked.
+   * Without it the owner kept the grant and read one more chunk for a paused
+   * socket: VS Code's server pauses the extension host's socket to hand it to
+   * that process, the chunk reached the server, and the extension host's
+   * stream began mid-frame. A chunk already on its way still arrives, and is
+   * kept, as Node keeps what it read before a pause.
+   */
+  endRead(): void {
+    if (!this.readingCredit || this.closing || stopped) return;
+    this.call({ operation: 'readStop', id: this.descriptor.id });
+    this.readingCredit = false;
+  }
+
   operation(operation: 'readStop' | 'ref' | 'unref'): number {
     return this.call({ operation, id: this.descriptor.id }).status;
   }
@@ -169,6 +248,14 @@ export class NativeStreamDriver {
     if (this.closing || stopped) return UV_EBADF;
     if (this.readingCredit || this.buffered || this.readEnded) return 0;
     this.readingCredit = true;
+    // Posted where it can be, so a process does not stop for its owner's thread once per chunk it reads: a refusal
+    // is the read that fails. A realm that stops reading takes the grant back (endRead), so the owner never reads
+    // ahead for a socket its realm has paused.
+    if (this.channel.post) {
+      try { this.channel.post({ operation: 'readStart', id: this.descriptor.id }); }
+      catch (cause) { this.readingCredit = false; throw cause; }
+      return 0;
+    }
     const status = this.call({ operation: 'readStart', id: this.descriptor.id }).status;
     if (status !== 0) this.readingCredit = false;
     return status;
@@ -186,7 +273,14 @@ export class NativeStreamDriver {
   complete(operation: NativeStreamOperation, callback: (status: number) => void): number {
     if (!('request' in operation)) throw new Error('Native completion requires a request ID.');
     const release = holdRequest(this.handle);
-    this.completions.set(operation.request, status => { try { callback(status); } finally { release(); } });
+    this.completions.set(operation.request, status => { try { withGuestCallback(() => callback(status)); } finally { release(); } });
+    // A shutdown is posted where it can be: it completes by its event either
+    // way, and Node's own completion of one reads no status (net's
+    // `afterShutdown`), so a refusal the owner completes is the same to it.
+    if (operation.operation === 'shutdown' && this.channel.post && !this.closing && !stopped) {
+      try { this.channel.post(operation as { operation: 'shutdown'; id: number; request: number }); return 0; }
+      catch (cause) { this.completions.delete(operation.request); release(); throw cause; }
+    }
     try {
       const status = this.call(operation).status;
       if (status !== 0) { this.completions.delete(operation.request); release(); }
@@ -211,14 +305,14 @@ export class NativeStreamDriver {
     const complete = (status: number): void => {
       if (completed) return;
       completed = true;
-      try { callback(status); } finally { release(); }
+      try { withGuestCallback(() => callback(status)); } finally { release(); }
     };
     this.pendingShutdown = () => {
-      if (this.closing || stopped) { queueMicrotask(() => complete(UV_ECANCELED)); return; }
+      if (this.closing || stopped) { queueBindingTask(() => complete(UV_ECANCELED)); return; }
       try {
         const status = this.complete(operation, complete);
-        if (status !== 0) queueMicrotask(() => complete(status));
-      } catch { queueMicrotask(() => complete(UV_ECANCELED)); }
+        if (status !== 0) queueBindingTask(() => complete(status));
+      } catch { queueBindingTask(() => complete(UV_ECANCELED)); }
     };
     return 0;
   }
@@ -308,7 +402,7 @@ export class NativeStreamDriver {
     } finally { write.sent = undefined; }
     // A Node callback throws as a native callback, not as a rejection of this
     // bridge's private async function.
-    queueMicrotask(() => { try { write.request.oncomplete?.(status); } finally { write.release(); } });
+    queueBindingTask(() => { try { withGuestCallback(() => write.request.oncomplete?.(status)); } finally { write.release(); } });
   }
 
   close(callback?: () => void, reset = false): number {
@@ -350,7 +444,7 @@ export class NativeStreamDriver {
     this.closeLocal(() => {
       const failures: unknown[] = [];
       try {
-        for (const callback of callbacks) { try { callback(); } catch (cause) { failures.push(cause); } }
+        for (const callback of callbacks) { try { withGuestCallback(callback); } catch (cause) { failures.push(cause); } }
       } finally { this.releaseClose?.(); this.releaseClose = undefined; }
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, 'Native close callbacks failed.');
@@ -359,6 +453,10 @@ export class NativeStreamDriver {
 
   receive(event: Exclude<NativeStreamEvent, { type: 'closed' }>): void {
     if (event.type === 'read') {
+      // An instrument: bytes the owner read for a handle its realm had stopped reading. The grant is taken back when
+      // a handle stops (endRead), so this stays 0 except for a chunk already on its way; a socket being handed to
+      // another process loses to this realm whatever is counted here.
+      if (event.bytes && !this.handle.reading && !this.closing) streamEvents.set('read-while-stopped', (streamEvents.get('read-while-stopped') ?? 0) + 1);
       this.readingCredit = false;
       if (this.closing) { if (event.handle) closeDescriptor(event.handle.id); return; }
       this.buffered = true;
@@ -367,7 +465,7 @@ export class NativeStreamDriver {
     } else if (event.type === 'connection') {
       if (this.closing || !this.handle.onconnection) { if (event.handle) closeDescriptor(event.handle.id); return; }
       const accepted = event.handle ? adopt(event.handle, this.handle) : undefined;
-      (this.handle.onconnection as (status: number, handle?: Stream) => void)(event.status, accepted);
+      withGuestCallback(() => (this.handle.onconnection as (status: number, handle?: Stream) => void)(event.status, accepted));
     } else {
       const complete = this.completions.get(event.request);
       this.completions.delete(event.request);

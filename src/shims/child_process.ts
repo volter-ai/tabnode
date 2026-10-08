@@ -37,7 +37,7 @@ import { promiseOwner } from '../promise-ownership';
 import { Bash, defineCommand } from 'just-bash';
 import type { CommandContext, ExecResult as JustBashExecResult } from 'just-bash';
 import { EventEmitter } from '../node-lib/events-module';
-import { __substrateExitCode, __substrateUncaughtCapture } from './process';
+import { __substrateExitCode, __substrateProcessEnding, __substrateUncaughtCapture } from './process';
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
 import { treeDescriptorsOf } from '../tree-descriptors';
@@ -58,7 +58,7 @@ import { UV_ESRCH } from '../node-lib/binding/uv';
 import { loadNodeLibFor } from '../node-lib/load';
 import type { ChildProcessModule } from '../node-lib/child-process-module';
 import { getCommandNames } from 'just-bash';
-import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateShellLine, __substrateRunsNode, setProgramResolver } from './command-line';
+import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateArgvFor, __substrateShellLine, __substrateRunsNode, setProgramResolver, setHostRunsProgram } from './command-line';
 
 import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
 
@@ -593,11 +593,17 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // argument (`node <next-bin> start apps/web` ran the directory apps/web when the bin did not resolve).
   const script = first;
   const resolvedPath: string | null = evaluated === null && args[script] ? fileNamed(args[script]!) : null;
-  if (evaluated === null && !args[script]) {
-    return { stdout: '', stderr: 'Usage: node <script.js> [args...]\n', exitCode: 1 };
-  }
+  // What node says when it starts nothing goes where its stderr goes. A host that takes fd 2 as bytes is answered
+  // an empty text total by contract (below), and its holders drop the total they are handed, so a refusal returned
+  // only as text was written nowhere: `node dist/x.js` from the wrong directory exited 1 with nothing said.
+  const refused = (text: string): CommandOutcome => {
+    if (!streams?.onStderrBytes) return { stdout: '', stderr: text, exitCode: 1 };
+    streams.onStderrBytes(new TextEncoder().encode(text));
+    return { stdout: '', stderr: '', exitCode: 1 };
+  };
+  if (evaluated === null && !args[script]) return refused('Usage: node <script.js> [args...]\n');
   if (evaluated === null && resolvedPath === null) {
-    return { stdout: '', stderr: `Error: Cannot find module '${__resolvePath(launch.cwd, args[script]!)}'\n`, exitCode: 1 };
+    return refused(`Error: Cannot find module '${__resolvePath(launch.cwd, args[script]!)}'\n`);
   }
 
   let stdout = '';
@@ -605,6 +611,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
 
   // Track whether process.exit() was called
   let exitCalled = false;
+  /** True while `exit` is being emitted: a listener's own `process.exit(n)` gives the status and stops nothing. */
+  let emittingExit = false;
   let exitCode = 0;
   let syncExecution = true;
   let exitResolve: ((code: number) => void) | null = null;
@@ -731,7 +739,21 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     hostReceiptWritten = true;
     writePipedEndReceipt(proc.pid, proc.argv0 || 'node', proc.argv[1] ?? '', kind, error);
   };
-  proc.exit = ((code = 0) => {
+  proc.exit = ((...given: [code?: number | string | null]) => {
+    let code = given[0] ?? 0;
+    // Called again while `exit` is being emitted (a listener that ends the process with its own status, which is how
+    // a test runner reports failures): Node takes the new code and does not emit again
+    // (`if (arguments.length) process.exitCode = code; if (!process._exiting) …; reallyExit(process.exitCode || 0)`).
+    // The code was dropped here, so a run that ended by draining, or by `process.exit(0)`, kept its first status.
+    if (exitCalled && given.length !== 0 && given[0] !== undefined) {
+      exitCode = __substrateExitCode(given[0]);
+      (proc as { exitCode?: number }).exitCode = exitCode;
+      code = exitCode;
+      // Inside the listener nothing is thrown to stop it: the throw that stands in for the process ending would be
+      // caught by the emitter and printed as the listener's error, a line Node never prints. The listener's
+      // remaining statements run, which in Node they do not; the status is the one it gave.
+      if (emittingExit) return undefined as never;
+    }
     if (!exitCalled) {
       exitCalled = true;
       // As Node takes one: a string from a command line becomes its number.
@@ -748,7 +770,12 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       // listeners ran, and VS Code's file-watcher child -- which pipes its
       // console over `process.send` and dies of a failed require -- wrote on
       // the closed channel and took `write EBADF` as its last act.
-      proc.emit('exit', code);
+      emittingExit = true;
+      __substrateProcessEnding(proc);
+      try { proc.emit('exit', code); } finally { emittingExit = false; }
+      // A listener may have ended the process with another status (above); that is the status it ends with.
+      code = exitCode;
+      (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
       exitResolve!(code);
     }
     // `process.exit()` ends a Node process and everything it holds; a named
@@ -1122,6 +1149,21 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) break;
     }
 
+    // A process whose loop has drained emits `exit`, as Node's does (`process.emit('exit', process.exitCode || 0)`,
+    // then it ends with whatever `process.exitCode` its listeners left): a program that writes its report, removes
+    // its temporary files or flushes a log from an `exit` listener did none of it here unless it called
+    // `process.exit` itself. Marked as exited first, so a listener that calls `process.exit` does not emit it again.
+    // One that was ended from outside (its run aborted) is killed, and a killed process emits nothing.
+    if (typeof proc !== 'undefined' && !exitCalled && !streams?.signal?.aborted) {
+      exitCalled = true;
+      exitCode = typeof proc.exitCode === 'number' ? proc.exitCode : 0;
+      emittingExit = true;
+      __substrateProcessEnding(proc);
+      try { proc.emit('exit', exitCode); } catch (error) { __reportUncaughtException(proc, error); } finally { emittingExit = false; }
+      if (typeof proc.exitCode === 'number') exitCode = proc.exitCode;
+    }
+    // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
+    if (typeof proc !== 'undefined') (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
     return { stdout, stderr, exitCode: runEnd = exitCalled ? exitCode : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
   } finally {
     if (streams) streams.stdin = null;
@@ -1302,6 +1344,14 @@ export function initChildProcess(vfs: VirtualFS): void {
   // What a `Process` handle runs. Node's own `child_process.js` starts, ends
   // and pipes a child through the binding; the binding asks this.
   setProgramResolver(engineProgramFor);
+  // The rule `startChildRun` applies below, as one answer for a synchronous child (the spawn_sync binding): with a
+  // host published, a shell and `env` are the host's, the engine's Node is the engine's, and any other program is
+  // the host's unless the engine carries it.
+  setHostRunsProgram((file, cwd, env) => {
+    if (hostExecutor() === null || __substrateRunsNode(file, cwd)) return false;
+    const program = engineProgramFor(file, cwd);
+    return SHELL_PROGRAMS.has(program) || program === 'env' || !programExists(file, cwd, env);
+  });
   setProcessRunner({
     resolves: (request: RunRequest): boolean => {
       if (!bashInstance) return false;
@@ -1703,6 +1753,13 @@ interface ChildProcessHostDescriptor {
 
 /** How a command is handed to that host. */
 interface ChildProcessHostRequest {
+  /**
+   * The command as the list a guest's `spawn` gave, where it gave one: the
+   * program, then its words. A host that starts programs from a list starts
+   * this one from it, and no shell reads the words a second time; the line
+   * beside it says the same run for a host that has only a shell.
+   */
+  argv?: readonly string[];
   cwd?: string;
   env?: Record<string, string>;
   /** Bytes already on fd 0 when the command begins, as Node delivers them. */
@@ -1710,7 +1767,11 @@ interface ChildProcessHostRequest {
   stdinStream: AsyncIterable<Uint8Array>;
   terminal?: RunStreams['terminal'];
   signal: AbortSignal;
-  hold: { value: boolean };
+  /**
+   * Whether the parent still waits for this child: false once its handle is unref'd, true again if ref'd. `changed`
+   * is the host's to set, and is called after each change, for a host that must tell another realm.
+   */
+  hold: { value: boolean; changed?: () => void };
   onStdout: (data: string) => void;
   onStderr: (data: string) => void;
   /**
@@ -1753,6 +1814,8 @@ interface CommandOutcome {
 /** What a caller gives one run of a command line. */
 interface CommandRun {
   command: string;
+  /** The same run as its words, where the caller had a list (`ChildProcessHostRequest.argv`). */
+  argv?: readonly string[];
   /**
    * Whether the engine's own shell answers for this command before the host's
    * process host is asked. A run the HOST asked for is the host's first: that
@@ -1782,6 +1845,8 @@ interface CommandRun {
   descriptors?: { fd: number; pipe: Pipe }[];
   /** Told when the host's process host takes the run: its end is then the host's, not the engine's. */
   onHostRun?: () => void;
+  /** The parent's wait for this run, as its handle's ref state has it (`ChildProcessHostRequest.hold`). */
+  hold?: { value: boolean; changed?: () => void };
 }
 
 /**
@@ -1839,13 +1904,14 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     const opened = (run.descriptors ?? []).map(({ fd, pipe }) => ({ fd, ...descriptorOver(pipe) }));
     try {
       const result = await bridge.run(run.command, {
+        ...(run.argv ? { argv: [...run.argv] } : {}),
         cwd: run.cwd,
         env: hostEnv,
         ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
         stdinStream: run.stdinStream ?? emptyStdinStream(),
         ...(run.terminal ? { terminal: run.terminal } : {}),
         signal: controller.signal,
-        hold: { value: true },
+        hold: run.hold ?? { value: true },
         onStdout,
         onStderr,
         ...byteSinks,
@@ -2258,6 +2324,8 @@ function startChildRun(request: RunRequest): StartedRun {
   let hosted = false;
   /** The host's process host runs this child (a program pack, a WALI image): it says when the child ends. */
   let hostRun = false;
+  // The parent's wait for a child a host runs, read by that host: its handle's ref state (`Process.ref`, `unref`).
+  const hold: { value: boolean; changed?: () => void } = { value: true };
   /** What the parent wrote to the child's fd 0 before the command began. */
   const initialStdin: Uint8Array[] = [];
 
@@ -2389,6 +2457,7 @@ function startChildRun(request: RunRequest): StartedRun {
           token,
         })) : await enterRun(token, () => routeCommand({
           command: __substrateLineFor(request.file, request.args, request.cwd),
+          ...(((argv) => argv ? { argv } : {})(__substrateArgvFor(request.file, request.args, request.cwd))),
           engineFirst,
           cwd: request.cwd,
           env: { ...request.env, [PROCESS_TOKEN_ENV]: token },
@@ -2401,6 +2470,7 @@ function startChildRun(request: RunRequest): StartedRun {
           onStderrBytes: streams.onStderrBytes,
           descriptors: request.descriptors,
           onHostRun: () => { hostRun = true; },
+          hold,
         }));
       } catch (error) {
         outcome = { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
@@ -2451,6 +2521,11 @@ function startChildRun(request: RunRequest): StartedRun {
       if (!started) { initialStdin.push(bytes); return; }
       pendingStdin.push(bytes);
       return flushStdin();
+    },
+    setRef(held: boolean): void {
+      if (hold.value === held) return;
+      hold.value = held;
+      hold.changed?.();
     },
     endStdin(): void {
       if (hostTerminal || liveInput) { pendingStdin.push(null); wakeInput?.(); wakeInput = undefined; return; }

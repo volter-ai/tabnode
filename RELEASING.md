@@ -13,4 +13,6 @@ After that the secret is deleted, the `NODE_AUTH_TOKEN` line leaves the workflow
 3. A minor release (the exported surface changed) is cut by hand: `bash scripts/release.sh <version>` on a clean `main`, with the version's changelog section already written; the workflow publishes that version as it is.
 4. The consumer moves its pin to the version and records what the tab gained.
 
+The workflow builds `dist/surface.json` before it publishes (`npm run build:surface`, under Node 24.21.0, which the comparison with Node's own surface requires). That is a choice: every release, a patch included, now depends on those four scripts passing, and the package always carries a surface measured from the code it ships. When one fails the release stops before npm: nothing is published, `main` has the change and no version for it. Fix the script or the engine and push; the next push releases. Do not skip the step to get a release out: a package without the file is read by its consumers as "packed without build:surface", not as an empty surface.
+
 The version is semver over the fork's own line, which began at `0.3.0`: a patch bump for a fix, a minor bump when the exported surface changes. The `dist/` directory is never committed; what npm serves is what the workflow built from `main`.

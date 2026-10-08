@@ -31,6 +31,7 @@ function ownedBytes(view: Uint8Array): Uint8Array {
 import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, stopHandle,
   type OwnedHandle, invokeOwned } from './handles';
+import { withGuestCallback, queueBindingTask } from '../../guest-loop';
 
 /** The four slots libuv's `StreamBase` reports a read or a write through. */
 export const kReadBytesOrError = 0;
@@ -172,9 +173,11 @@ export class LibuvStreamWrap implements OwnedHandle {
   }
 
   readStop(): number {
-    // The remote owner may already have posted its one permitted read. Keep
-    // that credit until arrival; pause guest delivery without granting another.
+    // Guest delivery pauses, and a grant the owner still holds is taken back
+    // (endRead): a paused socket may be handed to another process, which must
+    // find in it what this one did not read. A read already on its way is kept.
     this.reading = false;
+    nativeStreamFor(this)?.endRead();
     return 0;
   }
 
@@ -192,7 +195,7 @@ export class LibuvStreamWrap implements OwnedHandle {
     const native = nativeStreamFor(this);
     if (native) return native.shutdown(status => invokeOwned(req, 'oncomplete', status));
     this.sendEof();
-    queueMicrotask(() => { invokeOwned(req, 'oncomplete', 0); });
+    queueBindingTask(() => { invokeOwned(req, 'oncomplete', 0); });
     return 0;
   }
 
@@ -290,7 +293,7 @@ export class LibuvStreamWrap implements OwnedHandle {
     // The native close completion comes afterward. One microtask here ran the
     // close listener first, so ClientRequest replaced the actual policy denial
     // with ECONNRESET ("socket hang up"). Leave that tick ahead of completion.
-    if (callback) queueMicrotask(() => queueMicrotask(callback));
+    if (callback) queueBindingTask(() => queueBindingTask(() => withGuestCallback(callback)));
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, 'Native stream cleanup failed.');
   }
@@ -469,7 +472,7 @@ export class LibuvStreamWrap implements OwnedHandle {
     const endpoint = this.streamEndpoint;
     if (endpoint.flushScheduled) return;
     endpoint.flushScheduled = true;
-    queueMicrotask(() => {
+    queueBindingTask(() => {
       endpoint.flushScheduled = false;
       for (const handle of endpoint.handles) handle.flushInbound();
     });

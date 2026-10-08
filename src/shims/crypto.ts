@@ -8,6 +8,7 @@
 
 import SHA from 'sha.js';
 import { md5 } from '@noble/hashes/legacy.js';
+import { scrypt as nobleScrypt } from '@noble/hashes/scrypt.js';
 // The `buffer` package, not the guest polyfill: the byte-level encodings
 // (utf16le, latin1, offset views) crypto inputs arrive in are its own.
 import { Buffer as HostBuffer } from 'buffer/index.js';
@@ -22,6 +23,9 @@ import {
 } from '../node-internals';
 import { cryptoConstants as constants } from './crypto-constants';
 import { cipherNames, createCipherClasses } from './crypto-cipher';
+import type { NodeCryptoExport, NodeCryptoUnavailable } from './crypto-exports';
+import * as asymmetric from './crypto-ec';
+import type { AsymmetricKey, DsaEncoding, KeyEncodingType } from './crypto-ec';
 export { constants };
 
 interface DigestState {
@@ -30,6 +34,9 @@ interface DigestState {
   clone?(): DigestState;
   [field: string]: unknown;
 }
+
+/** `crypto.scrypt`'s options, by both of Node's names for each. */
+export interface ScryptOptions { N?: number; cost?: number; r?: number; blockSize?: number; p?: number; parallelization?: number; maxmem?: number }
 
 /** Native crypto allocates guest results and classes in the caller's graph. */
 export function createCryptoModule(require?: (name: string) => any) {
@@ -312,6 +319,8 @@ function hashAlgorithm(value: unknown): string {
   // Node accepts OpenSSL's spellings; `sha-256` and `sha256` are one digest.
   const name = value.toLowerCase().replace(/^sha-(1|224|256|384|512)$/, 'sha$1');
   if (!HASH_ALGORITHMS.includes(name)) {
+    // A digest OpenSSL has and this engine does not carry is refused as that, not called invalid.
+    if (/^(sha512-(224|256)|sha3-(224|256|384|512)|shake(128|256)|blake2[bs]\d+|ripemd(160)?|rmd160|sm3|md4|md5-sha1)$/.test(name)) unsupported(`The digest ${value}`);
     throw cryptoError('ERR_CRYPTO_INVALID_DIGEST', `Unsupported digest: ${value}`);
   }
   return name;
@@ -595,6 +604,173 @@ function pbkdf2(
 
 
 // ============================================================================
+// HKDF (RFC 5869) and scrypt (RFC 7914)
+// ============================================================================
+
+const DIGEST_BYTES: Record<string, number> = { md5: 16, sha1: 20, sha224: 28, sha256: 32, sha384: 48, sha512: 64 };
+
+interface HkdfParameters { algorithm: string; key: HostBytes; salt: HostBytes; info: HostBytes; length: number }
+
+/** Node's `validateParameters` (lib/internal/crypto/hkdf.js): the same refusals, by the same codes. */
+function hkdfParameters(digest: unknown, ikm: unknown, salt: unknown, info: unknown, length: unknown): HkdfParameters {
+  if (typeof digest !== 'string') throw new ERR_INVALID_ARG_TYPE('digest', 'string', digest);
+  const name = digest.toLowerCase().replace(/^sha-(1|224|256|384|512)$/, 'sha$1');
+  if (!HASH_ALGORITHMS.includes(name)) throw Object.assign(new TypeError(`Invalid digest: ${digest}`), { code: 'ERR_CRYPTO_INVALID_DIGEST' });
+  let key: HostBytes;
+  if (ikm instanceof KeyObject) {
+    const held = keyInfoOf(ikm);
+    if (held.type !== 'secret' || !(held.keyData instanceof Uint8Array)) {
+      throw Object.assign(new TypeError(`Invalid key object type ${held.type}, expected secret.`), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+    }
+    key = HostBuffer.from(held.keyData);
+  } else if (typeof ikm === 'string' || ArrayBuffer.isView(ikm) || ikm instanceof ArrayBuffer) {
+    key = HostBuffer.from(cryptoBytes(ikm, undefined, true));
+  } else throw new ERR_INVALID_ARG_TYPE('ikm', ['string', 'SecretKeyObject', 'ArrayBuffer', 'TypedArray', 'DataView', 'Buffer'], ikm);
+  const bytes = (label: string, value: unknown): HostBytes => {
+    if (typeof value === 'string' || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return HostBuffer.from(cryptoBytes(value, undefined, true));
+    throw new ERR_INVALID_ARG_TYPE(label, ['string', 'ArrayBuffer', 'TypedArray', 'DataView', 'Buffer'], value);
+  };
+  const saltBytes = bytes('salt', salt), infoBytes = bytes('info', info);
+  if (typeof length !== 'number') throw new ERR_INVALID_ARG_TYPE('length', 'number', length);
+  if (!Number.isInteger(length)) throw new ERR_OUT_OF_RANGE('length', 'an integer', length);
+  if (length < 0 || length > Number.MAX_SAFE_INTEGER) throw new ERR_OUT_OF_RANGE('length', `>= 0 && <= ${Number.MAX_SAFE_INTEGER}`, length);
+  if (infoBytes.byteLength > 1024) throw new ERR_OUT_OF_RANGE('info', 'must not contain more than 1024 bytes', infoBytes.byteLength);
+  // RFC 5869 2.3: the output is at most 255 blocks of the digest.
+  if (length > 255 * DIGEST_BYTES[name]!) throw Object.assign(new RangeError('Invalid key length'), { code: 'ERR_CRYPTO_INVALID_KEYLEN' });
+  return { algorithm: name, key, salt: saltBytes, info: infoBytes, length };
+}
+
+function hkdfDerive({ algorithm, key, salt, info, length }: HkdfParameters): ArrayBuffer {
+  // Node 24.21.0 answers a length of zero with this error, where its job has no bits to derive.
+  if (length === 0) throw new Error('Deriving bits failed');
+  const size = DIGEST_BYTES[algorithm]!;
+  // Extract: PRK = HMAC(salt, IKM), the salt absent being a block of zeros, which an empty HMAC key is.
+  const prk = HostBuffer.from(new Hmac(algorithm, salt).update(key).digest() as unknown as Uint8Array);
+  // Expand: T(n) = HMAC(PRK, T(n-1) | info | n).
+  const out = new Uint8Array(length);
+  let previous: Uint8Array = new Uint8Array(0);
+  const counter = new Uint8Array(1);
+  for (let block = 1, offset = 0; offset < length; block += 1, offset += size) {
+    counter[0] = block;
+    previous = new Hmac(algorithm, prk).update(previous).update(info).update(counter).digest() as unknown as Uint8Array;
+    out.set(previous.subarray(0, Math.min(size, length - offset)), offset);
+  }
+  prk.fill(0);
+  key.fill(0);
+  return out.buffer as ArrayBuffer;
+}
+
+function hkdfSync(digest: string, ikm: unknown, salt: unknown, info: unknown, length: number): ArrayBuffer {
+  return hkdfDerive(hkdfParameters(digest, ikm, salt, info, length));
+}
+
+function hkdf(digest: string, ikm: unknown, salt: unknown, info: unknown, length: number, callback: (error: Error | null, derived?: ArrayBuffer) => void): void {
+  // Node validates its arguments synchronously and calls back later.
+  const parameters = hkdfParameters(digest, ikm, salt, info, length);
+  validateFunction(callback, 'callback');
+  setTimeout(() => {
+    let derived: ArrayBuffer;
+    try { derived = hkdfDerive(parameters); } catch (error) { callback(error as Error); return; }
+    callback(null, derived);
+  }, 0);
+}
+
+/** Node's defaults and option names (lib/internal/crypto/scrypt.js): N 16384, r 8, p 1, maxmem 32 MiB. */
+function scryptParameters(password: unknown, salt: unknown, keylen: unknown, options: ScryptOptions = {}): { password: HostBytes; salt: HostBytes; keylen: number; N: number; r: number; p: number; maxmem: number } {
+  // In Node's order (lib/internal/crypto/scrypt.js `check`): the password, the salt, then the length, each refused
+  // by its own name. The length was checked first, so `scrypt()` with no arguments named "keylen" where Node names
+  // "password" (Node's own test-crypto-scrypt, its `badargs`).
+  const bytesOf = (value: unknown, name: string): HostBytes => {
+    if (typeof value !== 'string' && !ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer) && !(typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer)) {
+      throw new ERR_INVALID_ARG_TYPE(name, ['string', 'ArrayBuffer', 'Buffer', 'TypedArray', 'DataView'], value);
+    }
+    return HostBuffer.from(cryptoBytes(value instanceof ArrayBuffer || ArrayBuffer.isView(value) || typeof value === 'string' ? value : new Uint8Array(value as SharedArrayBuffer), undefined, true));
+  };
+  const passwordBytes = bytesOf(password, 'password'), saltBytes = bytesOf(salt, 'salt');
+  if (typeof keylen !== 'number') throw new ERR_INVALID_ARG_TYPE('keylen', 'number', keylen);
+  if (!Number.isInteger(keylen) || keylen < 0 || keylen > 0x7fffffff) throw new ERR_OUT_OF_RANGE('keylen', '>= 0 && <= 2147483647', keylen);
+  // Then the options, which are an object where given (`validateObject`): `null` is refused by name, not read.
+  if (options === null || typeof options !== 'object') throw new ERR_INVALID_ARG_TYPE('options', 'Object', options);
+  // The options as Node reads them (the same file): each name looked at for `undefined` and then read once more,
+  // that second reading being the one checked and used; the short and long names of one parameter together refused;
+  // a zero meaning the default. A value of the wrong type is ERR_INVALID_ARG_TYPE, one out of range ERR_OUT_OF_RANGE.
+  const uint32 = (value: unknown, name: string): number => {
+    if (typeof value !== 'number') throw new ERR_INVALID_ARG_TYPE(name, 'number', value);
+    if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) throw new ERR_OUT_OF_RANGE(name, '>= 0 && <= 4294967295', value);
+    return value;
+  };
+  const either = (short: 'N' | 'r' | 'p', long: 'cost' | 'blockSize' | 'parallelization', initial: number): number => {
+    let chosen = initial;
+    const hasShort = options[short] !== undefined;
+    if (hasShort) chosen = uint32(options[short], short);
+    if (options[long] !== undefined) {
+      if (hasShort) throw Object.assign(new TypeError(`Option "${short}" cannot be used in combination with option "${long}"`), { code: 'ERR_INCOMPATIBLE_OPTION_PAIR' });
+      chosen = uint32(options[long], long);
+    }
+    return chosen === 0 ? initial : chosen;
+  };
+  const N = either('N', 'cost', 16384), r = either('r', 'blockSize', 8), p = either('p', 'parallelization', 1);
+  let maxmem = 32 * 1024 * 1024;
+  if (options.maxmem !== undefined) {
+    const given: unknown = options.maxmem;
+    if (typeof given !== 'number') throw new ERR_INVALID_ARG_TYPE('maxmem', 'number', given);
+    if (!Number.isInteger(given) || given < 0 || given > Number.MAX_SAFE_INTEGER) throw new ERR_OUT_OF_RANGE('maxmem', `>= 0 && <= ${Number.MAX_SAFE_INTEGER}`, given);
+    if (given !== 0) maxmem = given;
+  }
+  // OpenSSL's own bounds (crypto/kdf/scrypt.c, and RFC 7914's): N a power of two above 1 and below 2^(16r); p at most
+  // (2^30 - 1) / r; and the memory it needs, p*128*r for B and 128*r*(N+2) for V and the block, within maxmem. The last
+  // was written 128*N*r, which let through N = 1024, r = 8 under maxmem 2^20, and the first two were missing: Node's own
+  // test (test-crypto-scrypt.js, the `toobig` vectors) found "Missing expected exception" in the measure run.
+  if (!Number.isInteger(N) || N < 2 || (N & (N - 1)) !== 0 || !Number.isInteger(r) || r < 1 || !Number.isInteger(p) || p < 1
+    || (16 * r < 53 && N >= 2 ** (16 * r)) || p > Math.floor((2 ** 30 - 1) / r) || p * 128 * r + 128 * r * (N + 2) > maxmem) {
+    throw Object.assign(new RangeError('Invalid scrypt params: memory limit exceeded'), { code: 'ERR_CRYPTO_INVALID_SCRYPT_PARAMS' });
+  }
+  return { password: passwordBytes, salt: saltBytes, keylen, N, r, p, maxmem };
+}
+
+function scryptDerive(parameters: ReturnType<typeof scryptParameters>): Buffer {
+  const { password, salt, keylen, N, r, p, maxmem } = parameters;
+  if (keylen === 0) return Buffer.from(new Uint8Array(0));
+  return Buffer.from(nobleScrypt(password, salt, { N, r, p, dkLen: keylen, maxmem: maxmem + 1024 }));
+}
+
+function scryptSync(password: unknown, salt: unknown, keylen: number, options?: ScryptOptions): Buffer {
+  return scryptDerive(scryptParameters(password, salt, keylen, options));
+}
+
+function scrypt(password: unknown, salt: unknown, keylen: number, options: ScryptOptions | ((error: Error | null, derived?: Buffer) => void), callback?: (error: Error | null, derived?: Buffer) => void): void {
+  const done = typeof options === 'function' ? options : callback;
+  const parameters = scryptParameters(password, salt, keylen, typeof options === 'function' ? undefined : options);
+  validateFunction(done, 'callback');
+  setTimeout(() => {
+    let derived: Buffer;
+    try { derived = scryptDerive(parameters); } catch (error) { done!(error as Error); return; }
+    done!(null, derived);
+  }, 0);
+}
+
+/** No FIPS provider is carried: Node built without one answers 0. */
+function getFips(): number { return 0; }
+
+/** No secure heap is carried: what Node 24.21.0 answers when started with none. */
+function secureHeapUsed(): { total: number; used: number; utilization: number; min: number } {
+  return { total: 0, used: 0, utilization: Number.NaN, min: 2 };
+}
+
+/**
+ * An export Node has and this module does not carry (crypto-exports.ts): a function that throws Node's
+ * ERR_FEATURE_UNAVAILABLE_ON_PLATFORM naming itself when called or constructed, so a program learns which call it
+ * was at the call, not as "is not a function".
+ */
+function unavailable<Name extends NodeCryptoUnavailable>(name: Name): (...args: unknown[]) => never {
+  const refuse = function (): never {
+    throw Object.assign(new TypeError(`The feature node:crypto.${name} is unavailable on the current platform, which is being used to run Node.js`), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
+  };
+  Object.defineProperty(refuse, 'name', { value: name });
+  return refuse;
+}
+
+// ============================================================================
 // Sign and Verify (main functions jose uses)
 // ============================================================================
 
@@ -610,6 +786,16 @@ function sign(
 ): Buffer | void {
   // Get the actual key material and algorithm
   const keyInfo = extractKeyInfo(key);
+  // An EC or Ed25519 key signs here and now; the callback form answers later, as Node's does.
+  if (keyInfo.asymmetric) {
+    const bytes = cryptoBytes(data, undefined, true);
+    if (!callback) return signAsymmetric(algorithm, bytes, keyInfo.asymmetric, dsaEncodingOf(key));
+    let made: Buffer;
+    try { made = signAsymmetric(algorithm, bytes, keyInfo.asymmetric, dsaEncodingOf(key)); }
+    catch (error) { setTimeout(() => callback(error as Error, null as unknown as Buffer), 0); return; }
+    setTimeout(() => callback(null, made), 0);
+    return;
+  }
   const alg = algorithm || keyInfo.algorithm;
 
   if (!alg) {
@@ -646,6 +832,12 @@ function verify(
   callback?: (error: Error | null, result: boolean) => void
 ): boolean | void {
   const keyInfo = extractKeyInfo(key);
+  if (keyInfo.asymmetric) {
+    const answer = verifyAsymmetric(algorithm, cryptoBytes(data, undefined, true), keyInfo.asymmetric, cryptoBytes(signature, undefined, true), dsaEncodingOf(key));
+    if (!callback) return answer;
+    setTimeout(() => callback(null, answer), 0);
+    return;
+  }
   const alg = algorithm || keyInfo.algorithm;
 
   if (!alg) {
@@ -697,15 +889,11 @@ class Sign extends EventEmitter {
   sign(privateKey: KeyLike, outputEncoding?: string): Buffer | string {
     const combined = concatBuffers(this.#data);
     const keyInfo = extractKeyInfo(privateKey);
-    const signature = signSync(this.#algorithm, combined, keyInfo);
+    const signature = keyInfo.asymmetric
+      ? signAsymmetric(this.#algorithm, combined, keyInfo.asymmetric, dsaEncodingOf(privateKey))
+      : signSync(this.#algorithm, combined, keyInfo);
 
-    if (outputEncoding === 'base64') {
-      return btoa(String.fromCharCode(...signature));
-    }
-    if (outputEncoding === 'hex') {
-      return Array.from(signature).map(b => b.toString(16).padStart(2, '0')).join('');
-    }
-    return signature;
+    return outputEncoding ? digestResult(signature, outputEncoding) : signature;
   }
 }
 
@@ -728,19 +916,11 @@ class Verify extends EventEmitter {
     const combined = concatBuffers(this.#data);
     const keyInfo = extractKeyInfo(publicKey);
 
-    let sig: Buffer;
-    if (typeof signature === 'string') {
-      if (signatureEncoding === 'base64') {
-        sig = Buffer.from(atob(signature));
-      } else if (signatureEncoding === 'hex') {
-        sig = Buffer.from(signature.match(/.{2}/g)!.map(byte => parseInt(byte, 16)));
-      } else {
-        sig = Buffer.from(signature);
-      }
-    } else {
-      sig = signature;
-    }
+    // The signature's bytes by the encoding named: `atob` into `Buffer.from(string)` re-encoded every byte above
+    // 0x7f as two, so no base64 signature (what jsonwebtoken's jwa passes) could verify.
+    const sig = typeof signature === 'string' ? Buffer.from(cryptoBytes(signature, signatureEncoding ?? 'utf8')) : signature;
 
+    if (keyInfo.asymmetric) return verifyAsymmetric(this.#algorithm, combined, keyInfo.asymmetric, sig, dsaEncodingOf(publicKey));
     return verifySync(this.#algorithm, combined, keyInfo, sig);
   }
 }
@@ -752,16 +932,18 @@ class Verify extends EventEmitter {
 let keyInfoOf: (key: KeyObject) => KeyInfo;
 class KeyObject {
   static {
-    keyInfoOf = (key) => ({ keyData: key.#_keyData, algorithm: key.#_algorithm, type: key.#_type, format: 'raw' });
+    keyInfoOf = (key) => ({ keyData: key.#_keyData, algorithm: key.#_algorithm, type: key.#_type, format: key.#_asymmetric ? 'pem' : 'raw', ...(key.#_asymmetric ? { asymmetric: key.#_asymmetric } : {}) });
   }
+  #_asymmetric?: AsymmetricKey;
   #_keyData: CryptoKey | Uint8Array;
   #_type: 'public' | 'private' | 'secret';
   #_algorithm?: string;
 
-  constructor(type: 'public' | 'private' | 'secret', keyData: CryptoKey | Uint8Array, algorithm?: string) {
+  constructor(type: 'public' | 'private' | 'secret', keyData: CryptoKey | Uint8Array, algorithm?: string, asymmetricKey?: AsymmetricKey) {
     this.#_type = type;
     this.#_keyData = keyData;
     this.#_algorithm = algorithm;
+    this.#_asymmetric = asymmetricKey;
   }
 
   get type(): string {
@@ -770,6 +952,7 @@ class KeyObject {
 
   get asymmetricKeyType(): string | undefined {
     if (this.#_type === 'secret') return undefined;
+    if (this.#_asymmetric) return this.#_asymmetric.kind;
     // Infer from algorithm
     if (this.#_algorithm?.includes('RSA')) return 'rsa';
     if (this.#_algorithm?.includes('EC') || this.#_algorithm?.includes('ES')) return 'ec';
@@ -785,12 +968,37 @@ class KeyObject {
     return undefined;
   }
 
-  export(options?: { type?: string; format?: string }): Buffer | string {
-    // Simplified export - returns the key data
-    if (this.#_keyData instanceof Uint8Array) {
-      return Buffer.from(this.#_keyData);
+  get asymmetricKeyDetails(): Record<string, unknown> | undefined {
+    if (this.#_type === 'secret') return undefined;
+    const held = this.#_asymmetric;
+    return held?.kind === 'ec' ? { namedCurve: asymmetric.nodeCurveName(held.curve) } : {};
+  }
+
+  equals(other: unknown): boolean {
+    if (!(other instanceof KeyObject) || other.#_type !== this.#_type) return false;
+    const mine = this.#_asymmetric, theirs = other.#_asymmetric;
+    if (mine && theirs) return mine.kind === theirs.kind && timingSafeEqual(mine.point, theirs.point);
+    return this.#_keyData instanceof Uint8Array && other.#_keyData instanceof Uint8Array && timingSafeEqual(this.#_keyData, other.#_keyData);
+  }
+
+  export(options?: KeyEncoding): Buffer | string | Record<string, string> {
+    if (this.#_asymmetric) return exportAsymmetric(this.#_asymmetric, this.#_type === 'private' ? 'private' : 'public', options);
+    if (this.#_type === 'secret') {
+      // A secret key: its bytes, or the `oct` JWK; any other format is Node's argument error.
+      const format = options?.format;
+      if (!(this.#_keyData instanceof Uint8Array)) throw new Error('Cannot export CryptoKey synchronously');
+      if (format === undefined || format === 'buffer') return Buffer.from(this.#_keyData);
+      if (format === 'jwk') return { kty: 'oct', k: Buffer.from(this.#_keyData).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') };
+      throw Object.assign(new TypeError(`The property 'options.format' is invalid. Received '${String(format)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
     }
-    throw new Error('Cannot export CryptoKey synchronously');
+    // Any other key (RSA) is held as the DER it was read from and nothing is known of its numbers: that DER can be
+    // given back, and nothing else. Every other request is refused by name; it used to be answered with the same
+    // bytes whatever was asked, a PEM or an encrypted key among them.
+    if (options === undefined || options === null || typeof options !== 'object') throw new ERR_INVALID_ARG_TYPE('options', 'object', options);
+    if (this.#_type === 'private') refuseKeyEncryption(options);
+    if (!(this.#_keyData instanceof Uint8Array)) throw new Error('Cannot export CryptoKey synchronously');
+    if (options.format !== 'der') unsupported(`Exporting this ${this.asymmetricKeyType ?? 'asymmetric'} key as ${String(options.format)}`);
+    return Buffer.from(this.#_keyData);
   }
 }
 
@@ -802,12 +1010,84 @@ function createSecretKey(key: BinaryLike | ArrayBufferView, encoding?: string): 
 
 function createPublicKey(key: KeyLike): KeyObject {
   const keyInfo = extractKeyInfo(key);
+  // A private key gives its public key, as Node's does.
+  if (keyInfo.asymmetric) return keyObjectOf(asymmetric.publicOf(keyInfo.asymmetric), 'public');
+  notAKey(key, keyInfo);
   return new KeyObject('public', keyInfo.keyData as Uint8Array, keyInfo.algorithm);
 }
 
 function createPrivateKey(key: KeyLike): KeyObject {
   const keyInfo = extractKeyInfo(key);
+  if (keyInfo.asymmetric) {
+    if (!keyInfo.asymmetric.secret) throw Object.assign(new TypeError('The key is a public key; a private key is required.'), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+    return keyObjectOf(keyInfo.asymmetric, 'private');
+  }
+  notAKey(key, keyInfo);
   return new KeyObject('private', keyInfo.keyData as Uint8Array, keyInfo.algorithm);
+}
+
+/**
+ * Bytes or text that are no key at all are refused, with OpenSSL's decoder error as Node passes it on. A caller
+ * that tries a key as asymmetric first and as a secret on the refusal depends on it: jsonwebtoken does, and an
+ * HS256 secret answered here as a "private key" was then refused as "must be a symmetric key".
+ */
+function notAKey(key: KeyLike, keyInfo: KeyInfo): void {
+  if (key instanceof KeyObject || keyInfo.format !== 'raw') return;
+  throw Object.assign(new Error('error:1E08010C:DECODER routines::unsupported'), { code: 'ERR_OSSL_UNSUPPORTED' });
+}
+
+/** The JOSE name of the signature an EC or Ed25519 key makes: what this module's WebCrypto paths key their algorithm on. */
+function asymmetricAlgorithm(key: AsymmetricKey): string {
+  return key.kind === 'ed25519' ? 'Ed25519' : key.curve === 'P-256' ? 'ES256' : key.curve === 'P-384' ? 'ES384' : 'ES512';
+}
+function keyObjectOf(key: AsymmetricKey, kind: 'public' | 'private'): KeyObject {
+  const held = kind === 'public' ? asymmetric.publicOf(key) : key;
+  return new KeyObject(kind, asymmetric.derOf(held, kind === 'public' ? 'spki' : 'pkcs8'), asymmetricAlgorithm(key), held);
+}
+/**
+ * What a private key's encoding says of encryption, read before anything is written. Node encrypts the key with
+ * `cipher` under `passphrase` (lib/internal/crypto/keys.js parsePrivateKeyEncoding); this engine encrypts no key, so
+ * the pair is refused by name. It is never dropped: a caller that asked for an encrypted key and was handed the
+ * clear one would store or send its key in clear and could not know. One without the other, and either with JWK,
+ * are Node's own argument errors.
+ */
+function refuseKeyEncryption(options: { format?: unknown; cipher?: unknown; passphrase?: unknown }): void {
+  const cipher = options.cipher, passphrase = options.passphrase;
+  if ((cipher === undefined || cipher === null) && passphrase === undefined) return;
+  if (cipher === undefined || cipher === null) {
+    throw Object.assign(new TypeError(`The property 'options.cipher' is invalid. Received ${cipher === null ? 'null' : 'undefined'}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  }
+  if (typeof cipher !== 'string') throw new ERR_INVALID_ARG_TYPE('options.cipher', 'string', cipher);
+  if (options.format === 'jwk') {
+    throw Object.assign(new Error('The selected key encoding jwk does not support encryption.'), { code: 'ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS' });
+  }
+  if (passphrase === undefined) {
+    throw Object.assign(new TypeError("The property 'options.passphrase' is invalid. Received undefined"), { code: 'ERR_INVALID_ARG_VALUE' });
+  }
+  unsupported('Encrypting an exported private key (options.cipher with options.passphrase)');
+}
+/** `KeyObject.export` and a key pair's encodings: Node's choices and its refusals (lib/internal/crypto/keys.js). */
+function exportAsymmetric(key: AsymmetricKey, kind: 'public' | 'private', options: KeyEncoding | undefined): Buffer | string | Record<string, string> {
+  if (options === null || typeof options !== 'object') throw new ERR_INVALID_ARG_TYPE('options', 'object', options);
+  // A public key's encoding has no encryption members in Node either: it reads `type` and `format` and no more.
+  if (kind === 'private') refuseKeyEncryption(options);
+  if (options.format === 'jwk') return asymmetric.jwkOf(key, kind === 'private');
+  if (kind === 'private' && options.type === 'sec1' && key.kind !== 'ec') {
+    throw Object.assign(new Error('The selected key encoding sec1 can only be used for EC keys.'), { code: 'ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS' });
+  }
+  if (options.type === 'pkcs1') {
+    throw Object.assign(new Error('The selected key encoding pkcs1 can only be used for RSA keys.'), { code: 'ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS' });
+  }
+  const allowed: KeyEncodingType[] = kind === 'public' ? ['spki'] : key.kind === 'ec' ? ['pkcs8', 'sec1'] : ['pkcs8'];
+  if (!allowed.includes(options.type as KeyEncodingType)) {
+    throw Object.assign(new TypeError(`The property 'options.type' is invalid. Received ${options.type === undefined ? 'undefined' : `'${options.type}'`}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  }
+  const der = asymmetric.derOf(key, options.type as KeyEncodingType);
+  if (options.format === 'der') return Buffer.from(der);
+  if (options.format !== 'pem') {
+    throw Object.assign(new TypeError(`The property 'options.format' is invalid. Received ${options.format === undefined ? 'undefined' : `'${options.format}'`}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  }
+  return asymmetric.pemOf(der, options.type as KeyEncodingType);
 }
 
 // ============================================================================
@@ -819,8 +1099,8 @@ function createPrivateKey(key: KeyLike): KeyObject {
 // when it loads, so its absence failed any module that imported jose.
 // ============================================================================
 
-type KeyEncoding = { type?: string; format?: string };
-type KeyPairOptions = { modulusLength?: number; publicExponent?: number; namedCurve?: string; publicKeyEncoding?: KeyEncoding; privateKeyEncoding?: KeyEncoding };
+type KeyEncoding = { type?: string; format?: string; cipher?: unknown; passphrase?: unknown };
+type KeyPairOptions = { modulusLength?: number; publicExponent?: number; namedCurve?: string; paramEncoding?: unknown; publicKeyEncoding?: KeyEncoding; privateKeyEncoding?: KeyEncoding };
 
 const NAMED_CURVES: Record<string, string> = {
   'prime256v1': 'P-256', 'p-256': 'P-256', 'secp256r1': 'P-256',
@@ -857,6 +1137,7 @@ function keyPairAlgorithm(type: string, options: KeyPairOptions): { generate: Al
 }
 
 function encodedKey(der: ArrayBuffer, encoding: KeyEncoding, kind: 'public' | 'private'): string | Buffer {
+  if (kind === 'private') refuseKeyEncryption(encoding);
   const expected = kind === 'public' ? 'spki' : 'pkcs8';
   if (encoding.type !== undefined && encoding.type !== expected) {
     unsupported(`Encoding a ${kind} key as ${encoding.type}`);
@@ -881,11 +1162,47 @@ async function generateKeyPairAsync(type: string, options: KeyPairOptions): Prom
   return { publicKey, privateKey };
 }
 
+/**
+ * A key pair made here and now, for the types whose arithmetic the engine carries (crypto-ec.ts): 'ec' over P-256,
+ * P-384 and P-521, and 'ed25519'. Undefined for a type it does not carry, which stays WebCrypto's and asynchronous.
+ */
+function keyPairNow(type: string, options: KeyPairOptions): { publicKey: KeyObject | string | Buffer | Record<string, string>; privateKey: KeyObject | string | Buffer | Record<string, string> } | undefined {
+  let made: AsymmetricKey;
+  if (type === 'ec') {
+    if (typeof options.namedCurve !== 'string') throw new ERR_INVALID_ARG_TYPE('options.namedCurve', 'string', options.namedCurve);
+    const curve = asymmetric.curveNamed(options.namedCurve);
+    // A curve OpenSSL has and this engine does not carry is not an invalid name: it is refused as not carried.
+    if (!curve && /^(secp\d+[kr]\d|sect\d+[kr]\d|prime\d+v\d|brainpoolP\d+[rt]1|c2[pt]nb\d+[vw]\d|wap-wsg-.*|Oakley-.*|SM2)$/i.test(options.namedCurve)) unsupported(`The curve ${options.namedCurve}`);
+    if (!curve) throw Object.assign(new TypeError('Invalid EC curve name'), { code: 'ERR_CRYPTO_INVALID_CURVE' });
+    // `paramEncoding`: 'named' is what is written; 'explicit' writes the curve's whole parameters, which is not.
+    if (options.paramEncoding !== undefined && options.paramEncoding !== 'named') {
+      if (options.paramEncoding === 'explicit') unsupported("Encoding an EC key's curve explicitly (paramEncoding 'explicit')");
+      throw Object.assign(new TypeError(`The property 'options.paramEncoding' is invalid. Received '${String(options.paramEncoding)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
+    }
+    made = asymmetric.generateKey('ec', curve);
+  } else if (type === 'ed25519') made = asymmetric.generateKey('ed25519');
+  else return undefined;
+  return {
+    publicKey: options.publicKeyEncoding ? exportAsymmetric(asymmetric.publicOf(made), 'public', options.publicKeyEncoding) : keyObjectOf(made, 'public'),
+    privateKey: options.privateKeyEncoding ? exportAsymmetric(made, 'private', options.privateKeyEncoding) : keyObjectOf(made, 'private'),
+  };
+}
+
+function generateKeyPairSync(type: string, options: KeyPairOptions = {}): { publicKey: unknown; privateKey: unknown } {
+  const pair = keyPairNow(type, options);
+  if (pair) return pair;
+  // Argument errors are Node's; a type that is valid and not carried is refused by name.
+  keyPairAlgorithm(type, options);
+  return unsupported(`Synchronous generation of a ${type} key pair`);
+}
+
 function generateKeyPair(type: string, options: KeyPairOptions | ((error: Error | null, publicKey?: unknown, privateKey?: unknown) => void), callback?: (error: Error | null, publicKey?: unknown, privateKey?: unknown) => void): void {
   if (typeof options === 'function') { callback = options; options = {}; }
   if (typeof callback !== 'function') throw Object.assign(new TypeError('The "callback" argument must be of type function.'), { code: 'ERR_INVALID_ARG_TYPE' });
   const done = callback;
-  // Argument errors throw synchronously, as Node's do.
+  // Argument errors throw synchronously, as Node's do. A type made here gives KeyObjects that export synchronously.
+  const now = keyPairNow(type, options ?? {});
+  if (now) { setTimeout(() => done(null, now.publicKey, now.privateKey), 0); return; }
   keyPairAlgorithm(type, options ?? {});
   generateKeyPairAsync(type, options ?? {}).then(
     ({ publicKey, privateKey }) => done(null, publicKey, privateKey),
@@ -893,7 +1210,7 @@ function generateKeyPair(type: string, options: KeyPairOptions | ((error: Error 
   );
 }
 Object.defineProperty(generateKeyPair, Symbol.for('nodejs.util.promisify.custom'), {
-  value: (type: string, options?: KeyPairOptions) => generateKeyPairAsync(type, options ?? {}),
+  value: async (type: string, options?: KeyPairOptions) => keyPairNow(type, options ?? {}) ?? generateKeyPairAsync(type, options ?? {}),
 });
 
 // ============================================================================
@@ -926,10 +1243,12 @@ function getHashes(): string[] {
 // Internal helpers
 // ============================================================================
 
-type KeyLike = string | Buffer | KeyObject | { key: string | Buffer; passphrase?: string };
+type KeyLike = string | Buffer | KeyObject | { key: string | Buffer | KeyObject | Record<string, unknown>; passphrase?: string; format?: string; type?: string; dsaEncoding?: string };
 
 interface KeyInfo {
   keyData: Uint8Array | CryptoKey;
+  /** An EC or Ed25519 key as its own numbers (crypto-ec.ts): what every synchronous operation on it uses. */
+  asymmetric?: AsymmetricKey;
   algorithm?: string;
   type: 'public' | 'private' | 'secret';
   format: 'pem' | 'der' | 'jwk' | 'raw';
@@ -971,15 +1290,59 @@ function getWebCryptoAlgorithm(nodeAlgorithm: string): { name: string; hash?: st
 }
 
 function extractKeyInfo(key: KeyLike): KeyInfo {
+  try { return readKeyInfo(key); }
+  catch (cause) {
+    if (!(cause instanceof asymmetric.KeyRefused)) throw cause;
+    // An encrypted key: Node asks for its passphrase, and with one decrypts it. This engine decrypts no key.
+    if (cause.reason === 'encrypted') {
+      const given = typeof key === 'object' && key !== null && !ArrayBuffer.isView(key) && !(key instanceof KeyObject) && (key as { passphrase?: unknown }).passphrase !== undefined;
+      if (!given) throw Object.assign(new TypeError('Passphrase required for encrypted key'), { code: 'ERR_MISSING_PASSPHRASE' });
+      return unsupported('Reading an encrypted private key (the key is encrypted and a passphrase was given)');
+    }
+    if (cause.reason === 'jwk') throw Object.assign(new TypeError('Invalid JWK data'), { code: 'ERR_CRYPTO_INVALID_JWK' });
+    if (cause.reason === 'curve') {
+      if (cause.message === 'Invalid JWK EC key') throw Object.assign(new TypeError('Invalid JWK EC key'), { code: 'ERR_CRYPTO_INVALID_CURVE' });
+      return unsupported(`Reading this key: ${cause.message}`);
+    }
+    // OpenSSL's decoder error, as Node passes it on, with what was wrong with the key.
+    throw Object.assign(new Error(`error:1E08010C:DECODER routines::unsupported (${cause.message})`), { code: 'ERR_OSSL_UNSUPPORTED' });
+  }
+}
+function readKeyInfo(key: KeyLike): KeyInfo {
   if (key instanceof KeyObject) {
     return keyInfoOf(key);
   }
 
-  if (typeof key === 'object' && 'key' in key) {
-    return extractKeyInfo(key.key);
+  if (typeof key === 'object' && key !== null && !ArrayBuffer.isView(key) && 'key' in key) {
+    const inner = key.key;
+    if (inner instanceof KeyObject) return keyInfoOf(inner);
+    // A JWK, or DER whose encoding the caller names.
+    if (key.format === 'jwk') {
+      if (!inner || typeof inner !== 'object' || ArrayBuffer.isView(inner)) throw new ERR_INVALID_ARG_TYPE('key.key', 'object', inner);
+      const fromJwk = asymmetric.keyFromJwk(inner as Record<string, unknown>);
+      if (fromJwk) return keyInfoOfAsymmetric(fromJwk);
+      throw Object.assign(new TypeError('Invalid JWK data'), { code: 'ERR_CRYPTO_INVALID_JWK' });
+    }
+    if (key.format === 'der') {
+      // DER names its encoding (`type`), and a string of it names how it is written (`encoding`), as Node reads them.
+      if (key.type === undefined) throw Object.assign(new TypeError("The property 'options.type' is invalid. Received undefined"), { code: 'ERR_INVALID_ARG_VALUE' });
+      const bytes = typeof inner === 'string' ? Buffer.from(inner, ((key as { encoding?: string }).encoding ?? 'utf8') as BufferEncoding)
+        : ArrayBuffer.isView(inner) ? inner as ArrayBufferView : undefined;
+      if (bytes) {
+        const fromDer = asymmetric.keyFromDer(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), key.type as KeyEncodingType | undefined);
+        if (fromDer) return keyInfoOfAsymmetric(fromDer);
+        if (typeof inner === 'string') return readKeyInfo(bytes as unknown as Buffer);
+      }
+    }
+    return readKeyInfo(inner as string | Buffer);
   }
 
   const keyStr = typeof key === 'string' ? key : key.toString();
+  // An EC or Ed25519 key is read into its own numbers; every other key keeps the bytes, as before.
+  if (keyStr.includes('-----BEGIN')) {
+    const fromPem = asymmetric.keyFromPem(keyStr);
+    if (fromPem) return keyInfoOfAsymmetric(fromPem);
+  }
 
   // Detect PEM format
   if (keyStr.includes('-----BEGIN')) {
@@ -1015,6 +1378,48 @@ function extractKeyInfo(key: KeyLike): KeyInfo {
     type: 'secret',
     format: 'raw',
   };
+}
+
+function keyInfoOfAsymmetric(key: AsymmetricKey): KeyInfo {
+  const kind = key.secret ? 'private' : 'public';
+  return { keyData: asymmetric.derOf(key, kind === 'public' ? 'spki' : 'pkcs8'), asymmetric: key, algorithm: asymmetricAlgorithm(key), type: kind, format: 'pem' };
+}
+
+/**
+ * The digest a signature algorithm's name asks for: the digest's own name in any case, with or without its hyphen,
+ * or an alias that names one (`RSA-SHA256`, `ecdsa-with-SHA384`). The WHOLE name: `sha512-256` is its own digest
+ * (SHA-512/256), not SHA-512 with something after it, which is how it was read. A digest OpenSSL has and this
+ * engine does not carry is refused as that; a name that is no digest is Node's ERR_CRYPTO_INVALID_DIGEST.
+ */
+function signatureDigest(algorithm: string | null | undefined): string | undefined {
+  if (algorithm === null || algorithm === undefined) return undefined;
+  const name = String(algorithm).toLowerCase().replace(/^(rsa-|ecdsa-with-|id-rsassa-pkcs1-v1_5-with-)/, '').replace(/^sha-(\d)/, 'sha$1');
+  if (HASH_ALGORITHMS.includes(name)) return name;
+  if (/^(sha512-(224|256)|sha3-(224|256|384|512)|shake(128|256)|blake2[bs]\d+|ripemd(160)?|rmd160|sm3|md4|md5-sha1)$/.test(name)) return unsupported(`Signing or verifying with the digest ${String(algorithm)}`);
+  throw Object.assign(new TypeError(`Invalid digest: ${String(algorithm)}`), { code: 'ERR_CRYPTO_INVALID_DIGEST' });
+}
+function dsaEncodingOf(key: unknown): DsaEncoding {
+  const named = key && typeof key === 'object' && !ArrayBuffer.isView(key) ? (key as { dsaEncoding?: unknown }).dsaEncoding : undefined;
+  if (named === undefined || named === 'der') return 'der';
+  if (named === 'ieee-p1363') return 'ieee-p1363';
+  throw Object.assign(new TypeError(`The property 'options.dsaEncoding' is invalid. Received '${String(named)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
+}
+/** What a signature over an EC key hashes with: the digest named, or SHA-256 where none is, as OpenSSL's default is. */
+function asymmetricDigest(key: AsymmetricKey, algorithm: string | null | undefined, data: Uint8Array): Uint8Array | undefined {
+  const named = signatureDigest(algorithm);
+  if (key.kind === 'ed25519') {
+    // Ed25519 signs the message itself: OpenSSL refuses a digest, and Node passes its error on.
+    if (named !== undefined) throw Object.assign(new Error('error:1C80007A:Provider routines::invalid digest'), { code: 'ERR_OSSL_INVALID_DIGEST' });
+    return undefined;
+  }
+  return digestEngine(named ?? 'sha256').update(HostBuffer.from(data.buffer as ArrayBuffer, data.byteOffset, data.byteLength)).digest();
+}
+function signAsymmetric(algorithm: string | null | undefined, data: Uint8Array, key: AsymmetricKey, encoding: DsaEncoding): Buffer {
+  if (!key.secret) throw Object.assign(new TypeError('Invalid key object type public, expected private.'), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+  return Buffer.from(asymmetric.signWith(key, data, asymmetricDigest(key, algorithm, data), encoding));
+}
+function verifyAsymmetric(algorithm: string | null | undefined, data: Uint8Array, key: AsymmetricKey, signature: Uint8Array, encoding: DsaEncoding): boolean {
+  return asymmetric.verifyWith(key, data, asymmetricDigest(key, algorithm, data), signature, encoding);
 }
 
 function concatBuffers(buffers: Uint8Array[]): Uint8Array {
@@ -1158,12 +1563,52 @@ const { Cipheriv, Decipheriv, createCipheriv, createDecipheriv } = createCipherC
 // Exports
 // ============================================================================
 
-return {
+// Every export of Node's `node:crypto` is here or this does not compile (crypto-exports.ts).
+const nodeExports = {
+  Certificate: unavailable('Certificate'),
+  DiffieHellman: unavailable('DiffieHellman'),
+  DiffieHellmanGroup: unavailable('DiffieHellmanGroup'),
+  ECDH: unavailable('ECDH'),
+  X509Certificate: unavailable('X509Certificate'),
+  argon2: unavailable('argon2'),
+  argon2Sync: unavailable('argon2Sync'),
+  checkPrime: unavailable('checkPrime'),
+  checkPrimeSync: unavailable('checkPrimeSync'),
+  createDiffieHellman: unavailable('createDiffieHellman'),
+  createDiffieHellmanGroup: unavailable('createDiffieHellmanGroup'),
+  createECDH: unavailable('createECDH'),
+  decapsulate: unavailable('decapsulate'),
+  diffieHellman: unavailable('diffieHellman'),
+  encapsulate: unavailable('encapsulate'),
+  generateKey: unavailable('generateKey'),
+  generateKeyPairSync,
+  generateKeySync: unavailable('generateKeySync'),
+  generatePrime: unavailable('generatePrime'),
+  generatePrimeSync: unavailable('generatePrimeSync'),
+  getCipherInfo: unavailable('getCipherInfo'),
+  getCurves: unavailable('getCurves'),
+  getDiffieHellman: unavailable('getDiffieHellman'),
+  privateDecrypt: unavailable('privateDecrypt'),
+  privateEncrypt: unavailable('privateEncrypt'),
+  publicDecrypt: unavailable('publicDecrypt'),
+  publicEncrypt: unavailable('publicEncrypt'),
+  randomUUIDv7: unavailable('randomUUIDv7'),
+  setEngine: unavailable('setEngine'),
+  setFips: unavailable('setFips'),
+  Hash,
+  Hmac,
+  Sign,
+  Verify,
+  hkdf,
+  hkdfSync,
+  scrypt,
+  scryptSync,
+  getFips,
+  secureHeapUsed,
   Cipheriv,
   Decipheriv,
   createCipheriv,
   createDecipheriv,
-  unsupported,
   randomBytes,
   randomFill,
   randomFillSync,
@@ -1191,12 +1636,25 @@ return {
   // Node's Web Crypto: the same object globalThis.crypto is in Node, and its SubtleCrypto
   webcrypto: crypto,
   subtle: crypto.subtle,
-};
+} satisfies Record<NodeCryptoExport, unknown>;
+// `unsupported` is this engine's own, beside Node's names: what an implemented export throws for an algorithm it lacks.
+const module = { ...nodeExports, unsupported };
+// Node's four legacy names, as Node has them: not enumerable (so not among its 70 keys), three of them accessors that
+// answer randomBytes, and `fips` an accessor over getFips and setFips. uid2 and tmp still call
+// pseudoRandomBytes.
+Object.defineProperties(module, {
+  pseudoRandomBytes: { get: () => randomBytes, set: (value: unknown) => { Object.defineProperty(module, 'pseudoRandomBytes', { value, enumerable: false, configurable: true, writable: true }); }, enumerable: false, configurable: true },
+  prng: { get: () => randomBytes, set: (value: unknown) => { Object.defineProperty(module, 'prng', { value, enumerable: false, configurable: true, writable: true }); }, enumerable: false, configurable: true },
+  rng: { get: () => randomBytes, set: (value: unknown) => { Object.defineProperty(module, 'rng', { value, enumerable: false, configurable: true, writable: true }); }, enumerable: false, configurable: true },
+  fips: { get: getFips, set: (value: unknown) => { nodeExports.setFips(value); }, enumerable: false, configurable: true },
+});
+return module as typeof module & { pseudoRandomBytes: typeof randomBytes; prng: typeof randomBytes; rng: typeof randomBytes; fips: number };
 
 }
 const cryptoModule = createCryptoModule();
 export const webcrypto = cryptoModule.webcrypto;
 export const subtle = cryptoModule.subtle;
 export const { Cipheriv, Decipheriv, createCipheriv, createDecipheriv, randomBytes, randomFillSync, randomFill, randomUUID, randomInt, getRandomValues, unsupported, createHash, createHmac, hash, pbkdf2Sync, pbkdf2, sign, verify, createSign, createVerify, KeyObject, createSecretKey, createPublicKey, createPrivateKey, generateKeyPair, timingSafeEqual, getCiphers, getHashes } = cryptoModule;
+export const { Certificate, DiffieHellman, DiffieHellmanGroup, ECDH, X509Certificate, argon2, argon2Sync, checkPrime, checkPrimeSync, createDiffieHellman, createDiffieHellmanGroup, createECDH, decapsulate, diffieHellman, encapsulate, generateKey, generateKeyPairSync, generateKeySync, generatePrime, generatePrimeSync, getCipherInfo, getCurves, getDiffieHellman, privateDecrypt, privateEncrypt, publicDecrypt, publicEncrypt, randomUUIDv7, setEngine, setFips, Hash, Hmac, Sign, Verify, hkdf, hkdfSync, scrypt, scryptSync, getFips, secureHeapUsed } = cryptoModule;
 export type KeyObject = InstanceType<typeof KeyObject>;
 export default cryptoModule;

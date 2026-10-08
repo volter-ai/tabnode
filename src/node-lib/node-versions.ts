@@ -35,3 +35,21 @@ export function nodeVersions(node: string = NODE_LTS_VERSION): {
   // v24.21.0 carries; `internal/util` reads it for `assertTypeScript()`.
   return { node, v8: "11.3.244.8", uv: "1.44.2", webcontainer: "1", openssl: "3.0.15", amaro: "1.1.11" };
 }
+
+/**
+ * `process.release`, in Node's shape (v24.21.0: name, lts, sourceUrl, headersUrl). The two addresses follow the
+ * version by Node's fixed scheme. `lts` is the release line's code name, known here for the library's own version
+ * only; for a version an image names it is left out rather than guessed.
+ */
+export function nodeRelease(node: string = NODE_LTS_VERSION): { name: string; lts?: string; sourceUrl: string; headersUrl: string } {
+  const base = `https://nodejs.org/download/release/v${node}/node-v${node}`;
+  return { name: "node", ...(node === NODE_LTS_VERSION ? { lts: "Krypton" } : {}), sourceUrl: `${base}.tar.gz`, headersUrl: `${base}-headers.tar.gz` };
+}
+
+/*
+ * Keys of Node's `process.versions` this engine does not answer, because it carries no such thing or another
+ * thing in its place, and a version of what is not there would be a lie: ada, ares, brotli, cldr, icu, llhttp (a
+ * wasm build whose version this file cannot read), merve, modules and napi (no native addon loads), nbytes,
+ * ncrypto, nghttp2, nghttp3, ngtcp2, simdjson, simdutf, sqlite, tz, undici, unicode, uvwasi, zlib (pako answers
+ * it), zstd. `acorn` is answered where the process object is made, from the parser's own version.
+ */

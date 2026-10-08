@@ -29,6 +29,7 @@ import {
 } from './buffer-and-streams';
 import { internalBootstrapRealm, internalUrl, internalEncoding } from './modules';
 import { internalAmaro } from './amaro';
+import { locksOf } from './locks';
 
 /** Built on the first ask, for the reason `./binding/index.ts` gives. */
 // eslint-disable-next-line no-var, vars-on-top
@@ -37,6 +38,11 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   if (name === 'internal/crypto/keys') return () => internalCryptoKeys;
   if (name === 'internal/deps/acorn/acorn/dist/acorn') return () => acorn;
   if (name === 'internal/modules/helpers') return () => ({
+    // Node's: a file URL as its path, anything else as it is (lib/internal/modules/helpers.js).
+    urlToFilename(url: unknown): unknown {
+      if (typeof url !== 'string' || !url.startsWith('file://')) return url;
+      try { return decodeURIComponent(new URL(url).pathname); } catch { return url; }
+    },
     getRequireStack(parent: any): string[] {
       const stack: string[] = [];
       const seen = new Set<object>();
@@ -47,6 +53,7 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
     },
   });
   if (require && name === 'internal/webstreams/adapters') return () => createWebStreamsAdapters(require);
+  if (name === 'internal/locks') return () => ({ locks: locksOf(process) });
   if (process && name === 'internal/process/per_thread') return () => ({
     platform: process.platform, arch: process.arch, version: process.version,
   });

@@ -16,6 +16,94 @@ let activeSince = 0;
 let depth = 0;
 let continuation = false;
 const enqueue = globalThis.queueMicrotask.bind(globalThis);
+const ticks: Array<() => void> = [];
+let tickDrainScheduled = false;
+let drainingTicks = false;
+let callbackDepth = 0;
+
+/**
+ * Node drains its FIFO, including ticks queued by ticks, before returning to
+ * promises. One browser microtask per tick let a promise continuation run
+ * between a stream's destroy tick and its nested close tick.
+ */
+export function queueGuestNextTick(callback: () => void): void {
+  ticks.push(callback);
+  scheduleTickDrain();
+}
+
+function scheduleTickDrain(): void {
+  if (tickDrainScheduled || drainingTicks || ticks.length === 0) return;
+  tickDrainScheduled = true;
+  // Native-await continuations have no engine callback scope. Their ticks
+  // still get one drain, rather than one microtask for each queued tick.
+  enqueue(() => {
+    tickDrainScheduled = false;
+    withGuestExecution(drainGuestNextTicks);
+  });
+}
+
+export function drainGuestNextTicks(): void {
+  if (drainingTicks) return;
+  drainingTicks = true;
+  let taken = 0;
+  try {
+    while (taken < ticks.length) ticks[taken++]();
+  } finally {
+    ticks.splice(0, taken);
+    drainingTicks = false;
+    scheduleTickDrain();
+  }
+}
+
+/**
+ * Node's outermost successful MakeCallback drains ticks before returning. Outermost means entered from the loop
+ * with no guest code on the stack. A callback a binding makes while guest code is still running (a stream handed to
+ * `net.Socket` that already has its end to report, inside `child_process.spawn`) is not outermost in Node: its
+ * scope depth is above one there, and the ticks wait for the code that queued them to return. Counting only the
+ * callbacks, this took such a call for the outermost and drained the queue in the middle of the caller: a spawn of
+ * a program that does not exist queues its `error` for the next tick, and it was emitted before `spawn()` had
+ * returned, so before any listener could be attached, and was uncaught (Node's own test-child-process-spawn-error,
+ * -exec-error, -promisified and -spawn-windows-batch-file).
+ *
+ * Guest code is not always inside a bracket the engine made: a listener on one of the realm's own event targets (an
+ * AbortSignal's timeout, a message port, a BroadcastChannel) is entered by the realm with the depth at zero. What
+ * such code leaves behind that a bracket does not is its ticks: a tick already queued when the callback is entered
+ * was queued by code that may still be on the stack, and one queued by code that has returned is drained by the
+ * microtask its queueing scheduled. So a callback drains only a queue that was empty when it was entered: its own
+ * ticks, and theirs. (The same spawn from an `abort` listener emitted its `error` before the listener was there.)
+ */
+export function withGuestCallback<T>(fn: () => T): T {
+  const fromTheLoop = depth === 0 && !continuation && ticks.length === 0;
+  return withGuestExecution(() => {
+    callbackDepth++;
+    try {
+      const result = fn();
+      if (fromTheLoop && callbackDepth === 1) drainGuestNextTicks();
+      return result;
+    } finally { callbackDepth--; }
+  });
+}
+
+/**
+ * The engine's own deferred work on a binding's behalf: a connect answered through its request, bytes that arrived
+ * handed to `onread`, a write's completion. libuv does each from the loop, with no program code on the stack, and
+ * the callback it makes is outermost. The realm's `queueMicrotask` brackets every callback it is given as guest
+ * execution (async_hooks.ts), which is right for a program's own callback and wrong for these: inside that bracket
+ * the callback a binding then makes took the engine's bracket for program code still running, and left the ticks it
+ * queued undrained until some later microtask. An HTTP request dumped by its response (`res.end()` with the body
+ * still arriving) resumes on such a tick; the socket's end, delivered by the same kind of task, came first, and a
+ * `data` listener the program added on `resume` was never called (Node's test-http-dump-req-when-res-ends).
+ *
+ * A task queued here is run by the realm's wrapper with no bracket of its own; the callback it makes brackets itself.
+ */
+const bindingTasks = new WeakSet<object>();
+export function queueBindingTask(task: () => void): void {
+  bindingTasks.add(task);
+  globalThis.queueMicrotask(task);
+}
+export function isBindingTask(task: unknown): boolean {
+  return typeof task === 'function' && bindingTasks.has(task);
+}
 
 export function startGuestLoop(): void {
   if (clock) return;

@@ -24,4 +24,4 @@ try {
     else save({ module: args.module, error: { message: result.stderr || `guest exited ${result.exitCode} before recording exports` } });
   }
   hostExit(0);
-} catch (error) { save({ module: args.module, error: { code: error.code, message: error.message } }); hostExit(0); }
+} catch (error) { save({ module: args.module, error: { code: error.code, message: error.message }, ...(args.mode === 'engine' ? { engineFailed: true } : {}) }); hostExit(0); }

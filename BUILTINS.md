@@ -72,14 +72,16 @@ The library now comes from Node v24.21.0 (ADR-0003). Existing suite numbers abov
 | `timers` | Node's timer wheel over libuv's loop. The engine's timers are the realm's, counted per run by the run's own loop, which is what decides when a run is idle. |
 | `string_decoder` | Node's current file needs a stateful binding -- the carry-over bytes of a half-read code point, held across calls in C++. The realm's `TextDecoder` does not expose that state, so Node's older pure-JavaScript file is what runs. |
 | `url` | Node's `url.js` reaches `internal/url`, which is the C++ URL parser's own state machine. The realm's `URL` answers the WHATWG API but not that binding's contract. |
-| `crypto` | Node's is OpenSSL; synchronous hashing has no WebCrypto twin, so the engine binds `@noble/hashes` and `sha.js` |
+| `crypto` | Node's is OpenSSL; synchronous hashing has no WebCrypto twin, so the engine binds `@noble/hashes` and `sha.js`; synchronous elliptic-curve keys and signatures (P-256, P-384, P-521, Ed25519) have none either, so it binds `@noble/curves` 2.3.0, the release that shares that `@noble/hashes`. Every export of Node's is accounted in `src/shims/crypto-exports.ts`. Reading old run logs: before 9c644ae `createVerify(...).verify(key, signature, 'base64')` decoded the signature wrongly (every byte above 0x7f became two), so no base64-encoded signature ever verified here, and `createPrivateKey`/`createPublicKey` accepted any bytes as a key, which made jsonwebtoken refuse an HS256 secret |
 | `tls` | the page's TLS relay is the transport (Article 4); on the loopback a TLS server listens as a net server and a TLS connect pairs with it, with no wire to protect |
 | `dns` | IP literals and local loopback; the World owns routed names. No external resolver or DNS record service. |
 | `vm` | V8 contexts; the engine's guest-global scoping is the tab's `vm` |
 | `worker_threads` | Node’s ports are native. Runtime guests use the real host or installed thread transport with per-process listener/ref/unref/close lifetime (ADR-0004); unsupported worker execution still refuses |
 | `module` | the loader itself, entangled with the engine's transforms and its ESM lowering. Its customization hooks are Node's own file, above. |
 | `process` | the bootstrap, one per run |
-| `dgram`, `cluster`, `http2`, `inspector`, `v8`, `trace_events`, `repl` | refusing stubs: no UDP, no fork-and-share, no nghttp2, no inspector in a tab. Each refusal names why at its site. |
+| `dgram`, `cluster`, `http2`, `inspector`, `v8`, `trace_events` | refusing stubs: no UDP, no fork-and-share, no nghttp2, no inspector in a tab. Each refusal names why at its site. |
+| `repl` | a stand-in (`src/shims/repl.ts`): Node 24's exported names, with `Recoverable`, `writer` and the mode symbols as Node has them, so a program that loads `repl` for a name starts (ts-node does on every run). `start()` and `new REPLServer()` refuse by name. Node's `lib/repl.js` is not carried: it requires Node's own CommonJS and ESM loaders, `internal/vm` over the `contextify` binding, `internal/repl/await`, `internal/process/execution` and `domain`, about a hundred internal files the engine does not have, the loaders among them. |
+| `sys` | Node's own meaning: the `util` module itself (`lib/sys.js`), without the DEP0025 warning. |
 | `esbuild`, `rollup` | not builtins: the engine's doors to the bundlers' own wasm builds |
 
 ## What used to be here

@@ -14,7 +14,7 @@
 export { restoreHostGlobals, guestRealmInstalled } from './host-globals';
 export { VirtualFS } from './virtual-fs';
 export type { FSNode, MountedTree, Stats, FSWatcher, WatchListener, WatchEventType } from './virtual-fs';
-export { Runtime, execute, prepareModuleForImage, preparedModuleKey, PREPARED_MODULES_DIR } from './runtime';
+export { Runtime, execute, prepareModuleForImage, preparedModuleKey, preparedModuleKeyOf, preparedModuleKind, isPreparedModuleKey, PREPARED_MODULES_DIR, PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT } from './runtime';
 export type { Module, RuntimeOptions, RequireFunction } from './runtime';
 export { createRuntime, WorkerRuntime } from './create-runtime';
 export type { IRuntime, IExecuteResult, CreateRuntimeOptions, IRuntimeOptions, VFSSnapshot } from './runtime-interface';
@@ -73,6 +73,7 @@ export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialPro
 import type { ProcessRegistry } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
+export { installHostNames } from './shims/dns';
 export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport, NativeStreamHandleView } from './native-stream-owner';
 
 export interface RunResult {

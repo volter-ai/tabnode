@@ -168,4 +168,6 @@ const report = { nodeVersion: manifest.nodeVersion, sourceFiles: js.map((path) =
   staleClassifications: Object.keys(classifications.entries).filter((key) => !entries.has(key)) };
 fs.mkdirSync(dirname(output), { recursive: true });
 fs.writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
-console.log(`Native surface: ${inventory.length} entries, ${report.unresolved.length} unresolved reads, ${inventory.filter((entry) => entry.status === 'UNCLASSIFIED').length} unclassified entries`);
+// This is the inventory, not a verdict: what Node's lib asks of its bindings. Which of them this engine answers is
+// scripts/native-probe.mjs's table, made from this file.
+console.log(`Native surface: an inventory of ${inventory.length} members Node's lib asks of its bindings, and ${report.unresolved.length} computed reads it could not name; native-probe.mjs says which are answered`);

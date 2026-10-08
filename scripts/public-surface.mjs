@@ -72,6 +72,12 @@ for (const [index, module] of modules.entries()) {
   // cannot contaminate its real Node reference.
   const expected = await capture('node', module, index);
   const actual = await capture('engine', module, index);
+  // An engine that did not load reads as every member of every module missing, printed as confidently as a real
+  // count (53,734 "differences" from a pack unpacked without its dependencies). That is no measurement: say so and stop.
+  if (actual.engineFailed) {
+    console.error(`Public surface: the engine at ${engine} did not load, so nothing was measured: ${actual.error?.message ?? 'no reason given'}`);
+    process.exit(1);
+  }
   compare(module, expected, actual);
 }
 const report = { nodeVersion: manifest.nodeVersion, modules, members, differences, unresolved };

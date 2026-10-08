@@ -22,12 +22,14 @@ import {
   LibuvStreamWrap, WriteWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
 } from './stream_wrap';
 import { Pipe, constants as pipeConstants } from './pipe_wrap';
-import { UV_ENOENT, UV_ESRCH } from './uv';
+import { nativeStreamFor } from '../../native-stream-binding';
+import { UV_EBADF, UV_ENOENT, UV_ESRCH } from './uv';
 import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
   ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
 } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
+import { withGuestCallback, queueBindingTask } from '../../guest-loop';
 import { handleForFd } from './fds';
 import { descriptorWriter, type DescriptorWriter } from './fs';
 import { TTY, type TerminalState } from './tty_wrap';
@@ -125,6 +127,11 @@ export interface StartedRun {
   writeStdin(bytes: Uint8Array): void | Promise<void>;
   /** The parent closed the child's fd 0. */
   endStdin(): void;
+  /**
+   * The parent's handle on this child was ref'd or unref'd. A child another runs (a host's program) is waited for by
+   * that host on the parent's behalf, and only while the handle is ref'd: `unref()` is how a program stops waiting.
+   */
+  setRef?(held: boolean): void;
 }
 
 /**
@@ -190,8 +197,13 @@ function spawningDirectory(token: ProcessToken | null): string | undefined {
   try { return realm.cwd(); } catch { return undefined; }
 }
 
-/** Where an `inherit` entry's bytes go: the spawning program's own stream. */
-function inheritedWriter(fd: number, token: ProcessToken | null): DescriptorWriter | null {
+/**
+ * Where an `inherit` entry's bytes go: the spawning program's own stream. An entry that names a descriptor by
+ * number is the same thing said another way, and `stdio: 'inherit'` is said that way: Node's
+ * `stdioStringToArray` turns the string into `[0, 1, 2]`, which `getValidStdio` hands on as `{ type: 'fd' }`.
+ * The synchronous binding asks here too, so a child's bytes go where they go whichever call started it.
+ */
+export function inheritedWriter(fd: number, token: ProcessToken | null): DescriptorWriter | null {
   // a descriptor of the parent's own (a log file it opened) is written as the file
   if (fd !== 1 && fd !== 2) return descriptorWriter(fd);
   // Inherit the descriptor's original sink, not a guest replacement of
@@ -233,6 +245,8 @@ export class Process implements OwnedHandle {
   private terminalEnds = new Map<number, TTY>();
   /** Writers holding their own reference to a parent's description (fd stdio), released at the child's end. */
   private heldDescriptions: DescriptorWriter[] = [];
+  /** The file this process was spawned from, for the instrument below. */
+  private spawned = '';
   private readonly asyncId = nextAsyncId++;
 
   constructor() {
@@ -245,10 +259,12 @@ export class Process implements OwnedHandle {
 
   ref(): void {
     refHandle(this);
+    this.run?.setRef?.(true);
   }
 
   unref(): void {
     unrefHandle(this);
+    this.run?.setRef?.(false);
   }
 
   hasRef(): boolean {
@@ -271,6 +287,7 @@ export class Process implements OwnedHandle {
     if (!runner) return UV_ENOENT;
     const env = environmentOf(options.envPairs);
     this.stdio = options.stdio ?? [];
+    this.spawned = options.file;
 
     const request: RunRequest = {
       owner: ownerOfInstance(this),
@@ -339,6 +356,12 @@ export class Process implements OwnedHandle {
         }
       } else if (entry.type === 'inherit' || entry.type === 'fd') {
         const inherited = inheritedWriter(entry.fd ?? index, ownerOf(this));
+        // A descriptor the caller names and does not hold fails the spawn (`spawn EBADF`), as libuv's does.
+        if (inherited === null && (entry.fd ?? index) > 2) {
+          for (const held of this.heldDescriptions.splice(0)) held.release?.();
+          this.closeFarEnds();
+          return UV_EBADF;
+        }
         if (inherited?.release) this.heldDescriptions.push(inherited);
         if (index === 1) request.stdout = inherited;
         else request.stderr = inherited;
@@ -351,6 +374,8 @@ export class Process implements OwnedHandle {
     }
 
     this.run = runner.start(request);
+    // A handle unref'd before its child started is not waited for either.
+    if (!handleHasRef(this)) this.run.setRef?.(false);
     // The number the parent reads off the handle is the child's own
     // `process.pid`, made at its fork, as it is in Node.
     this.pid = this.run.pid;
@@ -374,7 +399,7 @@ export class Process implements OwnedHandle {
       this.closed = true;
       releaseHandle(this);
     }
-    if (callback) queueMicrotask(callback);
+    if (callback) queueBindingTask(() => withGuestCallback(callback));
   }
 
   /**
@@ -447,6 +472,31 @@ export class Process implements OwnedHandle {
     this.closeFarEnds();
     this.run = null;
     invokeOwned(this, 'onexit', code, signal);
+    this.sayLateClose();
+  }
+
+  /**
+   * An instrument. Node emits a child's `close` once it has exited and each of its piped stdio streams has closed
+   * (lib/internal/child_process.js `maybeClose`: `_closesGot === _closesNeeded`), which here follows the far ends
+   * closing above. A parent's pipe that has still not read end-of-file a moment after the exit is what keeps
+   * `close` back (a World's `up` waited 507 ms on a fallback timer for it, Cal run 49); this says which pipe, and
+   * what still holds its other end. It changes nothing.
+   */
+  private sayLateClose(): void {
+    const file = this.spawned;
+    const entries = this.stdio;
+    const timer = setTimeout(() => {
+      const late: unknown[] = [];
+      entries.forEach((entry, index) => {
+        if (index === 0 || (entry.type !== 'pipe' && entry.type !== 'overlapped') || !entry.handle) return;
+        const handle = entry.handle as unknown as { closed?: boolean; reading?: boolean; eofDelivered?: boolean; streamEndpoint?: { eof?: boolean; inbound?: unknown[]; peer?: { handles?: { size: number } } | null } };
+        if (handle.closed || handle.eofDelivered) return;
+        late.push({ fd: index, native: nativeStreamFor(entry.handle as never) !== undefined, reading: handle.reading === true, endOfFileQueued: handle.streamEndpoint?.eof === true,
+          unread: handle.streamEndpoint?.inbound?.length ?? null, otherEndHeldBy: handle.streamEndpoint?.peer ? handle.streamEndpoint.peer.handles?.size ?? null : 0 });
+      });
+      if (late.length > 0) console.log('[boot-trace]', JSON.stringify({ event: 'child-close-late', at: Date.now(), file, stdio: entries.map((entry) => entry.type), late }));
+    }, 100);
+    (timer as { unref?: () => void }).unref?.();
   }
 }
 

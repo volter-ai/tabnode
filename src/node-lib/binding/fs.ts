@@ -37,7 +37,7 @@ const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
 import { allocateFd, handleForFd } from './fds';
 import { treeDescriptorsOf, type TreeDescriptors, type TreeDescriptorStats } from '../../tree-descriptors';
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
-import { errname } from './uv';
+import { errname, UV_ENOENT } from './uv';
 
 /**
  * An errno error, as the filesystem makes one. The tree's own maker knows the
@@ -701,8 +701,11 @@ class FSEvent {
  * `StatWatcher`: what `fs.watchFile` is. It polls, as libuv's does, and the
  * interval is the one the program asked for.
  */
+/** The fields of one stat as the binding passes them (Node's kFsStatsFieldsNumber, 18 in v24.21.0). */
+const FS_STATS_FIELDS = 18;
 class StatWatcher {
-  onchange: ((current: Float64Array | BigInt64Array, previous: Float64Array | BigInt64Array) => void) | null = null;
+  /** Node's callback: the poll's status (0, or libuv's error for a file that is not there) and ONE array, the new stat's fields then the old one's. */
+  onchange: ((status: number, stats: Float64Array | BigInt64Array) => void) | null = null;
   #timer: ReturnType<typeof setInterval> | null = null;
   #previous: Float64Array | BigInt64Array | null = null;
   constructor(public bigint = false) {}
@@ -710,9 +713,10 @@ class StatWatcher {
   start(path: unknown, interval = 5007): number {
     const name = asPath(path);
     const tree = vfs();
+    let status = 0;
     const read = (): Float64Array | BigInt64Array => {
-      try { return statArray(tree.statSync(name), this.bigint); }
-      catch { return this.bigint ? new BigInt64Array(18) : new Float64Array(18); }
+      try { const values = statArray(tree.statSync(name), this.bigint); status = 0; return values; }
+      catch { status = UV_ENOENT; return this.bigint ? new BigInt64Array(FS_STATS_FIELDS) : new Float64Array(FS_STATS_FIELDS); }
     };
     this.#previous = read();
     this.#timer = setInterval(() => {
@@ -722,7 +726,15 @@ class StatWatcher {
       for (let index = 0; index < current.length; index += 1) {
         if (current[index] !== previous[index]) { changed = true; break; }
       }
-      if (changed) { this.#previous = current; this.onchange?.(current, previous); }
+      if (!changed) return;
+      this.#previous = current;
+      // lib/internal/fs/watchers.js `onchange(newStatus, stats)` reads the new stat at 0 and the old one at
+      // kFsStatsFieldsNumber of the same array. Handed two arrays, it took the old stat for both, so a
+      // `fs.watchFile` listener was called with `curr` equal to `prev` and saw no change in either.
+      const both = this.bigint ? new BigInt64Array(2 * FS_STATS_FIELDS) : new Float64Array(2 * FS_STATS_FIELDS);
+      (both as Float64Array).set(current as Float64Array, 0);
+      (both as Float64Array).set(previous as Float64Array, FS_STATS_FIELDS);
+      this.onchange?.(status, both);
     }, interval);
     (this.#timer as unknown as { unref?: () => void }).unref?.();
     return 0;
@@ -764,6 +776,7 @@ const fsBinding = {
   FSReqCallback,
   kUsePromises,
   StatWatcher,
+  kFsStatsFieldsNumber: FS_STATS_FIELDS,
 
   /** `fs.promises.open`: the same open, answered as a promise with a handle. */
   openFileHandle(path: unknown, flags: number, mode: number, usePromises?: unknown): Promise<FileHandle> | FileHandle {
@@ -1060,11 +1073,11 @@ const fsBinding = {
    * a disk: a block size, and a count no program can exhaust.
    */
   statfs(_path: unknown, bigint: boolean, req?: FSReq): Float64Array | BigInt64Array | undefined {
-    // The order Node's `getStatFsFromBinding` reads: type, bsize, blocks,
-    // bfree, bavail, files, ffree. `fs.statfs` and `fs.promises.statfs` pass
-    // their flavour here like every other call, and it was read as nothing.
+    // The order Node's `getStatFsFromBinding` reads (v24.21.0, eight fields): type, bsize, frsize, blocks,
+    // bfree, bavail, files, ffree. Seven were handed, without frsize, so every field after bsize was read one
+    // place early: frsize as the block count, bavail as the file count, ffree as undefined.
     return answer(req, () => {
-      const values = [0, 4096, 2 ** 31, 2 ** 31, 2 ** 31, 2 ** 20, 2 ** 20];
+      const values = [0, 4096, 4096, 2 ** 31, 2 ** 31, 2 ** 31, 2 ** 20, 2 ** 20];
       return bigint ? BigInt64Array.from(values.map((value) => BigInt(value))) : Float64Array.from(values);
     });
   },

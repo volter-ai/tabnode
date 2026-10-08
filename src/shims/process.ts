@@ -4,6 +4,7 @@
  * Process is an EventEmitter in Node.js
  */
 
+import { queueGuestNextTick } from '../guest-loop';
 import { EventEmitter } from '../node-lib/events-module';
 import type { EventListener } from '../node-lib/events-module';
 import { Readable } from '../node-lib/stream-module';
@@ -11,8 +12,12 @@ import { loadNodeLibFor } from '../node-lib/load';
 import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
 import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, type ProcessToken } from '../process-tokens';
-import { NODE_LTS_VERSION, nodeVersions } from '../node-lib/node-versions';
-import { freemem as osFreemem } from './os';
+import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
+import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
+import { freemem as osFreemem, userInfo as osUserInfo } from './os';
+import { version as acornVersion } from 'acorn';
+import { ERR_INVALID_ARG_TYPE } from '../node-internals';
+import { setSourceMapsSupportOf, sourceMapsSupportOf } from '../node-lib/internals/events-util';
 
 export interface ProcessEnv {
   [key: string]: string | undefined;
@@ -172,8 +177,17 @@ export interface Process {
   cwd: () => string;
   chdir: (directory: string) => void;
   platform: string;
+  report: { getReport(): Record<string, unknown>; [name: string]: unknown };
   version: string;
-  versions: { node: string; v8: string; uv: string; webcontainer?: string; openssl?: string };
+  versions: { node: string; v8: string; uv: string; webcontainer?: string; openssl?: string; acorn?: string };
+  release?: { name: string; lts?: string; sourceUrl: string; headersUrl: string };
+  getuid?: () => number;
+  geteuid?: () => number;
+  getgid?: () => number;
+  getegid?: () => number;
+  getgroups?: () => number[];
+  setSourceMapsEnabled?: (enabled: unknown) => void;
+  readonly sourceMapsEnabled?: boolean;
   arch?: string;
   argv: string[];
   argv0: string;
@@ -519,6 +533,24 @@ export function __substrateExitCode(code: unknown): number {
   return Number.isNaN(asNumber) ? 0 : asNumber;
 }
 
+/**
+ * `process.memoryUsage()` from what the realm can measure. A process is one realm and the realm's JavaScript heap is
+ * the process's: where the realm reports it (`performance.memory`, Chromium; exact when the page is cross-origin
+ * isolated, which a page running this engine's threads is), `heapUsed` and `heapTotal` are those readings.
+ * Nothing in a realm reports resident memory, memory outside the heap or ArrayBuffer bytes: `rss` is then the heap's
+ * total, a floor and not a measurement (a process's resident size is never less than its heap), and `external` and
+ * `arrayBuffers` are 0, meaning not counted. A realm with no heap reading at all (Firefox, Safari) answers the fixed
+ * figures this function always gave, which are a shape for callers and measure nothing.
+ */
+function measuredMemory(): { rss: number; heapTotal: number; heapUsed: number; external: number; arrayBuffers: number } {
+  const heap = (performance as unknown as { memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number } }).memory;
+  const used = heap?.usedJSHeapSize, total = heap?.totalJSHeapSize;
+  if (typeof used === 'number' && typeof total === 'number' && total > 0) {
+    return { rss: total, heapTotal: total, heapUsed: used, external: 0, arrayBuffers: 0 };
+  }
+  return { rss: 50 * 1024 * 1024, heapTotal: 30 * 1024 * 1024, heapUsed: 20 * 1024 * 1024, external: 1 * 1024 * 1024, arrayBuffers: 0 };
+}
+
 export function createProcess(options?: {
   cwd?: string;
   env?: ProcessEnv;
@@ -581,6 +613,13 @@ export function createProcess(options?: {
 
   // Create an EventEmitter for process events
   const emitter = new EventEmitter();
+  // Once the process is ending, nothing it queued, before or from an `exit` listener, runs afterwards. Node exits
+  // when the listeners return; here the realm goes on, so a queued tick would otherwise run in a process that has
+  // already said its last (Node's own test-next-tick queues one from `exit` and requires that it never be called).
+  // The mark is set where the engine ends the process and nowhere else: `exit()` below, and the launcher through
+  // `__substrateProcessEnding`. A program that emits 'exit' itself has called its own listeners and is still running,
+  // as in Node; its ticks run.
+  let exiting = false;
   const startTime = Date.now();
   // The guest's fd 0: the bytes the runner put there, then the end of them.
   // Nothing more can arrive unless the runner says it holds the input open.
@@ -600,19 +639,74 @@ export function createProcess(options?: {
       return currentDir;
     },
 
-    chdir(directory: string) {
-      console.log('[process] chdir called:', directory, 'from:', currentDir);
+    chdir(this: unknown, directory: string) {
       if (!directory.startsWith('/')) {
         directory = currentDir + '/' + directory;
       }
+      // A run whose tree is its kernel process's has its working directory there (chdir(2)): the kernel resolves
+      // and checks the path, a child forked afterwards is born in it, and its own answer is what `cwd()` then says.
+      // A tree with no process of its own keeps the directory here, as before.
+      const tree = (this as Record<symbol, unknown> | null | undefined)?.[Symbol.for('tabnode.run.vfs')] as { chdir?: (path: string) => void; currentWorkingDirectory?: () => string } | undefined;
+      if (tree && typeof tree.chdir === 'function') {
+        tree.chdir(directory);
+        currentDir = typeof tree.currentWorkingDirectory === 'function' ? tree.currentWorkingDirectory() : directory;
+        return;
+      }
       currentDir = directory;
-      console.log('[process] chdir result:', currentDir);
     },
 
     platform: 'linux', // Pretend to be linux for better compatibility
     version: 'v' + __browserRuntimeNodeVersion(env),
-    versions: nodeVersions(__browserRuntimeNodeVersion(env)),
+    // `acorn` is the parser this engine bundles, by its own version; the library's internals do not read it.
+    versions: { ...nodeVersions(__browserRuntimeNodeVersion(env)), acorn: acornVersion },
+    // What a program reads to learn it is Node at all: lib0, y-protocols, the `ai` SDK, sharp and OpenTelemetry
+    // test `process.release.name`, and with no `release` each took its not-Node branch without a word.
+    release: nodeRelease(__browserRuntimeNodeVersion(env)),
+    // The account every process of the tab runs as: the kernel's (uid and gid 1000, one supplementary group, its
+    // own), which is what `os.userInfo()` answers here too. One function is asked, so the two cannot disagree.
+    getuid: (): number => osUserInfo().uid,
+    geteuid: (): number => osUserInfo().uid,
+    getgid: (): number => osUserInfo().gid,
+    getegid: (): number => osUserInfo().gid,
+    getgroups: (): number[] => [osUserInfo().gid],
+    // Node's switch for source maps (lib/internal/process/per_thread and the source-map cache): one state, read
+    // here and through `module.getSourceMapsSupport()`. Turning it on with this call covers every kind of code,
+    // as Node's does. It remaps nothing here (see the cache's note).
+    setSourceMapsEnabled(enabled: unknown): void {
+      if (typeof enabled !== 'boolean') throw new ERR_INVALID_ARG_TYPE('enabled', 'boolean', enabled);
+      setSourceMapsSupportOf(this, enabled, { nodeModules: enabled, generatedCode: enabled });
+    },
+    get sourceMapsEnabled(): boolean { return sourceMapsSupportOf(this).enabled; },
     arch: 'x64',
+
+    // `process.report.getReport()`: what a program reads to learn the C library it runs on (detect-libc, and
+    // through it sharp, node-gyp-build and every package that picks a prebuilt binary by libc family). Node fills
+    // `header.glibcVersionRuntime` from the libc it is linked to and leaves it out on musl. This process is linked
+    // to none, so the answer is its image's: the base image's own `/usr/bin/ldd` in this process's tree, the file
+    // a Linux program reads for the same question. No such file, or one that is not glibc's: the field is absent,
+    // as on musl. Nothing here names a family the tree does not state.
+    report: {
+      compact: false, directory: '', filename: '', excludeNetwork: false,
+      reportOnFatalError: false, reportOnSignal: false, reportOnUncaughtException: false, signal: 'SIGUSR2',
+      getReport(): Record<string, unknown> {
+        let glibc: string | undefined;
+        try {
+          const tree = (proc as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.run.vfs')] as { readFileSync?: (path: string, encoding: 'utf8') => string } | undefined;
+          const ldd = tree?.readFileSync?.('/usr/bin/ldd', 'utf8');
+          if (ldd !== undefined && ldd.includes('GNU C Library')) glibc = /LIBC[a-z0-9 \-).]*?(\d+\.\d+)/iu.exec(ldd)?.[1];
+        } catch { /* a tree with no ldd states no libc */ }
+        return {
+          header: {
+            reportVersion: 5, event: 'JavaScript API', trigger: 'GetReport', filename: null,
+            nodejsVersion: proc.version, ...(glibc ? { glibcVersionRuntime: glibc, glibcVersionCompiler: glibc } : {}),
+            wordSize: 64, arch: proc.arch, platform: proc.platform, componentVersions: { ...proc.versions },
+            cwd: proc.cwd(), commandLine: [...proc.argv], processId: proc.pid,
+          },
+          javascriptStack: { message: 'No stack.', stack: ['Unavailable.'] },
+          sharedObjects: [],
+        };
+      },
+    },
 
     argv: ['node', '/index.js'],
     argv0: 'node',
@@ -637,7 +731,9 @@ export function createProcess(options?: {
       __substrateCaptureCallback = callback;
     },
     hasUncaughtExceptionCaptureCallback() { return __substrateCaptureCallback !== null; },
-    features: { debug: false, inspector: false, tls: false, cached_builtins: true, ipv6: true, require_module: true, tls_alpn: false, tls_ocsp: false, tls_sni: false, typescript: false, uvwasi: true },
+    features: { debug: false, inspector: false, tls: false, cached_builtins: true, ipv6: true, require_module: true, tls_alpn: false, tls_ocsp: false, tls_sni: false, uvwasi: true,
+      // By the line the guest was told it is: Node 20 has no such property (node-line.ts).
+      ...(featuresTypescriptPresent(nodeLineOf(`v${__browserRuntimeNodeVersion(env)}`)) ? { typescript: 'strip' } : {}) },
     // The tab's tree carries no mode mask; Node's own default is what a
     // process that has not set one reports, and setting one answers the mask
     // it replaced, as Node's does.
@@ -655,7 +751,9 @@ export function createProcess(options?: {
 
     exit(code: number | string | null | undefined = 0) {
       code = __substrateExitCode(code);
+      exiting = true;
       emitter.emit('exit', code);
+      (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
       if (options?.onExit) {
         options.onExit(code);
       }
@@ -737,7 +835,8 @@ export function createProcess(options?: {
       // A throw from a tick callback is this process's uncaught exception in
       // Node. Out of a microtask it would be the realm's instead, and in the
       // tab the worker's, which the substrate takes for a dead host.
-      queueMicrotask(() => {
+      queueGuestNextTick(() => {
+        if (exiting) return;
         try { run(...args); }
         catch (error) { if (!__reportUncaughtException(proc, error)) throw error; }
       });
@@ -821,16 +920,8 @@ export function createProcess(options?: {
       }
     ),
 
-    memoryUsage() {
-      // Return mock values since we can't access real memory in browser
-      return {
-        rss: 50 * 1024 * 1024,
-        heapTotal: 30 * 1024 * 1024,
-        heapUsed: 20 * 1024 * 1024,
-        external: 1 * 1024 * 1024,
-        arrayBuffers: 0,
-      };
-    },
+    // Node's `process.memoryUsage` is a function with a function on it, `rss()`, for the one number alone.
+    memoryUsage: Object.assign(function memoryUsage() { return measuredMemory(); }, { rss: (): number => measuredMemory().rss }),
 
     /**
      * Node's `process.constrainedMemory`, which reports a cgroup's limit on
@@ -942,8 +1033,14 @@ export function createProcess(options?: {
     },
   };
 
+  processEndings.set(proc, () => { exiting = true; });
   return proc;
 }
+
+/** Each process's own mark that it is ending, kept here and not on the process, where a guest could reach it. */
+const processEndings = new WeakMap<object, () => void>();
+/** The launcher says a process is ending, before it emits that process's `exit`. */
+export function __substrateProcessEnding(process: object): void { processEndings.get(process)?.(); }
 
 // There is no default process: a process is made for a run, by the `node`
 // command, and making one when this module is evaluated built the guest's

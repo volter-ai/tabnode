@@ -79,7 +79,10 @@ var __priorities = new Map<number, number>();
 
 export const osBinding = {
   /** Node's `os.type()`, `release()` and `version()`, in that order. */
-  getOSInformation: (): string[] => [osShim.type(), osShim.release(), osShim.version()],
+  // The order lib/os.js reads: sysname, version, release, machine (`const { 0: type, 1: version, 2: release,
+  // 3: machine } = getOSInformation()`). Handed type, release, version, a guest's os.release() was the version
+  // string, os.version() the release, and os.machine() undefined.
+  getOSInformation: (): string[] => [osShim.type(), osShim.version(), osShim.release(), osShim.machine()],
   getHostname: (): string => osShim.hostname(),
   /**
    * Node's `os.homedir()` is libuv's: `HOME` when the environment sets it,
@@ -118,13 +121,16 @@ export const osBinding = {
     const flat: Array<string | number | boolean> = [];
     for (const [name, addresses] of Object.entries(osShim.networkInterfaces())) {
       for (const address of addresses ?? []) {
-        flat.push(name, address.address, address.netmask, address.family === 'IPv6' ? 6 : 4,
-          address.mac, address.internal, (address as { scopeid?: number }).scopeid ?? 0);
+        // lib/os.js reads the family as its name ('IPv4', 'IPv6') and a scope id of -1 as "none": handed 4 and 0,
+        // every interface read `family: 4, scopeid: 0`, and a program asking for `family === 'IPv4'` found none.
+        flat.push(name, address.address, address.netmask, address.family === 'IPv6' ? 'IPv6' : 'IPv4',
+          address.mac, address.internal, address.family === 'IPv6' ? (address as { scopeid?: number }).scopeid ?? 0 : -1);
       }
     }
     return flat;
   },
-  getUserInfo: (): Record<string, unknown> => osShim.userInfo() as unknown as Record<string, unknown>,
+  // In the order Node's own object has its keys.
+  getUserInfo: (): Record<string, unknown> => { const user = osShim.userInfo(); return { uid: user.uid, gid: user.gid, username: user.username, homedir: user.homedir, shell: user.shell }; },
   /**
    * A process's niceness. A tab has no scheduler to hand it to, but the pair
    * still has to agree: a program that sets a priority and reads it back must

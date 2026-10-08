@@ -54,6 +54,9 @@ export function __substrateShellLine(file: string, argv: string[]): string | nul
   if (program !== 'sh' && program !== 'bash' && program !== 'dash' && program !== 'zsh') return null;
   const dashC = argv.indexOf('-c');
   if (dashC < 1 || typeof argv[dashC + 1] !== 'string') return null;
+  // Words after the line are the shell's `$0` and positional parameters (`sh -c 'cd "$1" && …' name dir`). The
+  // line alone does not say them, so such an invocation is not "its own line": it goes as its list, whole.
+  if (argv.length > dashC + 2) return null;
   return argv[dashC + 1] as string;
 }
 
@@ -65,6 +68,19 @@ export function __substrateShellLine(file: string, argv: string[]): string | nul
 let resolveProgram: (file: string, cwd?: string) => string = (file) => file;
 export function setProgramResolver(resolve: (file: string, cwd?: string) => string): void {
   resolveProgram = resolve;
+}
+
+/**
+ * Whether a published host, not the engine, runs a program a guest names: the engine's process model answers once it
+ * knows the filesystem and the host (`src/shims/child_process.ts`). A synchronous child asks the same question an
+ * asynchronous one does, so a program is the host's by one rule whichever way it is spawned.
+ */
+let hostRuns: (file: string, cwd: string | undefined, env: Record<string, string>) => boolean = () => false;
+export function setHostRunsProgram(answer: (file: string, cwd: string | undefined, env: Record<string, string>) => boolean): void {
+  hostRuns = answer;
+}
+export function __substrateHostRuns(file: string, cwd: string | undefined, env: Record<string, string>): boolean {
+  return hostRuns(file, cwd, env);
 }
 
 /**
@@ -86,4 +102,15 @@ export function __substrateLineFor(file: string, argv: string[], cwd?: string): 
   const shell = __substrateShellLine(file, argv);
   if (shell !== null) return shell;
   return __substrateCommandLine(resolveProgram(file, cwd), argv.slice(1));
+}
+
+/**
+ * The same run as its words, for a host that starts a program from a list:
+ * the program as `__substrateLineFor` names it, then the words as the caller
+ * gave them, none quoted because none is read again. A shell invocation has
+ * no list: its line is the one word, and it is the shell's to read.
+ */
+export function __substrateArgvFor(file: string, argv: string[], cwd?: string): string[] | null {
+  if (__substrateShellLine(file, argv) !== null) return null;
+  return [resolveProgram(file, cwd), ...argv.slice(1).map((word) => String(word))];
 }

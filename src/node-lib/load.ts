@@ -30,6 +30,7 @@ import { nodeLibBinding } from './binding';
 import { nodeLibPublic } from './public-modules';
 import { setLibRequire } from './require-hook';
 import { NODE_LTS_VERSION, nodeVersions } from './node-versions';
+import { transcodeFor } from './binding/transcode';
 import { createUtilBinding } from './binding/util';
 import { ownedRun, ownerOfInstance, setInstanceOwner } from './binding/handles';
 import { __tokenForProcess, type ProcessToken } from '../process-tokens';
@@ -82,7 +83,11 @@ var builtBindings: Map<string, unknown> | undefined;
 /* eslint-enable no-var, vars-on-top */
 
 /** The libuv-shaped surface, built once per name, on the first file that asks. */
+/** An instrument: the binding names Node's lib has asked this realm for, for the run's record of what it used. */
+const bindingsAsked = new Set<string>();
+export function nodeLibBindingsAsked(): readonly string[] { return [...bindingsAsked]; }
 function internalBinding(name: string): unknown {
+  bindingsAsked.add(name);
   builtBindings ??= new Map<string, unknown>();
   if (builtBindings.has(name)) return builtBindings.get(name);
   const build = nodeLibBinding(name);
@@ -456,6 +461,12 @@ function compileNodeLib(name: string, record: NodeLibModule, require: NodeLibReq
     `${NODE_LIB_SOURCES[name]}\n//# sourceURL=node:${name}`,
   );
   compiled(record.exports, require, record, process, binding, primordialsOf());
+  // lib/buffer.js defines `transcode` only where Node is built with ICU, which this engine is not; the one
+  // function is bound here (binding/transcode.ts) rather than left undefined.
+  if (name === 'buffer') {
+    const made = record.exports as { transcode?: unknown; Buffer: { from(bytes: Uint8Array): unknown } };
+    if (made.transcode === undefined) made.transcode = transcodeFor((bytes) => made.Buffer.from(bytes));
+  }
   record.loaded = true;
   bootstrapNodeLib(name, record.exports, process);
 }

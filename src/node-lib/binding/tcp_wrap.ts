@@ -12,6 +12,7 @@
  * A wildcard bind holds the port for both families, as a dual-stack `::` bind
  * does on Linux, so `connect('127.0.0.1')` reaches a server that bound `::`.
  */
+import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap } from './stream_wrap';
 import { __adoptHandle, ownerOf, invokeOwned } from './handles';
 import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
@@ -186,7 +187,7 @@ export class TCP extends LibuvStreamWrap {
     // libuv answers a connect through the request, never from the call: a
     // refused connection is `oncomplete(UV_ECONNREFUSED)`, which is what
     // `afterConnect` turns into the socket's `ECONNREFUSED` error.
-    queueMicrotask(() => {
+    queueBindingTask(() => {
       if (this.closed) return;
       const server = reachable ? listenerOnPort(target, family) : undefined;
       if (!server) {
