@@ -22,6 +22,7 @@ import {
   LibuvStreamWrap, WriteWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
 } from './stream_wrap';
 import { Pipe, constants as pipeConstants } from './pipe_wrap';
+import { nativeStreamFor } from '../../native-stream-binding';
 import { UV_ENOENT, UV_ESRCH } from './uv';
 import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
@@ -239,6 +240,8 @@ export class Process implements OwnedHandle {
   private terminalEnds = new Map<number, TTY>();
   /** Writers holding their own reference to a parent's description (fd stdio), released at the child's end. */
   private heldDescriptions: DescriptorWriter[] = [];
+  /** The file this process was spawned from, for the instrument below. */
+  private spawned = '';
   private readonly asyncId = nextAsyncId++;
 
   constructor() {
@@ -279,6 +282,7 @@ export class Process implements OwnedHandle {
     if (!runner) return UV_ENOENT;
     const env = environmentOf(options.envPairs);
     this.stdio = options.stdio ?? [];
+    this.spawned = options.file;
 
     const request: RunRequest = {
       owner: ownerOfInstance(this),
@@ -457,6 +461,31 @@ export class Process implements OwnedHandle {
     this.closeFarEnds();
     this.run = null;
     invokeOwned(this, 'onexit', code, signal);
+    this.sayLateClose();
+  }
+
+  /**
+   * An instrument. Node emits a child's `close` once it has exited and each of its piped stdio streams has closed
+   * (lib/internal/child_process.js `maybeClose`: `_closesGot === _closesNeeded`), which here follows the far ends
+   * closing above. A parent's pipe that has still not read end-of-file a moment after the exit is what keeps
+   * `close` back (a World's `up` waited 507 ms on a fallback timer for it, Cal run 49); this says which pipe, and
+   * what still holds its other end. It changes nothing.
+   */
+  private sayLateClose(): void {
+    const file = this.spawned;
+    const entries = this.stdio;
+    const timer = setTimeout(() => {
+      const late: unknown[] = [];
+      entries.forEach((entry, index) => {
+        if (index === 0 || (entry.type !== 'pipe' && entry.type !== 'overlapped') || !entry.handle) return;
+        const handle = entry.handle as unknown as { closed?: boolean; reading?: boolean; eofDelivered?: boolean; streamEndpoint?: { eof?: boolean; inbound?: unknown[]; peer?: { handles?: { size: number } } | null } };
+        if (handle.closed || handle.eofDelivered) return;
+        late.push({ fd: index, native: nativeStreamFor(entry.handle as never) !== undefined, reading: handle.reading === true, endOfFileQueued: handle.streamEndpoint?.eof === true,
+          unread: handle.streamEndpoint?.inbound?.length ?? null, otherEndHeldBy: handle.streamEndpoint?.peer ? handle.streamEndpoint.peer.handles?.size ?? null : 0 });
+      });
+      if (late.length > 0) console.log('[boot-trace]', JSON.stringify({ event: 'child-close-late', at: Date.now(), file, stdio: entries.map((entry) => entry.type), late }));
+    }, 100);
+    (timer as { unref?: () => void }).unref?.();
   }
 }
 
