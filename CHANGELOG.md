@@ -144,6 +144,24 @@ Known cost
   happens in a real server is not measured, and the `[stream-calls]` line
   counts it (`readStop`).
 
+Known differences from Node, for a synchronous child's `stdio`
+(`scripts/sync-child-stdio-differences.cjs`, each line read under Node
+v24.21.0 and as a guest)
+
+- The child's fd 0 given as a descriptor of the caller's (a file opened for
+  reading, or `'inherit'`): the child reads an empty stdin and ends; Node's
+  reads the file (`"child read \"from a file\""`, here `"child read \"\""`).
+  Only `input` reaches a synchronous child's stdin.
+- An entry past fd 2 (`stdio[3]` as `'pipe'` or as a file's descriptor): the
+  child has no fd 3 and its write fails with `EBADF`; `output[3]` is `null`
+  and the file stays empty. Node gives the child the descriptor and answers
+  `output[3]`.
+- `process.stdout` or `process.stderr` itself as an entry throws
+  `ERR_INVALID_ARG_VALUE` from Node's own `getValidStdio`: the guest's stream
+  carries neither a descriptor nor a handle Node recognises. Node passes it
+  on. A stream that carries a descriptor (`fs.createWriteStream`) is passed on
+  here as there.
+
 Fixed
 
 - A default export's expression keeps its parentheses when lowered.
