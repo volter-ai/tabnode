@@ -73,6 +73,7 @@ export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialPro
 import type { ProcessRegistry } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
+export { installHostNames } from './shims/dns';
 export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport, NativeStreamHandleView } from './native-stream-owner';
 
 export interface RunResult {

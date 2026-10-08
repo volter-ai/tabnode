@@ -8,6 +8,26 @@ type LookupCallback = (err: Error | null, address?: string, family?: number) => 
 type LookupAllCallback = (err: Error | null, addresses?: Array<{ address: string; family: number }>) => void;
 type LookupOptions = { family?: number | 'IPv4' | 'IPv6'; all?: boolean; order?: 'verbatim' | 'ipv4first' | 'ipv6first' };
 
+/**
+ * The names that are this host besides `localhost`, as the host that owns the tab's loopback holds them (the
+ * services of a stack, the host's own name). The engine keeps no name table of its own (ADR-0002): the host
+ * installs its one, and a lookup asks it each time, so a name the host takes or drops is seen at once.
+ */
+let hostNames: (() => Iterable<string>) | undefined;
+
+/** Host bootstrap only, as the realm starts (the door `installNativeStreamTransport` is). */
+export function installHostNames(names: () => Iterable<string>): void {
+  hostNames = names;
+}
+
+/** Whether a name the host holds is this host: compared as DNS compares, without case or a trailing dot. */
+function heldByHost(hostname: string): boolean {
+  if (!hostNames) return false;
+  const name = hostname.toLowerCase().replace(/\.$/, '');
+  for (const held of hostNames()) if (held.toLowerCase() === name) return true;
+  return false;
+}
+
 function notFound(hostname: string, syscall = 'getaddrinfo'): Error {
   return Object.assign(new Error(`${syscall} ENOTFOUND ${hostname}`), { code: 'ENOTFOUND', errno: -3008, syscall, hostname });
 }
@@ -66,7 +86,7 @@ export function lookup(
       else (cb as LookupCallback)(null, address, family);
       return;
     }
-    if (hostname.toLowerCase().replace(/\.$/, '') === 'localhost') {
+    if (hostname.toLowerCase().replace(/\.$/, '') === 'localhost' || heldByHost(hostname)) {
       const families = requested ? [requested] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
       const addresses = families.map(family => ({ address: family === 6 ? '::1' : '127.0.0.1', family }));
       if (options.all) (cb as LookupAllCallback)(null, addresses);
@@ -80,14 +100,16 @@ export function lookup(
 }
 
 /**
- * Resource-record queries require a DNS service, which this host does not have.
+ * Resource-record queries require a DNS service, which this host does not have. A name the host holds as itself
+ * has the loopback's records, as the resolver that serves it to every other program answers: A 127.0.0.1.
  */
 export function resolve(
   hostname: string,
   callback: (err: Error | null, addresses?: string[]) => void
 ): void {
   setImmediate(() => {
-    callback(notFound(hostname, 'queryA'));
+    if (heldByHost(hostname)) callback(null, ['127.0.0.1']);
+    else callback(notFound(hostname, 'queryA'));
   });
 }
 
@@ -103,7 +125,8 @@ export function resolve6(
   callback: (err: Error | null, addresses?: string[]) => void
 ): void {
   setImmediate(() => {
-    callback(notFound(hostname, 'queryAaaa'));
+    if (heldByHost(hostname)) callback(null, ['::1']);
+    else callback(notFound(hostname, 'queryAaaa'));
   });
 }
 

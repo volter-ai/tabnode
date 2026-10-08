@@ -4,6 +4,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `installHostNames(names)`: a host supplies the names that are this host
+  besides `localhost` (ADR-0002). `dns.lookup` resolves a held name to the
+  loopback in the caller's family, and `dns.resolve4`/`resolve6` answer its
+  loopback records. With no host table installed nothing changes.
+
 ## v0.8.0 — 2026-10-07
 
 One process table (browser-substrate ADR-0129 step 1): a host whose kernel
