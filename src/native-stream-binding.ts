@@ -453,6 +453,10 @@ export class NativeStreamDriver {
 
   receive(event: Exclude<NativeStreamEvent, { type: 'closed' }>): void {
     if (event.type === 'read') {
+      // An instrument: bytes the owner read for a handle its realm had stopped reading. The grant is taken back when
+      // a handle stops (endRead), so this stays 0 except for a chunk already on its way; a socket being handed to
+      // another process loses to this realm whatever is counted here.
+      if (event.bytes && !this.handle.reading && !this.closing) streamEvents.set('read-while-stopped', (streamEvents.get('read-while-stopped') ?? 0) + 1);
       this.readingCredit = false;
       if (this.closing) { if (event.handle) closeDescriptor(event.handle.id); return; }
       this.buffered = true;
