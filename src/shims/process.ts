@@ -613,10 +613,12 @@ export function createProcess(options?: {
 
   // Create an EventEmitter for process events
   const emitter = new EventEmitter();
-  // Once `exit` is being emitted the process is ending: nothing it queued, before or from an `exit` listener, runs
-  // afterwards. Node exits when the listeners return; here the realm goes on, so a queued tick would otherwise run
-  // in a process that has already said its last (Node's own test-next-tick queues one from `exit` and requires that
-  // it never be called).
+  // Once the process is ending, nothing it queued, before or from an `exit` listener, runs afterwards. Node exits
+  // when the listeners return; here the realm goes on, so a queued tick would otherwise run in a process that has
+  // already said its last (Node's own test-next-tick queues one from `exit` and requires that it never be called).
+  // The mark is set where the engine ends the process and nowhere else: `exit()` below, and the launcher through
+  // `__substrateProcessEnding`. A program that emits 'exit' itself has called its own listeners and is still running,
+  // as in Node; its ticks run.
   let exiting = false;
   const startTime = Date.now();
   // The guest's fd 0: the bytes the runner put there, then the end of them.
@@ -975,7 +977,6 @@ export function createProcess(options?: {
      * a socket sent to the child arrived at nothing.
      */
     emit(event: string, ...args: unknown[]): boolean {
-      if (event === 'exit') exiting = true;
       const listeners = emitter.listeners(event);
       if (listeners.length === 0) return emitter.emit(event, ...args);
       for (const listener of listeners) {
@@ -1032,8 +1033,14 @@ export function createProcess(options?: {
     },
   };
 
+  processEndings.set(proc, () => { exiting = true; });
   return proc;
 }
+
+/** Each process's own mark that it is ending, kept here and not on the process, where a guest could reach it. */
+const processEndings = new WeakMap<object, () => void>();
+/** The launcher says a process is ending, before it emits that process's `exit`. */
+export function __substrateProcessEnding(process: object): void { processEndings.get(process)?.(); }
 
 // There is no default process: a process is made for a run, by the `node`
 // command, and making one when this module is evaluated built the guest's

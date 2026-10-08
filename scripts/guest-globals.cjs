@@ -61,6 +61,10 @@ for (const name of ['window', 'document', 'location']) {
 // The two names a program cannot do without: what a delete of each answers and leaves, and that it can be put back.
 {
   const kept = process, descriptor = Object.getOwnPropertyDescriptor(globalThis, 'process');
+  // An assignment reads back, is another object's while it stands, and takes nothing from the program: the file
+  // system still answers, and putting the process back puts it back.
+  const stand = { marker: true };
+  rows.push(`process | assign ${said(() => { globalThis.process = stand; return globalThis.process === stand; })} fs-still-answers ${said(() => require('fs').existsSync(__filename))} put-back ${said(() => { globalThis.process = kept; return globalThis.process === kept; })}`);
   const removed = said(() => delete globalThis.process), after = said(() => typeof globalThis.process), inAfter = said(() => 'process' in globalThis);
   const back = said(() => { Object.defineProperty(globalThis, 'process', descriptor); return globalThis.process === kept; });
   rows.push(`process | ${kindOf(descriptor)} | delete ${removed} typeof ${after} in ${inAfter} restored ${back}`);

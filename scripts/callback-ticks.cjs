@@ -96,6 +96,18 @@ async function entered(name, listen) {
     await settle();
     say(`${entry}/${act}: ${order.join(', ')}`);
   }
+  // 4. A program that emits 'exit' itself has called its own listeners and is still running: what it queues and
+  //    writes afterwards happens.
+  {
+    const after = [];
+    process.emit('exit', 0);
+    await new Promise((done) => {
+      process.nextTick(() => after.push('tick'));
+      const { PassThrough } = require('stream');
+      new PassThrough().write('x', () => { after.push('write-callback'); setImmediate(done); });
+    });
+    say('after a hand-emitted exit: ' + after.join(', '));
+  }
   clearInterval(alive);
   console.log('ORDER ' + out.join(' | '));
 })();

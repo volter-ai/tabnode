@@ -37,7 +37,7 @@ import { promiseOwner } from '../promise-ownership';
 import { Bash, defineCommand } from 'just-bash';
 import type { CommandContext, ExecResult as JustBashExecResult } from 'just-bash';
 import { EventEmitter } from '../node-lib/events-module';
-import { __substrateExitCode, __substrateUncaughtCapture } from './process';
+import { __substrateExitCode, __substrateProcessEnding, __substrateUncaughtCapture } from './process';
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
 import { treeDescriptorsOf } from '../tree-descriptors';
@@ -771,6 +771,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       // console over `process.send` and dies of a failed require -- wrote on
       // the closed channel and took `write EBADF` as its last act.
       emittingExit = true;
+      __substrateProcessEnding(proc);
       try { proc.emit('exit', code); } finally { emittingExit = false; }
       // A listener may have ended the process with another status (above); that is the status it ends with.
       code = exitCode;
@@ -1157,6 +1158,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       exitCalled = true;
       exitCode = typeof proc.exitCode === 'number' ? proc.exitCode : 0;
       emittingExit = true;
+      __substrateProcessEnding(proc);
       try { proc.emit('exit', exitCode); } catch (error) { __reportUncaughtException(proc, error); } finally { emittingExit = false; }
       if (typeof proc.exitCode === 'number') exitCode = proc.exitCode;
     }

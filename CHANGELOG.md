@@ -145,12 +145,16 @@ codes are not reproduced). The rest:
   descriptor answers: before, an assignment to a timer, `queueMicrotask` or
   `structuredClone` changed the realm's global for every program in it.
   The realm's `window`, `document` and `location` are absent until a program
-  makes them, and then are its own (`globalThis.window = dom.window` reads
-  back). `process` is answered ahead of the guest's own properties, because
-  the engine finds the run that is asking by it; it can be deleted and is
-  assigned again at the next module's start. `scripts/guest-globals.cjs`
+  makes them, and then are its own: `globalThis.window = dom.window` reads
+  back, and a bare `document` in any module finds what was assigned. `process`
+  is answered ahead of the guest's own properties, because the engine finds
+  the run that is asking by the realm's `process`. A guest may delete it or
+  assign another object, which it then reads back; neither reaches the
+  realm (an assignment used to be written there, where it stood in the
+  engine's way: every filesystem call after it found no run). The next
+  module's start puts the run's own process back. `scripts/guest-globals.cjs`
   assigns, defines (whole, attributes only, `writable` only), deletes,
-  restores and fixes each name under Node and in a guest: 72 rows.
+  restores and fixes each name under Node and in a guest: 73 rows.
 - A process emits `exit` when its loop has drained, and what "drained" means
   here is the engine's rule for ending a run, which this release does not
   change: the entry has returned and, with nothing the engine counts still
@@ -163,7 +167,8 @@ codes are not reproduced). The rest:
   and its `exit` listeners now run at that moment, where before they did not
   run at all. A tick the process had queued, or queues from an `exit` listener,
   does not run once `exit` is being emitted, as in Node, where the process is
-  gone by then.
+  gone by then. A program that emits `'exit'` itself has only called its own
+  listeners and goes on running, ticks included.
 - `process.nextTick` callbacks queued by a callback the loop entered run when
   that callback returns, before any promise it queued, and ticks they queue
   run with them (`cb, tick, promise`, as Node). A callback made while other
