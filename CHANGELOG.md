@@ -100,12 +100,15 @@ Changed, for every guest
 
 Where node:crypto's keys differ from Node's
 
-Measured with one script of 110 cases, hostile inputs among them, on Node
-v24.21.0 and in a guest: 64 answer the same, and in 20 more both refuse with
-different error codes (OpenSSL's own codes are not reproduced). The rest:
+Measured with one script of 131 cases (`scripts/crypto-keys-compare.mjs`),
+hostile inputs among them, on Node v24.21.0 and in a guest: 85 answer the
+same, and in 20 more both refuse with different error codes (OpenSSL's own
+codes are not reproduced). The rest:
 
 - Not carried, refused by name where Node does it: encrypting a private key on
-  export; reading an encrypted key; `paramEncoding: 'explicit'`; curves other
+  export; reading an encrypted key (with a passphrase offered the answer is
+  "unsupported" whatever the passphrase, right or wrong: none is tried);
+  `paramEncoding: 'explicit'`; curves other
   than P-256, P-384 and P-521 (secp256k1 among them); signing or hashing with
   SHA-512/224, SHA-512/256 or SHA-3 (`sha512-256` was read as SHA-512).
 - Stricter than Node, which accepts each of these and this engine refuses: a
@@ -115,11 +118,21 @@ different error codes (OpenSSL's own codes are not reproduced). The rest:
   stated one: it signs with one key and exports another's public half); a
   private value of zero or beyond the curve's order; a PKCS#8 key that names
   one curve outside and another inside; a JWK whose `d` is not the private
-  value of its `x` and `y` (EC) or `x` (Ed25519). No tool writes such a key;
-  one that does is the finding.
+  value of its `x` and `y` (EC) or `x` (Ed25519). None of these depends on a
+  key's value, and no tool writes them; one that does is the finding.
+- Read as Node reads them, because a correct tool writes them for some keys:
+  a JWK member without its leading zero bytes (one key in 128 a coordinate),
+  or with one more, or in the standard base64 alphabet; an EC public point in
+  compressed or hybrid form (`openssl ec -conv_form`), written back in the
+  form it was read; a private value shorter than its curve's width; the first
+  key among several PEM blocks, the `EC PARAMETERS` block that `openssl
+  ecparam -genkey` writes before the key among them.
 - The same as Node, and not the curve library's default: Ed25519 verification
   without the cofactor, refusing small-order keys and `R`; of the twelve
-  vectors of "Taming the many EdDSAs" both accept one.
+  vectors of "Taming the many EdDSAs" both accept one. Against Node at volume
+  (`scripts/crypto-ed25519-volume.mjs`): 3,000 generated keys and messages,
+  both directions, with flipped bits in signature, message and key, and RFC
+  8032's first three vectors: 18,018 checks, none differing.
 - A caller's DER is copied when a key is read; zeroing the buffer afterwards
   does not change the key.
 

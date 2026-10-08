@@ -15,7 +15,8 @@ import { sha512 } from '@noble/hashes/sha2.js';
 export type EcCurveName = 'P-256' | 'P-384' | 'P-521';
 /** `secret` is the private scalar (EC, at the field's width) or the seed (Ed25519); absent in a public key. */
 export type AsymmetricKey =
-  | { kind: 'ec'; curve: EcCurveName; point: Uint8Array; secret?: Uint8Array; /** Read from a private key that stated no public half: written back without one, as OpenSSL writes it. */ bare?: true }
+  | { kind: 'ec'; curve: EcCurveName; point: Uint8Array; secret?: Uint8Array; /** Read from a private key that stated no public half: written back without one, as OpenSSL writes it. */ bare?: true;
+      /** A public key read with its point in compressed or hybrid form: those bytes, which its SubjectPublicKeyInfo is written back with, as OpenSSL keeps the form it read. `point` is uncompressed always. */ written?: Uint8Array }
   | { kind: 'ed25519'; point: Uint8Array; secret?: Uint8Array };
 
 /**
@@ -153,14 +154,21 @@ export function generateKey(kind: 'ec' | 'ed25519', curve?: EcCurveName): Asymme
 }
 
 export function publicOf(key: AsymmetricKey): AsymmetricKey {
-  return key.kind === 'ec' ? { kind: 'ec', curve: key.curve, point: key.point } : { kind: 'ed25519', point: key.point };
+  return key.kind === 'ec' ? { kind: 'ec', curve: key.curve, point: key.point, ...(key.written ? { written: key.written } : {}) } : { kind: 'ed25519', point: key.point };
 }
 
-/** The uncompressed point, checked: its length, its form and that it is on its curve. A copy. */
+/**
+ * The point as uncompressed bytes, checked: its form, its length and that it is on its curve. A copy. Both forms a
+ * tool writes are read: uncompressed (04, x, y) and compressed (02 or 03, x) and hybrid (06 or 07, x, y), which `openssl ec -conv_form`
+ * writes and Node reads.
+ */
 function ecPoint(curve: EcCurveName, point: Uint8Array): Uint8Array {
   const { curve: math, bytes } = CURVES[curve];
-  if (point.length !== 1 + 2 * bytes || point[0] !== 4) return refuse(`an ${curve} public key is 04 and two ${bytes}-byte coordinates`);
-  try { return math.Point.fromBytes(point).toBytes(false); } catch { return refuse(`the public key is not a point on ${curve}`); }
+  const uncompressed = point.length === 1 + 2 * bytes && point[0] === 4, compressed = point.length === 1 + bytes && (point[0] === 2 || point[0] === 3);
+  // Hybrid: both coordinates, and y's parity in the first byte, which must agree with y.
+  const hybrid = point.length === 1 + 2 * bytes && (point[0] === 6 || point[0] === 7) && (point[0]! & 1) === (point[point.length - 1]! & 1);
+  if (!uncompressed && !compressed && !hybrid) return refuse(`an ${curve} public key is 04 with two ${bytes}-byte coordinates, 02 or 03 with one, or 06 or 07 with two`);
+  try { return math.Point.fromBytes(hybrid ? concat(Uint8Array.from([4]), point.subarray(1)) : point).toBytes(false); } catch { return refuse(`the public key is not a point on ${curve}`); }
 }
 /**
  * A private key from its scalar. The scalar is copied (a caller that zeroes its buffer afterwards does not change
@@ -233,7 +241,7 @@ function fromSpki(der: Uint8Array): AsymmetricKey {
   if (parts.length !== 2) return refuse('a SubjectPublicKeyInfo is an algorithm and a key, and nothing else');
   const point = bitString(bits.content);
   if (named.kind === 'ed25519') { if (point.length !== 32) return refuse('an Ed25519 public key is 32 bytes'); return { kind: 'ed25519', point: point.slice() }; }
-  return { kind: 'ec', curve: named.curve, point: ecPoint(named.curve, point) };
+  return { kind: 'ec', curve: named.curve, point: ecPoint(named.curve, point), ...(point[0] === 4 ? {} : { written: point.slice() }) };
 }
 function fromPkcs8(der: Uint8Array): AsymmetricKey {
   let parts: Element[];
@@ -276,16 +284,21 @@ export function keyFromDer(der: Uint8Array, type?: KeyEncodingType): AsymmetricK
  * refused as that: this engine decrypts no key, and its bytes must not be read as anything.
  */
 export function keyFromPem(pem: string): AsymmetricKey | undefined {
-  const found = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/.exec(pem);
-  if (!found) return undefined;
-  if (found[1] === 'ENCRYPTED PRIVATE KEY' || /^\s*Proc-Type:\s*4,\s*ENCRYPTED/mi.test(found[2]!)) throw new KeyRefused('encrypted', 'the key is encrypted');
-  const type: KeyEncodingType | undefined = found[1] === 'PUBLIC KEY' ? 'spki' : found[1] === 'PRIVATE KEY' ? 'pkcs8' : found[1] === 'EC PRIVATE KEY' ? 'sec1' : undefined;
-  if (!type) return undefined;
-  if (/[^A-Za-z0-9+/=\s]/.test(found[2]!)) return refuse('the key\'s text is not base64');
-  const der = base64Bytes(found[2]!);
-  // The label says which key this is, so an EC PRIVATE KEY that does not read is a refusal, not another key.
-  if (type === 'sec1') { try { return fromSec1(der); } catch (cause) { if (cause instanceof NotThisKey) return refuse('the EC PRIVATE KEY is not an ECPrivateKey'); throw cause; } }
-  return keyFromDer(der, type);
+  // The first block that is a key. Text around the blocks, and an `EC PARAMETERS` block before the key (the two
+  // blocks `openssl ecparam -genkey` writes), are passed over, as OpenSSL passes over them.
+  for (const found of pem.matchAll(/-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/g)) {
+    const label = found[1]!, body = found[2]!;
+    if (label === 'EC PARAMETERS') continue;
+    if (label === 'ENCRYPTED PRIVATE KEY' || /^\s*Proc-Type:\s*4,\s*ENCRYPTED/mi.test(body)) throw new KeyRefused('encrypted', 'the key is encrypted');
+    const type: KeyEncodingType | undefined = label === 'PUBLIC KEY' ? 'spki' : label === 'PRIVATE KEY' ? 'pkcs8' : label === 'EC PRIVATE KEY' ? 'sec1' : undefined;
+    if (!type) return undefined;
+    if (/[^A-Za-z0-9+/=\s]/.test(body)) return refuse('the key\'s text is not base64');
+    const der = base64Bytes(body);
+    // The label says which key this is, so an EC PRIVATE KEY that does not read is a refusal, not another key.
+    if (type === 'sec1') { try { return fromSec1(der); } catch (cause) { if (cause instanceof NotThisKey) return refuse('the EC PRIVATE KEY is not an ECPrivateKey'); throw cause; } }
+    return keyFromDer(der, type);
+  }
+  return undefined;
 }
 /**
  * A key from a JWK. Undefined where the object is another kind of key (`kty` RSA, oct). An EC or Ed25519 JWK whose
@@ -294,7 +307,11 @@ export function keyFromPem(pem: string): AsymmetricKey | undefined {
  */
 export function keyFromJwk(jwk: Record<string, unknown>): AsymmetricKey | undefined {
   const invalid = (): never => { throw new KeyRefused('jwk', 'Invalid JWK data'); };
-  const bytes = (value: unknown): Uint8Array => typeof value === 'string' && /^[A-Za-z0-9_-]+={0,2}$/.test(value) ? base64Bytes(value) : invalid();
+  // Either base64 alphabet, padded or not: Node reads both, and which letters a value has depends on the value.
+  const bytes = (value: unknown): Uint8Array => typeof value === 'string' && /^[A-Za-z0-9_+/-]+={0,2}$/.test(value) ? base64Bytes(value) : invalid();
+  // A member at the curve's width. One written without its leading zero bytes is that number, as Node reads it (an
+  // encoder that drops them does so for one key in 128 a coordinate); one wider than the curve is not a member.
+  const member = (value: unknown, width: number): Uint8Array => { try { return padded(bytes(value), width); } catch { return invalid(); } };
   if (jwk.kty === 'OKP') {
     if (jwk.crv !== 'Ed25519') return undefined;
     const point = bytes(jwk.x);
@@ -309,20 +326,18 @@ export function keyFromJwk(jwk: Record<string, unknown>): AsymmetricKey | undefi
   if (jwk.kty !== 'EC') return undefined;
   const curve = curveNamed(jwk.crv);
   if (!curve) throw new KeyRefused('curve', 'Invalid JWK EC key');
-  const width = CURVES[curve].bytes, x = bytes(jwk.x), y = bytes(jwk.y);
-  if (x.length !== width || y.length !== width) return invalid();
+  const width = CURVES[curve].bytes, x = member(jwk.x, width), y = member(jwk.y, width);
   try {
     const point = ecPoint(curve, concat(Uint8Array.from([4]), x, y));
     if (jwk.d === undefined) return { kind: 'ec', curve, point };
-    const secret = bytes(jwk.d);
-    if (secret.length !== width) return invalid();
-    return { ...ecFromSecret(curve, secret, point), kind: 'ec', curve } as AsymmetricKey;
+    return { ...ecFromSecret(curve, member(jwk.d, width), point), kind: 'ec', curve } as AsymmetricKey;
   } catch (cause) { if (cause instanceof KeyRefused && cause.reason === 'key') return invalid(); throw cause; }
 }
 
 function spkiOf(key: AsymmetricKey): Uint8Array {
   const algorithm = key.kind === 'ed25519' ? tlv(0x30, fromHex(OID_ED25519)) : tlv(0x30, fromHex(OID_EC_PUBLIC_KEY), fromHex(CURVES[key.curve].oid));
-  return tlv(0x30, algorithm, tlv(0x03, Uint8Array.from([0]), key.point));
+  const point = key.kind === 'ec' && key.written ? key.written : key.point;
+  return tlv(0x30, algorithm, tlv(0x03, Uint8Array.from([0]), point));
 }
 function sec1Of(key: AsymmetricKey & { kind: 'ec' }, withParameters: boolean): Uint8Array {
   return tlv(0x30, fromHex('020101'), tlv(0x04, key.secret!),
