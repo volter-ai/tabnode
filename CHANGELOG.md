@@ -173,8 +173,8 @@ codes are not reproduced). The rest:
   that callback returns, before any promise it queued, and ticks they queue
   run with them (`cb, tick, promise`, as Node). A callback made while other
   code is still running does not drain them, bracketed by the engine or not.
-  What a socket's or a pipe's callback queues runs before that stream's next
-  callback: `data, tick, end` (`scripts/callback-ticks.cjs`).
+  What a stream's callback queues runs before that stream's next callback
+  (`scripts/callback-ticks.cjs`, a request dumped by its response).
 - A child whose `stdio` names a descriptor the caller does not hold fails to
   start with `EBADF` (`spawnSync`: `error.code`, no pid, no output; `spawn`
   throws), as Node's does. Its output was dropped in silence.

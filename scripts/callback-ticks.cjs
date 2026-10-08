@@ -108,26 +108,28 @@ async function entered(name, listen) {
     });
     say('after a hand-emitted exit: ' + after.join(', '));
   }
-  // 5. What a socket's callback queues runs before the socket's next callback: bytes arrive, the tick their
-  //    listener queued runs, and only then does the end of the stream (`data, tick, end`). The same for a pipe to
-  //    a child: its output's tick before its close.
+  // 5. What a stream's callback queues runs before that stream's next callback. A response that ends while its
+  //    request's body is still arriving dumps the request, which resumes on a tick; the socket's next callback (the
+  //    close that follows the response) must not come before that tick, or the body already read is thrown away and
+  //    a `data` listener added on `resume` hears nothing. (`bytes, resume, data after the dump`.)
   {
-    const seen = [];
+    const http = require('http'), seen = [];
     await new Promise((done) => {
-      const server = net.createServer((peer) => {
-        peer.on('data', () => { seen.push('data'); process.nextTick(() => seen.push('tick')); });
-        peer.on('end', () => { seen.push('end'); peer.end(); server.close(() => done()); });
-      }).listen(0, () => { net.connect(server.address().port).end('x'); });
+      const server = http.createServer((req, res) => {
+        req.socket.once('data', () => { seen.push('bytes'); res.end('ok'); });
+        req.on('resume', () => { seen.push('resume'); req.on('data', () => { if (!seen.includes('data after the dump')) seen.push('data after the dump'); }); });
+        req.pause();
+        req.on('data', () => {});
+        res.flushHeaders();
+      });
+      server.listen(0, () => {
+        const req = http.request({ method: 'POST', port: server.address().port, agent: false, headers: { Connection: 'close' } });
+        req.flushHeaders();
+        req.on('response', (res) => { fs.createReadStream(__filename).pipe(req); res.resume(); res.on('close', () => server.close(() => done())); });
+        req.on('error', () => {});
+      });
     });
-    say('a socket: ' + seen.join(', '));
-    const piped = [];
-    await new Promise((done) => {
-      const started = spawn(process.execPath, ['-e', 'process.stdout.write("x")']);
-      started.stdout.on('data', () => { piped.push('data'); process.nextTick(() => piped.push('tick')); });
-      started.stdout.on('end', () => piped.push('end'));
-      started.on('close', () => done());
-    });
-    say("a child's output: " + piped.join(', '));
+    say('a request dumped by its response: ' + seen.join(', '));
   }
   clearInterval(alive);
   console.log('ORDER ' + out.join(' | '));
