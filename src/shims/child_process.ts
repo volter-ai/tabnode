@@ -58,7 +58,7 @@ import { UV_ESRCH } from '../node-lib/binding/uv';
 import { loadNodeLibFor } from '../node-lib/load';
 import type { ChildProcessModule } from '../node-lib/child-process-module';
 import { getCommandNames } from 'just-bash';
-import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateArgvFor, __substrateShellLine, __substrateRunsNode, setProgramResolver } from './command-line';
+import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateArgvFor, __substrateShellLine, __substrateRunsNode, setProgramResolver, setHostRunsProgram } from './command-line';
 
 import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
 
@@ -1293,6 +1293,14 @@ export function initChildProcess(vfs: VirtualFS): void {
   // What a `Process` handle runs. Node's own `child_process.js` starts, ends
   // and pipes a child through the binding; the binding asks this.
   setProgramResolver(engineProgramFor);
+  // The rule `startChildRun` applies below, as one answer for a synchronous child (the spawn_sync binding): with a
+  // host published, a shell and `env` are the host's, the engine's Node is the engine's, and any other program is
+  // the host's unless the engine carries it.
+  setHostRunsProgram((file, cwd, env) => {
+    if (hostExecutor() === null || __substrateRunsNode(file, cwd)) return false;
+    const program = engineProgramFor(file, cwd);
+    return SHELL_PROGRAMS.has(program) || program === 'env' || !programExists(file, cwd, env);
+  });
   setProcessRunner({
     resolves: (request: RunRequest): boolean => {
       if (!bashInstance) return false;

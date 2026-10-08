@@ -11,9 +11,10 @@
  * `UV_ENOSYS`, which is what Node reports for a child it could not start.
  */
 import { libRequire } from '../require-hook';
-import { UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS } from './uv';
+import { UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ETIMEDOUT } from './uv';
 import { runSyncChild, syncChildRefusal } from '../../shims/sync-child';
-import { __substrateLineFor, __substrateRunsNode, __substrateShellLine } from '../../shims/command-line';
+import { __substrateArgvFor, __substrateHostRuns, __substrateLineFor, __substrateRunsNode, __substrateShellLine } from '../../shims/command-line';
+import { __currentProcessToken, enterRun, exitRunProcess, forgetRunPid, mintPid, reapRunProcess, runPid, setRunPid } from '../../process-tokens';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio(stdio, true)` builds it. */
 interface SyncStdioEntry {
@@ -31,7 +32,32 @@ interface SyncSpawnOptions {
   stdio?: SyncStdioEntry[];
   maxBuffer?: number;
   killSignal?: number;
+  timeout?: number;
 }
+
+/**
+ * A host's door for a synchronous child it runs (a program its kernel holds): the twin of its `run`. It blocks this
+ * realm until the child has ended, handing each fd's bytes to `onStdout`/`onStderr` as they arrive, and answers
+ * the child's end. A host that cannot (a realm that may not block, a host with no such door here) answers a
+ * `refusal` that says why and starts nothing.
+ */
+interface SyncChildHost {
+  runSync?(command: string, request: {
+    argv?: readonly string[];
+    cwd?: string;
+    env?: Record<string, string>;
+    input?: Uint8Array;
+    /** Which of fd 1 and fd 2 count toward `maxBuffer`: the ones the caller captures. */
+    captured: [boolean, boolean];
+    maxBuffer?: number;
+    timeout?: number;
+    killSignal?: number;
+    onStdout(bytes: Uint8Array): void;
+    onStderr(bytes: Uint8Array): void;
+  }): { started: boolean; status: number | null; signal: string | null; error?: 'ETIMEDOUT' | 'ENOBUFS'; refusal?: string };
+}
+const hostExecutorSymbol = Symbol.for('@volter/browser-runtime/child-process-executor');
+let nextSyncChild = 1;
 
 /** What libuv answers for one synchronous child. */
 interface SyncSpawnResult {
@@ -82,17 +108,16 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
   const pid = nextPid++;
   const argv = options.args ?? [options.file];
   const stdio = options.stdio ?? [];
-  const nothing = (error: number): SyncSpawnResult => ({ pid, output: null, status: null, signal: null, error });
+  const nothing = (error: number, of: number = pid): SyncSpawnResult => ({ pid: of, output: null, status: null, signal: null, error });
 
   // A realm that cannot run a synchronous child at all says which of its reasons it is. libuv's record has room for
   // an errno only, and Node's own `spawnSync` (internal/child_process.js) makes the Error from it and stores it back
   // on the record's `error`; the reason is added to that Error's message as it is stored, so `result.error.message`
   // and the Error `execSync` throws read "spawnSync <file> ENOSYS: <reason>". Without it the four refusals were one
   // indistinguishable ENOSYS.
-  const refusal = syncChildRefusal();
-  if (refusal !== null) {
+  const refusedBecause = (refusal: string, of: number = pid): SyncSpawnResult => {
     let error: unknown = UV_ENOSYS;
-    const refused = nothing(UV_ENOSYS);
+    const refused = nothing(UV_ENOSYS, of);
     Object.defineProperty(refused, 'error', {
       enumerable: true,
       configurable: true,
@@ -104,12 +129,81 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
       },
     });
     return refused;
-  }
+  };
 
   const input = stdio[0]?.input;
   const realm = (globalThis as unknown as { process?: { cwd?: () => string; env?: Record<string, string> } & Record<symbol, unknown> }).process;
   // The tree of the run that asks, which a host may have given that run alone.
   const runTree = realm?.[Symbol.for('tabnode.run.vfs')] as Parameters<typeof runSyncChild>[0]['tree'];
+  const cwd = options.cwd ?? (typeof realm?.cwd === 'function' ? realm.cwd() : undefined);
+  const env = environmentOf(options.envPairs) ?? (realm?.env ? { ...realm.env } : undefined);
+
+  // A program the host runs (one its kernel holds: git, a shell script, psql) is the host's synchronous child, by
+  // the rule its asynchronous child goes by. It is a process as that one is: forked here, under this run, before
+  // the wait; run by the host as that process; reaped here when the wait ends, by the wait every child's end takes.
+  const host = (globalThis as unknown as Record<symbol, SyncChildHost | undefined>)[hostExecutorSymbol];
+  if (host && typeof host.runSync === 'function' && __substrateHostRuns(options.file, cwd, env ?? {})) {
+    const owner = __currentProcessToken();
+    const parentPid = runPid(owner)?.pid ?? 0;
+    const token = `sync-child-${nextSyncChild++}`;
+    const childPid = mintPid(parentPid, false, owner);
+    setRunPid(token, childPid, parentPid, { argv, ...(cwd ? { cwd } : {}) }, owner);
+    const kept: [Uint8Array[], Uint8Array[]] = [[], []];
+    const take = (index: 0 | 1) => (bytes: Uint8Array): void => {
+      const kind = stdio[index + 1]?.type;
+      if (kind === 'inherit') inheritedWriter(index + 1)?.(bytes);
+      else if (kind !== 'ignore') kept[index].push(bytes.slice());
+    };
+    const captured = (index: 1 | 2): boolean => stdio[index]?.type !== 'ignore' && stdio[index]?.type !== 'inherit';
+    let answer: ReturnType<NonNullable<SyncChildHost['runSync']>>;
+    try {
+      answer = enterRun(token, () => host.runSync!(__substrateLineFor(options.file, argv, options.cwd), {
+        ...(((list) => list ? { argv: list } : {})(__substrateArgvFor(options.file, argv, options.cwd))),
+        ...(cwd ? { cwd } : {}),
+        ...(env ? { env } : {}),
+        ...(input === undefined ? {} : { input: new Uint8Array(input) }),
+        captured: [captured(1), captured(2)],
+        ...(typeof options.maxBuffer === 'number' && options.maxBuffer >= 0 && Number.isFinite(options.maxBuffer) ? { maxBuffer: options.maxBuffer } : {}),
+        ...(typeof options.timeout === 'number' && options.timeout > 0 ? { timeout: options.timeout } : {}),
+        ...(typeof options.killSignal === 'number' ? { killSignal: options.killSignal } : {}),
+        onStdout: take(0),
+        onStderr: take(1),
+      }));
+    } catch (cause) {
+      answer = { started: false, status: null, signal: null, refusal: cause instanceof Error ? cause.message : String(cause) };
+    }
+    // A child the host never started ends here, as one the engine never started does; one it ran reported its own
+    // end. Either way this wait reaps it, and the end it answers is the one the process table holds.
+    if (!answer.started) exitRunProcess(childPid, parentPid, 0, 'SIGKILL', owner);
+    const ended = reapRunProcess(childPid, parentPid, answer.status ?? 0, answer.signal, owner);
+    forgetRunPid(token);
+    if (!answer.started) return refusedBecause(answer.refusal ?? 'the host did not start the child', childPid);
+    const join = (chunks: Uint8Array[]): Uint8Array => {
+      const whole = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+      let at = 0;
+      for (const chunk of chunks) { whole.set(chunk, at); at += chunk.byteLength; }
+      return Buffer.from(whole);
+    };
+    const hostOutput: Array<Uint8Array | null> = [null];
+    for (let index = 1; index < Math.max(3, stdio.length); index += 1) {
+      hostOutput.push((index === 1 || index === 2) && captured(index) ? join(kept[index - 1]!) : null);
+    }
+    // The shell's own "not found" for a program the caller named is ENOENT, as below.
+    const saidByHost = __substrateShellLine(options.file, argv) === null && (ended.code === 127 || ended.code === 126) && captured(2) ? new TextDecoder().decode(join(kept[1])) : '';
+    if (ended.code === 127 && /command not found|No such file or directory/u.test(saidByHost)) return nothing(UV_ENOENT, childPid);
+    if (ended.code === 126 && /Permission denied|not executable/u.test(saidByHost)) return nothing(UV_EACCES, childPid);
+    return {
+      pid: childPid,
+      output: hostOutput,
+      status: ended.signal ? null : ended.code,
+      signal: ended.signal,
+      ...(answer.error === 'ETIMEDOUT' ? { error: UV_ETIMEDOUT } : answer.error === 'ENOBUFS' ? { error: UV_ENOBUFS } : {}),
+    };
+  }
+
+  // A realm that cannot run a synchronous child of the engine's own says which of its reasons it is.
+  const refusal = syncChildRefusal();
+  if (refusal !== null) return refusedBecause(refusal);
   let answer;
   try {
     // A child that is the engine's Node goes by its argv, as `spawn` starts
@@ -119,8 +213,8 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
       ...(runTree ? { tree: runTree } : {}),
       command: __substrateLineFor(options.file, argv, options.cwd),
       ...(__substrateRunsNode(options.file, options.cwd) ? { argv } : {}),
-      cwd: options.cwd ?? (typeof realm?.cwd === 'function' ? realm.cwd() : undefined),
-      env: environmentOf(options.envPairs) ?? (realm?.env ? { ...realm.env } : undefined),
+      cwd,
+      env,
       ...(input === undefined ? {} : { input: new Uint8Array(input) }),
       onStdout: stdio[1]?.type === 'inherit' ? inheritedWriter(1) : undefined,
       onStderr: stdio[2]?.type === 'inherit' ? inheritedWriter(2) : undefined,

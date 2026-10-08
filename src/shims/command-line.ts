@@ -68,6 +68,19 @@ export function setProgramResolver(resolve: (file: string, cwd?: string) => stri
 }
 
 /**
+ * Whether a published host, not the engine, runs a program a guest names: the engine's process model answers once it
+ * knows the filesystem and the host (`src/shims/child_process.ts`). A synchronous child asks the same question an
+ * asynchronous one does, so a program is the host's by one rule whichever way it is spawned.
+ */
+let hostRuns: (file: string, cwd: string | undefined, env: Record<string, string>) => boolean = () => false;
+export function setHostRunsProgram(answer: (file: string, cwd: string | undefined, env: Record<string, string>) => boolean): void {
+  hostRuns = answer;
+}
+export function __substrateHostRuns(file: string, cwd: string | undefined, env: Record<string, string>): boolean {
+  return hostRuns(file, cwd, env);
+}
+
+/**
  * Whether a program a caller names is the engine's Node -- `node`, the path
  * `process.execPath` names, any `.../node` the tree does not carry -- as the
  * engine resolves it. Such a child is started from its argv by the Node
