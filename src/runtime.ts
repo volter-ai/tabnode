@@ -2402,14 +2402,17 @@ function createRequire(
       && (module as Module & { _compile?: unknown })._compile === Mod.__substrateOwnCompile
       && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> })) {
       const kind = preparedModuleKind(resolvedPath);
-      enterLoadPhase(loadAccount, LoadPhase.Prepared);
+      enterLoadPhase(loadAccount, LoadPhase.Digest);
+      let digest: string | undefined;
+      try { digest = kind ? vfs.contentDigest(resolvedPath) : undefined; } finally { leaveLoadPhase(loadAccount); }
       let body: string | undefined;
-      try {
-        const digest = kind ? vfs.contentDigest(resolvedPath) : undefined;
-        body = kind && digest ? __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)) : undefined;
-      } finally { leaveLoadPhase(loadAccount); }
+      if (kind && digest) {
+        enterLoadPhase(loadAccount, LoadPhase.BodyRead);
+        try { body = __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)); } finally { leaveLoadPhase(loadAccount); }
+      }
       if (body !== undefined) {
         loadAccount.preparedHit += 1;
+        loadAccount.preparedBytes += body.length;
         __substrateCountPrepared(process, 'digest');
         (module as Module & { filename?: string }).filename = resolvedPath;
         if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
@@ -2437,14 +2440,16 @@ function createRequire(
     __substrateTracePreparedGate(vfs, process, compiling, content, resolvedPath);
     // A body prepared for the file's own text; a program's `_compile` that handed on other text compiles that text.
     const strips = transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> });
-    enterLoadPhase(loadAccount, LoadPhase.Prepared);
+    enterLoadPhase(loadAccount, LoadPhase.Digest);
     let key: string | undefined;
+    try { key = compiling?.raw === content && format === undefined && !strips ? preparedModuleKey(rawCode, resolvedPath) : undefined; } finally { leaveLoadPhase(loadAccount); }
     let taken: string | undefined;
-    try {
-      key = compiling?.raw === content && format === undefined && !strips ? preparedModuleKey(rawCode, resolvedPath) : undefined;
-      taken = key ? __substrateReadPrepared(vfs, key) : undefined;
-    } finally { leaveLoadPhase(loadAccount); }
+    if (key) {
+      enterLoadPhase(loadAccount, LoadPhase.BodyRead);
+      try { taken = __substrateReadPrepared(vfs, key); } finally { leaveLoadPhase(loadAccount); }
+    }
     if (taken === undefined) loadAccount.preparedMiss += 1;
+    else loadAccount.preparedBytes += taken.length;
     if (key) {
       if (taken !== undefined) {
         loadAccount.preparedHit += 1;

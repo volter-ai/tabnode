@@ -7,7 +7,7 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 - Where a process's start went: one `[boot-trace] {"event":"load-account"}`
   line per process, when its loading has been quiet two seconds and at its
   exit. Files, bytes, prepared bodies taken and missed, and the milliseconds
-  of each loading phase (resolve, read, prepared, transform, compile,
+  of each loading phase (resolve, read, digest, bodyRead, transform, compile,
   evaluate, builtin, loader) as the phase's own time, with the twenty
   packages that took longest to evaluate (`src/load-account.ts` states each
   field and what the account cannot see).

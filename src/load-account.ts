@@ -9,8 +9,11 @@
  *
  *   resolve    a request made a file's path (`Module._resolveFilename`'s work), for every `require`, cached or not
  *   read       the file's source read from the tree
- *   prepared   a prepared body looked for and read: the tree's digest of the file, or a hash of the source just
- *              read, then the body's own read. `preparedHit` and `preparedMiss` count the answers.
+ *   digest     the name a prepared body would have: the tree asked for its digest of the file, or the source just
+ *              read hashed
+ *   bodyRead   the prepared body read from the tree by that name and decoded to text (`preparedBytes` of it; a
+ *              body taken by digest reads no source, so this is the file's only read). `preparedHit` and
+ *              `preparedMiss` count the answers.
  *   transform  the source made a body here because none was prepared: types stripped, ES module syntax lowered
  *   compile    the body handed to V8. V8 parses lazily, so the functions a body defines are compiled when they are
  *              first called and that time is the caller's `evaluate`.
@@ -23,13 +26,14 @@
  * its package, and nothing per line of output. No stacks are taken and nothing is said per file.
  *
  * What it does not see: a body that yields (a lowered ES module awaiting an import, a top-level `await`) is charged
- * until its first yield; what it does after resuming is outside the account, as a timer's callback is. `wallMs` is
- * the clock from the process's first load to the line, so `wallMs` less the phases is the program's own running and
- * waiting. The clock is the realm's `performance.now()`, which a browser coarsens (5 µs isolated, 100 µs not): a
+ * until its first yield; what it does after resuming is outside the account, as a timer's callback is. `accountedMs`
+ * is the phases' sum, and is the time loading took. `wallMs` is the clock from the process's first load to the line
+ * and `firstToLastLoadMs` to its last load: both include whatever the program did between its loads, so neither is
+ * a loading time. The clock is the realm's `performance.now()`, which a browser coarsens (5 µs isolated, 100 µs not): a
  * phase of many short stretches is a sum of rounded readings.
  */
-export const enum LoadPhase { Resolve, Read, Prepared, Transform, Compile, Evaluate, Builtin, Loader }
-const PHASE_NAMES = ['resolve', 'read', 'prepared', 'transform', 'compile', 'evaluate', 'builtin', 'loader'] as const;
+export const enum LoadPhase { Resolve, Read, Digest, BodyRead, Transform, Compile, Evaluate, Builtin, Loader }
+const PHASE_NAMES = ['resolve', 'read', 'digest', 'bodyRead', 'transform', 'compile', 'evaluate', 'builtin', 'loader'] as const;
 const PHASES = PHASE_NAMES.length;
 /** How many packages the line names, by evaluate time. */
 const PACKAGES_SAID = 20;
@@ -48,6 +52,7 @@ export interface LoadAccount {
   files: number;
   sourceBytes: number;
   bodyBytes: number;
+  preparedBytes: number;
   preparedHit: number;
   preparedMiss: number;
   byPackage: Map<string, PackageAccount>;
@@ -63,7 +68,7 @@ export function loadAccountFor(process: object): LoadAccount {
     const now = performance.now();
     account = {
       firstAt: now, firstWallAt: Date.now(), lastAt: now, last: now, depth: 0, kinds: [], packages: [],
-      ms: new Array<number>(PHASES).fill(0), requires: 0, files: 0, sourceBytes: 0, bodyBytes: 0, preparedHit: 0, preparedMiss: 0,
+      ms: new Array<number>(PHASES).fill(0), requires: 0, files: 0, sourceBytes: 0, bodyBytes: 0, preparedBytes: 0, preparedHit: 0, preparedMiss: 0,
       byPackage: new Map(), said: -1,
     };
     accounts.set(process, account);
@@ -146,9 +151,8 @@ export function sayLoadAccount(process: object, when: 'quiet' | 'exit'): void {
     event: 'load-account', at: Date.now(), when, pid: view.pid ?? null,
     entry: Array.isArray(view.argv) && typeof view.argv[1] === 'string' ? view.argv[1] : null,
     startedAt: account.firstWallAt,
-    // The clock from the first load to this line, and to the last load: the second is how long loading went on.
-    wallMs: round(now - account.firstAt), loadingMs: round(account.lastAt - account.firstAt), accountedMs: round(accounted),
-    requires: account.requires, files: account.files, sourceBytes: account.sourceBytes, bodyBytes: account.bodyBytes,
+    accountedMs: round(accounted), wallMs: round(now - account.firstAt), firstToLastLoadMs: round(account.lastAt - account.firstAt),
+    requires: account.requires, files: account.files, sourceBytes: account.sourceBytes, bodyBytes: account.bodyBytes, preparedBytes: account.preparedBytes,
     preparedHit: account.preparedHit, preparedMiss: account.preparedMiss, packagesLoaded: account.byPackage.size,
     ms,
     columns: ['package', 'files', 'bodyBytes', 'evaluateMs'],
