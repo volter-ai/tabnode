@@ -30,8 +30,7 @@ function ownedBytes(view: Uint8Array): Uint8Array {
 }
 import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, stopHandle,
-  type OwnedHandle,
-} from './handles';
+  type OwnedHandle, invokeOwned } from './handles';
 
 /** The four slots libuv's `StreamBase` reports a read or a write through. */
 export const kReadBytesOrError = 0;
@@ -191,9 +190,9 @@ export class LibuvStreamWrap implements OwnedHandle {
   shutdown(req: ShutdownWrap): number {
     if (this.closed) return UV_EBADF;
     const native = nativeStreamFor(this);
-    if (native) return native.shutdown(status => req.oncomplete?.(status));
+    if (native) return native.shutdown(status => invokeOwned(req, 'oncomplete', status));
     this.sendEof();
-    queueMicrotask(() => { req.oncomplete?.(0); });
+    queueMicrotask(() => { invokeOwned(req, 'oncomplete', 0); });
     return 0;
   }
 
@@ -500,13 +499,13 @@ export class LibuvStreamWrap implements OwnedHandle {
           if (taken < bytes.byteLength) this.inbound.unshift({ bytes: bytes.subarray(taken) });
           streamBaseState[kReadBytesOrError] = taken;
           streamBaseState[kArrayBufferOffset] = 0;
-          try { this.onread?.(null); } finally { this.streamEndpoint.capacityChanged(); }
+          try { invokeOwned(this, 'onread', null); } finally { this.streamEndpoint.capacityChanged(); }
           continue;
         }
         streamBaseState[kReadBytesOrError] = bytes.byteLength;
         this.bytesRead += bytes.byteLength;
         streamBaseState[kArrayBufferOffset] = bytes.byteOffset;
-        try { this.onread?.(bytes.buffer as ArrayBuffer); } finally { this.streamEndpoint.capacityChanged(); }
+        try { invokeOwned(this, 'onread', bytes.buffer as ArrayBuffer); } finally { this.streamEndpoint.capacityChanged(); }
       }
       if (this.reading && !this.closed && this.inbound.length === 0 && !this.eofDelivered &&
           (this.inboundError !== null || this.inboundEof)) {
@@ -517,7 +516,7 @@ export class LibuvStreamWrap implements OwnedHandle {
         stopHandle(this);
         streamBaseState[kReadBytesOrError] = this.inboundError ?? UV_EOF;
         streamBaseState[kArrayBufferOffset] = 0;
-        this.onread?.(null);
+        invokeOwned(this, 'onread', null);
       }
     } finally {
       nativeStreamFor(this)?.readFlushed(this.inbound.length === 0, this.eofDelivered);
