@@ -746,6 +746,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       // console over `process.send` and dies of a failed require -- wrote on
       // the closed channel and took `write EBADF` as its last act.
       proc.emit('exit', code);
+      (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
       exitResolve!(code);
     }
     // `process.exit()` ends a Node process and everything it holds; a named
@@ -1119,6 +1120,19 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) break;
     }
 
+    // A process whose loop has drained emits `exit`, as Node's does (`process.emit('exit', process.exitCode || 0)`,
+    // then it ends with whatever `process.exitCode` its listeners left): a program that writes its report, removes
+    // its temporary files or flushes a log from an `exit` listener did none of it here unless it called
+    // `process.exit` itself. Marked as exited first, so a listener that calls `process.exit` does not emit it again.
+    // One that was ended from outside (its run aborted) is killed, and a killed process emits nothing.
+    if (typeof proc !== 'undefined' && !exitCalled && !streams?.signal?.aborted) {
+      exitCalled = true;
+      exitCode = typeof proc.exitCode === 'number' ? proc.exitCode : 0;
+      try { proc.emit('exit', exitCode); } catch (error) { __reportUncaughtException(proc, error); }
+      if (typeof proc.exitCode === 'number') exitCode = proc.exitCode;
+    }
+    // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
+    if (typeof proc !== 'undefined') (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
     return { stdout, stderr, exitCode: runEnd = exitCalled ? exitCode : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
   } finally {
     if (streams) streams.stdin = null;
