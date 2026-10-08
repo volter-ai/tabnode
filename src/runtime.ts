@@ -55,6 +55,7 @@ import {
 } from './node-lib/small-modules';
 import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
+import type { ResolutionKept } from './node-resolution';
 import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
 import { PUNYCODE_SOURCE } from './punycode-source';
 import * as perfHooksShim from './shims/perf_hooks';
@@ -1836,6 +1837,26 @@ function __substrateRegisteredExtension(filename: string, extensions: Record<str
 // probes: 0.863 s inclusive resolveModule in Dub's retained World host.
 // Keep failures local and separate filesystems/process module caches. The
 // payload estimate bounds retained strings, not JavaScript heap overhead.
+/**
+ * What a process keeps between its resolutions (node-resolution.ts `ResolutionKept`), and the depth of its `require`
+ * calls in flight: Node's `requireDepth`, which decides when its stat cache exists.
+ */
+const __substrateResolutionKept = new WeakMap<object, ResolutionKept & { depth: number }>();
+function __substrateKeptFor(process: object): ResolutionKept & { depth: number } {
+  let kept = __substrateResolutionKept.get(process);
+  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0 }; __substrateResolutionKept.set(process, kept); }
+  return kept;
+}
+/**
+ * Node's stat cache exists while a module compiled at require depth 0 executes, and not otherwise
+ * (`Module.prototype._compile`: `if (requireDepth === 0) { statCache = new SafeMap(); }`, unset when the body returns).
+ */
+function __substrateInStatWindow<T>(process: object, run: () => T): T {
+  const keeping = __substrateKeptFor(process);
+  if (keeping.depth !== 0 || keeping.stats !== undefined) return run();
+  keeping.stats = new Map();
+  try { return run(); } finally { keeping.stats = undefined; }
+}
 const __substrateResolvedPaths = new WeakMap<Record<string, Module>, WeakMap<VirtualFS, { paths: Map<string, string>; bytes: number }>>();
 function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
   let filesystems = __substrateResolvedPaths.get(cache);
@@ -2089,7 +2110,7 @@ function createRequire(
     // so a root package's imports map never answered; the shared resolver takes
     // the `#` names too.
     if (id.startsWith('#')) {
-      const __resolvedImport = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir);
+      const __resolvedImport = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir, __substrateKeptFor(process));
       if (__resolvedImport) return __resolvedImport;
       throw Object.assign(new Error(`Cannot find module '${id}'`), { code: 'MODULE_NOT_FOUND' });
     }
@@ -2110,7 +2131,7 @@ function createRequire(
     // app found a new gap. This site keeps only its edges — the cache, the
     // builtins, the stand-ins — and calls the shared resolver.
     {
-      const __resolved = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir);
+      const __resolved = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir, __substrateKeptFor(process));
       if (__resolved) {
         __substrateKeepPath(successfulPaths, cacheKey, __resolved);
         return __resolved;
@@ -2425,7 +2446,7 @@ function createRequire(
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(moduleRequire, process, importMetaUrl);
 
-      const body = withGuestExecution(() => fn(
+      const body = __substrateInStatWindow(process, () => withGuestExecution(() => fn(
         module.exports,
         moduleRequire,
         module,
@@ -2437,7 +2458,7 @@ function createRequire(
         dynamicImport,
         __substrateGuestGlobal,
         __substrateGuestConstructor
-      ));
+      )));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
       if (settling) __substrateKeepPending(module, settling, () => { delete moduleCache[resolvedPath]; });
@@ -2482,7 +2503,13 @@ function createRequire(
    * case and so does this: with no hook registered, `requirePlain` is the
    * whole of a require and nothing below it runs.
    */
+  // Node's `Module.prototype.require` counts the calls in flight (`requireDepth`); the count is the process's.
   const requireRaw = (id: string): unknown => {
+    const keeping = __substrateKeptFor(process);
+    keeping.depth += 1;
+    try { return requireCounted(id); } finally { keeping.depth -= 1; }
+  };
+  const requireCounted = (id: string): unknown => {
     // A data: URL is a module of its own, loaded at that URL.
     if (id.startsWith('data:')) return loadModule(id).exports;
     // A hook is handed the specifier as it was written, `node:` prefix and
@@ -3037,7 +3064,7 @@ export class Runtime {
         try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), this.process); }
         catch { throw syntaxError; }
       }
-      const body = withGuestExecution(() => fn(
+      const body = __substrateInStatWindow(this.process, () => withGuestExecution(() => fn(
         module.exports,
         require,
         module,
@@ -3049,7 +3076,7 @@ export class Runtime {
         dynamicImport,
         __substrateGuestGlobal,
         __substrateGuestConstructor
-      ));
+      )));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
       if (settling) __substrateKeepPending(module, settling, () => { delete this.moduleCache[filename]; });

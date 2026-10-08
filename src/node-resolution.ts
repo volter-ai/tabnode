@@ -45,9 +45,30 @@ export interface NodeResolverOptions {
   skipThrowingCjs?: boolean;
 }
 
+/**
+ * What one process keeps between its resolutions, as Node's CommonJS loader does (lib/internal/modules/cjs/loader.js
+ * and helpers.js, v24.21.0). A caller that passes none resolves as before, every probe asked of the tree.
+ */
+export interface ResolutionKept {
+  /**
+   * `package.json` files read and parsed, by path, for the process's life: Node's package reader keeps each one it
+   * has read. One that is absent or does not parse is not kept, so a package linked in later is found.
+   */
+  manifests: Map<string, Record<string, unknown>>;
+  /** Real paths answered, for the process's life: Node's `realpathCache` (helpers.js `toRealPath`). */
+  realPaths: Map<string, string>;
+  /**
+   * Paths found to exist, 0 a file and 1 a directory: Node's `statCache`, which holds successful stats only
+   * (`stat()` sets it when `internalModuleStat` answers >= 0) and exists only while a module compiled at require
+   * depth 0 is executing (`Module.prototype._compile`). The caller sets it for that window and unsets it after;
+   * a path that was absent is asked again every time, so a file written and then required is found.
+   */
+  stats?: Map<string, 0 | 1>;
+}
+
 export interface NodeResolver {
   /** The file a specifier names from a directory, or null when the tree does not answer it. Builtins are the caller's. */
-  resolve(specifier: string, fromDir: string): string | null;
+  resolve(specifier: string, fromDir: string, kept?: ResolutionKept): string | null;
 }
 
 export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
@@ -64,16 +85,30 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
   const manifests = new Map<string, Record<string, unknown> | null>();
   // stat already distinguishes absence and type; probing exists first walks
   // the same filesystem path twice for every successful module candidate.
-  const isFile = (path: string): boolean => { try { return fs.statSync(path, { throwIfNoEntry: false })?.isFile() ?? false; } catch { return false; } };
-  const isDirectory = (path: string): boolean => { try { return fs.statSync(path, { throwIfNoEntry: false })?.isDirectory() ?? false; } catch { return false; } };
+  /** What the resolution in hand keeps for its process; none for a caller that keeps nothing. */
+  let kept: ResolutionKept | undefined;
+  /** 0 a file, 1 a directory, -1 neither or absent. */
+  const kind = (path: string): 0 | 1 | -1 => {
+    const held = kept?.stats?.get(path);
+    if (held !== undefined) return held;
+    let found: 0 | 1 | -1 = -1;
+    try { const stat = fs.statSync(path, { throwIfNoEntry: false }); found = stat?.isFile() ? 0 : stat?.isDirectory() ? 1 : -1; } catch { found = -1; }
+    if (found !== -1) kept?.stats?.set(path, found);
+    return found;
+  };
+  const isFile = (path: string): boolean => kind(path) === 0;
+  const isDirectory = (path: string): boolean => kind(path) === 1;
   const manifest = (directory: string): Record<string, unknown> | null => {
     const path = `${directory === "/" ? "" : directory}/package.json`;
+    const held = kept?.manifests.get(path);
+    if (held) return held;
     if (manifests.has(path)) return manifests.get(path)!;
     let parsed: Record<string, unknown> | null = null;
     if (isFile(path)) {
       try { const text = fs.readFileSync(path, "utf8"); parsed = JSON.parse(typeof text === "string" ? text : new TextDecoder().decode(text)) as Record<string, unknown>; } catch { parsed = null; }
     }
     manifests.set(path, parsed);
+    if (parsed && typeof parsed === "object") kept?.manifests.set(path, parsed);
     return parsed;
   };
   const join = (base: string, relative: string): string => normalize(relative.startsWith("/") ? relative : `${base}/${relative}`);
@@ -209,17 +244,26 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     }
   };
 
-  const resolve = (specifier: string, fromDir: string): string | null => {
-    // Manifests are read once per resolution, never kept across: the tree
-    // changes under a long-lived resolver, an install links a package in.
+  const resolve = (specifier: string, fromDir: string, keeping?: ResolutionKept): string | null => {
+    // Without a process's own store, manifests are read once per resolution and never kept across: this resolver
+    // outlives processes, the tree changes under it, an install links a package in. A process's store keeps the
+    // ones it read, as Node's does; an absent manifest is asked again in the next resolution either way.
     manifests.clear();
-    const found = resolveCached(specifier, fromDir);
-    // Node answers the real path of what it found: a package reached through
-    // a link (pnpm lays every dependency under `.pnpm` and links it in) is
-    // then walked up from where it really is, so its own dependencies beside
-    // it are found. A filesystem without links answers the path itself.
-    if (found && fs.realpathSync) { try { return fs.realpathSync(found); } catch { return found; } }
-    return found;
+    const outer = kept;
+    kept = keeping;
+    try {
+      const found = resolveCached(specifier, fromDir);
+      // Node answers the real path of what it found: a package reached through
+      // a link (pnpm lays every dependency under `.pnpm` and links it in) is
+      // then walked up from where it really is, so its own dependencies beside
+      // it are found. A filesystem without links answers the path itself.
+      if (found && fs.realpathSync) {
+        const held = kept?.realPaths.get(found);
+        if (held !== undefined) return held;
+        try { const real = fs.realpathSync(found); kept?.realPaths.set(found, real); return real; } catch { return found; }
+      }
+      return found;
+    } finally { kept = outer; }
   };
   const resolveCached = (specifier: string, fromDir: string): string | null => {
     if (specifier.startsWith("#")) return loadPackageImports(specifier, fromDir);
