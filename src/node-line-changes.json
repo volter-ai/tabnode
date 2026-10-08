@@ -15,13 +15,13 @@
   },
   "18 to 20": {
    "commits": 107,
-   "a": 29,
-   "b": 0,
-   "c": 1,
-   "d": 7,
-   "e": 4,
-   "v": 18,
-   "unclassed": 48
+   "a": 56,
+   "b": 8,
+   "c": 11,
+   "d": 23,
+   "e": 5,
+   "v": 4,
+   "unclassed": 0
   }
  },
  "rows": [
@@ -31,7 +31,8 @@
    "subsystem": "build",
    "title": "enable V8's trap handler on Windows",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -39,7 +40,8 @@
    "subsystem": "build",
    "title": "reset embedder string to \"-node.0\"",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -63,9 +65,8 @@
    "subsystem": "crypto",
    "title": "remove non-standard `webcrypto.Crypto.prototype.CryptoKey`",
    "pr": 42083,
-   "class": "d",
-   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
-   "reached": "not determined: no application's built server code was searched for it"
+   "class": "b",
+   "note": "a global crypto (WebCrypto): code that tests `typeof crypto` takes the other branch"
   },
   {
    "line": 19,
@@ -73,7 +74,10 @@
    "subsystem": "crypto",
    "title": "do not allow to call setFips from the worker thread",
    "pr": 43624,
-   "class": "unclassed"
+   "class": "d",
+   "note": "crypto.setFips throws when called from a worker thread",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 19,
@@ -91,7 +95,8 @@
    "subsystem": "deps",
    "title": "bump minimum ICU version to 71",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -99,7 +104,8 @@
    "subsystem": "deps",
    "title": "V8: cherry-pick 0cccb6f27d78",
    "pr": 44741,
-   "class": "v"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -107,7 +113,8 @@
    "subsystem": "deps",
    "title": "V8: cherry-pick 7ddb8399f9f1",
    "pr": 44741,
-   "class": "v"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -115,7 +122,8 @@
    "subsystem": "deps",
    "title": "V8: cherry-pick 1b3a4f0c34a1",
    "pr": 44741,
-   "class": "v"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -123,7 +131,8 @@
    "subsystem": "deps",
    "title": "V8: cherry-pick b161a0823165",
    "pr": 44741,
-   "class": "v"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -131,7 +140,8 @@
    "subsystem": "deps",
    "title": "fix V8 build on Windows with MSVC",
    "pr": 44741,
-   "class": "v"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -139,7 +149,8 @@
    "subsystem": "deps",
    "title": "fix V8 build on SmartOS",
    "pr": 44741,
-   "class": "v"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -147,7 +158,8 @@
    "subsystem": "deps",
    "title": "silence irrelevant V8 warning",
    "pr": 44741,
-   "class": "v"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -155,7 +167,8 @@
    "subsystem": "deps",
    "title": "update V8 to 10.7.193.13",
    "pr": 44741,
-   "class": "v"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -163,7 +176,10 @@
    "subsystem": "events",
    "title": "add null check for the signal of EventTarget",
    "pr": 43153,
-   "class": "unclassed"
+   "class": "d",
+   "note": "EventTarget validates a null signal",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 19,
@@ -171,7 +187,8 @@
    "subsystem": "fs",
    "title": "add directory autodetection to fsPromises.symlink()",
    "pr": 42894,
-   "class": "unclassed"
+   "class": "a",
+   "note": "fsPromises.symlink's directory autodetection is Windows'"
   },
   {
    "line": 19,
@@ -179,7 +196,10 @@
    "subsystem": "fs",
    "title": "add validateBuffer to improve error",
    "pr": 44769,
-   "class": "unclassed"
+   "class": "c",
+   "note": "an fs buffer argument's error is another error",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 19,
@@ -197,7 +217,10 @@
    "subsystem": "fs",
    "title": "harden fs.readSync(buffer, options) typecheck",
    "pr": 42772,
-   "class": "unclassed"
+   "class": "d",
+   "note": "fs.read, fs.readSync and filehandle.read check their arguments more strictly",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 19,
@@ -205,7 +228,10 @@
    "subsystem": "fs",
    "title": "harden fs.read(params, callback) typecheck",
    "pr": 42772,
-   "class": "unclassed"
+   "class": "d",
+   "note": "fs.read, fs.readSync and filehandle.read check their arguments more strictly",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 19,
@@ -213,7 +239,10 @@
    "subsystem": "fs",
    "title": "harden filehandle.read(params) typecheck",
    "pr": 42772,
-   "class": "unclassed"
+   "class": "d",
+   "note": "fs.read, fs.readSync and filehandle.read check their arguments more strictly",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 19,
@@ -221,7 +250,10 @@
    "subsystem": "http",
    "title": "use Keep-Alive by default in global agents",
    "pr": 43522,
-   "class": "unclassed"
+   "class": "c",
+   "note": "the global http and https agents keep connections alive by default: a server sees its Node clients reuse sockets, and an idle client holds one open",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 19,
@@ -229,7 +261,8 @@
    "subsystem": "inspector",
    "title": "introduce inspector/promises API",
    "pr": 44250,
-   "class": "unclassed"
+   "class": "b",
+   "note": "inspector/promises"
   },
   {
    "line": 19,
@@ -237,7 +270,8 @@
    "subsystem": "lib",
    "title": "enable global CustomEvent by default",
    "pr": 44860,
-   "class": "unclassed"
+   "class": "b",
+   "note": "a global CustomEvent"
   },
   {
    "line": 19,
@@ -245,7 +279,8 @@
    "subsystem": "lib",
    "title": "brand check event handler property receivers",
    "pr": 44483,
-   "class": "unclassed"
+   "class": "b",
+   "note": "web performance interfaces as globals, and event handler properties check their receiver"
   },
   {
    "line": 19,
@@ -253,7 +288,8 @@
    "subsystem": "lib",
    "title": "enable global WebCrypto by default",
    "pr": 42083,
-   "class": "unclassed"
+   "class": "b",
+   "note": "a global crypto (WebCrypto): code that tests `typeof crypto` takes the other branch"
   },
   {
    "line": 19,
@@ -261,7 +297,8 @@
    "subsystem": "lib",
    "title": "use private field in AbortController",
    "pr": 43820,
-   "class": "unclassed"
+   "class": "a",
+   "note": "AbortController internals"
   },
   {
    "line": 19,
@@ -279,7 +316,10 @@
    "subsystem": "path",
    "title": "the dot will be added(path.format) if it is not specified in `ext`",
    "pr": 44349,
-   "class": "unclassed"
+   "class": "c",
+   "note": "path.format adds the dot when `ext` lacks it",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 19,
@@ -287,7 +327,8 @@
    "subsystem": "perf_hooks",
    "title": "expose webperf global scope interfaces",
    "pr": 44483,
-   "class": "unclassed"
+   "class": "b",
+   "note": "web performance interfaces as globals, and event handler properties check their receiver"
   },
   {
    "line": 19,
@@ -295,7 +336,8 @@
    "subsystem": "perf_hooks",
    "title": "fix webperf idlharness",
    "pr": 44483,
-   "class": "unclassed"
+   "class": "b",
+   "note": "web performance interfaces as globals, and event handler properties check their receiver"
   },
   {
    "line": 19,
@@ -313,7 +355,10 @@
    "subsystem": "process",
    "title": "make process.config read only",
    "pr": 43627,
-   "class": "unclassed"
+   "class": "d",
+   "note": "process.config cannot be written",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 19,
@@ -331,7 +376,8 @@
    "subsystem": "src",
    "title": "use new v8::OOMErrorCallback API",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -339,7 +385,8 @@
    "subsystem": "src",
    "title": "override CreateJob instead of PostJob",
    "pr": 44741,
-   "class": "unclassed"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -347,7 +394,8 @@
    "subsystem": "src",
    "title": "use V8_ENABLE_SANDBOX macro",
    "pr": 44741,
-   "class": "unclassed"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -355,7 +403,8 @@
    "subsystem": "src",
    "title": "use non-deprecated V8 inspector API",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -363,7 +412,8 @@
    "subsystem": "src",
    "title": "update NODE_MODULE_VERSION to 111",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -371,7 +421,8 @@
    "subsystem": "src",
    "title": "turn embedder api overload into default argument",
    "pr": 43629,
-   "class": "unclassed"
+   "class": "a",
+   "note": "embedder API"
   },
   {
    "line": 19,
@@ -379,7 +430,8 @@
    "subsystem": "src",
    "title": "per-environment time origin value",
    "pr": 43781,
-   "class": "unclassed"
+   "class": "a",
+   "note": "an internal time origin"
   },
   {
    "line": 19,
@@ -387,7 +439,8 @@
    "subsystem": "src,test",
    "title": "disable freezing V8 flags on initialization",
    "pr": 44741,
-   "class": "unclassed"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -395,7 +448,10 @@
    "subsystem": "stream",
    "title": "use null for the error argument",
    "pr": 44312,
-   "class": "unclassed"
+   "class": "c",
+   "note": "a stream's callback gets null, not undefined, for no error",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 19,
@@ -403,7 +459,8 @@
    "subsystem": "test",
    "title": "adapt test-repl for V8 update",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -411,7 +468,8 @@
    "subsystem": "test",
    "title": "adapt test-repl-pretty-*stack to V8 changes",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -419,7 +477,8 @@
    "subsystem": "test",
    "title": "adapt to new JSON SyntaxError messages",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -427,7 +486,8 @@
    "subsystem": "test",
    "title": "rename always-opt flag to always-turbofan",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -435,7 +495,8 @@
    "subsystem": "test",
    "title": "fix test-hash-seed for new V8 versions",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 19,
@@ -451,7 +512,10 @@
    "subsystem": "tls,http2",
    "title": "send fatal alert on ALPN mismatch",
    "pr": 44031,
-   "class": "unclassed"
+   "class": "c",
+   "note": "TLS and http2 send a fatal alert on an ALPN mismatch",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 19,
@@ -459,7 +523,8 @@
    "subsystem": "tools",
    "title": "update V8 gypfiles for 10.7",
    "pr": 44741,
-   "class": "a"
+   "class": "a",
+   "note": "V8 embedding"
   },
   {
    "line": 20,
@@ -477,7 +542,10 @@
    "subsystem": "buffer",
    "title": "check INSPECT_MAX_BYTES with validateNumber",
    "pr": 46599,
-   "class": "unclassed"
+   "class": "d",
+   "note": "buffer.INSPECT_MAX_BYTES is validated",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -485,7 +553,8 @@
    "subsystem": "buffer",
    "title": "graduate File from experimental and expose as global",
    "pr": 47153,
-   "class": "unclassed"
+   "class": "b",
+   "note": "a global File"
   },
   {
    "line": 20,
@@ -493,7 +562,10 @@
    "subsystem": "buffer",
    "title": "use min/max of `validateNumber`",
    "pr": 45796,
-   "class": "unclassed"
+   "class": "d",
+   "note": "buffer functions validate number ranges",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -517,7 +589,8 @@
    "subsystem": "build",
    "title": "reset embedder string to \"-node.0\"",
    "pr": 45579,
-   "class": "a"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -555,7 +628,10 @@
    "subsystem": "crypto",
    "title": "use WebIDL converters in WebCryptoAPI",
    "pr": 46067,
-   "class": "unclassed"
+   "class": "d",
+   "note": "WebCrypto validates its arguments by WebIDL: values it used to coerce are refused",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -605,7 +681,8 @@
    "subsystem": "deps",
    "title": "V8: cherry-pick f1c888e7093e",
    "pr": 45579,
-   "class": "v"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -613,7 +690,8 @@
    "subsystem": "deps",
    "title": "fix V8 build on Windows with MSVC",
    "pr": 45579,
-   "class": "v"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -621,7 +699,8 @@
    "subsystem": "deps",
    "title": "silence irrelevant V8 warning",
    "pr": 45579,
-   "class": "v"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -629,7 +708,8 @@
    "subsystem": "deps",
    "title": "V8: fix v8-cppgc.h for MSVC",
    "pr": 45579,
-   "class": "v"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -637,7 +717,8 @@
    "subsystem": "deps",
    "title": "fix V8 build issue with inline methods",
    "pr": 45579,
-   "class": "v"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -645,7 +726,8 @@
    "subsystem": "deps",
    "title": "update V8 to 10.9.194.4",
    "pr": 45579,
-   "class": "v"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -661,7 +743,10 @@
    "subsystem": "events",
    "title": "refactor to use `validateNumber`",
    "pr": 45770,
-   "class": "unclassed"
+   "class": "d",
+   "note": "events validate numbers",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -669,7 +754,10 @@
    "subsystem": "http",
    "title": "close the connection after sending a body without declared length",
    "pr": 46333,
-   "class": "unclassed"
+   "class": "c",
+   "note": "an HTTP response with a body and no declared length closes the connection after it",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -677,7 +765,10 @@
    "subsystem": "http",
    "title": "keep HTTP/1.1 conns alive even if the Connection header is removed",
    "pr": 46331,
-   "class": "unclassed"
+   "class": "c",
+   "note": "HTTP/1.1 connections stay alive even when the Connection header is removed",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -685,7 +776,10 @@
    "subsystem": "http",
    "title": "throw error if options of http.Server is array",
    "pr": 46283,
-   "class": "unclassed"
+   "class": "d",
+   "note": "http.Server throws for options given as an array",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -693,7 +787,10 @@
    "subsystem": "http",
    "title": "server check Host header, to meet RFC 7230 5.4 requirement",
    "pr": 45597,
-   "class": "unclassed"
+   "class": "c",
+   "note": "an HTTP/1.1 request with no Host header is answered 400 by the server",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -701,7 +798,10 @@
    "subsystem": "lib",
    "title": "refactor to use min/max of `validateNumber`",
    "pr": 45772,
-   "class": "unclassed"
+   "class": "d",
+   "note": "stricter number validation",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -709,7 +809,10 @@
    "subsystem": "lib",
    "title": "refactor to use validators in http2",
    "pr": 46174,
-   "class": "unclassed"
+   "class": "d",
+   "note": "http2 validates its arguments",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -717,7 +820,8 @@
    "subsystem": "lib",
    "title": "performance improvement on readline async iterator",
    "pr": 41276,
-   "class": "unclassed"
+   "class": "a",
+   "note": "performance"
   },
   {
    "line": 20,
@@ -725,7 +829,10 @@
    "subsystem": "lib,src",
    "title": "update exit codes as per todos",
    "pr": 45841,
-   "class": "unclassed"
+   "class": "c",
+   "note": "some process exit codes changed",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -733,7 +840,10 @@
    "subsystem": "net",
    "title": "enable autoSelectFamily by default",
    "pr": 46790,
-   "class": "unclassed"
+   "class": "c",
+   "note": "net connects with autoSelectFamily by default (tries IPv6 and IPv4 addresses in turn): which address a client reaches, and how long a failed connect takes, differ",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -751,7 +861,10 @@
    "subsystem": "readline",
    "title": "refactor to use `validateNumber`",
    "pr": 45801,
-   "class": "unclassed"
+   "class": "d",
+   "note": "readline validates numbers",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -767,7 +880,8 @@
    "subsystem": "src",
    "title": "share common code paths for SEA and embedder script",
    "pr": 46825,
-   "class": "unclassed"
+   "class": "a",
+   "note": "single executable internals"
   },
   {
    "line": 20,
@@ -775,7 +889,8 @@
    "subsystem": "src",
    "title": "apply ABI-breaking API simplifications",
    "pr": 46705,
-   "class": "unclassed"
+   "class": "a",
+   "note": "embedder ABI"
   },
   {
    "line": 20,
@@ -783,7 +898,8 @@
    "subsystem": "src",
    "title": "use uint32_t for process initialization flags enum",
    "pr": 46427,
-   "class": "unclassed"
+   "class": "a",
+   "note": "embedder ABI"
   },
   {
    "line": 20,
@@ -791,7 +907,8 @@
    "subsystem": "src",
    "title": "fix ArrayBuffer::Detach deprecation",
    "pr": 45579,
-   "class": "unclassed"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -799,7 +916,8 @@
    "subsystem": "src",
    "title": "update NODE_MODULE_VERSION to 112",
    "pr": 45579,
-   "class": "a"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -807,7 +925,10 @@
    "subsystem": "stream",
    "title": "validate readable defaultEncoding",
    "pr": 46430,
-   "class": "unclassed"
+   "class": "d",
+   "note": "a readable's defaultEncoding is validated",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -815,7 +936,10 @@
    "subsystem": "stream",
    "title": "validate writable defaultEncoding",
    "pr": 46322,
-   "class": "unclassed"
+   "class": "d",
+   "note": "a writable's defaultEncoding is validated",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -823,7 +947,8 @@
    "subsystem": "test",
    "title": "make trace-gc-flag tests less strict",
    "pr": 45579,
-   "class": "a"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -831,7 +956,8 @@
    "subsystem": "test",
    "title": "adapt test-v8-stats for V8 update",
    "pr": 45579,
-   "class": "a"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -871,7 +997,8 @@
    "subsystem": "tools",
    "title": "update V8 gypfiles",
    "pr": 45579,
-   "class": "a"
+   "class": "a",
+   "note": "V8 API"
   },
   {
    "line": 20,
@@ -887,7 +1014,10 @@
    "subsystem": "url",
    "title": "runtime-deprecate url.parse() with invalid ports",
    "pr": 45526,
-   "class": "unclassed"
+   "class": "e",
+   "note": "url.parse() warns for an invalid port",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 20,
@@ -895,7 +1025,8 @@
    "subsystem": "util,doc",
    "title": "mark parseArgs() as stable",
    "pr": 46718,
-   "class": "unclassed"
+   "class": "a",
+   "note": "a stability label"
   },
   {
    "line": 20,
@@ -903,7 +1034,10 @@
    "subsystem": "wasi",
    "title": "make version non-optional",
    "pr": 47391,
-   "class": "unclassed"
+   "class": "d",
+   "note": "new WASI() requires a version",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
   },
   {
    "line": 21,

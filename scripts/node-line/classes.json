@@ -1,84 +1,484 @@
 {
   "about": "How each semver-major commit between Node lines is classed, as read from its title in Node's own changelog (not from its diff, except where `read` says so). a: not observable by a running server application. b: additive (the newer line has what the older lacked). c: a default or a behaviour changed. d: removed, or throws where the older line did not. e: a warning only the newer line prints. v: the JavaScript engine's (V8), which in a tab is the browser's for every line. Rules are tried in order on `subsystem: title`; `byPr` overrides them.",
   "rules": [
-    ["^(build|tools|test|doc|meta|benchmark)\\b", "a"],
-    ["^test_runner", "a"],
-    ["^deps: (update|upgrade) undici", "c"],
-    ["^deps: update llhttp", "c"],
-    ["^deps: (update|upgrade) npm", "a"],
-    ["^deps: bump minimum ICU", "a"],
-    ["^deps", "v"],
-    ["NODE_MODULE_VERSION|non-deprecated|deprecated fields|soon-to-be-deprecated|CppHeap|TaskRunner|TryCatch|V8 platform|v8::|FastApi|isolate|hash seed|OptionEnvvarSettings", "a"],
-    ["private (fields|properties)|fields private", "a"],
-    ["runtime deprecat|^[a-z_,]+: deprecate |emit warning|to runtime deprecation", "e"],
-    ["to eol|to EOL|end-of-life|EOL$|^[a-z_,]+: remove |nuke ", "d"]
+    [
+      "^(build|tools|test|doc|meta|benchmark)\\b",
+      "a"
+    ],
+    [
+      "^test_runner",
+      "a"
+    ],
+    [
+      "^deps: (update|upgrade) undici",
+      "c"
+    ],
+    [
+      "^deps: update llhttp",
+      "c"
+    ],
+    [
+      "^deps: (update|upgrade) npm",
+      "a"
+    ],
+    [
+      "^deps: bump minimum ICU",
+      "a"
+    ],
+    [
+      "^deps",
+      "v"
+    ],
+    [
+      "NODE_MODULE_VERSION|non-deprecated|deprecated fields|soon-to-be-deprecated|CppHeap|TaskRunner|TryCatch|V8 platform|v8::|FastApi|isolate|hash seed|OptionEnvvarSettings",
+      "a"
+    ],
+    [
+      "private (fields|properties)|fields private",
+      "a"
+    ],
+    [
+      "runtime deprecat|^[a-z_,]+: deprecate |emit warning|to runtime deprecation",
+      "e"
+    ],
+    [
+      "to eol|to EOL|end-of-life|EOL$|^[a-z_,]+: remove |nuke ",
+      "d"
+    ]
   ],
   "byPr": {
-    "49140": ["c", "crypto streams no longer overwrite the writable's defaultEncoding"],
-    "46018": ["d", "events.on/once throw on invalid options"],
-    "42835": ["d", "fs read methods validate `position` more strictly"],
-    "47653": ["b", "fs.globSync (and the test runner's globs)"],
-    "50167": ["c", "a corked chunked HTTP response is written in fewer parts: the bytes on the wire differ, the body does not"],
-    "47497": ["d", "structuredClone or postMessage of a URL or URLSearchParams throws"],
-    "48605": ["a", "AIX only"],
-    "47769": ["b", "a `navigator` global appears: code that feature-tests `typeof navigator` to tell a browser from Node takes the other branch"],
-    "48606": ["c", "an error code for a module failure changed"],
-    "48276": ["c", "server.maxConnections = 0 now refuses every connection instead of meaning no limit"],
-    "47385": ["c", "when a socket's _final is deferred"],
-    "48501": ["a", "native addon headers"],
-    "47839": ["c", "the error thrown for an uncloneable object is a DOMException"],
-    "47604": ["c", "the error thrown for an untransferable object is a DataCloneError"],
-    "49973": ["d", "tls validates options.minDHSize"],
-    "49896": ["d", "tls validates options.checkServerIdentity"],
-    "49720": ["a", "vm module internals"],
-    "49722": ["c", "console.assert formats non-string arguments separately"],
-    "50908": ["a", "fs.Stats date fields are made on first read"],
-    "50394": ["c", "writeHead after setHeader keeps duplicate raw headers"],
-    "51594": ["b", "a global WebSocket appears: a library that picks `ws` only when no global exists takes the other branch"],
-    "51362": ["v", "V8 12.x: the Iterator global and what came with that engine update"],
-    "52172": ["a", "node --print only"],
-    "52037": ["c", "streams' default highWaterMark is 64 KiB, was 16 KiB: chunk sizes and backpressure points move"],
-    "51360": ["v", "a compiler tier"],
-    "53495": ["c", "assert.deepStrictEqual and util.isDeepStrictEqual compare WeakMap and WeakSet by identity"],
-    "54588": ["d", "buffer writes past the end throw ERR_BUFFER_OUT_OF_BOUNDS"],
-    "47613": ["b", "File can be structured-cloned"],
-    "53793": ["a", "an internal event"],
-    "54761": ["d", "a V8 command-line flag is gone: a start command that passes it fails"],
-    "52747": ["d", "--trace-atomics-wait is gone"],
-    "52723": ["d", "--no-experimental-global-customevent is gone"],
-    "52611": ["d", "--no-experimental-fetch is gone: a start command that passes it fails"],
-    "52564": ["d", "--no-experimental-global-webcrypto is gone"],
-    "53305": ["c", "an scrypt parameter error has another code"],
-    "53848": ["b", "an ES module importing CommonJS also gets a 'module.exports' export name"],
-    "49741": ["d", "fs.symlink validates `type`"],
-    "54160": ["a", "Windows only"],
-    "54965": ["d", "AbortSignal arguments are validated by interface: an object that only looks like a signal is refused"],
-    "53355": ["b", "a global CloseEvent"],
-    "54470": ["d", "server.listen validates the host name"],
-    "54224": ["c", "path results for some edge inputs changed"],
-    "52347": ["c", "binding a pipe to a path too long for sockaddr_un fails instead of truncating"],
-    "53241": ["d", "stream.pipeline to a closed or destroyed stream errors"],
-    "54957": ["a", "string_decoder internals"],
-    "52627": ["c", "a TLS error code's spelling"],
-    "58154": ["v", "Float16Array and explicit resource management are the engine's"],
-    "57680": ["d", "readline functions throw after close"],
-    "57586": ["c", "http2 server.close() waits for sessions and closes them gracefully"],
-    "57591": ["c", "readline splits on Unicode line separators"],
-    "51821": ["d", "buffer functions validate their length argument's range"],
-    "57069": ["c", "clearImmediate ignores what is not an Immediate"],
-    "57149": ["d", "six process.binding() names are gone"],
-    "56950": ["b", "a global URLPattern"],
-    "56240": ["d", "--experimental-permission is gone (the flag is --permission)"],
-    "55270": ["c", "an error thrown by a destination's write during pipe is forwarded as the stream's error"],
-    "56082": ["c", "AsyncResource carries an async context frame"],
-    "55552": ["c", "AsyncLocalStorage is built on AsyncContextFrame, not async_hooks: what a store propagates through in edge cases, and its cost, differ"],
-    "54869": ["a", "the REPL"],
-    "58070": ["a", "V8 embedding API"],
-    "56664": ["a", "the test runner"]
+    "49140": [
+      "c",
+      "crypto streams no longer overwrite the writable's defaultEncoding"
+    ],
+    "46018": [
+      "d",
+      "events.on/once throw on invalid options"
+    ],
+    "42835": [
+      "d",
+      "fs read methods validate `position` more strictly"
+    ],
+    "47653": [
+      "b",
+      "fs.globSync (and the test runner's globs)"
+    ],
+    "50167": [
+      "c",
+      "a corked chunked HTTP response is written in fewer parts: the bytes on the wire differ, the body does not"
+    ],
+    "47497": [
+      "d",
+      "structuredClone or postMessage of a URL or URLSearchParams throws"
+    ],
+    "48605": [
+      "a",
+      "AIX only"
+    ],
+    "47769": [
+      "b",
+      "a `navigator` global appears: code that feature-tests `typeof navigator` to tell a browser from Node takes the other branch"
+    ],
+    "48606": [
+      "c",
+      "an error code for a module failure changed"
+    ],
+    "48276": [
+      "c",
+      "server.maxConnections = 0 now refuses every connection instead of meaning no limit"
+    ],
+    "47385": [
+      "c",
+      "when a socket's _final is deferred"
+    ],
+    "48501": [
+      "a",
+      "native addon headers"
+    ],
+    "47839": [
+      "c",
+      "the error thrown for an uncloneable object is a DOMException"
+    ],
+    "47604": [
+      "c",
+      "the error thrown for an untransferable object is a DataCloneError"
+    ],
+    "49973": [
+      "d",
+      "tls validates options.minDHSize"
+    ],
+    "49896": [
+      "d",
+      "tls validates options.checkServerIdentity"
+    ],
+    "49720": [
+      "a",
+      "vm module internals"
+    ],
+    "49722": [
+      "c",
+      "console.assert formats non-string arguments separately"
+    ],
+    "50908": [
+      "a",
+      "fs.Stats date fields are made on first read"
+    ],
+    "50394": [
+      "c",
+      "writeHead after setHeader keeps duplicate raw headers"
+    ],
+    "51594": [
+      "b",
+      "a global WebSocket appears: a library that picks `ws` only when no global exists takes the other branch"
+    ],
+    "51362": [
+      "v",
+      "V8 12.x: the Iterator global and what came with that engine update"
+    ],
+    "52172": [
+      "a",
+      "node --print only"
+    ],
+    "52037": [
+      "c",
+      "streams' default highWaterMark is 64 KiB, was 16 KiB: chunk sizes and backpressure points move"
+    ],
+    "51360": [
+      "v",
+      "a compiler tier"
+    ],
+    "53495": [
+      "c",
+      "assert.deepStrictEqual and util.isDeepStrictEqual compare WeakMap and WeakSet by identity"
+    ],
+    "54588": [
+      "d",
+      "buffer writes past the end throw ERR_BUFFER_OUT_OF_BOUNDS"
+    ],
+    "47613": [
+      "b",
+      "File can be structured-cloned"
+    ],
+    "53793": [
+      "a",
+      "an internal event"
+    ],
+    "54761": [
+      "d",
+      "a V8 command-line flag is gone: a start command that passes it fails"
+    ],
+    "52747": [
+      "d",
+      "--trace-atomics-wait is gone"
+    ],
+    "52723": [
+      "d",
+      "--no-experimental-global-customevent is gone"
+    ],
+    "52611": [
+      "d",
+      "--no-experimental-fetch is gone: a start command that passes it fails"
+    ],
+    "52564": [
+      "d",
+      "--no-experimental-global-webcrypto is gone"
+    ],
+    "53305": [
+      "c",
+      "an scrypt parameter error has another code"
+    ],
+    "53848": [
+      "b",
+      "an ES module importing CommonJS also gets a 'module.exports' export name"
+    ],
+    "49741": [
+      "d",
+      "fs.symlink validates `type`"
+    ],
+    "54160": [
+      "a",
+      "Windows only"
+    ],
+    "54965": [
+      "d",
+      "AbortSignal arguments are validated by interface: an object that only looks like a signal is refused"
+    ],
+    "53355": [
+      "b",
+      "a global CloseEvent"
+    ],
+    "54470": [
+      "d",
+      "server.listen validates the host name"
+    ],
+    "54224": [
+      "c",
+      "path results for some edge inputs changed"
+    ],
+    "52347": [
+      "c",
+      "binding a pipe to a path too long for sockaddr_un fails instead of truncating"
+    ],
+    "53241": [
+      "d",
+      "stream.pipeline to a closed or destroyed stream errors"
+    ],
+    "54957": [
+      "a",
+      "string_decoder internals"
+    ],
+    "52627": [
+      "c",
+      "a TLS error code's spelling"
+    ],
+    "58154": [
+      "v",
+      "Float16Array and explicit resource management are the engine's"
+    ],
+    "57680": [
+      "d",
+      "readline functions throw after close"
+    ],
+    "57586": [
+      "c",
+      "http2 server.close() waits for sessions and closes them gracefully"
+    ],
+    "57591": [
+      "c",
+      "readline splits on Unicode line separators"
+    ],
+    "51821": [
+      "d",
+      "buffer functions validate their length argument's range"
+    ],
+    "57069": [
+      "c",
+      "clearImmediate ignores what is not an Immediate"
+    ],
+    "57149": [
+      "d",
+      "six process.binding() names are gone"
+    ],
+    "56950": [
+      "b",
+      "a global URLPattern"
+    ],
+    "56240": [
+      "d",
+      "--experimental-permission is gone (the flag is --permission)"
+    ],
+    "55270": [
+      "c",
+      "an error thrown by a destination's write during pipe is forwarded as the stream's error"
+    ],
+    "56082": [
+      "c",
+      "AsyncResource carries an async context frame"
+    ],
+    "55552": [
+      "c",
+      "AsyncLocalStorage is built on AsyncContextFrame, not async_hooks: what a store propagates through in edge cases, and its cost, differ"
+    ],
+    "54869": [
+      "a",
+      "the REPL"
+    ],
+    "58070": [
+      "a",
+      "V8 embedding API"
+    ],
+    "56664": [
+      "a",
+      "the test runner"
+    ],
+    "43624": [
+      "d",
+      "crypto.setFips throws when called from a worker thread"
+    ],
+    "43153": [
+      "d",
+      "EventTarget validates a null signal"
+    ],
+    "42894": [
+      "a",
+      "fsPromises.symlink's directory autodetection is Windows'"
+    ],
+    "44769": [
+      "c",
+      "an fs buffer argument's error is another error"
+    ],
+    "42772": [
+      "d",
+      "fs.read, fs.readSync and filehandle.read check their arguments more strictly"
+    ],
+    "43522": [
+      "c",
+      "the global http and https agents keep connections alive by default: a server sees its Node clients reuse sockets, and an idle client holds one open"
+    ],
+    "44250": [
+      "b",
+      "inspector/promises"
+    ],
+    "44860": [
+      "b",
+      "a global CustomEvent"
+    ],
+    "44483": [
+      "b",
+      "web performance interfaces as globals, and event handler properties check their receiver"
+    ],
+    "42083": [
+      "b",
+      "a global crypto (WebCrypto): code that tests `typeof crypto` takes the other branch"
+    ],
+    "43820": [
+      "a",
+      "AbortController internals"
+    ],
+    "44349": [
+      "c",
+      "path.format adds the dot when `ext` lacks it"
+    ],
+    "43627": [
+      "d",
+      "process.config cannot be written"
+    ],
+    "44741": [
+      "a",
+      "V8 embedding"
+    ],
+    "43629": [
+      "a",
+      "embedder API"
+    ],
+    "43781": [
+      "a",
+      "an internal time origin"
+    ],
+    "44312": [
+      "c",
+      "a stream's callback gets null, not undefined, for no error"
+    ],
+    "44031": [
+      "c",
+      "TLS and http2 send a fatal alert on an ALPN mismatch"
+    ],
+    "46599": [
+      "d",
+      "buffer.INSPECT_MAX_BYTES is validated"
+    ],
+    "47153": [
+      "b",
+      "a global File"
+    ],
+    "45796": [
+      "d",
+      "buffer functions validate number ranges"
+    ],
+    "46067": [
+      "d",
+      "WebCrypto validates its arguments by WebIDL: values it used to coerce are refused"
+    ],
+    "45770": [
+      "d",
+      "events validate numbers"
+    ],
+    "46333": [
+      "c",
+      "an HTTP response with a body and no declared length closes the connection after it"
+    ],
+    "46331": [
+      "c",
+      "HTTP/1.1 connections stay alive even when the Connection header is removed"
+    ],
+    "46283": [
+      "d",
+      "http.Server throws for options given as an array"
+    ],
+    "45597": [
+      "c",
+      "an HTTP/1.1 request with no Host header is answered 400 by the server"
+    ],
+    "45772": [
+      "d",
+      "stricter number validation"
+    ],
+    "46174": [
+      "d",
+      "http2 validates its arguments"
+    ],
+    "41276": [
+      "a",
+      "performance"
+    ],
+    "45841": [
+      "c",
+      "some process exit codes changed"
+    ],
+    "46790": [
+      "c",
+      "net connects with autoSelectFamily by default (tries IPv6 and IPv4 addresses in turn): which address a client reaches, and how long a failed connect takes, differ"
+    ],
+    "45801": [
+      "d",
+      "readline validates numbers"
+    ],
+    "46825": [
+      "a",
+      "single executable internals"
+    ],
+    "46705": [
+      "a",
+      "embedder ABI"
+    ],
+    "46427": [
+      "a",
+      "embedder ABI"
+    ],
+    "45579": [
+      "a",
+      "V8 API"
+    ],
+    "46430": [
+      "d",
+      "a readable's defaultEncoding is validated"
+    ],
+    "46322": [
+      "d",
+      "a writable's defaultEncoding is validated"
+    ],
+    "45526": [
+      "e",
+      "url.parse() warns for an invalid port"
+    ],
+    "46718": [
+      "a",
+      "a stability label"
+    ],
+    "47391": [
+      "d",
+      "new WASI() requires a version"
+    ]
   },
   "unparsed": [
-    { "line": 24, "sha": "c7493fac5e", "subsystem": "test", "title": "Revert \"test: disable fast API call count checks\"", "pr": 58070, "class": "a", "note": "a test" },
-    { "line": 24, "sha": "4a47ce5ff9", "subsystem": "assert,util", "title": "Revert \"assert,util: revert recursive breaking change\"", "pr": 57622, "class": "c", "note": "assert and util.isDeepStrictEqual recursion handling; the PR number is as the changelog line gives it and was not checked" }
+    {
+      "line": 24,
+      "sha": "c7493fac5e",
+      "subsystem": "test",
+      "title": "Revert \"test: disable fast API call count checks\"",
+      "pr": 58070,
+      "class": "a",
+      "note": "a test"
+    },
+    {
+      "line": 24,
+      "sha": "4a47ce5ff9",
+      "subsystem": "assert,util",
+      "title": "Revert \"assert,util: revert recursive breaking change\"",
+      "pr": 57622,
+      "class": "c",
+      "note": "assert and util.isDeepStrictEqual recursion handling; the PR number is as the changelog line gives it and was not checked"
+    }
   ],
   "reached": {
     "47202": "reached: Twenty 19 and LibreChat 2 print \"[DEP0040] DeprecationWarning: The `punycode` module is deprecated\" in the tab (their dry-run logs); a Node 20 process prints nothing"
