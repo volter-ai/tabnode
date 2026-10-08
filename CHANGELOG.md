@@ -51,6 +51,13 @@ Added
   and Ed25519 key pairs, their PEM, DER and JWK encodings, `sign` and `verify`
   are implemented; what is not implemented throws by name at the call.
   `createPrivateKey` and `createPublicKey` refuse what is not a key.
+  No option of a key's encoding is dropped: each is read or refused by name.
+  A private key asked for with `cipher` and `passphrase` (from
+  `KeyObject.export`, `generateKeyPair` or `generateKeyPairSync`) is refused,
+  `ERR_CRYPTO_UNSUPPORTED_OPERATION`: this engine encrypts no key, and it does
+  not hand back the clear one. An encrypted key on the way in is refused as
+  encrypted (`ERR_MISSING_PASSPHRASE` with no passphrase, unsupported with
+  one). See "Where node:crypto's keys differ from Node's" below.
 - `navigator.locks` (one process's lock manager), `buffer.transcode`,
   `process.release`, `process.getuid`/`geteuid`/`getgid`/`getegid`/`getgroups`,
   `process.versions.acorn`, `process.features.typescript`.
@@ -58,7 +65,7 @@ Added
   `[boot-trace] node-line`, `[boot-trace] stat-window`, the resolver's probe
   counts on the `prepared-bodies` counts line, `[stream-calls]` and
   `[rows-used]` at a process's end.
-- - `installHostNames(names)`: a host supplies the names that are this host
+- `installHostNames(names)`: a host supplies the names that are this host
   besides `localhost` (ADR-0002). `dns.lookup` resolves a held name to the
   loopback in the caller's family, and `dns.resolve4`/`resolve6` answer its
   loopback records. With no host table installed nothing changes.
@@ -90,6 +97,31 @@ Changed, for every guest
 - `--enable-source-maps` and `process.setSourceMapsEnabled` keep the switch and
   warn once (`TABNODE_SOURCE_MAPS_NOT_APPLIED`): stacks are not remapped.
 - `Function.prototype.toString` makes a function's written source once.
+
+Where node:crypto's keys differ from Node's
+
+Measured with one script of 110 cases, hostile inputs among them, on Node
+v24.21.0 and in a guest: 64 answer the same, and in 16 more both refuse with
+different error codes (OpenSSL's own codes are not reproduced). The rest:
+
+- Not carried, refused by name where Node does it: encrypting a private key on
+  export; reading an encrypted key; `paramEncoding: 'explicit'`; curves other
+  than P-256, P-384 and P-521 (secp256k1 among them); signing or hashing with
+  SHA-512/224, SHA-512/256 or SHA-3 (`sha512-256` was read as SHA-512).
+- Stricter than Node, which accepts each of these and this engine refuses: a
+  DER length not in its shortest form, and bytes after the key; a SEC1 key
+  whose version is not 1; a public key's bit string with unused bits; a
+  private key whose stated public half is not its own (OpenSSL keeps the
+  stated one: it signs with one key and exports another's public half); a
+  private value of zero or beyond the curve's order; a PKCS#8 key that names
+  one curve outside and another inside; a JWK whose `d` is not the private
+  value of its `x` and `y` (EC) or `x` (Ed25519). No tool writes such a key;
+  one that does is the finding.
+- The same as Node, and not the curve library's default: Ed25519 verification
+  without the cofactor, refusing small-order keys and `R`; of the twelve
+  vectors of "Taming the many EdDSAs" both accept one.
+- A caller's DER is copied when a key is read; zeroing the buffer afterwards
+  does not change the key.
 
 Known cost
 
