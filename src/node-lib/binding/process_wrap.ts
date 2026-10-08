@@ -197,8 +197,13 @@ function spawningDirectory(token: ProcessToken | null): string | undefined {
   try { return realm.cwd(); } catch { return undefined; }
 }
 
-/** Where an `inherit` entry's bytes go: the spawning program's own stream. */
-function inheritedWriter(fd: number, token: ProcessToken | null): DescriptorWriter | null {
+/**
+ * Where an `inherit` entry's bytes go: the spawning program's own stream. An entry that names a descriptor by
+ * number is the same thing said another way, and `stdio: 'inherit'` is said that way: Node's
+ * `stdioStringToArray` turns the string into `[0, 1, 2]`, which `getValidStdio` hands on as `{ type: 'fd' }`.
+ * The synchronous binding asks here too, so a child's bytes go where they go whichever call started it.
+ */
+export function inheritedWriter(fd: number, token: ProcessToken | null): DescriptorWriter | null {
   // a descriptor of the parent's own (a log file it opened) is written as the file
   if (fd !== 1 && fd !== 2) return descriptorWriter(fd);
   // Inherit the descriptor's original sink, not a guest replacement of

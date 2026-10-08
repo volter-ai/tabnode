@@ -148,6 +148,13 @@ Fixed
 
 - A default export's expression keeps its parentheses when lowered.
 - `node`'s refusals go where its stderr goes when fd 2 is taken as bytes.
+- A synchronous child's output goes to the caller's own descriptor when
+  `stdio` names one by number, which is what `stdio: 'inherit'` is by the time
+  it reaches the binding: `spawnSync`/`execSync` with `'inherit'` printed
+  nothing and returned the bytes as `stdout`/`stderr` instead, a descriptor of
+  an open file stayed empty, and passed-on bytes counted toward `maxBuffer`.
+  Both paths (a child the engine runs, a child the host runs) go by the rule an
+  asynchronous child's stdio goes by (`scripts/sync-child-stdio.cjs`).
 - crypto: a base64 signature verifies; the legacy names `pseudoRandomBytes`,
   `prng` and `rng` are accessors as in Node.
 

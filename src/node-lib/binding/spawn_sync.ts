@@ -14,6 +14,7 @@ import { libRequire } from '../require-hook';
 import { UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ETIMEDOUT } from './uv';
 import { runSyncChild, syncChildRefusal } from '../../shims/sync-child';
 import { __substrateArgvFor, __substrateHostRuns, __substrateLineFor, __substrateRunsNode, __substrateShellLine } from '../../shims/command-line';
+import { inheritedWriter } from './process_wrap';
 import { __currentProcessToken, enterRun, exitRunProcess, forgetRunPid, mintPid, reapRunProcess, runPid, setRunPid } from '../../process-tokens';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio(stdio, true)` builds it. */
@@ -81,16 +82,12 @@ function environmentOf(envPairs: string[] | undefined): Record<string, string> |
   return env;
 }
 
-/** The program a caller can still write to: the engine's own stdout and stderr, given the child's bytes. */
-function inheritedWriter(fd: number): ((bytes: Uint8Array) => void) | undefined {
-  const realm = (globalThis as unknown as {
-    process?: { stdout?: { write(chunk: Uint8Array): unknown }; stderr?: { write(chunk: Uint8Array): unknown } };
-  }).process;
-  const stream = fd === 1 ? realm?.stdout : realm?.stderr;
-  if (!stream || typeof stream.write !== 'function') return undefined;
-  return (bytes: Uint8Array) => {
-    try { stream.write(bytes); } catch { /* a stream that refuses still lets the child run */ }
-  };
+/**
+ * Whether a child's fd is the caller's own descriptor rather than bytes kept for the caller: an `inherit` entry,
+ * or a descriptor named by number, which is what `stdio: 'inherit'` reaches this binding as.
+ */
+function passedOn(entry: SyncStdioEntry | undefined): boolean {
+  return entry?.type === 'inherit' || entry?.type === 'fd';
 }
 
 /**
@@ -131,6 +128,13 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
     return refused;
   };
 
+  // Where the child's fd 1 and fd 2 go when they are the caller's own descriptors, by the rule an asynchronous
+  // child's go by; a writer holding its own reference to a description lets it go when the child has ended.
+  const asking = __currentProcessToken();
+  const sinks = ([1, 2] as const).map((index) => passedOn(stdio[index]) ? inheritedWriter(stdio[index]!.fd ?? index, asking) : null);
+  const sink = (index: 1 | 2): ((bytes: Uint8Array) => void) | undefined => sinks[index - 1] ?? undefined;
+  const releaseSinks = (): void => { for (const held of sinks) held?.release?.(); };
+
   const input = stdio[0]?.input;
   const realm = (globalThis as unknown as { process?: { cwd?: () => string; env?: Record<string, string> } & Record<symbol, unknown> }).process;
   // The tree of the run that asks, which a host may have given that run alone.
@@ -150,11 +154,11 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
     setRunPid(token, childPid, parentPid, { argv, ...(cwd ? { cwd } : {}) }, owner);
     const kept: [Uint8Array[], Uint8Array[]] = [[], []];
     const take = (index: 0 | 1) => (bytes: Uint8Array): void => {
-      const kind = stdio[index + 1]?.type;
-      if (kind === 'inherit') inheritedWriter(index + 1)?.(bytes);
-      else if (kind !== 'ignore') kept[index].push(bytes.slice());
+      const entry = stdio[index + 1];
+      if (passedOn(entry)) sink((index + 1) as 1 | 2)?.(bytes);
+      else if (entry?.type !== 'ignore') kept[index].push(bytes.slice());
     };
-    const captured = (index: 1 | 2): boolean => stdio[index]?.type !== 'ignore' && stdio[index]?.type !== 'inherit';
+    const captured = (index: 1 | 2): boolean => stdio[index]?.type !== 'ignore' && !passedOn(stdio[index]);
     let answer: ReturnType<NonNullable<SyncChildHost['runSync']>>;
     try {
       answer = enterRun(token, () => host.runSync!(__substrateLineFor(options.file, argv, options.cwd), {
@@ -172,6 +176,7 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
     } catch (cause) {
       answer = { started: false, status: null, signal: null, refusal: cause instanceof Error ? cause.message : String(cause) };
     }
+    releaseSinks();
     // A child the host never started ends here, as one the engine never started does; one it ran reported its own
     // end. Either way this wait reaps it, and the end it answers is the one the process table holds.
     if (!answer.started) exitRunProcess(childPid, parentPid, 0, 'SIGKILL', owner);
@@ -218,12 +223,14 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
       cwd,
       env,
       ...(input === undefined ? {} : { input: new Uint8Array(input) }),
-      onStdout: stdio[1]?.type === 'inherit' ? inheritedWriter(1) : undefined,
-      onStderr: stdio[2]?.type === 'inherit' ? inheritedWriter(2) : undefined,
+      onStdout: sink(1),
+      onStderr: sink(2),
     });
   } catch {
+    releaseSinks();
     return nothing(UV_ENOSYS);
   }
+  releaseSinks();
 
   // A program the shell has no command for is absent, as it is on a machine
   // that does not carry that binary; a path that is there and is not a program
@@ -245,12 +252,13 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
   const limit = typeof options.maxBuffer === 'number' && options.maxBuffer >= 0 ? options.maxBuffer : Infinity;
   const stdout = Buffer.from(answer.stdout);
   const stderr = Buffer.from(answer.stderr);
-  const overflowed = stdout.length > limit || stderr.length > limit;
+  // Only bytes kept for the caller count: a descriptor passed on is not a buffer of this call's.
+  const kept = (index: 1 | 2): boolean => stdio[index]?.type !== 'ignore' && !passedOn(stdio[index]);
+  const overflowed = (kept(1) && stdout.length > limit) || (kept(2) && stderr.length > limit);
   const output: Array<Uint8Array | null> = [null];
   for (let index = 1; index < Math.max(3, stdio.length); index += 1) {
     const bytes = index === 1 ? stdout : index === 2 ? stderr : null;
-    const kind = stdio[index]?.type;
-    output.push(bytes === null || kind === 'ignore' || kind === 'inherit' ? null : bytes);
+    output.push(bytes === null || !kept(index as 1 | 2) ? null : bytes);
   }
 
   return {
