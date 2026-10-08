@@ -40,6 +40,37 @@ for (const name of names) {
   const reassign = `delete-then-assign ${said(() => { delete globalThis[name]; globalThis[name] = a; return globalThis[name] === a; })} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} restored ${restore()}`;
   rows.push(`${name} | ${assign} | ${define} | ${remove} | ${reassign}`);
 }
+// A define that names attributes only, or `writable` only, over a name the program has not made its own: the name
+// keeps its kind where the descriptor allows it (an accessor stays one for `enumerable`; `writable` makes it a value),
+// and an assignment after it is an ordinary one.
+for (const name of names) {
+  const original = Object.getOwnPropertyDescriptor(globalThis, name);
+  const first = globalThis[name];
+  const back = () => said(() => { Object.defineProperty(globalThis, name, original); if (globalThis[name] !== first) globalThis[name] = first; return globalThis[name] === first; });
+  const c = {};
+  const hidden = `attributes-only ${said(() => { Object.defineProperty(globalThis, name, { enumerable: false }); return globalThis[name] === first; })} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} assign-after ${said(() => { globalThis[name] = c; return globalThis[name] === c; })} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} restored ${back()}`;
+  const writable = `writable-only ${said(() => { Object.defineProperty(globalThis, name, { writable: true }); return globalThis[name] === first; })} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} assign-after ${said(() => { globalThis[name] = c; return globalThis[name] === c; })} restored ${back()}`;
+  rows.push(`${name} | ${hidden} | ${writable}`);
+}
+// Names Node does not have and a browser does: a program that makes one (a DOM test setup's `globalThis.window`) has
+// made a global like any other.
+for (const name of ['window', 'document', 'location']) {
+  const a = {}, b = {};
+  rows.push(`${name} | at first ${said(() => typeof globalThis[name])} in ${name in globalThis} ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} | assign ${said(() => { globalThis[name] = a; return globalThis[name] === a; })} bare ${said(() => eval(name) === a)} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} walked ${said(() => { for (const k in globalThis) if (k === name) return true; return false; })} | define ${said(() => { Object.defineProperty(globalThis, name, { value: b, writable: true, configurable: true, enumerable: false }); return globalThis[name] === b; })} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} | delete ${said(() => delete globalThis[name])} typeof ${said(() => typeof globalThis[name])} in ${name in globalThis}`);
+}
+// The two names a program cannot do without: what a delete of each answers and leaves, and that it can be put back.
+{
+  const kept = process, descriptor = Object.getOwnPropertyDescriptor(globalThis, 'process');
+  const removed = said(() => delete globalThis.process), after = said(() => typeof globalThis.process), inAfter = said(() => 'process' in globalThis);
+  const back = said(() => { Object.defineProperty(globalThis, 'process', descriptor); return globalThis.process === kept; });
+  rows.push(`process | ${kindOf(descriptor)} | delete ${removed} typeof ${after} in ${inAfter} restored ${back}`);
+  // `globalThis` is itself a property of the global object: once deleted the bare name is gone too, so the object
+  // is held by another name to look at it and to put the property back.
+  const G = globalThis, self = Object.getOwnPropertyDescriptor(G, 'globalThis');
+  const gone = said(() => delete G.globalThis), left = said(() => typeof G.globalThis), bare = said(() => typeof eval('globalThis'));
+  const again = said(() => { Object.defineProperty(G, 'globalThis', self); return G.globalThis === G && eval('globalThis') === G; });
+  rows.push(`globalThis | ${kindOf(self)} | delete ${gone} property-typeof ${left} bare-typeof ${bare} restored ${again}`);
+}
 for (const name of names) {
   const first = globalThis[name];
   rows.push(`${name} | fixed ${said(() => { Object.defineProperty(globalThis, name, { value: first, writable: false, configurable: false, enumerable: true }); return globalThis[name] === first; })} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} walk ${walkOf()} assign-ignored ${said(() => { globalThis[name] = {}; return globalThis[name] === first; })}`);

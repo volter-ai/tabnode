@@ -66,6 +66,36 @@ async function entered(name, listen) {
   await entered('event-target', (run) => { const target = new EventTarget(); target.addEventListener('go', run); queueMicrotask(() => target.dispatchEvent(new Event('go'))); });
   await entered('microtask', (run) => queueMicrotask(run));
   await entered('promise', (run) => { Promise.resolve().then(run); });
+  // 3. The same entry, where the code's FIRST act is a call a binding may answer before it returns, with no tick
+  //    queued yet: closing a handle, ending a child, a write. Whatever the act queues or emits comes after the code
+  //    that made it (`<name>/<act>: after, ...`); a binding's callback that drained the queue on its way out would
+  //    put the tick, or the event, first.
+  const net = require('net');
+  const acts = {
+    'destroy a socket': (seen, done) => { const server = net.createServer((peer) => peer.resume()).listen(0, () => { const socket = net.connect(server.address().port, () => enter(() => {
+      socket.on('close', () => seen('close')); socket.destroy(); process.nextTick(() => seen('tick')); seen('after');
+      setImmediate(() => server.close(() => done())); })); }); },
+    'close a server': (seen, done) => { const server = net.createServer().listen(0, () => enter(() => {
+      server.close(() => seen('closed')); process.nextTick(() => seen('tick')); seen('after'); setImmediate(() => setImmediate(done)); })); },
+    'kill a child': (seen, done) => { const started = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']); started.on('spawn', () => enter(() => {
+      started.on('exit', () => seen('exit')); started.kill(); process.nextTick(() => seen('tick')); seen('after'); started.on('close', () => done()); })); },
+    'end a writable': (seen, done) => { const { Writable } = require('stream'); const sink = new Writable({ write(chunk, encoding, next) { next(); } }); enter(() => {
+      sink.on('finish', () => seen('finish')); sink.end('x', () => seen('end-callback')); process.nextTick(() => seen('tick')); seen('after'); setImmediate(done); }); },
+  };
+  let enter;
+  const entries = {
+    'message-port': (run) => { const { port1, port2 } = new MessageChannel(); port1.onmessage = () => { port1.close(); run(); }; port2.postMessage(1); },
+    'abort-timeout': (run) => AbortSignal.timeout(2).addEventListener('abort', run),
+    'timer': (run) => setTimeout(run, 1),
+  };
+  for (const [entry, through] of Object.entries(entries)) for (const [act, start] of Object.entries(acts)) {
+    entering = entry + '/' + act;
+    const order = [];
+    enter = through;
+    await new Promise((done) => start((what) => order.push(what), done));
+    await settle();
+    say(`${entry}/${act}: ${order.join(', ')}`);
+  }
   clearInterval(alive);
   console.log('ORDER ' + out.join(' | '));
 })();

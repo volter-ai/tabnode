@@ -258,8 +258,8 @@ const __substrateHeldNamespaces: Record<string, readonly string[]> = {
 /** Node's own shape for the globals it gives every program that are accessors (v24.21.0, `Object.getOwnPropertyDescriptor(globalThis, name)`); the rest are writable values. */
 const NODE_GLOBAL_ACCESSORS: Record<string, { set: boolean; enumerable: boolean } | undefined> = { __proto__: null as never, performance: { set: true, enumerable: true }, Buffer: { set: true, enumerable: false }, crypto: { set: false, enumerable: true } };
 const NODE_ENUMERABLE_GLOBALS = new Set(['global', 'clearImmediate', 'setImmediate', 'clearInterval', 'clearTimeout', 'setInterval', 'setTimeout', 'queueMicrotask', 'structuredClone', 'atob', 'btoa', 'performance', 'fetch', 'crypto', 'navigator']);
-/** The names whose shape the guest's global takes from Node: those sixteen. `navigator` is among them and is the guest's own accessor from the start. */
-const NODE_GLOBALS = new Set([...NODE_ENUMERABLE_GLOBALS, 'Buffer']);
+/** The names whose shape the guest's global takes from Node: those fifteen and two it does not enumerate, `Buffer` and `globalThis`. `process` is not among them: see the `get` trap. `navigator` is among them and is the guest's own accessor from the start. */
+const NODE_GLOBALS = new Set([...NODE_ENUMERABLE_GLOBALS, 'Buffer', 'globalThis']);
 function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   let guest = __substrateGuestGlobals.get(process);
   if (guest) return guest;
@@ -272,7 +272,10 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   // A name the guest has not touched is answered by what stands behind it (`standing`, below): the engine's own
   // object for a name it provides, the realm's otherwise. It was three slots and five special cases, and a trap
   // that lacked a case answered from behind the guest's own write (an assignment to `atob` was ignored).
-  const removed = new Set<string | symbol>();
+  // The realm's `document`, `window` and `location` are no globals of Node's and a guest starts without them, which
+  // is the state of a name it deleted: one it then makes (a DOM test setup's `globalThis.window = dom.window`) is its
+  // own like any other.
+  const removed = new Set<string | symbol>(['document', 'window', 'location']);
   const boundGlobals = new Map<string | symbol, { original: unknown; bound: unknown }>();
   // A key the guest defined that the host would not take (a name the host
   // holds non-configurable, `navigator` under a worker's authority) lives on
@@ -307,10 +310,22 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   for (const key of browserTransportGlobals) Object.defineProperty(localGlobals, key, {
     value: undefined, writable: true, configurable: true, enumerable: false,
   });
+  // The names Node gives as accessors are the guest's own accessors from the start, as `navigator` is: each answers
+  // what stands behind the name until its setter is called, and from then what was assigned. Being properties of
+  // the target, a program may read their descriptor, define it back, change an attribute or delete them as on any
+  // object, and nothing the proxy reports about them has to be made up.
+  for (const [name, shape] of Object.entries(NODE_GLOBAL_ACCESSORS)) {
+    let assigned = false, held: unknown;
+    Object.defineProperty(localGlobals, name, {
+      get: () => assigned ? held : standing(name),
+      set: shape!.set ? (value: unknown) => { assigned = true; held = value; } : undefined,
+      configurable: true, enumerable: shape!.enumerable,
+    });
+  }
   const isLocalGlobal = (key: string | symbol) => ['Promise', 'navigator', 'Navigator', 'Worker', 'self', ...browserTransportGlobals].includes(key as string);
   /** What stands behind a name the guest has not made its own. */
   const standing = (key: string | symbol): unknown => {
-      if (key === "global") return guest;
+      if (key === "global" || key === "globalThis") return guest;
       if (key === "fetch") return fetch;
       // The guest's `Buffer` is the one `require('buffer')` answers with, read when the guest asks rather than when
       // this closure is made: a guest that compared the two found two objects.
@@ -365,9 +380,10 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   };
   guest = new Proxy(localGlobals, {
     get(target, key) {
-      if (["document", "window", "location"].includes(key as string)) return undefined;
-      if (key === "process") return process;
-      if (key === "globalThis") return guest;
+      // `process` is the realm's as well as the guest's: the engine's own bindings find the run that is asking by
+      // the realm's `process`, which each module's start assigns (the wrapper's `globalThis.process = $process`).
+      // So it is answered and assigned here, ahead of the guest's own properties; a guest may still delete it.
+      if (key === "process") return removed.has(key) ? undefined : process;
       if (shadowed(target, key)) return Reflect.get(target, key, guest);
       if (removed.has(key)) return undefined;
       return standing(key);
@@ -377,18 +393,13 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
         guestAssigned.add(key);
         return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
       }
+      if (key === "process") { removed.delete(key); return Reflect.set(host, key, value, host); }
       // The guest's own property takes the assignment as any object's does: a value is replaced, an accessor's
       // setter is called, one with no setter or not writable ignores it.
       if (shadowed(target, key)) return Reflect.set(target, key, value, target);
       if (removed.has(key)) { removed.delete(key); return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true }); }
-      if (typeof key === 'string' && NODE_GLOBALS.has(key)) {
-        // Node's shape for the name is kept: an accessor stays one and now answers the value assigned.
-        const accessor = NODE_GLOBAL_ACCESSORS[key];
-        if (!accessor) return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
-        if (!accessor.set) return false;
-        let held = value;
-        return Reflect.defineProperty(target, key, { get: () => held, set: (next: unknown) => { held = next; }, configurable: true, enumerable: accessor.enumerable });
-      }
+      // One of Node's value globals, not yet the guest's own: it becomes so, with the shape it had.
+      if (typeof key === 'string' && NODE_GLOBALS.has(key)) return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: key !== 'globalThis' });
       if (Reflect.set(host, key, value, host)) return true;
       // A global the host holds read-only (a confined realm's \`WebSocket\`) is
       // still the guest's to replace, as Node's globals are: undici's
@@ -397,8 +408,8 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
     },
     has(target, key) {
-      if (shadowed(target, key)) return true;
       if (removed.has(key)) return false;
+      if (shadowed(target, key)) return true;
       return isLocalGlobal(key) ? false : (typeof key === 'string' && NODE_GLOBALS.has(key)) || key in host;
     },
     ownKeys(target) {
@@ -419,14 +430,10 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       const own = Reflect.getOwnPropertyDescriptor(target, key);
       if (own) return own;
       if (removed.has(key) || isLocalGlobal(key)) return undefined;
-      if (typeof key === 'string' && NODE_GLOBALS.has(key)) {
-        // Node's own shape for the name: `Buffer` and `performance` are accessors with a setter, `crypto` one
-        // without, the rest writable values; all but `Buffer` enumerable.
-        const accessor = NODE_GLOBAL_ACCESSORS[key];
-        return accessor
-          ? { get: () => standing(key), set: accessor.set ? (value: unknown) => { guest![key] = value; } : undefined, configurable: true, enumerable: accessor.enumerable }
-          : { value: standing(key), writable: true, configurable: true, enumerable: true };
-      }
+      // Node's shape for `process`: an accessor with a setter, not enumerated.
+      if (key === "process") return { get: () => process, set: (value: unknown) => { Reflect.set(host, key, value, host); }, configurable: true, enumerable: false };
+      // One of Node's value globals the guest has not touched: writable, configurable, enumerable but for `globalThis`.
+      if (typeof key === 'string' && NODE_GLOBALS.has(key)) return { value: standing(key), writable: true, configurable: true, enumerable: key !== 'globalThis' };
       const descriptor = Reflect.getOwnPropertyDescriptor(host, key);
       // What the realm had before this guest (a worker's `self`, `postMessage`, `onmessage`, the engine's own names)
       // is reachable and is not ENUMERATED unless Node enumerates that name: `for (const name in global)` in a
@@ -441,12 +448,18 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       // A name Node gives every program, or one the guest deleted, is defined on the guest's own global: over what
       // stood there, so an attribute the descriptor leaves out keeps the one the name had, as on any object.
       if (removed.has(key) || (typeof key === 'string' && NODE_GLOBALS.has(key))) {
-        const before = removed.has(key) ? undefined : Reflect.getOwnPropertyDescriptor(guest!, key);
-        const kept: PropertyDescriptor = before ? { enumerable: before.enumerable, configurable: before.configurable } : {};
-        const accessorNow = 'get' in descriptor || 'set' in descriptor, accessorBefore = before !== undefined && ('get' in before || 'set' in before);
-        if (before && !('value' in descriptor) && !accessorNow) Object.assign(kept, accessorBefore ? { get: before.get, set: before.set } : { value: before.value, writable: before.writable });
-        else if (before && 'value' in descriptor && !accessorBefore) kept.writable = before.writable;
-        if (!Reflect.defineProperty(target, key, { ...kept, ...descriptor })) return false;
+        // The language's rule for a define over an existing property, the property being one of Node's value
+        // globals: a field the descriptor leaves out keeps what the property had, and making it an accessor starts
+        // the accessor's fields from their defaults. A name the guest deleted is defined as on a bare object.
+        let next: PropertyDescriptor = descriptor;
+        if (!removed.has(key)) {
+          const name = key as string;
+          const attributes = { enumerable: descriptor.enumerable ?? name !== 'globalThis', configurable: descriptor.configurable ?? true };
+          next = 'get' in descriptor || 'set' in descriptor
+            ? { ...attributes, get: descriptor.get, set: descriptor.set }
+            : { ...attributes, value: 'value' in descriptor ? descriptor.value : standing(name), writable: descriptor.writable ?? true };
+        }
+        if (!Reflect.defineProperty(target, key, next)) return false;
         removed.delete(key);
         return true;
       }

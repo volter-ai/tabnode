@@ -144,8 +144,24 @@ codes are not reproduced). The rest:
   defines or deletes there is its own and is what every later read, walk and
   descriptor answers: before, an assignment to a timer, `queueMicrotask` or
   `structuredClone` changed the realm's global for every program in it.
-  `scripts/guest-globals.cjs` assigns, defines, deletes, restores and fixes
-  each of the sixteen names under Node and in a guest.
+  The realm's `window`, `document` and `location` are absent until a program
+  makes them, and then are its own (`globalThis.window = dom.window` reads
+  back). `process` is answered ahead of the guest's own properties, because
+  the engine finds the run that is asking by it; it can be deleted and is
+  assigned again at the next module's start. `scripts/guest-globals.cjs`
+  assigns, defines (whole, attributes only, `writable` only), deletes,
+  restores and fixes each name under Node and in a guest: 72 rows.
+- A process emits `exit` when its loop has drained, and what "drained" means
+  here is the engine's rule for ending a run, which this release does not
+  change: the entry has returned and, with nothing the engine counts still
+  pending (timers, ports, handles, a read stdin, held work), no output for
+  half a second, or two seconds for a program that printed nothing. Work the
+  engine does not count does not hold a run: WebCrypto and asynchronous
+  `node:crypto` jobs, DNS, asynchronous zlib, a pending filesystem request, a
+  `fetch` with no host transport, any other promise of the host's. A program
+  whose last act is one of those is ended by that rule, as it was on v0.8.0,
+  and its `exit` listeners now run at that moment, where before they did not
+  run at all.
 - `process.nextTick` callbacks queued by a callback the loop entered run when
   that callback returns, before any promise it queued, and ticks they queue
   run with them (`cb, tick, promise`, as Node). A callback made while other
@@ -176,6 +192,9 @@ Known differences from Node, for a guest's globals and its ticks
   v0.8.0 binds the same names the same way.
 - The six timer globals are not the functions `require('timers')` exports
   (the same script, `is-owner's`).
+- `child.kill()` emits the child's `exit` before it returns (`exit, after,
+  tick` where Node gives `after, tick, exit`), for code entered any way. The
+  same on v0.8.0 (`scripts/callback-ticks.cjs`, section 3).
 - A tick queued from a promise reaction runs before a promise queued after it
   in the same reaction (`fs.promises.readFile(f).then(cb)`: `cb, tick,
   promise`); Node finishes the promises first (`cb, promise, tick`). The same
