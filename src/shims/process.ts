@@ -15,6 +15,8 @@ import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __r
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
 import { freemem as osFreemem, userInfo as osUserInfo } from './os';
 import { version as acornVersion } from 'acorn';
+import { ERR_INVALID_ARG_TYPE } from '../node-internals';
+import { internalSourceMapCache } from '../node-lib/internals/events-util';
 
 export interface ProcessEnv {
   [key: string]: string | undefined;
@@ -183,6 +185,8 @@ export interface Process {
   getgid?: () => number;
   getegid?: () => number;
   getgroups?: () => number[];
+  setSourceMapsEnabled?: (enabled: unknown) => void;
+  readonly sourceMapsEnabled?: boolean;
   arch?: string;
   argv: string[];
   argv0: string;
@@ -639,6 +643,14 @@ export function createProcess(options?: {
     getgid: (): number => osUserInfo().gid,
     getegid: (): number => osUserInfo().gid,
     getgroups: (): number[] => [osUserInfo().gid],
+    // Node's switch for source maps (lib/internal/process/per_thread and the source-map cache): one state, read
+    // here and through `module.getSourceMapsSupport()`. Turning it on with this call covers every kind of code,
+    // as Node's does. It remaps nothing here (see the cache's note).
+    setSourceMapsEnabled(enabled: unknown): void {
+      if (typeof enabled !== 'boolean') throw new ERR_INVALID_ARG_TYPE('enabled', 'boolean', enabled);
+      internalSourceMapCache.setSourceMapsSupport(enabled, { nodeModules: enabled, generatedCode: enabled });
+    },
+    get sourceMapsEnabled(): boolean { return internalSourceMapCache.getSourceMapsSupport().enabled; },
     arch: 'x64',
 
     // `process.report.getReport()`: what a program reads to learn the C library it runs on (detect-libc, and

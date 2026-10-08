@@ -57,6 +57,8 @@ import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
 import type { ResolutionKept } from './node-resolution';
 import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
+import { internalSourceMapCache } from './node-lib/internals/events-util';
+import { ERR_INVALID_ARG_TYPE } from './node-internals';
 import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
 import { PUNYCODE_SOURCE } from './punycode-source';
 import * as perfHooksShim from './shims/perf_hooks';
@@ -2009,6 +2011,15 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     return made;
   };
   Module.findSourceMap = () => undefined;
+  // The same switch `process.setSourceMapsEnabled` sets, by Node's two module functions.
+  Module.getSourceMapsSupport = () => Object.freeze(internalSourceMapCache.getSourceMapsSupport());
+  Module.setSourceMapsSupport = (enabled: unknown, options: { nodeModules?: unknown; generatedCode?: unknown } = {}) => {
+    if (typeof enabled !== 'boolean') throw new ERR_INVALID_ARG_TYPE('enabled', 'boolean', enabled);
+    for (const key of ['nodeModules', 'generatedCode'] as const) {
+      if (options[key] !== undefined && typeof options[key] !== 'boolean') throw new ERR_INVALID_ARG_TYPE(`options.${key}`, 'boolean', options[key]);
+    }
+    internalSourceMapCache.setSourceMapsSupport(enabled, { nodeModules: options.nodeModules === true, generatedCode: options.generatedCode === true });
+  };
   // The module-customization hooks of this run, built on the first call and
   // nowhere else: a run that registers none never pays for the chain, which is
   // the fast path Node keeps too. They hang off the Module class because that

@@ -29,6 +29,7 @@ import {
 } from './buffer-and-streams';
 import { internalBootstrapRealm, internalUrl, internalEncoding } from './modules';
 import { internalAmaro } from './amaro';
+import { locksOf } from './locks';
 
 /** Built on the first ask, for the reason `./binding/index.ts` gives. */
 // eslint-disable-next-line no-var, vars-on-top
@@ -52,6 +53,7 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
     },
   });
   if (require && name === 'internal/webstreams/adapters') return () => createWebStreamsAdapters(require);
+  if (name === 'internal/locks') return () => ({ locks: locksOf(process) });
   if (process && name === 'internal/process/per_thread') return () => ({
     platform: process.platform, arch: process.arch, version: process.version,
   });

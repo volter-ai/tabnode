@@ -30,6 +30,7 @@ import { nodeLibBinding } from './binding';
 import { nodeLibPublic } from './public-modules';
 import { setLibRequire } from './require-hook';
 import { NODE_LTS_VERSION, nodeVersions } from './node-versions';
+import { transcodeFor } from './binding/transcode';
 import { createUtilBinding } from './binding/util';
 import { ownedRun, ownerOfInstance, setInstanceOwner } from './binding/handles';
 import { __tokenForProcess, type ProcessToken } from '../process-tokens';
@@ -456,6 +457,12 @@ function compileNodeLib(name: string, record: NodeLibModule, require: NodeLibReq
     `${NODE_LIB_SOURCES[name]}\n//# sourceURL=node:${name}`,
   );
   compiled(record.exports, require, record, process, binding, primordialsOf());
+  // lib/buffer.js defines `transcode` only where Node is built with ICU, which this engine is not; the one
+  // function is bound here (binding/transcode.ts) rather than left undefined.
+  if (name === 'buffer') {
+    const made = record.exports as { transcode?: unknown; Buffer: { from(bytes: Uint8Array): unknown } };
+    if (made.transcode === undefined) made.transcode = transcodeFor((bytes) => made.Buffer.from(bytes));
+  }
   record.loaded = true;
   bootstrapNodeLib(name, record.exports, process);
 }

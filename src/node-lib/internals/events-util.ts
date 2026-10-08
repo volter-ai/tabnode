@@ -50,13 +50,21 @@ export const internalProcessWarning = {
  * the engine's own error stacks. Each name answers the way Node's does with
  * source maps switched off.
  */
+/** The switch Node keeps for source-map support: whether it is on, and for which code. */
+const sourceMapsSupport = { enabled: false, nodeModules: false, generatedCode: false };
 export const internalSourceMapCache = {
   findSourceMap: (): undefined => void 0,
   maybeCacheSourceMap: (): void => {},
   sourceMapCacheToObject: (): undefined => void 0,
-  getSourceMapsSupport: (): { enabled: boolean; nodeModules: boolean; generatedCode: boolean } =>
-    ({ enabled: false, nodeModules: false, generatedCode: false }),
-  setSourceMapsSupport: (): void => {},
+  getSourceMapsSupport: (): { enabled: boolean; nodeModules: boolean; generatedCode: boolean } => ({ ...sourceMapsSupport }),
+  // Node's `setSourceMapsSupport(enabled, options)` (lib/internal/source_map/source_map_cache.js): the switch is
+  // kept and read back as Node keeps it. What it switches is NOT here: no stack of this engine is remapped
+  // through a source map, on or off, so a program that turns it on reads `true` and still sees generated positions.
+  setSourceMapsSupport: (enabled: boolean, options: { nodeModules?: boolean; generatedCode?: boolean } = {}): void => {
+    sourceMapsSupport.enabled = enabled;
+    sourceMapsSupport.nodeModules = enabled && options.nodeModules === true;
+    sourceMapsSupport.generatedCode = enabled && options.generatedCode === true;
+  },
   rekeySourceMap: (): void => {},
   // Asked of a source map that was found; none ever is, so there is no line to give.
   getSourceLine: (): undefined => void 0,
