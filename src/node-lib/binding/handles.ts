@@ -161,6 +161,19 @@ export function __ownedHandleCount(token: ProcessToken): number {
 }
 
 /**
+ * The ref'd handles the named run holds, counted by kind (the handle's class): what a run's end-of-run line says
+ * was still holding its loop.
+ */
+export function __ownedHandleKinds(token: ProcessToken): Record<string, number> {
+  const kinds: Record<string, number> = {};
+  for (const handle of owners.get(token) ?? []) {
+    const kind = (handle as object).constructor?.name || 'handle';
+    kinds[kind] = (kinds[kind] ?? 0) + 1;
+  }
+  return kinds;
+}
+
+/**
  * Every port the named run is listening on.
  *
  * The engine's `node` command asks this to tell a run that has gone quiet but

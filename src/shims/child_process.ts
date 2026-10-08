@@ -44,6 +44,8 @@ import { treeDescriptorsOf } from '../tree-descriptors';
 import { VirtualFSAdapter } from './vfs-adapter';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
 import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
+import { __ownedHandleKinds } from '../node-lib/binding/handles';
+import { pendingGuestPorts } from '../guest-message-ports';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
 import { StdinRingReader, kStdinRing } from '../stdin-ring';
@@ -683,6 +685,12 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // elsewhere (the kernel's exec'd node: its own channel reports its exit) or is the host's.
   const reaper: ProcessToken | null | undefined = nested ? parentToken : forkedHere ? null : undefined;
   let runEnd: number | undefined;
+  // What the run's end-of-run line says: which rule ended it, how long that rule waited, and what was still counted
+  // as holding its loop when the rule decided. Written where each rule decides; read once, as the run ends.
+  let runEndedBy: string | undefined;
+  let runWaitedMs = 0;
+  let runPolledMs = 0;
+  let runCountedAtEnd: Record<string, unknown> | undefined;
   // Create a runtime with output capture for both console.log AND process.stdout.write
   const runtime = new Runtime(tree, {
     cwd: launch.cwd,
@@ -845,6 +853,13 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const inputConsumed = () => readableInput.readableFlowing === true
     || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0
     || ((proc.stdin as unknown as { __substrateGuestRead?: boolean }).__substrateGuestRead === true && readableInput.readableEnded !== true);
+  /** What the end-of-program rule counts for this run, now: read from the counters the rule itself reads. */
+  const __runCounted = (): Record<string, unknown> => {
+    const ports = pendingGuestPorts(proc);
+    return { timers: pendingGuestTimers(proc) - ports, ports, handles: runToken !== null ? __ownedHandleKinds(runToken) : {},
+      servers: runToken !== null ? __ownedServerPorts(runToken).length : 0, stdin: streams?.stdinOpen === true && inputConsumed(),
+      heldWork: heldWork().count, forkedChildren: _activeForkedChildren };
+  };
 
   // A child started with a channel wires its own end of it before its
   // module runs, which is what `lib/internal/process/pre_execution.js` does
@@ -1067,12 +1082,14 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // finished run and abort it before it listened. A run nobody holds
     // waits for its timers below, as Node's loop does.
     if (streams?.held) {
+      runEndedBy = "settled for its host at the body's return"; runCountedAtEnd = __runCounted();
       return { stdout, stderr, exitCode: typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0 };
     }
     // A run nobody holds, with nothing left to wait for, has drained its loop already: it ends as one that drained
     // it later does, below (`exit` emitted, its exit lines said). It returned from here with neither, so a script
     // that simply finished never ran its `exit` listeners.
     drained = !__printedThenWorking() && pendingGuestTimers(proc) === 0;
+    if (drained) { runEndedBy = "drained at the body's return"; runCountedAtEnd = __runCounted(); }
   }
 
   // No output yet — script likely has async work (e.g. vitest test runner).
@@ -1141,8 +1158,14 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         // longer wait is for a start that is quiet while it fetches, which
         // the engine cannot yet see as work.
         const silentIdle = SILENT_IDLE_TIMEOUT_MS;
-        if (lastOutputLen > 0 && !stillWorking() && idleMs >= effectiveIdle) break;
-        if (lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) break;
+        if (lastOutputLen > 0 && !stillWorking() && idleMs >= effectiveIdle) {
+          runEndedBy = childrenExited ? 'forked children gone, then no output' : 'idle: no output'; runWaitedMs = idleMs; runCountedAtEnd = __runCounted();
+          break;
+        }
+        if (lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) {
+          runEndedBy = 'silent: it printed nothing'; runWaitedMs = idleMs; runCountedAtEnd = __runCounted();
+          break;
+        }
       }
 
       // The hard timeout is for a program whose work the engine cannot see:
@@ -1153,8 +1176,12 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       // a server, which is every extension host and every pty host. Work the
       // host holds for it (a build, a pre-bundle) is seen work too: a dev
       // server whose start passed a minute mid pre-bundle was cut with exit 0.
-      if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) break;
+      if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) {
+        runEndedBy = 'the limit'; runWaitedMs = idleMs; runCountedAtEnd = __runCounted();
+        break;
+      }
     }
+    runPolledMs = Date.now() - startTime;
 
     // A process whose loop has drained emits `exit`, as Node's does (`process.emit('exit', process.exitCode || 0)`,
     // then it ends with whatever `process.exitCode` its listeners left): a program that writes its report, removes
@@ -1176,6 +1203,17 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     _onForkedChildExit = prevChildExitHandler;
   }
   } finally {
+    // THE RUN'S END, once, in the product: which rule ended it, how long that rule waited after the program's last
+    // output, how long the poll ran in all, and what the rule counted as holding the loop when it decided. A program
+    // that ends by its loop emptying is ended here by a wait, since the engine cannot see every pending operation
+    // (the rules above); this line is what says, per program, which wait it paid and holding what. It reads the
+    // counters the rules read and changes nothing about when a run ends.
+    try {
+      const how = runEndedBy ?? (streams?.signal?.aborted ? 'ended by its host' : exitCalled ? 'exit called' : 'threw');
+      console.log('[boot-trace]', JSON.stringify({ event: 'run-end', at: Date.now(), pid: (proc as { pid?: number } | undefined)?.pid ?? null,
+        entry: resolvedPath ?? (evaluated !== null ? '(evaluated)' : null), how, waitedMs: runWaitedMs, polledMs: runPolledMs,
+        printed, exitCode: runEnd ?? (exitCalled ? exitCode : null), counted: runCountedAtEnd ?? __runCounted() }));
+    } catch { /* a line that cannot be said does not keep a run from ending */ }
     detachRejections();
     detachUncaught();
     inputActive = false;
