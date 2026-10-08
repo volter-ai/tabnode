@@ -638,7 +638,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const stdoutDecoder = new TextDecoder();
   const stderrDecoder = new TextDecoder();
   const appendStdout = (data: string | Uint8Array) => {
-    if (exitCalled) return;
+    // An ended process writes nothing; its `exit` listeners run while it is ending and what they write is its output.
+    if (exitCalled && !emittingExit) return;
     printed += data.length;
     if (stdoutBytes) { stdoutBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
     const text = typeof data === 'string' ? data : stdoutDecoder.decode(data, { stream: true });
@@ -646,7 +647,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     streams?.onStdout?.(text);
   };
   const appendStderr = (data: string | Uint8Array) => {
-    if (exitCalled) return;
+    // An ended process writes nothing; its `exit` listeners run while it is ending and what they write is its output.
+    if (exitCalled && !emittingExit) return;
     printed += data.length;
     if (stderrBytes) { stderrBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
     const text = typeof data === 'string' ? data : stderrDecoder.decode(data, { stream: true });
