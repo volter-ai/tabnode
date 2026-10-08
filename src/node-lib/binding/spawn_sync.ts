@@ -84,7 +84,27 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
   const stdio = options.stdio ?? [];
   const nothing = (error: number): SyncSpawnResult => ({ pid, output: null, status: null, signal: null, error });
 
-  if (syncChildRefusal() !== null) return nothing(UV_ENOSYS);
+  // A realm that cannot run a synchronous child at all says which of its reasons it is. libuv's record has room for
+  // an errno only, and Node's own `spawnSync` (internal/child_process.js) makes the Error from it and stores it back
+  // on the record's `error`; the reason is added to that Error's message as it is stored, so `result.error.message`
+  // and the Error `execSync` throws read "spawnSync <file> ENOSYS: <reason>". Without it the four refusals were one
+  // indistinguishable ENOSYS.
+  const refusal = syncChildRefusal();
+  if (refusal !== null) {
+    let error: unknown = UV_ENOSYS;
+    const refused = nothing(UV_ENOSYS);
+    Object.defineProperty(refused, 'error', {
+      enumerable: true,
+      configurable: true,
+      get: () => error,
+      set: (value: unknown) => {
+        const made = value as { message?: unknown } | null;
+        if (made && typeof made === 'object' && typeof made.message === 'string' && !made.message.includes(refusal)) made.message = `${made.message}: ${refusal}`;
+        error = value;
+      },
+    });
+    return refused;
+  }
 
   const input = stdio[0]?.input;
   const realm = (globalThis as unknown as { process?: { cwd?: () => string; env?: Record<string, string> } & Record<symbol, unknown> }).process;
