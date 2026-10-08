@@ -8,7 +8,7 @@
 
 > **preparedModuleKey**(`rawCode`, `resolvedPath`): `string` \| `undefined`
 
-The name a prepared body goes under: the hash of the file as read, and how it is compiled. Undefined for a file no body is prepared for.
+The name a prepared body goes under, for a caller that has the file's text: its bytes are hashed here. Undefined for a file no body is prepared for.
 
 ## Parameters
 

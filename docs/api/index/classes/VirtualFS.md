@@ -163,6 +163,26 @@ Get stats for path
 
 ***
 
+### contentDigest()
+
+> **contentDigest**(`_path`): `string` \| `undefined`
+
+The plain SHA-256 of a file's current bytes, as 64 lowercase hex characters, where the tree holds it without
+reading the file; undefined where it does not (a file written since its image, a tree that keeps no digests).
+This tree keeps none.
+
+#### Parameters
+
+##### \_path
+
+`string`
+
+#### Returns
+
+`string` \| `undefined`
+
+***
+
 ### copyFileSync()
 
 > **copyFileSync**(`src`, `dest`): `void`

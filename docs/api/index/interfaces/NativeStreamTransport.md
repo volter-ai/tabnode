@@ -46,6 +46,27 @@
 
 ***
 
+### post()?
+
+> `optional` **post**(`operation`): `void`
+
+An operation whose answer nothing waits for, sent without waiting for
+the owner: the owner takes it in order with every call after it, and one
+it refuses completes with its status: a read grant as the handle's failed
+read, a shutdown as its completion. Optional; without it each is a call.
+
+#### Parameters
+
+##### operation
+
+\{ `id`: `number`; `operation`: `"readStart"`; \} \| \{ `id`: `number`; `operation`: `"shutdown"`; `request`: `number`; \}
+
+#### Returns
+
+`void`
+
+***
+
 ### write()
 
 > **write**(`id`, `bytes`, `handle?`): `Promise`\<`number`\>
