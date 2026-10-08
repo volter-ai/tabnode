@@ -59,6 +59,7 @@ import { sayNativeStreamCounts } from './native-stream-binding';
 import { nodeLibBindingsAsked } from './node-lib/load';
 import type { ResolutionKept } from './node-resolution';
 import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
+import { LoadPhase, countLoadedFile, enterLoadPhase, leaveLoadPhase, loadAccountFor, loadPackageOf, sayLoadAccount } from './load-account';
 import { setSourceMapsSupportOf, sourceMapsSupportOf } from './node-lib/internals/events-util';
 import { ERR_INVALID_ARG_TYPE } from './node-internals';
 import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
@@ -813,6 +814,7 @@ Object.defineProperty(globalThis, '__substratePreparedExit', {
   value: (process: object): void => {
     const counts = __substratePreparedCounts.get(process);
     if (counts) __substrateSayPrepared(process, counts, 'exit');
+    sayLoadAccount(process, 'exit');
     sayNativeStreamCounts((process as { pid?: number }).pid ?? null, 'exit');
     __substrateSayRowsUsed(process);
   },
@@ -2144,11 +2146,16 @@ function createRequire(
   const __substrateModule = () => __substrateModuleClassFor(moduleCache, (parent: any) => createRequire(vfs, fsShim, process, __substrateModuleDir(parent, currentDir), moduleCache, options, processedCodeCache, parent));
   /** The hooks this run has registered, and undefined while it has registered none. */
   const __substrateHooks = (): RunModuleHooks | undefined => __substrateModule().__substrateHooks as RunModuleHooks | undefined;
+  // Where this process's loading goes (load-account.ts): each phase below is entered and left around its own work.
+  const loadAccount = loadAccountFor(process);
   const __substrateResolve = (id: string): string => {
     const Module = __substrateModule();
-    return Module._resolveFilename === Module.__substrateResolveFilename
-      ? resolveModule(id, currentDir)
-      : Module._resolveFilename(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false, undefined);
+    enterLoadPhase(loadAccount, LoadPhase.Resolve);
+    try {
+      return Module._resolveFilename === Module.__substrateResolveFilename
+        ? resolveModule(id, currentDir)
+        : Module._resolveFilename(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false, undefined);
+    } finally { leaveLoadPhase(loadAccount); }
   };
   // Module resolution cache for faster repeated imports
   const resolutionCache: Map<string, string | null> = new Map();
@@ -2338,8 +2345,9 @@ function createRequire(
     const Mod = __substrateModule();
     Mod.__substrateBuiltinLoad = builtinLoad;
     Mod.__substrateCompileRaw = compileRaw;
+    enterLoadPhase(loadAccount, LoadPhase.Loader);
     try { Mod._extensions[__substrateRegisteredExtension(resolvedPath, Mod._extensions)](module, resolvedPath); }
-    finally { __substrateLoading.delete(module); }
+    finally { leaveLoadPhase(loadAccount); __substrateLoading.delete(module); }
     return module;
   };
 
@@ -2356,9 +2364,15 @@ function createRequire(
     // read is its last link, which is where Node's `loadSource` calls
     // `loadWithHooks`; where it has none, nothing here changes.
     const __hooks = __substrateHooks();
-    const defaultSource = (): string => resolvedPath.startsWith('data:')
-      ? __substrateDataModuleSource(resolvedPath)!
-      : vfs.readFileSync(resolvedPath, 'utf8');
+    const defaultSource = (): string => {
+      if (resolvedPath.startsWith('data:')) return __substrateDataModuleSource(resolvedPath)!;
+      enterLoadPhase(loadAccount, LoadPhase.Read);
+      try {
+        const text = vfs.readFileSync(resolvedPath, 'utf8');
+        loadAccount.sourceBytes += text.length;
+        return text;
+      } finally { leaveLoadPhase(loadAccount); }
+    };
     let format = resolvedAs?.format;
     let source = resolvedAs?.source;
     if (__hooks && __hooks.hasSyncLoad && source === undefined) {
@@ -2388,9 +2402,14 @@ function createRequire(
       && (module as Module & { _compile?: unknown })._compile === Mod.__substrateOwnCompile
       && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> })) {
       const kind = preparedModuleKind(resolvedPath);
-      const digest = kind ? vfs.contentDigest(resolvedPath) : undefined;
-      const body = kind && digest ? __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)) : undefined;
+      enterLoadPhase(loadAccount, LoadPhase.Prepared);
+      let body: string | undefined;
+      try {
+        const digest = kind ? vfs.contentDigest(resolvedPath) : undefined;
+        body = kind && digest ? __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)) : undefined;
+      } finally { leaveLoadPhase(loadAccount); }
       if (body !== undefined) {
+        loadAccount.preparedHit += 1;
         __substrateCountPrepared(process, 'digest');
         (module as Module & { filename?: string }).filename = resolvedPath;
         if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
@@ -2418,10 +2437,17 @@ function createRequire(
     __substrateTracePreparedGate(vfs, process, compiling, content, resolvedPath);
     // A body prepared for the file's own text; a program's `_compile` that handed on other text compiles that text.
     const strips = transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> });
-    const key = compiling?.raw === content && format === undefined && !strips ? preparedModuleKey(rawCode, resolvedPath) : undefined;
+    enterLoadPhase(loadAccount, LoadPhase.Prepared);
+    let key: string | undefined;
+    let taken: string | undefined;
+    try {
+      key = compiling?.raw === content && format === undefined && !strips ? preparedModuleKey(rawCode, resolvedPath) : undefined;
+      taken = key ? __substrateReadPrepared(vfs, key) : undefined;
+    } finally { leaveLoadPhase(loadAccount); }
+    if (taken === undefined) loadAccount.preparedMiss += 1;
     if (key) {
-      const taken = __substrateReadPrepared(vfs, key);
       if (taken !== undefined) {
+        loadAccount.preparedHit += 1;
         __substrateCountPrepared(process, 'hash');
         runModuleBody(module, taken, resolvedPath, dirname, true);
         return;
@@ -2467,7 +2493,9 @@ function createRequire(
     const codeCacheKey = `${resolvedPath}|${format ?? ''}|${transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }) ? 'transform-types|' : ''}${simpleHash(rawCode)}`;
     let code = processedCodeCache?.get(codeCacheKey);
     if (!code) {
-      code = __substratePrepareBody(rawCode, resolvedPath, format, process);
+      enterLoadPhase(loadAccount, LoadPhase.Transform);
+      try { code = __substratePrepareBody(rawCode, resolvedPath, format, process); }
+      finally { leaveLoadPhase(loadAccount); }
       processedCodeCache?.set(codeCacheKey, code);
     }
     return code;
@@ -2508,7 +2536,10 @@ function createRequire(
       const importMetaUrl = resolvedPath.startsWith('data:') ? resolvedPath : 'file://' + resolvedPath;
       const strictBody = code.startsWith(__substrateModuleMarker);
       if (strictBody) __substrateEsBodyRuns(process);
-      if (!scoped) code = __substrateScopeGlobalCalls(code);
+      if (!scoped) {
+        enterLoadPhase(loadAccount, LoadPhase.Transform);
+        try { code = __substrateScopeGlobalCalls(code); } finally { leaveLoadPhase(loadAccount); }
+      }
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
@@ -2526,9 +2557,14 @@ function createRequire(
       // importers await.
       let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
       let fn;
+      const loadOwner = loadPackageOf(loadAccount, resolvedPath);
+      countLoadedFile(process, loadAccount, loadOwner, code.length);
+      enterLoadPhase(loadAccount, LoadPhase.Compile);
       try {
         fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, process);
+        leaveLoadPhase(loadAccount);
       } catch (evalError) {
+        leaveLoadPhase(loadAccount);
         const msg = evalError instanceof Error ? evalError.message : String(evalError);
       // A module with top-level await runs. Node runs a `.js` file of a package
       // with `"type": "module"` as a module, where `await` is valid at the top;
@@ -2543,21 +2579,31 @@ function createRequire(
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(moduleRequire, process, importMetaUrl);
 
-      const body = __substrateInStatWindow(process, () => withGuestExecution(() => fn(
-        module.exports,
-        moduleRequire,
-        module,
-        resolvedPath,
-        dirname,
-        process,
-        consoleWrapper,
-        createImportMeta(moduleRequire, importMetaUrl, dirname, resolvedPath),
-        dynamicImport,
-        __substrateGuestGlobal,
-        __substrateGuestConstructor
-      )));
+      enterLoadPhase(loadAccount, LoadPhase.Evaluate, loadOwner);
+      let body;
+      try {
+        body = __substrateInStatWindow(process, () => withGuestExecution(() => fn(
+          module.exports,
+          moduleRequire,
+          module,
+          resolvedPath,
+          dirname,
+          process,
+          consoleWrapper,
+          createImportMeta(moduleRequire, importMetaUrl, dirname, resolvedPath),
+          dynamicImport,
+          __substrateGuestGlobal,
+          __substrateGuestConstructor
+        )));
+      } finally { leaveLoadPhase(loadAccount); }
 
-      const settling = __substrateDriveBody(bodyKind, body, module);
+      // A body that yields is driven here as far as it goes without waiting: that is the module's own running too.
+      let settling;
+      if (bodyKind === 'sync') settling = __substrateDriveBody(bodyKind, body, module);
+      else {
+        enterLoadPhase(loadAccount, LoadPhase.Evaluate, loadOwner);
+        try { settling = __substrateDriveBody(bodyKind, body, module); } finally { leaveLoadPhase(loadAccount); }
+      }
       if (settling) __substrateKeepPending(module, settling, () => { delete moduleCache[resolvedPath]; });
       else module.loaded = true;
     } catch (error) {
@@ -2699,6 +2745,13 @@ function createRequire(
     if (id.startsWith('node:')) {
       id = id.slice(5);
     }
+    loadAccount.requires += 1;
+    // One of the engine's own modules: its answer is the `builtin` phase (a file it turns out to name is its own).
+    if (!(moduleShim.isBuiltin(id) || Object.prototype.hasOwnProperty.call(builtinModules, id))) return requireNamed(id);
+    enterLoadPhase(loadAccount, LoadPhase.Builtin);
+    try { return requireNamed(id); } finally { leaveLoadPhase(loadAccount); }
+  };
+  const requireNamed = (id: string): unknown => {
     // A data: URL is a module of its own, loaded at that URL.
     if (id.startsWith('data:')) return loadModule(id).exports;
     if (moduleShim.isBuiltin(id)) __substrateRecordBuiltin(id);
