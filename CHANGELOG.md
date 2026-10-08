@@ -172,7 +172,8 @@ Known differences from Node, for a guest's globals and its ticks
   `setTimeout` in the same module is still the first. After a delete, a bare
   name is `undefined` or its first value where Node throws a ReferenceError.
   The property, the walk and the descriptor are Node's in every case
-  (`scripts/guest-globals.cjs`, the `bare` column).
+  (`scripts/guest-globals.cjs`, the `bare` column). Not new in this release:
+  v0.8.0 binds the same names the same way.
 - The six timer globals are not the functions `require('timers')` exports
   (the same script, `is-owner's`).
 - A tick queued from a promise reaction runs before a promise queued after it
