@@ -60,9 +60,11 @@ function tally(operation: string, ms: number, bytes?: number): void {
 interface RoundTrips { sentAt?: number; writtenAt?: number; writes: number; count: number; ms: number; max: number; over: number[]; toWrittenMs: number; toFirstByteMs: number }
 const roundTrips = new Map<number, RoundTrips>();
 const SLOW_ROUND_TRIP_MS = 64;
+/** A stream that is never closed (a pooled connection) says its round trips so far every this many. */
+const ROUND_TRIPS_EVERY = 500;
 function sayRoundTrips(id: number, when: string, pid?: number | null): void {
   const trips = roundTrips.get(id);
-  roundTrips.delete(id);
+  if (when !== 'running') roundTrips.delete(id);
   if (!trips || trips.count === 0) return;
   console.log('[stream-calls]', JSON.stringify({ event: 'round-trips', when, at: Date.now(), ...(pid === undefined ? {} : { pid }), id, roundTrips: trips.count, writes: trips.writes, ms: Math.round(trips.ms), maxMs: Math.round(trips.max), [`over ${OVER_MS.join('/')} ms`]: trips.over, toWrittenMs: Math.round(trips.toWrittenMs), toFirstByteMs: Math.round(trips.toFirstByteMs), unanswered: trips.sentAt === undefined ? 0 : 1 }));
 }
@@ -111,6 +113,7 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
             trips.toWrittenMs += writtenAt - trips.sentAt; trips.toFirstByteMs += now - writtenAt;
             if (ms >= SLOW_ROUND_TRIP_MS) console.log('[stream-calls]', JSON.stringify({ event: 'slow-round-trip', at: Date.now(), id: event.id, ms: Math.round(ms), toWrittenMs: Math.round(writtenAt - trips.sentAt), toFirstByteMs: Math.round(now - writtenAt) }));
             trips.sentAt = undefined; trips.writtenAt = undefined;
+            if (trips.count % ROUND_TRIPS_EVERY === 0) sayRoundTrips(event.id, 'running');
           }
         }
         listener(event);
