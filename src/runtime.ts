@@ -18,7 +18,7 @@ import type { PackageJson } from './types/package-json';
 import { simpleHash } from './utils/hash';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { PREPARED_MODULES_FORMAT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey } from './prepared-key';
+import { PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey } from './prepared-key';
 import { uint8ToBase64, uint8ToHex } from './utils/binary-encoding';
 import { createFsShim, FsShim } from './shims/fs';
 import * as pathShim from './shims/path';
@@ -689,7 +689,7 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
  * every process's memory.
  */
 export const PREPARED_MODULES_DIR = '/opt/.tabnode/prepared';
-export { PREPARED_MODULES_FORMAT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey };
+export { PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey };
 /** The name a prepared body goes under, for a caller that has the file's text: its bytes are hashed here. Undefined for a file no body is prepared for. */
 export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
   const kind = preparedModuleKind(resolvedPath);
@@ -2344,7 +2344,10 @@ function createRequire(
         // One write is one step of the tab's filesystem, so no reader sees
         // half a body; a rename after it failed in a forked process's realm
         // and left the half-named file behind.
-        try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${key}`, body); }
+        // What was kept is also said, one key a line, in a list beside the bodies: a reader that wants the bodies
+        // made in the tab (a dry run's capture) reads the list, where telling them from an image's own tens of
+        // thousands meant listing the directory.
+        try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${key}`, body); vfs.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${key}\n`); }
         catch { /* a process that may not write there prepares its own */ }
         __substrateCountPrepared(process, 'kept');
         runModuleBody(module, body, resolvedPath, dirname, true);

@@ -6,6 +6,8 @@
 
 /** The key derivation's own name: part of every key, and of the name of any store that keeps bodies by key. */
 export const PREPARED_MODULES_FORMAT = 'tabnode-prepared-4';
+/** The list, in the bodies' directory, of the keys of bodies prepared and kept where they run: one a line. No body has this name. */
+export const PREPARED_MODULES_KEPT = '.kept';
 /** How a file is compiled, which is part of its body's name: undefined for a file no body is prepared for. */
 export function preparedModuleKind(resolvedPath: string): 'js' | 'cjs' | undefined {
   const extension = /\.(js|cjs|mjs)$/u.exec(resolvedPath)?.[1];
