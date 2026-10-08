@@ -703,6 +703,30 @@ export function prepareModuleForImage(rawCode: string, resolvedPath: string): st
   return __substrateScopeGlobalCalls(__substratePrepareBody(rawCode, resolvedPath, undefined, { execArgv: [], env: {} }));
 }
 
+/**
+ * An instrument: the terms that decide whether a compile takes a prepared
+ * body, said for a realm's first compile and for its first compile of a file
+ * under no `node_modules` (an application's own built output).
+ */
+const __substratePreparedGateSaid = new WeakMap<object, { first: boolean; own: boolean }>();
+function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }, process: unknown, compiling: { raw: string; format: string | undefined } | undefined, content: string, resolvedPath: string): void {
+  const said = __substratePreparedGateSaid.get(process as object) ?? { first: false, own: false };
+  __substratePreparedGateSaid.set(process as object, said);
+  const own = !resolvedPath.includes('/node_modules/') && !resolvedPath.includes('/.browser-runtime-node-entry-');
+  const which = !said.first ? 'first' : own && !said.own ? 'own' : undefined;
+  if (!which) return;
+  said.first = true;
+  if (own) said.own = true;
+  const exists = (path: string): boolean | string => { try { return vfs.existsSync(path); } catch (cause) { return cause instanceof Error ? cause.message : String(cause); } };
+  const key = preparedModuleKey(content, resolvedPath);
+  console.log('[boot-trace]', JSON.stringify({
+    event: 'prepared-bodies', where: 'compile', which, at: Date.now(), file: resolvedPath, bytes: content.length,
+    rawIsOwn: compiling?.raw === content, handedRaw: compiling !== undefined, format: compiling?.format ?? null,
+    transformsTypes: transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }),
+    directory: exists(PREPARED_MODULES_DIR), key: key ?? null, body: key ? exists(`${PREPARED_MODULES_DIR}/${key}`) : false,
+  }));
+}
+
 function transformEsmToCjs(code: string, filename: string): string {
   // Quick check: does the code have any ESM-like patterns?
   const maybeEsm = __substrateHasEsmSyntax(code);
@@ -2220,6 +2244,7 @@ function createRequire(
     const format = compiling?.format;
     const rawCode = content;
     const resolvedPath = filename;
+    __substrateTracePreparedGate(vfs, process, compiling, content, resolvedPath);
     // A body prepared for the file's own text; a program's `_compile` that handed on other text compiles that text.
     if (compiling?.raw === content && format === undefined && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }) && vfs.existsSync(PREPARED_MODULES_DIR)) {
       const key = preparedModuleKey(rawCode, resolvedPath);
