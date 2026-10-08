@@ -15,6 +15,8 @@ let active = 0;
 let activeSince = 0;
 let depth = 0;
 let continuation = false;
+/** When guest code last stopped running in this realm, on the loop's clock: the reading `end` and a continuation's end already take. */
+let lastRanAt = 0;
 const enqueue = globalThis.queueMicrotask.bind(globalThis);
 const ticks: Array<() => void> = [];
 let tickDrainScheduled = false;
@@ -92,7 +94,21 @@ function begin(): void {
 
 function end(): void {
   depth--;
-  if (depth === 0 && !continuation) active += clock!() - activeSince;
+  if (depth === 0 && !continuation) { lastRanAt = clock!(); active += lastRanAt - activeSince; }
+}
+
+/**
+ * How long this realm's guest code has not run, in ms: zero while it is running, undefined before any has. It is
+ * what the engine can see of a program's activity: the loader and dispatch paths, a binding's callback, and the turn
+ * a compiled `await` resumes in. A reaction a guest attached with `then` to a promise the host settles is not
+ * bracketed and is not seen. A run's end-of-run line reads it beside the time since the program's last output: a
+ * program the end-of-program rule waited on, whose guest code ran during that wait, was still working through a
+ * door the rule does not count.
+ */
+export function guestQuietMs(): number | undefined {
+  if (!clock) return undefined;
+  if (depth > 0 || continuation) return 0;
+  return Math.round(clock() - lastRanAt);
 }
 
 export function withGuestExecution<T>(fn: () => T): T {
@@ -108,7 +124,7 @@ export function resumeGuestTurn(): void {
   continuation = true;
   enqueue(() => {
     continuation = false;
-    if (depth === 0) active += clock!() - activeSince;
+    if (depth === 0) { lastRanAt = clock!(); active += lastRanAt - activeSince; }
   });
 }
 
