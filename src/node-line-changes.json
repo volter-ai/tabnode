@@ -1,0 +1,3852 @@
+{
+ "about": "How each semver-major commit between Node lines is classed, as read from its title in Node's own changelog (not from its diff, except where `read` says so). a: not observable by a running server application. b: additive (the newer line has what the older lacked). c: a default or a behaviour changed. d: removed, or throws where the older line did not. e: a warning only the newer line prints. v: the JavaScript engine's (V8), which in a tab is the browser's for every line. Rules are tried in order on `subsystem: title`; `byPr` overrides them.",
+ "source": "nodejs/node doc/changelogs/CHANGELOG_V19.md … CHANGELOG_V24.md, the \"Semver-Major Commits\" of each x.0.0 release",
+ "read": "2026-10-08",
+ "counts": {
+  "20 to 24": {
+   "commits": 326,
+   "a": 117,
+   "b": 8,
+   "c": 24,
+   "d": 48,
+   "e": 32,
+   "v": 97,
+   "unclassed": 0
+  },
+  "18 to 20": {
+   "commits": 107,
+   "a": 29,
+   "b": 0,
+   "c": 1,
+   "d": 7,
+   "e": 4,
+   "v": 18,
+   "unclassed": 48
+  }
+ },
+ "rows": [
+  {
+   "line": 19,
+   "sha": "53f73d1cfe",
+   "subsystem": "build",
+   "title": "enable V8's trap handler on Windows",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "06aaf8a1c4",
+   "subsystem": "build",
+   "title": "reset embedder string to \"-node.0\"",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "aa3a572e6b",
+   "subsystem": "build",
+   "title": "remove dtrace & etw support",
+   "pr": 43652,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "38f1e2793c",
+   "subsystem": "build",
+   "title": "remove systemtap support",
+   "pr": 43651,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "2849283c4c",
+   "subsystem": "crypto",
+   "title": "remove non-standard `webcrypto.Crypto.prototype.CryptoKey`",
+   "pr": 42083,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 19,
+   "sha": "a1653ac715",
+   "subsystem": "crypto",
+   "title": "do not allow to call setFips from the worker thread",
+   "pr": 43624,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "fd36a8dadb",
+   "subsystem": "deps",
+   "title": "update llhttp to 8.1.0",
+   "pr": 44967,
+   "class": "c",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 19,
+   "sha": "89ecdddaab",
+   "subsystem": "deps",
+   "title": "bump minimum ICU version to 71",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "66fe446efd",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 0cccb6f27d78",
+   "pr": 44741,
+   "class": "v"
+  },
+  {
+   "line": 19,
+   "sha": "88ed027d57",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 7ddb8399f9f1",
+   "pr": 44741,
+   "class": "v"
+  },
+  {
+   "line": 19,
+   "sha": "26c651c34e",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 1b3a4f0c34a1",
+   "pr": 44741,
+   "class": "v"
+  },
+  {
+   "line": 19,
+   "sha": "c8ff2dfd11",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick b161a0823165",
+   "pr": 44741,
+   "class": "v"
+  },
+  {
+   "line": 19,
+   "sha": "7a8fa2d517",
+   "subsystem": "deps",
+   "title": "fix V8 build on Windows with MSVC",
+   "pr": 44741,
+   "class": "v"
+  },
+  {
+   "line": 19,
+   "sha": "83b0aaa800",
+   "subsystem": "deps",
+   "title": "fix V8 build on SmartOS",
+   "pr": 44741,
+   "class": "v"
+  },
+  {
+   "line": 19,
+   "sha": "7a952e8ea5",
+   "subsystem": "deps",
+   "title": "silence irrelevant V8 warning",
+   "pr": 44741,
+   "class": "v"
+  },
+  {
+   "line": 19,
+   "sha": "6bd756d7c6",
+   "subsystem": "deps",
+   "title": "update V8 to 10.7.193.13",
+   "pr": 44741,
+   "class": "v"
+  },
+  {
+   "line": 19,
+   "sha": "03fb789fb9",
+   "subsystem": "events",
+   "title": "add null check for the signal of EventTarget",
+   "pr": 43153,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "a4fa526ddc",
+   "subsystem": "fs",
+   "title": "add directory autodetection to fsPromises.symlink()",
+   "pr": 42894,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "bb4891d8d4",
+   "subsystem": "fs",
+   "title": "add validateBuffer to improve error",
+   "pr": 44769,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "950a4411fa",
+   "subsystem": "fs",
+   "title": "remove coercion to string in writing methods",
+   "pr": 42796,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 19,
+   "sha": "41a6d82968",
+   "subsystem": "fs",
+   "title": "harden fs.readSync(buffer, options) typecheck",
+   "pr": 42772,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "2275faac2b",
+   "subsystem": "fs",
+   "title": "harden fs.read(params, callback) typecheck",
+   "pr": 42772,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "29953a0b88",
+   "subsystem": "fs",
+   "title": "harden filehandle.read(params) typecheck",
+   "pr": 42772,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "4267b92604",
+   "subsystem": "http",
+   "title": "use Keep-Alive by default in global agents",
+   "pr": 43522,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "0324529e0f",
+   "subsystem": "inspector",
+   "title": "introduce inspector/promises API",
+   "pr": 44250,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "80270994d6",
+   "subsystem": "lib",
+   "title": "enable global CustomEvent by default",
+   "pr": 44860,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "f529f73bd7",
+   "subsystem": "lib",
+   "title": "brand check event handler property receivers",
+   "pr": 44483,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "6de2673a9f",
+   "subsystem": "lib",
+   "title": "enable global WebCrypto by default",
+   "pr": 42083,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "73ba8830d5",
+   "subsystem": "lib",
+   "title": "use private field in AbortController",
+   "pr": 43820,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "7dd2f41c73",
+   "subsystem": "module",
+   "title": "runtime deprecate exports double slash maps",
+   "pr": 44495,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 19,
+   "sha": "22c39b1ddd",
+   "subsystem": "path",
+   "title": "the dot will be added(path.format) if it is not specified in `ext`",
+   "pr": 44349,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "587367d107",
+   "subsystem": "perf_hooks",
+   "title": "expose webperf global scope interfaces",
+   "pr": 44483,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "364c0e196c",
+   "subsystem": "perf_hooks",
+   "title": "fix webperf idlharness",
+   "pr": 44483,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "ada2d053ae",
+   "subsystem": "process",
+   "title": "runtime deprecate coercion to integer in `process.exit()`",
+   "pr": 44711,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 19,
+   "sha": "e0ab8dd637",
+   "subsystem": "process",
+   "title": "make process.config read only",
+   "pr": 43627,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "481a959adb",
+   "subsystem": "readline",
+   "title": "remove `question` method from `InterfaceConstructor`",
+   "pr": 44606,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 19,
+   "sha": "c9602ce212",
+   "subsystem": "src",
+   "title": "use new v8::OOMErrorCallback API",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "19a70c11e4",
+   "subsystem": "src",
+   "title": "override CreateJob instead of PostJob",
+   "pr": 44741,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "fd52c62bee",
+   "subsystem": "src",
+   "title": "use V8_ENABLE_SANDBOX macro",
+   "pr": 44741,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "c10988db44",
+   "subsystem": "src",
+   "title": "use non-deprecated V8 inspector API",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "3efe901dd6",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 111",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "77e585657f",
+   "subsystem": "src",
+   "title": "turn embedder api overload into default argument",
+   "pr": 43629,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "dabda03ea9",
+   "subsystem": "src",
+   "title": "per-environment time origin value",
+   "pr": 43781,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "2e49b99cc2",
+   "subsystem": "src,test",
+   "title": "disable freezing V8 flags on initialization",
+   "pr": 44741,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "2b32985c62",
+   "subsystem": "stream",
+   "title": "use null for the error argument",
+   "pr": 44312,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "36805e8524",
+   "subsystem": "test",
+   "title": "adapt test-repl for V8 update",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "96ef25793d",
+   "subsystem": "test",
+   "title": "adapt test-repl-pretty-*stack to V8 changes",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "71c193e581",
+   "subsystem": "test",
+   "title": "adapt to new JSON SyntaxError messages",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "b5f1564880",
+   "subsystem": "test",
+   "title": "rename always-opt flag to always-turbofan",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "1acf0339dd",
+   "subsystem": "test",
+   "title": "fix test-hash-seed for new V8 versions",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "57ff476c33",
+   "subsystem": "test",
+   "title": "remove duplicate test",
+   "pr": 44051,
+   "class": "a"
+  },
+  {
+   "line": 19,
+   "sha": "77def91bf9",
+   "subsystem": "tls,http2",
+   "title": "send fatal alert on ALPN mismatch",
+   "pr": 44031,
+   "class": "unclassed"
+  },
+  {
+   "line": 19,
+   "sha": "4860ad99b9",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 10.7",
+   "pr": 44741,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "9fafb0a090",
+   "subsystem": "async_hooks",
+   "title": "deprecate the AsyncResource.bind asyncResource property",
+   "pr": 46432,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 20,
+   "sha": "1948d37595",
+   "subsystem": "buffer",
+   "title": "check INSPECT_MAX_BYTES with validateNumber",
+   "pr": 46599,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "7bc0e6a4e7",
+   "subsystem": "buffer",
+   "title": "graduate File from experimental and expose as global",
+   "pr": 47153,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "671ffd7825",
+   "subsystem": "buffer",
+   "title": "use min/max of `validateNumber`",
+   "pr": 45796,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "ab1614d280",
+   "subsystem": "build",
+   "title": "reset embedder string to \"-node.0\"",
+   "pr": 47251,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "c1bcdbcf79",
+   "subsystem": "build",
+   "title": "warn for gcc versions earlier than 10.1",
+   "pr": 46806,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "649f68fc1e",
+   "subsystem": "build",
+   "title": "reset embedder string to \"-node.0\"",
+   "pr": 45579,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "9374700d7a",
+   "subsystem": "crypto",
+   "title": "remove DEFAULT_ENCODING",
+   "pr": 47182,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 20,
+   "sha": "1640aeb680",
+   "subsystem": "crypto",
+   "title": "remove obsolete SSL_OP_* constants",
+   "pr": 47073,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 20,
+   "sha": "c2e4b1fa9a",
+   "subsystem": "crypto",
+   "title": "remove ALPN_ENABLED",
+   "pr": 47028,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 20,
+   "sha": "3ef38c4bd7",
+   "subsystem": "crypto",
+   "title": "use WebIDL converters in WebCryptoAPI",
+   "pr": 46067,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "08af023b1f",
+   "subsystem": "crypto",
+   "title": "runtime deprecate replaced rsa-pss keygen parameters",
+   "pr": 45653,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 20,
+   "sha": "7eb0ac3cb6",
+   "subsystem": "deps",
+   "title": "patch V8 to support compilation on win-arm64",
+   "pr": 47251,
+   "class": "v"
+  },
+  {
+   "line": 20,
+   "sha": "a7c129f286",
+   "subsystem": "deps",
+   "title": "silence irrelevant V8 warning",
+   "pr": 47251,
+   "class": "v"
+  },
+  {
+   "line": 20,
+   "sha": "6f5655a18e",
+   "subsystem": "deps",
+   "title": "always define V8_EXPORT_PRIVATE as no-op",
+   "pr": 47251,
+   "class": "v"
+  },
+  {
+   "line": 20,
+   "sha": "f226350fcb",
+   "subsystem": "deps",
+   "title": "update V8 to 11.3.244.4",
+   "pr": 47251,
+   "class": "v"
+  },
+  {
+   "line": 20,
+   "sha": "d6dae7420e",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick f1c888e7093e",
+   "pr": 45579,
+   "class": "v"
+  },
+  {
+   "line": 20,
+   "sha": "56c436533e",
+   "subsystem": "deps",
+   "title": "fix V8 build on Windows with MSVC",
+   "pr": 45579,
+   "class": "v"
+  },
+  {
+   "line": 20,
+   "sha": "51ab98c71b",
+   "subsystem": "deps",
+   "title": "silence irrelevant V8 warning",
+   "pr": 45579,
+   "class": "v"
+  },
+  {
+   "line": 20,
+   "sha": "9f84d3eea8",
+   "subsystem": "deps",
+   "title": "V8: fix v8-cppgc.h for MSVC",
+   "pr": 45579,
+   "class": "v"
+  },
+  {
+   "line": 20,
+   "sha": "f2318cd4b5",
+   "subsystem": "deps",
+   "title": "fix V8 build issue with inline methods",
+   "pr": 45579,
+   "class": "v"
+  },
+  {
+   "line": 20,
+   "sha": "16e03e7968",
+   "subsystem": "deps",
+   "title": "update V8 to 10.9.194.4",
+   "pr": 45579,
+   "class": "v"
+  },
+  {
+   "line": 20,
+   "sha": "6473f5e7f7",
+   "subsystem": "doc",
+   "title": "update toolchains used for Node.js 20 releases",
+   "pr": 47352,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "cc18fd9608",
+   "subsystem": "events",
+   "title": "refactor to use `validateNumber`",
+   "pr": 45770,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "ff92b40ffc",
+   "subsystem": "http",
+   "title": "close the connection after sending a body without declared length",
+   "pr": 46333,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "2a29df6464",
+   "subsystem": "http",
+   "title": "keep HTTP/1.1 conns alive even if the Connection header is removed",
+   "pr": 46331,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "391dc74a10",
+   "subsystem": "http",
+   "title": "throw error if options of http.Server is array",
+   "pr": 46283,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "ed3604cd64",
+   "subsystem": "http",
+   "title": "server check Host header, to meet RFC 7230 5.4 requirement",
+   "pr": 45597,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "88d71dc301",
+   "subsystem": "lib",
+   "title": "refactor to use min/max of `validateNumber`",
+   "pr": 45772,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "e4d641f02a",
+   "subsystem": "lib",
+   "title": "refactor to use validators in http2",
+   "pr": 46174,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "0f3e531096",
+   "subsystem": "lib",
+   "title": "performance improvement on readline async iterator",
+   "pr": 41276,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "5b5898ac86",
+   "subsystem": "lib,src",
+   "title": "update exit codes as per todos",
+   "pr": 45841,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "55321bafd1",
+   "subsystem": "net",
+   "title": "enable autoSelectFamily by default",
+   "pr": 46790,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "2d0d99733b",
+   "subsystem": "process",
+   "title": "remove `process.exit()`, `process.exitCode` coercion to integer",
+   "pr": 43716,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 20,
+   "sha": "dc06df31b6",
+   "subsystem": "readline",
+   "title": "refactor to use `validateNumber`",
+   "pr": 45801,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "295b2f3ff4",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 115",
+   "pr": 47251,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "3803b028dd",
+   "subsystem": "src",
+   "title": "share common code paths for SEA and embedder script",
+   "pr": 46825,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "e8bddac3e9",
+   "subsystem": "src",
+   "title": "apply ABI-breaking API simplifications",
+   "pr": 46705,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "f84de0ad4c",
+   "subsystem": "src",
+   "title": "use uint32_t for process initialization flags enum",
+   "pr": 46427,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "a6242772ec",
+   "subsystem": "src",
+   "title": "fix ArrayBuffer::Detach deprecation",
+   "pr": 45579,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "dd5c39a808",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 112",
+   "pr": 45579,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "63eca7fec0",
+   "subsystem": "stream",
+   "title": "validate readable defaultEncoding",
+   "pr": 46430,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "9e7093f416",
+   "subsystem": "stream",
+   "title": "validate writable defaultEncoding",
+   "pr": 46322,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "fb91ee4f26",
+   "subsystem": "test",
+   "title": "make trace-gc-flag tests less strict",
+   "pr": 45579,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "eca618071e",
+   "subsystem": "test",
+   "title": "adapt test-v8-stats for V8 update",
+   "pr": 45579,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "c03354d3e0",
+   "subsystem": "test",
+   "title": "test case for multiple res.writeHead and res.getHeader",
+   "pr": 45508,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "c733cc0c7f",
+   "subsystem": "test_runner",
+   "title": "mark module as stable",
+   "pr": 46983,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "7ce223273d",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 11.1",
+   "pr": 47251,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "ca4bd3023e",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 11.0",
+   "pr": 47251,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "58b06a269a",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles",
+   "pr": 45579,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "027841c964",
+   "subsystem": "url",
+   "title": "use private properties for brand check",
+   "pr": 46904,
+   "class": "a"
+  },
+  {
+   "line": 20,
+   "sha": "3bed5f11e0",
+   "subsystem": "url",
+   "title": "runtime-deprecate url.parse() with invalid ports",
+   "pr": 45526,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "7c76fddf25",
+   "subsystem": "util,doc",
+   "title": "mark parseArgs() as stable",
+   "pr": 46718,
+   "class": "unclassed"
+  },
+  {
+   "line": 20,
+   "sha": "4b52727976",
+   "subsystem": "wasi",
+   "title": "make version non-optional",
+   "pr": 47391,
+   "class": "unclassed"
+  },
+  {
+   "line": 21,
+   "sha": "ac2a68c76b",
+   "subsystem": "build",
+   "title": "drop support for Visual Studio 2019",
+   "pr": 49051,
+   "class": "a"
+  },
+  {
+   "line": 21,
+   "sha": "4e3983031a",
+   "subsystem": "build",
+   "title": "bump supported macOS and Xcode versions",
+   "pr": 49164,
+   "class": "a"
+  },
+  {
+   "line": 21,
+   "sha": "5a0777776d",
+   "subsystem": "crypto",
+   "title": "do not overwrite _writableState.defaultEncoding",
+   "pr": 49140,
+   "class": "c",
+   "note": "crypto streams no longer overwrite the writable's defaultEncoding",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "162a0652ab",
+   "subsystem": "deps",
+   "title": "bump minimum ICU version to 73",
+   "pr": 49639,
+   "class": "a"
+  },
+  {
+   "line": 21,
+   "sha": "17a74ddd3d",
+   "subsystem": "deps",
+   "title": "update V8 to 11.8.172.13",
+   "pr": 49639,
+   "class": "v"
+  },
+  {
+   "line": 21,
+   "sha": "e9ff81016d",
+   "subsystem": "deps",
+   "title": "update llhttp to 9.1.2",
+   "pr": 48981,
+   "class": "c",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "7ace5aba75",
+   "subsystem": "events",
+   "title": "validate options of `on` and `once`",
+   "pr": 46018,
+   "class": "d",
+   "note": "events.on/once throw on invalid options",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "b3ec13d449",
+   "subsystem": "fs",
+   "title": "adjust `position` validation in reading methods",
+   "pr": 42835,
+   "class": "d",
+   "note": "fs read methods validate `position` more strictly",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "1948dce707",
+   "subsystem": "fs",
+   "title": "add globSync implementation",
+   "pr": 47653,
+   "class": "b",
+   "note": "fs.globSync (and the test runner's globs)"
+  },
+  {
+   "line": 21,
+   "sha": "d68d0eacaa",
+   "subsystem": "http",
+   "title": "reduce parts in chunked response when corking",
+   "pr": 50167,
+   "class": "c",
+   "note": "a corked chunked HTTP response is written in fewer parts: the bytes on the wire differ, the body does not",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "c5b0b894ed",
+   "subsystem": "lib",
+   "title": "mark URL/URLSearchParams as uncloneable and untransferable",
+   "pr": 47497,
+   "class": "d",
+   "note": "structuredClone or postMessage of a URL or URLSearchParams throws",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "3205b1936a",
+   "subsystem": "lib",
+   "title": "remove aix directory case for package reader",
+   "pr": 48605,
+   "class": "a",
+   "note": "AIX only"
+  },
+  {
+   "line": 21,
+   "sha": "b40f0c3074",
+   "subsystem": "lib",
+   "title": "add `navigator.hardwareConcurrency`",
+   "pr": 47769,
+   "class": "b",
+   "note": "a `navigator` global appears: code that feature-tests `typeof navigator` to tell a browser from Node takes the other branch"
+  },
+  {
+   "line": 21,
+   "sha": "4b08c4c047",
+   "subsystem": "lib",
+   "title": "runtime deprecate punycode",
+   "pr": 47202,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "reached: Twenty 19 and LibreChat 2 print \"[DEP0040] DeprecationWarning: The `punycode` module is deprecated\" in the tab (their dry-run logs); a Node 20 process prints nothing"
+  },
+  {
+   "line": 21,
+   "sha": "3ce51ae9c0",
+   "subsystem": "module",
+   "title": "harmonize error code between ESM and CJS",
+   "pr": 48606,
+   "class": "c",
+   "note": "an error code for a module failure changed",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "7202859402",
+   "subsystem": "net",
+   "title": "do not treat `server.maxConnections=0` as `Infinity`",
+   "pr": 48276,
+   "class": "c",
+   "note": "server.maxConnections = 0 now refuses every connection instead of meaning no limit",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "c15bafdaf4",
+   "subsystem": "net",
+   "title": "only defer _final call when connecting",
+   "pr": 47385,
+   "class": "c",
+   "note": "when a socket's _final is deferred",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "6ffacbf0f9",
+   "subsystem": "node-api",
+   "title": "rename internal NAPI_VERSION definition",
+   "pr": 48501,
+   "class": "a",
+   "note": "native addon headers"
+  },
+  {
+   "line": 21,
+   "sha": "11af089b14",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 120",
+   "pr": 49639,
+   "class": "a"
+  },
+  {
+   "line": 21,
+   "sha": "d920b7c94b",
+   "subsystem": "src",
+   "title": "throw DOMException on cloning non-serializable objects",
+   "pr": 47839,
+   "class": "c",
+   "note": "the error thrown for an uncloneable object is a DOMException",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "64549731b6",
+   "subsystem": "src",
+   "title": "throw DataCloneError on transfering untransferable objects",
+   "pr": 47604,
+   "class": "c",
+   "note": "the error thrown for an untransferable object is a DataCloneError",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "dac8de689b",
+   "subsystem": "stream",
+   "title": "use private properties for strategies",
+   "pr": 47218,
+   "class": "a"
+  },
+  {
+   "line": 21,
+   "sha": "1fa084ecdf",
+   "subsystem": "stream",
+   "title": "use private properties for encoding",
+   "pr": 47218,
+   "class": "a"
+  },
+  {
+   "line": 21,
+   "sha": "4e93247079",
+   "subsystem": "stream",
+   "title": "use private properties for compression",
+   "pr": 47218,
+   "class": "a"
+  },
+  {
+   "line": 21,
+   "sha": "527589b755",
+   "subsystem": "test_runner",
+   "title": "disallow array in `run` options",
+   "pr": 49935,
+   "class": "a"
+  },
+  {
+   "line": 21,
+   "sha": "7cd4e70948",
+   "subsystem": "test_runner",
+   "title": "support passing globs",
+   "pr": 47653,
+   "class": "b",
+   "note": "fs.globSync (and the test runner's globs)"
+  },
+  {
+   "line": 21,
+   "sha": "2ef170254b",
+   "subsystem": "tls",
+   "title": "use `validateNumber` for `options.minDHSize`",
+   "pr": 49973,
+   "class": "d",
+   "note": "tls validates options.minDHSize",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "092fb9f541",
+   "subsystem": "tls",
+   "title": "use validateFunction for `options.checkServerIdentity`",
+   "pr": 49896,
+   "class": "d",
+   "note": "tls validates options.checkServerIdentity",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "ccca547e28",
+   "subsystem": "util",
+   "title": "runtime deprecate `promisify`-ing a function returning a `Promise`",
+   "pr": 49609,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 21,
+   "sha": "4038cf0513",
+   "subsystem": "vm",
+   "title": "freeze `dependencySpecifiers` array",
+   "pr": 49720,
+   "class": "a",
+   "note": "vm module internals"
+  },
+  {
+   "line": 22,
+   "sha": "2b1e7c2fcb",
+   "subsystem": "build",
+   "title": "compile with C++20 support on Windows",
+   "pr": 52465,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "12d00f1479",
+   "subsystem": "build",
+   "title": "reset embedder string to \"-node.0\"",
+   "pr": 52465,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "5f08e11a3c",
+   "subsystem": "build",
+   "title": "reset embedder string to \"-node.0\"",
+   "pr": 52293,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "94f0369d1d",
+   "subsystem": "build",
+   "title": "reset embedder string to \"-node.0\"",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "58674cd1d8",
+   "subsystem": "build",
+   "title": "reset embedder string to \"-node.0\"",
+   "pr": 50115,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "60e836427e",
+   "subsystem": "console",
+   "title": "treat non-strings as separate argument in console.assert()",
+   "pr": 49722,
+   "class": "c",
+   "note": "console.assert formats non-string arguments separately",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "d62ab3a1ef",
+   "subsystem": "crypto",
+   "title": "runtime deprecate hmac constructor",
+   "pr": 52071,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "de0602d190",
+   "subsystem": "crypto",
+   "title": "runtime deprecate Hash constructor",
+   "pr": 51880,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "215f4d04b7",
+   "subsystem": "crypto",
+   "title": "move createCipher and createDecipher to eol",
+   "pr": 50973,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "30801b8aaf",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick cd10ad7cdbe5",
+   "pr": 52465,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "521b629ab1",
+   "subsystem": "deps",
+   "title": "V8: revert CL 5331688",
+   "pr": 52465,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "3795e97e6c",
+   "subsystem": "deps",
+   "title": "patch V8 to support compilation with MSVC",
+   "pr": 52465,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "5bde9e677d",
+   "subsystem": "deps",
+   "title": "silence internal V8 deprecation warning",
+   "pr": 52465,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "46e628c6f2",
+   "subsystem": "deps",
+   "title": "patch V8 to avoid duplicated zlib symbol",
+   "pr": 52465,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "f824e40a82",
+   "subsystem": "deps",
+   "title": "remove usage of a C++20 feature from V8",
+   "pr": 52465,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "d2c84c9a13",
+   "subsystem": "deps",
+   "title": "avoid compilation error with ASan",
+   "pr": 52465,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "95d6045bdb",
+   "subsystem": "deps",
+   "title": "disable V8 concurrent sparkplug compilation",
+   "pr": 52465,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "00f55f5743",
+   "subsystem": "deps",
+   "title": "silence irrelevant V8 warning",
+   "pr": 52465,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "764085aa66",
+   "subsystem": "deps",
+   "title": "always define V8_EXPORT_PRIVATE as no-op",
+   "pr": 52465,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "02b0bc01fe",
+   "subsystem": "deps",
+   "title": "update V8 to 12.4.254.14",
+   "pr": 52465,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "0ec50a19dd",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick cd10ad7cdbe5",
+   "pr": 52293,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "021b0b7dee",
+   "subsystem": "deps",
+   "title": "V8: backport c4be0a97f981",
+   "pr": 52293,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "681aaf85c7",
+   "subsystem": "deps",
+   "title": "silence internal V8 deprecation warning",
+   "pr": 52293,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "c563a1c4e4",
+   "subsystem": "deps",
+   "title": "patch V8 to support compilation with MSVC",
+   "pr": 52293,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "11e94b9987",
+   "subsystem": "deps",
+   "title": "patch V8 to avoid duplicated zlib symbol",
+   "pr": 52293,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "856163e23c",
+   "subsystem": "deps",
+   "title": "remove usage of a C++20 feature from V8",
+   "pr": 52293,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "b530214127",
+   "subsystem": "deps",
+   "title": "avoid compilation error with ASan",
+   "pr": 52293,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "8054f69dd9",
+   "subsystem": "deps",
+   "title": "disable V8 concurrent sparkplug compilation",
+   "pr": 52293,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "dee908be42",
+   "subsystem": "deps",
+   "title": "silence irrelevant V8 warning",
+   "pr": 52293,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "cf069414ee",
+   "subsystem": "deps",
+   "title": "always define V8_EXPORT_PRIVATE as no-op",
+   "pr": 52293,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "cc5792dd85",
+   "subsystem": "deps",
+   "title": "update V8 to 12.3.219.16",
+   "pr": 52293,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "61a0d3b4c4",
+   "subsystem": "deps",
+   "title": "V8: backport c4be0a97f981",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "f55380a725",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick f8d5e576b814",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "b9d806a2dd",
+   "subsystem": "deps",
+   "title": "patch V8 to support compilation with MSVC",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "63b58bc17b",
+   "subsystem": "deps",
+   "title": "patch V8 to avoid duplicated zlib symbol",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "86056353c4",
+   "subsystem": "deps",
+   "title": "remove usage of a C++20 feature from V8",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "2e0efc1c8d",
+   "subsystem": "deps",
+   "title": "avoid compilation error with ASan",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "59e6f62e34",
+   "subsystem": "deps",
+   "title": "disable V8 concurrent sparkplug compilation",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "0423f7e27e",
+   "subsystem": "deps",
+   "title": "silence irrelevant V8 warning",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "f36620806d",
+   "subsystem": "deps",
+   "title": "always define V8_EXPORT_PRIVATE as no-op",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "09a8440b45",
+   "subsystem": "deps",
+   "title": "update V8 to 12.2.281.27",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "0da3beebfc",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick de611e69ad51",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "b982335637",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 0fd478bcdabd",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "481a90116c",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 0f9ebbc672c7",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "782addbdc3",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 8f0b94671ddb",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "b682e7f540",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick f7d000a7ae7b",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "a60090c52f",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 25902244ad1a",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "8441d1fc18",
+   "subsystem": "deps",
+   "title": "patch V8 to avoid duplicated zlib symbol",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "e8e9bbd7a9",
+   "subsystem": "deps",
+   "title": "remove usage of a C++20 feature from V8",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "785d5cd006",
+   "subsystem": "deps",
+   "title": "avoid compilation error with ASan",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "7071c1dafd",
+   "subsystem": "deps",
+   "title": "disable V8 concurrent sparkplug compilation",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "d1d60b297d",
+   "subsystem": "deps",
+   "title": "silence irrelevant V8 warning",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "5b240c62f9",
+   "subsystem": "deps",
+   "title": "always define V8_EXPORT_PRIVATE as no-op",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "d8c97e4857",
+   "subsystem": "deps",
+   "title": "update V8 to 11.9.169.7",
+   "pr": 50115,
+   "class": "v"
+  },
+  {
+   "line": 22,
+   "sha": "b9df88a8c2",
+   "subsystem": "doc",
+   "title": "runtime deprecate flag --trace-atomics-wait",
+   "pr": 51179,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "9ba5df30b4",
+   "subsystem": "doc",
+   "title": "bump FreeBSD experimental support to 13.2",
+   "pr": 51231,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "900d79caf2",
+   "subsystem": "doc",
+   "title": "add migration paths for deprecated utils",
+   "pr": 50488,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "8206f6bb7f",
+   "subsystem": "fs",
+   "title": "runtime deprecate fs.Stats constructor",
+   "pr": 52067,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "c14133503a",
+   "subsystem": "fs",
+   "title": "use private fields instead of symbols for `Dir`",
+   "pr": 51037,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "abbdc3efaa",
+   "subsystem": "fs",
+   "title": "make stats date fields lazy",
+   "pr": 50908,
+   "class": "a",
+   "note": "fs.Stats date fields are made on first read"
+  },
+  {
+   "line": 22,
+   "sha": "4b76ccea95",
+   "subsystem": "http",
+   "title": "preserve raw header duplicates in writeHead after setHeader calls",
+   "pr": 50394,
+   "class": "c",
+   "note": "writeHead after setHeader keeps duplicate raw headers",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "c975384264",
+   "subsystem": "lib",
+   "title": "enable WebSocket by default",
+   "pr": 51594,
+   "class": "b",
+   "note": "a global WebSocket appears: a library that picks `ws` only when no global exists takes the other branch"
+  },
+  {
+   "line": 22,
+   "sha": "351495e938",
+   "subsystem": "lib,test",
+   "title": "handle new Iterator global",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "a8b21fdc90",
+   "subsystem": "process",
+   "title": "wait for `'exit'` before printing result",
+   "pr": 52172,
+   "class": "a",
+   "note": "node --print only"
+  },
+  {
+   "line": 22,
+   "sha": "582ff5037c",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 127",
+   "pr": 52465,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "c5c4b50260",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 126",
+   "pr": 52293,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "d248639285",
+   "subsystem": "src",
+   "title": "use supported API to get stalled TLA messages",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "d34b02db4c",
+   "subsystem": "src",
+   "title": "update default V8 platform to override functions with location",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "d9c47e9b5f",
+   "subsystem": "src",
+   "title": "add missing TryCatch",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "5cddd3b2d8",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 124",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "1528846ada",
+   "subsystem": "src",
+   "title": "use non-deprecated v8::Uint8Array::kMaxLength",
+   "pr": 50115,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "7166986626",
+   "subsystem": "src",
+   "title": "adapt to v8::Exception API change",
+   "pr": 50115,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "4782818020",
+   "subsystem": "src",
+   "title": "use non-deprecated version of CreateSyntheticModule",
+   "pr": 50115,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "2cff0ce411",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 122",
+   "pr": 50115,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "1abff07392",
+   "subsystem": "stream",
+   "title": "bump default highWaterMark",
+   "pr": 52037,
+   "class": "c",
+   "note": "streams' default highWaterMark is 64 KiB, was 16 KiB: chunk sizes and backpressure points move",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "9efc84a2cb",
+   "subsystem": "test",
+   "title": "mark test-worker-arraybuffer-zerofill as flaky",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "84c2e712eb",
+   "subsystem": "test",
+   "title": "mark some GC-related tests as flaky",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "cdc4437b87",
+   "subsystem": "test",
+   "title": "allow slightly more diff in memory leak test",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "515b007fae",
+   "subsystem": "test",
+   "title": "replace always-opt flag with alway-turbofan",
+   "pr": 50115,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "2341805eb2",
+   "subsystem": "test",
+   "title": "remove tests that create very large buffers",
+   "pr": 50115,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "941cef5636",
+   "subsystem": "test",
+   "title": "adapt to new V8 trusted memory spaces",
+   "pr": 50115,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "29de7f82cd",
+   "subsystem": "test_runner",
+   "title": "omit filtered test from output",
+   "pr": 52221,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "00dc6d9d97",
+   "subsystem": "test_runner",
+   "title": "improve `--test-name-pattern` to allow matching single test",
+   "pr": 51577,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "5def8019d5",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 12.4",
+   "pr": 52465,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "c22793d050",
+   "subsystem": "tools",
+   "title": "roughly port v8_abseil to gyp",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "ffb0302f0c",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 12.2",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "aadea12440",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 12.1",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "7784773967",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 12.0",
+   "pr": 51362,
+   "class": "v",
+   "note": "V8 12.x: the Iterator global and what came with that engine update"
+  },
+  {
+   "line": 22,
+   "sha": "9fe0424baa",
+   "subsystem": "trace_events",
+   "title": "use private fields instead of symbols for `Tracing`",
+   "pr": 51180,
+   "class": "a"
+  },
+  {
+   "line": 22,
+   "sha": "e96cd25007",
+   "subsystem": "util",
+   "title": "runtime deprecate util.log",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "6cf20d5e43",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isUndefined",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "09e424921f",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isSymbol",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "80b6bfd4e9",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isString",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "d419edded9",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isRegExp",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "e0b8de78ed",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isPrimitive",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "5478e1129a",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isObject",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "b05b1dd541",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isNumber",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "5af9bf5f6a",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isNullOrUndefined",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "860a10e10e",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isNull",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "70330f5c2b",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isFunction",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "7c69c33acc",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isError",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "a0c5b871a9",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isDate",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "3c670cb15d",
+   "subsystem": "util",
+   "title": "runtime deprecation util.isBuffer",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "c17a448ca9",
+   "subsystem": "util",
+   "title": "runtime deprecation util.isBoolean",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "fbb2f891aa",
+   "subsystem": "util",
+   "title": "runtime deprecate util.isArray",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "22d8062e42",
+   "subsystem": "util",
+   "title": "runtime deprecation util._extend",
+   "pr": 50488,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 22,
+   "sha": "1a5acd0638",
+   "subsystem": "v8",
+   "title": "enable maglev on supported architectures",
+   "pr": 51360,
+   "class": "v",
+   "note": "a compiler tier"
+  },
+  {
+   "line": 23,
+   "sha": "764b13d75c",
+   "subsystem": "assert,util",
+   "title": "change WeakMap and WeakSet comparison handling",
+   "pr": 53495,
+   "class": "c",
+   "note": "assert.deepStrictEqual and util.isDeepStrictEqual compare WeakMap and WeakSet by identity",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "3800d60c66",
+   "subsystem": "buffer",
+   "title": "throw when writing beyond buffer\"",
+   "pr": 54588,
+   "class": "d",
+   "note": "buffer writes past the end throw ERR_BUFFER_OUT_OF_BOUNDS",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "17fd32790a",
+   "subsystem": "buffer",
+   "title": "make File cloneable",
+   "pr": 47613,
+   "class": "b",
+   "note": "File can be structured-cloned"
+  },
+  {
+   "line": 23,
+   "sha": "f68d7d2acc",
+   "subsystem": "build",
+   "title": "reset embedder string to \"-node.0\"",
+   "pr": 54536,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "9d0748c5df",
+   "subsystem": "build",
+   "title": "disable ICF for mksnapshot",
+   "pr": 54077,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "b7bcf3e121",
+   "subsystem": "build",
+   "title": "include v8-sandbox.h header in distribution",
+   "pr": 54077,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "1dfa3b8255",
+   "subsystem": "build",
+   "title": "reset embedder string to \"-node.0\"",
+   "pr": 54077,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "046343ea9d",
+   "subsystem": "build",
+   "title": "warn for GCC versions earlier than 12.2",
+   "pr": 54081,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "a5decd4c8d",
+   "subsystem": "build",
+   "title": "drop experimental support for Windows <10",
+   "pr": 54079,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "7ad0cc3e57",
+   "subsystem": "build",
+   "title": "remove support for 32-bit Windows",
+   "pr": 53184,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "c7e42092f3",
+   "subsystem": "build",
+   "title": "compile with C++20 support",
+   "pr": 45427,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "e2b7e41e23",
+   "subsystem": "child_process",
+   "title": "remove unused internal event",
+   "pr": 53793,
+   "class": "a",
+   "note": "an internal event"
+  },
+  {
+   "line": 23,
+   "sha": "4f1fe8a015",
+   "subsystem": "cli",
+   "title": "remove deprecated V8 flag",
+   "pr": 54761,
+   "class": "d",
+   "note": "a V8 command-line flag is gone: a start command that passes it fails",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "8f37492b65",
+   "subsystem": "cli",
+   "title": "move --trace-atomics-wait to eol",
+   "pr": 52747,
+   "class": "d",
+   "note": "--trace-atomics-wait is gone",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "f7e73cd1f2",
+   "subsystem": "cli",
+   "title": "remove --no-experimental-global-customevent flag",
+   "pr": 52723,
+   "class": "d",
+   "note": "--no-experimental-global-customevent is gone",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "311504125f",
+   "subsystem": "cli",
+   "title": "remove --no-experimental-fetch flag",
+   "pr": 52611,
+   "class": "d",
+   "note": "--no-experimental-fetch is gone: a start command that passes it fails",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "a30ae50860",
+   "subsystem": "cli",
+   "title": "remove --no-experimental-global-webcrypto flag",
+   "pr": 52564,
+   "class": "d",
+   "note": "--no-experimental-global-webcrypto is gone",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "afe56aa58b",
+   "subsystem": "crypto",
+   "title": "runtime deprecate crypto.fips",
+   "pr": 55019,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "33a6d1fe3a",
+   "subsystem": "crypto",
+   "title": "remove ERR_CRYPTO_SCRYPT_INVALID_PARAMETER",
+   "pr": 53305,
+   "class": "c",
+   "note": "an scrypt parameter error has another code",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "ff826069a8",
+   "subsystem": "crypto",
+   "title": "move DEP0182 to runtime deprecation",
+   "pr": 52552,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "6e150f9527",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 97199f686e2f",
+   "pr": 54536,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "1e16779fa1",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 01a47f3ffff2",
+   "pr": 54536,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "762a440e68",
+   "subsystem": "deps",
+   "title": "patch V8 to support older Clang versions",
+   "pr": 54536,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "95f2213eed",
+   "subsystem": "deps",
+   "title": "always define V8_NODISCARD as no-op",
+   "pr": 54536,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "09d997f181",
+   "subsystem": "deps",
+   "title": "fix FP16 bitcasts.h",
+   "pr": 54536,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "1866363854",
+   "subsystem": "deps",
+   "title": "patch V8 to support compilation with MSVC",
+   "pr": 54536,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "6f4f22f84c",
+   "subsystem": "deps",
+   "title": "patch V8 to avoid duplicated zlib symbol",
+   "pr": 54536,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "dfff61475e",
+   "subsystem": "deps",
+   "title": "disable V8 concurrent sparkplug compilation",
+   "pr": 54536,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "69ad89f8eb",
+   "subsystem": "deps",
+   "title": "always define V8_EXPORT_PRIVATE as no-op",
+   "pr": 54536,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "5ab3140dfb",
+   "subsystem": "deps",
+   "title": "update V8 to 12.9.202.18",
+   "pr": 54536,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "fba06eb34a",
+   "subsystem": "deps",
+   "title": "remove bogus V8 DCHECK",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "5355603fb5",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 00e9eeb3fb2c",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "bcc1e2716c",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick b1397772c70c",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "415bc750a5",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 35888fee7bba",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "28f3e5c9d1",
+   "subsystem": "deps",
+   "title": "always define V8_NODISCARD as no-op",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "a41c381cde",
+   "subsystem": "deps",
+   "title": "fix FP16 bitcasts.h",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "16c9348e60",
+   "subsystem": "deps",
+   "title": "V8: revert CL 5331688",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "dc4e702a45",
+   "subsystem": "deps",
+   "title": "patch V8 to support compilation with MSVC",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "f626acc328",
+   "subsystem": "deps",
+   "title": "silence internal V8 deprecation warning",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "ed187faa64",
+   "subsystem": "deps",
+   "title": "patch V8 to avoid duplicated zlib symbol",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "ed029bded7",
+   "subsystem": "deps",
+   "title": "avoid compilation error with ASan",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "e600de93cf",
+   "subsystem": "deps",
+   "title": "disable V8 concurrent sparkplug compilation",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "cc36db7c06",
+   "subsystem": "deps",
+   "title": "always define V8_EXPORT_PRIVATE as no-op",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "9d7cd9b864",
+   "subsystem": "deps",
+   "title": "update V8 to 12.8.374.13",
+   "pr": 54077,
+   "class": "v"
+  },
+  {
+   "line": 23,
+   "sha": "4f70132972",
+   "subsystem": "doc",
+   "title": "reflect toolchains used for official binaries",
+   "pr": 54967,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "7fab6e8885",
+   "subsystem": "doc",
+   "title": "use gcc 12 on AIX for Node.js >=23",
+   "pr": 54338,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "1d5ed725e9",
+   "subsystem": "esm",
+   "title": "export 'module.exports' on ESM CJS wrapper",
+   "pr": 53848,
+   "class": "b",
+   "note": "an ES module importing CommonJS also gets a 'module.exports' export name"
+  },
+  {
+   "line": 23,
+   "sha": "d5c29ba12d",
+   "subsystem": "events",
+   "title": "set EventEmitterAsyncResource fields private",
+   "pr": 54889,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "f202322ea4",
+   "subsystem": "fs",
+   "title": "adjust typecheck for `type` in `fs.symlink()`",
+   "pr": 49741,
+   "class": "d",
+   "note": "fs.symlink validates `type`",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "15e7563062",
+   "subsystem": "fs",
+   "title": "runtime deprecate `dirent.path`",
+   "pr": 51050,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "00b2f07f9d",
+   "subsystem": "fs,win",
+   "title": "fix bug in paths with trailing slashes",
+   "pr": 54160,
+   "class": "a",
+   "note": "Windows only"
+  },
+  {
+   "line": 23,
+   "sha": "e973c3e94b",
+   "subsystem": "lib",
+   "title": "validate signals with interface converter",
+   "pr": 54965,
+   "class": "d",
+   "note": "AbortSignal arguments are validated by interface: an object that only looks like a signal is refused",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "a5a946d8a5",
+   "subsystem": "lib",
+   "title": "implement interface converter in webidl",
+   "pr": 54965,
+   "class": "d",
+   "note": "AbortSignal arguments are validated by interface: an object that only looks like a signal is refused",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "6ed93b4d69",
+   "subsystem": "lib",
+   "title": "expose global CloseEvent",
+   "pr": 53355,
+   "class": "b",
+   "note": "a global CloseEvent"
+  },
+  {
+   "line": 23,
+   "sha": "52322aa42a",
+   "subsystem": "net",
+   "title": "validate host name for server listen",
+   "pr": 54470,
+   "class": "d",
+   "note": "server.listen validates the host name",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "efbba60e5b",
+   "subsystem": "path",
+   "title": "fix bugs and inconsistencies",
+   "pr": 54224,
+   "class": "c",
+   "note": "path results for some edge inputs changed",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "c237eabf4c",
+   "subsystem": "process",
+   "title": "remove `process.assert`",
+   "pr": 55035,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "17a17164d6",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 131",
+   "pr": 54536,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "f0134fa6c3",
+   "subsystem": "src",
+   "title": "stop using deprecated fields of `v8::FastApiCallbackOptions`",
+   "pr": 54077,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "0be79f4deb",
+   "subsystem": "src",
+   "title": "remove dependency on wrapper-descriptor-based CppHeap",
+   "pr": 54077,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "525b3f22d1",
+   "subsystem": "src",
+   "title": "add source location to v8::TaskRunner",
+   "pr": 54077,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "e945bd9525",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 129",
+   "pr": 54077,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "bb8d2936ab",
+   "subsystem": "src",
+   "title": "do not use soon-to-be-deprecated V8 API",
+   "pr": 53174,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "75884678d7",
+   "subsystem": "src",
+   "title": "add UV_PIPE_NO_TRUNCATE for bind in pipe_wrap.cc",
+   "pr": 52347,
+   "class": "c",
+   "note": "binding a pipe to a path too long for sockaddr_un fails instead of truncating",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "922feb1ff5",
+   "subsystem": "stream",
+   "title": "pipe to a closed or destroyed stream is not allowed in pipeline",
+   "pr": 53241,
+   "class": "d",
+   "note": "stream.pipeline to a closed or destroyed stream errors",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "ffe0dc5b87",
+   "subsystem": "string_decoder",
+   "title": "refactor encoding validation",
+   "pr": 54957,
+   "class": "a",
+   "note": "string_decoder internals"
+  },
+  {
+   "line": 23,
+   "sha": "df9efba2ce",
+   "subsystem": "test",
+   "title": "update v8-stats test for V8 12.6",
+   "pr": 54077,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "dbaef339aa",
+   "subsystem": "test_runner",
+   "title": "detect only tests when --test is not used",
+   "pr": 54881,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "eb7e18fe94",
+   "subsystem": "test_runner",
+   "title": "always make spec the default reporter",
+   "pr": 54548,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "0db38f0f99",
+   "subsystem": "test_runner",
+   "title": "expose lcov reporter as newable function",
+   "pr": 52403,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "f5ed3386fd",
+   "subsystem": "timers",
+   "title": "emit warning if delay is negative or NaN",
+   "pr": 46678,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "f666a1b754",
+   "subsystem": "tls",
+   "title": "fix 'ERR_TLS_PSK_SET_IDENTIY_HINT_FAILED' typo",
+   "pr": 52627,
+   "class": "c",
+   "note": "a TLS error code's spelling",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "c8c108f9b0",
+   "subsystem": "tools",
+   "title": "add additonal include dirs for V8 on AIX",
+   "pr": 54536,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "64e8646618",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 12.8",
+   "pr": 54077,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "dc352a5ff2",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 12.7",
+   "pr": 54077,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "8044051ce3",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 12.6",
+   "pr": 54077,
+   "class": "a"
+  },
+  {
+   "line": 23,
+   "sha": "982f6ad516",
+   "subsystem": "util",
+   "title": "move util.log to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "1d817dcb52",
+   "subsystem": "util",
+   "title": "move util.isPrimitive to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "72240942ed",
+   "subsystem": "util",
+   "title": "move util.isFunction to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "dc379626ab",
+   "subsystem": "util",
+   "title": "move util.isError to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "b5cae4fea6",
+   "subsystem": "util",
+   "title": "move util.isDate to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "bd559e3e5a",
+   "subsystem": "util",
+   "title": "move util.isObject to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "d3068b9cfa",
+   "subsystem": "util",
+   "title": "move util.isRegExp to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "a59c7aeb27",
+   "subsystem": "util",
+   "title": "move util.isUndefined to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "05e72c939a",
+   "subsystem": "util",
+   "title": "move util.isSymbol to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "832a77c003",
+   "subsystem": "util",
+   "title": "move util.isString to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "708f57ea49",
+   "subsystem": "util",
+   "title": "move util.isNumber to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "6ec403fe91",
+   "subsystem": "util",
+   "title": "move util.isNullOrUndefined to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "7cd8bb26d1",
+   "subsystem": "util",
+   "title": "move util.isNull to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "e32b0c1eab",
+   "subsystem": "util",
+   "title": "move util.isBuffer to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "be528ab11e",
+   "subsystem": "util",
+   "title": "move util.isBoolean to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "ac97a532f5",
+   "subsystem": "util",
+   "title": "move util._extend to eol",
+   "pr": 52744,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 23,
+   "sha": "e225f00034",
+   "subsystem": "zlib",
+   "title": "remove `zlib.bytesRead`",
+   "pr": 55020,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "c6b934380a",
+   "subsystem": "src",
+   "title": "enable `Float16Array` on global object",
+   "pr": 58154,
+   "class": "v",
+   "note": "Float16Array and explicit resource management are the engine's"
+  },
+  {
+   "line": 24,
+   "sha": "69efb81a73",
+   "subsystem": "src",
+   "title": "enable explicit resource management",
+   "pr": 58154,
+   "class": "v",
+   "note": "Float16Array and explicit resource management are the engine's"
+  },
+  {
+   "line": 24,
+   "sha": "b00ff4270e",
+   "subsystem": "src,test",
+   "title": "unregister the isolate after disposal and before freeing",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "b81697d860",
+   "subsystem": "src",
+   "title": "use non-deprecated WriteUtf8V2() method",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "1f06169b87",
+   "subsystem": "src",
+   "title": "use non-deprecated Utf8LengthV2() method",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "eae9a296f0",
+   "subsystem": "src",
+   "title": "use V8-owned CppHeap",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "087c254a11",
+   "subsystem": "test",
+   "title": "fix test-fs-write for V8 13.6",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "9e49bedd8e",
+   "subsystem": "build",
+   "title": "update list of installed cppgc headers",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "93cca8a43e",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 13.6",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "347daa07be",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 13.5",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "2a35d5a86c",
+   "subsystem": "build",
+   "title": "fix V8 TLS config for shared lib builds",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "b0fb5a09cf",
+   "subsystem": "build",
+   "title": "pass `-fPIC` to linker as well for shared builds",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "dd4c5d6c73",
+   "subsystem": "src,test",
+   "title": "add V8 API to test the hash seed",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "1d5d7b6eed",
+   "subsystem": "src",
+   "title": "use `v8::ExternalMemoryAccounter`",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "3779e43cce",
+   "subsystem": "tools",
+   "title": "update license-builder and LICENSE for V8 deps",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "82c2255206",
+   "subsystem": "deps",
+   "title": "remove deps/simdutf",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "8a258eb7b1",
+   "subsystem": "test",
+   "title": "handle explicit resource management globals",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "9e0d9b6024",
+   "subsystem": "test",
+   "title": "adapt assert tests to stack trace changes",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "f7406aa56d",
+   "subsystem": "test",
+   "title": "update test-linux-perf-logger",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "50a8527867",
+   "subsystem": "src",
+   "title": "replace uses of FastApiTypedArray",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "9c1ebb713c",
+   "subsystem": "build",
+   "title": "add `/bigobj` to compile V8 on Windows",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "fb3d5ea45d",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 13.4",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "756abacf73",
+   "subsystem": "build,src,tools",
+   "title": "adapt build config for V8 13.3",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "f8953e54b0",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 13.2",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "c8a0e205e1",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 13.1",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "1689ee84ce",
+   "subsystem": "build",
+   "title": "enable shared RO heap with ptr compression",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "15f2fb9467",
+   "subsystem": "build",
+   "title": "remove support for s390 32-bit",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "4ab254c9f2",
+   "subsystem": "deps",
+   "title": "V8: backport 954187bb1b87",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "732923b927",
+   "subsystem": "deps",
+   "title": "patch V8 to support compilation with MSVC",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "972834d7c0",
+   "subsystem": "deps",
+   "title": "always define V8_EXPORT_PRIVATE as no-op",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "7098bff3a9",
+   "subsystem": "deps",
+   "title": "disable V8 concurrent sparkplug compilation",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "dc82c40d4a",
+   "subsystem": "deps",
+   "title": "use std::map in MSVC STL for EphemeronRememberedSet",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "42f5130ee2",
+   "subsystem": "deps",
+   "title": "patch V8 for illumos",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "23b17dbd9e",
+   "subsystem": "deps",
+   "title": "remove problematic comment from v8-internal",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "c5d71fcdab",
+   "subsystem": "deps",
+   "title": "define V8_PRESERVE_MOST as no-op on Windows",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "fbc2005b15",
+   "subsystem": "deps",
+   "title": "fix FP16 bitcasts.h",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "57f9430503",
+   "subsystem": "deps",
+   "title": "patch V8 to avoid duplicated zlib symbol",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "f26cab1b85",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 137",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "f8923a4f17",
+   "subsystem": "build",
+   "title": "reset embedder string to \"-node.0\"",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "c7964bc02b",
+   "subsystem": "deps",
+   "title": "update V8 to 13.6.233.8",
+   "pr": 58070,
+   "class": "a",
+   "note": "V8 embedding API"
+  },
+  {
+   "line": 24,
+   "sha": "6682861d6f",
+   "subsystem": "build",
+   "title": "downgrade armv7 support to experimental",
+   "pr": 58071,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "0579e0ec93",
+   "subsystem": "buffer",
+   "title": "move SlowBuffer to EOL",
+   "pr": 58008,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "a55f5d5e63",
+   "subsystem": "readline",
+   "title": "add stricter validation for functions called after closed",
+   "pr": 57680,
+   "class": "d",
+   "note": "readline functions throw after close",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "d16b0bae55",
+   "subsystem": "http2",
+   "title": "session tracking and graceful server close",
+   "pr": 57586,
+   "class": "c",
+   "note": "http2 server.close() waits for sessions and closes them gracefully",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "e2b94dc3f9",
+   "subsystem": "readline",
+   "title": "fix unicode line separators being ignored",
+   "pr": 57591,
+   "class": "c",
+   "note": "readline splits on Unicode line separators",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "7d4db69049",
+   "subsystem": "http",
+   "title": "remove outgoingmessage _headers and _headersList",
+   "pr": 57551,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "fabf9384e0",
+   "subsystem": "fs",
+   "title": "remove ability to call truncate with fd",
+   "pr": 57567,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "a587bd2ee2",
+   "subsystem": "net",
+   "title": "make _setSimultaneousAccepts() end-of-life deprecated",
+   "pr": 57550,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "c6bca3fd34",
+   "subsystem": "child_process",
+   "title": "deprecate passing `args` to `spawn` and `execFile`",
+   "pr": 57199,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "e42c01b56d",
+   "subsystem": "buffer",
+   "title": "make `buflen` in integer range",
+   "pr": 51821,
+   "class": "d",
+   "note": "buffer functions validate their length argument's range",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "cc08ad56b8",
+   "subsystem": "tls",
+   "title": "remove deprecated tls.createSecurePair",
+   "pr": 57361,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "6f2a6b262b",
+   "subsystem": "tls",
+   "title": "make server.prototype.setOptions end-of-life",
+   "pr": 57339,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "0c371d919e",
+   "subsystem": "lib",
+   "title": "remove obsolete Cipher export",
+   "pr": 57266,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "2cbf3c38db",
+   "subsystem": "timers",
+   "title": "check for immediate instance in clearImmediate",
+   "pr": 57069,
+   "class": "c",
+   "note": "clearImmediate ignores what is not an Immediate",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "4f512faf4a",
+   "subsystem": "lib",
+   "title": "unexpose six process bindings",
+   "pr": 57149,
+   "class": "d",
+   "note": "six process.binding() names are gone",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "8b40221777",
+   "subsystem": "build",
+   "title": "bump supported macOS version to 13.5",
+   "pr": 57115,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "5d7091f1bc",
+   "subsystem": "timers",
+   "title": "set several methods EOL",
+   "pr": 56966,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "d1f8ccb10d",
+   "subsystem": "url",
+   "title": "expose urlpattern as global",
+   "pr": 56950,
+   "class": "b",
+   "note": "a global URLPattern"
+  },
+  {
+   "line": 24,
+   "sha": "ed52ab913b",
+   "subsystem": "build",
+   "title": "increase minimum Xcode version to 16.1",
+   "pr": 56824,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "1a2eb15bc6",
+   "subsystem": "test_runner",
+   "title": "remove promises returned by t.test()",
+   "pr": 56664,
+   "class": "a",
+   "note": "the test runner"
+  },
+  {
+   "line": 24,
+   "sha": "96718268fe",
+   "subsystem": "test_runner",
+   "title": "remove promises returned by test()",
+   "pr": 56664,
+   "class": "a",
+   "note": "the test runner"
+  },
+  {
+   "line": 24,
+   "sha": "aa3523ec22",
+   "subsystem": "test_runner",
+   "title": "automatically wait for subtests to finish",
+   "pr": 56664,
+   "class": "a",
+   "note": "the test runner"
+  },
+  {
+   "line": 24,
+   "sha": "6857dbc018",
+   "subsystem": "test",
+   "title": "disable fast API call count checks",
+   "pr": 55014,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "89f661dd66",
+   "subsystem": "build",
+   "title": "link V8 with atomic library",
+   "pr": 55014,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "7e8752006a",
+   "subsystem": "src",
+   "title": "update GetForegroundTaskRunner override",
+   "pr": 55014,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "44b0e423dc",
+   "subsystem": "build",
+   "title": "remove support for ppc 32-bit",
+   "pr": 55014,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "6f965260dd",
+   "subsystem": "tools",
+   "title": "update V8 gypfiles for 13.0",
+   "pr": 55014,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "52d39441d0",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick f915fa4c9f41",
+   "pr": 55014,
+   "class": "v"
+  },
+  {
+   "line": 24,
+   "sha": "99ffe3555a",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 0d5d6e71bbb0",
+   "pr": 55014,
+   "class": "v"
+  },
+  {
+   "line": 24,
+   "sha": "5d8011d91c",
+   "subsystem": "deps",
+   "title": "V8: cherry-pick 0c11feeeca4a",
+   "pr": 55014,
+   "class": "v"
+  },
+  {
+   "line": 24,
+   "sha": "d85d2f8350",
+   "subsystem": "deps",
+   "title": "define V8_PRESERVE_MOST as no-op on Windows",
+   "pr": 55014,
+   "class": "v"
+  },
+  {
+   "line": 24,
+   "sha": "e8f55f7b7a",
+   "subsystem": "deps",
+   "title": "always define V8_NODISCARD as no-op",
+   "pr": 55014,
+   "class": "v"
+  },
+  {
+   "line": 24,
+   "sha": "b3c1b63a5d",
+   "subsystem": "deps",
+   "title": "fix FP16 bitcasts.h",
+   "pr": 55014,
+   "class": "v"
+  },
+  {
+   "line": 24,
+   "sha": "d0361f0bba",
+   "subsystem": "deps",
+   "title": "patch V8 to support compilation with MSVC",
+   "pr": 55014,
+   "class": "v"
+  },
+  {
+   "line": 24,
+   "sha": "a4e0fce896",
+   "subsystem": "deps",
+   "title": "patch V8 to avoid duplicated zlib symbol",
+   "pr": 55014,
+   "class": "v"
+  },
+  {
+   "line": 24,
+   "sha": "4f8fd566cc",
+   "subsystem": "deps",
+   "title": "disable V8 concurrent sparkplug compilation",
+   "pr": 55014,
+   "class": "v"
+  },
+  {
+   "line": 24,
+   "sha": "1142f78f1d",
+   "subsystem": "deps",
+   "title": "always define V8_EXPORT_PRIVATE as no-op",
+   "pr": 55014,
+   "class": "v"
+  },
+  {
+   "line": 24,
+   "sha": "7917b67313",
+   "subsystem": "src",
+   "title": "update NODE_MODULE_VERSION to 134",
+   "pr": 55014,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "1f654e655c",
+   "subsystem": "build",
+   "title": "reset embedder string to \"-node.0\"",
+   "pr": 55014,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "5edec0e39a",
+   "subsystem": "deps",
+   "title": "update V8 to 13.0.245.25",
+   "pr": 55014,
+   "class": "v"
+  },
+  {
+   "line": 24,
+   "sha": "25b22e4754",
+   "subsystem": "deps",
+   "title": "upgrade npm to 11.0.0",
+   "pr": 56274,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "529b56ef9d",
+   "subsystem": "fs",
+   "title": "deprecate passing invalid types in `fs.existsSync`",
+   "pr": 55753,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "bf3bc4ec2f",
+   "subsystem": "src",
+   "title": "drop --experimental-permission in favour of --permission",
+   "pr": 56240,
+   "class": "d",
+   "note": "--experimental-permission is gone (the flag is --permission)",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "fd8de670da",
+   "subsystem": "stream",
+   "title": "catch and forward error from dest.write",
+   "pr": 55270,
+   "class": "c",
+   "note": "an error thrown by a destination's write during pipe is forwarded as the stream's error",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "47b80c293d",
+   "subsystem": "deps",
+   "title": "update undici to 7.0.0",
+   "pr": 56070,
+   "class": "c",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "58982d712b",
+   "subsystem": "src",
+   "title": "add async context frame to AsyncResource",
+   "pr": 56082,
+   "class": "c",
+   "note": "AsyncResource carries an async context frame",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "4ee87b8bc3",
+   "subsystem": "zlib",
+   "title": "deprecate classes usage without `new`",
+   "pr": 55718,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "b02cd411c2",
+   "subsystem": "fs",
+   "title": "runtime deprecate `fs.F_OK`, `fs.R_OK`, `fs.W_OK`, `fs.X_OK`",
+   "pr": 49686,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "d9540b51eb",
+   "subsystem": "fs",
+   "title": "remove `dirent.path`",
+   "pr": 55548,
+   "class": "d",
+   "present": "the removed member or the old acceptance restored in the carried library for the older line; hours each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "0368f2f662",
+   "subsystem": "repl",
+   "title": "runtime deprecate instantiating without new",
+   "pr": 54869,
+   "class": "a",
+   "note": "the REPL"
+  },
+  {
+   "line": 24,
+   "sha": "03dcd7077a",
+   "subsystem": "src",
+   "title": "nuke deprecated and un-used enum members in `OptionEnvvarSettings`",
+   "pr": 53079,
+   "class": "a"
+  },
+  {
+   "line": 24,
+   "sha": "51ae57673d",
+   "subsystem": "lib",
+   "title": "make ALS default to AsyncContextFrame",
+   "pr": 55552,
+   "class": "c",
+   "note": "AsyncLocalStorage is built on AsyncContextFrame, not async_hooks: what a store propagates through in edge cases, and its cost, differ",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "11fbdd8c9d",
+   "subsystem": "url",
+   "title": "runtime deprecate url.parse",
+   "pr": 55017,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "019efe1453",
+   "subsystem": "lib",
+   "title": "runtime deprecate SlowBuffer",
+   "pr": 55175,
+   "class": "e",
+   "present": "the warning not emitted for the older line (one condition where the deprecation is declared); minutes each",
+   "reached": "not determined: no application's built server code was searched for it"
+  },
+  {
+   "line": 24,
+   "sha": "c7493fac5e",
+   "subsystem": "test",
+   "title": "Revert \"test: disable fast API call count checks\"",
+   "pr": 58070,
+   "class": "a",
+   "note": "a test"
+  },
+  {
+   "line": 24,
+   "sha": "4a47ce5ff9",
+   "subsystem": "assert,util",
+   "title": "Revert \"assert,util: revert recursive breaking change\"",
+   "pr": 57622,
+   "class": "c",
+   "note": "assert and util.isDeepStrictEqual recursion handling; the PR number is as the changelog line gives it and was not checked",
+   "present": "a branch on the declared line where the carried library decides it (a constant or a few lines in one lib file); hours to a day each, with the measurement on the real Node of each line that node-line.ts requires",
+   "reached": "not determined: no application's built server code was searched for it"
+  }
+ ]
+}
