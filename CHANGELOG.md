@@ -101,7 +101,7 @@ Changed, for every guest
 Where node:crypto's keys differ from Node's
 
 Measured with one script of 110 cases, hostile inputs among them, on Node
-v24.21.0 and in a guest: 64 answer the same, and in 16 more both refuse with
+v24.21.0 and in a guest: 64 answer the same, and in 20 more both refuse with
 different error codes (OpenSSL's own codes are not reproduced). The rest:
 
 - Not carried, refused by name where Node does it: encrypting a private key on
