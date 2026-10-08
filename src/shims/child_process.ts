@@ -611,6 +611,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
 
   // Track whether process.exit() was called
   let exitCalled = false;
+  /** True while `exit` is being emitted: a listener's own `process.exit(n)` gives the status and stops nothing. */
+  let emittingExit = false;
   let exitCode = 0;
   let syncExecution = true;
   let exitResolve: ((code: number) => void) | null = null;
@@ -747,6 +749,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       exitCode = __substrateExitCode(given[0]);
       (proc as { exitCode?: number }).exitCode = exitCode;
       code = exitCode;
+      // Inside the listener nothing is thrown to stop it: the throw that stands in for the process ending would be
+      // caught by the emitter and printed as the listener's error, a line Node never prints. The listener's
+      // remaining statements run, which in Node they do not; the status is the one it gave.
+      if (emittingExit) return undefined as never;
     }
     if (!exitCalled) {
       exitCalled = true;
@@ -764,7 +770,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       // listeners ran, and VS Code's file-watcher child -- which pipes its
       // console over `process.send` and dies of a failed require -- wrote on
       // the closed channel and took `write EBADF` as its last act.
-      proc.emit('exit', code);
+      emittingExit = true;
+      try { proc.emit('exit', code); } finally { emittingExit = false; }
       // A listener may have ended the process with another status (above); that is the status it ends with.
       code = exitCode;
       (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
@@ -1149,7 +1156,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     if (typeof proc !== 'undefined' && !exitCalled && !streams?.signal?.aborted) {
       exitCalled = true;
       exitCode = typeof proc.exitCode === 'number' ? proc.exitCode : 0;
-      try { proc.emit('exit', exitCode); } catch (error) { __reportUncaughtException(proc, error); }
+      emittingExit = true;
+      try { proc.emit('exit', exitCode); } catch (error) { __reportUncaughtException(proc, error); } finally { emittingExit = false; }
       if (typeof proc.exitCode === 'number') exitCode = proc.exitCode;
     }
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
