@@ -53,7 +53,7 @@ import { VirtualFS } from './virtual-fs';
 import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
-import { runCommand, runNode, registerRunStreams, releaseRunStreams, sendStdin, adoptEngineTree, type StdioKind } from './shims/child_process';
+import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, type StdioKind } from './shims/child_process';
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/handles';
 import { listenerOnPort } from './node-lib/binding/tcp_wrap';
@@ -317,6 +317,9 @@ export function createContainer(options?: ContainerOptions): {
         // A run that is a process of a kernel's (its own connection): its registry and its numbers, as runNode's.
         if (runOptions?.registry) installRunRegistry(processToken, runOptions.registry);
         if (runOptions?.process) claimRunPid(processToken, runOptions.process.pid, runOptions.process.ppid, { argv: ['sh', '-c', command], cwd: runOptions.cwd ?? '/' });
+        // That process is a shell: each `node` its line runs is its child, numbered through its registry, and the line
+        // is forgotten only here, at its own end (below).
+        if (numbered) holdShellRun(processToken);
         // `container.run("cat", { stdin })` used to reach the engine's shell
         // without its stdin: the run dropped it before exec, and exec dropped
         // it before the shell. Both forward it, so a builtin reads what was

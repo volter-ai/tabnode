@@ -26,8 +26,10 @@ second table for it. The exported surface changed, hence a minor release.
   it was.
 - `runNode` and `container.run` given `process` in a realm that is a registry
   client no longer throw "This realm is a process registry client": the run is
-  an exec in its registry. A `container.run` line given `process` gives its pid
-  back when it ends, as a node run does.
+  an exec in its registry. A `container.run` line given `process` or
+  `registry` is a kernel's shell process: each `node` it runs is that shell's
+  child, numbered through its registry, and the line gives its pid back when it
+  ends.
 - A child's end is the status its zombie holds, which its parent's wait reaps;
   a run the runtime failed to run is killed (`SIGKILL`) rather than given an
   exit code it never passed, and a killed run ends with its signal and no exit
