@@ -685,8 +685,12 @@ function scryptParameters(password: unknown, salt: unknown, keylen: unknown, opt
   };
   const N = pick('N', 'cost', 16384), r = pick('r', 'blockSize', 8), p = pick('p', 'parallelization', 1);
   const maxmem = options.maxmem ?? 32 * 1024 * 1024;
-  // OpenSSL's own bounds, by Node's code: N a power of two above 1, and 128*N*r within maxmem.
-  if (!Number.isInteger(N) || N < 2 || (N & (N - 1)) !== 0 || !Number.isInteger(r) || r < 1 || !Number.isInteger(p) || p < 1 || 128 * N * r > maxmem) {
+  // OpenSSL's own bounds (crypto/kdf/scrypt.c, and RFC 7914's): N a power of two above 1 and below 2^(16r); p at most
+  // (2^30 - 1) / r; and the memory it needs, p*128*r for B and 128*r*(N+2) for V and the block, within maxmem. The last
+  // was written 128*N*r, which let through N = 1024, r = 8 under maxmem 2^20, and the first two were missing: Node's own
+  // test (test-crypto-scrypt.js, the `toobig` vectors) found "Missing expected exception" in the measure run.
+  if (!Number.isInteger(N) || N < 2 || (N & (N - 1)) !== 0 || !Number.isInteger(r) || r < 1 || !Number.isInteger(p) || p < 1
+    || (16 * r < 53 && N >= 2 ** (16 * r)) || p > Math.floor((2 ** 30 - 1) / r) || p * 128 * r + 128 * r * (N + 2) > maxmem) {
     throw Object.assign(new RangeError('Invalid scrypt params: memory limit exceeded'), { code: 'ERR_CRYPTO_INVALID_SCRYPT_PARAMS' });
   }
   return { password: HostBuffer.from(cryptoBytes(password, undefined, true)), salt: HostBuffer.from(cryptoBytes(salt, undefined, true)), keylen, N, r, p, maxmem };
