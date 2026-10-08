@@ -2151,6 +2151,8 @@ function createRequire(
   const __substrateResolve = (id: string): string => {
     const Module = __substrateModule();
     enterLoadPhase(loadAccount, LoadPhase.Resolve);
+    // What an earlier resolution found is not this one's: the load after this takes only this resolution's digest.
+    __substrateKeptFor(process).found = undefined;
     try {
       return Module._resolveFilename === Module.__substrateResolveFilename
         ? resolveModule(id, currentDir)
@@ -2404,7 +2406,12 @@ function createRequire(
       const kind = preparedModuleKind(resolvedPath);
       enterLoadPhase(loadAccount, LoadPhase.Digest);
       let digest: string | undefined;
-      try { digest = kind ? vfs.contentDigest(resolvedPath) : undefined; } finally { leaveLoadPhase(loadAccount); }
+      try {
+        // The digest the tree gave with the stat that found this file, where it gave one; else the tree is asked.
+        const found = kind ? __substrateKeptFor(process).found : undefined;
+        if (found && found.path === resolvedPath) { digest = found.digest; loadAccount.digestsWithStat += 1; }
+        else if (kind) { digest = vfs.contentDigest(resolvedPath); loadAccount.digestsAsked += 1; }
+      } finally { leaveLoadPhase(loadAccount); }
       let body: string | undefined;
       if (kind && digest) {
         enterLoadPhase(loadAccount, LoadPhase.BodyRead);

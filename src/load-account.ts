@@ -10,7 +10,8 @@
  *   resolve    a request made a file's path (`Module._resolveFilename`'s work), for every `require`, cached or not
  *   read       the file's source read from the tree
  *   digest     the name a prepared body would have: the tree asked for its digest of the file, or the source just
- *              read hashed
+ *              read hashed. `digestsWithStat` counts the files whose digest the tree had already given with the
+ *              stat that found them (no question asked); `digestsAsked` the ones the tree was asked for.
  *   bodyRead   the prepared body read from the tree by that name and decoded to text (`preparedBytes` of it; a
  *              body taken by digest reads no source, so this is the file's only read). `preparedHit` and
  *              `preparedMiss` count the answers.
@@ -53,6 +54,8 @@ export interface LoadAccount {
   sourceBytes: number;
   bodyBytes: number;
   preparedBytes: number;
+  digestsWithStat: number;
+  digestsAsked: number;
   preparedHit: number;
   preparedMiss: number;
   byPackage: Map<string, PackageAccount>;
@@ -68,7 +71,7 @@ export function loadAccountFor(process: object): LoadAccount {
     const now = performance.now();
     account = {
       firstAt: now, firstWallAt: Date.now(), lastAt: now, last: now, depth: 0, kinds: [], packages: [],
-      ms: new Array<number>(PHASES).fill(0), requires: 0, files: 0, sourceBytes: 0, bodyBytes: 0, preparedBytes: 0, preparedHit: 0, preparedMiss: 0,
+      ms: new Array<number>(PHASES).fill(0), requires: 0, files: 0, sourceBytes: 0, bodyBytes: 0, preparedBytes: 0, digestsWithStat: 0, digestsAsked: 0, preparedHit: 0, preparedMiss: 0,
       byPackage: new Map(), said: -1,
     };
     accounts.set(process, account);
@@ -153,6 +156,7 @@ export function sayLoadAccount(process: object, when: 'quiet' | 'exit'): void {
     startedAt: account.firstWallAt,
     accountedMs: round(accounted), wallMs: round(now - account.firstAt), firstToLastLoadMs: round(account.lastAt - account.firstAt),
     requires: account.requires, files: account.files, sourceBytes: account.sourceBytes, bodyBytes: account.bodyBytes, preparedBytes: account.preparedBytes,
+    digestsWithStat: account.digestsWithStat, digestsAsked: account.digestsAsked,
     preparedHit: account.preparedHit, preparedMiss: account.preparedMiss, packagesLoaded: account.byPackage.size,
     ms,
     columns: ['package', 'files', 'bodyBytes', 'evaluateMs'],

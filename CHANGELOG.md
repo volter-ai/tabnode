@@ -4,6 +4,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A tree may say a regular file's content digest with its stat answer
+  (`statSync(...)`'s `contentDigest`). The loader then takes a prepared body
+  by the digest the stat that found the file gave, and does not ask the tree
+  to walk the same path again for it. A tree that does not say it is asked as
+  before. The load account counts both (`digestsWithStat`, `digestsAsked`).
 - Where a process's start went: one `[boot-trace] {"event":"load-account"}`
   line per process, when its loading has been quiet two seconds and at its
   exit. Files, bytes, prepared bodies taken and missed, and the milliseconds
