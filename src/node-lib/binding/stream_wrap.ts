@@ -173,9 +173,11 @@ export class LibuvStreamWrap implements OwnedHandle {
   }
 
   readStop(): number {
-    // The remote owner may already have posted its one permitted read. Keep
-    // that credit until arrival; pause guest delivery without granting another.
+    // Guest delivery pauses, and a grant the owner still holds is taken back
+    // (endRead): a paused socket may be handed to another process, which must
+    // find in it what this one did not read. A read already on its way is kept.
     this.reading = false;
+    nativeStreamFor(this)?.endRead();
     return 0;
   }
 

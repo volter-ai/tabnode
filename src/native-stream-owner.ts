@@ -34,6 +34,13 @@ export interface NativeStreamReply { status: number; handle?: NativeStreamDescri
 export interface NativeStreamTransport {
   readonly limits: Readonly<NativeStreamLimits>;
   call(operation: NativeStreamOperation): NativeStreamReply;
+  /**
+   * An operation whose answer nothing waits for, sent without waiting for
+   * the owner: the owner takes it in order with every call after it, and one
+   * it refuses completes with its status: a read grant as the handle's failed
+   * read, a shutdown as its completion. Optional; without it each is a call.
+   */
+  post?(operation: { operation: 'readStart'; id: number } | { operation: 'shutdown'; id: number; request: number }): void;
   write(id: number, bytes: Uint8Array, handle?: number): Promise<number>;
   onEvent(listener: (event: NativeStreamEvent) => void): () => void;
 }
