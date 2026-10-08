@@ -613,6 +613,11 @@ export function createProcess(options?: {
 
   // Create an EventEmitter for process events
   const emitter = new EventEmitter();
+  // Once `exit` is being emitted the process is ending: nothing it queued, before or from an `exit` listener, runs
+  // afterwards. Node exits when the listeners return; here the realm goes on, so a queued tick would otherwise run
+  // in a process that has already said its last (Node's own test-next-tick queues one from `exit` and requires that
+  // it never be called).
+  let exiting = false;
   const startTime = Date.now();
   // The guest's fd 0: the bytes the runner put there, then the end of them.
   // Nothing more can arrive unless the runner says it holds the input open.
@@ -744,6 +749,7 @@ export function createProcess(options?: {
 
     exit(code: number | string | null | undefined = 0) {
       code = __substrateExitCode(code);
+      exiting = true;
       emitter.emit('exit', code);
       (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
       if (options?.onExit) {
@@ -828,6 +834,7 @@ export function createProcess(options?: {
       // Node. Out of a microtask it would be the realm's instead, and in the
       // tab the worker's, which the substrate takes for a dead host.
       queueGuestNextTick(() => {
+        if (exiting) return;
         try { run(...args); }
         catch (error) { if (!__reportUncaughtException(proc, error)) throw error; }
       });
@@ -968,6 +975,7 @@ export function createProcess(options?: {
      * a socket sent to the child arrived at nothing.
      */
     emit(event: string, ...args: unknown[]): boolean {
+      if (event === 'exit') exiting = true;
       const listeners = emitter.listeners(event);
       if (listeners.length === 0) return emitter.emit(event, ...args);
       for (const listener of listeners) {

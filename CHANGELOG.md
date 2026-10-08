@@ -161,7 +161,9 @@ codes are not reproduced). The rest:
   `fetch` with no host transport, any other promise of the host's. A program
   whose last act is one of those is ended by that rule, as it was on v0.8.0,
   and its `exit` listeners now run at that moment, where before they did not
-  run at all.
+  run at all. A tick the process had queued, or queues from an `exit` listener,
+  does not run once `exit` is being emitted, as in Node, where the process is
+  gone by then.
 - `process.nextTick` callbacks queued by a callback the loop entered run when
   that callback returns, before any promise it queued, and ticks they queue
   run with them (`cb, tick, promise`, as Node). A callback made while other
