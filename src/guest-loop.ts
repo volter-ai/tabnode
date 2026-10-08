@@ -55,13 +55,23 @@ export function drainGuestNextTicks(): void {
   }
 }
 
-/** Node's outermost successful MakeCallback drains ticks before returning. */
+/**
+ * Node's outermost successful MakeCallback drains ticks before returning. Outermost means entered from the loop
+ * with no guest code on the stack. A callback a binding makes while guest code is still running (a stream handed to
+ * `net.Socket` that already has its end to report, inside `child_process.spawn`) is not outermost in Node: its
+ * scope depth is above one there, and the ticks wait for the code that queued them to return. Counting only the
+ * callbacks, this took such a call for the outermost and drained the queue in the middle of the caller: a spawn of
+ * a program that does not exist queues its `error` for the next tick, and it was emitted before `spawn()` had
+ * returned, so before any listener could be attached, and was uncaught (Node's own test-child-process-spawn-error,
+ * -exec-error, -promisified and -spawn-windows-batch-file).
+ */
 export function withGuestCallback<T>(fn: () => T): T {
+  const fromTheLoop = depth === 0 && !continuation;
   return withGuestExecution(() => {
     callbackDepth++;
     try {
       const result = fn();
-      if (callbackDepth === 1) drainGuestNextTicks();
+      if (fromTheLoop && callbackDepth === 1) drainGuestNextTicks();
       return result;
     } finally { callbackDepth--; }
   });
