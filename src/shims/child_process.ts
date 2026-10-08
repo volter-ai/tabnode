@@ -58,7 +58,7 @@ import { UV_ESRCH } from '../node-lib/binding/uv';
 import { loadNodeLibFor } from '../node-lib/load';
 import type { ChildProcessModule } from '../node-lib/child-process-module';
 import { getCommandNames } from 'just-bash';
-import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateShellLine, __substrateRunsNode, setProgramResolver } from './command-line';
+import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateArgvFor, __substrateShellLine, __substrateRunsNode, setProgramResolver } from './command-line';
 
 import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
 
@@ -1694,6 +1694,13 @@ interface ChildProcessHostDescriptor {
 
 /** How a command is handed to that host. */
 interface ChildProcessHostRequest {
+  /**
+   * The command as the list a guest's `spawn` gave, where it gave one: the
+   * program, then its words. A host that starts programs from a list starts
+   * this one from it, and no shell reads the words a second time; the line
+   * beside it says the same run for a host that has only a shell.
+   */
+  argv?: readonly string[];
   cwd?: string;
   env?: Record<string, string>;
   /** Bytes already on fd 0 when the command begins, as Node delivers them. */
@@ -1744,6 +1751,8 @@ interface CommandOutcome {
 /** What a caller gives one run of a command line. */
 interface CommandRun {
   command: string;
+  /** The same run as its words, where the caller had a list (`ChildProcessHostRequest.argv`). */
+  argv?: readonly string[];
   /**
    * Whether the engine's own shell answers for this command before the host's
    * process host is asked. A run the HOST asked for is the host's first: that
@@ -1830,6 +1839,7 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     const opened = (run.descriptors ?? []).map(({ fd, pipe }) => ({ fd, ...descriptorOver(pipe) }));
     try {
       const result = await bridge.run(run.command, {
+        ...(run.argv ? { argv: [...run.argv] } : {}),
         cwd: run.cwd,
         env: hostEnv,
         ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
@@ -2380,6 +2390,7 @@ function startChildRun(request: RunRequest): StartedRun {
           token,
         })) : await enterRun(token, () => routeCommand({
           command: __substrateLineFor(request.file, request.args, request.cwd),
+          ...(((argv) => argv ? { argv } : {})(__substrateArgvFor(request.file, request.args, request.cwd))),
           engineFirst,
           cwd: request.cwd,
           env: { ...request.env, [PROCESS_TOKEN_ENV]: token },

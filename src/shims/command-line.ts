@@ -87,3 +87,14 @@ export function __substrateLineFor(file: string, argv: string[], cwd?: string): 
   if (shell !== null) return shell;
   return __substrateCommandLine(resolveProgram(file, cwd), argv.slice(1));
 }
+
+/**
+ * The same run as its words, for a host that starts a program from a list:
+ * the program as `__substrateLineFor` names it, then the words as the caller
+ * gave them, none quoted because none is read again. A shell invocation has
+ * no list: its line is the one word, and it is the shell's to read.
+ */
+export function __substrateArgvFor(file: string, argv: string[], cwd?: string): string[] | null {
+  if (__substrateShellLine(file, argv) !== null) return null;
+  return [resolveProgram(file, cwd), ...argv.slice(1).map((word) => String(word))];
+}
