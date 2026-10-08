@@ -41,6 +41,10 @@
     "./stdin-ring": {
       "types": "./dist/stdin-ring.d.ts",
       "default": "./dist/stdin-ring.mjs"
+    },
+    "./prepared-key": {
+      "types": "./dist/prepared-key.d.ts",
+      "default": "./dist/prepared-key.mjs"
     }
   },
   "files": [

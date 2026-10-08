@@ -61,6 +61,7 @@ export default defineConfig({
         // layout, with nothing else of the engine. The engine's own reader
         // imports this same module.
         'stdin-ring': resolve(__dirname, 'src/stdin-ring.ts'),
+        'prepared-key': resolve(__dirname, 'src/prepared-key.ts'),
       },
       name: 'Tabnode',
       formats: ['es'],
