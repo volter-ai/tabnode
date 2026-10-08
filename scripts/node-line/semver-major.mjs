@@ -1,5 +1,5 @@
 // Every semver-major commit between Node release lines, from Node's own changelogs, classed by scripts/node-line/classes.json,
-// written as src/node-line-changes.json: the denominator for "how far is Node 24's library, presenting as Node 20, from Node 20".
+// written as scripts/node-line/changes.json (beside this script; the engine imports none of it and the package does not carry it): the denominator for "how far is Node 24's library, presenting as Node 20, from Node 20".
 //   node scripts/node-line/semver-major.mjs --changelogs <dir holding CHANGELOG_V19.md … CHANGELOG_V24.md>
 // The changelogs are nodejs/node's doc/changelogs files (not vendored here; fetched and read on the date in the output).
 // Each x.0.0 release lists its "Semver-Major Commits"; a commit's id is its PR number and sha. The enumeration is parsed,
@@ -55,7 +55,7 @@ const out = {
   counts: { '20 to 24': { commits: span(20, 24).length, ...count(span(20, 24)) }, '18 to 20': { commits: span(18, 20).length, ...count(span(18, 20)) } },
   rows,
 };
-fs.writeFileSync(resolve(here, '../../src/node-line-changes.json'), JSON.stringify(out, null, 1) + '\n');
+fs.writeFileSync(resolve(here, 'changes.json'), JSON.stringify(out, null, 1) + '\n');
 console.log(`Node line changes: ${rows.length} semver-major commits; 20 to 24 ${JSON.stringify(out.counts['20 to 24'])}; 18 to 20 ${JSON.stringify(out.counts['18 to 20'])}`);
 const open = rows.filter((entry) => entry.class === 'unclassed');
 for (const entry of open) console.log(`  unclassed ${entry.line} #${entry.pr} ${entry.subsystem}: ${entry.title.slice(0, 100)}`);

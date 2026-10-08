@@ -42,6 +42,19 @@ export function freshEsModuleImportTurns(line: number): number {
   return line === 20 ? 1 : 0;
 }
 
+/**
+ * `process.features.typescript`, by line. Measured by asking each: `node -e "console.log(process.version,
+ * JSON.stringify(process.features.typescript), 'typescript' in process.features)"`:
+ *   v20.20.2  undefined, false (no such property)     v22.11.0  false, true
+ *   v22.23.3  "strip", true                           v24.21.0  "strip", true
+ * So a guest told it is Node 20 has no such property: a program that reads it to decide whether a `.ts` file can be
+ * run was told "strip" on a line where Node says nothing. Within line 22 the value changed between minors (false,
+ * then "strip"); the engine answers the library's "strip" there, which is that line's later answer and not its early one.
+ */
+export function featuresTypescriptPresent(line: number): boolean {
+  return line !== 20;
+}
+
 /*
  * Candidates, not rows. Each is believed to differ between lines 20 and 24 and is what the engine does today
  * because its library is 24's; none has been measured on a real Node 20, so none is switched:

@@ -13,6 +13,7 @@ import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
 import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, type ProcessToken } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
+import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
 import { freemem as osFreemem, userInfo as osUserInfo } from './os';
 import { version as acornVersion } from 'acorn';
 import { ERR_INVALID_ARG_TYPE } from '../node-internals';
@@ -723,7 +724,9 @@ export function createProcess(options?: {
       __substrateCaptureCallback = callback;
     },
     hasUncaughtExceptionCaptureCallback() { return __substrateCaptureCallback !== null; },
-    features: { debug: false, inspector: false, tls: false, cached_builtins: true, ipv6: true, require_module: true, tls_alpn: false, tls_ocsp: false, tls_sni: false, typescript: 'strip', uvwasi: true },
+    features: { debug: false, inspector: false, tls: false, cached_builtins: true, ipv6: true, require_module: true, tls_alpn: false, tls_ocsp: false, tls_sni: false, uvwasi: true,
+      // By the line the guest was told it is: Node 20 has no such property (node-line.ts).
+      ...(featuresTypescriptPresent(nodeLineOf(`v${__browserRuntimeNodeVersion(env)}`)) ? { typescript: 'strip' } : {}) },
     // The tab's tree carries no mode mask; Node's own default is what a
     // process that has not set one reports, and setting one answers the mask
     // it replaced, as Node's does.

@@ -737,7 +737,17 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     hostReceiptWritten = true;
     writePipedEndReceipt(proc.pid, proc.argv0 || 'node', proc.argv[1] ?? '', kind, error);
   };
-  proc.exit = ((code = 0) => {
+  proc.exit = ((...given: [code?: number | string | null]) => {
+    let code = given[0] ?? 0;
+    // Called again while `exit` is being emitted (a listener that ends the process with its own status, which is how
+    // a test runner reports failures): Node takes the new code and does not emit again
+    // (`if (arguments.length) process.exitCode = code; if (!process._exiting) …; reallyExit(process.exitCode || 0)`).
+    // The code was dropped here, so a run that ended by draining, or by `process.exit(0)`, kept its first status.
+    if (exitCalled && given.length !== 0 && given[0] !== undefined) {
+      exitCode = __substrateExitCode(given[0]);
+      (proc as { exitCode?: number }).exitCode = exitCode;
+      code = exitCode;
+    }
     if (!exitCalled) {
       exitCalled = true;
       // As Node takes one: a string from a command line becomes its number.
@@ -755,6 +765,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       // console over `process.send` and dies of a failed require -- wrote on
       // the closed channel and took `write EBADF` as its last act.
       proc.emit('exit', code);
+      // A listener may have ended the process with another status (above); that is the status it ends with.
+      code = exitCode;
       (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
       exitResolve!(code);
     }

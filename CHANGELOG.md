@@ -4,6 +4,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- To follow, not yet changed: four optional members added in v0.9.0 and before
+  are second paths that only an embedder without them takes (the stream
+  transport's `post`, a started run's `setRef`, the host request's
+  `hold.changed`, the tree's `contentDigest`). Once browser-substrate
+  implements all four they become required, and the paths without them go.
+
 ## v0.9.0 — 2026-10-08
 
 The engine answers more of Node 24.21.0's surface and several things every
@@ -63,7 +69,10 @@ Changed, for every guest
   Node 24.21.0's whatever it says. On line 20 an `import()` that first runs an
   ES module settles after a loop turn, as Node 20's does (ADR-0005).
 - A process whose loop drains emits `exit`, with `process.exitCode || 0`; only
-  `process.exit()` did. `beforeExit` is still not emitted.
+  `process.exit()` did. `beforeExit` is still not emitted. A listener that
+  calls `process.exit(n)` while `exit` is being emitted ends the process with
+  `n`, as Node does, whether the process was draining or exiting (the code was
+  dropped: a test runner that reports its failures that way read as passed).
 - Resolution asks the tree what Node asks: an entry's body runs at require
   depth 0 (`Module._load` no longer counts as a `require` call), so the stat
   cache Node keeps for that body exists; a level with no `node_modules`
@@ -74,11 +83,21 @@ Changed, for every guest
   one twice). `os.release()` and `os.version()` are no longer swapped;
   `os.networkInterfaces()` gives `family` as `IPv4`/`IPv6`; `fs.statfs` has its
   eight fields in Node's order.
+- `process.features.typescript` follows the line: absent for a guest told it
+  is Node 20 (Node 20.20.2 has no such property), `"strip"` otherwise.
 - `process.memoryUsage()` is the realm's own heap where the realm reports one
   (`performance.memory`); elsewhere the fixed figures it always gave.
 - `--enable-source-maps` and `process.setSourceMapsEnabled` keep the switch and
   warn once (`TABNODE_SOURCE_MAPS_NOT_APPLIED`): stacks are not remapped.
 - `Function.prototype.toString` makes a function's written source once.
+
+Known cost
+
+- A stream that stops reading while a read grant is with its owner makes one
+  synchronous call to take it back. Under heavy back-pressure (a reader that
+  pauses and resumes at every chunk) that is a call per pause; how often it
+  happens in a real server is not measured, and the `[stream-calls]` line
+  counts it (`readStop`).
 
 Fixed
 
