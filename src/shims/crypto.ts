@@ -677,14 +677,46 @@ function hkdf(digest: string, ikm: unknown, salt: unknown, info: unknown, length
 
 /** Node's defaults and option names (lib/internal/crypto/scrypt.js): N 16384, r 8, p 1, maxmem 32 MiB. */
 function scryptParameters(password: unknown, salt: unknown, keylen: unknown, options: ScryptOptions = {}): { password: HostBytes; salt: HostBytes; keylen: number; N: number; r: number; p: number; maxmem: number } {
+  // In Node's order (lib/internal/crypto/scrypt.js `check`): the password, the salt, then the length, each refused
+  // by its own name. The length was checked first, so `scrypt()` with no arguments named "keylen" where Node names
+  // "password" (Node's own test-crypto-scrypt, its `badargs`).
+  const bytesOf = (value: unknown, name: string): HostBytes => {
+    if (typeof value !== 'string' && !ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer) && !(typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer)) {
+      throw new ERR_INVALID_ARG_TYPE(name, ['string', 'ArrayBuffer', 'Buffer', 'TypedArray', 'DataView'], value);
+    }
+    return HostBuffer.from(cryptoBytes(value instanceof ArrayBuffer || ArrayBuffer.isView(value) || typeof value === 'string' ? value : new Uint8Array(value as SharedArrayBuffer), undefined, true));
+  };
+  const passwordBytes = bytesOf(password, 'password'), saltBytes = bytesOf(salt, 'salt');
   if (typeof keylen !== 'number') throw new ERR_INVALID_ARG_TYPE('keylen', 'number', keylen);
   if (!Number.isInteger(keylen) || keylen < 0 || keylen > 0x7fffffff) throw new ERR_OUT_OF_RANGE('keylen', '>= 0 && <= 2147483647', keylen);
-  const pick = (short: 'N' | 'r' | 'p', long: 'cost' | 'blockSize' | 'parallelization', initial: number): number => {
-    if (options[short] !== undefined && options[long] !== undefined) throw Object.assign(new TypeError(`Option "${short}" cannot be used in combination with option "${long}"`), { code: 'ERR_INCOMPATIBLE_OPTION_PAIR' });
-    return options[short] ?? options[long] ?? initial;
+  // Then the options, which are an object where given (`validateObject`): `null` is refused by name, not read.
+  if (options === null || typeof options !== 'object') throw new ERR_INVALID_ARG_TYPE('options', 'Object', options);
+  // The options as Node reads them (the same file): each name looked at for `undefined` and then read once more,
+  // that second reading being the one checked and used; the short and long names of one parameter together refused;
+  // a zero meaning the default. A value of the wrong type is ERR_INVALID_ARG_TYPE, one out of range ERR_OUT_OF_RANGE.
+  const uint32 = (value: unknown, name: string): number => {
+    if (typeof value !== 'number') throw new ERR_INVALID_ARG_TYPE(name, 'number', value);
+    if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) throw new ERR_OUT_OF_RANGE(name, '>= 0 && <= 4294967295', value);
+    return value;
   };
-  const N = pick('N', 'cost', 16384), r = pick('r', 'blockSize', 8), p = pick('p', 'parallelization', 1);
-  const maxmem = options.maxmem ?? 32 * 1024 * 1024;
+  const either = (short: 'N' | 'r' | 'p', long: 'cost' | 'blockSize' | 'parallelization', initial: number): number => {
+    let chosen = initial;
+    const hasShort = options[short] !== undefined;
+    if (hasShort) chosen = uint32(options[short], short);
+    if (options[long] !== undefined) {
+      if (hasShort) throw Object.assign(new TypeError(`Option "${short}" cannot be used in combination with option "${long}"`), { code: 'ERR_INCOMPATIBLE_OPTION_PAIR' });
+      chosen = uint32(options[long], long);
+    }
+    return chosen === 0 ? initial : chosen;
+  };
+  const N = either('N', 'cost', 16384), r = either('r', 'blockSize', 8), p = either('p', 'parallelization', 1);
+  let maxmem = 32 * 1024 * 1024;
+  if (options.maxmem !== undefined) {
+    const given: unknown = options.maxmem;
+    if (typeof given !== 'number') throw new ERR_INVALID_ARG_TYPE('maxmem', 'number', given);
+    if (!Number.isInteger(given) || given < 0 || given > Number.MAX_SAFE_INTEGER) throw new ERR_OUT_OF_RANGE('maxmem', `>= 0 && <= ${Number.MAX_SAFE_INTEGER}`, given);
+    if (given !== 0) maxmem = given;
+  }
   // OpenSSL's own bounds (crypto/kdf/scrypt.c, and RFC 7914's): N a power of two above 1 and below 2^(16r); p at most
   // (2^30 - 1) / r; and the memory it needs, p*128*r for B and 128*r*(N+2) for V and the block, within maxmem. The last
   // was written 128*N*r, which let through N = 1024, r = 8 under maxmem 2^20, and the first two were missing: Node's own
@@ -693,7 +725,7 @@ function scryptParameters(password: unknown, salt: unknown, keylen: unknown, opt
     || (16 * r < 53 && N >= 2 ** (16 * r)) || p > Math.floor((2 ** 30 - 1) / r) || p * 128 * r + 128 * r * (N + 2) > maxmem) {
     throw Object.assign(new RangeError('Invalid scrypt params: memory limit exceeded'), { code: 'ERR_CRYPTO_INVALID_SCRYPT_PARAMS' });
   }
-  return { password: HostBuffer.from(cryptoBytes(password, undefined, true)), salt: HostBuffer.from(cryptoBytes(salt, undefined, true)), keylen, N, r, p, maxmem };
+  return { password: passwordBytes, salt: saltBytes, keylen, N, r, p, maxmem };
 }
 
 function scryptDerive(parameters: ReturnType<typeof scryptParameters>): Buffer {
