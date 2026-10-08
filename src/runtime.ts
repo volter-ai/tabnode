@@ -1864,8 +1864,14 @@ function __substrateKeptFor(process: object): ResolutionKept & { depth: number }
  * Node's stat cache exists while a module compiled at require depth 0 executes, and not otherwise
  * (`Module.prototype._compile`: `if (requireDepth === 0) { statCache = new SafeMap(); }`, unset when the body returns).
  */
+const __substrateWindowSaid = new WeakSet<object>();
 function __substrateInStatWindow<T>(process: object, run: () => T): T {
   const keeping = __substrateKeptFor(process);
+  // An instrument: at a process's first module body, whether its stat window opens and the require depth it saw.
+  if (!__substrateWindowSaid.has(process)) {
+    __substrateWindowSaid.add(process);
+    console.log('[boot-trace]', JSON.stringify({ event: 'stat-window', at: Date.now(), pid: (process as { pid?: number }).pid ?? null, opened: keeping.depth === 0 && keeping.stats === undefined, depth: keeping.depth }));
+  }
   if (keeping.depth !== 0 || keeping.stats !== undefined) return run();
   keeping.stats = new Map();
   if (keeping.probes) keeping.probes.windows += 1;
@@ -1914,7 +1920,13 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   // the engine's require went straight to its own loader, so every such patch
   // was installed and never called. Measured in the tab: after
   // `module._load = fn`, a `require('fs')` never reached `fn`.
-  Module.prototype.require = function (this: any, id: string) { return Module._load(id, this, false); };
+  // The calls in flight are counted here and nowhere below, as Node counts them (`requireDepth` in
+  // `Module.prototype.require`): `_load` does not count, so an entry started through it runs its body at depth 0.
+  Module.prototype.require = function (this: any, id: string) {
+    const keeping = __substrateKeptFor(process);
+    keeping.depth += 1;
+    try { return Module._load(id, this, false); } finally { keeping.depth -= 1; }
+  };
   Module.__substrateRequire = Module.prototype.require;
   // `Module.prototype._compile(content, filename)` is the seam every loader
   // that transpiles a file uses: require.extensions hooks, ts-node, and
@@ -1939,7 +1951,7 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module._load = function (request: string, parent: any, isMain: boolean) {
     const from = parent || new Module();
     if (isMain) (process as any).__substrateMainPending = Module._resolveFilename(request, from, true, void 0);
-    return requireFor(from).__requireRaw(request);
+    return requireFor(from).__loadRaw(request);
   };
   Module.__substrateLoad = Module._load;
   Module._cache = moduleCache;
@@ -2515,7 +2527,9 @@ function createRequire(
     // as it would in Node; with the engine's own still in place, the fast
     // path below is the whole of a require, as it is for `_resolveFilename`.
     if (Module._load !== Module.__substrateLoad) {
-      return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false);
+      const keeping = __substrateKeptFor(process);
+      keeping.depth += 1;
+      try { return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false); } finally { keeping.depth -= 1; }
     }
     return requireRaw(id);
   };
@@ -2776,6 +2790,8 @@ function createRequire(
 
   require.cache = moduleCache;
   (require as any).__requireRaw = requireRaw;
+  // What `Module._load` is: a load that is not a `require` call and so is not counted as one.
+  (require as any).__loadRaw = requireCounted;
   (require as any).__compileRaw = compileRaw;
   (require as any).__builtinLoad = builtinLoad;
   (require as any).__resolveRaw = (id: string) => resolveModule(id, currentDir);
@@ -3155,7 +3171,8 @@ export class Runtime {
     const require = createRequire(this.vfs, this.fsShim, this.process,
       pathShim.dirname(real), this.moduleCache, this.options, this.processedCodeCache);
     if (!(this.process as any).mainModule) (this.process as any).__substrateMainPending = real;
-    const exports = require(real);
+    // Node starts its entry through `Module._load`, not through a `require` call, so the entry's body runs at depth 0.
+    const exports = (require as unknown as { __loadRaw(id: string): unknown }).__loadRaw(real);
     return { exports, module: this.moduleCache[real] };
   }
 

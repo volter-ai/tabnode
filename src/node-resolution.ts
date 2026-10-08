@@ -93,8 +93,20 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
   // the same filesystem path twice for every successful module candidate.
   /** What the resolution in hand keeps for its process; none for a caller that keeps nothing. */
   let kept: ResolutionKept | undefined;
+  /**
+   * What the resolution in hand has been answered, absences too: one resolution is one synchronous walk and nothing
+   * changes the tree under it, so it asks each path once. Emptied when a resolution begins; nothing outlives it.
+   */
+  const asked = new Map<string, 0 | 1 | -1>();
   /** 0 a file, 1 a directory, -1 neither or absent. */
   const kind = (path: string): 0 | 1 | -1 => {
+    const again = asked.get(path);
+    if (again !== undefined) return again;
+    const answer = ask(path);
+    asked.set(path, answer);
+    return answer;
+  };
+  const ask = (path: string): 0 | 1 | -1 => {
     const held = kept?.stats?.get(path);
     const probes = kept?.probes;
     if (held !== undefined) { if (probes) probes.held += 1; return held; }
@@ -217,18 +229,23 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
   const loadFromNodeModules = (nodeModules: string, specifier: string): string | null => {
     const packageName = packageNameOf(specifier);
     const packageRoot = `${nodeModules}/${packageName}`;
-    const pkg = isDirectory(packageRoot) ? manifest(packageRoot) : null;
+    const rooted = isDirectory(packageRoot);
+    // Nothing is under a directory that is not there: a subpath of an absent package ends here, unprobed.
+    if (!rooted && specifier !== packageName) return null;
+    const pkg = rooted ? manifest(packageRoot) : null;
     if (pkg && pkg.exports !== undefined && pkg.exports !== null) return loadPackageExports(packageRoot, pkg, specifier, packageName);
     const path = `${nodeModules}/${specifier}`;
     return loadAsFile(path) ?? loadAsDirectory(path);
   };
-  // LOAD_PACKAGE_SELF: a package importing itself by name through its exports.
+  // LOAD_PACKAGE_SELF: a package importing itself by name through its exports. The package is the nearest manifest
+  // above the importer and no other (Node's `trySelf` reads `getNearestParentPackageJSON` and answers false unless
+  // that one has `exports` and the name asked for), so the walk ends at the first manifest it meets.
   const loadPackageSelf = (specifier: string, fromDir: string): string | null => {
     const packageName = packageNameOf(specifier);
     let directory = fromDir;
     for (;;) {
       const pkg = manifest(directory);
-      if (pkg && pkg.name === packageName && pkg.exports !== undefined && pkg.exports !== null) return loadPackageExports(directory, pkg, specifier, packageName);
+      if (pkg) return pkg.name === packageName && pkg.exports !== undefined && pkg.exports !== null ? loadPackageExports(directory, pkg, specifier, packageName) : null;
       if (directory === "/") return null;
       directory = parent(directory);
     }
@@ -260,6 +277,7 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     // outlives processes, the tree changes under it, an install links a package in. A process's store keeps the
     // ones it read, as Node's does; an absent manifest is asked again in the next resolution either way.
     manifests.clear();
+    asked.clear();
     const outer = kept;
     kept = keeping;
     try {
@@ -287,14 +305,17 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     let directory = fromDir;
     for (;;) {
       if (!directory.endsWith("/node_modules")) {
-        const found = loadFromNodeModules(`${directory === "/" ? "" : directory}/node_modules`, specifier);
+        // A level with no `node_modules` directory is one probe, as it is in Node (`Module._findPath`:
+        // `if (curPath && _stat(curPath) < 1) continue`), not one per name a package there could have had.
+        const nodeModules = `${directory === "/" ? "" : directory}/node_modules`;
+        const found = isDirectory(nodeModules) ? loadFromNodeModules(nodeModules, specifier) : null;
         if (found) return found;
       }
       if (directory === "/") break;
       directory = parent(directory);
     }
     for (const root of options.globalRoots ?? []) {
-      const found = loadFromNodeModules(root, specifier);
+      const found = isDirectory(root) ? loadFromNodeModules(root, specifier) : null;
       if (found) return found;
     }
     return null;
