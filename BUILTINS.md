@@ -79,7 +79,9 @@ The library now comes from Node v24.21.0 (ADR-0003). Existing suite numbers abov
 | `worker_threads` | Node’s ports are native. Runtime guests use the real host or installed thread transport with per-process listener/ref/unref/close lifetime (ADR-0004); unsupported worker execution still refuses |
 | `module` | the loader itself, entangled with the engine's transforms and its ESM lowering. Its customization hooks are Node's own file, above. |
 | `process` | the bootstrap, one per run |
-| `dgram`, `cluster`, `http2`, `inspector`, `v8`, `trace_events`, `repl` | refusing stubs: no UDP, no fork-and-share, no nghttp2, no inspector in a tab. Each refusal names why at its site. |
+| `dgram`, `cluster`, `http2`, `inspector`, `v8`, `trace_events` | refusing stubs: no UDP, no fork-and-share, no nghttp2, no inspector in a tab. Each refusal names why at its site. |
+| `repl` | a stand-in (`src/shims/repl.ts`): Node 24's exported names, with `Recoverable`, `writer` and the mode symbols as Node has them, so a program that loads `repl` for a name starts (ts-node does on every run). `start()` and `new REPLServer()` refuse by name. Node's `lib/repl.js` is not carried: it requires Node's own CommonJS and ESM loaders, `internal/vm` over the `contextify` binding, `internal/repl/await`, `internal/process/execution` and `domain`, about a hundred internal files the engine does not have, the loaders among them. |
+| `sys` | Node's own meaning: the `util` module itself (`lib/sys.js`), without the DEP0025 warning. |
 | `esbuild`, `rollup` | not builtins: the engine's doors to the bundlers' own wasm builds |
 
 ## What used to be here

@@ -67,6 +67,7 @@ import * as tlsShim from './shims/tls';
 import * as http2Shim from './shims/http2';
 import * as clusterShim from './shims/cluster';
 import * as dgramShim from './shims/dgram';
+import * as replShim from './shims/repl';
 import * as vmShim from './shims/vm';
 import * as inspectorShim from './shims/inspector';
 import * as asyncHooksShim from './shims/async_hooks';
@@ -1186,6 +1187,10 @@ const builtinModules: Record<string, unknown> = {
   http2: http2Shim,
   cluster: clusterShim,
   dgram: dgramShim,
+  // A stand-in for Node's surface that refuses the REPL by name (shims/repl.ts says why it is not Node's file).
+  repl: replShim,
+  // Node's `sys` is `util` itself (lib/sys.js: `module.exports = require('util')`), deprecated (DEP0025).
+  sys: utilShim,
   vm: vmShim,
   inspector: inspectorShim,
   'inspector/promises': inspectorShim,
@@ -1264,6 +1269,16 @@ Object.defineProperty(builtinModules, 'assert/strict', {
   enumerable: true,
   get(): unknown { return (assertModule as { strict: unknown }).strict; },
 });
+// A builtin NAME is a promise that `require` of it loads a module. Every name the engine lists
+// (`shims/module.ts`, which is what `module.builtinModules` and `isBuiltin` answer from) has a module in this table,
+// or is one of the three made per guest (`fs`, `process`, `wasi`, each answered where a guest's require is built).
+// A listed name with neither resolved to its bare id and was then opened as a FILE of that name: `require('repl')`
+// answered "ENOENT: open 'repl'" (ts-node, which loads `repl` on every start). The engine does not load with one.
+{
+  const __perGuest = new Set(['fs', 'process', 'wasi']);
+  const __unanswered = moduleShim.builtinModules.filter((name: string) => !__perGuest.has(name) && !Object.prototype.hasOwnProperty.call(builtinModules, name));
+  if (__unanswered.length > 0) throw new Error(`tabnode: builtin name${__unanswered.length === 1 ? '' : 's'} listed with no module: ${__unanswered.join(', ')}. Give each a module in runtime.ts's table or take it off shims/module.ts's list.`);
+}
 // Node's builtin module objects are ordinary mutable objects: a program can
 // patch `vm.runInContext` or `crypto.randomUUID`, and Next's environment
 // extensions and its error inspector do. Most shims are frozen module
