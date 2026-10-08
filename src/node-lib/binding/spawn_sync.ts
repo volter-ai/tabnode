@@ -11,7 +11,7 @@
  * `UV_ENOSYS`, which is what Node reports for a child it could not start.
  */
 import { libRequire } from '../require-hook';
-import { UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ETIMEDOUT } from './uv';
+import { UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ETIMEDOUT, UV_EBADF } from './uv';
 import { runSyncChild, syncChildRefusal } from '../../shims/sync-child';
 import { __substrateArgvFor, __substrateHostRuns, __substrateLineFor, __substrateRunsNode, __substrateShellLine } from '../../shims/command-line';
 import { inheritedWriter } from './process_wrap';
@@ -134,6 +134,13 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
   const sinks = ([1, 2] as const).map((index) => passedOn(stdio[index]) ? inheritedWriter(stdio[index]!.fd ?? index, asking) : null);
   const sink = (index: 1 | 2): ((bytes: Uint8Array) => void) | undefined => sinks[index - 1] ?? undefined;
   const releaseSinks = (): void => { for (const held of sinks) held?.release?.(); };
+  // A descriptor the caller names and does not hold fails the spawn, as libuv's does (`spawnSync ... EBADF`, no
+  // pid, no output): the child's bytes were dropped in silence. The caller's own fd 1 and 2 always stand for its
+  // output, held or not.
+  if (([1, 2] as const).some((index) => passedOn(stdio[index]) && sinks[index - 1] === null && (stdio[index]!.fd ?? index) > 2)) {
+    releaseSinks();
+    return nothing(UV_EBADF, 0);
+  }
 
   const input = stdio[0]?.input;
   const realm = (globalThis as unknown as { process?: { cwd?: () => string; env?: Record<string, string> } & Record<symbol, unknown> }).process;
@@ -210,7 +217,7 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
 
   // A realm that cannot run a synchronous child of the engine's own says which of its reasons it is.
   const refusal = syncChildRefusal();
-  if (refusal !== null) return refusedBecause(refusal);
+  if (refusal !== null) { releaseSinks(); return refusedBecause(refusal); }
   let answer;
   try {
     // A child that is the engine's Node goes by its argv, as `spawn` starts

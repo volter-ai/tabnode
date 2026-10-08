@@ -64,9 +64,16 @@ export function drainGuestNextTicks(): void {
  * a program that does not exist queues its `error` for the next tick, and it was emitted before `spawn()` had
  * returned, so before any listener could be attached, and was uncaught (Node's own test-child-process-spawn-error,
  * -exec-error, -promisified and -spawn-windows-batch-file).
+ *
+ * Guest code is not always inside a bracket the engine made: a listener on one of the realm's own event targets (an
+ * AbortSignal's timeout, a message port, a BroadcastChannel) is entered by the realm with the depth at zero. What
+ * such code leaves behind that a bracket does not is its ticks: a tick already queued when the callback is entered
+ * was queued by code that may still be on the stack, and one queued by code that has returned is drained by the
+ * microtask its queueing scheduled. So a callback drains only a queue that was empty when it was entered: its own
+ * ticks, and theirs. (The same spawn from an `abort` listener emitted its `error` before the listener was there.)
  */
 export function withGuestCallback<T>(fn: () => T): T {
-  const fromTheLoop = depth === 0 && !continuation;
+  const fromTheLoop = depth === 0 && !continuation && ticks.length === 0;
   return withGuestExecution(() => {
     callbackDepth++;
     try {

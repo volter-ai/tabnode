@@ -19,4 +19,29 @@ for (const name of names) {
 const walk = []; for (const n in globalThis) walk.push(n);
 rows.push('walk: ' + walk.filter((n) => !['__filename', 'module', 'exports', '__dirname', 'require'].includes(n)).sort().join(' '));
 rows.push('reachable typeof: ' + ['self', 'window', 'document', 'postMessage', 'addEventListener', 'Worker', 'location', 'importScripts'].map((n) => n + '=' + typeof globalThis[n]).join(' '));
+// What a program may DO to each of those names, as Node lets it: assign it, define it with a value, delete it, put it
+// back, and define it non-configurable and then walk the globals. Each answer is read back three ways: the property,
+// the bare name, and the descriptor. The non-configurable define is last and keeps the name's own value, since it
+// cannot be undone.
+const kindOf = (d) => !d ? 'none' : 'value' in d ? `value w${+d.writable} e${+d.enumerable} c${+d.configurable}` : `accessor get${+!!d.get} set${+!!d.set} e${+d.enumerable} c${+d.configurable}`;
+const said = (f) => { try { return String(f()); } catch (e) { return 'throws ' + (e && e.name); } };
+const why = (f) => { try { return String(f()); } catch (e) { return 'throws ' + (e && e.name) + ': ' + String(e && e.message).slice(0, 60); } };
+const walkOf = () => why(() => { let n = 0; for (const k in globalThis) n += 1; Object.getOwnPropertyNames(globalThis); Object.getOwnPropertyDescriptors(globalThis); Object.keys(globalThis); return 'ok'; });
+for (const name of names) {
+  const original = Object.getOwnPropertyDescriptor(globalThis, name);
+  const first = globalThis[name];
+  // An accessor put back still answers what its setter last stored (Node's lazy globals keep the value in a
+  // closure), so the value is put back through it too.
+  const restore = () => said(() => { Object.defineProperty(globalThis, name, original); if (globalThis[name] !== first) globalThis[name] = first; return globalThis[name] === first && eval(name) === first; });
+  const a = {}, b = {};
+  const assign = `assign ${said(() => { globalThis[name] = a; return globalThis[name] === a; })} bare ${said(() => eval(name) === a)} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} restored ${restore()}`;
+  const define = `define ${said(() => { Object.defineProperty(globalThis, name, { value: b, writable: true, configurable: true, enumerable: true }); return globalThis[name] === b; })} bare ${said(() => eval(name) === b)} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} restored ${restore()}`;
+  const remove = `delete ${said(() => delete globalThis[name])} typeof ${said(() => typeof globalThis[name])} in ${said(() => name in globalThis)} bare ${said(() => typeof eval(name))} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} restored ${restore()}`;
+  const reassign = `delete-then-assign ${said(() => { delete globalThis[name]; globalThis[name] = a; return globalThis[name] === a; })} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} restored ${restore()}`;
+  rows.push(`${name} | ${assign} | ${define} | ${remove} | ${reassign}`);
+}
+for (const name of names) {
+  const first = globalThis[name];
+  rows.push(`${name} | fixed ${said(() => { Object.defineProperty(globalThis, name, { value: first, writable: false, configurable: false, enumerable: true }); return globalThis[name] === first; })} then ${kindOf(Object.getOwnPropertyDescriptor(globalThis, name))} walk ${walkOf()} assign-ignored ${said(() => { globalThis[name] = {}; return globalThis[name] === first; })}`);
+}
 console.log('ORDER ' + JSON.stringify(rows));

@@ -136,6 +136,25 @@ codes are not reproduced). The rest:
 - A caller's DER is copied when a key is read; zeroing the buffer afterwards
   does not change the key.
 
+- A guest's global object is the guest's own, with Node's names and shapes.
+  `for (name in globalThis)` gives Node's fifteen names and none of the
+  realm's; `Buffer` and `performance` are accessors with a setter, `crypto`
+  one without, the rest writable values; `atob`, `btoa`, `Buffer` and
+  `performance` are the objects their modules export. What a program assigns,
+  defines or deletes there is its own and is what every later read, walk and
+  descriptor answers: before, an assignment to a timer, `queueMicrotask` or
+  `structuredClone` changed the realm's global for every program in it.
+  `scripts/guest-globals.cjs` assigns, defines, deletes, restores and fixes
+  each of the sixteen names under Node and in a guest.
+- `process.nextTick` callbacks queued by a callback the loop entered run when
+  that callback returns, before any promise it queued, and ticks they queue
+  run with them (`cb, tick, promise`, as Node). A callback made while other
+  code is still running does not drain them, bracketed by the engine or not
+  (`scripts/callback-ticks.cjs`).
+- A child whose `stdio` names a descriptor the caller does not hold fails to
+  start with `EBADF` (`spawnSync`: `error.code`, no pid, no output; `spawn`
+  throws), as Node's does. Its output was dropped in silence.
+
 Known cost
 
 - A stream that stops reading while a read grant is with its owner makes one
@@ -143,6 +162,23 @@ Known cost
   pauses and resumes at every chunk) that is a call per pause; how often it
   happens in a real server is not measured, and the `[stream-calls]` line
   counts it (`readStop`).
+
+Known differences from Node, for a guest's globals and its ticks
+
+- A bare name reads the value the global had when its module began, for
+  `global`, `Buffer`, `atob`, `btoa`, `queueMicrotask`, `structuredClone` and
+  the six timer functions, and `crypto` reads the realm's: after
+  `globalThis.setTimeout = mine`, `globalThis.setTimeout` is `mine` and a bare
+  `setTimeout` in the same module is still the first. After a delete, a bare
+  name is `undefined` or its first value where Node throws a ReferenceError.
+  The property, the walk and the descriptor are Node's in every case
+  (`scripts/guest-globals.cjs`, the `bare` column).
+- The six timer globals are not the functions `require('timers')` exports
+  (the same script, `is-owner's`).
+- A tick queued from a promise reaction runs before a promise queued after it
+  in the same reaction (`fs.promises.readFile(f).then(cb)`: `cb, tick,
+  promise`); Node finishes the promises first (`cb, promise, tick`). The same
+  on v0.8.0 (`scripts/callback-ticks.cjs`, the one row that differs).
 
 Known differences from Node, for a synchronous child's `stdio`
 (`scripts/sync-child-stdio-differences.cjs`, each line read under Node

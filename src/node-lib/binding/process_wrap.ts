@@ -23,7 +23,7 @@ import {
 } from './stream_wrap';
 import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { nativeStreamFor } from '../../native-stream-binding';
-import { UV_ENOENT, UV_ESRCH } from './uv';
+import { UV_EBADF, UV_ENOENT, UV_ESRCH } from './uv';
 import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
   ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
@@ -356,6 +356,12 @@ export class Process implements OwnedHandle {
         }
       } else if (entry.type === 'inherit' || entry.type === 'fd') {
         const inherited = inheritedWriter(entry.fd ?? index, ownerOf(this));
+        // A descriptor the caller names and does not hold fails the spawn (`spawn EBADF`), as libuv's does.
+        if (inherited === null && (entry.fd ?? index) > 2) {
+          for (const held of this.heldDescriptions.splice(0)) held.release?.();
+          this.closeFarEnds();
+          return UV_EBADF;
+        }
         if (inherited?.release) this.heldDescriptions.push(inherited);
         if (index === 1) request.stdout = inherited;
         else request.stderr = inherited;

@@ -29,3 +29,9 @@ fs.unlinkSync(file);
 // Bytes passed on are not a buffer of this call's: one byte of `maxBuffer` is not exceeded by them.
 const crossed = spawnSync(process.execPath, child, { stdio: ['ignore', 2, 1], maxBuffer: 1 });
 console.log('G error=' + (crossed.error && crossed.error.code));
+// A descriptor the caller names and does not hold fails the spawn; nothing is run and nothing is dropped in silence.
+const unheld = spawnSync(process.execPath, child, { stdio: ['ignore', 99, 'pipe'] });
+console.log('H error=' + (unheld.error && unheld.error.code) + ' status=' + unheld.status + ' pid=' + unheld.pid + ' output=' + JSON.stringify(unheld.output));
+let thrown = 'nothing thrown';
+try { require('child_process').spawn(process.execPath, child, { stdio: ['ignore', 99, 'pipe'] }).on('error', () => {}); } catch (error) { thrown = error.code + ' ' + error.syscall; }
+console.log('I asynchronous spawn: ' + thrown);
