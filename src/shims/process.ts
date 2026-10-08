@@ -532,6 +532,24 @@ export function __substrateExitCode(code: unknown): number {
   return Number.isNaN(asNumber) ? 0 : asNumber;
 }
 
+/**
+ * `process.memoryUsage()` from what the realm can measure. A process is one realm and the realm's JavaScript heap is
+ * the process's: where the realm reports it (`performance.memory`, Chromium; exact when the page is cross-origin
+ * isolated, which a page running this engine's threads is), `heapUsed` and `heapTotal` are those readings.
+ * Nothing in a realm reports resident memory, memory outside the heap or ArrayBuffer bytes: `rss` is then the heap's
+ * total, a floor and not a measurement (a process's resident size is never less than its heap), and `external` and
+ * `arrayBuffers` are 0, meaning not counted. A realm with no heap reading at all (Firefox, Safari) answers the fixed
+ * figures this function always gave, which are a shape for callers and measure nothing.
+ */
+function measuredMemory(): { rss: number; heapTotal: number; heapUsed: number; external: number; arrayBuffers: number } {
+  const heap = (performance as unknown as { memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number } }).memory;
+  const used = heap?.usedJSHeapSize, total = heap?.totalJSHeapSize;
+  if (typeof used === 'number' && typeof total === 'number' && total > 0) {
+    return { rss: total, heapTotal: total, heapUsed: used, external: 0, arrayBuffers: 0 };
+  }
+  return { rss: 50 * 1024 * 1024, heapTotal: 30 * 1024 * 1024, heapUsed: 20 * 1024 * 1024, external: 1 * 1024 * 1024, arrayBuffers: 0 };
+}
+
 export function createProcess(options?: {
   cwd?: string;
   env?: ProcessEnv;
@@ -891,16 +909,7 @@ export function createProcess(options?: {
     ),
 
     // Node's `process.memoryUsage` is a function with a function on it, `rss()`, for the one number alone.
-    memoryUsage: Object.assign(function memoryUsage() {
-      // Return mock values since we can't access real memory in browser
-      return {
-        rss: 50 * 1024 * 1024,
-        heapTotal: 30 * 1024 * 1024,
-        heapUsed: 20 * 1024 * 1024,
-        external: 1 * 1024 * 1024,
-        arrayBuffers: 0,
-      };
-    }, { rss: (): number => 50 * 1024 * 1024 }),
+    memoryUsage: Object.assign(function memoryUsage() { return measuredMemory(); }, { rss: (): number => measuredMemory().rss }),
 
     /**
      * Node's `process.constrainedMemory`, which reports a cgroup's limit on
