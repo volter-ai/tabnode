@@ -46,7 +46,7 @@ import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-modul
 import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
 import { __ownedHandleKinds } from '../node-lib/binding/handles';
 import { pendingGuestPorts } from '../guest-message-ports';
-import { guestQuietMs } from '../guest-loop';
+import { engineSetTimeout, guestQuietMs } from '../guest-loop';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
 import { StdinRingReader, kStdinRing } from '../stdin-ring';
@@ -1130,10 +1130,15 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       if (streams?.signal?.aborted) break;
 
       // Check if exitPromise resolved (non-blocking)
-      const raceResult = await Promise.race([
-        exitPromise.then(() => 'exit' as const),
-        new Promise<'tick'>(r => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, () => r('tick'), CHECK_MS)),
-      ]);
+      // One promise of the realm's own, settled by the exit or by the tick, and awaited: nothing here passes through
+      // a callback the engine wraps for its guests. `Promise.race` and a `then` on the tick do (shims/async_hooks.ts
+      // wraps the realm's timers and `Promise.prototype.then`), and each such callback is counted as guest code
+      // running, which made every program this poll ended read as busy at the moment it was judged idle. The `then`
+      // on the exit runs only when the program exits.
+      const raceResult = await new Promise<'exit' | 'tick'>(settle => {
+        void exitPromise.then(() => settle('exit'));
+        (globalThis.__browserRuntimeNativeSetTimeout ?? engineSetTimeout).call(globalThis, () => settle('tick'), CHECK_MS);
+      });
 
       if (raceResult === 'exit' || exitCalled) break;
       if (streams?.signal?.aborted) break;
