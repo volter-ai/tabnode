@@ -58,6 +58,7 @@
   },
   "scripts": {
     "build:lib": "vite build --config vite.lib.config.js && tsc -p tsconfig.build.json",
+    "build:surface": "node scripts/native-surface.mjs --out measurement/native.json && node scripts/public-surface.mjs --out measurement/public.json && node scripts/native-probe.mjs --inventory measurement/native.json --out measurement/native-probe.json && node scripts/surface-file.mjs",
     "docs:api": "typedoc",
     "test": "vitest run",
     "type-check": "tsc --noEmit"

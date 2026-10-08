@@ -28,9 +28,68 @@ function requestId(): number {
   return nextRequest++;
 }
 
+/**
+ * An instrument: what this realm asked of its stream owner. Per operation, the calls, the milliseconds this thread
+ * was blocked in them (a call is synchronous: it returns when the owner's thread has answered) and the longest one;
+ * per write, the bytes and the milliseconds until the owner said it was written; per event the owner sent, the count.
+ * A single call that blocks past `SLOW_CALL_MS` is said at once, so a stall is named even by a process that never exits.
+ */
+interface StreamCount { calls: number; ms: number; max: number; bytes?: number }
+const streamCounts = new Map<string, StreamCount>();
+const streamEvents = new Map<string, number>();
+const SLOW_CALL_MS = 250;
+let streamCountsSaid = 0;
+function tally(operation: string, ms: number, bytes?: number): void {
+  let count = streamCounts.get(operation);
+  if (!count) streamCounts.set(operation, count = { calls: 0, ms: 0, max: 0 });
+  count.calls += 1; count.ms += ms; if (ms > count.max) count.max = ms;
+  if (bytes !== undefined) count.bytes = (count.bytes ?? 0) + bytes;
+}
+function counting(next: NativeStreamTransport): NativeStreamTransport {
+  return {
+    limits: next.limits,
+    call(operation) {
+      const from = performance.now();
+      try { return next.call(operation); }
+      finally {
+        const ms = performance.now() - from;
+        tally(operation.operation, ms);
+        if (ms >= SLOW_CALL_MS) console.log('[stream-calls]', JSON.stringify({ event: 'slow', at: Date.now(), operation: operation.operation, id: 'id' in operation ? operation.id : null, blockedMs: Math.round(ms) }));
+      }
+    },
+    write(id, bytes, handle) {
+      const from = performance.now();
+      const size = bytes.byteLength;
+      const written = next.write(id, bytes, handle);
+      const done = (): void => tally('write', performance.now() - from, size);
+      written.then(done, done);
+      return written;
+    },
+    onEvent(listener) {
+      return next.onEvent(event => {
+        const kind = event.type === 'read' ? (event.bytes ? 'read' : event.handle ? 'read-handle' : `read-status-${event.status}`) : event.type;
+        streamEvents.set(kind, (streamEvents.get(kind) ?? 0) + 1);
+        if (event.type === 'read' && event.bytes) streamEvents.set('read-bytes', (streamEvents.get('read-bytes') ?? 0) + event.bytes.byteLength);
+        listener(event);
+      });
+    },
+  };
+}
+/** Says the counts so far, once per change: a process says them at its exit. */
+export function sayNativeStreamCounts(pid: number | null, when: string): void {
+  let total = 0;
+  for (const count of streamCounts.values()) total += count.calls;
+  if (total === streamCountsSaid) return;
+  streamCountsSaid = total;
+  const operations = [...streamCounts].sort((a, b) => b[1].ms - a[1].ms)
+    .map(([operation, count]) => [operation, count.calls, Math.round(count.ms), Math.round(count.max), ...(count.bytes === undefined ? [] : [count.bytes])]);
+  console.log('[stream-calls]', JSON.stringify({ event: when, at: Date.now(), pid, columns: ['operation', 'calls', 'blockedMs', 'maxMs', 'bytes'], operations, events: Object.fromEntries(streamEvents) }));
+}
+
 /** Host bootstrap only, before any TCP/Pipe exists in this process realm. */
 export function installNativeStreamTransport(next: NativeStreamTransport): void {
   if (transport || allocated) throw new Error('Native stream transport must be installed before stream construction.');
+  next = counting(next);
   transport = next;
   next.onEvent(event => {
     if (event.type === 'closed') {

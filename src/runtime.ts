@@ -55,6 +55,7 @@ import {
 } from './node-lib/small-modules';
 import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
+import { sayNativeStreamCounts } from './native-stream-binding';
 import type { ResolutionKept } from './node-resolution';
 import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
 import { setSourceMapsSupportOf, sourceMapsSupportOf } from './node-lib/internals/events-util';
@@ -757,7 +758,11 @@ function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCo
 }
 Object.defineProperty(globalThis, '__substratePreparedExit', {
   configurable: true,
-  value: (process: object): void => { const counts = __substratePreparedCounts.get(process); if (counts) __substrateSayPrepared(process, counts, 'exit'); },
+  value: (process: object): void => {
+    const counts = __substratePreparedCounts.get(process);
+    if (counts) __substrateSayPrepared(process, counts, 'exit');
+    sayNativeStreamCounts((process as { pid?: number }).pid ?? null, 'exit');
+  },
 });
 /** A prepared body's text, or undefined where the tree holds none by that name: the read's own miss is the answer. */
 function __substrateReadPrepared(vfs: { readFileSync(path: string, encoding: 'utf8'): string }, key: string): string | undefined {
