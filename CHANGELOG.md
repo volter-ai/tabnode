@@ -4,6 +4,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Where a process's start went: one `[boot-trace] {"event":"load-account"}`
+  line per process, when its loading has been quiet two seconds and at its
+  exit. Files, bytes, prepared bodies taken and missed, and the milliseconds
+  of each loading phase (resolve, read, prepared, transform, compile,
+  evaluate, builtin, loader) as the phase's own time, with the twenty
+  packages that took longest to evaluate (`src/load-account.ts` states each
+  field and what the account cannot see).
 - To follow, not yet changed: four optional members added in v0.9.0 and before
   are second paths that only an embedder without them takes (the stream
   transport's `post`, a started run's `setRef`, the host request's
