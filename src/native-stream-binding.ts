@@ -34,15 +34,18 @@ function requestId(): number {
  * per write, the bytes and the milliseconds until the owner said it was written; per event the owner sent, the count.
  * A single call that blocks past `SLOW_CALL_MS` is said at once, so a stall is named even by a process that never exits.
  */
-interface StreamCount { calls: number; ms: number; max: number; bytes?: number }
+/** `over`: how many took at least 1, 4, 16, 64 and 250 ms, so a few long waits are told from many short ones. */
+interface StreamCount { calls: number; ms: number; max: number; over: number[]; bytes?: number }
+const OVER_MS = [1, 4, 16, 64, 250];
 const streamCounts = new Map<string, StreamCount>();
 const streamEvents = new Map<string, number>();
 const SLOW_CALL_MS = 250;
 let streamCountsSaid = 0;
 function tally(operation: string, ms: number, bytes?: number): void {
   let count = streamCounts.get(operation);
-  if (!count) streamCounts.set(operation, count = { calls: 0, ms: 0, max: 0 });
+  if (!count) streamCounts.set(operation, count = { calls: 0, ms: 0, max: 0, over: OVER_MS.map(() => 0) });
   count.calls += 1; count.ms += ms; if (ms > count.max) count.max = ms;
+  for (let at = 0; at < OVER_MS.length && ms >= OVER_MS[at]!; at++) count.over[at]! += 1;
   if (bytes !== undefined) count.bytes = (count.bytes ?? 0) + bytes;
 }
 function counting(next: NativeStreamTransport): NativeStreamTransport {
@@ -82,8 +85,8 @@ export function sayNativeStreamCounts(pid: number | null, when: string): void {
   if (total === streamCountsSaid) return;
   streamCountsSaid = total;
   const operations = [...streamCounts].sort((a, b) => b[1].ms - a[1].ms)
-    .map(([operation, count]) => [operation, count.calls, Math.round(count.ms), Math.round(count.max), ...(count.bytes === undefined ? [] : [count.bytes])]);
-  console.log('[stream-calls]', JSON.stringify({ event: when, at: Date.now(), pid, columns: ['operation', 'calls', 'blockedMs', 'maxMs', 'bytes'], operations, events: Object.fromEntries(streamEvents) }));
+    .map(([operation, count]) => [operation, count.calls, Math.round(count.ms), Math.round(count.max), count.over, ...(count.bytes === undefined ? [] : [count.bytes])]);
+  console.log('[stream-calls]', JSON.stringify({ event: when, at: Date.now(), pid, columns: ['operation', 'calls', 'blockedMs', 'maxMs', `over ${OVER_MS.join('/')} ms`, 'bytes'], operations, events: Object.fromEntries(streamEvents) }));
 }
 
 /** Host bootstrap only, before any TCP/Pipe exists in this process realm. */
