@@ -1044,6 +1044,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // timer — as idle, with exit 0, three times over.
   const __ownsHandles = () => runToken !== null && (__ownedServerPorts(runToken).length > 0 || __ownedHandleCount(runToken) > 0);
   const __printedThenWorking = () => (streams?.stdinOpen === true && inputConsumed()) || pendingGuestTimers(proc) > 0 || heldWork().count > 0 || __ownsHandles();
+  /** The run's loop has nothing left and no host holds it: the wait below is skipped and it ends as a drained run. */
+  let drained = false;
   if (printed > 0 && !__printedThenWorking()) {
     // Settling the command is host work. Killing guest timers must not
     // cancel this continuation and leave the command's promise unresolved.
@@ -1062,9 +1064,13 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // the substrate's loop take a `vite` quiet during its start for a
     // finished run and abort it before it listened. A run nobody holds
     // waits for its timers below, as Node's loop does.
-    if (streams?.held || (!__printedThenWorking() && pendingGuestTimers(proc) === 0)) {
+    if (streams?.held) {
       return { stdout, stderr, exitCode: typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0 };
     }
+    // A run nobody holds, with nothing left to wait for, has drained its loop already: it ends as one that drained
+    // it later does, below (`exit` emitted, its exit lines said). It returned from here with neither, so a script
+    // that simply finished never ran its `exit` listeners.
+    drained = !__printedThenWorking() && pendingGuestTimers(proc) === 0;
   }
 
   // No output yet — script likely has async work (e.g. vitest test runner).
@@ -1098,7 +1104,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // only exit when aborted or process.exit is called.
     const isLongRunning = !!streams?.held;
 
-    while (!exitCalled) {
+    while (!exitCalled && !drained) {
       // Check abort signal for long-running commands (watch mode)
       if (streams?.signal?.aborted) break;
 
