@@ -427,8 +427,12 @@ function transformEsmToCjsAst(code: string): string {
         const classCode = code.slice(decl.start, node.end);
         replacements.push([node.start, node.end, decl.id ? `${classCode}\n${defineDefault(decl.id.name)}` : `const __default_${node.start} = ${classCode};\n${defineDefault(`__default_${node.start}`)}`]);
       } else {
-        // export default <expression>: evaluated here, in order, once.
-        const exprCode = code.slice(decl.start, node.end).replace(/;\s*$/u, '');
+        // export default <expression>: evaluated here, in order, once. The expression's text is the statement's,
+        // from after `default`: an expression's own range leaves out parentheses around it, so a text cut from the
+        // expression's start to the statement's end kept the closing one of `export default (a => b);` without its
+        // opening one (Next's compiled next.config: "Unexpected token ')'").
+        const keyword = /^export(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*default/u.exec(code.slice(node.start, decl.start));
+        const exprCode = code.slice(keyword ? node.start + keyword[0].length : decl.start, node.end).replace(/;\s*$/u, '');
         replacements.push([node.start, node.end, `const __default_${node.start} = (${exprCode});\n${defineDefault(`__default_${node.start}`)}`]);
       }
     } else if (node.type === 'ExportNamedDeclaration') {
