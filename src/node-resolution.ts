@@ -64,6 +64,12 @@ export interface ResolutionKept {
    * a path that was absent is asked again every time, so a file written and then required is found.
    */
   stats?: Map<string, 0 | 1>;
+  /**
+   * An instrument: the resolver's stat probes for this process. `file`, `directory`, `absent`: asked of the tree, by
+   * the answer. `held`: answered from `stats` without asking. `outside`: of those asked, the ones asked with no
+   * window open. `windows`: stat windows opened.
+   */
+  probes?: { file: number; directory: number; absent: number; held: number; outside: number; windows: number };
 }
 
 export interface NodeResolver {
@@ -90,9 +96,14 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
   /** 0 a file, 1 a directory, -1 neither or absent. */
   const kind = (path: string): 0 | 1 | -1 => {
     const held = kept?.stats?.get(path);
-    if (held !== undefined) return held;
+    const probes = kept?.probes;
+    if (held !== undefined) { if (probes) probes.held += 1; return held; }
     let found: 0 | 1 | -1 = -1;
     try { const stat = fs.statSync(path, { throwIfNoEntry: false }); found = stat?.isFile() ? 0 : stat?.isDirectory() ? 1 : -1; } catch { found = -1; }
+    if (probes) {
+      if (found === 0) probes.file += 1; else if (found === 1) probes.directory += 1; else probes.absent += 1;
+      if (kept?.stats === undefined) probes.outside += 1;
+    }
     if (found !== -1) kept?.stats?.set(path, found);
     return found;
   };

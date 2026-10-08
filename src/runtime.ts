@@ -728,6 +728,7 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
  * An instrument: how each of a process's compiles came by its body, said when its loading has been quiet for two
  * seconds and when it exits. `digest`: named by the tree's digest, the source never read. `hash`: named by hashing
  * the source read. `kept`: prepared here and kept. The rest prepared here, by why no body could be taken.
+ * `stats`: the resolver's stat probes for the same process (node-resolution.ts `ResolutionKept.probes`).
  */
 type PreparedCounts = { digest: number; hash: number; kept: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
 const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
@@ -737,7 +738,7 @@ function __substrateSayPrepared(process: object, counts: PreparedCounts, at: str
   const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
   if (total === counts.said) return;
   counts.said = total;
-  console.log('[boot-trace]', JSON.stringify({ event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals }));
+  console.log('[boot-trace]', JSON.stringify({ event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: __substrateResolutionKept.get(process)?.probes ?? null }));
 }
 function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCounts, 'said' | 'timer'>): void {
   let counts = __substratePreparedCounts.get(process);
@@ -1844,7 +1845,7 @@ function __substrateRegisteredExtension(filename: string, extensions: Record<str
 const __substrateResolutionKept = new WeakMap<object, ResolutionKept & { depth: number }>();
 function __substrateKeptFor(process: object): ResolutionKept & { depth: number } {
   let kept = __substrateResolutionKept.get(process);
-  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0 }; __substrateResolutionKept.set(process, kept); }
+  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0, probes: { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 } }; __substrateResolutionKept.set(process, kept); }
   return kept;
 }
 /**
@@ -1855,6 +1856,7 @@ function __substrateInStatWindow<T>(process: object, run: () => T): T {
   const keeping = __substrateKeptFor(process);
   if (keeping.depth !== 0 || keeping.stats !== undefined) return run();
   keeping.stats = new Map();
+  if (keeping.probes) keeping.probes.windows += 1;
   try { return run(); } finally { keeping.stats = undefined; }
 }
 const __substrateResolvedPaths = new WeakMap<Record<string, Module>, WeakMap<VirtualFS, { paths: Map<string, string>; bytes: number }>>();
