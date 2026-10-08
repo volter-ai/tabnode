@@ -37,6 +37,11 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   if (name === 'internal/crypto/keys') return () => internalCryptoKeys;
   if (name === 'internal/deps/acorn/acorn/dist/acorn') return () => acorn;
   if (name === 'internal/modules/helpers') return () => ({
+    // Node's: a file URL as its path, anything else as it is (lib/internal/modules/helpers.js).
+    urlToFilename(url: unknown): unknown {
+      if (typeof url !== 'string' || !url.startsWith('file://')) return url;
+      try { return decodeURIComponent(new URL(url).pathname); } catch { return url; }
+    },
     getRequireStack(parent: any): string[] {
       const stack: string[] = [];
       const seen = new Set<object>();

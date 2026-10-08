@@ -38,6 +38,7 @@ const codes: Record<string, [number, string]> = {
   UV_ENOBUFS: [-105, 'no buffer space available'],
   UV_ENOENT: [-2, 'no such file or directory'],
   UV_ENOMEM: [-12, 'not enough memory'],
+  UV_ENOSPC: [-28, 'no space left on device'],
   UV_ENOSYS: [-38, 'function not implemented'],
   UV_ENOTCONN: [-107, 'socket is not connected'],
   UV_ENOTDIR: [-20, 'not a directory'],

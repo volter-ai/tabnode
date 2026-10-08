@@ -58,6 +58,8 @@ export const internalSourceMapCache = {
     ({ enabled: false, nodeModules: false, generatedCode: false }),
   setSourceMapsSupport: (): void => {},
   rekeySourceMap: (): void => {},
+  // Asked of a source map that was found; none ever is, so there is no line to give.
+  getSourceLine: (): undefined => void 0,
 };
 
 /**

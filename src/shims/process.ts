@@ -693,7 +693,7 @@ export function createProcess(options?: {
       __substrateCaptureCallback = callback;
     },
     hasUncaughtExceptionCaptureCallback() { return __substrateCaptureCallback !== null; },
-    features: { debug: false, inspector: false, tls: false, cached_builtins: true, ipv6: true, require_module: true, tls_alpn: false, tls_ocsp: false, tls_sni: false, typescript: false, uvwasi: true },
+    features: { debug: false, inspector: false, tls: false, cached_builtins: true, ipv6: true, require_module: true, tls_alpn: false, tls_ocsp: false, tls_sni: false, typescript: 'strip', uvwasi: true },
     // The tab's tree carries no mode mask; Node's own default is what a
     // process that has not set one reports, and setting one answers the mask
     // it replaced, as Node's does.
