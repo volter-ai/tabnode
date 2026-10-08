@@ -25,6 +25,9 @@ const bundle = resolve(fs.mkdtempSync(resolve(tmpdir(), 'native-probe-')), 'regi
 await build({
   stdin: { contents: `import ${JSON.stringify(resolve(root, 'src/index.ts'))};\nexport { nodeLibBinding } from ${JSON.stringify(resolve(root, 'src/node-lib/binding/index.ts'))};\nexport { nodeLibInternal } from ${JSON.stringify(resolve(root, 'src/node-lib/internals/index.ts'))};\n`, resolveDir: root, loader: 'ts' },
   bundle: true, format: 'esm', platform: 'node', outfile: bundle, logLevel: 'silent', plugins: [raw],
+  // A dependency's compiled addon is not part of what is probed: left as the require it was, which nothing here runs.
+  // (A clean install builds @mongodb-js/zstd's, and bundling it failed: no loader for `.node`.)
+  external: ['*.node'],
   banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
 });
 if (typeof globalThis.window === 'undefined') globalThis.window = { navigator: { serviceWorker: {} } };
