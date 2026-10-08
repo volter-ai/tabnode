@@ -54,6 +54,9 @@ export function __substrateShellLine(file: string, argv: string[]): string | nul
   if (program !== 'sh' && program !== 'bash' && program !== 'dash' && program !== 'zsh') return null;
   const dashC = argv.indexOf('-c');
   if (dashC < 1 || typeof argv[dashC + 1] !== 'string') return null;
+  // Words after the line are the shell's `$0` and positional parameters (`sh -c 'cd "$1" && …' name dir`). The
+  // line alone does not say them, so such an invocation is not "its own line": it goes as its list, whole.
+  if (argv.length > dashC + 2) return null;
   return argv[dashC + 1] as string;
 }
 

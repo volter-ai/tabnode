@@ -601,13 +601,20 @@ export function createProcess(options?: {
       return currentDir;
     },
 
-    chdir(directory: string) {
-      console.log('[process] chdir called:', directory, 'from:', currentDir);
+    chdir(this: unknown, directory: string) {
       if (!directory.startsWith('/')) {
         directory = currentDir + '/' + directory;
       }
+      // A run whose tree is its kernel process's has its working directory there (chdir(2)): the kernel resolves
+      // and checks the path, a child forked afterwards is born in it, and its own answer is what `cwd()` then says.
+      // A tree with no process of its own keeps the directory here, as before.
+      const tree = (this as Record<symbol, unknown> | null | undefined)?.[Symbol.for('tabnode.run.vfs')] as { chdir?: (path: string) => void; currentWorkingDirectory?: () => string } | undefined;
+      if (tree && typeof tree.chdir === 'function') {
+        tree.chdir(directory);
+        currentDir = typeof tree.currentWorkingDirectory === 'function' ? tree.currentWorkingDirectory() : directory;
+        return;
+      }
       currentDir = directory;
-      console.log('[process] chdir result:', currentDir);
     },
 
     platform: 'linux', // Pretend to be linux for better compatibility

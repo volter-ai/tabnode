@@ -54,7 +54,7 @@ interface SyncChildHost {
     killSignal?: number;
     onStdout(bytes: Uint8Array): void;
     onStderr(bytes: Uint8Array): void;
-  }): { started: boolean; status: number | null; signal: string | null; error?: 'ETIMEDOUT' | 'ENOBUFS'; refusal?: string };
+  }): { started: boolean; status: number | null; signal: string | null; error?: 'ETIMEDOUT' | 'ENOBUFS' | 'ENOENT' | 'ENOTDIR'; refusal?: string };
 }
 const hostExecutorSymbol = Symbol.for('@volter/browser-runtime/child-process-executor');
 let nextSyncChild = 1;
@@ -177,6 +177,8 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
     if (!answer.started) exitRunProcess(childPid, parentPid, 0, 'SIGKILL', owner);
     const ended = reapRunProcess(childPid, parentPid, answer.status ?? 0, answer.signal, owner);
     forgetRunPid(token);
+    // A working directory that is not there is the child's ENOENT, as Node reports a bad `cwd` for a spawn.
+    if (!answer.started && (answer.error === 'ENOENT' || answer.error === 'ENOTDIR')) return nothing(UV_ENOENT, childPid);
     if (!answer.started) return refusedBecause(answer.refusal ?? 'the host did not start the child', childPid);
     const join = (chunks: Uint8Array[]): Uint8Array => {
       const whole = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
