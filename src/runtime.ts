@@ -56,6 +56,7 @@ import {
 import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
 import type { ResolutionKept } from './node-resolution';
+import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
 import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
 import { PUNYCODE_SOURCE } from './punycode-source';
 import * as perfHooksShim from './shims/perf_hooks';
@@ -1024,9 +1025,17 @@ function createImportMeta(moduleRequire: RequireFunction, url: string, dirname: 
   return { url, dirname, filename, resolve };
 }
 
+/** ES module bodies a process has run: an import that raises it ran one for the first time. */
+const __substrateEsBodiesRun = new WeakMap<object, number>();
+function __substrateEsBodyRuns(process: object): void { __substrateEsBodiesRun.set(process, (__substrateEsBodiesRun.get(process) ?? 0) + 1); }
+/** One turn of the loop a guest's own `setImmediate` waits on. */
+const __substrateLoopTurn = (): Promise<void> => new Promise<void>(resolve => { setImmediate(resolve); });
 function createDynamicImport(moduleRequire: RequireFunction, process: Process, parentURL?: string): (specifier: unknown) => Promise<unknown> {
   return async (specifier: unknown): Promise<unknown> => {
     try {
+      // What the guest's Node line does when an import runs an ES module for the first time (node-line.ts).
+      const turns = freshEsModuleImportTurns(nodeLineOf((process as { version?: unknown }).version));
+      const esBodiesBefore = turns > 0 ? __substrateEsBodiesRun.get(process) ?? 0 : 0;
       // The specifier of `import()` undergoes ToString, as Node's does. ESLint's
       // `loadFormatter` imports `pathToFileURL(formatterPath)` — a URL object —
       // and the engine handed the object to require untouched, so the
@@ -1046,6 +1055,7 @@ function createDynamicImport(moduleRequire: RequireFunction, process: Process, p
       // A module still settling settles the import, as Node's does.
       const pending = __substratePendingOf(mod);
       if (pending) await pending;
+      if (turns > 0 && (__substrateEsBodiesRun.get(process) ?? 0) > esBodiesBefore) for (let turn = 0; turn < turns; turn += 1) await __substrateLoopTurn();
 
       // A lowered ES module already carries its named exports and `__esModule`.
       // A CommonJS builtin does not: Node's ESM namespace is built from the
@@ -2416,6 +2426,7 @@ function createRequire(
     try {
       const importMetaUrl = resolvedPath.startsWith('data:') ? resolvedPath : 'file://' + resolvedPath;
       const strictBody = code.startsWith(__substrateModuleMarker);
+      if (strictBody) __substrateEsBodyRuns(process);
       if (!scoped) code = __substrateScopeGlobalCalls(code);
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
@@ -2886,6 +2897,10 @@ export class Runtime {
     // so the binding reads the tree off the process whose code is executing --
     // the same door every vendored file gets its `process` through.
     (this.process as unknown as Record<symbol, unknown>)[kRunFilesystem] = vfs;
+    // The Node line this process answers as, and where it came from (node-line.ts).
+    const namedVersion = options.env?.NODE_VERSION;
+    console.log('[boot-trace]', JSON.stringify({ event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
+      line: nodeLineOf(this.process.version), from: this.process.version === `v${String(namedVersion ?? '').replace(/^v/, '')}` ? 'NODE_VERSION of the image' : 'default' }));
     // Create fs shim with cwd getter for relative path resolution
     this.fsShim = createFsShim(vfs, () => this.process.cwd());
     this.options = options;
