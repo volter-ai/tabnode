@@ -126,6 +126,11 @@ export interface StartedRun {
   writeStdin(bytes: Uint8Array): void | Promise<void>;
   /** The parent closed the child's fd 0. */
   endStdin(): void;
+  /**
+   * The parent's handle on this child was ref'd or unref'd. A child another runs (a host's program) is waited for by
+   * that host on the parent's behalf, and only while the handle is ref'd: `unref()` is how a program stops waiting.
+   */
+  setRef?(held: boolean): void;
 }
 
 /**
@@ -246,10 +251,12 @@ export class Process implements OwnedHandle {
 
   ref(): void {
     refHandle(this);
+    this.run?.setRef?.(true);
   }
 
   unref(): void {
     unrefHandle(this);
+    this.run?.setRef?.(false);
   }
 
   hasRef(): boolean {
@@ -352,6 +359,8 @@ export class Process implements OwnedHandle {
     }
 
     this.run = runner.start(request);
+    // A handle unref'd before its child started is not waited for either.
+    if (!handleHasRef(this)) this.run.setRef?.(false);
     // The number the parent reads off the handle is the child's own
     // `process.pid`, made at its fork, as it is in Node.
     this.pid = this.run.pid;

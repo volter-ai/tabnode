@@ -1708,7 +1708,11 @@ interface ChildProcessHostRequest {
   stdinStream: AsyncIterable<Uint8Array>;
   terminal?: RunStreams['terminal'];
   signal: AbortSignal;
-  hold: { value: boolean };
+  /**
+   * Whether the parent still waits for this child: false once its handle is unref'd, true again if ref'd. `changed`
+   * is the host's to set, and is called after each change, for a host that must tell another realm.
+   */
+  hold: { value: boolean; changed?: () => void };
   onStdout: (data: string) => void;
   onStderr: (data: string) => void;
   /**
@@ -1782,6 +1786,8 @@ interface CommandRun {
   descriptors?: { fd: number; pipe: Pipe }[];
   /** Told when the host's process host takes the run: its end is then the host's, not the engine's. */
   onHostRun?: () => void;
+  /** The parent's wait for this run, as its handle's ref state has it (`ChildProcessHostRequest.hold`). */
+  hold?: { value: boolean; changed?: () => void };
 }
 
 /**
@@ -1846,7 +1852,7 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
         stdinStream: run.stdinStream ?? emptyStdinStream(),
         ...(run.terminal ? { terminal: run.terminal } : {}),
         signal: controller.signal,
-        hold: { value: true },
+        hold: run.hold ?? { value: true },
         onStdout,
         onStderr,
         ...byteSinks,
@@ -2259,6 +2265,8 @@ function startChildRun(request: RunRequest): StartedRun {
   let hosted = false;
   /** The host's process host runs this child (a program pack, a WALI image): it says when the child ends. */
   let hostRun = false;
+  // The parent's wait for a child a host runs, read by that host: its handle's ref state (`Process.ref`, `unref`).
+  const hold: { value: boolean; changed?: () => void } = { value: true };
   /** What the parent wrote to the child's fd 0 before the command began. */
   const initialStdin: Uint8Array[] = [];
 
@@ -2403,6 +2411,7 @@ function startChildRun(request: RunRequest): StartedRun {
           onStderrBytes: streams.onStderrBytes,
           descriptors: request.descriptors,
           onHostRun: () => { hostRun = true; },
+          hold,
         }));
       } catch (error) {
         outcome = { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
@@ -2453,6 +2462,11 @@ function startChildRun(request: RunRequest): StartedRun {
       if (!started) { initialStdin.push(bytes); return; }
       pendingStdin.push(bytes);
       return flushStdin();
+    },
+    setRef(held: boolean): void {
+      if (hold.value === held) return;
+      hold.value = held;
+      hold.changed?.();
     },
     endStdin(): void {
       if (hostTerminal || liveInput) { pendingStdin.push(null); wakeInput?.(); wakeInput = undefined; return; }
