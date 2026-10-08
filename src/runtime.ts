@@ -2534,6 +2534,19 @@ function createRequire(
     }
     return resolveModule(id, currentDir);
   };
+  // Node's `require.resolve.paths(request)` (lib/internal/modules/helpers.js makeRequireFunction, over
+  // Module._resolveLookupPaths): the directories a lookup of `request` from this module would search. Null for a
+  // builtin; for a relative request the requiring module's own directory; otherwise each node_modules above it.
+  // Every require the engine makes is made here (a module's own, `createRequire`'s), so each has it: ts-node reads
+  // it on a require from `createRequire` before it resolves anything ("req.resolve.paths is not a function").
+  (require.resolve as unknown as { paths: (request: string) => string[] | null }).paths = (request: string): string[] | null => {
+    if (typeof request !== 'string') throw Object.assign(new TypeError(`The "request" argument must be of type string. Received ${request === null ? 'null' : typeof request}`), { code: 'ERR_INVALID_ARG_TYPE' });
+    if (request === 'fs' || request === 'process' || request.startsWith('node:') || moduleShim.builtinModules.includes(request)) return null;
+    const second = request.charAt(1);
+    const relative = request.charAt(0) === '.' && (request.length === 1 || second === '/' || (second === '.' && (request.length === 2 || request.charAt(2) === '/')));
+    if (relative) return [currentDir];
+    return __substrateModule()._nodeModulePaths(currentDir);
+  };
 
   require.cache = moduleCache;
   (require as any).__requireRaw = requireRaw;
