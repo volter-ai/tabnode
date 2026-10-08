@@ -13,6 +13,10 @@
  * The names are `Object.keys(require('node:crypto')).sort()` on Node v24.21.0, the line of the library this engine
  * carries: `node scripts/crypto-exports.mjs` prints them from the Node that runs it and says how they differ from
  * this list. A library bump re-runs it; a name it adds fails the compile until it is given a row.
+ *
+ * Beside these 70, Node has four legacy names that are not enumerable and so not among its keys: pseudoRandomBytes,
+ * prng and rng (accessors answering randomBytes) and fips (an accessor over getFips and setFips). The module
+ * defines them the same way (crypto.ts).
  */
 export const NODE_CRYPTO_EXPORTS = {
   Certificate: 'throws',

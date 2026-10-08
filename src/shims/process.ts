@@ -12,8 +12,9 @@ import { loadNodeLibFor } from '../node-lib/load';
 import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
 import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, type ProcessToken } from '../process-tokens';
-import { NODE_LTS_VERSION, nodeVersions } from '../node-lib/node-versions';
-import { freemem as osFreemem } from './os';
+import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
+import { freemem as osFreemem, userInfo as osUserInfo } from './os';
+import { version as acornVersion } from 'acorn';
 
 export interface ProcessEnv {
   [key: string]: string | undefined;
@@ -175,7 +176,13 @@ export interface Process {
   platform: string;
   report: { getReport(): Record<string, unknown>; [name: string]: unknown };
   version: string;
-  versions: { node: string; v8: string; uv: string; webcontainer?: string; openssl?: string };
+  versions: { node: string; v8: string; uv: string; webcontainer?: string; openssl?: string; acorn?: string };
+  release?: { name: string; lts?: string; sourceUrl: string; headersUrl: string };
+  getuid?: () => number;
+  geteuid?: () => number;
+  getgid?: () => number;
+  getegid?: () => number;
+  getgroups?: () => number[];
   arch?: string;
   argv: string[];
   argv0: string;
@@ -620,7 +627,18 @@ export function createProcess(options?: {
 
     platform: 'linux', // Pretend to be linux for better compatibility
     version: 'v' + __browserRuntimeNodeVersion(env),
-    versions: nodeVersions(__browserRuntimeNodeVersion(env)),
+    // `acorn` is the parser this engine bundles, by its own version; the library's internals do not read it.
+    versions: { ...nodeVersions(__browserRuntimeNodeVersion(env)), acorn: acornVersion },
+    // What a program reads to learn it is Node at all: lib0, y-protocols, the `ai` SDK, sharp and OpenTelemetry
+    // test `process.release.name`, and with no `release` each took its not-Node branch without a word.
+    release: nodeRelease(__browserRuntimeNodeVersion(env)),
+    // The account every process of the tab runs as: the kernel's (uid and gid 1000, one supplementary group, its
+    // own), which is what `os.userInfo()` answers here too. One function is asked, so the two cannot disagree.
+    getuid: (): number => osUserInfo().uid,
+    geteuid: (): number => osUserInfo().uid,
+    getgid: (): number => osUserInfo().gid,
+    getegid: (): number => osUserInfo().gid,
+    getgroups: (): number[] => [osUserInfo().gid],
     arch: 'x64',
 
     // `process.report.getReport()`: what a program reads to learn the C library it runs on (detect-libc, and

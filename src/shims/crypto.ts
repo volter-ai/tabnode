@@ -1521,7 +1521,17 @@ const nodeExports = {
   subtle: crypto.subtle,
 } satisfies Record<NodeCryptoExport, unknown>;
 // `unsupported` is this engine's own, beside Node's names: what an implemented export throws for an algorithm it lacks.
-return { ...nodeExports, unsupported };
+const module = { ...nodeExports, unsupported };
+// Node's four legacy names, as Node has them: not enumerable (so not among its 70 keys), three of them accessors that
+// answer randomBytes, and `fips` an accessor over getFips and setFips. uid2 and tmp still call
+// pseudoRandomBytes.
+Object.defineProperties(module, {
+  pseudoRandomBytes: { get: () => randomBytes, set: (value: unknown) => { Object.defineProperty(module, 'pseudoRandomBytes', { value, enumerable: false, configurable: true, writable: true }); }, enumerable: false, configurable: true },
+  prng: { get: () => randomBytes, set: (value: unknown) => { Object.defineProperty(module, 'prng', { value, enumerable: false, configurable: true, writable: true }); }, enumerable: false, configurable: true },
+  rng: { get: () => randomBytes, set: (value: unknown) => { Object.defineProperty(module, 'rng', { value, enumerable: false, configurable: true, writable: true }); }, enumerable: false, configurable: true },
+  fips: { get: getFips, set: (value: unknown) => { nodeExports.setFips(value); }, enumerable: false, configurable: true },
+});
+return module as typeof module & { pseudoRandomBytes: typeof randomBytes; prng: typeof randomBytes; rng: typeof randomBytes; fips: number };
 
 }
 const cryptoModule = createCryptoModule();
