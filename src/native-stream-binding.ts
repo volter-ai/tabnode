@@ -48,6 +48,24 @@ function tally(operation: string, ms: number, bytes?: number): void {
   for (let at = 0; at < OVER_MS.length && ms >= OVER_MS[at]!; at++) count.over[at]! += 1;
   if (bytes !== undefined) count.bytes = (count.bytes ?? 0) + bytes;
 }
+/**
+ * An instrument: a stream's round trips. One begins at the first write after the stream last delivered bytes (or
+ * since it opened) and ends at the next bytes it delivers; writes sent before any answer are one round trip. Its
+ * time is split where this realm can see: until the owner said the first write was written (`toWrittenMs`: this
+ * realm to the owner's thread and into the socket or pipe), and from there to the first byte back (`toFirstByteMs`:
+ * the peer, and the way back). What happens inside the owner and the peer is theirs to say. A stream says its
+ * round trips when it is closed, or with the realm's counts if it never was; one that takes `SLOW_ROUND_TRIP_MS`
+ * is said at once.
+ */
+interface RoundTrips { sentAt?: number; writtenAt?: number; writes: number; count: number; ms: number; max: number; over: number[]; toWrittenMs: number; toFirstByteMs: number }
+const roundTrips = new Map<number, RoundTrips>();
+const SLOW_ROUND_TRIP_MS = 64;
+function sayRoundTrips(id: number, when: string, pid?: number | null): void {
+  const trips = roundTrips.get(id);
+  roundTrips.delete(id);
+  if (!trips || trips.count === 0) return;
+  console.log('[stream-calls]', JSON.stringify({ event: 'round-trips', when, at: Date.now(), ...(pid === undefined ? {} : { pid }), id, roundTrips: trips.count, writes: trips.writes, ms: Math.round(trips.ms), maxMs: Math.round(trips.max), [`over ${OVER_MS.join('/')} ms`]: trips.over, toWrittenMs: Math.round(trips.toWrittenMs), toFirstByteMs: Math.round(trips.toFirstByteMs), unanswered: trips.sentAt === undefined ? 0 : 1 }));
+}
 function counting(next: NativeStreamTransport): NativeStreamTransport {
   return {
     limits: next.limits,
@@ -57,6 +75,7 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
       finally {
         const ms = performance.now() - from;
         tally(operation.operation, ms);
+        if (operation.operation === 'close' && 'id' in operation) sayRoundTrips(operation.id, 'close');
         if (ms >= SLOW_CALL_MS) console.log('[stream-calls]', JSON.stringify({ event: 'slow', at: Date.now(), operation: operation.operation, id: 'id' in operation ? operation.id : null, blockedMs: Math.round(ms) }));
       }
     },
@@ -64,8 +83,17 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
     write(id, bytes, handle) {
       const from = performance.now();
       const size = bytes.byteLength;
+      const trips: RoundTrips = roundTrips.get(id) ?? { writes: 0, count: 0, ms: 0, max: 0, over: OVER_MS.map(() => 0), toWrittenMs: 0, toFirstByteMs: 0 };
+      roundTrips.set(id, trips);
+      trips.writes += 1;
+      const opens = trips.sentAt === undefined;
+      if (opens) { trips.sentAt = from; trips.writtenAt = undefined; }
       const written = next.write(id, bytes, handle);
-      const done = (): void => tally('write', performance.now() - from, size);
+      const done = (): void => {
+        const now = performance.now();
+        tally('write', now - from, size);
+        if (opens && trips.sentAt === from && trips.writtenAt === undefined) trips.writtenAt = now;
+      };
       written.then(done, done);
       return written;
     },
@@ -74,6 +102,17 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
         const kind = event.type === 'read' ? (event.bytes ? 'read' : event.handle ? 'read-handle' : `read-status-${event.status}`) : event.type;
         streamEvents.set(kind, (streamEvents.get(kind) ?? 0) + 1);
         if (event.type === 'read' && event.bytes) streamEvents.set('read-bytes', (streamEvents.get('read-bytes') ?? 0) + event.bytes.byteLength);
+        if (event.type === 'read' && event.bytes) {
+          const trips = roundTrips.get(event.id);
+          if (trips && trips.sentAt !== undefined) {
+            const now = performance.now(), ms = now - trips.sentAt, writtenAt = trips.writtenAt ?? now;
+            trips.count += 1; trips.ms += ms; if (ms > trips.max) trips.max = ms;
+            for (let at = 0; at < OVER_MS.length && ms >= OVER_MS[at]!; at++) trips.over[at]! += 1;
+            trips.toWrittenMs += writtenAt - trips.sentAt; trips.toFirstByteMs += now - writtenAt;
+            if (ms >= SLOW_ROUND_TRIP_MS) console.log('[stream-calls]', JSON.stringify({ event: 'slow-round-trip', at: Date.now(), id: event.id, ms: Math.round(ms), toWrittenMs: Math.round(writtenAt - trips.sentAt), toFirstByteMs: Math.round(now - writtenAt) }));
+            trips.sentAt = undefined; trips.writtenAt = undefined;
+          }
+        }
         listener(event);
       });
     },
@@ -81,6 +120,7 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
 }
 /** Says the counts so far, once per change: a process says them at its exit. */
 export function sayNativeStreamCounts(pid: number | null, when: string): void {
+  for (const id of [...roundTrips.keys()]) sayRoundTrips(id, when, pid);
   let total = 0;
   for (const count of streamCounts.values()) total += count.calls;
   if (total === streamCountsSaid) return;
