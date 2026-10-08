@@ -1762,6 +1762,18 @@ function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string): boolean {
  * consults it before its own path.
  */
 const __substrateModuleClasses = new WeakMap<Record<string, Module>, any>();
+/** What a module being loaded carries past its extension's handler, whose signature has no room for it. */
+const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined } }>();
+/** Node's `findLongestRegisteredExtension`: the longest registered extension the file's name ends with, else `.js`. */
+function __substrateRegisteredExtension(filename: string, extensions: Record<string, unknown>): string {
+  const name = filename.slice(filename.lastIndexOf('/') + 1);
+  for (let index = name.indexOf('.'); index !== -1; index = name.indexOf('.', index + 1)) {
+    if (index === 0) continue;
+    const extension = name.slice(index);
+    if (extensions[extension]) return extension;
+  }
+  return '.js';
+}
 // Node shares successful path resolutions between a process's modules
 // (Module._pathCache). A cache per require repeated sibling imports' tree
 // probes: 0.863 s inclusive resolveModule in Dub's retained World host.
@@ -1821,7 +1833,7 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     const file = typeof filename === 'string' && filename ? filename : (this.filename || this.id || '');
     this.filename = file;
     if (!Array.isArray(this.paths) || this.paths.length === 0) this.paths = Module._nodeModulePaths(pathShim.dirname(file));
-    requireFor(this).__compileRaw(this, String(content), file, pathShim.dirname(file));
+    (Module.__substrateCompileRaw ?? ((module: any, text: string, name: string, dir: string) => requireFor(module).__compileRaw(module, text, name, dir)))(this, String(content), file, pathShim.dirname(file));
     return this.exports;
   };
   Module._resolveFilename = function (request: string, parent: any) { return requireFor(parent).__resolveRaw(request); };
@@ -1836,13 +1848,21 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   };
   Module.__substrateLoad = Module._load;
   Module._cache = moduleCache;
-  // Node's extension loaders, what require.extensions names. A loader here
-  // runs the file through the engine; the engine's own loader does not yet
-  // consult these, so a program that wraps one to transpile is honored only
-  // where it calls the loader itself.
+  // Node's extension loaders, what `require.extensions` names, and the loader's one path: it loads every file by
+  // calling the entry for the file's extension. The built-in ones are the engine's load step, which compiles through
+  // `module._compile` as Node's do; a program that registers one (ts-node's `.ts`, @babel/register's `.js`) replaces
+  // the entry and is called in its place, and usually chains to the one it replaced. `.ts`, `.mts` and `.cts` are
+  // built in as in Node 24, where they strip types; a registered `.ts` handler replaces that, as it does there.
+  const builtinHandler = (module: any, filename: string) => {
+    // Before this run has loaded any file (a program calling a handler itself), the load step is a loader's made here.
+    (Module.__substrateBuiltinLoad ?? ((loading: any, name: string) => requireFor(loading).__builtinLoad(loading, name)))(module, filename);
+  };
   Module._extensions = Object.assign(Object.create(null), {
-    ".js": (module: any, filename: string) => { module.exports = requireFor(module).__requireRaw(filename); module.loaded = true; },
-    ".json": (module: any, filename: string) => { module.exports = requireFor(module).__requireRaw(filename); module.loaded = true; },
+    ".js": builtinHandler,
+    ".json": builtinHandler,
+    ".ts": builtinHandler,
+    ".mts": builtinHandler,
+    ".cts": builtinHandler,
     ".node": (module: any, filename: string) => { throw Object.assign(new Error(`Cannot load native addon ${filename} in a tab.`), { code: "ERR_DLOPEN_FAILED" }); },
   });
   Module._pathCache = Object.create(null);
@@ -2135,6 +2155,27 @@ function createRequire(
     // second time: two live copies of a module that holds state, such as Next's
     // request store, and the second copy empty.
 
+    // Node's `Module.prototype.load`: the handler registered for the file's extension loads it, and that is the one
+    // path. The built-in handlers are the engine's own load step (`builtinLoad`, below) and compile through
+    // `module._compile`; a handler a program registered (ts-node, @babel/register, pirates) is called here because
+    // it is the one in the table, and the `_compile` it replaced on the module is called because the handler it
+    // chains to calls it.
+    if (resolvedAs) __substrateLoading.set(module, { resolvedAs });
+    const Mod = __substrateModule();
+    Mod.__substrateBuiltinLoad = builtinLoad;
+    Mod.__substrateCompileRaw = compileRaw;
+    try { Mod._extensions[__substrateRegisteredExtension(resolvedPath, Mod._extensions)](module, resolvedPath); }
+    finally { __substrateLoading.delete(module); }
+    return module;
+  };
+
+  /**
+   * The built-in handlers' load step (Node's `Module._extensions['.js']`, `['.json']` and, since Node 24, `['.ts']`):
+   * the file's source and format, through the run's load hooks where it has any; JSON parsed; anything else
+   * compiled through `module._compile`, which a program may have replaced on this module.
+   */
+  const builtinLoad = (module: Module, resolvedPath: string): void => {
+    const resolvedAs = __substrateLoading.get(module)?.resolvedAs;
     // A module's source, and the format it is compiled in, are the load step.
     // Where a run has registered load hooks the chain answers both and this
     // read is its last link, which is where Node's `loadSource` calls
@@ -2160,19 +2201,32 @@ function createRequire(
     if (format === 'json' || (format === undefined && resolvedPath.endsWith('.json'))) {
       module.exports = JSON.parse(source === undefined || source === null ? vfs.readFileSync(resolvedPath, 'utf8') : String(source));
       module.loaded = true;
-      return module;
+      return;
     }
 
     // Read and execute JS file; a data: URL carries its own source.
     const rawCode = source === undefined || source === null ? defaultSource() : String(source);
-    const dirname = resolvedPath.startsWith('data:') ? currentDir : pathShim.dirname(resolvedPath);
+    // A data: URL is no file: it has no extension's handler to answer to and no directory of its own.
+    if (resolvedPath.startsWith('data:')) { runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, currentDir); return; }
+    // What `_compile` is handed, kept beside the module so the engine's own compile knows the format a hook named
+    // and whether the text is still the file's own (a body the image prepared is taken only for that).
+    __substrateLoading.set(module, { ...(resolvedAs ? { resolvedAs } : {}), compiling: { raw: rawCode, format } });
+    (module as Module & { _compile(content: string, filename: string): unknown })._compile(rawCode, resolvedPath);
+  };
 
-    if (format === undefined && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }) && vfs.existsSync(PREPARED_MODULES_DIR)) {
+  /** `Module.prototype._compile`'s own work: the engine's pipeline over `content`, as the module at `filename`. */
+  const compileRaw = (module: Module, content: string, filename: string, dirname: string): void => {
+    const compiling = __substrateLoading.get(module)?.compiling;
+    const format = compiling?.format;
+    const rawCode = content;
+    const resolvedPath = filename;
+    // A body prepared for the file's own text; a program's `_compile` that handed on other text compiles that text.
+    if (compiling?.raw === content && format === undefined && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }) && vfs.existsSync(PREPARED_MODULES_DIR)) {
       const key = preparedModuleKey(rawCode, resolvedPath);
       const prepared = key ? `${PREPARED_MODULES_DIR}/${key}` : undefined;
       if (prepared && vfs.existsSync(prepared)) {
         runModuleBody(module, vfs.readFileSync(prepared, 'utf8'), resolvedPath, dirname, true);
-        return module;
+        return;
       }
       // A file the image carries no body for (a package installed in the
       // tab) is prepared here once and kept under the same name, so the next
@@ -2186,11 +2240,10 @@ function createRequire(
         try { vfs.writeFileSync(prepared, body); }
         catch { /* a process that may not write there prepares its own */ }
         runModuleBody(module, body, resolvedPath, dirname, true);
-        return module;
+        return;
       }
     }
     runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, dirname);
-    return module;
   };
 
   /**
@@ -2581,7 +2634,8 @@ function createRequire(
 
   require.cache = moduleCache;
   (require as any).__requireRaw = requireRaw;
-  (require as any).__compileRaw = (module: Module, content: string, filename: string, dir: string): void => runModuleBody(module, prepareModuleCode(content, filename), filename, dir);
+  (require as any).__compileRaw = compileRaw;
+  (require as any).__builtinLoad = builtinLoad;
   (require as any).__resolveRaw = (id: string) => resolveModule(id, currentDir);
   // The doors `module.register`'s chain reaches this loader through: the run's
   // hooks, the engine's own resolution in the URL terms a hook speaks, the
