@@ -173,6 +173,7 @@ export interface Process {
   cwd: () => string;
   chdir: (directory: string) => void;
   platform: string;
+  report: { getReport(): Record<string, unknown>; [name: string]: unknown };
   version: string;
   versions: { node: string; v8: string; uv: string; webcontainer?: string; openssl?: string };
   arch?: string;
@@ -621,6 +622,35 @@ export function createProcess(options?: {
     version: 'v' + __browserRuntimeNodeVersion(env),
     versions: nodeVersions(__browserRuntimeNodeVersion(env)),
     arch: 'x64',
+
+    // `process.report.getReport()`: what a program reads to learn the C library it runs on (detect-libc, and
+    // through it sharp, node-gyp-build and every package that picks a prebuilt binary by libc family). Node fills
+    // `header.glibcVersionRuntime` from the libc it is linked to and leaves it out on musl. This process is linked
+    // to none, so the answer is its image's: the base image's own `/usr/bin/ldd` in this process's tree, the file
+    // a Linux program reads for the same question. No such file, or one that is not glibc's: the field is absent,
+    // as on musl. Nothing here names a family the tree does not state.
+    report: {
+      compact: false, directory: '', filename: '', excludeNetwork: false,
+      reportOnFatalError: false, reportOnSignal: false, reportOnUncaughtException: false, signal: 'SIGUSR2',
+      getReport(): Record<string, unknown> {
+        let glibc: string | undefined;
+        try {
+          const tree = (proc as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.run.vfs')] as { readFileSync?: (path: string, encoding: 'utf8') => string } | undefined;
+          const ldd = tree?.readFileSync?.('/usr/bin/ldd', 'utf8');
+          if (ldd !== undefined && ldd.includes('GNU C Library')) glibc = /LIBC[a-z0-9 \-).]*?(\d+\.\d+)/iu.exec(ldd)?.[1];
+        } catch { /* a tree with no ldd states no libc */ }
+        return {
+          header: {
+            reportVersion: 5, event: 'JavaScript API', trigger: 'GetReport', filename: null,
+            nodejsVersion: proc.version, ...(glibc ? { glibcVersionRuntime: glibc, glibcVersionCompiler: glibc } : {}),
+            wordSize: 64, arch: proc.arch, platform: proc.platform, componentVersions: { ...proc.versions },
+            cwd: proc.cwd(), commandLine: [...proc.argv], processId: proc.pid,
+          },
+          javascriptStack: { message: 'No stack.', stack: ['Unavailable.'] },
+          sharedObjects: [],
+        };
+      },
+    },
 
     argv: ['node', '/index.js'],
     argv0: 'node',
