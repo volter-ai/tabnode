@@ -10,6 +10,21 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   `hold.changed`, the tree's `contentDigest`). Once browser-substrate
   implements all four they become required, and the paths without them go.
 
+## v0.9.1 — unreleased
+
+Fixed
+- A loopback `tls.connect` calls the caller's `checkServerIdentity` once the
+  peer has answered, with the name asked for and the peer's certificate, and
+  ends the connection with an Error it returns, as Node does. The shim never
+  called it: a program that counts on being asked, or refuses a peer there,
+  was not. Node's test-tls-env-extra-ca passed before v0.9.0 only because its
+  child's failed exit check did not reach its exit status.
+- A stream over a wrapped Duplex (`DuplexStreamHandle`) calls the Duplex's own
+  `write` as program code. Since the binding's deferred work stopped being
+  bracketed as guest execution (v0.9.0), that call ran at depth zero, and a
+  binding callback made inside it took itself for the outermost and drained
+  the tick queue while the write was still running.
+
 ## v0.9.0 — 2026-10-08
 
 The engine answers more of Node 24.21.0's surface and several things every
