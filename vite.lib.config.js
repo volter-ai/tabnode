@@ -91,6 +91,13 @@ export default defineConfig({
         },
       },
     },
+    // Every CommonJS dependency is wrapped the one way, in a function run at its first `require`, as Node runs
+    // it. The plugin's default here (Vite 5: `strictRequires: "auto"`) wraps a module only where it finds it in a
+    // require cycle or required conditionally, and what it finds depends on the order modules finish loading,
+    // which is not fixed: two packs of one commit differed in one dependency's wrap (`var functionApply = …`
+    // hoisted in one, `requireFunctionApply()` in the other), so in the worker bundle's content-hashed name, so in
+    // `index.mjs`, whose digest is the engine's ABI label. The worker's own bundle is built with these options too.
+    commonjsOptions: { strictRequires: true },
     sourcemap: false,
     minify: false,
   },
