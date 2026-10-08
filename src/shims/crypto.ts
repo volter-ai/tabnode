@@ -24,6 +24,8 @@ import {
 import { cryptoConstants as constants } from './crypto-constants';
 import { cipherNames, createCipherClasses } from './crypto-cipher';
 import type { NodeCryptoExport, NodeCryptoUnavailable } from './crypto-exports';
+import * as asymmetric from './crypto-ec';
+import type { AsymmetricKey, DsaEncoding, KeyEncodingType } from './crypto-ec';
 export { constants };
 
 interface DigestState {
@@ -746,6 +748,16 @@ function sign(
 ): Buffer | void {
   // Get the actual key material and algorithm
   const keyInfo = extractKeyInfo(key);
+  // An EC or Ed25519 key signs here and now; the callback form answers later, as Node's does.
+  if (keyInfo.asymmetric) {
+    const bytes = cryptoBytes(data, undefined, true);
+    if (!callback) return signAsymmetric(algorithm, bytes, keyInfo.asymmetric, dsaEncodingOf(key));
+    let made: Buffer;
+    try { made = signAsymmetric(algorithm, bytes, keyInfo.asymmetric, dsaEncodingOf(key)); }
+    catch (error) { setTimeout(() => callback(error as Error, null as unknown as Buffer), 0); return; }
+    setTimeout(() => callback(null, made), 0);
+    return;
+  }
   const alg = algorithm || keyInfo.algorithm;
 
   if (!alg) {
@@ -782,6 +794,12 @@ function verify(
   callback?: (error: Error | null, result: boolean) => void
 ): boolean | void {
   const keyInfo = extractKeyInfo(key);
+  if (keyInfo.asymmetric) {
+    const answer = verifyAsymmetric(algorithm, cryptoBytes(data, undefined, true), keyInfo.asymmetric, cryptoBytes(signature, undefined, true), dsaEncodingOf(key));
+    if (!callback) return answer;
+    setTimeout(() => callback(null, answer), 0);
+    return;
+  }
   const alg = algorithm || keyInfo.algorithm;
 
   if (!alg) {
@@ -833,15 +851,11 @@ class Sign extends EventEmitter {
   sign(privateKey: KeyLike, outputEncoding?: string): Buffer | string {
     const combined = concatBuffers(this.#data);
     const keyInfo = extractKeyInfo(privateKey);
-    const signature = signSync(this.#algorithm, combined, keyInfo);
+    const signature = keyInfo.asymmetric
+      ? signAsymmetric(this.#algorithm, combined, keyInfo.asymmetric, dsaEncodingOf(privateKey))
+      : signSync(this.#algorithm, combined, keyInfo);
 
-    if (outputEncoding === 'base64') {
-      return btoa(String.fromCharCode(...signature));
-    }
-    if (outputEncoding === 'hex') {
-      return Array.from(signature).map(b => b.toString(16).padStart(2, '0')).join('');
-    }
-    return signature;
+    return outputEncoding ? digestResult(signature, outputEncoding) : signature;
   }
 }
 
@@ -864,19 +878,11 @@ class Verify extends EventEmitter {
     const combined = concatBuffers(this.#data);
     const keyInfo = extractKeyInfo(publicKey);
 
-    let sig: Buffer;
-    if (typeof signature === 'string') {
-      if (signatureEncoding === 'base64') {
-        sig = Buffer.from(atob(signature));
-      } else if (signatureEncoding === 'hex') {
-        sig = Buffer.from(signature.match(/.{2}/g)!.map(byte => parseInt(byte, 16)));
-      } else {
-        sig = Buffer.from(signature);
-      }
-    } else {
-      sig = signature;
-    }
+    // The signature's bytes by the encoding named: `atob` into `Buffer.from(string)` re-encoded every byte above
+    // 0x7f as two, so no base64 signature (what jsonwebtoken's jwa passes) could verify.
+    const sig = typeof signature === 'string' ? Buffer.from(cryptoBytes(signature, signatureEncoding ?? 'utf8')) : signature;
 
+    if (keyInfo.asymmetric) return verifyAsymmetric(this.#algorithm, combined, keyInfo.asymmetric, sig, dsaEncodingOf(publicKey));
     return verifySync(this.#algorithm, combined, keyInfo, sig);
   }
 }
@@ -888,16 +894,18 @@ class Verify extends EventEmitter {
 let keyInfoOf: (key: KeyObject) => KeyInfo;
 class KeyObject {
   static {
-    keyInfoOf = (key) => ({ keyData: key.#_keyData, algorithm: key.#_algorithm, type: key.#_type, format: 'raw' });
+    keyInfoOf = (key) => ({ keyData: key.#_keyData, algorithm: key.#_algorithm, type: key.#_type, format: key.#_asymmetric ? 'pem' : 'raw', ...(key.#_asymmetric ? { asymmetric: key.#_asymmetric } : {}) });
   }
+  #_asymmetric?: AsymmetricKey;
   #_keyData: CryptoKey | Uint8Array;
   #_type: 'public' | 'private' | 'secret';
   #_algorithm?: string;
 
-  constructor(type: 'public' | 'private' | 'secret', keyData: CryptoKey | Uint8Array, algorithm?: string) {
+  constructor(type: 'public' | 'private' | 'secret', keyData: CryptoKey | Uint8Array, algorithm?: string, asymmetricKey?: AsymmetricKey) {
     this.#_type = type;
     this.#_keyData = keyData;
     this.#_algorithm = algorithm;
+    this.#_asymmetric = asymmetricKey;
   }
 
   get type(): string {
@@ -906,6 +914,7 @@ class KeyObject {
 
   get asymmetricKeyType(): string | undefined {
     if (this.#_type === 'secret') return undefined;
+    if (this.#_asymmetric) return this.#_asymmetric.kind;
     // Infer from algorithm
     if (this.#_algorithm?.includes('RSA')) return 'rsa';
     if (this.#_algorithm?.includes('EC') || this.#_algorithm?.includes('ES')) return 'ec';
@@ -921,7 +930,21 @@ class KeyObject {
     return undefined;
   }
 
-  export(options?: { type?: string; format?: string }): Buffer | string {
+  get asymmetricKeyDetails(): Record<string, unknown> | undefined {
+    if (this.#_type === 'secret') return undefined;
+    const held = this.#_asymmetric;
+    return held?.kind === 'ec' ? { namedCurve: asymmetric.nodeCurveName(held.curve) } : {};
+  }
+
+  equals(other: unknown): boolean {
+    if (!(other instanceof KeyObject) || other.#_type !== this.#_type) return false;
+    const mine = this.#_asymmetric, theirs = other.#_asymmetric;
+    if (mine && theirs) return mine.kind === theirs.kind && timingSafeEqual(mine.point, theirs.point);
+    return this.#_keyData instanceof Uint8Array && other.#_keyData instanceof Uint8Array && timingSafeEqual(this.#_keyData, other.#_keyData);
+  }
+
+  export(options?: { type?: string; format?: string }): Buffer | string | Record<string, string> {
+    if (this.#_asymmetric) return exportAsymmetric(this.#_asymmetric, this.#_type === 'private' ? 'private' : 'public', options ?? {});
     // Simplified export - returns the key data
     if (this.#_keyData instanceof Uint8Array) {
       return Buffer.from(this.#_keyData);
@@ -938,12 +961,56 @@ function createSecretKey(key: BinaryLike | ArrayBufferView, encoding?: string): 
 
 function createPublicKey(key: KeyLike): KeyObject {
   const keyInfo = extractKeyInfo(key);
+  // A private key gives its public key, as Node's does.
+  if (keyInfo.asymmetric) return keyObjectOf(asymmetric.publicOf(keyInfo.asymmetric), 'public');
+  notAKey(key, keyInfo);
   return new KeyObject('public', keyInfo.keyData as Uint8Array, keyInfo.algorithm);
 }
 
 function createPrivateKey(key: KeyLike): KeyObject {
   const keyInfo = extractKeyInfo(key);
+  if (keyInfo.asymmetric) {
+    if (!keyInfo.asymmetric.secret) throw Object.assign(new TypeError('The key is a public key; a private key is required.'), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+    return keyObjectOf(keyInfo.asymmetric, 'private');
+  }
+  notAKey(key, keyInfo);
   return new KeyObject('private', keyInfo.keyData as Uint8Array, keyInfo.algorithm);
+}
+
+/**
+ * Bytes or text that are no key at all are refused, with OpenSSL's decoder error as Node passes it on. A caller
+ * that tries a key as asymmetric first and as a secret on the refusal depends on it: jsonwebtoken does, and an
+ * HS256 secret answered here as a "private key" was then refused as "must be a symmetric key".
+ */
+function notAKey(key: KeyLike, keyInfo: KeyInfo): void {
+  if (key instanceof KeyObject || keyInfo.format !== 'raw') return;
+  throw Object.assign(new Error('error:1E08010C:DECODER routines::unsupported'), { code: 'ERR_OSSL_UNSUPPORTED' });
+}
+
+/** The JOSE name of the signature an EC or Ed25519 key makes: what this module's WebCrypto paths key their algorithm on. */
+function asymmetricAlgorithm(key: AsymmetricKey): string {
+  return key.kind === 'ed25519' ? 'Ed25519' : key.curve === 'P-256' ? 'ES256' : key.curve === 'P-384' ? 'ES384' : 'ES512';
+}
+function keyObjectOf(key: AsymmetricKey, kind: 'public' | 'private'): KeyObject {
+  const held = kind === 'public' ? asymmetric.publicOf(key) : key;
+  return new KeyObject(kind, asymmetric.derOf(held, kind === 'public' ? 'spki' : 'pkcs8'), asymmetricAlgorithm(key), held);
+}
+/** `KeyObject.export` and a key pair's encodings: Node's choices and its refusals (lib/internal/crypto/keys.js). */
+function exportAsymmetric(key: AsymmetricKey, kind: 'public' | 'private', options: { type?: string; format?: string }): Buffer | string | Record<string, string> {
+  if (options.format === 'jwk') return asymmetric.jwkOf(key, kind === 'private');
+  if (kind === 'private' && options.type === 'sec1' && key.kind !== 'ec') {
+    throw Object.assign(new Error('The selected key encoding sec1 can only be used for EC keys.'), { code: 'ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS' });
+  }
+  const allowed: KeyEncodingType[] = kind === 'public' ? ['spki'] : key.kind === 'ec' ? ['pkcs8', 'sec1'] : ['pkcs8'];
+  if (!allowed.includes(options.type as KeyEncodingType)) {
+    throw Object.assign(new TypeError(`The property 'options.type' is invalid. Received ${options.type === undefined ? 'undefined' : `'${options.type}'`}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  }
+  const der = asymmetric.derOf(key, options.type as KeyEncodingType);
+  if (options.format === 'der') return Buffer.from(der);
+  if (options.format !== 'pem') {
+    throw Object.assign(new TypeError(`The property 'options.format' is invalid. Received ${options.format === undefined ? 'undefined' : `'${options.format}'`}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  }
+  return asymmetric.pemOf(der, options.type as KeyEncodingType);
 }
 
 // ============================================================================
@@ -1017,11 +1084,40 @@ async function generateKeyPairAsync(type: string, options: KeyPairOptions): Prom
   return { publicKey, privateKey };
 }
 
+/**
+ * A key pair made here and now, for the types whose arithmetic the engine carries (crypto-ec.ts): 'ec' over P-256,
+ * P-384 and P-521, and 'ed25519'. Undefined for a type it does not carry, which stays WebCrypto's and asynchronous.
+ */
+function keyPairNow(type: string, options: KeyPairOptions): { publicKey: KeyObject | string | Buffer | Record<string, string>; privateKey: KeyObject | string | Buffer | Record<string, string> } | undefined {
+  let made: AsymmetricKey;
+  if (type === 'ec') {
+    if (typeof options.namedCurve !== 'string') throw new ERR_INVALID_ARG_TYPE('options.namedCurve', 'string', options.namedCurve);
+    const curve = asymmetric.curveNamed(options.namedCurve);
+    if (!curve) throw Object.assign(new TypeError('Invalid EC curve name'), { code: 'ERR_CRYPTO_INVALID_CURVE' });
+    made = asymmetric.generateKey('ec', curve);
+  } else if (type === 'ed25519') made = asymmetric.generateKey('ed25519');
+  else return undefined;
+  return {
+    publicKey: options.publicKeyEncoding ? exportAsymmetric(asymmetric.publicOf(made), 'public', options.publicKeyEncoding) : keyObjectOf(made, 'public'),
+    privateKey: options.privateKeyEncoding ? exportAsymmetric(made, 'private', options.privateKeyEncoding) : keyObjectOf(made, 'private'),
+  };
+}
+
+function generateKeyPairSync(type: string, options: KeyPairOptions = {}): { publicKey: unknown; privateKey: unknown } {
+  const pair = keyPairNow(type, options);
+  if (pair) return pair;
+  // Argument errors are Node's; a type that is valid and not carried is refused by name.
+  keyPairAlgorithm(type, options);
+  return unsupported(`Synchronous generation of a ${type} key pair`);
+}
+
 function generateKeyPair(type: string, options: KeyPairOptions | ((error: Error | null, publicKey?: unknown, privateKey?: unknown) => void), callback?: (error: Error | null, publicKey?: unknown, privateKey?: unknown) => void): void {
   if (typeof options === 'function') { callback = options; options = {}; }
   if (typeof callback !== 'function') throw Object.assign(new TypeError('The "callback" argument must be of type function.'), { code: 'ERR_INVALID_ARG_TYPE' });
   const done = callback;
-  // Argument errors throw synchronously, as Node's do.
+  // Argument errors throw synchronously, as Node's do. A type made here gives KeyObjects that export synchronously.
+  const now = keyPairNow(type, options ?? {});
+  if (now) { setTimeout(() => done(null, now.publicKey, now.privateKey), 0); return; }
   keyPairAlgorithm(type, options ?? {});
   generateKeyPairAsync(type, options ?? {}).then(
     ({ publicKey, privateKey }) => done(null, publicKey, privateKey),
@@ -1029,7 +1125,7 @@ function generateKeyPair(type: string, options: KeyPairOptions | ((error: Error 
   );
 }
 Object.defineProperty(generateKeyPair, Symbol.for('nodejs.util.promisify.custom'), {
-  value: (type: string, options?: KeyPairOptions) => generateKeyPairAsync(type, options ?? {}),
+  value: async (type: string, options?: KeyPairOptions) => keyPairNow(type, options ?? {}) ?? generateKeyPairAsync(type, options ?? {}),
 });
 
 // ============================================================================
@@ -1062,10 +1158,12 @@ function getHashes(): string[] {
 // Internal helpers
 // ============================================================================
 
-type KeyLike = string | Buffer | KeyObject | { key: string | Buffer; passphrase?: string };
+type KeyLike = string | Buffer | KeyObject | { key: string | Buffer | KeyObject | Record<string, unknown>; passphrase?: string; format?: string; type?: string; dsaEncoding?: string };
 
 interface KeyInfo {
   keyData: Uint8Array | CryptoKey;
+  /** An EC or Ed25519 key as its own numbers (crypto-ec.ts): what every synchronous operation on it uses. */
+  asymmetric?: AsymmetricKey;
   algorithm?: string;
   type: 'public' | 'private' | 'secret';
   format: 'pem' | 'der' | 'jwk' | 'raw';
@@ -1111,11 +1209,29 @@ function extractKeyInfo(key: KeyLike): KeyInfo {
     return keyInfoOf(key);
   }
 
-  if (typeof key === 'object' && 'key' in key) {
-    return extractKeyInfo(key.key);
+  if (typeof key === 'object' && key !== null && !ArrayBuffer.isView(key) && 'key' in key) {
+    const inner = key.key;
+    if (inner instanceof KeyObject) return keyInfoOf(inner);
+    // A JWK, or DER whose encoding the caller names.
+    if (key.format === 'jwk' && inner && typeof inner === 'object' && !ArrayBuffer.isView(inner)) {
+      const fromJwk = asymmetric.keyFromJwk(inner as Record<string, unknown>);
+      if (fromJwk) return keyInfoOfAsymmetric(fromJwk);
+      throw Object.assign(new TypeError('Invalid JWK data'), { code: 'ERR_CRYPTO_INVALID_JWK' });
+    }
+    if (key.format === 'der' && ArrayBuffer.isView(inner)) {
+      const view = inner as ArrayBufferView;
+      const fromDer = asymmetric.keyFromDer(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), key.type as KeyEncodingType | undefined);
+      if (fromDer) return keyInfoOfAsymmetric(fromDer);
+    }
+    return extractKeyInfo(inner as string | Buffer);
   }
 
   const keyStr = typeof key === 'string' ? key : key.toString();
+  // An EC or Ed25519 key is read into its own numbers; every other key keeps the bytes, as before.
+  if (keyStr.includes('-----BEGIN')) {
+    const fromPem = asymmetric.keyFromPem(keyStr);
+    if (fromPem) return keyInfoOfAsymmetric(fromPem);
+  }
 
   // Detect PEM format
   if (keyStr.includes('-----BEGIN')) {
@@ -1151,6 +1267,42 @@ function extractKeyInfo(key: KeyLike): KeyInfo {
     type: 'secret',
     format: 'raw',
   };
+}
+
+function keyInfoOfAsymmetric(key: AsymmetricKey): KeyInfo {
+  const kind = key.secret ? 'private' : 'public';
+  return { keyData: asymmetric.derOf(key, kind === 'public' ? 'spki' : 'pkcs8'), asymmetric: key, algorithm: asymmetricAlgorithm(key), type: kind, format: 'pem' };
+}
+
+/** The digest a signature algorithm's name asks for (`sha256`, `SHA-256`, `RSA-SHA256`, `ecdsa-with-SHA384`). */
+function signatureDigest(algorithm: string | null | undefined): string | undefined {
+  if (algorithm === null || algorithm === undefined) return undefined;
+  const found = /sha-?(1|224|256|384|512)\b/i.exec(String(algorithm));
+  if (!found) throw Object.assign(new Error(`Invalid digest: ${String(algorithm)}`), { code: 'ERR_CRYPTO_INVALID_DIGEST' });
+  return `sha${found[1]}`;
+}
+function dsaEncodingOf(key: unknown): DsaEncoding {
+  const named = key && typeof key === 'object' && !ArrayBuffer.isView(key) ? (key as { dsaEncoding?: unknown }).dsaEncoding : undefined;
+  if (named === undefined || named === 'der') return 'der';
+  if (named === 'ieee-p1363') return 'ieee-p1363';
+  throw Object.assign(new TypeError(`The property 'options.dsaEncoding' is invalid. Received '${String(named)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
+}
+/** What a signature over an EC key hashes with: the digest named, or SHA-256 where none is, as OpenSSL's default is. */
+function asymmetricDigest(key: AsymmetricKey, algorithm: string | null | undefined, data: Uint8Array): Uint8Array | undefined {
+  const named = signatureDigest(algorithm);
+  if (key.kind === 'ed25519') {
+    // Ed25519 signs the message itself: OpenSSL refuses a digest, and Node passes its error on.
+    if (named !== undefined) throw Object.assign(new Error('error:1C80007A:Provider routines::invalid digest'), { code: 'ERR_OSSL_INVALID_DIGEST' });
+    return undefined;
+  }
+  return digestEngine(named ?? 'sha256').update(HostBuffer.from(data.buffer as ArrayBuffer, data.byteOffset, data.byteLength)).digest();
+}
+function signAsymmetric(algorithm: string | null | undefined, data: Uint8Array, key: AsymmetricKey, encoding: DsaEncoding): Buffer {
+  if (!key.secret) throw Object.assign(new TypeError('Invalid key object type public, expected private.'), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+  return Buffer.from(asymmetric.signWith(key, data, asymmetricDigest(key, algorithm, data), encoding));
+}
+function verifyAsymmetric(algorithm: string | null | undefined, data: Uint8Array, key: AsymmetricKey, signature: Uint8Array, encoding: DsaEncoding): boolean {
+  return asymmetric.verifyWith(key, data, asymmetricDigest(key, algorithm, data), signature, encoding);
 }
 
 function concatBuffers(buffers: Uint8Array[]): Uint8Array {
@@ -1312,7 +1464,7 @@ const nodeExports = {
   diffieHellman: unavailable('diffieHellman'),
   encapsulate: unavailable('encapsulate'),
   generateKey: unavailable('generateKey'),
-  generateKeyPairSync: unavailable('generateKeyPairSync'),
+  generateKeyPairSync,
   generateKeySync: unavailable('generateKeySync'),
   generatePrime: unavailable('generatePrime'),
   generatePrimeSync: unavailable('generatePrimeSync'),

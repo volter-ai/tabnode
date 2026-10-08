@@ -64,6 +64,7 @@
   },
   "dependencies": {
     "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.3.0",
     "@noble/hashes": "2.3.0",
     "acorn": "^8.15.0",
     "amaro": "1.1.11",

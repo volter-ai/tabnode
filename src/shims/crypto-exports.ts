@@ -49,7 +49,7 @@ export const NODE_CRYPTO_EXPORTS = {
   encapsulate: 'throws',
   generateKey: 'throws',
   generateKeyPair: 'implemented',
-  generateKeyPairSync: 'throws',
+  generateKeyPairSync: 'implemented',
   generateKeySync: 'throws',
   generatePrime: 'throws',
   generatePrimeSync: 'throws',
