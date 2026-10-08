@@ -46,6 +46,7 @@ import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-modul
 import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
 import { __ownedHandleKinds } from '../node-lib/binding/handles';
 import { pendingGuestPorts } from '../guest-message-ports';
+import { guestQuietMs } from '../guest-loop';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
 import { StdinRingReader, kStdinRing } from '../stdin-ring';
@@ -691,6 +692,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   let runWaitedMs = 0;
   let runPolledMs = 0;
   let runCountedAtEnd: Record<string, unknown> | undefined;
+  let runGuestQuietMs: number | undefined;
   // Create a runtime with output capture for both console.log AND process.stdout.write
   const runtime = new Runtime(tree, {
     cwd: launch.cwd,
@@ -1082,14 +1084,14 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // finished run and abort it before it listened. A run nobody holds
     // waits for its timers below, as Node's loop does.
     if (streams?.held) {
-      runEndedBy = "settled for its host at the body's return"; runCountedAtEnd = __runCounted();
+      runEndedBy = "settled for its host at the body's return"; runCountedAtEnd = __runCounted(); runGuestQuietMs = guestQuietMs();
       return { stdout, stderr, exitCode: typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0 };
     }
     // A run nobody holds, with nothing left to wait for, has drained its loop already: it ends as one that drained
     // it later does, below (`exit` emitted, its exit lines said). It returned from here with neither, so a script
     // that simply finished never ran its `exit` listeners.
     drained = !__printedThenWorking() && pendingGuestTimers(proc) === 0;
-    if (drained) { runEndedBy = "drained at the body's return"; runCountedAtEnd = __runCounted(); }
+    if (drained) { runEndedBy = "drained at the body's return"; runCountedAtEnd = __runCounted(); runGuestQuietMs = guestQuietMs(); }
   }
 
   // No output yet — script likely has async work (e.g. vitest test runner).
@@ -1159,11 +1161,11 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         // the engine cannot yet see as work.
         const silentIdle = SILENT_IDLE_TIMEOUT_MS;
         if (lastOutputLen > 0 && !stillWorking() && idleMs >= effectiveIdle) {
-          runEndedBy = childrenExited ? 'forked children gone, then no output' : 'idle: no output'; runWaitedMs = idleMs; runCountedAtEnd = __runCounted();
+          runEndedBy = childrenExited ? 'forked children gone, then no output' : 'idle: no output'; runWaitedMs = idleMs; runCountedAtEnd = __runCounted(); runGuestQuietMs = guestQuietMs();
           break;
         }
         if (lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) {
-          runEndedBy = 'silent: it printed nothing'; runWaitedMs = idleMs; runCountedAtEnd = __runCounted();
+          runEndedBy = 'silent: it printed nothing'; runWaitedMs = idleMs; runCountedAtEnd = __runCounted(); runGuestQuietMs = guestQuietMs();
           break;
         }
       }
@@ -1177,7 +1179,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       // host holds for it (a build, a pre-bundle) is seen work too: a dev
       // server whose start passed a minute mid pre-bundle was cut with exit 0.
       if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) {
-        runEndedBy = 'the limit'; runWaitedMs = idleMs; runCountedAtEnd = __runCounted();
+        runEndedBy = 'the limit'; runWaitedMs = idleMs; runCountedAtEnd = __runCounted(); runGuestQuietMs = guestQuietMs();
         break;
       }
     }
@@ -1212,7 +1214,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       const how = runEndedBy ?? (streams?.signal?.aborted ? 'ended by its host' : exitCalled ? 'exit called' : 'threw');
       console.log('[boot-trace]', JSON.stringify({ event: 'run-end', at: Date.now(), pid: (proc as { pid?: number } | undefined)?.pid ?? null,
         entry: resolvedPath ?? (evaluated !== null ? '(evaluated)' : null), how, waitedMs: runWaitedMs, polledMs: runPolledMs,
-        printed, exitCode: runEnd ?? (exitCalled ? exitCode : null), counted: runCountedAtEnd ?? __runCounted() }));
+        printed, exitCode: runEnd ?? (exitCalled ? exitCode : null), guestQuietMs: runGuestQuietMs ?? guestQuietMs() ?? null, counted: runCountedAtEnd ?? __runCounted() }));
     } catch { /* a line that cannot be said does not keep a run from ending */ }
     detachRejections();
     detachUncaught();
