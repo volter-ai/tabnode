@@ -687,16 +687,33 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
  * every process's memory.
  */
 export const PREPARED_MODULES_DIR = '/opt/.tabnode/prepared';
-const PREPARED_MODULES_FORMAT = 'tabnode-prepared-3';
-/** The name a prepared body goes under: the hash of the file as read, and how it is compiled. Undefined for a file no body is prepared for. */
-export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
+/** The key derivation's own name: part of every key, and of the name of any store that keeps bodies by key. */
+export const PREPARED_MODULES_FORMAT = 'tabnode-prepared-4';
+/** How a file is compiled, which is part of its body's name: undefined for a file no body is prepared for. */
+export function preparedModuleKind(resolvedPath: string): 'js' | 'cjs' | undefined {
   const extension = /\.(js|cjs|mjs)$/u.exec(resolvedPath)?.[1];
   // Node also loads extensionless JavaScript executables (for example a
   // package's bin entry). Their preparation is identical to ordinary JS.
   const extensionless = !resolvedPath.slice(resolvedPath.lastIndexOf('/') + 1).includes('.');
   if (!extension && !extensionless) return undefined;
-  const kind = extension === 'cjs' ? 'cjs' : 'js';
-  return bytesToHex(sha256(new TextEncoder().encode(`${PREPARED_MODULES_FORMAT}|${kind}|${rawCode}`)));
+  return extension === 'cjs' ? 'cjs' : 'js';
+}
+/**
+ * The name a prepared body goes under, from the plain SHA-256 of the file's bytes (64 lowercase hex): the format,
+ * how the file is compiled, and that digest, as text. A tree that holds its files' digests names a body without
+ * the file being read; where the image is built and in the tab it is this one function.
+ */
+export function preparedModuleKeyOf(kind: 'js' | 'cjs', contentSha256: string): string {
+  return `${PREPARED_MODULES_FORMAT}.${kind}.${contentSha256}`;
+}
+/** Whether a name is a prepared body's, of this format. */
+export function isPreparedModuleKey(name: string): boolean {
+  return name.startsWith(`${PREPARED_MODULES_FORMAT}.`) && /^\.(?:js|cjs)\.[0-9a-f]{64}$/u.test(name.slice(PREPARED_MODULES_FORMAT.length));
+}
+/** The name a prepared body goes under, for a caller that has the file's text: its bytes are hashed here. Undefined for a file no body is prepared for. */
+export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
+  const kind = preparedModuleKind(resolvedPath);
+  return kind ? preparedModuleKeyOf(kind, bytesToHex(sha256(new TextEncoder().encode(rawCode)))) : undefined;
 }
 /** The body the loader would compile for this file, with no load hooks and no type stripping: what the image carries. */
 export function prepareModuleForImage(rawCode: string, resolvedPath: string): string {
@@ -725,6 +742,43 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
     transformsTypes: transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }),
     directory: exists(PREPARED_MODULES_DIR), key: key ?? null, body: key ? exists(`${PREPARED_MODULES_DIR}/${key}`) : false,
   }));
+}
+
+/**
+ * An instrument: how each of a process's compiles came by its body, said when its loading has been quiet for two
+ * seconds and when it exits. `digest`: named by the tree's digest, the source never read. `hash`: named by hashing
+ * the source read. `kept`: prepared here and kept. The rest prepared here, by why no body could be taken.
+ */
+type PreparedCounts = { digest: number; hash: number; kept: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
+const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
+function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
+  if (counts.timer !== undefined) { clearTimeout(counts.timer); counts.timer = undefined; }
+  const totals = { digest: counts.digest, hash: counts.hash, kept: counts.kept, noDirectory: counts.noDirectory, notOwnText: counts.notOwnText, format: counts.format, types: counts.types, notJavaScript: counts.notJavaScript };
+  const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
+  if (total === counts.said) return;
+  counts.said = total;
+  console.log('[boot-trace]', JSON.stringify({ event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals }));
+}
+function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCounts, 'said' | 'timer'>): void {
+  let counts = __substratePreparedCounts.get(process);
+  if (!counts) {
+    counts = { digest: 0, hash: 0, kept: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
+    __substratePreparedCounts.set(process, counts);
+  }
+  counts[how] += 1;
+  if (counts.timer !== undefined) clearTimeout(counts.timer);
+  const mine = counts;
+  counts.timer = setTimeout(() => { mine.timer = undefined; __substrateSayPrepared(process, mine, 'quiet'); }, 2000);
+  (counts.timer as { unref?: () => void }).unref?.();
+}
+Object.defineProperty(globalThis, '__substratePreparedExit', {
+  configurable: true,
+  value: (process: object): void => { const counts = __substratePreparedCounts.get(process); if (counts) __substrateSayPrepared(process, counts, 'exit'); },
+});
+/** A prepared body's text, or undefined where the tree holds none by that name: the read's own miss is the answer. */
+function __substrateReadPrepared(vfs: { readFileSync(path: string, encoding: 'utf8'): string }, key: string): string | undefined {
+  try { return vfs.readFileSync(`${PREPARED_MODULES_DIR}/${key}`, 'utf8'); }
+  catch { return undefined; }
 }
 
 function transformEsmToCjs(code: string, filename: string): string {
@@ -1860,6 +1914,9 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     (Module.__substrateCompileRaw ?? ((module: any, text: string, name: string, dir: string) => requireFor(module).__compileRaw(module, text, name, dir)))(this, String(content), file, pathShim.dirname(file));
     return this.exports;
   };
+  // The engine's own compile, by identity: a load takes a body by the tree's digest only where this is what the
+  // module would be compiled by, since a program's own `_compile` is handed the source's text.
+  Module.__substrateOwnCompile = Module.prototype._compile;
   Module._resolveFilename = function (request: string, parent: any) { return requireFor(parent).__resolveRaw(request); };
   Module.__substrateResolveFilename = Module._resolveFilename;
   // `Module._load(request, null, true)` runs a module as the main module, the
@@ -2199,6 +2256,7 @@ function createRequire(
    * compiled through `module._compile`, which a program may have replaced on this module.
    */
   const builtinLoad = (module: Module, resolvedPath: string): void => {
+    const Mod = __substrateModule();
     const resolvedAs = __substrateLoading.get(module)?.resolvedAs;
     // A module's source, and the format it is compiled in, are the load step.
     // Where a run has registered load hooks the chain answers both and this
@@ -2228,6 +2286,26 @@ function createRequire(
       return;
     }
 
+    // A body named by the tree's own digest of the file, where the source would reach the engine's compile as the
+    // file's own text and nothing else: no load hook is registered (a hook may answer other text or a format), no
+    // resolve step named a source or format, the module's `_compile` is the engine's (a program's own is handed the
+    // text, so it must be read), and types are not stripped. Then the text is never read and never hashed. A tree
+    // with no digest for the file's current content, or no body by that name, leaves the load to the read below.
+    if (source === undefined && format === undefined && !(__hooks && __hooks.hasSyncLoad) && !resolvedPath.startsWith('data:')
+      && (module as Module & { _compile?: unknown })._compile === Mod.__substrateOwnCompile
+      && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> })) {
+      const kind = preparedModuleKind(resolvedPath);
+      const digest = kind ? vfs.contentDigest(resolvedPath) : undefined;
+      const body = kind && digest ? __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)) : undefined;
+      if (body !== undefined) {
+        __substrateCountPrepared(process, 'digest');
+        (module as Module & { filename?: string }).filename = resolvedPath;
+        if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
+        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), true);
+        return;
+      }
+    }
+
     // Read and execute JS file; a data: URL carries its own source.
     const rawCode = source === undefined || source === null ? defaultSource() : String(source);
     // A data: URL is no file: it has no extension's handler to answer to and no directory of its own.
@@ -2246,28 +2324,34 @@ function createRequire(
     const resolvedPath = filename;
     __substrateTracePreparedGate(vfs, process, compiling, content, resolvedPath);
     // A body prepared for the file's own text; a program's `_compile` that handed on other text compiles that text.
-    if (compiling?.raw === content && format === undefined && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }) && vfs.existsSync(PREPARED_MODULES_DIR)) {
-      const key = preparedModuleKey(rawCode, resolvedPath);
-      const prepared = key ? `${PREPARED_MODULES_DIR}/${key}` : undefined;
-      if (prepared && vfs.existsSync(prepared)) {
-        runModuleBody(module, vfs.readFileSync(prepared, 'utf8'), resolvedPath, dirname, true);
+    const strips = transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> });
+    const key = compiling?.raw === content && format === undefined && !strips ? preparedModuleKey(rawCode, resolvedPath) : undefined;
+    if (key) {
+      const taken = __substrateReadPrepared(vfs, key);
+      if (taken !== undefined) {
+        __substrateCountPrepared(process, 'hash');
+        runModuleBody(module, taken, resolvedPath, dirname, true);
         return;
       }
       // A file the image carries no body for (a package installed in the
       // tab) is prepared here once and kept under the same name, so the next
       // process takes it: every Playwright test worker required
-      // playwright-core afresh, 28 s each, measured in a tab.
-      if (prepared) {
+      // playwright-core afresh, 28 s each, measured in a tab. Only where the
+      // tree has the directory bodies are kept in; asked once the body's own
+      // read has missed, so a taken body costs no question about it.
+      if (vfs.existsSync(PREPARED_MODULES_DIR)) {
         const body = __substrateScopeGlobalCalls(prepareModuleCode(rawCode, resolvedPath));
         // One write is one step of the tab's filesystem, so no reader sees
         // half a body; a rename after it failed in a forked process's realm
         // and left the half-named file behind.
-        try { vfs.writeFileSync(prepared, body); }
+        try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${key}`, body); }
         catch { /* a process that may not write there prepares its own */ }
+        __substrateCountPrepared(process, 'kept');
         runModuleBody(module, body, resolvedPath, dirname, true);
         return;
       }
     }
+    __substrateCountPrepared(process, key ? 'noDirectory' : compiling?.raw !== content ? 'notOwnText' : format !== undefined ? 'format' : strips ? 'types' : 'notJavaScript');
     runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, dirname);
   };
 

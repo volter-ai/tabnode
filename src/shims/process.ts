@@ -664,6 +664,7 @@ export function createProcess(options?: {
     exit(code: number | string | null | undefined = 0) {
       code = __substrateExitCode(code);
       emitter.emit('exit', code);
+      (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
       if (options?.onExit) {
         options.onExit(code);
       }

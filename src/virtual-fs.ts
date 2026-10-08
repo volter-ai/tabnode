@@ -558,6 +558,15 @@ export class VirtualFS {
   }
 
   /**
+   * The plain SHA-256 of a file's current bytes, as 64 lowercase hex characters, where the tree holds it without
+   * reading the file; undefined where it does not (a file written since its image, a tree that keeps no digests).
+   * This tree keeps none.
+   */
+  contentDigest(_path: string): string | undefined {
+    return undefined;
+  }
+
+  /**
    * Check if path exists
    */
   existsSync(path: string): boolean {
