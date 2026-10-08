@@ -2960,7 +2960,9 @@ export class Runtime {
     // The Node line this process answers as, and where it came from (node-line.ts).
     const namedVersion = options.env?.NODE_VERSION;
     console.log('[boot-trace]', JSON.stringify({ event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
-      line: nodeLineOf(this.process.version), from: this.process.version === `v${String(namedVersion ?? '').replace(/^v/, '')}` ? 'NODE_VERSION of the image' : 'default' }));
+      line: nodeLineOf(this.process.version), from: this.process.version === `v${String(namedVersion ?? '').replace(/^v/, '')}` ? 'NODE_VERSION of the image' : 'default',
+      // The variable as this process was given it, so a reader need not infer it: null when it has none.
+      env: typeof namedVersion === 'string' ? namedVersion : null }));
     // Create fs shim with cwd getter for relative path resolution
     this.fsShim = createFsShim(vfs, () => this.process.cwd());
     this.options = options;
