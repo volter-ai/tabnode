@@ -18,6 +18,13 @@ let continuation = false;
 /** When guest code last stopped running in this realm, on the loop's clock: the reading `end` and a continuation's end already take. */
 let lastRanAt = 0;
 const enqueue = globalThis.queueMicrotask.bind(globalThis);
+/**
+ * The realm's own `setTimeout`, taken before the engine wraps the realm's timers for its guests (shims/async_hooks.ts
+ * gives every timer callback a guest bracket). For a timer that is the engine's and not a guest's: the end-of-program
+ * poll ticks on one, and through the wrapped timer each tick was counted as guest code running, so guestQuietMs read
+ * 0 for every program the poll ended (Rallly run 214: `up` and `url`, waitedMs 500, guestQuietMs 0).
+ */
+export const engineSetTimeout: typeof setTimeout = globalThis.setTimeout.bind(globalThis) as typeof setTimeout;
 const ticks: Array<() => void> = [];
 let tickDrainScheduled = false;
 let drainingTicks = false;
@@ -100,10 +107,11 @@ function end(): void {
 /**
  * How long this realm's guest code has not run, in ms: zero while it is running, undefined before any has. It is
  * what the engine can see of a program's activity: the loader and dispatch paths, a binding's callback, and the turn
- * a compiled `await` resumes in. Two entries are not bracketed and are not seen: a reaction a guest attached with
- * `then` to a promise the host settles, and a listener the realm itself enters on one of its own event targets (an
- * AbortSignal's timeout, a message port, a BroadcastChannel) where no dispatch path of the engine made the call.
- * So a quiet reading does not prove a program idle. A run's end-of-run line reads it beside the time since the program's last output: a
+ * a compiled `await` resumes in, and every callback given to the realm's timers, `queueMicrotask` and `then`, which
+ * the engine wraps for its guests (shims/async_hooks.ts). Not seen: a listener the realm itself enters on one of its
+ * own event targets (an AbortSignal's timeout, a message port, a BroadcastChannel) where no dispatch path of the
+ * engine made the call, and code the engine did not compile. So a quiet reading does not prove a program idle. The
+ * engine's own timers must not pass through the wrapped ones, or they read as the guest running (engineSetTimeout). A run's end-of-run line reads it beside the time since the program's last output: a
  * program the end-of-program rule waited on, whose guest code ran during that wait, was still working through a
  * door the rule does not count.
  */
