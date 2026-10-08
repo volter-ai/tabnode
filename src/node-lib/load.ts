@@ -83,7 +83,11 @@ var builtBindings: Map<string, unknown> | undefined;
 /* eslint-enable no-var, vars-on-top */
 
 /** The libuv-shaped surface, built once per name, on the first file that asks. */
+/** An instrument: the binding names Node's lib has asked this realm for, for the run's record of what it used. */
+const bindingsAsked = new Set<string>();
+export function nodeLibBindingsAsked(): readonly string[] { return [...bindingsAsked]; }
 function internalBinding(name: string): unknown {
+  bindingsAsked.add(name);
   builtBindings ??= new Map<string, unknown>();
   if (builtBindings.has(name)) return builtBindings.get(name);
   const build = nodeLibBinding(name);

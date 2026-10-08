@@ -30,11 +30,22 @@ for (const difference of surface.differences) {
   const name = JSON.parse(`"${at[2]}"`);
   const entry = builtins[at[1]].exports[name] ?? (builtins[at[1]].exports[name] = { is: 'extra', differences: 0 });
   entry.differences += 1;
-  if (difference.key === at[0] && difference.reason === 'missing-member') entry.is = 'missing';
-  else if (entry.is === 'same') entry.is = 'differs';
+  // `own`: the difference on the export itself (what a caller reading the export meets first). `under`: differences
+  // on what hangs from it (prototype members, statics), with how many of those are members Node has and this lacks.
+  if (difference.key === at[0]) {
+    // An export can differ in more than one way; the gravest is what it is.
+    const rank = { 'missing-member': 3, typeof: 2 };
+    if ((rank[difference.reason] ?? 1) > (rank[entry.own] ?? 0)) entry.own = difference.reason;
+    entry.is = entry.own === 'missing-member' ? 'missing' : entry.own === 'typeof' ? 'wrong-type' : 'differs';
+  } else {
+    entry.under = entry.under ?? { differences: 0, missing: 0 };
+    entry.under.differences += 1;
+    if (difference.reason === 'missing-member') entry.under.missing += 1;
+    if (entry.is === 'same') entry.is = 'differs';
+  }
   if (difference.limitation) entry.limitation = difference.limitation;
 }
-const counts = { same: 0, differs: 0, missing: 0, extra: 0 };
+const counts = { same: 0, differs: 0, 'wrong-type': 0, missing: 0, extra: 0 };
 for (const builtin of Object.values(builtins)) for (const entry of Object.values(builtin.exports)) counts[entry.is] += 1;
 const bindings = Object.fromEntries(probe.rows.map((row) => [`engine.${row.key.replace(':', '.')}`, { is: row.status, ...(row.detail ? { detail: row.detail } : {}) }]));
 fs.mkdirSync(dirname(output), { recursive: true });

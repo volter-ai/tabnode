@@ -56,6 +56,7 @@ import {
 import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
 import { sayNativeStreamCounts } from './native-stream-binding';
+import { nodeLibBindingsAsked } from './node-lib/load';
 import type { ResolutionKept } from './node-resolution';
 import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
 import { setSourceMapsSupportOf, sourceMapsSupportOf } from './node-lib/internals/events-util';
@@ -608,7 +609,16 @@ function __substrateUnfollowAwaits(source: string): string {
 }
 forGuestRealm(() => {
   const native = Function.prototype.toString;
-  takeFromHost(Function.prototype, 'toString', function toString(this: unknown): string { return __substrateUnfollowAwaits(native.call(this)); });
+  // A function's source never changes, so its written text is made once: Nest and TypeORM read the same classes'
+  // sources over and over (1.55 s of Twenty's boot was this pass re-scanning them).
+  const written = new WeakMap<object, string>();
+  takeFromHost(Function.prototype, 'toString', function toString(this: unknown): string {
+    const held = typeof this === 'function' ? written.get(this) : undefined;
+    if (held !== undefined) return held;
+    const text = __substrateUnfollowAwaits(native.call(this));
+    if (typeof this === 'function') written.set(this, text);
+    return text;
+  });
 });
 
 /** Applies edits in source coordinates, preserving reverse insertion order at a shared offset. */
@@ -756,12 +766,30 @@ function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCo
   counts.timer = setTimeout(() => { mine.timer = undefined; __substrateSayPrepared(process, mine, 'quiet'); }, 2000);
   (counts.timer as { unref?: () => void }).unref?.();
 }
+/**
+ * An instrument: what this process used of the engine, in the capability ledger's own row ids, one line at its exit:
+ * `engine.<builtin>` for each builtin it loaded (Node's `process.moduleLoadList`, which the engine keeps) and
+ * `engine.binding.<name>` for each binding Node's lib asked for. The count is 1: loaded, not how often called.
+ * Bindings are the realm's, and a realm is one process wherever processes are separate realms.
+ */
+const __substrateRowsSaid = new WeakSet<object>();
+function __substrateSayRowsUsed(process: object): void {
+  if (__substrateRowsSaid.has(process)) return;
+  __substrateRowsSaid.add(process);
+  const view = process as { pid?: number; argv0?: string; moduleLoadList?: string[] };
+  const rows: Record<string, number> = {};
+  for (const entry of view.moduleLoadList ?? []) if (entry.startsWith('NativeModule ')) rows[`engine.${entry.slice(13)}`] = 1;
+  for (const name of nodeLibBindingsAsked()) rows[`engine.binding.${name}`] = 1;
+  const program = String(view.argv0 ?? 'node').split('/').pop() || 'node';
+  console.log('[rows-used]', JSON.stringify({ pid: view.pid ?? null, program, rows }));
+}
 Object.defineProperty(globalThis, '__substratePreparedExit', {
   configurable: true,
   value: (process: object): void => {
     const counts = __substratePreparedCounts.get(process);
     if (counts) __substrateSayPrepared(process, counts, 'exit');
     sayNativeStreamCounts((process as { pid?: number }).pid ?? null, 'exit');
+    __substrateSayRowsUsed(process);
   },
 });
 /** A prepared body's text, or undefined where the tree holds none by that name: the read's own miss is the answer. */
