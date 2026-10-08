@@ -56,12 +56,21 @@ class TLSSocket extends NetSocket {
   }
 
   connect(...args: unknown[]): this {
-    const options = args[0] as { port?: unknown; host?: unknown; hostname?: unknown; socket?: unknown } | undefined;
+    const options = args[0] as { port?: unknown; host?: unknown; hostname?: unknown; socket?: unknown; servername?: unknown; checkServerIdentity?: unknown } | undefined;
     const host = String(options?.host ?? options?.hostname ?? 'localhost');
     if (options && typeof options === 'object' && options.socket === undefined && loopback(host)) {
       // The peer is a listener of this engine, or nothing: a refused port
       // fails as a net connect does.
       this.once('connect', () => {
+        // Node asks the caller's checkServerIdentity once the peer has answered, with the name asked for and the
+        // peer's certificate, and an Error it returns ends the connection with that error. There is no handshake
+        // here to verify, but the caller's own check is the caller's: it is asked, as Node asks it (a program that
+        // counts on being asked, or refuses a peer there, was never called).
+        const check = options.checkServerIdentity;
+        if (typeof check === 'function') {
+          const refused = (check as (name: string, certificate: object) => unknown)(String(options.servername ?? host), this.getPeerCertificate(true));
+          if (refused) { this.destroy(refused as Error); return; }
+        }
         this.authorized = true;
         this.emit('secureConnect');
       });

@@ -1,5 +1,5 @@
 /** A Node Duplex as a libuv stream handle. Node still owns both socket APIs. */
-import { queueBindingTask } from '../../guest-loop';
+import { queueBindingTask, withGuestExecution } from '../../guest-loop';
 import { invokeOwned } from './handles';
 import { LibuvStreamWrap, type WriteWrap, type ShutdownWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './stream_wrap';
 import { UV_EBADF, UV_ECONNRESET, UV_ENOTSUP } from './uv';
@@ -68,12 +68,16 @@ export class DuplexStreamHandle extends LibuvStreamWrap {
       // only one bounded copy enters the transport at a time.
       const bytes = buffer.slice(offset, offset + 64 * 1024);
       offset += bytes.byteLength;
-      this.transport.write(bytes, error => {
+      // The transport's `write` is the wrapped Duplex's own: program code. The task that calls it is run with no
+      // bracket (queueBindingTask), which is right for a callback a binding makes and wrong here: with the depth
+      // at zero, a binding callback made inside that write took itself for the outermost and drained the ticks
+      // while the write was still on the stack. The call is bracketed as the program code it is.
+      withGuestExecution(() => this.transport.write(bytes, error => {
         if (error) { finish(UV_ECONNRESET); return; }
         this.bytesWritten += bytes.byteLength;
         this.writeQueueSize -= bytes.byteLength;
         next();
-      });
+      }));
     };
     queueBindingTask(next);
     return 0;
