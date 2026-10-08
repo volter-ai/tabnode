@@ -8,6 +8,7 @@
 
 import SHA from 'sha.js';
 import { md5 } from '@noble/hashes/legacy.js';
+import { scrypt as nobleScrypt } from '@noble/hashes/scrypt.js';
 // The `buffer` package, not the guest polyfill: the byte-level encodings
 // (utf16le, latin1, offset views) crypto inputs arrive in are its own.
 import { Buffer as HostBuffer } from 'buffer/index.js';
@@ -22,6 +23,7 @@ import {
 } from '../node-internals';
 import { cryptoConstants as constants } from './crypto-constants';
 import { cipherNames, createCipherClasses } from './crypto-cipher';
+import type { NodeCryptoExport, NodeCryptoUnavailable } from './crypto-exports';
 export { constants };
 
 interface DigestState {
@@ -30,6 +32,9 @@ interface DigestState {
   clone?(): DigestState;
   [field: string]: unknown;
 }
+
+/** `crypto.scrypt`'s options, by both of Node's names for each. */
+export interface ScryptOptions { N?: number; cost?: number; r?: number; blockSize?: number; p?: number; parallelization?: number; maxmem?: number }
 
 /** Native crypto allocates guest results and classes in the caller's graph. */
 export function createCryptoModule(require?: (name: string) => any) {
@@ -595,6 +600,137 @@ function pbkdf2(
 
 
 // ============================================================================
+// HKDF (RFC 5869) and scrypt (RFC 7914)
+// ============================================================================
+
+const DIGEST_BYTES: Record<string, number> = { md5: 16, sha1: 20, sha224: 28, sha256: 32, sha384: 48, sha512: 64 };
+
+interface HkdfParameters { algorithm: string; key: HostBytes; salt: HostBytes; info: HostBytes; length: number }
+
+/** Node's `validateParameters` (lib/internal/crypto/hkdf.js): the same refusals, by the same codes. */
+function hkdfParameters(digest: unknown, ikm: unknown, salt: unknown, info: unknown, length: unknown): HkdfParameters {
+  if (typeof digest !== 'string') throw new ERR_INVALID_ARG_TYPE('digest', 'string', digest);
+  const name = digest.toLowerCase().replace(/^sha-(1|224|256|384|512)$/, 'sha$1');
+  if (!HASH_ALGORITHMS.includes(name)) throw Object.assign(new TypeError(`Invalid digest: ${digest}`), { code: 'ERR_CRYPTO_INVALID_DIGEST' });
+  let key: HostBytes;
+  if (ikm instanceof KeyObject) {
+    const held = keyInfoOf(ikm);
+    if (held.type !== 'secret' || !(held.keyData instanceof Uint8Array)) {
+      throw Object.assign(new TypeError(`Invalid key object type ${held.type}, expected secret.`), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+    }
+    key = HostBuffer.from(held.keyData);
+  } else if (typeof ikm === 'string' || ArrayBuffer.isView(ikm) || ikm instanceof ArrayBuffer) {
+    key = HostBuffer.from(cryptoBytes(ikm, undefined, true));
+  } else throw new ERR_INVALID_ARG_TYPE('ikm', ['string', 'SecretKeyObject', 'ArrayBuffer', 'TypedArray', 'DataView', 'Buffer'], ikm);
+  const bytes = (label: string, value: unknown): HostBytes => {
+    if (typeof value === 'string' || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return HostBuffer.from(cryptoBytes(value, undefined, true));
+    throw new ERR_INVALID_ARG_TYPE(label, ['string', 'ArrayBuffer', 'TypedArray', 'DataView', 'Buffer'], value);
+  };
+  const saltBytes = bytes('salt', salt), infoBytes = bytes('info', info);
+  if (typeof length !== 'number') throw new ERR_INVALID_ARG_TYPE('length', 'number', length);
+  if (!Number.isInteger(length)) throw new ERR_OUT_OF_RANGE('length', 'an integer', length);
+  if (length < 0 || length > Number.MAX_SAFE_INTEGER) throw new ERR_OUT_OF_RANGE('length', `>= 0 && <= ${Number.MAX_SAFE_INTEGER}`, length);
+  if (infoBytes.byteLength > 1024) throw new ERR_OUT_OF_RANGE('info', 'must not contain more than 1024 bytes', infoBytes.byteLength);
+  // RFC 5869 2.3: the output is at most 255 blocks of the digest.
+  if (length > 255 * DIGEST_BYTES[name]!) throw Object.assign(new RangeError('Invalid key length'), { code: 'ERR_CRYPTO_INVALID_KEYLEN' });
+  return { algorithm: name, key, salt: saltBytes, info: infoBytes, length };
+}
+
+function hkdfDerive({ algorithm, key, salt, info, length }: HkdfParameters): ArrayBuffer {
+  // Node 24.21.0 answers a length of zero with this error, where its job has no bits to derive.
+  if (length === 0) throw new Error('Deriving bits failed');
+  const size = DIGEST_BYTES[algorithm]!;
+  // Extract: PRK = HMAC(salt, IKM), the salt absent being a block of zeros, which an empty HMAC key is.
+  const prk = HostBuffer.from(new Hmac(algorithm, salt).update(key).digest() as unknown as Uint8Array);
+  // Expand: T(n) = HMAC(PRK, T(n-1) | info | n).
+  const out = new Uint8Array(length);
+  let previous: Uint8Array = new Uint8Array(0);
+  const counter = new Uint8Array(1);
+  for (let block = 1, offset = 0; offset < length; block += 1, offset += size) {
+    counter[0] = block;
+    previous = new Hmac(algorithm, prk).update(previous).update(info).update(counter).digest() as unknown as Uint8Array;
+    out.set(previous.subarray(0, Math.min(size, length - offset)), offset);
+  }
+  prk.fill(0);
+  key.fill(0);
+  return out.buffer as ArrayBuffer;
+}
+
+function hkdfSync(digest: string, ikm: unknown, salt: unknown, info: unknown, length: number): ArrayBuffer {
+  return hkdfDerive(hkdfParameters(digest, ikm, salt, info, length));
+}
+
+function hkdf(digest: string, ikm: unknown, salt: unknown, info: unknown, length: number, callback: (error: Error | null, derived?: ArrayBuffer) => void): void {
+  // Node validates its arguments synchronously and calls back later.
+  const parameters = hkdfParameters(digest, ikm, salt, info, length);
+  validateFunction(callback, 'callback');
+  setTimeout(() => {
+    let derived: ArrayBuffer;
+    try { derived = hkdfDerive(parameters); } catch (error) { callback(error as Error); return; }
+    callback(null, derived);
+  }, 0);
+}
+
+/** Node's defaults and option names (lib/internal/crypto/scrypt.js): N 16384, r 8, p 1, maxmem 32 MiB. */
+function scryptParameters(password: unknown, salt: unknown, keylen: unknown, options: ScryptOptions = {}): { password: HostBytes; salt: HostBytes; keylen: number; N: number; r: number; p: number; maxmem: number } {
+  if (typeof keylen !== 'number') throw new ERR_INVALID_ARG_TYPE('keylen', 'number', keylen);
+  if (!Number.isInteger(keylen) || keylen < 0 || keylen > 0x7fffffff) throw new ERR_OUT_OF_RANGE('keylen', '>= 0 && <= 2147483647', keylen);
+  const pick = (short: 'N' | 'r' | 'p', long: 'cost' | 'blockSize' | 'parallelization', initial: number): number => {
+    if (options[short] !== undefined && options[long] !== undefined) throw Object.assign(new TypeError(`Option "${short}" cannot be used in combination with option "${long}"`), { code: 'ERR_INCOMPATIBLE_OPTION_PAIR' });
+    return options[short] ?? options[long] ?? initial;
+  };
+  const N = pick('N', 'cost', 16384), r = pick('r', 'blockSize', 8), p = pick('p', 'parallelization', 1);
+  const maxmem = options.maxmem ?? 32 * 1024 * 1024;
+  // OpenSSL's own bounds, by Node's code: N a power of two above 1, and 128*N*r within maxmem.
+  if (!Number.isInteger(N) || N < 2 || (N & (N - 1)) !== 0 || !Number.isInteger(r) || r < 1 || !Number.isInteger(p) || p < 1 || 128 * N * r > maxmem) {
+    throw Object.assign(new RangeError('Invalid scrypt params: memory limit exceeded'), { code: 'ERR_CRYPTO_INVALID_SCRYPT_PARAMS' });
+  }
+  return { password: HostBuffer.from(cryptoBytes(password, undefined, true)), salt: HostBuffer.from(cryptoBytes(salt, undefined, true)), keylen, N, r, p, maxmem };
+}
+
+function scryptDerive(parameters: ReturnType<typeof scryptParameters>): Buffer {
+  const { password, salt, keylen, N, r, p, maxmem } = parameters;
+  if (keylen === 0) return Buffer.from(new Uint8Array(0));
+  return Buffer.from(nobleScrypt(password, salt, { N, r, p, dkLen: keylen, maxmem: maxmem + 1024 }));
+}
+
+function scryptSync(password: unknown, salt: unknown, keylen: number, options?: ScryptOptions): Buffer {
+  return scryptDerive(scryptParameters(password, salt, keylen, options));
+}
+
+function scrypt(password: unknown, salt: unknown, keylen: number, options: ScryptOptions | ((error: Error | null, derived?: Buffer) => void), callback?: (error: Error | null, derived?: Buffer) => void): void {
+  const done = typeof options === 'function' ? options : callback;
+  const parameters = scryptParameters(password, salt, keylen, typeof options === 'function' ? undefined : options);
+  validateFunction(done, 'callback');
+  setTimeout(() => {
+    let derived: Buffer;
+    try { derived = scryptDerive(parameters); } catch (error) { done!(error as Error); return; }
+    done!(null, derived);
+  }, 0);
+}
+
+/** No FIPS provider is carried: Node built without one answers 0. */
+function getFips(): number { return 0; }
+
+/** No secure heap is carried: what Node 24.21.0 answers when started with none. */
+function secureHeapUsed(): { total: number; used: number; utilization: number; min: number } {
+  return { total: 0, used: 0, utilization: Number.NaN, min: 2 };
+}
+
+/**
+ * An export Node has and this module does not carry (crypto-exports.ts): a function that throws Node's
+ * ERR_FEATURE_UNAVAILABLE_ON_PLATFORM naming itself when called or constructed, so a program learns which call it
+ * was at the call, not as "is not a function".
+ */
+function unavailable<Name extends NodeCryptoUnavailable>(name: Name): (...args: unknown[]) => never {
+  const refuse = function (): never {
+    throw Object.assign(new TypeError(`The feature node:crypto.${name} is unavailable on the current platform, which is being used to run Node.js`), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' });
+  };
+  Object.defineProperty(refuse, 'name', { value: name });
+  return refuse;
+}
+
+// ============================================================================
 // Sign and Verify (main functions jose uses)
 // ============================================================================
 
@@ -1158,12 +1294,52 @@ const { Cipheriv, Decipheriv, createCipheriv, createDecipheriv } = createCipherC
 // Exports
 // ============================================================================
 
-return {
+// Every export of Node's `node:crypto` is here or this does not compile (crypto-exports.ts).
+const nodeExports = {
+  Certificate: unavailable('Certificate'),
+  DiffieHellman: unavailable('DiffieHellman'),
+  DiffieHellmanGroup: unavailable('DiffieHellmanGroup'),
+  ECDH: unavailable('ECDH'),
+  X509Certificate: unavailable('X509Certificate'),
+  argon2: unavailable('argon2'),
+  argon2Sync: unavailable('argon2Sync'),
+  checkPrime: unavailable('checkPrime'),
+  checkPrimeSync: unavailable('checkPrimeSync'),
+  createDiffieHellman: unavailable('createDiffieHellman'),
+  createDiffieHellmanGroup: unavailable('createDiffieHellmanGroup'),
+  createECDH: unavailable('createECDH'),
+  decapsulate: unavailable('decapsulate'),
+  diffieHellman: unavailable('diffieHellman'),
+  encapsulate: unavailable('encapsulate'),
+  generateKey: unavailable('generateKey'),
+  generateKeyPairSync: unavailable('generateKeyPairSync'),
+  generateKeySync: unavailable('generateKeySync'),
+  generatePrime: unavailable('generatePrime'),
+  generatePrimeSync: unavailable('generatePrimeSync'),
+  getCipherInfo: unavailable('getCipherInfo'),
+  getCurves: unavailable('getCurves'),
+  getDiffieHellman: unavailable('getDiffieHellman'),
+  privateDecrypt: unavailable('privateDecrypt'),
+  privateEncrypt: unavailable('privateEncrypt'),
+  publicDecrypt: unavailable('publicDecrypt'),
+  publicEncrypt: unavailable('publicEncrypt'),
+  randomUUIDv7: unavailable('randomUUIDv7'),
+  setEngine: unavailable('setEngine'),
+  setFips: unavailable('setFips'),
+  Hash,
+  Hmac,
+  Sign,
+  Verify,
+  hkdf,
+  hkdfSync,
+  scrypt,
+  scryptSync,
+  getFips,
+  secureHeapUsed,
   Cipheriv,
   Decipheriv,
   createCipheriv,
   createDecipheriv,
-  unsupported,
   randomBytes,
   randomFill,
   randomFillSync,
@@ -1191,12 +1367,15 @@ return {
   // Node's Web Crypto: the same object globalThis.crypto is in Node, and its SubtleCrypto
   webcrypto: crypto,
   subtle: crypto.subtle,
-};
+} satisfies Record<NodeCryptoExport, unknown>;
+// `unsupported` is this engine's own, beside Node's names: what an implemented export throws for an algorithm it lacks.
+return { ...nodeExports, unsupported };
 
 }
 const cryptoModule = createCryptoModule();
 export const webcrypto = cryptoModule.webcrypto;
 export const subtle = cryptoModule.subtle;
 export const { Cipheriv, Decipheriv, createCipheriv, createDecipheriv, randomBytes, randomFillSync, randomFill, randomUUID, randomInt, getRandomValues, unsupported, createHash, createHmac, hash, pbkdf2Sync, pbkdf2, sign, verify, createSign, createVerify, KeyObject, createSecretKey, createPublicKey, createPrivateKey, generateKeyPair, timingSafeEqual, getCiphers, getHashes } = cryptoModule;
+export const { Certificate, DiffieHellman, DiffieHellmanGroup, ECDH, X509Certificate, argon2, argon2Sync, checkPrime, checkPrimeSync, createDiffieHellman, createDiffieHellmanGroup, createECDH, decapsulate, diffieHellman, encapsulate, generateKey, generateKeyPairSync, generateKeySync, generatePrime, generatePrimeSync, getCipherInfo, getCurves, getDiffieHellman, privateDecrypt, privateEncrypt, publicDecrypt, publicEncrypt, randomUUIDv7, setEngine, setFips, Hash, Hmac, Sign, Verify, hkdf, hkdfSync, scrypt, scryptSync, getFips, secureHeapUsed } = cryptoModule;
 export type KeyObject = InstanceType<typeof KeyObject>;
 export default cryptoModule;
