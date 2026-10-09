@@ -74,6 +74,7 @@ function treeHoldsLinks(): boolean {
 import type { VirtualFS, Stats as VfsStats } from '../../virtual-fs';
 import { constantsBinding } from './misc';
 import { Buffer as NodeBuffer } from '../buffer-module';
+import { unsharedBytes } from './buffer';
 
 /** The key the engine hangs a run's filesystem off its guest process. */
 export const kRunFilesystem = Symbol.for('tabnode.run.vfs');
@@ -562,7 +563,7 @@ function encodeFsName(name: string, encoding: unknown): string | Uint8Array {
 /** The path as Node handed it, with a Buffer decoded. A symlink's target is this, not resolved. */
 function asWritten(path: unknown): string {
   if (typeof path === 'string') return path;
-  if (path instanceof Uint8Array) return new TextDecoder().decode(path);
+  if (path instanceof Uint8Array) return new TextDecoder().decode(unsharedBytes(path));
   return String(path);
 }
 

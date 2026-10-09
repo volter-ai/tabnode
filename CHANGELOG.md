@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Text is written into and read out of a `Buffer` over shared memory, as Node
+  does it. The platform's `TextEncoder.encodeInto` and `TextDecoder.decode`
+  refuse a shared view in Chromium, so `buffer.write`, `buffer.toString`
+  (UTF-8, latin1, UCS-2), `buffer.isUtf8`, a path given as bytes, a
+  `TextDecoder` given shared bytes and a `fetch` body that is a shared view go
+  through an unshared copy of exactly those bytes. pino's thread-stream is
+  such a Buffer. A buffer that is not shared takes the path it always took.
+
 - To follow, not yet changed: four optional members added in v0.9.0 and before
   are second paths that only an embedder without them takes (the stream
   transport's `post`, a started run's `setRef`, the host request's

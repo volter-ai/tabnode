@@ -1679,7 +1679,9 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
   if (typeof globalThis.File !== "undefined") bufferModule.File = globalThis.File;
   bufferModule.kStringMaxLength = (bufferModule.constants && bufferModule.constants.MAX_STRING_LENGTH) || 536870888;
   bufferModule.isUtf8 = (input: any) => {
-    const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+    const view = input instanceof Uint8Array ? input : new Uint8Array(input);
+    // shared bytes are decoded from an unshared copy, whichever decoder this name is here (node-lib/binding/buffer.ts)
+    const bytes = Object.prototype.toString.call(view.buffer) === "[object SharedArrayBuffer]" ? new Uint8Array(view) : view;
     try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); return true; } catch (error) { return false; }
   };
   bufferModule.isAscii = (input: any) => {
@@ -3609,6 +3611,14 @@ function __substrateTextDecoderPolyfill(): void {
     }
 
     decode(input?: BufferSource, options?: TextDecodeOptions): string {
+      // Node's TextDecoder takes a SharedArrayBuffer and a view of one; the platform's here does not (Chromium's
+      // declaration carries no AllowShared, where the Encoding Standard's does), so shared bytes are decoded from
+      // an unshared copy of them (node-lib/binding/buffer.ts says the same of a Buffer).
+      if (input) {
+        const held = ArrayBuffer.isView(input) ? input.buffer : input;
+        // by its tag: `instanceof` is false for a buffer of another realm
+        if (Object.prototype.toString.call(held) === '[object SharedArrayBuffer]') input = new Uint8Array(ArrayBuffer.isView(input) ? new Uint8Array(held, input.byteOffset, input.byteLength) : new Uint8Array(held));
+      }
       if (this.decoder) {
         return this.decoder.decode(input, options);
       }
