@@ -1,5 +1,6 @@
 /** Host Fetch I/O uses the same process-owned liveness registry as sockets. */
 import { withNodeRequestBody } from './node-body';
+import { holdWhile } from './host-globals';
 import type { Process } from './shims/process';
 import { __tokenForProcess, __runFor, enterRun, type ProcessToken } from './process-tokens';
 import { registerHandle, __adoptHandle, refHandle, unrefHandle, releaseHandle } from './node-lib/binding/handles';
@@ -91,7 +92,8 @@ export function guestFetch(process: Process, fallback: typeof globalThis.fetch):
     // A stream body is read as undici reads it, whichever door the fetch
     // leaves by; a body undici refuses rejects the fetch, as Node's does.
     try { init = withNodeRequestBody(init); } catch (error) { return Promise.reject(error); }
-    if (!adapter) return fallback.call(globalThis, input, init);
+    // With no transport the host's own fetch answers, and a request in flight is work the run waits on.
+    if (!adapter) return holdWhile(fallback.call(globalThis, input, init));
     const context: FetchTransportContext = { begin(cancel) {
       if (ended()) throw stopped();
       return activity(owner, cancel);

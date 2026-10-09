@@ -249,6 +249,18 @@ function __substrateHeldAsync<T extends (...args: never[]) => Promise<unknown>>(
   } as T;
 }
 
+/**
+ * Host names behind which work can stay pending that the engine does not count (a socket of the tab's own, a
+ * stream of compression, a store): a run that has read one is ended by the older rule, a wait for quiet, and its
+ * end says which names it read. The list closes as each is counted.
+ */
+const __substrateUncountedNames = new Set(['WebSocket', 'EventSource', 'XMLHttpRequest', 'indexedDB', 'caches', 'CompressionStream', 'DecompressionStream', 'BroadcastChannel', 'SharedWorker']);
+const __substrateUncountedTouched = new WeakMap<object, Set<string>>();
+/** The uncounted host names a process has read; empty for one whose pending work the engine counts whole. */
+export function __uncountedTouched(process: object): ReadonlySet<string> {
+  return __substrateUncountedTouched.get(process) ?? new Set();
+}
+
 /** The host namespaces whose asynchronous calls are work the guest is waiting on. */
 const __substrateHeldNamespaces: Record<string, readonly string[]> = {
   WebAssembly: ['compile', 'compileStreaming', 'instantiate', 'instantiateStreaming'],
@@ -336,6 +348,31 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       // `perf_hooks`'s own object.
       if (key === "performance") return perfHooksShim.performance;
       const value = Reflect.get(host, key, host);
+      if (typeof key === "string" && __substrateUncountedNames.has(key) && value !== undefined) {
+        let touched = __substrateUncountedTouched.get(process);
+        if (!touched) __substrateUncountedTouched.set(process, touched = new Set());
+        touched.add(key);
+      }
+      // Web Crypto's work is done off this thread and answered through a promise: each call of `crypto.subtle` is
+      // held while it is in flight, as a compile is. The rest of `crypto` is the host's own, called on the host's.
+      if (key === "crypto" && value !== null && typeof value === "object") {
+        if (boundGlobals.get(key)?.original !== value) {
+          let subtle: unknown;
+          boundGlobals.set(key, { original: value, bound: new Proxy(value as object, {
+            get(target, name) {
+              const member = Reflect.get(target, name, target);
+              if (name === "subtle" && member !== null && typeof member === "object") {
+                return subtle ??= new Proxy(member as object, { get(inner, method) {
+                  const call = Reflect.get(inner, method, inner);
+                  return typeof call === "function" ? __substrateHeldAsync(call as (...args: never[]) => Promise<unknown>, inner) : call;
+                } });
+              }
+              return typeof member === "function" ? member.bind(target) : member;
+            },
+          }) as never });
+        }
+        return boundGlobals.get(key)!.bound;
+      }
       if (key === "structuredClone" && typeof value === "function") {
         if (boundGlobals.get(key)?.original !== value) boundGlobals.set(key, {
           original: value,

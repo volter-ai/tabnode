@@ -7,6 +7,9 @@
  */
 
 import SHA from 'sha.js';
+import { heldCalls, holdWhile } from '../host-globals';
+
+const heldSubtle = heldCalls(crypto.subtle);
 import { md5 } from '@noble/hashes/legacy.js';
 import { scrypt as nobleScrypt } from '@noble/hashes/scrypt.js';
 // The `buffer` package, not the guest polyfill: the byte-level encodings
@@ -809,7 +812,7 @@ function sign(
 
   // For async operation with callback
   if (callback) {
-    signAsync(alg, data, keyInfo)
+    holdWhile(signAsync(alg, data, keyInfo))
       .then(sig => callback(null, sig))
       .catch(err => callback(err, null as unknown as Buffer));
     return;
@@ -850,7 +853,7 @@ function verify(
   }
 
   if (callback) {
-    verifyAsync(alg, data, keyInfo, signature)
+    holdWhile(verifyAsync(alg, data, keyInfo, signature))
       .then(result => callback(null, result))
       .catch(err => callback(err, false));
     return;
@@ -1204,7 +1207,7 @@ function generateKeyPair(type: string, options: KeyPairOptions | ((error: Error 
   const now = keyPairNow(type, options ?? {});
   if (now) { setTimeout(() => done(null, now.publicKey, now.privateKey), 0); return; }
   keyPairAlgorithm(type, options ?? {});
-  generateKeyPairAsync(type, options ?? {}).then(
+  holdWhile(generateKeyPairAsync(type, options ?? {})).then(
     ({ publicKey, privateKey }) => done(null, publicKey, privateKey),
     (error) => done(error instanceof Error ? error : new Error(String(error))),
   );
@@ -1634,8 +1637,14 @@ const nodeExports = {
   createPrivateKey,
   generateKeyPair,
   // Node's Web Crypto: the same object globalThis.crypto is in Node, and its SubtleCrypto
-  webcrypto: crypto,
-  subtle: crypto.subtle,
+  // The module's own doors to Web Crypto hold each call as the global's does: `require('crypto').webcrypto.subtle`
+  // is the same work behind the same promises.
+  webcrypto: new Proxy(crypto, { get(target, name) {
+    const member = Reflect.get(target, name, target);
+    if (name === 'subtle' && member) return heldSubtle;
+    return typeof member === 'function' ? member.bind(target) : member;
+  } }),
+  subtle: heldSubtle,
 } satisfies Record<NodeCryptoExport, unknown>;
 // `unsupported` is this engine's own, beside Node's names: what an implemented export throws for an algorithm it lacks.
 const module = { ...nodeExports, unsupported };
