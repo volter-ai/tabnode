@@ -2457,7 +2457,9 @@ function createRequire(
       // The digest this load's OWN resolution carried (node-resolution.ts ResolutionCarried), handed to this module
       // object by the require that resolved it, and only for the path that resolution answered. Otherwise the tree
       // is asked, as it is for every load that did not come straight from a resolution's stat.
-      const carried = __substrateLoading.get(module)?.carried;
+      // Taken once: a handler run again on the same module object is not answered with it.
+      const loading = __substrateLoading.get(module), carried = loading?.carried;
+      if (loading?.carried !== undefined) delete loading.carried;
       const digest = kind ? (carried !== undefined && carried.path === resolvedPath ? carried.digest : undefined) ?? vfs.contentDigest(resolvedPath) : undefined;
       const body = kind && digest ? __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)) : undefined;
       if (body !== undefined) {

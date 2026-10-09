@@ -309,7 +309,9 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
       const answer = (path: string): string => { if (carries && digest !== undefined) { carries.path = path; carries.digest = digest; } return path; };
       if (found && fs.realpathSync) {
         const held = kept?.realPaths.get(found);
-        if (held !== undefined) return answer(held);
+        // A real path answered from what the process kept was not read in this resolution: a link retargeted
+        // since would give the kept path with the new target's digest. Nothing is carried with it.
+        if (held !== undefined) return held;
         try { const real = fs.realpathSync(found); kept?.realPaths.set(found, real); return answer(real); } catch { return answer(found); }
       }
       return found ? answer(found) : found;
