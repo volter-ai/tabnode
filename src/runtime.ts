@@ -1679,7 +1679,9 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
   if (typeof globalThis.File !== "undefined") bufferModule.File = globalThis.File;
   bufferModule.kStringMaxLength = (bufferModule.constants && bufferModule.constants.MAX_STRING_LENGTH) || 536870888;
   bufferModule.isUtf8 = (input: any) => {
-    const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+    const view = input instanceof Uint8Array ? input : new Uint8Array(input);
+    // shared bytes are decoded from an unshared copy, whichever decoder this name is here (node-lib/binding/buffer.ts)
+    const bytes = Object.prototype.toString.call(view.buffer) === "[object SharedArrayBuffer]" ? new Uint8Array(view) : view;
     try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); return true; } catch (error) { return false; }
   };
   bufferModule.isAscii = (input: any) => {
