@@ -13,7 +13,8 @@
 
 export interface ResolutionFs {
   existsSync(path: string): boolean;
-  statSync(path: string, options?: { throwIfNoEntry?: boolean }): { isFile(): boolean; isDirectory(): boolean } | undefined;
+  /** `contentDigest`: the file's content sha256 where the tree gave it with the stat (64 lowercase hex), as `contentDigest(path)` would answer at that moment. */
+  statSync(path: string, options?: { throwIfNoEntry?: boolean }): { isFile(): boolean; isDirectory(): boolean; contentDigest?: string } | undefined;
   readFileSync(path: string, encoding: "utf8"): string | Uint8Array;
   realpathSync?(path: string): string;
 }
@@ -72,9 +73,18 @@ export interface ResolutionKept {
   probes?: { file: number; directory: number; absent: number; held: number; outside: number; windows: number };
 }
 
+/**
+ * WHAT A RESOLUTION CARRIES TO ITS OWN LOAD, beside the path it answers: the tree's digest of the file's content,
+ * where the stat that found the file in THIS resolution came with one. It is a field of this one resolution's
+ * answer, filled for the caller that asked and for nobody else: nothing is kept by path, so no later load of the
+ * same file (through a cached answer, another specifier, a `require.resolve` long before) can take it. A
+ * resolution answered from what was kept made no stat and carries none.
+ */
+export interface ResolutionCarried { path?: string; digest?: string }
+
 export interface NodeResolver {
   /** The file a specifier names from a directory, or null when the tree does not answer it. Builtins are the caller's. */
-  resolve(specifier: string, fromDir: string, kept?: ResolutionKept): string | null;
+  resolve(specifier: string, fromDir: string, kept?: ResolutionKept, carried?: ResolutionCarried): string | null;
 }
 
 export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
@@ -98,6 +108,8 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
    * changes the tree under it, so it asks each path once. Emptied when a resolution begins; nothing outlives it.
    */
   const asked = new Map<string, 0 | 1 | -1>();
+  /** The digests the stats of the resolution in hand carried, by the path statted. Emptied with `asked`. */
+  const carried = new Map<string, string>();
   /** 0 a file, 1 a directory, -1 neither or absent. */
   const kind = (path: string): 0 | 1 | -1 => {
     const again = asked.get(path);
@@ -111,7 +123,11 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     const probes = kept?.probes;
     if (held !== undefined) { if (probes) probes.held += 1; return held; }
     let found: 0 | 1 | -1 = -1;
-    try { const stat = fs.statSync(path, { throwIfNoEntry: false }); found = stat?.isFile() ? 0 : stat?.isDirectory() ? 1 : -1; } catch { found = -1; }
+    try {
+      const stat = fs.statSync(path, { throwIfNoEntry: false });
+      found = stat?.isFile() ? 0 : stat?.isDirectory() ? 1 : -1;
+      if (found === 0 && typeof stat!.contentDigest === "string") carried.set(path, stat!.contentDigest);
+    } catch { found = -1; }
     if (probes) {
       if (found === 0) probes.file += 1; else if (found === 1) probes.directory += 1; else probes.absent += 1;
       if (kept?.stats === undefined) probes.outside += 1;
@@ -272,12 +288,13 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     }
   };
 
-  const resolve = (specifier: string, fromDir: string, keeping?: ResolutionKept): string | null => {
+  const resolve = (specifier: string, fromDir: string, keeping?: ResolutionKept, carries?: ResolutionCarried): string | null => {
     // Without a process's own store, manifests are read once per resolution and never kept across: this resolver
     // outlives processes, the tree changes under it, an install links a package in. A process's store keeps the
     // ones it read, as Node's does; an absent manifest is asked again in the next resolution either way.
     manifests.clear();
     asked.clear();
+    carried.clear();
     const outer = kept;
     kept = keeping;
     try {
@@ -286,12 +303,18 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
       // a link (pnpm lays every dependency under `.pnpm` and links it in) is
       // then walked up from where it really is, so its own dependencies beside
       // it are found. A filesystem without links answers the path itself.
+      // The digest of what was found, where its own stat in this resolution carried one, goes with the answer to
+      // the caller that asked: the stat followed links, so it is the digest of the file the real path names.
+      const digest = found ? carried.get(found) : undefined;
+      const answer = (path: string): string => { if (carries && digest !== undefined) { carries.path = path; carries.digest = digest; } return path; };
       if (found && fs.realpathSync) {
         const held = kept?.realPaths.get(found);
+        // A real path answered from what the process kept was not read in this resolution: a link retargeted
+        // since would give the kept path with the new target's digest. Nothing is carried with it.
         if (held !== undefined) return held;
-        try { const real = fs.realpathSync(found); kept?.realPaths.set(found, real); return real; } catch { return found; }
+        try { const real = fs.realpathSync(found); kept?.realPaths.set(found, real); return answer(real); } catch { return answer(found); }
       }
-      return found;
+      return found ? answer(found) : found;
     } finally { kept = outer; }
   };
   const resolveCached = (specifier: string, fromDir: string): string | null => {

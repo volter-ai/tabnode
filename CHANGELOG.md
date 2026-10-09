@@ -11,6 +11,16 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   `TextDecoder` given shared bytes and a `fetch` body that is a shared view go
   through an unshared copy of exactly those bytes. pino's thread-stream is
   such a Buffer. A buffer that is not shared takes the path it always took.
+- A module's load takes the content digest its own resolution's stat carried,
+  where the embedder's `statSync` answers one (`contentDigest` on the stats
+  object), and asks `contentDigest(path)` only where it carried none. The load
+  asked for it in a request of its own for every module; an embedder whose
+  stat already holds it answers one request fewer for a load whose resolution
+  made that stat (a first `require` of a file; a resolution answered from the
+  engine's caches, a real path already kept, an `import` and a program's own
+  resolver ask as before). The digest travels with that one resolution to its
+  own load and is kept by no path. An embedder whose stats carry no digest
+  sees no change.
 
 - To follow, not yet changed: four optional members added in v0.9.0 and before
   are second paths that only an embedder without them takes (the stream
