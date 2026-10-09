@@ -3609,6 +3609,14 @@ function __substrateTextDecoderPolyfill(): void {
     }
 
     decode(input?: BufferSource, options?: TextDecodeOptions): string {
+      // A view over shared memory is decoded from a copy: the web's decoder refuses one, and Node's takes it.
+      if (input && typeof SharedArrayBuffer !== 'undefined') {
+        const buffer = input instanceof ArrayBuffer ? undefined : (input as ArrayBufferView).buffer;
+        if (buffer instanceof SharedArrayBuffer) {
+          const view = input as ArrayBufferView;
+          input = new Uint8Array(new Uint8Array(buffer, view.byteOffset, view.byteLength));
+        } else if ((input as unknown) instanceof SharedArrayBuffer) input = new Uint8Array(new Uint8Array(input as unknown as SharedArrayBuffer));
+      }
       if (this.decoder) {
         return this.decoder.decode(input, options);
       }

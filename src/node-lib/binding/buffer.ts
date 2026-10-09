@@ -58,10 +58,25 @@ function clamp(buffer: Uint8Array, start: number, end: number): [number, number]
 
 // ── Encoding a string into a buffer ────────────────────────────────────────
 
+/**
+ * Whether a view is over shared memory. The web's TextEncoder and TextDecoder refuse such a view ("The provided
+ * Uint8Array value must not be shared"), where Node's StringBytes read and write a Buffer over a SharedArrayBuffer
+ * as any other: so a string goes into one through a private buffer, and comes out of one from a copy.
+ */
+const shared = (buf: Uint8Array): boolean => typeof SharedArrayBuffer !== 'undefined' && buf.buffer instanceof SharedArrayBuffer;
+/** The same bytes, in memory a decoder takes. */
+const unshared = (bytes: Uint8Array): Uint8Array => shared(bytes) ? new Uint8Array(bytes) : bytes;
+
 /** Node's `StringWrite<UTF8>`: as many whole code points as fit. */
 export function utf8WriteStatic(buf: Uint8Array, string: string, offset = 0, length = buf.byteLength - offset): number {
   const room = Math.min(length, buf.byteLength - offset);
   if (room <= 0) return 0;
+  if (shared(buf)) {
+    const scratch = new Uint8Array(room);
+    const { written } = encoder.encodeInto(string, scratch);
+    buf.set(scratch.subarray(0, written ?? 0), offset);
+    return written ?? 0;
+  }
   const { written } = encoder.encodeInto(string, buf.subarray(offset, offset + room));
   return written ?? 0;
 }
@@ -168,7 +183,7 @@ export function base64urlWrite(buf: Uint8Array, string: string, offset = 0, leng
 
 export function utf8Slice(buf: Uint8Array, start?: number, end?: number): string {
   const [from, to] = clamp(buf, start as number, end as number);
-  return utf8Decoder.decode(buf.subarray(from, to));
+  return utf8Decoder.decode(unshared(buf.subarray(from, to)));
 }
 
 export function asciiSlice(buf: Uint8Array, start?: number, end?: number): string {
@@ -180,7 +195,7 @@ export function asciiSlice(buf: Uint8Array, start?: number, end?: number): strin
 
 export function latin1Slice(buf: Uint8Array, start?: number, end?: number): string {
   const [from, to] = clamp(buf, start as number, end as number);
-  return latin1Decoder.decode(buf.subarray(from, to));
+  return latin1Decoder.decode(unshared(buf.subarray(from, to)));
 }
 
 export function ucs2Slice(buf: Uint8Array, start?: number, end?: number): string {
@@ -189,7 +204,7 @@ export function ucs2Slice(buf: Uint8Array, start?: number, end?: number): string
   const whole = to - ((to - from) % 2);
   const bytes = buf.subarray(from, whole);
   // A view whose offset is odd cannot be a `Uint16Array`; copy that one.
-  const aligned = (bytes.byteOffset % 2) === 0 ? bytes : new Uint8Array(bytes);
+  const aligned = (bytes.byteOffset % 2) === 0 && !shared(bytes) ? bytes : new Uint8Array(bytes);
   return ucs2Decoder.decode(aligned);
 }
 
@@ -425,7 +440,7 @@ export function swap64(buf: Uint8Array): Uint8Array {
 
 /** Node's `IsUtf8`: whether the bytes decode without a replacement. */
 export function isUtf8(buf: Uint8Array): boolean {
-  try { new TextDecoder('utf-8', { fatal: true }).decode(buf); return true; } catch { return false; }
+  try { new TextDecoder('utf-8', { fatal: true }).decode(unshared(buf)); return true; } catch { return false; }
 }
 
 /** Node's `IsAscii`: every byte under 128. */
