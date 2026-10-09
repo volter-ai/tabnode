@@ -886,7 +886,10 @@ function __substrateSayLoadClock(process: object, at: string): void {
   const wall = { ...clock.wall }, now = performance.now();
   wall[clock.phase] += now - clock.at;
   console.log('[boot-trace]', JSON.stringify({ event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
-    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began), wallMs: round(wall), kernelMs: round(clock.kernel) }));
+    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began), wallMs: round(wall), kernelMs: round(clock.kernel),
+    // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
+    // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
+    kernelFrom: { fileSystem: clock.fs ? (clock.fs as object).constructor?.name ?? 'unnamed' : null, total: typeof clock.fs?.kernelBlockedMs === 'function' ? Math.round(clock.fs.kernelBlockedMs()) : 'no kernelBlockedMs on it' } }));
 }
 function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
   if (counts.timer !== undefined) { clearTimeout(counts.timer); counts.timer = undefined; }
