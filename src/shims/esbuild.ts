@@ -459,8 +459,12 @@ export async function analyzeMetafile(metafile: string | EsbuildMetafile, option
  */
 const SHIM_PLUGINS = new Set(["vfs-loader", "neighbors"]);
 
+/** Whether this realm was ever given a host: an instrument for a thread that did not start. */
+let hostEverInstalled = false;
+
 export function useHost(host: EsbuildHost | null): void {
   currentHost = host;
+  if (host) hostEverInstalled = true;
   // The thread for synchronous calls starts now, while this realm's loop
   // still runs: a realm that installs a host is one guests run in, and a
   // worker created inside a blocked call never starts (its start is the
@@ -623,6 +627,9 @@ interface SyncService {
   initialized: boolean;
   /** What the thread reported through its error event, where the realm's loop ran to deliver it. */
   failure?: string;
+  /** When and by what the thread was started: said where it did not start. */
+  startedAt: number;
+  startedBy: string;
 }
 let syncService: SyncService | null = null;
 const SYNC_STATE = 0;
@@ -718,7 +725,7 @@ function __syncServiceStart(): SyncService {
     ? URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
     : new URL(`data:text/javascript,${encodeURIComponent(source)}`);
   const worker = new WorkerClass(url, { type: 'module' });
-  const service: SyncService = { control, data, worker, initialized: false };
+  const service: SyncService = { control, data, worker, initialized: false, startedAt: Date.now(), startedBy: currentHost ? 'the host being installed' : 'a synchronous call, with no esbuild host installed in this realm' };
   const failed = (event: unknown) => { service.failure = String((event as { message?: unknown } | null)?.message ?? event); };
   if (typeof worker.on === 'function') worker.on('error', failed);
   else worker.onerror = failed;
@@ -742,7 +749,7 @@ function __syncAwaitStarted(service: SyncService): void {
   Atomics.wait(control, SYNC_STARTED, 0, SYNC_START_WAIT_MS);
   if (Atomics.load(control, SYNC_STARTED) === 1) return;
   __syncServiceDrop(service);
-  throw new Error(`esbuild's thread for synchronous calls did not start within ${SYNC_START_WAIT_MS / 1000} s${service.failure ? ` (${service.failure})` : ''}. A worker this realm starts runs only once this realm's loop has turned since; it is started when esbuild's host is installed, and this call found it not yet running.`);
+  throw new Error(`esbuild's thread for synchronous calls did not start within ${SYNC_START_WAIT_MS / 1000} s${service.failure ? ` (${service.failure})` : ''}; it was started by ${service.startedBy} ${Date.now() - service.startedAt} ms before this call gave up, and a host ${hostEverInstalled ? 'was' : 'was NEVER'} installed in this realm. A worker this realm starts runs only once this realm's loop has turned since; it is started when esbuild's host is installed, and this call found it not yet running.`);
 }
 
 /** Blocks until the thread's answer is in the shared window and returns it, or throws what esbuild threw, or throws at the bound. */
