@@ -837,8 +837,60 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
  */
 type PreparedCounts = { digest: number; hash: number; kept: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
 const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
+/**
+ * An instrument: WHERE A PROCESS'S MODULE LOADING SPENDS ITS TIME, by this realm's own clock, said beside the counts
+ * above (when its loading has been quiet for two seconds, and at its exit). A load is about a millisecond a module in
+ * a tab and a third of that in Node (17,000 modules of one application: 17 s against 5 to 7.5), and the kernel's own
+ * account holds a third of the tab's; nothing said what the rest was.
+ *
+ * Every instant since the process's first `require` is in exactly one phase, and a phase's time is its own, never a
+ * nested load's: a `require` made while a body runs leaves `evaluate` and returns to it.
+ *   resolve   from a `require`'s start to its module's load: the resolver's candidates, its stats, the cache's answer;
+ *   read      the load step before a body is run: the file's digest, its prepared body's bytes, or its source;
+ *   link      the engine's own work to run one body: its `require`, console, import function and wrapper;
+ *   compile   the script made of the wrapped body (the engine's eval);
+ *   evaluate  the module's own body;
+ *   outside   everything else since the first `require`: the program running, and waiting.
+ * `kernelMs` is, of each phase, the time this realm was blocked on its file system's answers, where its file
+ * system says it (`vfs.kernelBlockedMs`, the holder's); a phase's own work is its time less that. Without one the
+ * field is zero and the phase is not split. The process's entry script is run elsewhere and is in `outside`.
+ */
+type LoadPhase = 'outside' | 'resolve' | 'read' | 'link' | 'compile' | 'evaluate';
+type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>; bodies: number; bodyBytes: number; began: number; said: number };
+const __substrateLoadClocks = new WeakMap<object, LoadClock>();
+type LoadClockFs = { kernelBlockedMs?: () => number };
+/** Ends the process's current phase now and begins `phase`; answers the phase that ended, for its caller to return to. */
+function __substrateLoadPhase(process: object, vfs: object | undefined, phase: LoadPhase): LoadPhase {
+  const now = performance.now();
+  let clock = __substrateLoadClocks.get(process);
+  if (!clock) {
+    const zero = (): Record<LoadPhase, number> => ({ outside: 0, resolve: 0, read: 0, link: 0, compile: 0, evaluate: 0 });
+    clock = { phase: 'outside', at: now, kernelAt: 0, wall: zero(), kernel: zero(), bodies: 0, bodyBytes: 0, began: now, said: -1 };
+    __substrateLoadClocks.set(process, clock);
+  }
+  // The file system is the process's, known from the first caller that holds it (a `require` made through
+  // `Module.prototype.require` holds none): its total is taken from then, so nothing before is counted to a phase.
+  if (!clock.fs && vfs) { clock.fs = vfs as LoadClockFs; clock.kernelAt = clock.fs.kernelBlockedMs?.() ?? 0; }
+  const kernelNow = clock.fs?.kernelBlockedMs?.() ?? 0;
+  const was = clock.phase;
+  clock.wall[was] += now - clock.at; clock.kernel[was] += kernelNow - clock.kernelAt;
+  clock.phase = phase; clock.at = now; clock.kernelAt = kernelNow;
+  return was;
+}
+function __substrateSayLoadClock(process: object, at: string): void {
+  const clock = __substrateLoadClocks.get(process);
+  if (!clock || clock.bodies === clock.said) return;
+  clock.said = clock.bodies;
+  const round = (values: Record<LoadPhase, number>): Record<string, number> => Object.fromEntries(Object.entries(values).map(([name, ms]) => [name, Math.round(ms)]));
+  // The phase open now is counted to this instant, in a copy: the clock itself goes on.
+  const wall = { ...clock.wall }, now = performance.now();
+  wall[clock.phase] += now - clock.at;
+  console.log('[boot-trace]', JSON.stringify({ event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
+    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began), wallMs: round(wall), kernelMs: round(clock.kernel) }));
+}
 function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
   if (counts.timer !== undefined) { clearTimeout(counts.timer); counts.timer = undefined; }
+  __substrateSayLoadClock(process, at);
   const totals = { digest: counts.digest, hash: counts.hash, kept: counts.kept, noDirectory: counts.noDirectory, notOwnText: counts.notOwnText, format: counts.format, types: counts.types, notJavaScript: counts.notJavaScript };
   const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
   if (total === counts.said) return;
@@ -2049,7 +2101,8 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module.prototype.require = function (this: any, id: string) {
     const keeping = __substrateKeptFor(process);
     keeping.depth += 1;
-    try { return Module._load(id, this, false); } finally { keeping.depth -= 1; }
+    const phase = __substrateLoadPhase(process, undefined, 'resolve');
+    try { return Module._load(id, this, false); } finally { keeping.depth -= 1; __substrateLoadPhase(process, undefined, phase); }
   };
   Module.__substrateRequire = Module.prototype.require;
   // `Module.prototype._compile(content, filename)` is the seam every loader
@@ -2415,6 +2468,7 @@ function createRequire(
    * compiled through `module._compile`, which a program may have replaced on this module.
    */
   const builtinLoad = (module: Module, resolvedPath: string): void => {
+    __substrateLoadPhase(process, vfs, 'read');
     const Mod = __substrateModule();
     const resolvedAs = __substrateLoading.get(module)?.resolvedAs;
     // A module's source, and the format it is compiled in, are the load step.
@@ -2548,6 +2602,9 @@ function createRequire(
    * body Node-shaped here.
    */
   const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, scoped = false): void => {
+    __substrateLoadPhase(process, vfs, 'link');
+    const loadClock = __substrateLoadClocks.get(process);
+    if (loadClock) { loadClock.bodies += 1; loadClock.bodyBytes += prepared.length; }
     let code = prepared;
     // Create require for this module
     const moduleRequire = createRequire(
@@ -2592,6 +2649,7 @@ function createRequire(
       // importers await.
       let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
       let fn;
+      __substrateLoadPhase(process, vfs, 'compile');
       try {
         fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, process);
       } catch (evalError) {
@@ -2606,9 +2664,12 @@ function createRequire(
         try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), process); }
         catch { throw new SyntaxError(`${msg} (in ${resolvedPath})`); }
       }
+      __substrateLoadPhase(process, vfs, 'link');
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(moduleRequire, process, importMetaUrl);
+      const importMeta = createImportMeta(moduleRequire, importMetaUrl, dirname, resolvedPath);
 
+      __substrateLoadPhase(process, vfs, 'evaluate');
       const body = __substrateInStatWindow(process, () => withGuestExecution(() => fn(
         module.exports,
         moduleRequire,
@@ -2617,7 +2678,7 @@ function createRequire(
         dirname,
         process,
         consoleWrapper,
-        createImportMeta(moduleRequire, importMetaUrl, dirname, resolvedPath),
+        importMeta,
         dynamicImport,
         __substrateGuestGlobal,
         __substrateGuestConstructor
@@ -2672,7 +2733,8 @@ function createRequire(
   const requireRaw = (id: string): unknown => {
     const keeping = __substrateKeptFor(process);
     keeping.depth += 1;
-    try { return requireCounted(id); } finally { keeping.depth -= 1; }
+    const phase = __substrateLoadPhase(process, vfs, 'resolve');
+    try { return requireCounted(id); } finally { keeping.depth -= 1; __substrateLoadPhase(process, vfs, phase); }
   };
   const requireCounted = (id: string): unknown => {
     // A data: URL is a module of its own, loaded at that URL.
