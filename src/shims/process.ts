@@ -11,6 +11,11 @@ import { Readable } from '../node-lib/stream-module';
 import { loadNodeLibFor } from '../node-lib/load';
 import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
+import { nodeLibBinding } from '../node-lib/binding/index';
+
+/** The names Node 24's `process.binding` answers with `internalBinding(name)` (lib/internal/bootstrap/realm.js). */
+const PROCESS_BINDING_ALLOWED = new Set(['buffer', 'cares_wrap', 'config', 'constants', 'contextify', 'fs', 'fs_event_wrap', 'icu', 'inspector',
+  'js_stream', 'os', 'pipe_wrap', 'process_wrap', 'spawn_sync', 'stream_wrap', 'tcp_wrap', 'tls_wrap', 'tty_wrap', 'udp_wrap', 'uv', 'zlib']);
 import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, type ProcessToken } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
 import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
@@ -813,11 +818,12 @@ export function createProcess(options?: {
      * before it reads anything public: the Prisma CLI asks for `constants`,
      * `buffer` and `tty_wrap` on its way in. The engine had no such function,
      * so the call was `undefined is not a function` -- a TypeError where Node
-     * answers. `constants` is the one binding a tab can serve honestly, and it
-     * is the engine's own table, the same numbers `require("constants")` hands
-     * out; every other name gets the error Node raises for a module it does
-     * not have, because a binding a tab cannot back is a surface that answers
-     * and then cannot act. Node prints the DEP0111 warning only under
+     * answers. A name on Node's allow list is answered with the engine's own
+     * internal binding of that name, the one Node's vendored lib runs on, so
+     * it acts as Node's lib does (`constants` is the engine's table, the same
+     * numbers `require("constants")` hands out). A listed name the engine has
+     * no binding for, and every unlisted one, gets the error Node raises for a
+     * module it does not have. Node prints the DEP0111 warning only under
      * `--pending-deprecation`, and only once, so this does the same.
      */
     binding(name: string): unknown {
@@ -827,6 +833,13 @@ export function createProcess(options?: {
       }
       if (name === "constants") return constantsBinding();
       if (name === "tty_wrap") return ttyWrapBinding;
+      // Node answers `internalBinding(name)` for a name on its allow list (lib/internal/bootstrap/realm.js,
+      // processBindingAllowList, Node 24), and the engine's internal bindings are the ones Node's own vendored lib
+      // runs on: `fs` among them, whose `stat` and `FSReqCallback` a fast stat reaches for (audiobookshelf's
+      // ripstat: `const { stat, FSReqCallback } = process.binding('fs')`, which threw here at load). A listed name
+      // the engine holds no binding for raises Node's own error, as an unlisted one does.
+      const binding = PROCESS_BINDING_ALLOWED.has(name) ? nodeLibBinding(name) : undefined;
+      if (binding) return binding();
       throw new Error("No such module: " + name);
     },
 
