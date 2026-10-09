@@ -28,6 +28,7 @@ import { cryptoConstants as constants } from './crypto-constants';
 import { cipherNames, createCipherClasses } from './crypto-cipher';
 import type { NodeCryptoExport, NodeCryptoUnavailable } from './crypto-exports';
 import * as asymmetric from './crypto-ec';
+import * as rsa from './crypto-rsa';
 import type { AsymmetricKey, DsaEncoding, KeyEncodingType } from './crypto-ec';
 export { constants };
 
@@ -810,6 +811,15 @@ function sign(
     throw error;
   }
 
+  // An RSA key signs by the engine's own arithmetic in either form; the callback form answers later, as Node's does.
+  if (callback && rsaKeyOf(keyInfo)) {
+    let made: Buffer;
+    try { made = signSync(alg, cryptoBytes(data, undefined, true), keyInfo, rsaOptionsOf(key)); }
+    catch (error) { setTimeout(() => callback(error as Error, null as unknown as Buffer), 0); return; }
+    setTimeout(() => callback(null, made), 0);
+    return;
+  }
+
   // For async operation with callback
   if (callback) {
     holdWhile(signAsync(alg, data, keyInfo))
@@ -820,7 +830,7 @@ function sign(
 
   // Synchronous operation - we need to use a workaround
   // Store the promise result for later retrieval
-  const result = signSync(alg, data, keyInfo);
+  const result = signSync(alg, cryptoBytes(data, undefined, true), keyInfo, rsaOptionsOf(key));
   return result;
 }
 
@@ -852,6 +862,14 @@ function verify(
     throw error;
   }
 
+  if (callback && rsaKeyOf(keyInfo)) {
+    let answer: boolean;
+    try { answer = verifySync(alg, cryptoBytes(data, undefined, true), keyInfo, cryptoBytes(signature, undefined, true), rsaOptionsOf(key)); }
+    catch (error) { setTimeout(() => callback(error as Error, false), 0); return; }
+    setTimeout(() => callback(null, answer), 0);
+    return;
+  }
+
   if (callback) {
     holdWhile(verifyAsync(alg, data, keyInfo, signature))
       .then(result => callback(null, result))
@@ -859,7 +877,7 @@ function verify(
     return;
   }
 
-  return verifySync(alg, data, keyInfo, signature);
+  return verifySync(alg, cryptoBytes(data, undefined, true), keyInfo, cryptoBytes(signature, undefined, true), rsaOptionsOf(key));
 }
 
 // ============================================================================
@@ -894,7 +912,7 @@ class Sign extends EventEmitter {
     const keyInfo = extractKeyInfo(privateKey);
     const signature = keyInfo.asymmetric
       ? signAsymmetric(this.#algorithm, combined, keyInfo.asymmetric, dsaEncodingOf(privateKey))
-      : signSync(this.#algorithm, combined, keyInfo);
+      : signSync(this.#algorithm, combined, keyInfo, rsaOptionsOf(privateKey));
 
     return outputEncoding ? digestResult(signature, outputEncoding) : signature;
   }
@@ -924,7 +942,7 @@ class Verify extends EventEmitter {
     const sig = typeof signature === 'string' ? Buffer.from(cryptoBytes(signature, signatureEncoding ?? 'utf8')) : signature;
 
     if (keyInfo.asymmetric) return verifyAsymmetric(this.#algorithm, combined, keyInfo.asymmetric, sig, dsaEncodingOf(publicKey));
-    return verifySync(this.#algorithm, combined, keyInfo, sig);
+    return verifySync(this.#algorithm, combined, keyInfo, sig, rsaOptionsOf(publicKey));
   }
 }
 
@@ -974,7 +992,9 @@ class KeyObject {
   get asymmetricKeyDetails(): Record<string, unknown> | undefined {
     if (this.#_type === 'secret') return undefined;
     const held = this.#_asymmetric;
-    return held?.kind === 'ec' ? { namedCurve: asymmetric.nodeCurveName(held.curve) } : {};
+    if (held) return held.kind === 'ec' ? { namedCurve: asymmetric.nodeCurveName(held.curve) } : {};
+    const rsaKey = this.#_keyData instanceof Uint8Array ? rsa.keyFromDer(this.#_keyData) : undefined;
+    return rsaKey ? { modulusLength: rsa.modulusBits(rsaKey), publicExponent: rsaKey.e } : {};
   }
 
   equals(other: unknown): boolean {
@@ -994,7 +1014,10 @@ class KeyObject {
       if (format === 'jwk') return { kty: 'oct', k: Buffer.from(this.#_keyData).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') };
       throw Object.assign(new TypeError(`The property 'options.format' is invalid. Received '${String(format)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
     }
-    // Any other key (RSA) is held as the DER it was read from and nothing is known of its numbers: that DER can be
+    // An RSA key is held as DER and read into its numbers (crypto-rsa.ts): written in any encoding Node writes.
+    const rsaKey = this.#_keyData instanceof Uint8Array ? rsa.keyFromDer(this.#_keyData) : undefined;
+    if (rsaKey) return exportRsa(rsaKey, this.#_type === 'private' ? 'private' : 'public', options);
+    // Any other key is held as the DER it was read from and nothing is known of its numbers: that DER can be
     // given back, and nothing else. Every other request is refused by name; it used to be answered with the same
     // bytes whatever was asked, a PEM or an encrypted key among them.
     if (options === undefined || options === null || typeof options !== 'object') throw new ERR_INVALID_ARG_TYPE('options', 'object', options);
@@ -1015,6 +1038,9 @@ function createPublicKey(key: KeyLike): KeyObject {
   const keyInfo = extractKeyInfo(key);
   // A private key gives its public key, as Node's does.
   if (keyInfo.asymmetric) return keyObjectOf(asymmetric.publicOf(keyInfo.asymmetric), 'public');
+  // An RSA key, private or public, gives its public key, held as its SubjectPublicKeyInfo.
+  const rsaKey = rsaKeyOf(keyInfo);
+  if (rsaKey) return rsaKeyObject(rsaKey, 'public');
   notAKey(key, keyInfo);
   return new KeyObject('public', keyInfo.keyData as Uint8Array, keyInfo.algorithm);
 }
@@ -1024,6 +1050,11 @@ function createPrivateKey(key: KeyLike): KeyObject {
   if (keyInfo.asymmetric) {
     if (!keyInfo.asymmetric.secret) throw Object.assign(new TypeError('The key is a public key; a private key is required.'), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
     return keyObjectOf(keyInfo.asymmetric, 'private');
+  }
+  const rsaKey = rsaKeyOf(keyInfo);
+  if (rsaKey) {
+    if (rsaKey.d === undefined) throw Object.assign(new TypeError('The key is a public key; a private key is required.'), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+    return rsaKeyObject(rsaKey, 'private');
   }
   notAKey(key, keyInfo);
   return new KeyObject('private', keyInfo.keyData as Uint8Array, keyInfo.algorithm);
@@ -1169,7 +1200,22 @@ async function generateKeyPairAsync(type: string, options: KeyPairOptions): Prom
  * A key pair made here and now, for the types whose arithmetic the engine carries (crypto-ec.ts): 'ec' over P-256,
  * P-384 and P-521, and 'ed25519'. Undefined for a type it does not carry, which stays WebCrypto's and asynchronous.
  */
+let saidRsaGeneration = false;
 function keyPairNow(type: string, options: KeyPairOptions): { publicKey: KeyObject | string | Buffer | Record<string, string>; privateKey: KeyObject | string | Buffer | Record<string, string> } | undefined {
+  if (type === 'rsa') {
+    // AN RSA KEY PAIR MADE HERE AND NOW: two primes searched for in BigInt (crypto-rsa.ts). It is the one slow
+    // thing this engine does for RSA, on the order of a second or more for 2048 bits where OpenSSL takes a tenth,
+    // and the calling thread waits for it as it does in Node. Said once, with the time it took.
+    if (typeof options.modulusLength !== 'number') throw new ERR_INVALID_ARG_TYPE('options.modulusLength', 'number', options.modulusLength);
+    const exponent = options.publicExponent === undefined ? 65537n : BigInt(options.publicExponent as number | bigint);
+    const began = Date.now();
+    const pair = rsa.generateKey(options.modulusLength, exponent, rsaRandom);
+    if (!saidRsaGeneration) { saidRsaGeneration = true; console.warn(`[tabnode] crypto.generateKeyPairSync('rsa', ${options.modulusLength}) took ${Date.now() - began} ms: the engine searches for the primes in JavaScript, and the thread waits. generateKeyPair (asynchronous) uses the browser's own generator`); }
+    return {
+      publicKey: options.publicKeyEncoding ? exportRsa(pair, 'public', options.publicKeyEncoding) : rsaKeyObject(pair, 'public'),
+      privateKey: options.privateKeyEncoding ? exportRsa(pair, 'private', options.privateKeyEncoding) : rsaKeyObject(pair, 'private'),
+    };
+  }
   let made: AsymmetricKey;
   if (type === 'ec') {
     if (typeof options.namedCurve !== 'string') throw new ERR_INVALID_ARG_TYPE('options.namedCurve', 'string', options.namedCurve);
@@ -1334,6 +1380,8 @@ function readKeyInfo(key: KeyLike): KeyInfo {
       if (bytes) {
         const fromDer = asymmetric.keyFromDer(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), key.type as KeyEncodingType | undefined);
         if (fromDer) return keyInfoOfAsymmetric(fromDer);
+        const der = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), rsaDer = rsa.keyFromDer(der);
+        if (rsaDer) return { keyData: der, algorithm: 'RSA-SHA256', type: rsaDer.d === undefined ? 'public' : 'private', format: 'der' };
         if (typeof inner === 'string') return readKeyInfo(bytes as unknown as Buffer);
       }
     }
@@ -1360,11 +1408,16 @@ function readKeyInfo(key: KeyLike): KeyInfo {
 
     const keyData = Buffer.from(atob(base64));
 
-    // Try to detect algorithm from key header
+    // AN RSA KEY IS KNOWN BY WHAT ITS DER HOLDS, in any of its four encodings (crypto-rsa.ts). The type used to be
+    // guessed from letters anywhere in the text, the base64 included: a PKCS#8 RSA key whose body held "EC" was an
+    // EC key (`asymmetricKeyType` 'ec'), and one whose body held neither had no type at all.
+    const rsaKey = rsa.keyFromDer(keyData);
+    if (rsaKey) return { keyData, algorithm: 'RSA-SHA256', type: rsaKey.d === undefined ? 'public' : 'private', format: 'pem' };
+    const label = /-----BEGIN ([^-]+)-----/.exec(keyStr)?.[1] ?? '';
     let algorithm: string | undefined;
-    if (keyStr.includes('RSA')) algorithm = 'RSA-SHA256';
-    else if (keyStr.includes('EC')) algorithm = 'ES256';
-    else if (keyStr.includes('ED25519')) algorithm = 'Ed25519';
+    if (label.includes('RSA')) algorithm = 'RSA-SHA256';
+    else if (label.includes('EC')) algorithm = 'ES256';
+    else if (label.includes('ED25519')) algorithm = 'Ed25519';
 
     return {
       keyData,
@@ -1482,17 +1535,103 @@ async function verifyAsync(
 // subtle.sign is async and there is no other. Node throws
 // ERR_CRYPTO_UNSUPPORTED_OPERATION for an operation it cannot do, and so does
 // this; what stood here returned syncHash(key || data) as a "signature".
-function signSync(_algorithm: string, _data: Uint8Array, _keyInfo: KeyInfo): Buffer {
-  return unsupported('Synchronous signing');
+// An RSA key signs here and now, by the engine's own arithmetic (crypto-rsa.ts): every other key that reaches these
+// two is one the engine does not hold as numbers, and is refused by name.
+function signSync(algorithm: string, data: Uint8Array, keyInfo: KeyInfo, options: RsaOptions = {}): Buffer {
+  const key = rsaKeyOf(keyInfo);
+  if (!key) return unsupported('Synchronous signing with a key that is not RSA, EC or Ed25519');
+  if (key.d === undefined) throw Object.assign(new TypeError('Invalid key object type public, expected private.'), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+  const digestName = rsaDigestNamed(algorithm);
+  if (options.padding === constants.RSA_PKCS1_PSS_PADDING) return Buffer.from(rsa.signPss(key, digestName, data, options.saltLength ?? -2, rsaDigest, rsaRandom));
+  if (options.padding !== undefined && options.padding !== constants.RSA_PKCS1_PADDING) return unsupported(`RSA signing with padding ${String(options.padding)}`);
+  return Buffer.from(rsa.signPkcs1(key, digestName, data, rsaDigest));
 }
 
 function verifySync(
-  _algorithm: string,
-  _data: Uint8Array,
-  _keyInfo: KeyInfo,
-  _signature: Uint8Array
+  algorithm: string,
+  data: Uint8Array,
+  keyInfo: KeyInfo,
+  signature: Uint8Array,
+  options: RsaOptions = {}
 ): boolean {
-  return unsupported('Synchronous verification');
+  const key = rsaKeyOf(keyInfo);
+  if (!key) return unsupported('Synchronous verification with a key that is not RSA, EC or Ed25519');
+  const digestName = rsaDigestNamed(algorithm);
+  if (options.padding === constants.RSA_PKCS1_PSS_PADDING) return rsa.verifyPss(key, digestName, data, signature, options.saltLength ?? -2, rsaDigest);
+  if (options.padding !== undefined && options.padding !== constants.RSA_PKCS1_PADDING) return unsupported(`RSA verification with padding ${String(options.padding)}`);
+  return rsa.verifyPkcs1(key, digestName, data, signature, rsaDigest);
+}
+
+/** What a key given as `{ key, padding, saltLength, oaepHash, oaepLabel }` says beside the key (Node's own names). */
+interface RsaOptions { padding?: number; saltLength?: number; oaepHash?: string; oaepLabel?: Uint8Array }
+function rsaOptionsOf(key: unknown): RsaOptions {
+  if (typeof key !== 'object' || key === null || ArrayBuffer.isView(key) || key instanceof KeyObject) return {};
+  const given = key as { padding?: unknown; saltLength?: unknown; oaepHash?: unknown; oaepLabel?: unknown };
+  return {
+    ...(typeof given.padding === 'number' ? { padding: given.padding } : {}),
+    ...(typeof given.saltLength === 'number' ? { saltLength: given.saltLength } : {}),
+    ...(typeof given.oaepHash === 'string' ? { oaepHash: given.oaepHash } : {}),
+    ...(given.oaepLabel !== undefined ? { oaepLabel: cryptoBytes(given.oaepLabel as BinaryLike, undefined, true) } : {}),
+  };
+}
+/** The RSA key a key holds, where it is one: read from its DER once and kept beside it. */
+const rsaKeys = new WeakMap<Uint8Array, rsa.RsaKey | null>();
+function rsaKeyOf(keyInfo: KeyInfo): rsa.RsaKey | undefined {
+  if (keyInfo.asymmetric || !(keyInfo.keyData instanceof Uint8Array) || keyInfo.type === 'secret') return undefined;
+  let held = rsaKeys.get(keyInfo.keyData);
+  if (held === undefined) { held = rsa.keyFromDer(keyInfo.keyData) ?? null; rsaKeys.set(keyInfo.keyData, held); }
+  return held ?? undefined;
+}
+const rsaDigest: rsa.Digest = (name, bytes) => new Uint8Array(createHash(name).update(bytes).digest() as unknown as Uint8Array);
+const rsaRandom: rsa.RandomBytes = (length) => {
+  const out = new Uint8Array(length);
+  // getRandomValues gives at most 65,536 bytes a call.
+  for (let at = 0; at < length; at += 65536) globalThis.crypto.getRandomValues(out.subarray(at, Math.min(length, at + 65536)));
+  return out;
+};
+function rsaDigestNamed(algorithm: string): string {
+  const name = rsa.digestNamed(algorithm);
+  if (!name) throw Object.assign(new TypeError(`Invalid digest: ${algorithm}`), { code: 'ERR_CRYPTO_INVALID_DIGEST' });
+  return name;
+}
+/** An RSA key in the encoding and format asked, as Node writes it (lib/internal/crypto/keys.js). */
+function exportRsa(key: rsa.RsaKey, kind: 'public' | 'private', options: KeyEncoding | undefined): Buffer | string | Record<string, string> {
+  if (options === null || typeof options !== 'object') throw new ERR_INVALID_ARG_TYPE('options', 'object', options);
+  if (kind === 'private') refuseKeyEncryption(options);
+  if (options.format === 'jwk') return unsupported('Exporting an RSA key as a JWK');
+  const allowed = kind === 'public' ? ['spki', 'pkcs1'] : ['pkcs8', 'pkcs1'];
+  if (!allowed.includes(options.type as string)) {
+    throw Object.assign(new TypeError(`The property 'options.type' is invalid. Received ${options.type === undefined ? 'undefined' : `'${options.type}'`}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  }
+  const der = rsa.derOf(kind === 'public' ? rsa.publicOf(key) : key, options.type as rsa.RsaEncoding);
+  if (options.format === 'der') return Buffer.from(der);
+  if (options.format !== 'pem') {
+    throw Object.assign(new TypeError(`The property 'options.format' is invalid. Received ${options.format === undefined ? 'undefined' : `'${options.format}'`}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  }
+  const label = options.type === 'spki' ? 'PUBLIC KEY' : options.type === 'pkcs8' ? 'PRIVATE KEY' : kind === 'public' ? 'RSA PUBLIC KEY' : 'RSA PRIVATE KEY';
+  const body = Buffer.from(der).toString('base64').replace(/(.{64})/g, '$1\n').replace(/\n$/, '');
+  return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----\n`;
+}
+function rsaKeyObject(key: rsa.RsaKey, kind: 'public' | 'private'): KeyObject {
+  return new KeyObject(kind, kind === 'public' ? rsa.derOf(rsa.publicOf(key), 'spki') : rsa.derOf(key, 'pkcs8'), 'RSA-SHA256');
+}
+/** RSA encryption to a public key: OAEP unless the key object names PKCS #1 v1.5 padding, as Node chooses. */
+function publicEncrypt(key: KeyLike, buffer: BinaryLike): Buffer {
+  const held = rsaKeyOf(extractKeyInfo(key)), options = rsaOptionsOf(key);
+  if (!held) return unsupported('publicEncrypt with a key that is not RSA');
+  const message = cryptoBytes(buffer, undefined, true);
+  if (options.padding === constants.RSA_PKCS1_PADDING) return Buffer.from(rsa.encryptPkcs1(held, message, rsaRandom));
+  if (options.padding !== undefined && options.padding !== constants.RSA_PKCS1_OAEP_PADDING) return unsupported(`publicEncrypt with padding ${String(options.padding)}`);
+  return Buffer.from(rsa.encryptOaep(held, message, rsaDigestNamed(options.oaepHash ?? 'sha1'), options.oaepLabel ?? new Uint8Array(0), rsaDigest, rsaRandom));
+}
+function privateDecrypt(key: KeyLike, buffer: BinaryLike): Buffer {
+  const held = rsaKeyOf(extractKeyInfo(key)), options = rsaOptionsOf(key);
+  if (!held) return unsupported('privateDecrypt with a key that is not RSA');
+  if (held.d === undefined) throw Object.assign(new TypeError('Invalid key object type public, expected private.'), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+  const ciphertext = cryptoBytes(buffer, undefined, true);
+  if (options.padding === constants.RSA_PKCS1_PADDING) return Buffer.from(rsa.decryptPkcs1(held, ciphertext));
+  if (options.padding !== undefined && options.padding !== constants.RSA_PKCS1_OAEP_PADDING) return unsupported(`privateDecrypt with padding ${String(options.padding)}`);
+  return Buffer.from(rsa.decryptOaep(held, ciphertext, rsaDigestNamed(options.oaepHash ?? 'sha1'), options.oaepLabel ?? new Uint8Array(0), rsaDigest));
 }
 
 async function importKey(
@@ -1591,10 +1730,10 @@ const nodeExports = {
   getCipherInfo: unavailable('getCipherInfo'),
   getCurves: unavailable('getCurves'),
   getDiffieHellman: unavailable('getDiffieHellman'),
-  privateDecrypt: unavailable('privateDecrypt'),
+  privateDecrypt,
   privateEncrypt: unavailable('privateEncrypt'),
   publicDecrypt: unavailable('publicDecrypt'),
-  publicEncrypt: unavailable('publicEncrypt'),
+  publicEncrypt,
   randomUUIDv7: unavailable('randomUUIDv7'),
   setEngine: unavailable('setEngine'),
   setFips: unavailable('setFips'),
