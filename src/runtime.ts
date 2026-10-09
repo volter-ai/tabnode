@@ -57,7 +57,7 @@ import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
 import { sayNativeStreamCounts } from './native-stream-binding';
 import { nodeLibBindingsAsked } from './node-lib/load';
-import type { ResolutionKept } from './node-resolution';
+import type { ResolutionCarried, ResolutionKept } from './node-resolution';
 import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
 import { setSourceMapsSupportOf, sourceMapsSupportOf } from './node-lib/internals/events-util';
 import { ERR_INVALID_ARG_TYPE } from './node-internals';
@@ -1958,7 +1958,7 @@ function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string): boolean {
  */
 const __substrateModuleClasses = new WeakMap<Record<string, Module>, any>();
 /** What a module being loaded carries past its extension's handler, whose signature has no room for it. */
-const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined } }>();
+const __substrateLoading = new WeakMap<object, { carried?: ResolutionCarried; resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined } }>();
 /** Node's `findLongestRegisteredExtension`: the longest registered extension the file's name ends with, else `.js`. */
 function __substrateRegisteredExtension(filename: string, extensions: Record<string, unknown>): string {
   const name = filename.slice(filename.lastIndexOf('/') + 1);
@@ -1981,7 +1981,7 @@ function __substrateRegisteredExtension(filename: string, extensions: Record<str
 const __substrateResolutionKept = new WeakMap<object, ResolutionKept & { depth: number }>();
 function __substrateKeptFor(process: object): ResolutionKept & { depth: number } {
   let kept = __substrateResolutionKept.get(process);
-  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), digests: new Map(), depth: 0, probes: { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 } }; __substrateResolutionKept.set(process, kept); }
+  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0, probes: { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 } }; __substrateResolutionKept.set(process, kept); }
   return kept;
 }
 /**
@@ -2210,10 +2210,10 @@ function createRequire(
   const __substrateModule = () => __substrateModuleClassFor(moduleCache, (parent: any) => createRequire(vfs, fsShim, process, __substrateModuleDir(parent, currentDir), moduleCache, options, processedCodeCache, parent));
   /** The hooks this run has registered, and undefined while it has registered none. */
   const __substrateHooks = (): RunModuleHooks | undefined => __substrateModule().__substrateHooks as RunModuleHooks | undefined;
-  const __substrateResolve = (id: string): string => {
+  const __substrateResolve = (id: string, carried?: ResolutionCarried): string => {
     const Module = __substrateModule();
     return Module._resolveFilename === Module.__substrateResolveFilename
-      ? resolveModule(id, currentDir)
+      ? resolveModule(id, currentDir, carried)
       : Module._resolveFilename(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false, undefined);
   };
   // Module resolution cache for faster repeated imports
@@ -2238,7 +2238,7 @@ function createRequire(
     }
   };
 
-  const resolveModule = (id: string, fromDir: string): string => {
+  const resolveModule = (id: string, fromDir: string, carried?: ResolutionCarried): string => {
     // Handle node: protocol prefix (Node.js 16+)
     if (id.startsWith('node:')) {
       id = id.slice(5);
@@ -2290,7 +2290,7 @@ function createRequire(
     // app found a new gap. This site keeps only its edges — the cache, the
     // builtins, the stand-ins — and calls the shared resolver.
     {
-      const __resolved = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir, __substrateKeptFor(process));
+      const __resolved = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir, __substrateKeptFor(process), carried);
       if (__resolved) {
         __substrateKeepPath(successfulPaths, cacheKey, __resolved);
         return __resolved;
@@ -2319,7 +2319,7 @@ function createRequire(
    * record (`kURL`, `kFormat`, `kModuleSource`).
    */
   type ResolvedAs = { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null };
-  const loadModule = (resolvedPath: string, resolvedAs?: ResolvedAs): Module => {
+  const loadModule = (resolvedPath: string, resolvedAs?: ResolvedAs, carried?: ResolutionCarried): Module => {
     // A path into a package the host stands in for loads the host's file
     // too, from the same table the resolver reads by name
     // (`globalThis.__browserRuntimeStandInPaths`, package name -> file): Vite's
@@ -2400,7 +2400,7 @@ function createRequire(
     // `module._compile`; a handler a program registered (ts-node, @babel/register, pirates) is called here because
     // it is the one in the table, and the `_compile` it replaced on the module is called because the handler it
     // chains to calls it.
-    if (resolvedAs) __substrateLoading.set(module, { resolvedAs });
+    if (resolvedAs || carried?.digest !== undefined) __substrateLoading.set(module, { ...(resolvedAs ? { resolvedAs } : {}), ...(carried?.digest !== undefined ? { carried } : {}) });
     const Mod = __substrateModule();
     Mod.__substrateBuiltinLoad = builtinLoad;
     Mod.__substrateCompileRaw = compileRaw;
@@ -2454,12 +2454,11 @@ function createRequire(
       && (module as Module & { _compile?: unknown })._compile === Mod.__substrateOwnCompile
       && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> })) {
       const kind = preparedModuleKind(resolvedPath);
-      // The digest the stat that resolved this file carried, where it did (node-resolution.ts `digests`): taken and
-      // removed, so it is used for the load its own resolution led to and for no later one. Otherwise asked of the tree.
-      const carriedDigests = __substrateKeptFor(process).digests;
-      const carried = carriedDigests?.get(resolvedPath);
-      if (carried !== undefined) carriedDigests!.delete(resolvedPath);
-      const digest = kind ? carried ?? vfs.contentDigest(resolvedPath) : undefined;
+      // The digest this load's OWN resolution carried (node-resolution.ts ResolutionCarried), handed to this module
+      // object by the require that resolved it, and only for the path that resolution answered. Otherwise the tree
+      // is asked, as it is for every load that did not come straight from a resolution's stat.
+      const carried = __substrateLoading.get(module)?.carried;
+      const digest = kind ? (carried !== undefined && carried.path === resolvedPath ? carried.digest : undefined) ?? vfs.contentDigest(resolvedPath) : undefined;
       const body = kind && digest ? __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)) : undefined;
       if (body !== undefined) {
         __substrateCountPrepared(process, 'digest');
@@ -2832,7 +2831,9 @@ function createRequire(
         return builtinModules['prettier'];
       }
     }
-    const resolved = __substrateResolve(id);
+    // What this require's own resolution carries to the load it leads to, below, and to nothing else.
+    const carried: ResolutionCarried = {};
+    const resolved = __substrateResolve(id, carried);
 
     // If resolved to a built-in name (shouldn't happen but safety check)
     if (builtinModules[resolved] && !(resolved === 'fsevents' || resolved === 'chokidar' || resolved === 'readdirp')) {
@@ -2876,7 +2877,7 @@ function createRequire(
       if (identity && registered.has(identity)) return registered.get(identity)!(process);
     }
 
-    return loadModule(resolved).exports;
+    return loadModule(resolved, undefined, carried).exports;
   };
 
   require.resolve = (id: string, options?: { paths?: unknown }): string => {
