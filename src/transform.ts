@@ -6,6 +6,7 @@
  */
 
 import { VirtualFS } from './virtual-fs';
+import { holdWhile } from './host-globals';
 import { ESBUILD_WASM_ESM_CDN, ESBUILD_WASM_BINARY_CDN } from './config/cdn';
 // The dev servers and this transformer took a realm without a window for no
 // browser at all and served a file untransformed. A realm with an esbuild
@@ -81,7 +82,8 @@ export async function initTransformer(): Promise<void> {
     return window.__esbuildInitPromise;
   }
 
-  window.__esbuildInitPromise = (async () => {
+  // A module waiting to be transformed waits on this load: held while it is in flight.
+  window.__esbuildInitPromise = holdWhile((async () => {
     try {
       console.log('[transform] Loading esbuild-wasm...');
 
@@ -114,7 +116,7 @@ export async function initTransformer(): Promise<void> {
       window.__esbuildInitPromise = undefined;
       throw error;
     }
-  })();
+  })());
 
   return window.__esbuildInitPromise;
 }

@@ -7,7 +7,9 @@
  */
 
 import SHA from 'sha.js';
-import { holdWhile } from '../host-globals';
+import { heldCalls, holdWhile } from '../host-globals';
+
+const heldSubtle = heldCalls(crypto.subtle);
 import { md5 } from '@noble/hashes/legacy.js';
 import { scrypt as nobleScrypt } from '@noble/hashes/scrypt.js';
 // The `buffer` package, not the guest polyfill: the byte-level encodings
@@ -1635,8 +1637,14 @@ const nodeExports = {
   createPrivateKey,
   generateKeyPair,
   // Node's Web Crypto: the same object globalThis.crypto is in Node, and its SubtleCrypto
-  webcrypto: crypto,
-  subtle: crypto.subtle,
+  // The module's own doors to Web Crypto hold each call as the global's does: `require('crypto').webcrypto.subtle`
+  // is the same work behind the same promises.
+  webcrypto: new Proxy(crypto, { get(target, name) {
+    const member = Reflect.get(target, name, target);
+    if (name === 'subtle' && member) return heldSubtle;
+    return typeof member === 'function' ? member.bind(target) : member;
+  } }),
+  subtle: heldSubtle,
 } satisfies Record<NodeCryptoExport, unknown>;
 // `unsupported` is this engine's own, beside Node's names: what an implemented export throws for an algorithm it lacks.
 const module = { ...nodeExports, unsupported };

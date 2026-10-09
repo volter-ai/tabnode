@@ -5,6 +5,7 @@
 
 import { Buffer } from '../node-lib/buffer-module';
 import pako from 'pako';
+import { holdWhile } from '../host-globals';
 import { zlibConstants as constants } from './zlib-constants';
 export { constants };
 
@@ -16,7 +17,8 @@ let brotliLoadPromise: Promise<BrotliModule | null> | null = null;
 async function loadBrotli(): Promise<BrotliModule | null> {
   if (brotliModule) return brotliModule;
   if (!brotliLoadPromise) {
-    brotliLoadPromise = (async () => {
+    // Loading the codec is work a program's first brotli call waits on: held while it is in flight.
+    brotliLoadPromise = holdWhile((async () => {
       try {
         // Dynamic import - brotli-wasm handles environment detection automatically
         // In Node.js: returns sync module
@@ -30,7 +32,7 @@ async function loadBrotli(): Promise<BrotliModule | null> {
         console.error('[zlib] Failed to load brotli-wasm:', error);
         return null;
       }
-    })();
+    })());
   }
   return brotliLoadPromise;
 }

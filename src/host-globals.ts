@@ -121,6 +121,18 @@ export function holdWhile<T>(work: Promise<T>): Promise<T> {
   return work.finally(() => { held.count -= 1; });
 }
 
+/** An object of the host's whose calls answer promises (Web Crypto's `subtle`), with each call held while it is in flight. */
+export function heldCalls<T extends object>(target: T): T {
+  return new Proxy(target, { get(inner, name) {
+    const member = Reflect.get(inner, name, inner);
+    if (typeof member !== 'function') return member;
+    return function (this: unknown, ...args: unknown[]) {
+      const answer = (member as (...args: unknown[]) => unknown).apply(inner, args);
+      return answer instanceof Promise ? holdWhile(answer) : answer;
+    };
+  } });
+}
+
 export function heldWork(): { count: number } {
   return (globalThis as { __browserRuntimeHeldWork?: { count: number } }).__browserRuntimeHeldWork ?? ownHeldWork;
 }
