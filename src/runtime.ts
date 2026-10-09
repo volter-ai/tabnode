@@ -1981,7 +1981,7 @@ function __substrateRegisteredExtension(filename: string, extensions: Record<str
 const __substrateResolutionKept = new WeakMap<object, ResolutionKept & { depth: number }>();
 function __substrateKeptFor(process: object): ResolutionKept & { depth: number } {
   let kept = __substrateResolutionKept.get(process);
-  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0, probes: { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 } }; __substrateResolutionKept.set(process, kept); }
+  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), digests: new Map(), depth: 0, probes: { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 } }; __substrateResolutionKept.set(process, kept); }
   return kept;
 }
 /**
@@ -2454,7 +2454,12 @@ function createRequire(
       && (module as Module & { _compile?: unknown })._compile === Mod.__substrateOwnCompile
       && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> })) {
       const kind = preparedModuleKind(resolvedPath);
-      const digest = kind ? vfs.contentDigest(resolvedPath) : undefined;
+      // The digest the stat that resolved this file carried, where it did (node-resolution.ts `digests`): taken and
+      // removed, so it is used for the load its own resolution led to and for no later one. Otherwise asked of the tree.
+      const carriedDigests = __substrateKeptFor(process).digests;
+      const carried = carriedDigests?.get(resolvedPath);
+      if (carried !== undefined) carriedDigests!.delete(resolvedPath);
+      const digest = kind ? carried ?? vfs.contentDigest(resolvedPath) : undefined;
       const body = kind && digest ? __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)) : undefined;
       if (body !== undefined) {
         __substrateCountPrepared(process, 'digest');
