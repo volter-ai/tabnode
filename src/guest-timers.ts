@@ -28,9 +28,11 @@ export function stopGuestTimers(process: object): void {
   const host = globalThis as unknown as Record<string, unknown>;
   const clearOnce = host.clearTimeout as ((id: unknown) => void) | undefined;
   const clearRepeating = host.clearInterval as ((id: unknown) => void) | undefined;
+  const clearQueued = host.clearImmediate as ((id: unknown) => void) | undefined;
   for (const id of [...held]) {
     try { clearOnce?.call(host, id); } catch {}
     try { clearRepeating?.call(host, id); } catch {}
+    try { clearQueued?.call(host, timerHandleOf(id)); } catch {}
   }
   held.clear();
 }
@@ -42,6 +44,8 @@ export function guestTimerFunctions(process: object, host: Record<string, unknow
   const hostSetInterval = host.setInterval as (fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) => unknown;
   const hostClearTimeout = host.clearTimeout as (id: unknown) => void;
   const hostClearInterval = host.clearInterval as (id: unknown) => void;
+  const hostSetImmediate = host.setImmediate as ((fn: (...a: unknown[]) => void, ...rest: unknown[]) => unknown) | undefined;
+  const hostClearImmediate = host.clearImmediate as ((id: unknown) => void) | undefined;
   // Node's timers answer a `Timeout`: an object with `ref`, `unref`,
   // `hasRef` and `refresh`, which vitest and many packages call. A browser's
   // answer a number. The engine used to correct this by replacing the realm's
@@ -87,6 +91,21 @@ export function guestTimerFunctions(process: object, host: Record<string, unknow
     setInterval(fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) {
       return track(nodeTimeout(hostSetInterval.call(host, inProcess(fn), ms, ...rest)));
     },
+    // AN IMMEDIATE IS WORK THE LOOP WAITS FOR, as a timer is: Node's loop does not end while one is queued. The
+    // guest's bare `setImmediate` used to be the realm's own, counted by nothing, so a program whose only pending
+    // work was one (a database binding answering its caller a turn later) was taken for finished and ended with
+    // exit 0 before the callback ran: audiobookshelf stopped at "Loading extension" with status 0, and the error its
+    // callback carried was printed after its process had been reaped. Held until it runs or is cleared, and its
+    // throw is the program's uncaught exception, as a timer's is. `require('timers').setImmediate` was counted
+    // already (node-lib/timers.ts, through setTimeout).
+    setImmediate(fn: (...a: unknown[]) => void, ...rest: unknown[]) {
+      if (typeof fn !== "function" || !hostSetImmediate) return hostSetImmediate?.call(host, fn, ...rest);
+      let id: unknown;
+      const call = inProcess(fn);
+      id = nodeTimeout(hostSetImmediate.call(host, (...args: unknown[]) => { held.delete(id); call(...args); }, ...rest));
+      return track(id);
+    },
+    clearImmediate(id: unknown) { held.delete(id); return hostClearImmediate?.call(host, handleOf(id)); },
     clearTimeout(id: unknown) { held.delete(id); return hostClearTimeout.call(host, handleOf(id)); },
     clearInterval(id: unknown) { held.delete(id); return hostClearInterval.call(host, handleOf(id)); },
   };

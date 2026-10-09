@@ -346,11 +346,11 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
         });
         return boundGlobals.get(key)!.bound;
       }
-      if (["setTimeout", "clearTimeout", "setInterval", "clearInterval"].includes(key as string) && typeof value === "function") {
+      if (["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"].includes(key as string) && typeof value === "function") {
         // The guest's timers, counted for it; rebuilt if the host's own change.
         if (boundGlobals.get(key)?.original !== value) {
           const timers = guestTimerFunctions(process, host);
-          for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] as const) boundGlobals.set(name, { original: Reflect.get(host, name, host), bound: timers[name] });
+          for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"] as const) boundGlobals.set(name, { original: Reflect.get(host, name, host), bound: timers[name] });
         }
         return boundGlobals.get(key)!.bound;
       }
