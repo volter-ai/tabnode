@@ -1212,7 +1212,7 @@ function keyPairNow(type: string, options: KeyPairOptions): { publicKey: KeyObje
     // return, with no line (rsa-sign-case on 6084d5c). So: a line before it starts, a line when the random source
     // first answers, a line every two seconds with the candidates tried so far, and after sixty seconds it is
     // refused by name with that count, where it used to hang the thread that called it.
-    const said = (text: string): void => { try { console.warn(`[tabnode] crypto.generateKeyPairSync('rsa', ${options.modulusLength}): ${text}`); } catch { /* an instrument */ } };
+    const said = (text: string): void => { try { console.log(`[tabnode] crypto.generateKeyPairSync('rsa', ${options.modulusLength}): ${text}`); } catch { /* an instrument */ } };
     said('searching for two primes in JavaScript; the thread waits');
     let tried = 0, lastSaid = began, firstRandom = true;
     const random: rsa.RandomBytes = (length) => {
