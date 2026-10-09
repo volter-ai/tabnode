@@ -67,9 +67,14 @@ export interface ResolutionKept {
   /**
    * An instrument: the resolver's stat probes for this process. `file`, `directory`, `absent`: asked of the tree, by
    * the answer. `held`: answered from `stats` without asking. `outside`: of those asked, the ones asked with no
-   * window open. `windows`: stat windows opened.
+   * window open. `windows`: stat windows opened. Of the absences, what a cheaper answer could have given: `absentAgain`,
+   * the path was already answered absent to this process; `absentUnderAbsent`, a directory above it was (so one
+   * answer about that directory answers this one); `absentParents`, how many different directories the absences
+   * were asked in (so a listing of each would answer them all). The three are counts over the same absences and
+   * overlap. `seen` is the instrument's own memory and is not a cache: nothing is answered from it.
    */
-  probes?: { file: number; directory: number; absent: number; held: number; outside: number; windows: number };
+  probes?: { file: number; directory: number; absent: number; held: number; outside: number; windows: number;
+    absentAgain?: number; absentUnderAbsent?: number; absentParents?: number; seen?: { absent: Set<string>; parents: Set<string> } };
 }
 
 export interface NodeResolver {
@@ -115,6 +120,15 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     if (probes) {
       if (found === 0) probes.file += 1; else if (found === 1) probes.directory += 1; else probes.absent += 1;
       if (kept?.stats === undefined) probes.outside += 1;
+      if (found === -1) {
+        const seen = probes.seen ??= { absent: new Set(), parents: new Set() };
+        if (seen.absent.has(path)) probes.absentAgain = (probes.absentAgain ?? 0) + 1;
+        let above = path.slice(0, path.lastIndexOf("/"));
+        seen.parents.add(above || "/");
+        probes.absentParents = seen.parents.size;
+        for (; above !== ""; above = above.slice(0, above.lastIndexOf("/"))) if (seen.absent.has(above)) { probes.absentUnderAbsent = (probes.absentUnderAbsent ?? 0) + 1; break; }
+        seen.absent.add(path);
+      }
     }
     if (found !== -1) kept?.stats?.set(path, found);
     return found;

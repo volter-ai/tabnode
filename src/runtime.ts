@@ -843,7 +843,7 @@ function __substrateSayPrepared(process: object, counts: PreparedCounts, at: str
   const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
   if (total === counts.said) return;
   counts.said = total;
-  console.log('[boot-trace]', JSON.stringify({ event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: __substrateResolutionKept.get(process)?.probes ?? null }));
+  console.log('[boot-trace]', JSON.stringify({ event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: (({ seen: _instrumentMemory, ...counts }) => counts)(__substrateResolutionKept.get(process)?.probes ?? { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 }) ?? null }));
 }
 function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCounts, 'said' | 'timer'>): void {
   let counts = __substratePreparedCounts.get(process);
