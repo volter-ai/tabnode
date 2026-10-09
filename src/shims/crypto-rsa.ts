@@ -381,9 +381,11 @@ function inverse(value: bigint, modulus: bigint): bigint {
   while (r) { const quotient = oldR / r; [oldR, r] = [r, oldR - quotient * r]; [oldS, s] = [s, oldS - quotient * s]; }
   return ((oldS % modulus) + modulus) % modulus;
 }
-function prime(bits: number, e: bigint, random: RandomBytes): bigint {
+function prime(bits: number, e: bigint, random: RandomBytes, watch?: () => void): bigint {
   const width = Math.ceil(bits / 8);
   for (;;) {
+    // Told of every candidate drawn: a search that does not end is then seen, and can be ended, by its caller.
+    watch?.();
     const bytes = random(width);
     // The two top bits set, so the product of two such primes has exactly twice the bits; odd.
     bytes[0] = (bytes[0]! & (0xff >>> (8 * width - bits))) | (0xc0 >>> (8 * width - bits));
@@ -394,11 +396,11 @@ function prime(bits: number, e: bigint, random: RandomBytes): bigint {
   }
 }
 /** A key pair made here and now. Two primes of half the modulus each are searched for: on the order of a second for 2048 bits. */
-export function generateKey(bits: number, publicExponent: bigint, random: RandomBytes): RsaKey {
+export function generateKey(bits: number, publicExponent: bigint, random: RandomBytes, watch?: () => void): RsaKey {
   if (!Number.isInteger(bits) || bits < 512 || bits % 2 !== 0) throw new RangeError('Invalid modulus length');
   if (publicExponent < 3n || (publicExponent & 1n) === 0n) throw new RangeError('Invalid public exponent');
   for (;;) {
-    let p = prime(bits / 2, publicExponent, random), q = prime(bits / 2, publicExponent, random);
+    let p = prime(bits / 2, publicExponent, random, watch), q = prime(bits / 2, publicExponent, random, watch);
     if (p === q) continue;
     if (p < q) [p, q] = [q, p];
     const n = p * q;

@@ -1200,7 +1200,6 @@ async function generateKeyPairAsync(type: string, options: KeyPairOptions): Prom
  * A key pair made here and now, for the types whose arithmetic the engine carries (crypto-ec.ts): 'ec' over P-256,
  * P-384 and P-521, and 'ed25519'. Undefined for a type it does not carry, which stays WebCrypto's and asynchronous.
  */
-let saidRsaGeneration = false;
 function keyPairNow(type: string, options: KeyPairOptions): { publicKey: KeyObject | string | Buffer | Record<string, string>; privateKey: KeyObject | string | Buffer | Record<string, string> } | undefined {
   if (type === 'rsa') {
     // AN RSA KEY PAIR MADE HERE AND NOW: two primes searched for in BigInt (crypto-rsa.ts). It is the one slow
@@ -1209,8 +1208,28 @@ function keyPairNow(type: string, options: KeyPairOptions): { publicKey: KeyObje
     if (typeof options.modulusLength !== 'number') throw new ERR_INVALID_ARG_TYPE('options.modulusLength', 'number', options.modulusLength);
     const exponent = options.publicExponent === undefined ? 65537n : BigInt(options.publicExponent as number | bigint);
     const began = Date.now();
-    const pair = rsa.generateKey(options.modulusLength, exponent, rsaRandom);
-    if (!saidRsaGeneration) { saidRsaGeneration = true; console.warn(`[tabnode] crypto.generateKeyPairSync('rsa', ${options.modulusLength}) took ${Date.now() - began} ms: the engine searches for the primes in JavaScript, and the thread waits. generateKeyPair (asynchronous) uses the browser's own generator`); }
+    // THE SEARCH SAYS WHERE IT IS, AND ENDS. Under Node it takes a fifth of a second; in a tab it was seen never to
+    // return, with no line (rsa-sign-case on 6084d5c). So: a line before it starts, a line when the random source
+    // first answers, a line every two seconds with the candidates tried so far, and after sixty seconds it is
+    // refused by name with that count, where it used to hang the thread that called it.
+    const said = (text: string): void => { try { console.warn(`[tabnode] crypto.generateKeyPairSync('rsa', ${options.modulusLength}): ${text}`); } catch { /* an instrument */ } };
+    said('searching for two primes in JavaScript; the thread waits');
+    let tried = 0, lastSaid = began, firstRandom = true;
+    const random: rsa.RandomBytes = (length) => {
+      const bytes = rsaRandom(length);
+      if (firstRandom) { firstRandom = false; said(`the random source answered ${bytes.length} bytes after ${Date.now() - began} ms`); }
+      return bytes;
+    };
+    const watch = (): void => {
+      tried += 1;
+      const now = Date.now();
+      if (now - lastSaid >= 2000) { lastSaid = now; said(`${tried} candidates tried in ${now - began} ms`); }
+      if (now - began > 60_000) {
+        throw Object.assign(new Error(`crypto.generateKeyPairSync('rsa', ${options.modulusLength}) found no key pair in 60 s (${tried} candidates tried): this engine's prime search is not finishing here. generateKeyPair (asynchronous) uses the browser's own generator`), { code: 'ERR_CRYPTO_OPERATION_FAILED' });
+      }
+    };
+    const pair = rsa.generateKey(options.modulusLength, exponent, random, watch);
+    said(`took ${Date.now() - began} ms, ${tried} candidates tried. generateKeyPair (asynchronous) uses the browser's own generator`);
     return {
       publicKey: options.publicKeyEncoding ? exportRsa(pair, 'public', options.publicKeyEncoding) : rsaKeyObject(pair, 'public'),
       privateKey: options.privateKeyEncoding ? exportRsa(pair, 'private', options.privateKeyEncoding) : rsaKeyObject(pair, 'private'),
