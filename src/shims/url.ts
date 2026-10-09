@@ -200,7 +200,15 @@ export function pathToFileURL(path: string): URL {
   }
   const cwd = typeof globalThis.process?.cwd === 'function' ? globalThis.process.cwd() : '/';
   const resolved = path.startsWith('/') ? path : cwd.replace(/\/$/, '') + '/' + path;
-  return new globalThis.URL('file://' + resolved.split('/').map((segment) => encodeURIComponent(segment)).join('/'));
+  // Encoded as Node encodes it (v24.21.0, every character from U+0001 to U+02FF compared): the URL's own path
+  // setter encodes what a path cannot hold, and Node encodes `%`, `\\`, the controls, `#`, `?`, `[`, `]`, `|` and
+  // `~` before it. encodeURIComponent per segment encoded `@` too, so a scoped package's file URL read
+  // `node_modules/%40scope/…`, and a createRequire made from it found nothing beside that file (LibreChat:
+  // "Cannot find module './llm/openai/index.cjs'" from @librechat/agents' lazyRequire.cjs).
+  const url = new globalThis.URL('file://');
+  url.pathname = resolved.replace(/%/g, '%25').replace(/\\/g, '%5C').replace(/\n/g, '%0A').replace(/\r/g, '%0D').replace(/\t/g, '%09')
+    .replace(/#/g, '%23').replace(/\?/g, '%3F').replace(/\[/g, '%5B').replace(/\]/g, '%5D').replace(/\|/g, '%7C').replace(/~/g, '%7E');
+  return url;
 }
 
 export const URLPattern = (globalThis as unknown as { URLPattern?: unknown }).URLPattern;

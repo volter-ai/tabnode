@@ -2212,8 +2212,11 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module.wrap = (code: string) => Module.wrapper[0] + code + Module.wrapper[1];
   Module.createRequire = (filenameOrUrl: string) => {
     let fromPath = String(filenameOrUrl);
+    // A file URL is read as a URL, as Node's createRequire reads it (fileURLToPath): its path DECODED. Sliced after
+    // `file://` it kept every escape, so a URL of a scoped package (`%40scope`) or of a path with a space named a
+    // directory that is not there, and every relative require from it was "not found".
     if (fromPath.startsWith("file://")) {
-      fromPath = fromPath.slice(7);
+      fromPath = decodeURIComponent(new URL(fromPath).pathname);
       if (fromPath.startsWith("/") && fromPath[2] === ":") fromPath = fromPath.slice(1);
     }
     const made = requireFor({ id: fromPath, filename: fromPath, paths: [] });
