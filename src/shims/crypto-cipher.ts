@@ -19,6 +19,8 @@ type Mode = 'gcm' | 'cbc' | 'ctr' | 'ecb';
 type Bytes = Uint8Array;
 
 export interface CipherDeps {
+  /** stream.Transform: a cipher is one, as Node's is (lib/internal/crypto/cipher.js). */
+  Transform: typeof import('node:stream').Transform;
   /** The guest's Buffer.from over bytes. */
   toBuffer(bytes: Bytes): Uint8Array;
   /** Bytes of a string (in its encoding) or a view, as the rest of crypto reads them. */
@@ -104,7 +106,7 @@ export function createCipherClasses(deps: CipherDeps) {
   let authTagOf: (cipher: CipherBase) => Bytes;
   let expectTagOf: (cipher: CipherBase, tag: unknown, encoding?: string) => void;
 
-  class CipherBase {
+  class CipherBase extends deps.Transform {
     static {
       authTagOf = (cipher) => cipher.#getTag();
       expectTagOf = (cipher, tag, encoding) => cipher.#setTag(tag, encoding);
@@ -133,6 +135,7 @@ export function createCipherClasses(deps: CipherDeps) {
     #authTag: Bytes | undefined;
 
     constructor(decrypt: boolean, algorithm: unknown, key: unknown, iv: unknown, options?: { authTagLength?: number }) {
+      super();
       const { keyLength, mode } = parse(algorithm);
       this.#decrypt = decrypt;
       this.#mode = mode;
@@ -210,6 +213,17 @@ export function createCipherClasses(deps: CipherDeps) {
       if (this.#finished) throw error('ERR_CRYPTO_INVALID_STATE', 'Unsupported state');
       this.#finished = true;
       return deps.encode(this.#finish(), outputEncoding);
+    }
+
+    // As a stream: each chunk written is enciphered and read out, and final()'s bytes are the last chunk.
+    override _transform(chunk: unknown, _encoding: string, callback: (error?: Error | null) => void): void {
+      try { this.push(this.update(chunk) as Uint8Array); } catch (cause) { callback(cause as Error); return; }
+      callback();
+    }
+
+    override _flush(callback: (error?: Error | null) => void): void {
+      try { this.push(this.final() as Uint8Array); } catch (cause) { callback(cause as Error); return; }
+      callback();
     }
 
     #process(input: Bytes): Bytes {

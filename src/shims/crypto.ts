@@ -16,7 +16,6 @@ import { scrypt as nobleScrypt } from '@noble/hashes/scrypt.js';
 // (utf16le, latin1, offset views) crypto inputs arrive in are its own.
 import { Buffer as HostBuffer } from 'buffer/index.js';
 import type { Buffer, BufferConstructor, BufferModule } from '../node-lib/buffer-module';
-import type { EventsModule } from '../node-lib/events-module';
 import { lazyModule, lazyExport } from '../node-lib/lazy';
 import {
   ERR_INVALID_ARG_TYPE,
@@ -49,7 +48,12 @@ export function createCryptoModule(require?: (name: string) => any) {
   // eagerly can hit its TDZ under a different bundle evaluation order.
   const bufferModule: BufferModule = require ? require('buffer') : lazyModule<BufferModule>('buffer');
   const Buffer: BufferConstructor = require ? bufferModule.Buffer : lazyExport<BufferConstructor>('buffer', 'Buffer');
-  const EventEmitter: EventsModule['EventEmitter'] = require ? require('events').EventEmitter : lazyExport<EventsModule['EventEmitter']>('events', 'EventEmitter');
+  // Node's Hash, Hmac, Cipheriv and Decipheriv are Transform streams, and its Sign and Verify are Writable ones
+  // (lib/internal/crypto/hash.js, cipher.js, sig.js): `sign.write(data); sign.end(); sign.sign(key)` and
+  // `stream.pipe(createHash('sha256'))` are how libraries use them (world-core's jwtSign calls `signer.end()`; the
+  // OpenAI twin's credentials door answered 500 "signer.end is not a function").
+  const Writable: typeof import('node:stream').Writable = require ? require('stream').Writable : lazyExport<typeof import('node:stream').Writable>('stream', 'Writable');
+  const Transform: typeof import('node:stream').Transform = require ? require('stream').Transform : lazyExport<typeof import('node:stream').Transform>('stream', 'Transform');
 // ============================================================================
 // Random functions
 // ============================================================================
@@ -386,12 +390,13 @@ function digestResult(value: Uint8Array, encoding?: string): Buffer | string {
   return HostBuffer.from(value).toString(name);
 }
 
-class Hash {
+class Hash extends Transform {
   #state: DigestState;
   #done = false;
   readonly algorithm: string;
 
   constructor(algorithm: string) {
+    super();
     this.algorithm = algorithm;
     this.#state = digestEngine(algorithm);
   }
@@ -412,6 +417,17 @@ class Hash {
 
   async digestAsync(outputEncoding?: string): Promise<Buffer | string> {
     return this.digest(outputEncoding);
+  }
+
+  // As a stream: what is written is hashed, and the digest is the one chunk read at the end.
+  override _transform(chunk: unknown, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    try { this.update(chunk, encoding === ('buffer' as BufferEncoding) ? undefined : encoding); } catch (error) { callback(error as Error); return; }
+    callback();
+  }
+
+  override _flush(callback: (error?: Error | null) => void): void {
+    try { this.push(this.digest()); } catch (error) { callback(error as Error); return; }
+    callback();
   }
 
   copy(): Hash {
@@ -435,12 +451,13 @@ class Hash {
   }
 }
 
-class Hmac {
+class Hmac extends Transform {
   #inner: DigestState;
   #outer: DigestState;
   #done = false;
 
   constructor(algorithm: string, key: HostBytes) {
+    super();
     const blockSize = algorithm === 'sha384' || algorithm === 'sha512' ? 128 : 64;
     // RFC 2104: a key longer than the block is hashed first, a shorter one
     // is zero-padded to the block.
@@ -473,6 +490,16 @@ class Hmac {
 
   async digestAsync(outputEncoding?: string): Promise<Buffer | string> {
     return this.digest(outputEncoding);
+  }
+
+  override _transform(chunk: unknown, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    try { this.update(chunk, encoding === ('buffer' as BufferEncoding) ? undefined : encoding); } catch (error) { callback(error as Error); return; }
+    callback();
+  }
+
+  override _flush(callback: (error?: Error | null) => void): void {
+    try { this.push(this.digest()); } catch (error) { callback(error as Error); return; }
+    callback();
   }
 }
 
@@ -892,13 +919,19 @@ function createVerify(algorithm: string): Verify {
   return new Verify(algorithm);
 }
 
-class Sign extends EventEmitter {
+class Sign extends Writable {
   #algorithm: string;
   #data: Uint8Array[] = [];
 
   constructor(algorithm: string) {
     super();
     this.#algorithm = algorithm;
+  }
+
+  // As a stream: what is written is what is signed.
+  override _write(chunk: Buffer | string, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.update(typeof chunk === 'string' ? Buffer.from(chunk, encoding) : chunk);
+    callback();
   }
 
   update(data: string | Buffer | Uint8Array, encoding?: string): this {
@@ -918,13 +951,18 @@ class Sign extends EventEmitter {
   }
 }
 
-class Verify extends EventEmitter {
+class Verify extends Writable {
   #algorithm: string;
   #data: Uint8Array[] = [];
 
   constructor(algorithm: string) {
     super();
     this.#algorithm = algorithm;
+  }
+
+  override _write(chunk: Buffer | string, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.update(typeof chunk === 'string' ? Buffer.from(chunk, encoding) : chunk);
+    callback();
   }
 
   update(data: string | Buffer | Uint8Array, encoding?: string): this {
@@ -1709,6 +1747,7 @@ async function importKey(
 // ============================================================================
 
 const { Cipheriv, Decipheriv, createCipheriv, createDecipheriv } = createCipherClasses({
+  Transform,
   toBuffer: (bytes) => Buffer.from(bytes),
   bytesOf: (value, encoding) => cryptoBytes(value, encoding, true),
   secretKeyBytes: (value) => {
