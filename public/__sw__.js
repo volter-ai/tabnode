@@ -753,6 +753,33 @@ async function withDocumentPrelude(event, response) {
 }
 
 /**
+ * The Referer a browser would give this server for a request one of its own pages made.
+ *
+ * A server may refuse a call that names no page of its own (MyIP gates every /api route on it and answered 403).
+ * Fetch never puts Referer in Request.headers, and a preview's documents are served with a no-referrer policy, so
+ * `request.referrer` is empty as well: a server in the tab was told nothing of who asked. The document that asked
+ * is known here, as the request's client. Its address is given when it is of the origin the request is for, with no
+ * fragment and with the virtual-server prefix taken off its path, which is the server's own root; a request from
+ * another origin, or with no document behind it (a typed address), is given none, and nothing is invented.
+ */
+async function refererFor(request) {
+  let from = request.referrer;
+  if (!from) {
+    const event = requestEvents.get(request);
+    if (!event || !event.clientId) return undefined;
+    const client = await self.clients.get(event.clientId);
+    from = client ? client.url : '';
+  }
+  try {
+    const url = new URL(from);
+    if (url.origin !== new URL(request.url).origin) return undefined;
+    url.pathname = url.pathname.replace(/^\/__virtual__\/\d+(?=\/|$)/, '') || '/';
+    url.hash = '';
+    return url.href;
+  } catch (e) { return undefined; }
+}
+
+/**
  * Handle a request to a virtual server
  */
 async function handleVirtualRequest(request, port, path, rooted = false) {
@@ -771,6 +798,10 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
     // the client's authority; server-generated resource identities must agree
     // with those the client computes from its own URL.
     if (headers.host === undefined) headers.host = new URL(request.url).host;
+    if (headers.referer === undefined) {
+      const referer = await refererFor(request);
+      if (referer !== undefined) headers.referer = referer;
+    }
 
     // Get body if present
     let body = null;
