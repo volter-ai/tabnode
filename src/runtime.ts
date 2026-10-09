@@ -2105,7 +2105,7 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     const keeping = __substrateKeptFor(process);
     keeping.depth += 1;
     const phase = __substrateLoadPhase(process, undefined, 'resolve');
-    try { return Module._load(id, this, false); } finally { keeping.depth -= 1; __substrateLoadPhase(process, undefined, phase); }
+    try { return Module._load(id, this, false); } finally { keeping.depth -= 1; __substrateLoadPhase(process, undefined, keeping.depth === 0 ? 'outside' : phase); }
   };
   Module.__substrateRequire = Module.prototype.require;
   // `Module.prototype._compile(content, filename)` is the seam every loader
@@ -2687,6 +2687,11 @@ function createRequire(
         __substrateGuestConstructor
       )));
 
+      // The body has returned. With no require in flight it was an entry's (started through `_load`, at depth 0), and
+      // what follows is the program's life, not a load: left as 'evaluate', every process's line counted its wait
+      // for the quiet line (two seconds) and all it did afterwards as evaluation. A body that goes on after an await
+      // is counted outside from here too.
+      __substrateLoadPhase(process, vfs, __substrateKeptFor(process).depth === 0 ? 'outside' : 'link');
       const settling = __substrateDriveBody(bodyKind, body, module);
       if (settling) __substrateKeepPending(module, settling, () => { delete moduleCache[resolvedPath]; });
       else module.loaded = true;
@@ -2717,7 +2722,7 @@ function createRequire(
     if (Module._load !== Module.__substrateLoad) {
       const keeping = __substrateKeptFor(process);
       keeping.depth += 1;
-      try { return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false); } finally { keeping.depth -= 1; }
+      try { return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false); } finally { keeping.depth -= 1; if (keeping.depth === 0) __substrateLoadPhase(process, vfs, 'outside'); }
     }
     return requireRaw(id);
   };
@@ -2737,7 +2742,7 @@ function createRequire(
     const keeping = __substrateKeptFor(process);
     keeping.depth += 1;
     const phase = __substrateLoadPhase(process, vfs, 'resolve');
-    try { return requireCounted(id); } finally { keeping.depth -= 1; __substrateLoadPhase(process, vfs, phase); }
+    try { return requireCounted(id); } finally { keeping.depth -= 1; __substrateLoadPhase(process, vfs, keeping.depth === 0 ? 'outside' : phase); }
   };
   const requireCounted = (id: string): unknown => {
     // A data: URL is a module of its own, loaded at that URL.
