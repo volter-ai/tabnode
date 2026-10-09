@@ -7,6 +7,7 @@
  */
 
 import SHA from 'sha.js';
+import { holdWhile } from '../host-globals';
 import { md5 } from '@noble/hashes/legacy.js';
 import { scrypt as nobleScrypt } from '@noble/hashes/scrypt.js';
 // The `buffer` package, not the guest polyfill: the byte-level encodings
@@ -809,7 +810,7 @@ function sign(
 
   // For async operation with callback
   if (callback) {
-    signAsync(alg, data, keyInfo)
+    holdWhile(signAsync(alg, data, keyInfo))
       .then(sig => callback(null, sig))
       .catch(err => callback(err, null as unknown as Buffer));
     return;
@@ -850,7 +851,7 @@ function verify(
   }
 
   if (callback) {
-    verifyAsync(alg, data, keyInfo, signature)
+    holdWhile(verifyAsync(alg, data, keyInfo, signature))
       .then(result => callback(null, result))
       .catch(err => callback(err, false));
     return;
@@ -1204,7 +1205,7 @@ function generateKeyPair(type: string, options: KeyPairOptions | ((error: Error 
   const now = keyPairNow(type, options ?? {});
   if (now) { setTimeout(() => done(null, now.publicKey, now.privateKey), 0); return; }
   keyPairAlgorithm(type, options ?? {});
-  generateKeyPairAsync(type, options ?? {}).then(
+  holdWhile(generateKeyPairAsync(type, options ?? {})).then(
     ({ publicKey, privateKey }) => done(null, publicKey, privateKey),
     (error) => done(error instanceof Error ? error : new Error(String(error))),
   );
