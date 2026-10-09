@@ -237,12 +237,24 @@ function __substrateScopeGlobalCalls(code: string): string {
  * analogue of one of those requests, and it holds the run while it is in
  * flight, exactly as the engine's own esbuild and rollup work already does.
  */
-function __substrateHeldAsync<T extends (...args: never[]) => Promise<unknown>>(call: T, host: unknown): T {
+/**
+ * THE RECEIVER A HOST'S METHOD IS CALLED ON IS THE HOST, NEVER THE PROXY THAT HANDED IT OUT. A wrapped method is read
+ * off a proxy of a host object (`crypto.subtle`, `WebAssembly`), so a guest that calls it as a method calls it with
+ * `this` the PROXY, and a native that checks its receiver refuses a proxy: every `crypto.subtle.generateKey(…)` a
+ * guest made answered "TypeError: Illegal invocation" (LibreChat 13: the OpenAI twin's signing key, so the World
+ * issued no OPENAI_API_KEY). `stands` is the proxy the method was read off: called on it, the native is called on
+ * its host. `strict` is Node's own rule for a receiver that is neither (v24.21.0, measured: `const { digest } =
+ * crypto.subtle; digest(…)` and `digest.call({}, …)` throw ERR_INVALID_THIS 'Value of "this" must be of type
+ * SubtleCrypto', while a namespace's function, `const { instantiate } = WebAssembly`, is called bare).
+ */
+function __substrateHeldAsync<T extends (...args: never[]) => Promise<unknown>>(call: T, host: unknown, stands?: () => unknown, strict?: string): T {
   return function (this: unknown, ...args: Parameters<T>) {
+    const onProxy = stands !== undefined && this === stands();
+    if (strict !== undefined && !onProxy && this !== host) throw Object.assign(new TypeError(`Value of "this" must be of type ${strict}`), { code: 'ERR_INVALID_THIS' });
     const held = heldWork();
     held.count += 1;
     let settled: Promise<unknown>;
-    try { settled = call.apply(this === undefined ? host : this, args); }
+    try { settled = call.apply(this === undefined || onProxy ? host : this, args); }
     catch (error) { held.count -= 1; throw error; }
     if (!(settled instanceof Promise)) { held.count -= 1; return settled; }
     return settled.finally(() => { held.count -= 1; });
@@ -358,16 +370,37 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       if (key === "crypto" && value !== null && typeof value === "object") {
         if (boundGlobals.get(key)?.original !== value) {
           let subtle: unknown;
+          // One wrapper for each method, as Node's is one function: `crypto.subtle.digest === crypto.subtle.digest`.
+          const wrapped = new Map<string | symbol, { call: unknown; held: unknown }>();
           boundGlobals.set(key, { original: value, bound: new Proxy(value as object, {
             get(target, name) {
               const member = Reflect.get(target, name, target);
               if (name === "subtle" && member !== null && typeof member === "object") {
                 return subtle ??= new Proxy(member as object, { get(inner, method) {
                   const call = Reflect.get(inner, method, inner);
-                  return typeof call === "function" ? __substrateHeldAsync(call as (...args: never[]) => Promise<unknown>, inner) : call;
+                  if (typeof call !== "function" || method === "constructor") return call;
+                  const kept = wrapped.get(method);
+                  if (kept !== undefined && kept.call === call) return kept.held;
+                  const held = __substrateHeldAsync(call as (...args: never[]) => Promise<unknown>, inner, () => subtle, 'SubtleCrypto');
+                  wrapped.set(method, { call, held });
+                  return held;
                 } });
               }
-              return typeof member === "function" ? member.bind(target) : member;
+              // The rest of `crypto` is the host's own, called on the host when it is called on this proxy, and
+              // refused on any other receiver as Node refuses it (v24.21.0, measured in a file: `const {
+              // getRandomValues } = crypto; getRandomValues(…)` throws ERR_INVALID_THIS 'Value of "this" must be
+              // of type Crypto'). One function for each name, as Node's is one.
+              if (typeof member !== "function" || name === "constructor") return member;
+              const kept = wrapped.get(name);
+              if (kept !== undefined && kept.call === member) return kept.held;
+              const own = function (this: unknown, ...args: unknown[]) {
+                if (this !== boundGlobals.get(key)?.bound && this !== target) throw Object.assign(new TypeError('Value of "this" must be of type Crypto'), { code: 'ERR_INVALID_THIS' });
+                return (member as (...args: unknown[]) => unknown).apply(target, args);
+              };
+              Object.defineProperty(own, "name", { value: (member as { name: string }).name, configurable: true });
+              Object.defineProperty(own, "length", { value: (member as { length: number }).length, configurable: true });
+              wrapped.set(name, { call: member, held: own });
+              return own;
             },
           }) as never });
         }
@@ -398,13 +431,15 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       if (held !== undefined && value !== null && typeof value === "object") {
         if (boundGlobals.get(key)?.original !== value) {
           const namespace = value as Record<string, unknown>;
-          boundGlobals.set(key, { original: value, bound: new Proxy(namespace, {
-            get(target, name, receiver) {
-              const member = Reflect.get(target, name, receiver);
+          // Read off the HOST, not off the proxy: a getter of the namespace is the host's and takes the host.
+          const proxied: object = new Proxy(namespace, {
+            get(target, name) {
+              const member = Reflect.get(target, name, target);
               if (!held.includes(name as string) || typeof member !== "function") return member;
-              return __substrateHeldAsync(member as (...args: never[]) => Promise<unknown>, target);
+              return __substrateHeldAsync(member as (...args: never[]) => Promise<unknown>, target, () => proxied);
             },
-          }) });
+          });
+          boundGlobals.set(key, { original: value, bound: proxied });
         }
         return boundGlobals.get(key)!.bound;
       }
