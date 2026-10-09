@@ -3617,7 +3617,7 @@ function __substrateTextDecoderPolyfill(): void {
       if (input) {
         const held = ArrayBuffer.isView(input) ? input.buffer : input;
         // by its tag: `instanceof` is false for a buffer of another realm
-        if (Object.prototype.toString.call(held) === '[object SharedArrayBuffer]') input = new Uint8Array(ArrayBuffer.isView(input) ? new Uint8Array(held, input.byteOffset, input.byteLength) : new Uint8Array(held as SharedArrayBuffer));
+        if (Object.prototype.toString.call(held) === '[object SharedArrayBuffer]') input = new Uint8Array(ArrayBuffer.isView(input) ? new Uint8Array(held, input.byteOffset, input.byteLength) : new Uint8Array(held));
       }
       if (this.decoder) {
         return this.decoder.decode(input, options);
