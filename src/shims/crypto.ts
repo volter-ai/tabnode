@@ -1406,7 +1406,10 @@ function readKeyInfo(key: KeyLike): KeyInfo {
       .replace(/-----END [^-]+-----/, '')
       .replace(/\s/g, '');
 
-    const keyData = Buffer.from(atob(base64));
+    // The PEM body's bytes, by the encoding it is written in. `Buffer.from(atob(base64))` read atob's byte string as
+    // UTF-8 and wrote every byte above 0x7f as two: a 1,217-byte PKCS#8 key became 1,802 bytes, wrong from its second
+    // byte, and no key that reached this fallback could be read as what it is.
+    const keyData = Buffer.from(base64, 'base64');
 
     // AN RSA KEY IS KNOWN BY WHAT ITS DER HOLDS, in any of its four encodings (crypto-rsa.ts). The type used to be
     // guessed from letters anywhere in the text, the base64 included: a PKCS#8 RSA key whose body held "EC" was an
