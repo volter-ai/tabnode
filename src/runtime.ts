@@ -3612,9 +3612,10 @@ function __substrateTextDecoderPolyfill(): void {
       // Node's TextDecoder takes a SharedArrayBuffer and a view of one; the platform's here does not (Chromium's
       // declaration carries no AllowShared, where the Encoding Standard's does), so shared bytes are decoded from
       // an unshared copy of them (node-lib/binding/buffer.ts says the same of a Buffer).
-      if (input && typeof SharedArrayBuffer !== 'undefined') {
+      if (input) {
         const held = ArrayBuffer.isView(input) ? input.buffer : input;
-        if (held instanceof SharedArrayBuffer) input = (ArrayBuffer.isView(input) ? new Uint8Array(held, input.byteOffset, input.byteLength) : new Uint8Array(held)).slice();
+        // by its tag: `instanceof` is false for a buffer of another realm
+        if (Object.prototype.toString.call(held) === '[object SharedArrayBuffer]') input = new Uint8Array(ArrayBuffer.isView(input) ? new Uint8Array(held, input.byteOffset, input.byteLength) : new Uint8Array(held as SharedArrayBuffer));
       }
       if (this.decoder) {
         return this.decoder.decode(input, options);

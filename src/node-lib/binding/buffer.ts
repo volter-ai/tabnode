@@ -45,9 +45,14 @@ const encoder = new TextEncoder();
  * shared". Where the bytes are shared, the text goes through an unshared copy of exactly those bytes: encoded into
  * a scratch and copied in, or copied out and decoded. A buffer that is not shared takes the path it always took.
  */
-export const isSharedView = (view: Uint8Array): boolean => typeof SharedArrayBuffer !== 'undefined' && view.buffer instanceof SharedArrayBuffer;
-/** The same bytes where the platform will take them: the view itself, or a copy of it that is not shared. */
-export const unsharedBytes = (view: Uint8Array): Uint8Array => (isSharedView(view) ? view.slice() : view);
+/** By its tag, as `util.types.isSharedArrayBuffer` here tells one (internals/util.ts): `instanceof` is false for a buffer made in another realm. */
+export const isSharedView = (view: ArrayBufferView): boolean => Object.prototype.toString.call(view.buffer) === '[object SharedArrayBuffer]';
+/**
+ * The same bytes where the platform will take them: the view itself, or a copy of it that is not shared. The copy
+ * is `new Uint8Array(view)`, never `view.slice()`: the views this binding is handed are Buffers, and
+ * `Buffer.prototype.slice` is `subarray`, a view of the same shared memory.
+ */
+export const unsharedBytes = (view: Uint8Array): Uint8Array => (isSharedView(view) ? new Uint8Array(view) : view);
 /** A decoder per flavour: `fatal: false` is what Node's lossy decode is. */
 const utf8Decoder = new TextDecoder('utf-8');
 const latin1Decoder = new TextDecoder('latin1');
@@ -78,7 +83,8 @@ export function utf8WriteStatic(buf: Uint8Array, string: string, offset = 0, len
   if (room <= 0) return 0;
   if (!isSharedView(buf)) return encoder.encodeInto(string, buf.subarray(offset, offset + room)).written ?? 0;
   // encodeInto writes whole code points only, into the scratch as it would into the buffer's own room
-  const scratch = new Uint8Array(room), written = encoder.encodeInto(string, scratch).written ?? 0;
+  // and no larger than the string can fill: UTF-8 is at most three bytes for each UTF-16 unit
+  const scratch = new Uint8Array(Math.min(room, string.length * 3)), written = encoder.encodeInto(string, scratch).written ?? 0;
   buf.set(scratch.subarray(0, written), offset);
   return written;
 }
