@@ -1091,10 +1091,11 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     const startTime = Date.now();
     let lastOutputLen = printed;
     let idleMs = 0;
-    // How the wait ended, said on one line when it does: the rule, how long it waited and what the run had read
-    // that the engine does not count. Two turns in a row with nothing pending is the loop empty, as Node's is.
+    // How the wait ended, said on one line when it does: the rule, how long it waited, when its loop first looked
+    // empty by the engine's count, and the host names it had read that the engine does not count.
     let endedBy = 'process.exit';
     let emptyTurns = 0;
+    let lookedEmptyAfterMs: number | undefined;
     // A timer the guest still holds is work in Node's loop, whether or not
     // the program has printed; so is a handle it has open.
     const stillWorking = (): boolean => (streams?.stdinOpen === true && inputConsumed()) || pendingGuestTimers(proc) > 0 || __ownsHandles();
@@ -1138,17 +1139,19 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         // longer wait is for a start that is quiet while it fetches, which
         // the engine cannot yet see as work.
         const silentIdle = SILENT_IDLE_TIMEOUT_MS;
-        // A NODE PROCESS ENDS WHEN ITS LOOP HAS NOTHING LEFT, not after a silence. What can be pending across a
-        // turn is counted: a referenced timer or port, a handle (a server, a socket, a pipe, a child), stdin, work
-        // the host holds behind a promise (a build, a compile, a fetch, a Web Crypto call), a forked child. A
-        // binding's own completions are microtasks and are gone before a turn ends. So two turns in a row with
-        // none of those and no new output is an empty loop, and the run ends there: half a second sooner than the
-        // wait below for a program that printed, two seconds sooner for one that did not (the World's `up`, a seed
-        // step, a registration: each paid it once, with nothing left to do). A run that has read a host name the
-        // engine does not count yet may have work it cannot see, and waits for quiet as before.
+        // WHEN THE LOOP FIRST LOOKED EMPTY IS MEASURED, AND NOTHING IS DECIDED BY IT. What the engine counts as
+        // pending across a turn: a referenced timer or port, a handle (a server, a socket, a pipe, a child), stdin,
+        // a forked child, and work the host holds behind a promise. Two turns in a row with none of those and no
+        // new output LOOKS like Node's empty loop, and a run could end there, half a second or two seconds sooner.
+        // It does not: the count is not provably whole. A host object's own promise is not held (a fetch is held
+        // to its headers and `await response.json()` is not; a stream's read, a Blob's bytes), a host name reached
+        // around the guest's global is not seen, and an omission there is a program cut short with nothing to say
+        // so. So the run still ends by the wait for quiet below, and its line says when the loop first looked
+        // empty: over real runs that is what ending there would have saved, and for which runs.
         const empty = !stillWorking() && heldWork().count === 0 && _activeForkedChildren <= 0 && idleMs > 0;
         emptyTurns = empty ? emptyTurns + 1 : 0;
-        if (emptyTurns >= 2 && __uncountedTouched(proc).size === 0) { endedBy = 'its loop was empty for two turns'; break; }
+        if (emptyTurns === 2 && lookedEmptyAfterMs === undefined) lookedEmptyAfterMs = Date.now() - startTime;
+        if (emptyTurns === 0) lookedEmptyAfterMs = undefined;
         if (lastOutputLen > 0 && !stillWorking() && idleMs >= effectiveIdle) { endedBy = `it was quiet for ${effectiveIdle} ms after printing`; break; }
         if (lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) { endedBy = `it was quiet for ${silentIdle} ms and never printed`; break; }
       }
@@ -1167,7 +1170,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // One line for every run that waited here: which rule ended it, how long it waited after its entry returned,
     // and the uncounted host names it had read (which is why a run with any waited for quiet).
     console.log('[boot-trace]', JSON.stringify({ event: 'run-end', at: Date.now(), pid: (proc as { pid?: number } | undefined)?.pid ?? null, by: endedBy,
-      waitedMs: Date.now() - startTime, quietMs: idleMs, printed: lastOutputLen > 0, uncounted: [...__uncountedTouched(proc)] }));
+      waitedMs: Date.now() - startTime, quietMs: idleMs, printed: lastOutputLen > 0,
+      // Undefined where the loop never looked empty for two turns before the run ended (it called process.exit, or work was always pending).
+      lookedEmptyAfterMs, uncounted: [...__uncountedTouched(proc)] }));
 
     // A process whose loop has drained emits `exit`, as Node's does (`process.emit('exit', process.exitCode || 0)`,
     // then it ends with whatever `process.exitCode` its listeners left): a program that writes its report, removes
