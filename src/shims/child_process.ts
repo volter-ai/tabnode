@@ -910,7 +910,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       const hook = (Error as { prepareStackTrace?: unknown }).prepareStackTrace;
       console.log(`[boot-trace] ${JSON.stringify({ event: 'uncaught-stack-text', at: Date.now(), pid: proc.pid, name: error.name, messageBytes: String(error.message ?? '').length, messageIsOwn: Object.prototype.hasOwnProperty.call(error, 'message'), messageIsAccessor: typeof Object.getOwnPropertyDescriptor(error, 'message')?.get === 'function', message: String(error.message ?? '').slice(0, 300), ownKeys: Reflect.ownKeys(error).map(String).slice(0, 12), printedFirstLine: printed.split('\n', 1)[0]!.slice(0, 160), printedCarriesMessage: printed.startsWith(now) || (String(error.message ?? '') === '' ? null : printed.includes(String(error.message).slice(0, 80))), formedBy: formed ? formed.by : "V8's own text, or before this realm's hook was asked", errorTextWhenFormed: formed?.errorTextThen ?? null, prepareStackTraceNow: typeof hook === 'function' ? (hook.name || 'a function') : String(hook) })}`);
     }
-    appendStderr(`${error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error)}\n`);
+    appendStderr(`${error instanceof Error ? uncaughtText(error) : String(error)}\n`);
     writeHostReceipt('uncaught', error);
     if (exitCalled) return;
     const wasSync = syncExecution;
@@ -2011,11 +2011,44 @@ let stackHeaderAsked = false;
  * carry, formed by none of the realm's paths. Each case makes an error as zod 4 does one step at a time and says
  * the first line of its stack; said once, the first time an uncaught error is printed.
  */
+/**
+ * WHAT IS PRINTED FOR AN UNCAUGHT ERROR: its stack, whose first line says what the error is.
+ *
+ * Node prints `error.stack`, and on Node 22 to 24 that text's first line is formed when the stack is first read, so
+ * it carries the name and message the error has by then. In the tab the first line was fixed earlier: this realm's
+ * own reading (`stack-header-rule`, langfuse on HeadlessChrome 154) answered the bare name for a message set after
+ * the error was made, after a capture, BEFORE a capture, and through an own accessor. langfuse's worker therefore
+ * died saying "ZodError" and its frames, with none of the issues, and the variable it refused could not be read
+ * off the run. WHY this V8 fixes the line then is UNEXPLAINED; the print does not depend on it.
+ *
+ * So where the stack has frames and the text above them is the error's bare name while the error has a message,
+ * the print forms the first line from the error as it stands (Error.prototype.toString: "name: message"), which is
+ * what Node's first read would have formed. Nothing else is rewritten: a stack whose first line already carries a
+ * message, a stack a program set to text of its own, and one with no frames are printed as they are. One place
+ * this differs from Node: a program that read `.stack` before giving the error its message prints the bare name
+ * there and the message here.
+ */
+function uncaughtText(error: Error): string {
+  const stack = typeof error.stack === 'string' ? error.stack : undefined;
+  let now = '';
+  try { now = Error.prototype.toString.call(error); } catch { return stack ?? String(error); }
+  if (stack === undefined || stack === '') return now;
+  const frames = stack.search(/^\s+at /mu);
+  if (frames <= 0) return stack;
+  const head = stack.slice(0, frames).trimEnd();
+  let message = '';
+  try { message = String(error.message ?? ''); } catch { message = ''; }
+  const bare = head === String(error.name) || head === 'Error' || head === error.constructor?.name;
+  return bare && message !== '' && now !== head ? `${now}\n${stack.slice(frames)}` : stack;
+}
+
 function stackHeaderRule(): Record<string, string> {
   const first = (error: Error): string => String(error.stack ?? '').split('\n', 1)[0]!.slice(0, 60);
   const capture = (Error as unknown as { captureStackTrace?: (target: object, limit?: unknown) => void }).captureStackTrace;
   const out: Record<string, string> = { engine: typeof navigator === 'object' && navigator ? String(navigator.userAgent).slice(-60) : 'no navigator', captureStackTrace: typeof capture === 'function' ? (/\[native code\]/u.test(Function.prototype.toString.call(capture)) ? 'native' : 'not native') : 'absent' };
   try {
+    // The plain case, nothing set afterwards: whether a first line carries a message given at construction at all.
+    out.messageGivenWhenMade = first(new Error('given when it was made'));
     const plain = new Error(); plain.name = 'N'; plain.message = 'set after it was made';
     out.messageSetAfterMade = first(plain);
     const captured = new Error(); captured.name = 'N';
