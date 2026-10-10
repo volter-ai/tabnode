@@ -502,9 +502,23 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
 // compiled through this alias, which is an indirect eval: global scope, sloppy.
 // The guest helpers are then out of scope by name, so they are arguments.
 const __substrateSloppyEval = eval;
+/**
+ * AN INSTRUMENT (R5): how each process's bodies were compiled, said on its load-clock line. `eval`: bodies compiled by
+ * the engine's sloppy eval, their characters and the time; `chunk`: bodies taken from a registered script chunk
+ * (none until R5's chunks exist); `importScripts`: whether this realm can load a classic script synchronously, which
+ * a chunk needs (a module worker cannot).
+ */
+const __substrateCompiles = new WeakMap<object, { eval: { bodies: number; chars: number; ms: number }; chunk: { bodies: number; ms: number } }>();
+function __substrateCompilesOf(owner: object) {
+  let held = __substrateCompiles.get(owner);
+  if (!held) { held = { eval: { bodies: 0, chars: 0, ms: 0 }, chunk: { bodies: 0, ms: 0 } }; __substrateCompiles.set(owner, held); }
+  return held;
+}
 function __substrateCompileBody(source: string, owner: object): any {
   rememberCompiledSource(owner, source);
-  return __substrateSloppyEval(source);
+  const began = performance.now();
+  try { return __substrateSloppyEval(source); }
+  finally { const held = __substrateCompilesOf(owner).eval; held.bodies += 1; held.chars += source.length; held.ms += performance.now() - began; }
 }
 // An ES module stays strict, as Node keeps one: the lowering marks its output.
 const __substrateModuleMarker = '/*__substrate_module__*/';
@@ -925,7 +939,9 @@ function __substrateSayLoadClock(process: object, at: string): void {
   const saidAfter = at === 'quiet' ? Math.min(QUIET_SAID_AFTER_MS, Math.max(0, now - clock.at)) : 0;
   wall[clock.phase] += now - clock.at - saidAfter;
   console.log('[boot-trace]', JSON.stringify({ event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
-    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: Math.round(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(clock.kernel),
+    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began - saidAfter),
+    compiled: (() => { const held = __substrateCompilesOf(process); return { eval: { ...held.eval, ms: Math.round(held.eval.ms) }, chunk: { ...held.chunk, ms: Math.round(held.chunk.ms) },
+      importScripts: typeof (globalThis as { importScripts?: unknown }).importScripts === 'function' }; })(), ...(saidAfter > 0 ? { saidAfterQuietMs: Math.round(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(clock.kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
     requires: __substrateRequirePaths.get(process) ?? null,
