@@ -296,6 +296,8 @@ export class PortBridge extends BridgeEvents {
     // Set up controllerchange listener BEFORE registration so we don't miss the event.
     // clients.claim() in the SW's activate handler fires controllerchange, and it can
     // happen before our activation wait completes.
+    // Whether an earlier worker controls this page as it starts: the only case the update below is for.
+    const underEarlierWorker = navigator.serviceWorker.controller !== null;
     const controllerReady = navigator.serviceWorker.controller
       ? Promise.resolve()
       : new Promise<void>((resolve) => {
@@ -309,8 +311,14 @@ export class PortBridge extends BridgeEvents {
     });
     // A page loaded under an earlier deploy's worker asks for this deploy's now, before anything depends on the one in
     // control: otherwise the new worker installs later, claims the page mid-boot and every stream it carries is cut.
-    // bounded: on a slow or captive network the worker in control serves rather than the boot waiting on the fetch
-    try { await Promise.race([registration.update(), new Promise((resolve) => setTimeout(resolve, 5_000))]); } catch { /* offline: the worker in control serves */ }
+    // bounded: on a slow or captive network the worker in control serves rather than the boot waiting on the fetch.
+    // Only then: a page no worker controlled is registering this deploy's worker just now, from the script it fetched a
+    // moment before, and its update() answered only once the browser's update job settled, 1.2-1.4 s later, while the
+    // worker had been installed, activated and in control within ~25 ms (browser-substrate's sw-attach stamps, the empty
+    // server on the mini: the whole of the attach, and the image's command waited on it).
+    if (underEarlierWorker) {
+      try { await Promise.race([registration.update(), new Promise((resolve) => setTimeout(resolve, 5_000))]); } catch { /* offline: the worker in control serves */ }
+    }
 
     // The incoming worker when there is one, else the active: the page binds to the worker that will control it
     const sw = registration.installing || registration.waiting || registration.active;
