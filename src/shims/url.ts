@@ -191,16 +191,33 @@ export function fileURLToPath(url: string | URL): string {
  * and a virtual module id, the Vue plugin's `\0plugin-vue:export-helper`, was
  * no host at all: Vite's SSR loader asked for the file URL of every module it
  * instantiated and vue3-ssr's render died on "Invalid URL". A relative path is
- * resolved against the working directory first, as Node resolves it, and each
- * segment is encoded on its own, so the URL's path is the path.
+ * resolved against the working directory first, as Node resolves it.
+ *
+ * Node encodes only what the URL would otherwise read as something else (`%`,
+ * `\`, a newline, a carriage return, a tab, `?`, `#`, `|`, `^`, `[`, `]`, `~`) and leaves the rest
+ * to the URL's own path encoding (lib/internal/url.js, encodePathChars). This
+ * encoded each segment whole, so `@` became `%40`: @librechat/agents makes its
+ * `require` from `pathToFileURL(__filename).href` and asks it for
+ * `./llm/openai/index.cjs`, which was looked for under `node_modules/%40librechat`
+ * and not found, and LibreChat answered every message with that error (mini run 5).
  */
 export function pathToFileURL(path: string): URL {
   if (typeof path !== 'string') {
     throw new TypeError('The "path" argument must be of type string. Received ' + typeof path);
   }
   const cwd = typeof globalThis.process?.cwd === 'function' ? globalThis.process.cwd() : '/';
-  const resolved = path.startsWith('/') ? path : cwd.replace(/\/$/, '') + '/' + path;
-  return new globalThis.URL('file://' + resolved.split('/').map((segment) => encodeURIComponent(segment)).join('/'));
+  const joined = path.startsWith('/') ? path : cwd.replace(/\/$/, '') + '/' + path;
+  // path.posix.resolve: `.` and `..` taken out, repeated slashes made one; a trailing slash is kept, as Node keeps it.
+  const segments: string[] = [];
+  for (const segment of joined.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') segments.pop(); else segments.push(segment);
+  }
+  let resolved = '/' + segments.join('/');
+  if (path.endsWith('/') && resolved !== '/') resolved += '/';
+  resolved = resolved.replace(/%/g, '%25').replace(/\\/g, '%5C').replace(/\n/g, '%0A').replace(/\r/g, '%0D').replace(/\t/g, '%09')
+    .replace(/\?/g, '%3F').replace(/#/g, '%23').replace(/\|/g, '%7C').replace(/\^/g, '%5E').replace(/\[/g, '%5B').replace(/\]/g, '%5D').replace(/~/g, '%7E');
+  return new globalThis.URL('file://' + resolved);
 }
 
 export const URLPattern = (globalThis as unknown as { URLPattern?: unknown }).URLPattern;

@@ -2205,11 +2205,11 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
   Module.wrap = (code: string) => Module.wrapper[0] + code + Module.wrapper[1];
   Module.createRequire = (filenameOrUrl: string) => {
-    let fromPath = String(filenameOrUrl);
-    if (fromPath.startsWith("file://")) {
-      fromPath = fromPath.slice(7);
-      if (fromPath.startsWith("/") && fromPath[2] === ":") fromPath = fromPath.slice(1);
-    }
+    // A file URL is read as Node reads it, by fileURLToPath: its path, percent-decoded. This took the text after
+    // `file://` as it stood, so a URL whose path had an escape (`%40` for `@`, `%20` for a space) named a directory
+    // that is not there, and every relative `require` made from it was "Cannot find module".
+    let fromPath = filenameOrUrl instanceof URL ? filenameOrUrl.href : String(filenameOrUrl);
+    if (fromPath.startsWith("file:")) fromPath = urlShim.fileURLToPath(fromPath);
     const made = requireFor({ id: fromPath, filename: fromPath, paths: [] });
     made.cache = moduleCache;
     return made;
