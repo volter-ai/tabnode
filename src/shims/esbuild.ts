@@ -408,17 +408,29 @@ function realmCanStartWorker(): boolean {
   return typeof (globalThis as { Worker?: unknown }).Worker === 'function';
 }
 
+/**
+ * THE HOST'S CHECK OF ESBUILD'S OWN FILES (browser-substrate node/src/compiler-pins.ts). Where the realm holds the
+ * image's pins, the module is checked before it is imported by its URL, and the wasm is compiled from the checked
+ * bytes, so the wasm run is the wasm checked. A file that differs from its pin fails the load, naming the file. A realm
+ * with no pins loads both by URL, as before.
+ */
+async function importEsbuild(moduleURL: string): Promise<typeof import('esbuild-wasm')> {
+  await (globalThis as { __substrateVerifyImport?: (url: string) => Promise<void> }).__substrateVerifyImport?.(moduleURL);
+  return import(/* @vite-ignore */ moduleURL);
+}
+async function esbuildWasmOption(url: string): Promise<{ wasmURL: string } | { wasmModule: WebAssembly.Module }> {
+  const bytes = await (globalThis as { __substrateVerifiedBytes?: (url: string) => Promise<Uint8Array> | undefined }).__substrateVerifiedBytes?.(url);
+  return bytes ? { wasmModule: await WebAssembly.compile(bytes as Uint8Array<ArrayBuffer>) } : { wasmURL: url };
+}
+
 let inlineEsbuild: Promise<typeof import('esbuild-wasm')> | null = null;
 function ownEsbuild(): Promise<typeof import('esbuild-wasm')> {
   // A build that brings plugins of its own, a bundler such as tsup does,
   // cannot cross to the host: a plugin is a function in this realm. It
   // runs on esbuild here, loaded once and kept; the host stays for the
   // builds that carry only the filesystem plugin.
-  inlineEsbuild ??= import(
-    /* @vite-ignore */
-    esbuildModuleURL
-  ).then(async (esbuild) => {
-    await esbuild.initialize({ wasmURL, worker: realmCanStartWorker() });
+  inlineEsbuild ??= importEsbuild(esbuildModuleURL).then(async (esbuild) => {
+    await esbuild.initialize({ ...await esbuildWasmOption(wasmURL), worker: realmCanStartWorker() });
     return esbuild;
   }).catch((cause) => {
     // A load that failed, a page whose server was away for a moment, is not kept: the next build tries again.
@@ -530,13 +542,10 @@ export async function initialize(options?: { wasmURL?: string }): Promise<void> 
   initPromise = (async () => {
     try {
       // Dynamically import esbuild-wasm from CDN
-      const esbuild = await import(
-        /* @vite-ignore */
-        esbuildModuleURL
-      );
+      const esbuild = await importEsbuild(esbuildModuleURL);
 
       await esbuild.initialize({
-        wasmURL: options?.wasmURL || wasmURL,
+        ...await esbuildWasmOption(options?.wasmURL || wasmURL),
         worker: realmCanStartWorker(),
       });
 
@@ -683,7 +692,25 @@ function receive(message) {
     Atomics.store(control, 2, 1);
     Atomics.notify(control, 2);
   } else if (message.type === 'init') {
-    answer(import(message.moduleURL).then(async (module) => { esbuild = module; await esbuild.initialize({ wasmURL: message.wasmURL }); return true; }));
+    // The host's pins, when its realm held them (browser-substrate compiler-pins.ts): this thread checks esbuild's
+    // module before importing it and compiles the wasm from the checked bytes, as the realm that started it would.
+    const pins = message.pins || null;
+    const checked = async (url) => {
+      const pin = pins && pins[url];
+      if (!pin) return undefined;
+      const response = await fetch(url, { credentials: 'omit', redirect: 'error' });
+      if (!response.ok) throw new Error('Compiler file unavailable: ' + url + ' (' + response.status + ')');
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const hashed = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+      if (bytes.byteLength !== pin.bytes || 'sha256:' + Array.from(hashed, (byte) => byte.toString(16).padStart(2, '0')).join('') !== pin.digest) throw new Error('Compiler file corrupt: ' + url);
+      return bytes;
+    };
+    answer(checked(message.moduleURL).then(() => import(message.moduleURL)).then(async (module) => {
+      esbuild = module;
+      const wasm = await checked(message.wasmURL);
+      await esbuild.initialize(wasm ? { wasmModule: await WebAssembly.compile(wasm) } : { wasmURL: message.wasmURL });
+      return true;
+    }));
   } else if (message.type === 'transform') {
     answer(esbuild.transform(message.code, message.options));
   }
@@ -791,7 +818,8 @@ export function transformSync(
   __syncAwaitStarted(service);
   if (!service.initialized) {
     Atomics.store(service.control, SYNC_STATE, 0);
-    service.worker.postMessage({ type: 'init', moduleURL: esbuildModuleURL, wasmURL });
+    const pins = (globalThis as { __substrateCompilerPins?: Record<string, { bytes: number; digest: string }> }).__substrateCompilerPins;
+    service.worker.postMessage({ type: 'init', moduleURL: esbuildModuleURL, wasmURL, ...(pins ? { pins } : {}) });
     __syncAnswer(service, SYNC_INIT_WAIT_MS, 'loading esbuild');
     service.initialized = true;
   }

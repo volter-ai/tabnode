@@ -46,10 +46,11 @@ async function loadRollup(): Promise<unknown> {
       // Load @rollup/browser from CDN
       // The browser build comes from the page's own origin when the page says
       // where, the CDN otherwise: a guest's egress refuses the CDN.
-      const rollup = await import(
-        /* @vite-ignore */
-        typeof globalThis.__browserRuntimeRollupUrl === 'string' ? globalThis.__browserRuntimeRollupUrl : ROLLUP_BROWSER_CDN
-      );
+      const url = typeof globalThis.__browserRuntimeRollupUrl === 'string' ? globalThis.__browserRuntimeRollupUrl : ROLLUP_BROWSER_CDN;
+      // The host's check of rollup's build against the image's pin, before it is imported (browser-substrate
+      // compiler-pins.ts); its wasm, fetched from beside it, is answered with checked bytes by the realm's fetch.
+      await (globalThis as { __substrateVerifyImport?: (url: string) => Promise<void> }).__substrateVerifyImport?.(url);
+      const rollup = await import(/* @vite-ignore */ url);
       rollupInstance = rollup;
       console.log('[rollup] Browser version loaded');
       return rollup;
