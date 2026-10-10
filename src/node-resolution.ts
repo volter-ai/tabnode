@@ -81,6 +81,13 @@ export interface ResolutionKept {
    * found the file was asked of the tree in that resolution (not one `stats` held); the caller takes it once.
    */
   carried?: { path: string; digest: string };
+  /**
+   * Whether a `.cjs` entry is a throwing stub (`skipThrowingCjs`), learned once for the bytes it was learned from,
+   * by their content digest, for the process's life: the answer is a fact of those bytes. The check read the file
+   * whole at every resolution that passed it: LibreChat run 40's server read @librechat/api's 6.19 MB entry 52 times
+   * and data-schemas' 1.76 MB entry 48 times, 406 of the 409 MB its realm read again.
+   */
+  throwingStubs?: Map<string, boolean>;
 }
 
 export interface NodeResolver {
@@ -100,6 +107,25 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     return `/${parts.join("/")}`;
   };
   const manifests = new Map<string, Record<string, unknown> | null>();
+  /** The same fact by path, while one stat window stands (`ResolutionKept.stats`): a stat it holds asks nothing, so no digest. */
+  const stubsInWindow = new WeakMap<Map<string, 0 | 1>, Map<string, boolean>>();
+  /** Whether `found`, a `.cjs` file, is a stub whose whole content is a `throw`: read once per digest, or once per window. */
+  const throwingStub = (found: string): boolean => {
+    const digest = digests.get(found);
+    const window = kept?.stats;
+    const byPath = window ? stubsInWindow.get(window) : undefined;
+    const known = byPath?.get(found) ?? (digest !== undefined ? kept?.throwingStubs?.get(digest) : undefined);
+    if (known !== undefined) return known;
+    let throwing = false;
+    try { const text = fs.readFileSync(found, "utf8"); throwing = String(text).trimStart().startsWith("throw "); } catch { /* unreadable: taken as is */ }
+    if (digest !== undefined && kept) (kept.throwingStubs ??= new Map()).set(digest, throwing);
+    if (window) {
+      let held = byPath;
+      if (!held) { held = new Map(); stubsInWindow.set(window, held); }
+      held.set(found, throwing);
+    }
+    return throwing;
+  };
   // stat already distinguishes absence and type; probing exists first walks
   // the same filesystem path twice for every successful module candidate.
   /** What the resolution in hand keeps for its process; none for a caller that keeps nothing. */
@@ -224,9 +250,7 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
         const path = join(packageRoot, target);
         const found = loadAsFile(path) ?? workspaceSource(packageRoot, target);
         if (!found) continue;
-        if (options.skipThrowingCjs && found.endsWith(".cjs")) {
-          try { const text = fs.readFileSync(found, "utf8"); if (String(text).trimStart().startsWith("throw ")) continue; } catch { /* unreadable: taken as is */ }
-        }
+        if (options.skipThrowingCjs && found.endsWith(".cjs") && throwingStub(found)) continue;
         return found;
       }
     }
