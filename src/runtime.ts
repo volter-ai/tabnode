@@ -831,11 +831,12 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
 
 /**
  * An instrument: how each of a process's compiles came by its body, said when its loading has been quiet for two
- * seconds and when it exits. `digest`: named by the tree's digest, the source never read. `hash`: named by hashing
+ * seconds and when it exits. `digest`: named by the tree's digest, the source never read. `carried`: of the digests
+ * asked for a load, those the resolving stat had carried, so not asked again. `hash`: named by hashing
  * the source read. `kept`: prepared here and kept. The rest prepared here, by why no body could be taken.
  * `stats`: the resolver's stat probes for the same process (node-resolution.ts `ResolutionKept.probes`).
  */
-type PreparedCounts = { digest: number; hash: number; kept: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
+type PreparedCounts = { digest: number; carried: number; hash: number; kept: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
 const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
 /**
  * An instrument: WHERE A PROCESS'S MODULE LOADING SPENDS ITS TIME, by this realm's own clock, said beside the counts
@@ -942,7 +943,7 @@ function __substrateSayPrepared(process: object, counts: PreparedCounts, at: str
 function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCounts, 'said' | 'timer'>): void {
   let counts = __substratePreparedCounts.get(process);
   if (!counts) {
-    counts = { digest: 0, hash: 0, kept: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
+    counts = { digest: 0, carried: 0, hash: 0, kept: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
     __substratePreparedCounts.set(process, counts);
   }
   counts[how] += 1;
@@ -2335,6 +2336,9 @@ function createRequire(
   };
 
   const resolveModule = (id: string, fromDir: string): string => {
+    // A digest the last resolution carried is for the load that follows that resolution alone: one answered from a
+    // cache below asks no stat, so the load after it must ask the tree (a file rewritten since is loaded as it is).
+    __substrateKeptFor(process).carried = undefined;
     // Handle node: protocol prefix (Node.js 16+)
     if (id.startsWith('node:')) {
       id = id.slice(5);
@@ -2551,7 +2555,19 @@ function createRequire(
       && (module as Module & { _compile?: unknown })._compile === Mod.__substrateOwnCompile
       && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> })) {
       const kind = preparedModuleKind(resolvedPath);
-      const digest = kind ? vfs.contentDigest(resolvedPath) : undefined;
+      // The digest the resolving stat carried, where the resolution that answered this path is the last one this
+      // process made, and made by the tree's own stat in it (`resolveModule` drops it at every start, so a resolution
+      // answered from a cache leaves none): the stat and this load are one `require`, with no load hook (above), so
+      // the bytes it names are the file's as that stat saw them, as a digest asked here names them as this request
+      // sees them. Any other load (a cached resolution, a stat `stats` held, a load no resolution led to) asks.
+      // A KNOWN DIFFERENCE, left open: a program that resolves a path itself (`require.resolve`), then rewrites that
+      // file, then loads it by calling `Module._extensions` or `module.load` on it with no resolution between, loads
+      // the file as the resolving stat saw it, where asking here would have loaded the rewrite.
+      const keptNow = __substrateKeptFor(process);
+      const carried = keptNow.carried?.path === resolvedPath ? keptNow.carried.digest : undefined;
+      keptNow.carried = undefined;
+      if (kind && carried !== undefined) __substrateCountPrepared(process, 'carried');
+      const digest = kind ? (carried ?? vfs.contentDigest(resolvedPath)) : undefined;
       const body = kind && digest ? __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)) : undefined;
       if (body !== undefined) {
         __substrateCountPrepared(process, 'digest');
