@@ -184,8 +184,22 @@ const runOne = (file) => new Promise((resolveRun) => {
   const args = [process.argv[1], "--tests", TESTS, "--dir", dirname(file), "--one", file.split("/").at(-1), "--engine", ENGINE, ...(PRELUDE ? ["--prelude", PRELUDE] : [])];
   const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "", stdout = "";
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-  child.stdout.on("data", (chunk) => { stdout = tail(stdout + chunk); });
+  // HOW EACH PROGRAM OF THE FILE ENDED, as the engine says it (`[boot-trace] run-drained`, its `endedBy`): read from
+  // both streams as they arrive, since the kept output is its bounded end and `linesOf` drops these lines. It judges
+  // nothing; it is what says how many of the suite's programs end by the engine's quiet rule and by which form.
+  const endedBy = [];
+  const drains = (carry) => (chunk) => {
+    const text = carry.text + chunk, lines = text.split("\n");
+    carry.text = lines.pop() ?? "";
+    for (const line of lines) {
+      const at = line.indexOf('{"event":"run-drained"');
+      if (at < 0) continue;
+      try { const said = JSON.parse(line.slice(at)); endedBy.push({ endedBy: said.endedBy, afterEntryMs: said.afterEntryMs }); } catch { /* a line cut by another write */ }
+    }
+  };
+  const drainsOfStderr = drains({ text: "" }), drainsOfStdout = drains({ text: "" });
+  child.stderr.on("data", (chunk) => { stderr += chunk; drainsOfStderr(String(chunk)); });
+  child.stdout.on("data", (chunk) => { stdout = tail(stdout + chunk); drainsOfStdout(String(chunk)); });
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); stderr += "\ntimeout"; }, TIMEOUT);
   child.on("error", (error) => { clearTimeout(timer); resolveRun({ file, passed: false, reason: error.message, lines: [error.message], stderr: error.stack, code: null, signal: null, timedOut }); });
@@ -194,7 +208,7 @@ const runOne = (file) => new Promise((resolveRun) => {
     const lines = stderr.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("at ") && !line.includes("cwd() called"));
     const passed = code === 0;
     const reason = passed ? "" : (lines.find((line) => /Error|error:|failed|timeout/u.test(line)) ?? lines[0] ?? `exit ${code ?? signal}`);
-    const record = { file, passed, reason: reason.slice(0, 200), lines: lines.slice(0, 4), stderr, stdout: linesOf(stdout).slice(-6), code, signal, timedOut };
+    const record = { file, passed, reason: reason.slice(0, 200), lines: lines.slice(0, 4), stderr, stdout: linesOf(stdout).slice(-6), code, signal, timedOut, endedBy };
     // A failure that said nothing on stderr, in a file test/common re-runs: record what its inner run says.
     const flags = !passed && !timedOut && lines.length === 0 ? flagsOf(file) : null;
     if (flags === null) { resolveRun(record); return; }
@@ -219,6 +233,15 @@ if (REPORT) {
   nodeFs.mkdirSync(dirname(resolve(REPORT)), { recursive: true });
   nodeFs.writeFileSync(REPORT, JSON.stringify({ nodeVersion: MANIFEST.nodeVersion, nodeCommit: MANIFEST.nodeCommit, engine: ENGINE, fullDenominator: ALL, timeoutMs: TIMEOUT, jobs: JOBS, durationSeconds, results }, null, 2) + "\n");
 }
+// How the suite's programs ended, by the engine's own words, over every program of every file and over the files
+// that pass (a file's last program is its own; the ones before it are children it started).
+const ends = new Map(), endsOfPassing = new Map();
+for (const r of results) for (const end of r.endedBy ?? []) {
+  ends.set(end.endedBy, (ends.get(end.endedBy) ?? 0) + 1);
+  if (r.passed) endsOfPassing.set(end.endedBy, (endsOfPassing.get(end.endedBy) ?? 0) + 1);
+}
+if (ends.size) hostOut(`how ${[...ends.values()].reduce((sum, count) => sum + count, 0)} programs ended (of files that pass, in brackets):\n`);
+for (const [how, count] of [...ends].sort((a, b) => b[1] - a[1])) hostOut(`  ${String(count).padStart(5)} [${String(endsOfPassing.get(how) ?? 0).padStart(5)}]  ${how}\n`);
 const reasons = new Map();
 for (const r of results) if (!r.passed) reasons.set(r.reason, (reasons.get(r.reason) ?? 0) + 1);
 for (const [reason, count] of [...reasons].sort((a, b) => b[1] - a[1]).slice(0, 12)) hostOut(`  ${String(count).padStart(4)}  ${reason}\n`);
