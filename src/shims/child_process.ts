@@ -41,7 +41,7 @@ import { __substrateExitCode, __substrateProcessEnding, __substrateUncaughtCaptu
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
 import { treeDescriptorsOf } from '../tree-descriptors';
-import { VirtualFSAdapter } from './vfs-adapter';
+import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
 import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
@@ -1955,12 +1955,54 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
   }
 
   if (!bash) throw new Error('child_process not initialized');
-  const result = await bash.exec(run.command, {
-    cwd: run.cwd,
-    env: run.env,
-    ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
-  });
-  return { stdout: result.stdout || '', stderr: result.stderr || '', exitCode: result.exitCode };
+  shellLinesRunning.push(run.command);
+  setShellReadWatch(shellReadsProgram);
+  try {
+    const result = await bash.exec(run.command, {
+      cwd: run.cwd,
+      env: run.env,
+      ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
+    });
+    return { stdout: result.stdout || '', stderr: result.stderr || '', exitCode: result.exitCode };
+  } finally {
+    shellLinesRunning.splice(shellLinesRunning.lastIndexOf(run.command), 1);
+    if (shellLinesRunning.length === 0) setShellReadWatch(null);
+  }
+}
+
+/** The command lines this engine's shell is running now, oldest first: what a file it reads was reached from. */
+const shellLinesRunning: string[] = [];
+const HOST_EXECUTABLE = /^\0Volter-host-executable-v1\nsha256:[a-f0-9]{64}\n/u;
+const PROGRAM_STUB = /^#!\/bin\/sh\n# [\w.+-]+: runtime-registered program\n/u;
+
+/**
+ * AN INSTRUMENT, AND ONE ANSWER. This engine's shell runs a file it finds for a command word as a script: it reads
+ * the file's text and parses it. A host program's handle (the substrate's ADR-0122 format: a NUL, the format line,
+ * the handle's `sha256:` identity) read that way is two lines, each "command not found" (RSSHub under a World's
+ * attach, 3.0.2177: `bash:  Volter-host-executable-v1: command not found`, `bash: sha256:a38cec…: command not found`,
+ * exit before the application's own node). A spawn BY PATH is kept from this (isRegisteredProgramStub); a file the
+ * shell finds itself, for a word of a line or of a script it is running, was not, and nothing said which file.
+ *
+ * Said for each such read: the path, and the lines the shell was running (the first is the one a caller gave it;
+ * the word that led to the file is in one of them, or in a script one of them ran). For a handle the text given
+ * back says the same on stderr and ends 126, as a shell answers a file it cannot execute. It is NOT handed to the
+ * host that holds the handle: which route reaches here decides where that belongs, and this line is what says it.
+ * A binary image and a registered program's `#!/bin/sh` stub are said and read as before.
+ */
+function shellReadsProgram(path: string, tree: VirtualFS): string | undefined {
+  let head: Uint8Array;
+  try {
+    if (!tree.statSync(path).isFile()) return undefined;
+    head = (tree.readFileSync(path) as Uint8Array).subarray(0, FILE_HEAD_BYTES);
+  } catch { return undefined; }
+  const text = new TextDecoder().decode(head);
+  const kind = HOST_EXECUTABLE.test(text) ? "a host program's handle" : PROGRAM_STUB.test(text) ? "a registered program's stub" : isBinaryImage(head) ? 'a binary image' : undefined;
+  if (kind === undefined) return undefined;
+  const handle = kind === "a host program's handle";
+  console.log(`[boot-trace] ${JSON.stringify({ event: 'shell-read-program-as-text', at: Date.now(), path, kind, ...(handle ? { identity: text.split('\n')[1] } : {}), lines: shellLinesRunning.map((line) => line.slice(0, 400)), answered: handle ? 'exit 126 with a sentence' : 'read as before' })}`);
+  if (!handle) return undefined;
+  const sentence = `bash: ${path}: cannot execute: it is a host program's handle, not a script (this engine's shell found it for a command of: ${shellLinesRunning[0] ?? ''})`;
+  return `printf '%s\\n' '${sentence.replace(/'/gu, `'\\''`)}' >&2\n(exit 126)\n`;
 }
 
 /**
