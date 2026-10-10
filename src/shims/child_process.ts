@@ -1550,6 +1550,17 @@ async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBa
     ...environmentOf(ctx),
     npm_lifecycle_event: scriptName,
   };
+  // A SCRIPT'S FIRST WORD IS LOOKED FOR IN THE PACKAGE'S OWN BINARIES FIRST. npm runs a script with
+  // `node_modules/.bin` of the package's directory, and of each directory above it, ahead of the caller's PATH; that
+  // is how `cross-env …` or `next start` in a script finds a dependency's binary. The script was run with the
+  // caller's PATH alone, which names `/node_modules/.bin` at the tree's root and no package's: RSSHub's start,
+  // `cross-env NODE_ENV=production … node dist/index.mjs` in /app, ended "bash: cross-env: command not found".
+  const binaries: string[] = [];
+  for (let directory = ctx.cwd.replace(/\/+$/u, '') || '/'; ; directory = directory.slice(0, directory.lastIndexOf('/')) || '/') {
+    binaries.push(`${directory === '/' ? '' : directory}/node_modules/.bin`);
+    if (directory === '/') break;
+  }
+  npmEnv.PATH = [...binaries, ...(npmEnv.PATH ?? '/usr/local/bin:/usr/bin:/bin').split(':').filter((entry) => entry !== '' && !binaries.includes(entry))].join(':');
   if (pkgJson.name) npmEnv.npm_package_name = pkgJson.name;
   if (pkgJson.version) npmEnv.npm_package_version = pkgJson.version;
 
