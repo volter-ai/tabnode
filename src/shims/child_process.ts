@@ -2441,7 +2441,40 @@ let __nextChildRun = 1;
  * releases them, and `onexit` carries the signal. Whatever the command does
  * afterwards is nobody's.
  */
+/**
+ * A PROJECT'S OWN NODE BIN, SPAWNED BY ITS NAME, IS `node <bin>`, as Linux's binfmt_script makes it: the kernel reads
+ * the file's `#!` line and runs the interpreter with the file's path before its arguments. A bare name was a Node child
+ * only when the name itself was `node`, so `spawn('next', ['start'])` from a node on the kernel's tree (a World's attach
+ * starting a manifest project's `next start`) went to the page's lane, which runs the project's bin in the toolchain
+ * worker over the worker's own tree: no kernel channel, every module body read and hashed. Measured on Dub, one pair
+ * (browser-substrate 8ce7d589 + tabnode 7885dfc), interleaved: by name 19.9 and 18.4 s to the first page, the server's
+ * load 11.3 and 10.4 s; as `node ../../node_modules/next/dist/bin/next start` 15.2 and 14.5 s, load 6.7 and 6.3 s.
+ *
+ * The bin is the one the page's lane would have run for that name: `node_modules/.bin/<name>` on the way up from the
+ * child's directory, and only when it is a Node script (its `#!` line names node). Rewritten only where the child would
+ * then be the admitted Node child of this realm's own process, exactly as `spawn('node', [bin])` from the same caller
+ * is: nothing is admitted that is not admitted today. Not rewritten: a name with a `/`, a name the engine's shell
+ * carries, and the package managers, whose names the substrate answers with programs of its own (an install, a plan).
+ */
+const PACKAGE_MANAGER_NAMES = new Set(['npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'yarnpkg', 'corepack', 'bun', 'bunx']);
+function projectNodeBinFor(request: RunRequest): string | null {
+  const name = request.file;
+  if (!/^[A-Za-z0-9][\w.-]*$/u.test(name) || PACKAGE_MANAGER_NAMES.has(name) || shellCommandNames().has(name)) return null;
+  if (!nodeProcessHostInstalled() || request.owner === null || nodeProcessRealmToken() !== request.owner) return null;
+  let directory = __resolvePath('/', request.cwd ?? '/').replace(/\/+$/u, '') || '/';
+  for (;;) {
+    const bin = `${directory === '/' ? '' : directory}/node_modules/.bin/${name}`;
+    if (existsInTree(bin)) return isNodeScript(bin) ? bin : null;
+    if (directory === '/') return null;
+    directory = directory.slice(0, directory.lastIndexOf('/')) || '/';
+  }
+}
+
 function startChildRun(request: RunRequest): StartedRun {
+  {
+    const bin = projectNodeBinFor(request);
+    if (bin !== null) request = { ...request, file: 'node', args: ['node', bin, ...request.args.slice(1)] };
+  }
   const token: ProcessToken = `child-${__nextChildRun++}`;
   // A child is a process and has its own number, which its parent reads off
   // the handle and the child itself reports as `process.pid`; `ppid` is the
