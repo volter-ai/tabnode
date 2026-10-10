@@ -630,6 +630,15 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // what the program has written on either fd, which is how the loop below
   // tells a program that printed from one still quiet.
   let printed = 0;
+  // An instrument: when the program last wrote, on which fd and what, for the line that says what held it at its end
+  // (`run-drained`): the wait before a quiet program is ended counts from this write, and nothing said when it was,
+  // so the time between a program's last module and its last line could not be placed. The engine's own console
+  // lines are not writes of the program and are not counted here or in `printed`.
+  const lastWrite = { at: 0, fd: 0, bytes: 0, head: '', writes: 0 };
+  const noteWrite = (fd: 1 | 2, data: string | Uint8Array): void => {
+    lastWrite.at = Date.now(); lastWrite.fd = fd; lastWrite.bytes = data.length; lastWrite.writes += 1;
+    lastWrite.head = typeof data === 'string' ? data.slice(0, 80) : '';
+  };
   const stdinRing = streams?.stdinShared ? new StdinRingReader(streams.stdinShared) : undefined;
   const stdoutBytes = streams?.onStdoutBytes;
   const stderrBytes = streams?.onStderrBytes;
@@ -641,6 +650,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const appendStdout = (data: string | Uint8Array) => {
     if (exitCalled) return;
     printed += data.length;
+    noteWrite(1, data);
     if (stdoutBytes) { stdoutBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
     const text = typeof data === 'string' ? data : stdoutDecoder.decode(data, { stream: true });
     stdout += text;
@@ -649,6 +659,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const appendStderr = (data: string | Uint8Array) => {
     if (exitCalled) return;
     printed += data.length;
+    noteWrite(2, data);
     if (stderrBytes) { stderrBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
     const text = typeof data === 'string' ? data : stderrDecoder.decode(data, { stream: true });
     stderr += text;
@@ -1205,7 +1216,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     }
     // Said only where the wait was long enough to matter to whoever waits on this program.
     if (Date.now() - startTime >= 200) {
-      console.log('[boot-trace]', JSON.stringify({ event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: heldBy, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS }));
+      console.log('[boot-trace]', JSON.stringify({ event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: heldBy, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
+        entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null }));
     }
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
     if (typeof proc !== 'undefined') (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);

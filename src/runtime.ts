@@ -884,6 +884,32 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
   clock.phase = phase; clock.at = now; clock.kernelAt = kernelNow;
   return was;
 }
+/**
+ * An instrument: WHICH PATH EACH OF A PROCESS'S REQUIRES TOOK, said with its load clock. A `require` is the engine's
+ * own (`requireRaw`), or goes through `Module.prototype.require` or `Module._load` where a program replaced either
+ * (module-alias, a tracing hook), and the engine's `_load` is reached from the engine's `Module.prototype.require`,
+ * from a replaced `_load` that hands on, or by a program calling it. The clock marked `resolve` on the first of
+ * these alone, so an application whose requires all go through a replaced `_load` read 4 ms of resolving for 6,173
+ * modules beside 25,018 stats: its resolver's time was in whichever phase was open, and after each child the parent's
+ * body was counted in the child's last phase. `replaced` says, once each, what stands in the engine's place: the
+ * function's first characters and the stack at the first load that came through it (its own frame names its file).
+ */
+type RequirePaths = { requireRaw: number; replacedPrototypeRequire: number; replacedLoad: number;
+  engineLoad: { fromEnginePrototypeRequire: number; fromReplacedLoad: number; direct: number };
+  replaced: { prototypeRequire?: { source: string; stack: string[] }; load?: { source: string; stack: string[] } } };
+const __substrateRequirePaths = new WeakMap<object, RequirePaths>();
+function __substrateRequirePathsFor(process: object): RequirePaths {
+  let paths = __substrateRequirePaths.get(process);
+  if (!paths) { paths = { requireRaw: 0, replacedPrototypeRequire: 0, replacedLoad: 0, engineLoad: { fromEnginePrototypeRequire: 0, fromReplacedLoad: 0, direct: 0 }, replaced: {} }; __substrateRequirePaths.set(process, paths); }
+  return paths;
+}
+/** How the engine's `_load` is being reached, set by the caller that reaches it and taken by the load it reaches. */
+let __substrateLoadVia: 'engine-prototype-require' | 'replaced-load' | undefined;
+function __substrateSaidReplacement(replacement: unknown): { source: string; stack: string[] } {
+  let source = '';
+  try { source = String(replacement).replace(/\s+/gu, ' ').slice(0, 160); } catch { /* a function that cannot be printed */ }
+  return { source, stack: (new Error().stack ?? '').split('\n').slice(2, 10).map(line => line.trim().slice(0, 200)) };
+}
 function __substrateSayLoadClock(process: object, at: string): void {
   const clock = __substrateLoadClocks.get(process);
   if (!clock || clock.bodies === clock.said) return;
@@ -901,6 +927,7 @@ function __substrateSayLoadClock(process: object, at: string): void {
     bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: Math.round(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(clock.kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
+    requires: __substrateRequirePaths.get(process) ?? null,
     kernelFrom: { fileSystem: clock.fs ? (clock.fs as object).constructor?.name ?? 'unnamed' : null, total: typeof clock.fs?.kernelBlockedMs === 'function' ? Math.round(clock.fs.kernelBlockedMs()) : 'no kernelBlockedMs on it' } }));
 }
 function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
@@ -2117,7 +2144,8 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     const keeping = __substrateKeptFor(process);
     keeping.depth += 1;
     const phase = __substrateLoadPhase(process, undefined, 'resolve');
-    try { return Module._load(id, this, false); } finally { keeping.depth -= 1; __substrateLoadPhase(process, undefined, keeping.depth === 0 ? 'outside' : phase); }
+    __substrateLoadVia = 'engine-prototype-require';
+    try { return Module._load(id, this, false); } finally { __substrateLoadVia = undefined; keeping.depth -= 1; __substrateLoadPhase(process, undefined, keeping.depth === 0 ? 'outside' : phase); }
   };
   Module.__substrateRequire = Module.prototype.require;
   // `Module.prototype._compile(content, filename)` is the seam every loader
@@ -2726,6 +2754,7 @@ function createRequire(
   const require: RequireFunction = (id: string): unknown => {
     const Module = __substrateModule();
     if (Module.prototype.require !== Module.__substrateRequire) {
+      __substrateRequirePathsFor(process).replacedPrototypeRequire += 1;
       return Module.prototype.require.call(parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, id);
     }
     // A program that replaced `Module._load` sees every require from here on,
@@ -2734,7 +2763,13 @@ function createRequire(
     if (Module._load !== Module.__substrateLoad) {
       const keeping = __substrateKeptFor(process);
       keeping.depth += 1;
-      try { return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false); } finally { keeping.depth -= 1; if (keeping.depth === 0) __substrateLoadPhase(process, vfs, 'outside'); }
+      __substrateRequirePathsFor(process).replacedLoad += 1;
+      // The clock, as `requireRaw` keeps it: the require is resolving from here (the program's own `_load` is part
+      // of that), and when it returns the caller is where it was. Without the two marks nothing on this path was
+      // counted to `resolve`, and a parent's body went on in its child's last phase (`link`).
+      const phase = __substrateLoadPhase(process, vfs, 'resolve');
+      __substrateLoadVia = 'replaced-load';
+      try { return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false); } finally { __substrateLoadVia = undefined; keeping.depth -= 1; __substrateLoadPhase(process, vfs, keeping.depth === 0 ? 'outside' : phase); }
     }
     return requireRaw(id);
   };
@@ -2753,6 +2788,7 @@ function createRequire(
   const requireRaw = (id: string): unknown => {
     const keeping = __substrateKeptFor(process);
     keeping.depth += 1;
+    __substrateRequirePathsFor(process).requireRaw += 1;
     const phase = __substrateLoadPhase(process, vfs, 'resolve');
     try { return requireCounted(id); } finally { keeping.depth -= 1; __substrateLoadPhase(process, vfs, keeping.depth === 0 ? 'outside' : phase); }
   };
@@ -2997,7 +3033,17 @@ function createRequire(
   require.cache = moduleCache;
   (require as any).__requireRaw = requireRaw;
   // What `Module._load` is: a load that is not a `require` call and so is not counted as one.
-  (require as any).__loadRaw = requireCounted;
+  // Counted by how it was reached, and on the load clock: it resolves from here, and its caller is where it was when
+  // it returns (a `_load` is not a `require` call, so the depth is its caller's).
+  (require as any).__loadRaw = (id: string): unknown => {
+    const paths = __substrateRequirePathsFor(process), via = __substrateLoadVia;
+    __substrateLoadVia = undefined;
+    paths.engineLoad[via === 'engine-prototype-require' ? 'fromEnginePrototypeRequire' : via === 'replaced-load' ? 'fromReplacedLoad' : 'direct'] += 1;
+    if (paths.replacedPrototypeRequire > 0 && !paths.replaced.prototypeRequire) paths.replaced.prototypeRequire = __substrateSaidReplacement(__substrateModule().prototype.require);
+    if (via === 'replaced-load' && !paths.replaced.load) paths.replaced.load = __substrateSaidReplacement(__substrateModule()._load);
+    const phase = __substrateLoadPhase(process, vfs, 'resolve');
+    try { return requireCounted(id); } finally { __substrateLoadPhase(process, vfs, phase); }
+  };
   (require as any).__compileRaw = compileRaw;
   (require as any).__builtinLoad = builtinLoad;
   (require as any).__resolveRaw = (id: string) => resolveModule(id, currentDir);
