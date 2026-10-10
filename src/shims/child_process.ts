@@ -1098,10 +1098,19 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // When an abort signal is present (e.g. watch mode), don't apply idle timeout —
     // only exit when aborted or process.exit is called.
     const isLongRunning = !!streams?.held;
+    // WHAT HELD THIS PROGRAM AFTER ITS ENTRY RETURNED, AND WHY THE WAIT ENDED. A program that has done its work
+    // ends only when this loop lets it: when nothing of its own is pending and it has written nothing for
+    // IDLE_TIMEOUT_MS (2 s where it wrote nothing at all, 100 ms once its children have exited), looked at every
+    // CHECK_MS. A World's `up` said "returning: the World is up" and its process ended 0.55 s later for one
+    // application and 1.9 s later for another, the page waiting on it both times, and no line said what held it.
+    // Each look's time is put to every thing true at that look, and one line says them when the wait ends.
+    const heldBy: Record<string, number> = {};
+    let endedBy = 'the program called exit';
+    const note = (name: string): void => { heldBy[name] = (heldBy[name] ?? 0) + CHECK_MS; };
 
     while (!exitCalled) {
       // Check abort signal for long-running commands (watch mode)
-      if (streams?.signal?.aborted) break;
+      if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
 
       // Check if exitPromise resolved (non-blocking)
       const raceResult = await Promise.race([
@@ -1110,7 +1119,17 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       ]);
 
       if (raceResult === 'exit' || exitCalled) break;
-      if (streams?.signal?.aborted) break;
+      if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
+      {
+        const timers = pendingGuestTimers(proc), ports = runToken !== null ? __ownedServerPorts(runToken).length : 0, handles = runToken !== null ? __ownedHandleCount(runToken) : 0, held = heldWork().count;
+        const input = streams?.stdinOpen === true && inputConsumed();
+        if (input) note('its input is open and read');
+        if (timers > 0) note('a timer is pending');
+        if (ports > 0) note('it owns a listening port');
+        if (handles > 0) note('it owns an open handle');
+        if (held > 0) note('held work (a child or a build)');
+        if (!input && timers === 0 && ports === 0 && handles === 0 && held === 0) note('nothing: the idle rule alone');
+      }
 
       const currentLen = printed;
       if (currentLen > lastOutputLen) {
@@ -1134,8 +1153,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         // longer wait is for a start that is quiet while it fetches, which
         // the engine cannot yet see as work.
         const silentIdle = SILENT_IDLE_TIMEOUT_MS;
-        if (lastOutputLen > 0 && !stillWorking() && idleMs >= effectiveIdle) break;
-        if (lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) break;
+        if (lastOutputLen > 0 && !stillWorking() && idleMs >= effectiveIdle) { endedBy = `nothing of its own was pending and it had written nothing for ${effectiveIdle} ms${childrenExited ? ' (its children had exited)' : ''}`; break; }
+        if (lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) { endedBy = `nothing of its own was pending and it wrote nothing at all, for ${silentIdle} ms`; break; }
       }
 
       // The hard timeout is for a program whose work the engine cannot see:
@@ -1146,7 +1165,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       // a server, which is every extension host and every pty host. Work the
       // host holds for it (a build, a pre-bundle) is seen work too: a dev
       // server whose start passed a minute mid pre-bundle was cut with exit 0.
-      if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) break;
+      if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) { endedBy = `the ${MAX_TOTAL_MS} ms bound`; break; }
     }
 
     // A process whose loop has drained emits `exit`, as Node's does (`process.emit('exit', process.exitCode || 0)`,
@@ -1161,6 +1180,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       __substrateProcessEnding(proc);
       try { proc.emit('exit', exitCode); } catch (error) { __reportUncaughtException(proc, error); } finally { emittingExit = false; }
       if (typeof proc.exitCode === 'number') exitCode = proc.exitCode;
+    }
+    // Said only where the wait was long enough to matter to whoever waits on this program.
+    if (Date.now() - startTime >= 200) {
+      console.log('[boot-trace]', JSON.stringify({ event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: heldBy, checkMs: CHECK_MS }));
     }
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
     if (typeof proc !== 'undefined') (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
