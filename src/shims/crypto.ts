@@ -882,8 +882,27 @@ class Sign extends EventEmitter {
   }
 
   update(data: string | Buffer | Uint8Array, encoding?: string): this {
-    const buffer = typeof data === 'string' ? Buffer.from(data) : data;
+    // A string's bytes by the encoding named, as Node reads it (`update(hex, 'hex')`); it was read as UTF-8 whatever was named.
+    const buffer = typeof data === 'string' ? Buffer.from(cryptoBytes(data, encoding ?? 'utf8')) : data;
     this.#data.push(buffer);
+    return this;
+  }
+
+  // NODE'S SIGN AND VERIFY ARE WRITABLE STREAMS (`class Sign extends stream.Writable`): a caller may write its data
+  // and end the stream before it asks for the result, and code written against Node does (`signer.update(input);
+  // signer.end(); signer.sign(key)`, a JWT's RS256 in a World's twin). With neither method the call threw "signer.end
+  // is not a function" and the twin issued no key. `write` is `update`; `end` takes a last chunk and says 'finish'.
+  write(chunk: string | Buffer | Uint8Array, encoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean {
+    this.update(chunk, typeof encoding === 'string' ? encoding : undefined);
+    const done = typeof encoding === 'function' ? encoding : callback;
+    if (done) queueMicrotask(() => done(null));
+    return true;
+  }
+
+  end(chunk?: string | Buffer | Uint8Array | (() => void), encoding?: string | (() => void), callback?: () => void): this {
+    if (chunk !== undefined && typeof chunk !== 'function') this.update(chunk, typeof encoding === 'string' ? encoding : undefined);
+    const done = typeof chunk === 'function' ? chunk : typeof encoding === 'function' ? encoding : callback;
+    queueMicrotask(() => { this.emit('finish'); done?.(); });
     return this;
   }
 
@@ -908,8 +927,27 @@ class Verify extends EventEmitter {
   }
 
   update(data: string | Buffer | Uint8Array, encoding?: string): this {
-    const buffer = typeof data === 'string' ? Buffer.from(data) : data;
+    // A string's bytes by the encoding named, as Node reads it (`update(hex, 'hex')`); it was read as UTF-8 whatever was named.
+    const buffer = typeof data === 'string' ? Buffer.from(cryptoBytes(data, encoding ?? 'utf8')) : data;
     this.#data.push(buffer);
+    return this;
+  }
+
+  // NODE'S SIGN AND VERIFY ARE WRITABLE STREAMS (`class Sign extends stream.Writable`): a caller may write its data
+  // and end the stream before it asks for the result, and code written against Node does (`signer.update(input);
+  // signer.end(); signer.sign(key)`, a JWT's RS256 in a World's twin). With neither method the call threw "signer.end
+  // is not a function" and the twin issued no key. `write` is `update`; `end` takes a last chunk and says 'finish'.
+  write(chunk: string | Buffer | Uint8Array, encoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean {
+    this.update(chunk, typeof encoding === 'string' ? encoding : undefined);
+    const done = typeof encoding === 'function' ? encoding : callback;
+    if (done) queueMicrotask(() => done(null));
+    return true;
+  }
+
+  end(chunk?: string | Buffer | Uint8Array | (() => void), encoding?: string | (() => void), callback?: () => void): this {
+    if (chunk !== undefined && typeof chunk !== 'function') this.update(chunk, typeof encoding === 'string' ? encoding : undefined);
+    const done = typeof chunk === 'function' ? chunk : typeof encoding === 'function' ? encoding : callback;
+    queueMicrotask(() => { this.emit('finish'); done?.(); });
     return this;
   }
 
