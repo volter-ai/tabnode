@@ -1137,6 +1137,12 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     let sinceLastOutput: Record<string, number> = {};
     let endedBy = 'the program called exit';
     const note = (name: string): void => { heldBy[name] = (heldBy[name] ?? 0) + CHECK_MS; sinceLastOutput[name] = (sinceLastOutput[name] ?? 0) + CHECK_MS; };
+    // Whether the idle rule's wait ever saw work the engine does not count: a look that found nothing pending and no new
+    // output begins an empty span; a later look that finds output or pending work ends it, and the program is said to
+    // have woken that long after its loop looked empty (Node would have ended it at the first empty look). A program
+    // that never wakes from an empty span was waited on by the idle rule for nothing it did.
+    let emptyLooks = 0, emptyAt: number | undefined;
+    const wokeAfterEmpty: Array<{ afterEmptyMs: number; by: string[] }> = [];
 
     while (!exitCalled) {
       // Check abort signal for long-running commands (watch mode)
@@ -1161,6 +1167,13 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         if (handles > 0) { note('it owns an open handle'); for (const kind of new Set(__ownedHandleKinds(runToken!))) note(`it owns an open handle: ${kind}`); }
         if (held > 0) note('held work (a child or a build)');
         if (!input && timers === 0 && ports === 0 && handles === 0 && held === 0) note('nothing: the idle rule alone');
+        const by = [...(printed > lastOutputLen ? ['output'] : []), ...(input ? ['input'] : []), ...(timers > 0 ? ['timer'] : []),
+          ...(ports > 0 ? ['port'] : []), ...(handles > 0 ? ['handle'] : []), ...(held > 0 ? ['held work'] : [])];
+        if (by.length === 0) { emptyLooks += 1; emptyAt ??= Date.now(); }
+        else if (emptyAt !== undefined) {
+          if (wokeAfterEmpty.length < 8) wokeAfterEmpty.push({ afterEmptyMs: Date.now() - emptyAt, by });
+          emptyAt = undefined;
+        }
       }
 
       const currentLen = printed;
@@ -1217,7 +1230,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // Said only where the wait was long enough to matter to whoever waits on this program.
     if (Date.now() - startTime >= 200) {
       console.log('[boot-trace]', JSON.stringify({ event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: heldBy, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
-        entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null }));
+        entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null,
+        emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt }));
     }
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
     if (typeof proc !== 'undefined') (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
