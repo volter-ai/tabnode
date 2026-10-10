@@ -160,6 +160,12 @@ export function __ownedHandleCount(token: ProcessToken): number {
   return owners.get(token)?.size ?? 0;
 }
 
+/** Each ref'd handle the named run holds, by its wrap's name (TCP, Pipe, Process, …), for the line that says what held it. */
+export function __ownedHandleKinds(token: ProcessToken): string[] {
+  const held = owners.get(token);
+  return held ? [...held].map((handle) => (handle as object).constructor?.name || 'handle') : [];
+}
+
 /**
  * Every port the named run is listening on.
  *

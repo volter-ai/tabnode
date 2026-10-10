@@ -43,7 +43,7 @@ import type { VirtualFS } from '../virtual-fs';
 import { treeDescriptorsOf } from '../tree-descriptors';
 import { VirtualFSAdapter } from './vfs-adapter';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
-import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
+import { __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
 import { StdinRingReader, kStdinRing } from '../stdin-ring';
@@ -69,7 +69,7 @@ const __hostProcess: { on(event: string, listener: (reason: unknown) => void): u
   typeof process !== 'undefined' && process !== null && typeof (process as { on?: unknown }).on === 'function' && typeof (process as { off?: unknown }).off === 'function'
     ? (process as { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown })
     : null;
-import { Runtime, pendingGuestTimers, stopGuestTimers, __substratePendingOf } from '../runtime';
+import { Runtime, pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers, __substratePendingOf } from '../runtime';
 import { __nodeResolverFor } from '../node-resolver';
 import { resolve as __resolvePath } from './path';
 import { setSyncChildVfs, warmSyncChild } from './sync-child';
@@ -1124,9 +1124,11 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         const timers = pendingGuestTimers(proc), ports = runToken !== null ? __ownedServerPorts(runToken).length : 0, handles = runToken !== null ? __ownedHandleCount(runToken) : 0, held = heldWork().count;
         const input = streams?.stdinOpen === true && inputConsumed();
         if (input) note('its input is open and read');
-        if (timers > 0) note('a timer is pending');
+        // Named by kind as well as counted: run 5 of Rallly said "an open handle" 600 ms and "a timer" 350 ms for the
+        // World's `up` after it said it was up, and not which.
+        if (timers > 0) { note('a timer is pending'); for (const kind of new Set(pendingGuestTimerKinds(proc))) note(`a timer is pending: ${kind}`); }
         if (ports > 0) note('it owns a listening port');
-        if (handles > 0) note('it owns an open handle');
+        if (handles > 0) { note('it owns an open handle'); for (const kind of new Set(__ownedHandleKinds(runToken!))) note(`it owns an open handle: ${kind}`); }
         if (held > 0) note('held work (a child or a build)');
         if (!input && timers === 0 && ports === 0 && handles === 0 && held === 0) note('nothing: the idle rule alone');
       }

@@ -32,7 +32,7 @@ import { errname as __uvErrname } from './node-lib/binding/uv';
 import { createTimersModule } from './node-lib/timers';
 import { guestTimerFunctions } from './guest-timers';
 import { stackOverrides } from './stack-overrides';
-export { pendingGuestTimers, stopGuestTimers } from './guest-timers';
+export { pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers } from './guest-timers';
 import eventsShim from './node-lib/events-module';
 import { streamModule as streamShim, streamPromisesModule as streamPromises } from './node-lib/stream-module';
 import * as urlShim from './shims/url';
@@ -2204,7 +2204,7 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   };
   Module.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
   Module.wrap = (code: string) => Module.wrapper[0] + code + Module.wrapper[1];
-  Module.createRequire = (filenameOrUrl: string) => {
+  Module.createRequire = (filenameOrUrl: string | URL) => {
     // A file URL is read as Node reads it, by fileURLToPath: its path, percent-decoded. This took the text after
     // `file://` as it stood, so a URL whose path had an escape (`%40` for `@`, `%20` for a space) named a directory
     // that is not there, and every relative `require` made from it was "Cannot find module".

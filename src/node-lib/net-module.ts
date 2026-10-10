@@ -27,7 +27,7 @@ import { loadNodeLib } from './load';
 import type { DuplexLike } from './stream-module';
 import type { EventEmitter } from './events-module';
 import type { ProcessToken } from '../process-tokens';
-import { __adoptHandle, __ownedHandleCount, __releaseOwnedHandles } from './binding/handles';
+import { __adoptHandle, __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles } from './binding/handles';
 import { TCP, constants as tcpConstants, type SockName } from './binding/tcp_wrap';
 import { LibuvStreamWrap, WriteWrap, ShutdownWrap, kReadBytesOrError, kArrayBufferOffset, streamBaseState } from './binding/stream_wrap';
 
@@ -168,7 +168,7 @@ export const isIPv4 = netModule.isIPv4;
 export const isIPv6 = netModule.isIPv6;
 
 /** How many ref'd handles the named run holds, as Node's loop counts them. */
-export { __ownedHandleCount, __releaseOwnedHandles };
+export { __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles };
 
 /** The ports a run is listening on, and the release of them when it ends. */
 export { __ownedServerPorts, __releaseOwnedServers } from './binding/handles';

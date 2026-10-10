@@ -13,6 +13,16 @@ const __substratePendingTimers = new WeakMap<object, Set<unknown>>();
 export function pendingGuestTimers(process: object): number {
   return (__substratePendingTimers.get(process)?.size ?? 0) + pendingGuestPorts(process);
 }
+// What each pending timer is, for the line that says what held a program after its entry returned: "pending
+// timer" alone did not say whether it was a retry a second long or an interval a heartbeat keeps.
+const __substrateTimerKinds = new WeakMap<object, string>();
+/** Each timer and port the process still holds, named by its kind and delay ("a 1000 ms timeout"). */
+export function pendingGuestTimerKinds(process: object): string[] {
+  const kinds: string[] = [...(__substratePendingTimers.get(process) ?? [])].map((id) => (id && typeof id === "object" ? __substrateTimerKinds.get(id) : undefined) ?? "a timer");
+  const ports = pendingGuestPorts(process);
+  if (ports > 0) kinds.push(`${ports} message port${ports === 1 ? "" : "s"}`);
+  return kinds;
+}
 /**
  * Close this process's message ports and clear every timer it still holds.
  * Ending a Node process clears the
@@ -70,8 +80,9 @@ export function guestTimerFunctions(process: object, host: Record<string, unknow
     try { withGuestCallback(() => fn(...args)); }
     catch (error) { if (!__reportUncaughtException(process, error)) throw error; }
   };
-  const track = (id: unknown): unknown => {
+  const track = (id: unknown, kind?: string): unknown => {
     held.add(id);
+    if (kind && id && typeof id === "object") __substrateTimerKinds.set(id, kind);
     if (id && typeof id === "object" && typeof (id as { unref?: unknown }).unref === "function") {
       const handle = id as { unref: () => unknown; ref: () => unknown };
       const unref = handle.unref.bind(handle);
@@ -86,10 +97,10 @@ export function guestTimerFunctions(process: object, host: Record<string, unknow
       let id: unknown;
       const call = inProcess(fn);
       id = nodeTimeout(hostSetTimeout.call(host, (...args: unknown[]) => { held.delete(id); call(...args); }, ms, ...rest));
-      return track(id);
+      return track(id, `a ${Number(ms) || 0} ms timeout`);
     },
     setInterval(fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) {
-      return track(nodeTimeout(hostSetInterval.call(host, inProcess(fn), ms, ...rest)));
+      return track(nodeTimeout(hostSetInterval.call(host, inProcess(fn), ms, ...rest)), `a ${Number(ms) || 0} ms interval`);
     },
     // AN IMMEDIATE IS WORK THE LOOP WAITS FOR, as a timer is: Node's loop does not end while one is queued. The
     // guest's bare `setImmediate` used to be the realm's own, counted by nothing, so a program whose only pending
@@ -103,7 +114,7 @@ export function guestTimerFunctions(process: object, host: Record<string, unknow
       let id: unknown;
       const call = inProcess(fn);
       id = nodeTimeout(hostSetImmediate.call(host, (...args: unknown[]) => { held.delete(id); call(...args); }, ...rest));
-      return track(id);
+      return track(id, "an immediate");
     },
     clearImmediate(id: unknown) { held.delete(id); return hostClearImmediate?.call(host, handleOf(id)); },
     clearTimeout(id: unknown) { held.delete(id); return hostClearTimeout.call(host, handleOf(id)); },
