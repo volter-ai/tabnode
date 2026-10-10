@@ -14,6 +14,7 @@ import { scrypt as nobleScrypt } from '@noble/hashes/scrypt.js';
 import { Buffer as HostBuffer } from 'buffer/index.js';
 import type { Buffer, BufferConstructor, BufferModule } from '../node-lib/buffer-module';
 import type { EventsModule } from '../node-lib/events-module';
+import type { StreamModule } from '../node-lib/stream-module';
 import { lazyModule, lazyExport } from '../node-lib/lazy';
 import {
   ERR_INVALID_ARG_TYPE,
@@ -47,6 +48,8 @@ export function createCryptoModule(require?: (name: string) => any) {
   const bufferModule: BufferModule = require ? require('buffer') : lazyModule<BufferModule>('buffer');
   const Buffer: BufferConstructor = require ? bufferModule.Buffer : lazyExport<BufferConstructor>('buffer', 'Buffer');
   const EventEmitter: EventsModule['EventEmitter'] = require ? require('events').EventEmitter : lazyExport<EventsModule['EventEmitter']>('events', 'EventEmitter');
+  // The stream a Sign and a Verify are, reached the same late way and for the same reason.
+  const Writable: StreamModule['Writable'] = require ? require('stream').Writable : lazyExport<StreamModule['Writable']>('stream', 'Writable');
 // ============================================================================
 // Random functions
 // ============================================================================
@@ -872,7 +875,7 @@ function createVerify(algorithm: string): Verify {
   return new Verify(algorithm);
 }
 
-class Sign extends EventEmitter {
+class Sign extends Writable {
   #algorithm: string;
   #data: Uint8Array[] = [];
 
@@ -890,20 +893,13 @@ class Sign extends EventEmitter {
 
   // NODE'S SIGN AND VERIFY ARE WRITABLE STREAMS (`class Sign extends stream.Writable`): a caller may write its data
   // and end the stream before it asks for the result, and code written against Node does (`signer.update(input);
-  // signer.end(); signer.sign(key)`, a JWT's RS256 in a World's twin). With neither method the call threw "signer.end
-  // is not a function" and the twin issued no key. `write` is `update`; `end` takes a last chunk and says 'finish'.
-  write(chunk: string | Buffer | Uint8Array, encoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean {
-    this.update(chunk, typeof encoding === 'string' ? encoding : undefined);
-    const done = typeof encoding === 'function' ? encoding : callback;
-    if (done) queueMicrotask(() => done(null));
-    return true;
-  }
-
-  end(chunk?: string | Buffer | Uint8Array | (() => void), encoding?: string | (() => void), callback?: () => void): this {
-    if (chunk !== undefined && typeof chunk !== 'function') this.update(chunk, typeof encoding === 'string' ? encoding : undefined);
-    const done = typeof chunk === 'function' ? chunk : typeof encoding === 'function' ? encoding : callback;
-    queueMicrotask(() => { this.emit('finish'); done?.(); });
-    return this;
+  // signer.end(); signer.sign(key)`, a JWT's RS256 in a World's twin). As an EventEmitter with `update` alone the
+  // call threw "signer.end is not a function" and the twin issued no key. Built on the engine's own Writable, which
+  // is Node's source, so every member a caller can reach is Node's (write, end, pipe, cork, destroy, the
+  // writable* states, 'finish'); what is written is what `update` takes.
+  _write(chunk: string | Buffer | Uint8Array, encoding: string, callback: (error?: Error | null) => void): void {
+    this.update(chunk, typeof chunk === 'string' ? encoding : undefined);
+    callback();
   }
 
   sign(privateKey: KeyLike, outputEncoding?: string): Buffer | string {
@@ -917,7 +913,7 @@ class Sign extends EventEmitter {
   }
 }
 
-class Verify extends EventEmitter {
+class Verify extends Writable {
   #algorithm: string;
   #data: Uint8Array[] = [];
 
@@ -935,20 +931,13 @@ class Verify extends EventEmitter {
 
   // NODE'S SIGN AND VERIFY ARE WRITABLE STREAMS (`class Sign extends stream.Writable`): a caller may write its data
   // and end the stream before it asks for the result, and code written against Node does (`signer.update(input);
-  // signer.end(); signer.sign(key)`, a JWT's RS256 in a World's twin). With neither method the call threw "signer.end
-  // is not a function" and the twin issued no key. `write` is `update`; `end` takes a last chunk and says 'finish'.
-  write(chunk: string | Buffer | Uint8Array, encoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean {
-    this.update(chunk, typeof encoding === 'string' ? encoding : undefined);
-    const done = typeof encoding === 'function' ? encoding : callback;
-    if (done) queueMicrotask(() => done(null));
-    return true;
-  }
-
-  end(chunk?: string | Buffer | Uint8Array | (() => void), encoding?: string | (() => void), callback?: () => void): this {
-    if (chunk !== undefined && typeof chunk !== 'function') this.update(chunk, typeof encoding === 'string' ? encoding : undefined);
-    const done = typeof chunk === 'function' ? chunk : typeof encoding === 'function' ? encoding : callback;
-    queueMicrotask(() => { this.emit('finish'); done?.(); });
-    return this;
+  // signer.end(); signer.sign(key)`, a JWT's RS256 in a World's twin). As an EventEmitter with `update` alone the
+  // call threw "signer.end is not a function" and the twin issued no key. Built on the engine's own Writable, which
+  // is Node's source, so every member a caller can reach is Node's (write, end, pipe, cork, destroy, the
+  // writable* states, 'finish'); what is written is what `update` takes.
+  _write(chunk: string | Buffer | Uint8Array, encoding: string, callback: (error?: Error | null) => void): void {
+    this.update(chunk, typeof chunk === 'string' ? encoding : undefined);
+    callback();
   }
 
   verify(publicKey: KeyLike, signature: Buffer | string, signatureEncoding?: string): boolean {
@@ -1419,6 +1408,18 @@ function readKeyInfo(key: KeyLike): KeyInfo {
       if (!inner || typeof inner !== 'object' || ArrayBuffer.isView(inner)) throw new ERR_INVALID_ARG_TYPE('key.key', 'object', inner);
       const fromJwk = asymmetric.keyFromJwk(inner as Record<string, unknown>);
       if (fromJwk) return keyInfoOfAsymmetric(fromJwk);
+      // An RSA key written as a JWK (`{ kty: 'RSA', n, e }`, what a JWKS serves and a JWT's verifier builds its key
+      // from): read into the DER this engine holds an RSA key as, and from there as any other. It was refused as
+      // "Invalid JWK data", so no RS256 token could be verified against a key published as a JWK.
+      if ((inner as { kty?: unknown }).kty === 'RSA') {
+        const made = rsa.rsaKeyFromJwk(inner as Record<string, unknown>);
+        if (made) {
+          const secret = 'd' in made, der = secret ? rsa.rsaPkcs8Of(made) : rsa.rsaSpkiOf(made), label = secret ? 'PRIVATE KEY' : 'PUBLIC KEY';
+          let binary = '';
+          for (const byte of der) binary += String.fromCharCode(byte);
+          return readKeyInfo(`-----BEGIN ${label}-----\n${btoa(binary).replace(/(.{64})/g, '$1\n')}\n-----END ${label}-----\n`);
+        }
+      }
       throw Object.assign(new TypeError('Invalid JWK data'), { code: 'ERR_CRYPTO_INVALID_JWK' });
     }
     if (key.format === 'der') {

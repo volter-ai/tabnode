@@ -124,6 +124,26 @@ export function rsaPublicPkcs1Of(key: RsaPublicKey): Uint8Array {
   return Uint8Array.from(derOf(0x30, [...derInteger(key.n), ...derInteger(key.e)]));
 }
 /** A key as a JWK (RFC 7518, section 6.3): its public numbers, and with `secret` its private ones. */
+/**
+ * An RSA key from a JWK's members, or undefined where they are not one: `n` and `e` for a public key; with `d`, the
+ * whole private key (`p`, `q`, `dp`, `dq`, `qi` beside it), as Node requires. Each member is base64url of the
+ * number's big-endian bytes; either base64 alphabet is read, padded or not, as the engine reads an EC key's.
+ */
+export function rsaKeyFromJwk(jwk: Record<string, unknown>): RsaPublicKey | RsaPrivateKey | undefined {
+  const number = (value: unknown): bigint | undefined => {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9_+/-]+={0,2}$/.test(value)) return undefined;
+    const text = atob(value.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '').padEnd(Math.ceil(value.replace(/=+$/, '').length / 4) * 4, '='));
+    let made = 0n;
+    for (let at = 0; at < text.length; at += 1) made = (made << 8n) | BigInt(text.charCodeAt(at));
+    return made;
+  };
+  const n = number(jwk.n), e = number(jwk.e);
+  if (n === undefined || e === undefined || n <= 0n || e <= 0n) return undefined;
+  if (jwk.d === undefined) return { n, e };
+  const d = number(jwk.d), p = number(jwk.p), q = number(jwk.q), dp = number(jwk.dp), dq = number(jwk.dq), qi = number(jwk.qi);
+  if (d === undefined || p === undefined || q === undefined || dp === undefined || dq === undefined || qi === undefined) return undefined;
+  return { n, e, d, p, q, dp, dq, qi };
+}
 export function rsaJwkOf(key: RsaPublicKey | RsaPrivateKey, secret: boolean): Record<string, string> {
   const text = (value: bigint): string => {
     const bytes = toBytes(value, Math.max(1, byteLength(value)));
