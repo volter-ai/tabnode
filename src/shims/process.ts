@@ -603,7 +603,13 @@ export function createProcess(options?: {
     // guest's environment, not the shell's: a PATH that left the directory out
     // meant `spawn('vite')` found nothing that `npm run dev` finds.
     PATH: '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin',
-    HOME: '/',
+    // No HOME: Node sets none. Started with no HOME in its environment, Node has
+    // `process.env.HOME` undefined and `os.homedir()` the account's directory
+    // (`env -u HOME node -p "os.homedir(), process.env.HOME"`). A HOME of `/`
+    // made here was read as one the image set: a program that keeps its state
+    // under the home kept it under `/`, where a later command given the
+    // account's home did not find it. A guest sees HOME only where the image,
+    // the Dockerfile, the command or its host set it.
     ...options?.env,
   };
   // A run that was not given a TTY is a pipe. The host's FORCE_COLOR would

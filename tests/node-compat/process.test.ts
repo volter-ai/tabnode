@@ -27,7 +27,8 @@ describe('process module (Node.js compat)', () => {
       const proc = createProcess();
       expect(proc.env.NODE_ENV).toBeDefined();
       expect(proc.env.PATH).toBeDefined();
-      expect(proc.env.HOME).toBeDefined();
+      // Node sets no HOME; `os.homedir()` answers the account's directory without one.
+      expect(proc.env.HOME).toBeUndefined();
     });
 
     it('should accept custom environment variables', () => {
