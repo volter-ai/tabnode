@@ -2460,12 +2460,19 @@ const PACKAGE_MANAGER_NAMES = new Set(['npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'ya
 function projectNodeBinFor(request: RunRequest): string | null {
   const name = request.file;
   if (!/^[A-Za-z0-9][\w.-]*$/u.test(name) || PACKAGE_MANAGER_NAMES.has(name) || shellCommandNames().has(name)) return null;
-  if (!nodeProcessHostInstalled() || request.owner === null || nodeProcessRealmToken() !== request.owner) return null;
+  // Said for every bare name that reaches the rule, with the check that decided: Dub 13 ran this rule and its server
+  // still started off the tree, and no line said why.
+  const say = (decided: string | null, why: string): string | null => {
+    console.log('[boot-trace]', JSON.stringify({ event: 'bin-by-name', name, cwd: request.cwd ?? null, decided, why, owner: request.owner, realm: nodeProcessRealmToken(), host: nodeProcessHostInstalled() }));
+    return decided;
+  };
+  if (!nodeProcessHostInstalled()) return say(null, 'no process host is installed in this realm');
+  if (request.owner === null || nodeProcessRealmToken() !== request.owner) return say(null, 'the spawning run is not this realm\'s own process');
   let directory = __resolvePath('/', request.cwd ?? '/').replace(/\/+$/u, '') || '/';
   for (;;) {
     const bin = `${directory === '/' ? '' : directory}/node_modules/.bin/${name}`;
-    if (existsInTree(bin)) return isNodeScript(bin) ? bin : null;
-    if (directory === '/') return null;
+    if (existsInTree(bin)) return isNodeScript(bin) ? say(bin, 'a Node script') : say(null, `${bin} is not a Node script (its first line does not name node)`);
+    if (directory === '/') return say(null, 'no node_modules/.bin/<name> on the way up from its directory');
     directory = directory.slice(0, directory.lastIndexOf('/')) || '/';
   }
 }
