@@ -13,7 +13,11 @@
 
 export interface ResolutionFs {
   existsSync(path: string): boolean;
-  statSync(path: string, options?: { throwIfNoEntry?: boolean }): { isFile(): boolean; isDirectory(): boolean } | undefined;
+  /**
+   * `contentDigest`: where the filesystem's stat carries it (a kernel tree's stat of a regular file, links followed,
+   * KernelVirtualFS `statWithDigest`), the file's content digest from the same walk as the stat.
+   */
+  statSync(path: string, options?: { throwIfNoEntry?: boolean }): { isFile(): boolean; isDirectory(): boolean; contentDigest?: string } | undefined;
   readFileSync(path: string, encoding: "utf8"): string | Uint8Array;
   realpathSync?(path: string): string;
 }
@@ -70,6 +74,13 @@ export interface ResolutionKept {
    * window open. `windows`: stat windows opened.
    */
   probes?: { file: number; directory: number; absent: number; held: number; outside: number; windows: number };
+  /**
+   * The file the last resolution answered, with the content digest its own stat carried, for the load that follows
+   * it: the load asked the tree for the digest again, one request a module (`contentDigest`, LibreChat 14's server:
+   * 6,172 asks beside 7,893 stats that had carried one). Set by every resolution, a digest only where the stat that
+   * found the file was asked of the tree in that resolution (not one `stats` held); the caller takes it once.
+   */
+  carried?: { path: string; digest: string };
 }
 
 export interface NodeResolver {
@@ -98,6 +109,8 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
    * changes the tree under it, so it asks each path once. Emptied when a resolution begins; nothing outlives it.
    */
   const asked = new Map<string, 0 | 1 | -1>();
+  /** The content digest each file stat of the resolution in hand carried, by path; emptied with `asked`. */
+  const digests = new Map<string, string>();
   /** 0 a file, 1 a directory, -1 neither or absent. */
   const kind = (path: string): 0 | 1 | -1 => {
     const again = asked.get(path);
@@ -111,7 +124,11 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     const probes = kept?.probes;
     if (held !== undefined) { if (probes) probes.held += 1; return held; }
     let found: 0 | 1 | -1 = -1;
-    try { const stat = fs.statSync(path, { throwIfNoEntry: false }); found = stat?.isFile() ? 0 : stat?.isDirectory() ? 1 : -1; } catch { found = -1; }
+    try {
+      const stat = fs.statSync(path, { throwIfNoEntry: false });
+      found = stat?.isFile() ? 0 : stat?.isDirectory() ? 1 : -1;
+      if (found === 0 && typeof stat?.contentDigest === "string") digests.set(path, stat.contentDigest);
+    } catch { found = -1; }
     if (probes) {
       if (found === 0) probes.file += 1; else if (found === 1) probes.directory += 1; else probes.absent += 1;
       if (kept?.stats === undefined) probes.outside += 1;
@@ -278,20 +295,25 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     // ones it read, as Node's does; an absent manifest is asked again in the next resolution either way.
     manifests.clear();
     asked.clear();
+    digests.clear();
     const outer = kept;
     kept = keeping;
+    if (keeping) keeping.carried = undefined;
     try {
       const found = resolveCached(specifier, fromDir);
+      // The digest is of the file the stat reached with links followed, so it is the real path's too.
+      const digest = found ? digests.get(found) : undefined;
+      const carry = (path: string): string => { if (digest !== undefined && keeping) keeping.carried = { path, digest }; return path; };
       // Node answers the real path of what it found: a package reached through
       // a link (pnpm lays every dependency under `.pnpm` and links it in) is
       // then walked up from where it really is, so its own dependencies beside
       // it are found. A filesystem without links answers the path itself.
       if (found && fs.realpathSync) {
         const held = kept?.realPaths.get(found);
-        if (held !== undefined) return held;
-        try { const real = fs.realpathSync(found); kept?.realPaths.set(found, real); return real; } catch { return found; }
+        if (held !== undefined) return carry(held);
+        try { const real = fs.realpathSync(found); kept?.realPaths.set(found, real); return carry(real); } catch { return carry(found); }
       }
-      return found;
+      return found ? carry(found) : found;
     } finally { kept = outer; }
   };
   const resolveCached = (specifier: string, fromDir: string): string | null => {
