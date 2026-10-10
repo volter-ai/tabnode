@@ -998,6 +998,8 @@ class KeyObject {
     if (options === undefined || options === null || typeof options !== 'object') throw new ERR_INVALID_ARG_TYPE('options', 'object', options);
     if (this.#_type === 'private') refuseKeyEncryption(options);
     if (!(this.#_keyData instanceof Uint8Array)) throw new Error('Cannot export CryptoKey synchronously');
+    // An RSA key's numbers are read from its DER (crypto-rsa.ts), so it is written in any of its encodings.
+    if (this.#_algorithm === 'RSA-SHA256') return exportRsa(this.#_keyData, this.#_type === 'private' ? 'private' : 'public', options);
     if (options.format !== 'der') unsupported(`Exporting this ${this.asymmetricKeyType ?? 'asymmetric'} key as ${String(options.format)}`);
     return Buffer.from(this.#_keyData);
   }
@@ -1045,6 +1047,33 @@ function createPrivateKey(key: KeyLike): KeyObject {
 function notAKey(key: KeyLike, keyInfo: KeyInfo): void {
   if (key instanceof KeyObject || keyInfo.format !== 'raw') return;
   throw Object.assign(new Error('error:1E08010C:DECODER routines::unsupported'), { code: 'ERR_OSSL_UNSUPPORTED' });
+}
+
+/**
+ * An RSA key written as asked: a private key as PKCS#8 or PKCS#1, a public key as SPKI or PKCS#1, each as DER or PEM,
+ * or either as a JWK. `der` is the key as it is held (any of those four DER encodings).
+ */
+function exportRsa(der: Uint8Array, kind: 'public' | 'private', options: KeyEncoding | undefined): Buffer | string | Record<string, string> {
+  if (options === null || typeof options !== 'object') throw new ERR_INVALID_ARG_TYPE('options', 'object', options);
+  if (kind === 'private') refuseKeyEncryption(options);
+  try {
+    const key = kind === 'private' ? rsa.rsaPrivateKeyFromDer(der) : rsa.rsaPublicKeyFromDer(der);
+    if (options.format === 'jwk') return rsa.rsaJwkOf(key, kind === 'private');
+    const type = options.type as string | undefined;
+    if (type === 'sec1') throw Object.assign(new Error('The selected key encoding sec1 can only be used for EC keys.'), { code: 'ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS' });
+    const allowed = kind === 'private' ? ['pkcs1', 'pkcs8'] : ['pkcs1', 'spki'];
+    if (type === undefined || !allowed.includes(type)) throw Object.assign(new TypeError(`The property 'options.type' is invalid. Received ${type === undefined ? 'undefined' : `'${type}'`}`), { code: 'ERR_INVALID_ARG_VALUE' });
+    const bytes = kind === 'private'
+      ? (type === 'pkcs1' ? rsa.rsaPkcs1Of(key as rsa.RsaPrivateKey) : rsa.rsaPkcs8Of(key as rsa.RsaPrivateKey))
+      : (type === 'pkcs1' ? rsa.rsaPublicPkcs1Of(key) : rsa.rsaSpkiOf(key));
+    if (options.format === 'der') return Buffer.from(bytes);
+    if (options.format !== 'pem') throw Object.assign(new TypeError(`The property 'options.format' is invalid. Received ${options.format === undefined ? 'undefined' : `'${String(options.format)}'`}`), { code: 'ERR_INVALID_ARG_VALUE' });
+    const label = type === 'pkcs1' ? (kind === 'private' ? 'RSA PRIVATE KEY' : 'RSA PUBLIC KEY') : kind === 'private' ? 'PRIVATE KEY' : 'PUBLIC KEY';
+    return `-----BEGIN ${label}-----\n${Buffer.from(bytes).toString('base64').replace(/(.{64})/g, '$1\n').replace(/\n$/, '')}\n-----END ${label}-----\n`;
+  } catch (cause) {
+    if (cause instanceof rsa.RsaKeyRefused) throw Object.assign(new Error(`error:1E08010C:DECODER routines::unsupported (${cause.message})`), { code: 'ERR_OSSL_UNSUPPORTED' });
+    throw cause;
+  }
 }
 
 /** The JOSE name of the signature an EC or Ed25519 key makes: what this module's WebCrypto paths key their algorithm on. */
@@ -1178,6 +1207,25 @@ async function generateKeyPairAsync(type: string, options: KeyPairOptions): Prom
  * P-384 and P-521, and 'ed25519'. Undefined for a type it does not carry, which stays WebCrypto's and asynchronous.
  */
 function keyPairNow(type: string, options: KeyPairOptions): { publicKey: KeyObject | string | Buffer | Record<string, string>; privateKey: KeyObject | string | Buffer | Record<string, string> } | undefined {
+  // RSA, made here in BigInt (crypto-rsa.ts): a caller that makes its key in a synchronous function cannot wait for
+  // WebCrypto's promise, and "Synchronous generation of a rsa key pair" was refused whole (a World that mints its
+  // signing key at start did not start). About a third of a second for 2048 bits where it was measured.
+  if (type === 'rsa') {
+    if (typeof options.modulusLength !== 'number') throw new ERR_INVALID_ARG_TYPE('options.modulusLength', 'number', options.modulusLength);
+    const exponent = options.publicExponent ?? 0x10001;
+    if (typeof exponent !== 'number' || !Number.isSafeInteger(exponent)) throw new ERR_INVALID_ARG_TYPE('options.publicExponent', 'number', exponent);
+    let key: rsa.RsaPrivateKey;
+    try { key = rsa.rsaGenerate(options.modulusLength, BigInt(exponent), (bytes) => new Uint8Array(randomBytes(bytes))); }
+    catch (cause) {
+      if (cause instanceof rsa.RsaKeyRefused) return unsupported(`Making this RSA key: ${cause.message}`);
+      throw cause;
+    }
+    const secret = rsa.rsaPkcs8Of(key), open = rsa.rsaSpkiOf(key);
+    return {
+      publicKey: options.publicKeyEncoding ? exportRsa(open, 'public', options.publicKeyEncoding) : new KeyObject('public', open, 'RSA-SHA256'),
+      privateKey: options.privateKeyEncoding ? exportRsa(secret, 'private', options.privateKeyEncoding) : new KeyObject('private', secret, 'RSA-SHA256'),
+    };
+  }
   let made: AsymmetricKey;
   if (type === 'ec') {
     if (typeof options.namedCurve !== 'string') throw new ERR_INVALID_ARG_TYPE('options.namedCurve', 'string', options.namedCurve);
@@ -1212,7 +1260,8 @@ function generateKeyPair(type: string, options: KeyPairOptions | ((error: Error 
   if (typeof callback !== 'function') throw Object.assign(new TypeError('The "callback" argument must be of type function.'), { code: 'ERR_INVALID_ARG_TYPE' });
   const done = callback;
   // Argument errors throw synchronously, as Node's do. A type made here gives KeyObjects that export synchronously.
-  const now = keyPairNow(type, options ?? {});
+  // RSA asked for with a callback stays WebCrypto's: it is made off this thread, where making it here would hold it.
+  const now = type === 'rsa' ? undefined : keyPairNow(type, options ?? {});
   if (now) { setTimeout(() => done(null, now.publicKey, now.privateKey), 0); return; }
   keyPairAlgorithm(type, options ?? {});
   generateKeyPairAsync(type, options ?? {}).then(
@@ -1221,7 +1270,7 @@ function generateKeyPair(type: string, options: KeyPairOptions | ((error: Error 
   );
 }
 Object.defineProperty(generateKeyPair, Symbol.for('nodejs.util.promisify.custom'), {
-  value: async (type: string, options?: KeyPairOptions) => keyPairNow(type, options ?? {}) ?? generateKeyPairAsync(type, options ?? {}),
+  value: async (type: string, options?: KeyPairOptions) => (type === 'rsa' ? undefined : keyPairNow(type, options ?? {})) ?? generateKeyPairAsync(type, options ?? {}),
 });
 
 // ============================================================================

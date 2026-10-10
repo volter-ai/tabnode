@@ -111,6 +111,92 @@ export function rsaSpkiOf(key: RsaPublicKey): Uint8Array {
   return Uint8Array.from(derOf(0x30, [...derOf(0x30, [...derOf(0x06, RSA_ENCRYPTION), 0x05, 0x00]), ...derOf(0x03, [0x00, ...pkcs1])]));
 }
 
+/** A private key as PKCS#1 DER (`RSA PRIVATE KEY`). */
+export function rsaPkcs1Of(key: RsaPrivateKey): Uint8Array {
+  return Uint8Array.from(derOf(0x30, [...derInteger(0n), ...[key.n, key.e, key.d, key.p, key.q, key.dp, key.dq, key.qi].flatMap(derInteger)]));
+}
+/** A private key as PKCS#8 DER (`PRIVATE KEY`). */
+export function rsaPkcs8Of(key: RsaPrivateKey): Uint8Array {
+  return Uint8Array.from(derOf(0x30, [...derInteger(0n), ...derOf(0x30, [...derOf(0x06, RSA_ENCRYPTION), 0x05, 0x00]), ...derOf(0x04, [...rsaPkcs1Of(key)])]));
+}
+/** A public key as PKCS#1 DER (`RSA PUBLIC KEY`). */
+export function rsaPublicPkcs1Of(key: RsaPublicKey): Uint8Array {
+  return Uint8Array.from(derOf(0x30, [...derInteger(key.n), ...derInteger(key.e)]));
+}
+/** A key as a JWK (RFC 7518, section 6.3): its public numbers, and with `secret` its private ones. */
+export function rsaJwkOf(key: RsaPublicKey | RsaPrivateKey, secret: boolean): Record<string, string> {
+  const text = (value: bigint): string => {
+    const bytes = toBytes(value, Math.max(1, byteLength(value)));
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+  const jwk: Record<string, string> = { kty: "RSA", n: text(key.n), e: text(key.e) };
+  if (secret && "d" in key) Object.assign(jwk, { d: text(key.d), p: text(key.p), q: text(key.q), dp: text(key.dp), dq: text(key.dq), qi: text(key.qi) });
+  return jwk;
+}
+
+function gcd(left: bigint, right: bigint): bigint { while (right !== 0n) [left, right] = [right, left % right]; return left; }
+function modInverse(value: bigint, modulus: bigint): bigint {
+  let [oldR, r] = [value % modulus, modulus], [oldS, s] = [1n, 0n];
+  while (r !== 0n) { const quotient = oldR / r; [oldR, r] = [r, oldR - quotient * r]; [oldS, s] = [s, oldS - quotient * s]; }
+  if (oldR !== 1n) throw new RsaKeyRefused("the numbers have no inverse");
+  return ((oldS % modulus) + modulus) % modulus;
+}
+const SMALL_PRIMES: bigint[] = (() => {
+  const found: number[] = [];
+  for (let candidate = 3; found.length < 400; candidate += 2) if (found.every((prime) => candidate % prime !== 0)) found.push(candidate);
+  return found.map(BigInt);
+})();
+/** Miller-Rabin with bases from the caller's random source: FIPS 186-5 table B.1's rounds for the size, and more below it. */
+function probablyPrime(candidate: bigint, bits: number, random: (bytes: number) => Uint8Array): boolean {
+  for (const prime of SMALL_PRIMES) { if (candidate === prime) return true; if (candidate % prime === 0n) return false; }
+  let odd = candidate - 1n, twos = 0;
+  while ((odd & 1n) === 0n) { odd >>= 1n; twos += 1; }
+  const rounds = bits >= 1536 ? 4 : bits >= 1024 ? 5 : bits >= 512 ? 8 : 24;
+  const length = Math.ceil(bits / 8);
+  for (let round = 0; round < rounds; round += 1) {
+    const base = 2n + fromBytes(random(length)) % (candidate - 3n);
+    let power = modPow(base, odd, candidate);
+    if (power === 1n || power === candidate - 1n) continue;
+    let composite = true;
+    for (let step = 1; step < twos; step += 1) {
+      power = (power * power) % candidate;
+      if (power === candidate - 1n) { composite = false; break; }
+    }
+    if (composite) return false;
+  }
+  return true;
+}
+function randomPrime(bits: number, exponent: bigint, random: (bytes: number) => Uint8Array): bigint {
+  const length = Math.ceil(bits / 8), spare = BigInt(length * 8 - bits);
+  for (;;) {
+    // The top two bits set, so two such primes multiply to a modulus of the whole length; the low bit, so it is odd.
+    let candidate = fromBytes(random(length)) >> spare;
+    candidate |= (3n << BigInt(bits - 2)) | 1n;
+    if (!probablyPrime(candidate, bits, random)) continue;
+    if (gcd(candidate - 1n, exponent) === 1n) return candidate;
+  }
+}
+/**
+ * A new RSA key of `bits` with public exponent `exponent`, from `random` (the platform's random bytes): two primes
+ * of half the length each, the private exponent the inverse of the public one modulo lcm(p-1, q-1) as OpenSSL takes
+ * it, and the larger prime first.
+ */
+export function rsaGenerate(bits: number, exponent: bigint, random: (bytes: number) => Uint8Array): RsaPrivateKey {
+  if (!Number.isInteger(bits) || bits < 512 || bits > 8192 || bits % 2 !== 0) throw new RsaKeyRefused(`an RSA key of ${bits} bits is not made here (512 to 8192, even)`);
+  if (exponent < 3n || (exponent & 1n) === 0n) throw new RsaKeyRefused("the public exponent is not an odd number of 3 or more");
+  for (;;) {
+    let p = randomPrime(bits / 2, exponent, random), q = randomPrime(bits / 2, exponent, random);
+    if (p === q) continue;
+    if (p < q) [p, q] = [q, p];
+    const n = p * q;
+    if (n.toString(2).length !== bits) continue;
+    const d = modInverse(exponent, ((p - 1n) * (q - 1n)) / gcd(p - 1n, q - 1n));
+    return { n, e: exponent, d, p, q, dp: d % (p - 1n), dq: d % (q - 1n), qi: modInverse(q, p) };
+  }
+}
+
 function modPow(base: bigint, exponent: bigint, modulus: bigint): bigint {
   let result = 1n, power = base % modulus;
   for (let left = exponent; left > 0n; left >>= 1n) {
