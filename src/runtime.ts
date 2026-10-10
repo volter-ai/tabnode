@@ -2560,6 +2560,9 @@ function createRequire(
       // answered from a cache leaves none): the stat and this load are one `require`, with no load hook (above), so
       // the bytes it names are the file's as that stat saw them, as a digest asked here names them as this request
       // sees them. Any other load (a cached resolution, a stat `stats` held, a load no resolution led to) asks.
+      // A KNOWN DIFFERENCE, left open: a program that resolves a path itself (`require.resolve`), then rewrites that
+      // file, then loads it by calling `Module._extensions` or `module.load` on it with no resolution between, loads
+      // the file as the resolving stat saw it, where asking here would have loaded the rewrite.
       const keptNow = __substrateKeptFor(process);
       const carried = keptNow.carried?.path === resolvedPath ? keptNow.carried.digest : undefined;
       keptNow.carried = undefined;
