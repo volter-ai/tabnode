@@ -2006,8 +2006,16 @@ function shellReadsProgram(path: string, tree: VirtualFS): string | undefined {
   const kind = HOST_EXECUTABLE.test(text) ? "a host program's handle" : PROGRAM_STUB.test(text) ? "a registered program's stub" : isBinaryImage(head) ? 'a binary image' : undefined;
   if (kind === undefined) return undefined;
   const handle = kind === "a host program's handle";
-  console.log(`[boot-trace] ${JSON.stringify({ event: 'shell-read-program-as-text', at: Date.now(), path, kind, ...(handle ? { identity: text.split('\n')[1] } : {}), lines: shellLinesRunning.map((line) => line.slice(0, 400)), answered: handle ? 'exit 126 with a sentence' : 'read as before' })}`);
+  console.log(`[boot-trace] ${JSON.stringify({ event: 'shell-read-program-as-text', at: Date.now(), path, kind, ...(handle ? { identity: text.split('\n')[1] } : {}), lines: shellLinesRunning.map((line) => line.slice(0, 400)), answered: !handle ? 'read as before' : shellCommandNames().has(path.slice(path.lastIndexOf('/') + 1)) ? "the shell's own command of that name" : 'exit 126 with a sentence' })}`);
   if (!handle) return undefined;
+  // A HANDLE NAMED AS ONE OF THIS SHELL'S OWN COMMANDS IS THAT COMMAND. An image carries `/usr/local/bin/npm`; the tab
+  // lays its handle there; the shell's walk of PATH meets that file before the directories where it keeps its own
+  // `npm`, and ran the file (RSSHub, `npm run start` under a World's attach: the route this line named). The handle
+  // is not another program to hand over: the host's `npm` and `node` are this engine's, registered there so a path
+  // resolves and forwarded back here, so handing it over would come round to this shell again. A command named by a
+  // path is the shell's own command of that name where it has one, so the text given back names the path.
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  if (shellCommandNames().has(name)) return `'${path.replace(/'/gu, `'\\''`)}' "$@"\n`;
   const sentence = `bash: ${path}: cannot execute: it is a host program's handle, not a script (this engine's shell found it for a command of: ${shellLinesRunning[0] ?? ''})`;
   return `printf '%s\\n' '${sentence.replace(/'/gu, `'\\''`)}' >&2\n(exit 126)\n`;
 }

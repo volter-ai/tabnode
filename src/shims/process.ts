@@ -776,6 +776,15 @@ export function createProcess(options?: {
       // Keep the legacy path only for hosts without the optional operations.
       if (pid < 0) {
         const result = signal === 0 ? groupIsLive(-pid, __tokenForProcess(proc)) : signalGroup(-pid, name, __tokenForProcess(proc));
+        // An instrument (langfuse, 3.0.2176: a World's `down` signalled its Redis twin's group, asked for a minute
+        // whether the group was still there, and gave up, "retirement unconfirmed"): for a signal that is not the
+        // question, whether any member took it and whether the group is there before and after. Three ends look the
+        // same from outside: no member takes the signal, the member takes it and does not end, or it ends and the
+        // table still lists it.
+        if (signal !== 0) {
+          const token = __tokenForProcess(proc);
+          console.log(`[boot-trace] ${JSON.stringify({ event: 'group-signal', at: Date.now(), from: proc.pid, pgid: -pid, signal: name, delivered: result ?? 'this host has no group operations', listedAfter: groupIsLive(-pid, token) ?? null, leaderListed: pidIsLive(-pid, token) })}`);
+        }
         if (result === true) return true;
         if (result === false) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
       }
