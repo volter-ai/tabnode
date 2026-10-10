@@ -42,6 +42,7 @@ import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
 import { treeDescriptorsOf } from '../tree-descriptors';
 import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
+import { stackFormedBy } from '../stack-overrides';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
 import { __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
@@ -895,6 +896,19 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     const capture = __substrateUncaughtCapture();
     if (capture) { capture(error); return; }
     if (proc.listenerCount('uncaughtException') > 0) { proc.emit('uncaughtException', error, 'uncaughtException'); return; }
+    // An instrument (langfuse, runtime 3.0.2178: its worker died of a ZodError and its stderr was "ZodError" and the
+    // frames, with none of the issues Node prints above them; Node 24 asked with an error of that shape answers
+    // "ZodError: [" and the issues, since V8 forms the first line when `.stack` is first read). For each uncaught
+    // error printed: whether the text printed begins with the error's present text, what formed the stack's text
+    // and what the error's text was then, and what `Error.prepareStackTrace` is now.
+    if (error instanceof Error) {
+      let now = '';
+      try { now = Error.prototype.toString.call(error); } catch { now = '(its text could not be read)'; }
+      const printed = String(error.stack ?? '');
+      const formed = stackFormedBy.get(error);
+      const hook = (Error as { prepareStackTrace?: unknown }).prepareStackTrace;
+      console.log(`[boot-trace] ${JSON.stringify({ event: 'uncaught-stack-text', at: Date.now(), pid: proc.pid, name: error.name, messageBytes: String(error.message ?? '').length, messageIsOwn: Object.prototype.hasOwnProperty.call(error, 'message'), printedFirstLine: printed.split('\n', 1)[0]!.slice(0, 160), printedCarriesMessage: printed.startsWith(now) || (String(error.message ?? '') === '' ? null : printed.includes(String(error.message).slice(0, 80))), formedBy: formed ? formed.by : "V8's own text, or before this realm's hook was asked", errorTextWhenFormed: formed?.errorTextThen ?? null, prepareStackTraceNow: typeof hook === 'function' ? (hook.name || 'a function') : String(hook) })}`);
+    }
     appendStderr(`${error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error)}\n`);
     writeHostReceipt('uncaught', error);
     if (exitCalled) return;

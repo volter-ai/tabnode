@@ -31,7 +31,7 @@ import { netModule as netShim } from './node-lib/net-module';
 import { errname as __uvErrname } from './node-lib/binding/uv';
 import { createTimersModule } from './node-lib/timers';
 import { guestTimerFunctions } from './guest-timers';
-import { stackOverrides } from './stack-overrides';
+import { noteStackFormed, stackOverrides } from './stack-overrides';
 export { pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers } from './guest-timers';
 import eventsShim from './node-lib/events-module';
 import { streamModule as streamShim, streamPromisesModule as streamPromises } from './node-lib/stream-module';
@@ -3935,7 +3935,7 @@ function __substrateCallSiteFileNames(): void {
   const namerFor = (prepare: Prepare): Prepare => {
     let namer = namers.get(prepare);
     if (!namer) {
-      namer = (error, sites) => prepare(error, sites.map(named));
+      namer = (error, sites) => { noteStackFormed(error, "the guest's prepareStackTrace"); return prepare(error, sites.map(named)); };
       namers.set(prepare, namer);
       guests.set(namer, prepare);
     }
@@ -3951,8 +3951,9 @@ function __substrateCallSiteFileNames(): void {
     if (known) return known;
     const overriding: Prepare = (error, sites) => {
       const override = error !== null && typeof error === 'object' ? stackOverrides.get(error) : undefined;
-      if (override) { stackOverrides.delete(error as object); return override(error, sites.map(named)); }
+      if (override) { noteStackFormed(error, "an override of one of Node's own files"); stackOverrides.delete(error as object); return override(error, sites.map(named)); }
       if (typeof guest === 'function') return namerFor(guest as Prepare)(error, sites);
+      noteStackFormed(error, 'the fallback beside a pending override');
       return `${Error.prototype.toString.call(error)}${sites.map(site => `\n    at ${String(site)}`).join('')}`;
     };
     // A guest that saves the hook and restores it later restores the function
