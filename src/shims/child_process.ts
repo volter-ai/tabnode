@@ -902,6 +902,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // error printed: whether the text printed begins with the error's present text, what formed the stack's text
     // and what the error's text was then, and what `Error.prepareStackTrace` is now.
     if (error instanceof Error) {
+      if (!stackHeaderAsked) { stackHeaderAsked = true; console.log(`[boot-trace] ${JSON.stringify({ event: 'stack-header-rule', at: Date.now(), ...stackHeaderRule() })}`); }
       let now = '';
       try { now = Error.prototype.toString.call(error); } catch { now = '(its text could not be read)'; }
       const printed = String(error.stack ?? '');
@@ -2000,6 +2001,43 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     shellLinesRunning.splice(shellLinesRunning.lastIndexOf(run.command), 1);
     if (shellLinesRunning.length === 0) setShellReadWatch(null);
   }
+}
+
+let stackHeaderAsked = false;
+/**
+ * THIS REALM'S OWN ANSWER to when a stack's first line is fixed: the same statements asked of Node 24 on the build
+ * machine (V8 13.6), which answers that the line is formed when `.stack` is first read, whatever was set before. A
+ * tab's V8 is another version, and langfuse's ZodError printed "ZodError" with a 717-byte message the line did not
+ * carry, formed by none of the realm's paths. Each case makes an error as zod 4 does one step at a time and says
+ * the first line of its stack; said once, the first time an uncaught error is printed.
+ */
+function stackHeaderRule(): Record<string, string> {
+  const first = (error: Error): string => String(error.stack ?? '').split('\n', 1)[0]!.slice(0, 60);
+  const capture = (Error as unknown as { captureStackTrace?: (target: object, limit?: unknown) => void }).captureStackTrace;
+  const out: Record<string, string> = { engine: typeof navigator === 'object' && navigator ? String(navigator.userAgent).slice(-60) : 'no navigator', captureStackTrace: typeof capture === 'function' ? (/\[native code\]/u.test(Function.prototype.toString.call(capture)) ? 'native' : 'not native') : 'absent' };
+  try {
+    const plain = new Error(); plain.name = 'N'; plain.message = 'set after it was made';
+    out.messageSetAfterMade = first(plain);
+    const captured = new Error(); captured.name = 'N';
+    capture?.(captured); captured.message = 'set after the capture';
+    out.messageSetAfterCapture = first(captured);
+    const before = new Error(); before.name = 'N'; before.message = 'set before the capture';
+    capture?.(before);
+    out.messageSetBeforeCapture = first(before);
+    const accessor = new Error(); accessor.name = 'N';
+    Object.defineProperty(accessor, 'message', { get: () => 'an own accessor, before the capture', configurable: true, enumerable: true });
+    capture?.(accessor);
+    out.accessorBeforeCapture = first(accessor);
+    const E = Error as unknown as { stackTraceLimit?: number };
+    const saved = E.stackTraceLimit;
+    let bare: Error;
+    try { E.stackTraceLimit = 0; bare = new Error(); } finally { E.stackTraceLimit = saved; }
+    bare.name = 'N';
+    Object.defineProperty(bare, 'message', { get: () => 'made with no frames, an own accessor, then captured', configurable: true, enumerable: true });
+    capture?.(bare);
+    out.zodOrder = first(bare);
+  } catch (cause) { out.failed = cause instanceof Error ? cause.message.slice(0, 120) : String(cause); }
+  return out;
 }
 
 /** The command lines this engine's shell is running now, oldest first: what a file it reads was reached from. */
