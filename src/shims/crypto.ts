@@ -25,6 +25,7 @@ import { cryptoConstants as constants } from './crypto-constants';
 import { cipherNames, createCipherClasses } from './crypto-cipher';
 import type { NodeCryptoExport, NodeCryptoUnavailable } from './crypto-exports';
 import * as asymmetric from './crypto-ec';
+import * as rsa from './crypto-rsa';
 import type { AsymmetricKey, DsaEncoding, KeyEncodingType } from './crypto-ec';
 export { constants };
 
@@ -817,7 +818,7 @@ function sign(
 
   // Synchronous operation - we need to use a workaround
   // Store the promise result for later retrieval
-  const result = signSync(alg, data, keyInfo);
+  const result = signSync(alg, data, keyInfo, key);
   return result;
 }
 
@@ -856,7 +857,7 @@ function verify(
     return;
   }
 
-  return verifySync(alg, data, keyInfo, signature);
+  return verifySync(alg, data, keyInfo, signature, key);
 }
 
 // ============================================================================
@@ -891,7 +892,7 @@ class Sign extends EventEmitter {
     const keyInfo = extractKeyInfo(privateKey);
     const signature = keyInfo.asymmetric
       ? signAsymmetric(this.#algorithm, combined, keyInfo.asymmetric, dsaEncodingOf(privateKey))
-      : signSync(this.#algorithm, combined, keyInfo);
+      : signSync(this.#algorithm, combined, keyInfo, privateKey);
 
     return outputEncoding ? digestResult(signature, outputEncoding) : signature;
   }
@@ -921,7 +922,7 @@ class Verify extends EventEmitter {
     const sig = typeof signature === 'string' ? Buffer.from(cryptoBytes(signature, signatureEncoding ?? 'utf8')) : signature;
 
     if (keyInfo.asymmetric) return verifyAsymmetric(this.#algorithm, combined, keyInfo.asymmetric, sig, dsaEncodingOf(publicKey));
-    return verifySync(this.#algorithm, combined, keyInfo, sig);
+    return verifySync(this.#algorithm, combined, keyInfo, sig, publicKey);
   }
 }
 
@@ -1013,6 +1014,16 @@ function createPublicKey(key: KeyLike): KeyObject {
   // A private key gives its public key, as Node's does.
   if (keyInfo.asymmetric) return keyObjectOf(asymmetric.publicOf(keyInfo.asymmetric), 'public');
   notAKey(key, keyInfo);
+  // An RSA private key gives its public key too: its two public numbers as SPKI. It used to be handed back whole
+  // under the name "public", so exporting that "public key" gave out the private key's own bytes.
+  if (keyInfo.type === 'private' && keyInfo.algorithm === 'RSA-SHA256' && keyInfo.keyData instanceof Uint8Array) {
+    try { return new KeyObject('public', rsa.rsaSpkiOf(rsa.rsaPrivateKeyFromDer(keyInfo.keyData)), keyInfo.algorithm); }
+    catch (cause) {
+      if (cause instanceof rsa.RsaKeyRefused) throw Object.assign(new Error(`error:1E08010C:DECODER routines::unsupported (${cause.message})`), { code: 'ERR_OSSL_UNSUPPORTED' });
+      throw cause;
+    }
+  }
+  if (keyInfo.type === 'private') return unsupported('Making a public key from a private key that is not RSA, EC or Ed25519');
   return new KeyObject('public', keyInfo.keyData as Uint8Array, keyInfo.algorithm);
 }
 
@@ -1355,13 +1366,28 @@ function readKeyInfo(key: KeyLike): KeyInfo {
       .replace(/-----END [^-]+-----/, '')
       .replace(/\s/g, '');
 
-    const keyData = Buffer.from(atob(base64));
+    // The key's own bytes: `atob` into `Buffer.from(string)` wrote every byte above 0x7f as two, so no key read here was its DER.
+    const keyData = Buffer.from(base64, 'base64');
 
-    // Try to detect algorithm from key header
+    // WHAT KIND OF KEY THIS IS, read from the key, never from its letters. The kind used to be guessed from the
+    // PEM's text: "RSA" anywhere in it, else "EC" anywhere. A PKCS#8 or SPKI key's label names no algorithm
+    // ("BEGIN PRIVATE KEY"), so the guess read the base64 body, where "EC" turns up by chance in about a third of
+    // RSA keys of 2048 bits and "RSA" in almost none: `createPrivateKey(pem).asymmetricKeyType` answered "ec" for
+    // an RSA key, and a signer that checks its key's kind before RS256 refused it (the OpenAI twin issued no
+    // OPENAI_API_KEY, and LibreChat had no endpoint to draw its composer for). An EC or Ed25519 key never reaches
+    // here (keyFromPem above), so what is left is RSA, by PKCS#1's own label or by the algorithm PKCS#8 and SPKI
+    // carry (rsaEncryption 1.2.840.113549.1.1.1, or RSASSA-PSS ...1.10), or a key of a kind this engine does not
+    // name, which stays unnamed.
     let algorithm: string | undefined;
-    if (keyStr.includes('RSA')) algorithm = 'RSA-SHA256';
-    else if (keyStr.includes('EC')) algorithm = 'ES256';
-    else if (keyStr.includes('ED25519')) algorithm = 'Ed25519';
+    const label = /-----BEGIN ([^-]+)-----/.exec(keyStr)?.[1] ?? '';
+    if (label === 'RSA PRIVATE KEY' || label === 'RSA PUBLIC KEY') algorithm = 'RSA-SHA256';
+    else {
+      const der = Buffer.from(base64, 'base64'), head = der.subarray(0, Math.min(der.byteLength, 48));
+      const rsaFamily = Buffer.from([0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01]);
+      const at = head.indexOf(rsaFamily);
+      const member = at >= 0 ? head[at + rsaFamily.byteLength] : undefined;
+      if (member === 0x01 || member === 0x0a) algorithm = 'RSA-SHA256';
+    }
 
     return {
       keyData,
@@ -1479,17 +1505,52 @@ async function verifyAsync(
 // subtle.sign is async and there is no other. Node throws
 // ERR_CRYPTO_UNSUPPORTED_OPERATION for an operation it cannot do, and so does
 // this; what stood here returned syncHash(key || data) as a "signature".
-function signSync(_algorithm: string, _data: Uint8Array, _keyInfo: KeyInfo): Buffer {
-  return unsupported('Synchronous signing');
+/**
+ * A signature made now, on the caller's thread, with a key that is not EC or Ed25519: an RSA key's, as
+ * RSASSA-PKCS1-v1_5 (crypto-rsa.ts). It used to be refused whole ("Synchronous signing"), so `createSign('RSA-SHA256')`
+ * and a JWT's RS256 could not be made here at all. `given` is the key as the caller passed it: a padding it names
+ * other than PKCS#1's is refused by name, never signed as PKCS#1.
+ */
+function rsaPaddingOf(given: unknown): void {
+  const padding = given && typeof given === 'object' && !ArrayBuffer.isView(given) ? (given as { padding?: unknown }).padding : undefined;
+  if (padding !== undefined && padding !== 1) unsupported(`An RSA signature with padding ${String(padding)} (only RSA_PKCS1_PADDING is made on the caller's thread)`);
+}
+function rsaKeyBytes(keyInfo: KeyInfo, what: string): Uint8Array {
+  if (keyInfo.algorithm !== 'RSA-SHA256' || !(keyInfo.keyData instanceof Uint8Array)) return unsupported(`${what} with a key that is not RSA, EC or Ed25519`);
+  return keyInfo.keyData;
+}
+function signSync(algorithm: string, data: Uint8Array, keyInfo: KeyInfo, given?: unknown): Buffer {
+  const der = rsaKeyBytes(keyInfo, 'Synchronous signing');
+  rsaPaddingOf(given);
+  const digest = signatureDigest(algorithm) ?? 'sha256';
+  if (!rsa.rsaSignsWith(digest)) return unsupported(`An RSA signature with the digest ${digest}`);
+  try {
+    if (keyInfo.type !== 'private') throw Object.assign(new TypeError('The key is a public key; a private key is required.'), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+    return Buffer.from(rsa.rsaSign(digest, createHash(digest).update(data).digest() as Buffer, rsa.rsaPrivateKeyFromDer(der)));
+  } catch (cause) {
+    if (cause instanceof rsa.RsaKeyRefused) throw Object.assign(new Error(`error:1E08010C:DECODER routines::unsupported (${cause.message})`), { code: 'ERR_OSSL_UNSUPPORTED' });
+    throw cause;
+  }
 }
 
 function verifySync(
-  _algorithm: string,
-  _data: Uint8Array,
-  _keyInfo: KeyInfo,
-  _signature: Uint8Array
+  algorithm: string,
+  data: Uint8Array,
+  keyInfo: KeyInfo,
+  signature: Uint8Array,
+  given?: unknown
 ): boolean {
-  return unsupported('Synchronous verification');
+  const der = rsaKeyBytes(keyInfo, 'Synchronous verification');
+  rsaPaddingOf(given);
+  const digest = signatureDigest(algorithm) ?? 'sha256';
+  if (!rsa.rsaSignsWith(digest)) return unsupported(`An RSA signature with the digest ${digest}`);
+  try {
+    const key = keyInfo.type === 'private' ? rsa.rsaPrivateKeyFromDer(der) : rsa.rsaPublicKeyFromDer(der);
+    return rsa.rsaVerify(digest, createHash(digest).update(data).digest() as Buffer, key, signature);
+  } catch (cause) {
+    if (cause instanceof rsa.RsaKeyRefused) throw Object.assign(new Error(`error:1E08010C:DECODER routines::unsupported (${cause.message})`), { code: 'ERR_OSSL_UNSUPPORTED' });
+    throw cause;
+  }
 }
 
 async function importKey(
