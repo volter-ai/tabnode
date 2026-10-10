@@ -859,6 +859,8 @@ type LoadPhase = 'outside' | 'resolve' | 'read' | 'link' | 'compile' | 'evaluate
 type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>; bodies: number; bodyBytes: number; began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
 type LoadClockFs = { kernelBlockedMs?: () => number };
+/** How long after a process's last body its 'quiet' line is said. */
+const QUIET_SAID_AFTER_MS = 2000;
 /** Ends the process's current phase now and begins `phase`; answers the phase that ended, for its caller to return to. */
 function __substrateLoadPhase(process: object, vfs: object | undefined, phase: LoadPhase): LoadPhase {
   const now = performance.now();
@@ -870,7 +872,12 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
   }
   // The file system is the process's, known from the first caller that holds it (a `require` made through
   // `Module.prototype.require` holds none): its total is taken from then, so nothing before is counted to a phase.
-  if (!clock.fs && vfs) { clock.fs = vfs as LoadClockFs; clock.kernelAt = clock.fs.kernelBlockedMs?.() ?? 0; }
+  // The first caller's is not always the process's: every line of a run said `"fileSystem":"_VirtualFS","total":"no
+  // kernelBlockedMs on it"`, the engine's own tree, taken from a caller that ran before the process's kernel tree
+  // was the one in hand, and kept. A file system that carries the kernel's total replaces one that does not, and
+  // the total is taken from that moment.
+  const offered = vfs as LoadClockFs | undefined;
+  if (offered && (!clock.fs || (typeof clock.fs.kernelBlockedMs !== 'function' && typeof offered.kernelBlockedMs === 'function'))) { clock.fs = offered; clock.kernelAt = clock.fs.kernelBlockedMs?.() ?? 0; }
   const kernelNow = clock.fs?.kernelBlockedMs?.() ?? 0;
   const was = clock.phase;
   clock.wall[was] += now - clock.at; clock.kernel[was] += kernelNow - clock.kernelAt;
@@ -884,9 +891,14 @@ function __substrateSayLoadClock(process: object, at: string): void {
   const round = (values: Record<LoadPhase, number>): Record<string, number> => Object.fromEntries(Object.entries(values).map(([name, ms]) => [name, Math.round(ms)]));
   // The phase open now is counted to this instant, in a copy: the clock itself goes on.
   const wall = { ...clock.wall }, now = performance.now();
-  wall[clock.phase] += now - clock.at;
+  // A 'quiet' line is said by a timer that waits QUIET_SAID_AFTER_MS after the process's last body: that wait is the
+  // line's own and none of the load's. Counted in, every process's line held two seconds of it in whatever phase
+  // was open (2,029 of a twins' host's 2,579 ms and 2,002 of an attach's 2,185 were this wait). Taken off the open
+  // phase and off the total, and said beside them.
+  const saidAfter = at === 'quiet' ? Math.min(QUIET_SAID_AFTER_MS, Math.max(0, now - clock.at)) : 0;
+  wall[clock.phase] += now - clock.at - saidAfter;
   console.log('[boot-trace]', JSON.stringify({ event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
-    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began), wallMs: round(wall), kernelMs: round(clock.kernel),
+    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: Math.round(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(clock.kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
     kernelFrom: { fileSystem: clock.fs ? (clock.fs as object).constructor?.name ?? 'unnamed' : null, total: typeof clock.fs?.kernelBlockedMs === 'function' ? Math.round(clock.fs.kernelBlockedMs()) : 'no kernelBlockedMs on it' } }));
@@ -909,7 +921,7 @@ function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCo
   counts[how] += 1;
   if (counts.timer !== undefined) clearTimeout(counts.timer);
   const mine = counts;
-  counts.timer = setTimeout(() => { mine.timer = undefined; __substrateSayPrepared(process, mine, 'quiet'); }, 2000);
+  counts.timer = setTimeout(() => { mine.timer = undefined; __substrateSayPrepared(process, mine, 'quiet'); }, QUIET_SAID_AFTER_MS);
   (counts.timer as { unref?: () => void }).unref?.();
 }
 /**
