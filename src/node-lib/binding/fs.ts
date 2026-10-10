@@ -204,6 +204,25 @@ function stdioOf(fd: number): StdioFd | null {
   return (fd === 0 || fd === 1 || fd === 2) && !openFiles.has(fd) && !ownedFds.has(fd) ? fd : null;
 }
 
+/**
+ * The standard stream a path names. Besides the fixed names above, Linux's procfs has every process's descriptors
+ * under its number: `/proc/<pid>/fd/N` of the process's own pid is `/proc/self/fd/N`. And `/proc/1/fd/1` and
+ * `/proc/1/fd/2` are how a program in a container writes to the container's log from wherever it is (pid 1 is the
+ * container's first process, and its output is the log): a logger given that path as its file, `fs.appendFileSync`
+ * of it from a child whose own output is piped. A process here is given its own standard stream for pid 1's: its
+ * output and the first process's go to the same place. It was ENOENT or, over a kernel's tree, EBADF at the write.
+ * Where it differs from Linux: a process whose own stream is not the first process's (its stdout redirected to a
+ * file by its parent) writes pid 1's path to its own; no other process's descriptor is opened by a path.
+ */
+function stdioPath(name: string): StdioFd | undefined {
+  const fixed = STDIO_PATHS.get(name);
+  if (fixed !== undefined) return fixed;
+  const match = /^\/proc\/(\d+)\/fd\/([012])$/.exec(name);
+  if (!match) return undefined;
+  const pid = Number(match[1]), own = (stdioProcess() as { pid?: unknown } | undefined)?.pid;
+  return pid === 1 || pid === own ? Number(match[2]) as StdioFd : undefined;
+}
+
 /** Where a run's process carries what each of its fds 0, 1 and 2 is: 'tty', 'pipe', 'file' or 'char'. */
 export const kStdioKinds = Symbol.for('tabnode.run.stdioKinds');
 
@@ -788,7 +807,7 @@ const fsBinding = {
   open(path: unknown, flags: number, _mode: number, req?: FSReq): number | undefined {
     return answer(req, () => {
       const name = asPath(path);
-      const standard = STDIO_PATHS.get(name);
+      const standard = stdioPath(name);
       if (standard !== undefined) {
         const fd = allocateFd();
         stdioAliases.set(fd, standard);
