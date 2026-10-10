@@ -1105,8 +1105,12 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // application and 1.9 s later for another, the page waiting on it both times, and no line said what held it.
     // Each look's time is put to every thing true at that look, and one line says them when the wait ends.
     const heldBy: Record<string, number> = {};
+    // The same, counted only since the program last wrote: begun again at each write, so at the end it is what held
+    // the program after its last line (a World's "returning: the World is up"), which the whole run's tally mixes
+    // with what was pending while it worked.
+    let sinceLastOutput: Record<string, number> = {};
     let endedBy = 'the program called exit';
-    const note = (name: string): void => { heldBy[name] = (heldBy[name] ?? 0) + CHECK_MS; };
+    const note = (name: string): void => { heldBy[name] = (heldBy[name] ?? 0) + CHECK_MS; sinceLastOutput[name] = (sinceLastOutput[name] ?? 0) + CHECK_MS; };
 
     while (!exitCalled) {
       // Check abort signal for long-running commands (watch mode)
@@ -1138,6 +1142,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         // New output — reset idle timer
         lastOutputLen = currentLen;
         idleMs = 0;
+        sinceLastOutput = {};
       } else {
         idleMs += CHECK_MS;
       }
@@ -1185,7 +1190,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     }
     // Said only where the wait was long enough to matter to whoever waits on this program.
     if (Date.now() - startTime >= 200) {
-      console.log('[boot-trace]', JSON.stringify({ event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: heldBy, checkMs: CHECK_MS }));
+      console.log('[boot-trace]', JSON.stringify({ event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: heldBy, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS }));
     }
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
     if (typeof proc !== 'undefined') (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
