@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 - K5a (substrate Articles 1/6): clarify that a filesystem's image digest is answered only after the bytes match that record, before first use. Packed adapters may retain verification by immutable generation and extent. The existing loader already derives prepared keys from that content digest; its key format and kernel path are unchanged. Compilation is the builder's check; runtime proof is separate.
 
+- llhttp can be compiled once asynchronously by the worker creating guest realms, then structured-cloned through `RuntimeOptions.httpParserModule`. The engine's WorkerRuntime shares that compile across workers. Each realm keeps its own parser instance, memory and callbacks; a standalone realm retains the synchronous compile and ERR_HTTP_PARSER_UNAVAILABLE. Count-only `llhttp-module` boot traces record compilation and installation; runtime proof across multiple realms is pending.
+
 - Both module wrappers bind bare setImmediate and clearImmediate through the process’s existing guest timer face, so immediates return Node handles and participate in that process’s lifetime. Etherpad’s pinned queue rerun is pending.
 
 - esbuild.useHost returns the compiler thread’s attachment settlement so an embedder can finish initialization before a guest makes a synchronous call. Ending the host settles pending attachment and retires the worker’s blob URL. Companion and rerun proof pending.

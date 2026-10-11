@@ -12,6 +12,7 @@ import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { guestFetch, rememberRequestBodySource } from './fetch-transport';
 import { installNodeResponse } from './node-response';
 import { withNodeRequestBody } from './node-body';
+import { installHttpParserModule } from './http-parser-module';
 import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork } from './host-globals';
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
@@ -1327,6 +1328,8 @@ export interface RuntimeOptions {
   cwd?: string;
   env?: Record<string, string>;
   onConsole?: (method: string, args: unknown[]) => void;
+  /** llhttp compiled by the creating worker; structured-cloned into the guest realm. */
+  httpParserModule?: WebAssembly.Module;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
   /** fd 1 and fd 2 as the bytes the program wrote; where given, the text sink of that fd is not called. */
@@ -3202,6 +3205,7 @@ export class Runtime {
   private processedCodeCache: Map<string, string> = new Map();
 
   constructor(vfs: VirtualFS, options: RuntimeOptions = {}) {
+    if (options.httpParserModule !== undefined) installHttpParserModule(options.httpParserModule);
     this.vfs = vfs;
     // Create process first so we can get cwd for fs shim
     this.process = createProcess({

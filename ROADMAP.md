@@ -135,3 +135,13 @@ Completion:
 Status: built; consumer observation pending
 
 Article6: merge the existing shared-text binding correction, preserving Node Buffer.write/toString/TextDecoder behavior for shared and foreign-realm buffers. The bounded scratch is sized to text rather than the whole destination, and copied decoding bytes cannot be replaced by Buffer.slice’s shared view. Consumer byte-copy reductions are implemented in the substrate; this engine commit makes no speed claim. Bundle and declaration compilation are the coding lane’s only verification.
+
+## B6: Share compiled llhttp code with guest workers
+
+Status: active
+
+Substrate Articles 5/6: merge origin/w3/item-B6 so the engine creator asynchronously compiles llhttp once and structured-clones its immutable module through Runtime options. Parser instances, memory and callbacks remain in each guest realm; standalone callers retain their existing compile and refusal. No engine version, catalog or artifact publication belongs to this ARC.
+
+Completion:
+- Library bundle and declarations compile on the combined K5a/read-clock/G1/B6 engine line.
+- The independently integrated engine is delivered to confined workers and records one compilation with N realm installations; runtime and speed proof remain unverified in this coding lane.
