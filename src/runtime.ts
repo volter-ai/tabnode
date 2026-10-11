@@ -860,6 +860,23 @@ type LoadPhase = 'outside' | 'resolve' | 'read' | 'link' | 'compile' | 'evaluate
 type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>; bodies: number; bodyBytes: number; began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
 type LoadClockFs = { kernelBlockedMs?: () => number };
+/**
+ * An instrument (K5a on the speed checklist): the 'read' phase's parts, per process, in ms and counts. On Dub the
+ * server's read was 1.5-2.2 s for 1,525 bodies where its native file I/O was ~0.2 s; this says which part: the tree's
+ * digest asked, the source read (and decoded), the prepared body's name computed from the text (encode + SHA-256), the
+ * prepared body read (and decoded), and a body prepared here. Said with the load clock. Readings only.
+ */
+type ReadSplit = { digestAsk: number; source: number; key: number; prepared: number; transform: number; sources: number; keys: number; preparedReads: number; transforms: number };
+const __substrateReadSplits = new WeakMap<object, ReadSplit>();
+function __substrateTimeRead<T>(process: object, part: 'digestAsk' | 'source' | 'key' | 'prepared' | 'transform', fn: () => T): T {
+  const began = performance.now();
+  try { return fn(); } finally {
+    let split = __substrateReadSplits.get(process);
+    if (!split) { split = { digestAsk: 0, source: 0, key: 0, prepared: 0, transform: 0, sources: 0, keys: 0, preparedReads: 0, transforms: 0 }; __substrateReadSplits.set(process, split); }
+    split[part] += performance.now() - began;
+    if (part === 'source') split.sources++; else if (part === 'key') split.keys++; else if (part === 'prepared') split.preparedReads++; else if (part === 'transform') split.transforms++;
+  }
+}
 /** How long after a process's last body its 'quiet' line is said. */
 const QUIET_SAID_AFTER_MS = 2000;
 /** Ends the process's current phase now and begins `phase`; answers the phase that ended, for its caller to return to. */
@@ -925,6 +942,7 @@ function __substrateSayLoadClock(process: object, at: string): void {
   const saidAfter = at === 'quiet' ? Math.min(QUIET_SAID_AFTER_MS, Math.max(0, now - clock.at)) : 0;
   wall[clock.phase] += now - clock.at - saidAfter;
   console.log('[boot-trace]', JSON.stringify({ event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
+    readSplit: (() => { const split = __substrateReadSplits.get(process); return split ? Object.fromEntries(Object.entries(split).map(([name, value]) => [name, Math.round(value)])) : null; })(),
     bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: Math.round(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(clock.kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
@@ -2525,7 +2543,7 @@ function createRequire(
     const __hooks = __substrateHooks();
     const defaultSource = (): string => resolvedPath.startsWith('data:')
       ? __substrateDataModuleSource(resolvedPath)!
-      : vfs.readFileSync(resolvedPath, 'utf8');
+      : __substrateTimeRead(process, 'source', () => vfs.readFileSync(resolvedPath, 'utf8'));
     let format = resolvedAs?.format;
     let source = resolvedAs?.source;
     if (__hooks && __hooks.hasSyncLoad && source === undefined) {
@@ -2569,8 +2587,8 @@ function createRequire(
       const carried = keptNow.carried?.path === resolvedPath ? keptNow.carried.digest : undefined;
       keptNow.carried = undefined;
       if (kind && carried !== undefined) __substrateCountPrepared(process, 'carried');
-      const digest = kind ? (carried ?? vfs.contentDigest(resolvedPath)) : undefined;
-      const body = kind && digest ? __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)) : undefined;
+      const digest = kind ? (carried ?? __substrateTimeRead(process, 'digestAsk', () => vfs.contentDigest(resolvedPath))) : undefined;
+      const body = kind && digest ? __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest))) : undefined;
       if (body !== undefined) {
         __substrateCountPrepared(process, 'digest');
         (module as Module & { filename?: string }).filename = resolvedPath;
@@ -2599,9 +2617,9 @@ function createRequire(
     __substrateTracePreparedGate(vfs, process, compiling, content, resolvedPath);
     // A body prepared for the file's own text; a program's `_compile` that handed on other text compiles that text.
     const strips = transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> });
-    const key = compiling?.raw === content && format === undefined && !strips ? preparedModuleKey(rawCode, resolvedPath) : undefined;
+    const key = compiling?.raw === content && format === undefined && !strips ? __substrateTimeRead(process, 'key', () => preparedModuleKey(rawCode, resolvedPath)) : undefined;
     if (key) {
-      const taken = __substrateReadPrepared(vfs, key);
+      const taken = __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, key));
       if (taken !== undefined) {
         __substrateCountPrepared(process, 'hash');
         runModuleBody(module, taken, resolvedPath, dirname, true);
@@ -2614,7 +2632,7 @@ function createRequire(
       // tree has the directory bodies are kept in; asked once the body's own
       // read has missed, so a taken body costs no question about it.
       if (vfs.existsSync(PREPARED_MODULES_DIR)) {
-        const body = __substrateScopeGlobalCalls(prepareModuleCode(rawCode, resolvedPath));
+        const body = __substrateTimeRead(process, 'transform', () => __substrateScopeGlobalCalls(prepareModuleCode(rawCode, resolvedPath)));
         // One write is one step of the tab's filesystem, so no reader sees
         // half a body; a rename after it failed in a forked process's realm
         // and left the half-named file behind.
@@ -2665,7 +2683,11 @@ function createRequire(
   const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, scoped = false): void => {
     __substrateLoadPhase(process, vfs, 'link');
     const loadClock = __substrateLoadClocks.get(process);
-    if (loadClock) { loadClock.bodies += 1; loadClock.bodyBytes += prepared.length; }
+    if (loadClock) {
+      loadClock.bodies += 1; loadClock.bodyBytes += prepared.length;
+      // K5's turn-order reading: the count so far, where the process's own http server can say it beside a request.
+      (process as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.k5.bodies')] = loadClock.bodies;
+    }
     let code = prepared;
     // Create require for this module
     const moduleRequire = createRequire(
