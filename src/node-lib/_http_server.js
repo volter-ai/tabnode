@@ -1293,7 +1293,8 @@ function parserOnIncoming(server, socket, state, req, keepAlive) {
   if (!handled) {
     // K5's turn-order reading (an instrument, readings only): a server's first three requests say when their
     // 'request' event is emitted and when their head is written, with the bodies the process had loaded by then.
-    if (k5Said < 3) {
+    // The World's own servers (/__volter/…, /_twin/…) are not the application's: they would take the three places.
+    if (k5Said < 3 && !/^\/(__volter|_twin)\//.test(req.url ?? '')) {
       const n = ++k5Said;
       const say = (what, extra) => console.log(`[k5] server ${JSON.stringify({ n, what, url: req.url, at: Math.round((performance.timeOrigin + performance.now()) * 10) / 10, bodies: process[Symbol.for('tabnode.k5.bodies')] ?? 0, ...extra })}`);
       say('request-event');
