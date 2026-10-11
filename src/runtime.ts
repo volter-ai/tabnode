@@ -858,7 +858,8 @@ const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
  * field is zero and the phase is not split. The process's entry script is run elsewhere and is in `outside`.
  */
 type LoadPhase = 'outside' | 'resolve' | 'read' | 'link' | 'compile' | 'evaluate';
-type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>; bodies: number; bodyBytes: number; began: number; said: number };
+type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>;
+  bodies: number; bodyBytes: number; preparedBodies: number; preparedBodyBytes: number; sourceBodies: number; sourceBodyBytes: number; began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
 type LoadClockFs = { kernelBlockedMs?: () => number };
 /**
@@ -886,7 +887,8 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
   let clock = __substrateLoadClocks.get(process);
   if (!clock) {
     const zero = (): Record<LoadPhase, number> => ({ outside: 0, resolve: 0, read: 0, link: 0, compile: 0, evaluate: 0 });
-    clock = { phase: 'outside', at: now, kernelAt: 0, wall: zero(), kernel: zero(), bodies: 0, bodyBytes: 0, began: now, said: -1 };
+    clock = { phase: 'outside', at: now, kernelAt: 0, wall: zero(), kernel: zero(), bodies: 0, bodyBytes: 0,
+      preparedBodies: 0, preparedBodyBytes: 0, sourceBodies: 0, sourceBodyBytes: 0, began: now, said: -1 };
     __substrateLoadClocks.set(process, clock);
   }
   // The file system is the process's, known from the first caller that holds it (a `require` made through
@@ -942,7 +944,10 @@ function __substrateSayLoadClock(process: object, at: string): void {
   // phase and off the total, and said beside them.
   const saidAfter = at === 'quiet' ? Math.min(QUIET_SAID_AFTER_MS, Math.max(0, now - clock.at)) : 0;
   wall[clock.phase] += now - clock.at - saidAfter;
+  const entry = (process as { argv?: string[] }).argv?.[1];
   console.log('[boot-trace]', JSON.stringify({ event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
+    script: entry === undefined ? null : pathShim.posix.basename(entry),
+    preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
     readSplit: (() => { const split = __substrateReadSplits.get(process); return split ? Object.fromEntries(Object.entries(split).map(([name, value]) => [name, Math.round(value)])) : null; })(),
     bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: Math.round(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(clock.kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
@@ -2598,7 +2603,7 @@ function createRequire(
         __substrateCountPrepared(process, 'digest');
         (module as Module & { filename?: string }).filename = resolvedPath;
         if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
-        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), true);
+        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true);
         return;
       }
     }
@@ -2606,7 +2611,7 @@ function createRequire(
     // Read and execute JS file; a data: URL carries its own source.
     const rawCode = source === undefined || source === null ? defaultSource() : String(source);
     // A data: URL is no file: it has no extension's handler to answer to and no directory of its own.
-    if (resolvedPath.startsWith('data:')) { runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, currentDir); return; }
+    if (resolvedPath.startsWith('data:')) { runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, currentDir, 'source'); return; }
     // What `_compile` is handed, kept beside the module so the engine's own compile knows the format a hook named
     // and whether the text is still the file's own (a body the image prepared is taken only for that).
     __substrateLoading.set(module, { ...(resolvedAs ? { resolvedAs } : {}), compiling: { raw: rawCode, format } });
@@ -2627,7 +2632,7 @@ function createRequire(
       const taken = __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, key));
       if (taken !== undefined) {
         __substrateCountPrepared(process, 'hash');
-        runModuleBody(module, taken, resolvedPath, dirname, true);
+        runModuleBody(module, taken, resolvedPath, dirname, 'prepared', true);
         return;
       }
       // A file the image carries no body for (a package installed in the
@@ -2647,12 +2652,12 @@ function createRequire(
         try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${key}`, body); vfs.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${key}\n`); }
         catch { /* a process that may not write there prepares its own */ }
         __substrateCountPrepared(process, 'kept');
-        runModuleBody(module, body, resolvedPath, dirname, true);
+        runModuleBody(module, body, resolvedPath, dirname, 'source', true);
         return;
       }
     }
     __substrateCountPrepared(process, key ? 'noDirectory' : compiling?.raw !== content ? 'notOwnText' : format !== undefined ? 'format' : strips ? 'types' : 'notJavaScript');
-    runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, dirname);
+    runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, dirname, 'source');
   };
 
   /**
@@ -2685,11 +2690,17 @@ function createRequire(
    * hands the result to it; the engine's own pipeline is what makes the
    * body Node-shaped here.
    */
-  const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, scoped = false): void => {
+  const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false): void => {
     __substrateLoadPhase(process, vfs, 'link');
     const loadClock = __substrateLoadClocks.get(process);
     if (loadClock) {
       loadClock.bodies += 1; loadClock.bodyBytes += prepared.length;
+      // C6: count the body actually handed off, not a prepared read attempt or a module-cache hit. Newly kept
+      // bodies still came from source in this process. Startup streams feed the tree and use these same paths.
+      // Preserve bodyBytes' existing string-length accounting; the new fields give each body's UTF-8 byte size.
+      const bytes = BufferPolyfill.byteLength(prepared, 'utf8');
+      if (bodySource === 'prepared') { loadClock.preparedBodies += 1; loadClock.preparedBodyBytes += bytes; }
+      else { loadClock.sourceBodies += 1; loadClock.sourceBodyBytes += bytes; }
       // K5's turn-order reading: the count so far, where the process's own http server can say it beside a request.
       (process as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.k5.bodies')] = loadClock.bodies;
     }

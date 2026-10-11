@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- C6: each existing `load-clock` line adds `script` (the basename of the process's entry argument), `preparedBodies`/`preparedBodyBytes` and `sourceBodies`/`sourceBodyBytes`. The new byte counters measure UTF-8 bodies before wrapping; bodies prepared and kept during this process count as source. Startup-stream files reach the same filesystem paths. Runtime counts and the native comparison await the metrics cycle.
+
 - K5a (substrate Articles 1/6): clarify that a filesystem's image digest is answered only after the bytes match that record, before first use. Packed adapters may retain verification by immutable generation and extent. The existing loader already derives prepared keys from that content digest; its key format and kernel path are unchanged. Compilation is the builder's check; runtime proof is separate.
 
 - llhttp can be compiled once asynchronously by the worker creating guest realms, then structured-cloned through `RuntimeOptions.httpParserModule`. The engine's WorkerRuntime shares that compile across workers. Each realm keeps its own parser instance, memory and callbacks; a standalone realm retains the synchronous compile and ERR_HTTP_PARSER_UNAVAILABLE. Count-only `llhttp-module` boot traces record compilation and installation; runtime proof across multiple realms is pending.

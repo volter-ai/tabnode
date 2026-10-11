@@ -9,6 +9,28 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## C6: Name the load-clock process and distinguish body sources
+
+Status: built; independent metrics observation pending
+
+The native/module-path comparison needs the entry script and the origin of every body counted by the tab's
+existing `load-clock` line. Add `script`, the POSIX basename of this process's `argv[1]` (null when absent), and
+`preparedBodies`/`preparedBodyBytes` and `sourceBodies`/`sourceBodyBytes` on that same line. Count at the existing
+body handoff: a body read from the prepared directory, by digest or source hash, is prepared; a body transformed
+from source in this process is source, including one newly kept in the prepared directory. Each new byte counter
+is the UTF-8 size of the body handed to the compiler, before its wrapper. Existing fields and their accounting
+remain unchanged. Startup streams populate the filesystem in the embedder; the engine has no separate stream
+body handoff, so those reads use the same prepared/source paths. This is a general instrument for comparing
+Node's module loading, with no package recognition or execution change.
+
+Completion:
+- The library bundle and declarations compile, and the change is committed with hooks enabled and pushed.
+- Runtime counts and the native comparison remain for the independent metrics cycle; no measurement runs here.
+
+Builder evidence: the `build:lib` Vite bundle step passed; the combined command reached the owner's ten-second
+script cap during declaration generation, then its exact `tsc -p tsconfig.build.json` step passed separately.
+There is no installed Git commit hook in this checkout; the commit uses ordinary hook-enabled Git.
+
 ## guest-immediate-binding: Bare immediates use the guest's Node timer handle
 
 Status: active
