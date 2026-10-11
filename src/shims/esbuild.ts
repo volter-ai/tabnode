@@ -471,15 +471,16 @@ export async function analyzeMetafile(metafile: string | EsbuildMetafile, option
  */
 const SHIM_PLUGINS = new Set(["vfs-loader", "neighbors"]);
 
-export function useHost(host: EsbuildHost | null): void {
+export function useHost(host: EsbuildHost | null): Promise<void> {
   currentHost = host;
+  let started = Promise.resolve();
   // The thread for synchronous calls starts now, while this realm's loop
   // still runs: a realm that installs a host is one guests run in, and a
   // worker created inside a blocked call never starts (its start is the
   // creator's loop's work), which held the execution worker for minutes.
   // A realm without a Worker or shared memory is left as it is; the call
   // says what is missing when it comes.
-  if (host && !(typeof host.transformSync === 'function')) { try { __syncServiceStart(); } catch { /* reported at the call */ } }
+  if (host && !(typeof host.transformSync === 'function')) { try { started = __syncServiceStart().started; } catch { /* reported at the call */ } }
   if (!host && syncService) __syncServiceDrop(syncService);
   esbuildInstance = (host ? {
     build: (options: BuildOptions) => typeof host.prebundle === "function" && (options.plugins || []).some((plugin) => plugin && (plugin as { name?: string }).name === "vite:dep-pre-bundle")
@@ -495,6 +496,7 @@ export function useHost(host: EsbuildHost | null): void {
     window.__esbuild = esbuildInstance ?? void 0;
     window.__esbuildInitPromise = esbuildInstance ? Promise.resolve() : void 0;
   }
+  return started;
 }
 
 /**
@@ -627,7 +629,11 @@ interface SyncService {
   /** [0] the answer's state: 0 waiting, 1 final chunk written, 2 a chunk written with more to come; [1] the chunk's length; [2] 1 once the thread runs. */
   control: Int32Array;
   data: Uint8Array;
-  worker: { postMessage(message: unknown): void; terminate(): unknown; unref?: () => void; on?: (event: string, listener: (value: unknown) => void) => unknown; onerror?: unknown };
+  worker: { postMessage(message: unknown): void; terminate(): unknown; unref?: () => void; on?: (event: string, listener: (value: unknown) => void) => unknown; onerror?: unknown; onmessage?: unknown };
+  /** Host initialization finishes after the thread has taken its shared window, with the creator's loop running. */
+  started: Promise<void>;
+  settleStart(): void;
+  releaseURL(): void;
   /** esbuild loaded on the thread, after the first call. */
   initialized: boolean;
   /** What the thread reported through its error event, where the realm's loop ran to deliver it. */
@@ -691,6 +697,7 @@ function receive(message) {
     data = new Uint8Array(message.data);
     Atomics.store(control, 2, 1);
     Atomics.notify(control, 2);
+    port.postMessage({ type: 'attached' });
   } else if (message.type === 'init') {
     // The host's pins, when its realm held them (browser-substrate compiler-pins.ts): this thread checks esbuild's
     // module before importing it and compiles the wasm from the checked bytes, as the realm that started it would.
@@ -745,10 +752,20 @@ function __syncServiceStart(): SyncService {
     ? URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
     : new URL(`data:text/javascript,${encodeURIComponent(source)}`);
   const worker = new WorkerClass(url, { type: 'module' });
-  const service: SyncService = { control, data, worker, initialized: false };
-  const failed = (event: unknown) => { service.failure = String((event as { message?: unknown } | null)?.message ?? event); };
-  if (typeof worker.on === 'function') worker.on('error', failed);
-  else worker.onerror = failed;
+  let settleStart = (): void => {};
+  const started = new Promise<void>((resolve) => { settleStart = resolve; });
+  const releaseURL = (): void => { if (typeof url === 'string') URL.revokeObjectURL(url); };
+  const service: SyncService = { control, data, worker, initialized: false, started, settleStart, releaseURL };
+  const attached = (message: unknown): void => {
+    if ((message as { type?: unknown } | null)?.type !== 'attached') return;
+    releaseURL(); settleStart();
+  };
+  const failed = (event: unknown): void => {
+    service.failure = String((event as { message?: unknown } | null)?.message ?? event);
+    releaseURL(); settleStart();
+  };
+  if (typeof worker.on === 'function') { worker.on('error', failed); worker.on('message', attached); }
+  else { worker.onerror = failed; worker.onmessage = (event: { data: unknown }) => attached(event.data); }
   // A Node host is not held open by the thread.
   if (typeof worker.unref === 'function') worker.unref();
   worker.postMessage({ type: 'attach', control: control.buffer, data: data.buffer });
@@ -759,6 +776,8 @@ function __syncServiceStart(): SyncService {
 /** Ends the thread and forgets it, so the next call starts afresh. */
 function __syncServiceDrop(service: SyncService): void {
   try { service.worker.terminate(); } catch { /* already gone */ }
+  service.releaseURL();
+  service.settleStart();
   if (syncService === service) syncService = null;
 }
 

@@ -4,6 +4,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Both module wrappers bind bare setImmediate and clearImmediate through the process’s existing guest timer face, so immediates return Node handles and participate in that process’s lifetime. Etherpad’s pinned queue rerun is pending.
+
+- esbuild.useHost returns the compiler thread’s attachment settlement so an embedder can finish initialization before a guest makes a synchronous call. Ending the host settles pending attachment and retires the worker’s blob URL. Companion and rerun proof pending.
+
 - To follow, not yet changed: four optional members added in v0.9.0 and before
   are second paths that only an embedder without them takes (the stream
   transport's `post`, a started run's `setRef`, the host request's

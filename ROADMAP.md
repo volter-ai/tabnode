@@ -9,6 +9,26 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## guest-immediate-binding: Bare immediates use the guest's Node timer handle
+
+Status: active
+
+Etherpad's pinned source f00f70cb85724b57588ebcf676be447d6d787fbe on substrate e1275d96 + tabnode 5a03c59 passed the previous compiler-thread startup failure, then tsx@4.23.15 failed in transformSync's cache initialization with `setImmediate(...).unref is not a function`. Both module wrappers bind bare timeout/interval names to the process's guest global, but omitted immediate names. Thus a bare call reached the realm's browser numeric handle. Bind setImmediate and clearImmediate through the existing guest timer face in both wrappers, as Node's module scope does. No package is recognized and no new timer implementation is added.
+
+Completion:
+- The queue reruns Etherpad on its recorded source and passes this exact timer-handle failure; its next stop or first HTTP is retained.
+- Every other repository whose selected start reaches tsx or an immediate unref call is named and rerun on its source; a manifest mention alone is a candidate, not a proven reached call.
+
+## esbuild-host-start: Finish compiler-thread attachment before admitting a guest
+
+Status: active
+
+Etherpad (db259afa + engine 905820e7) and Linkwarden reach a synchronous compiler call while the thread created by useHost has not attached its shared buffer. The substrate sends its initialized reply before that attachment; the guest then blocks the creator’s loop inside transformSync. Node’s synchronous native compiler runs beside the caller. The browser host must finish installing that compiler before admitting the guest. useHost now returns attachment settlement (including a startup error, which remains a call’s failure), and disposal settles the pending installation and retires the blob URL. The substrate companion awaits it in both init paths and drops it on disposal. No deadline is increased or added, and no package is recognized by the correction. No build or rerun proof yet.
+
+Completion:
+- Etherpad and Linkwarden pass the old synchronous-thread startup failure through the queue, with their commits and source recorded.
+- Existing synchronous call and disposal deadlines remain unchanged; startup error evidence remains available to the caller.
+
 ## rejection-ownership: Deliver native promise failures to their process
 
 Card t_94bcd252, task t_41f48f39, substrate Article 6: the accepted cold/repeat
