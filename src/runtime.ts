@@ -2549,8 +2549,10 @@ function createRequire(
     // A body named by the tree's own digest of the file, where the source would reach the engine's compile as the
     // file's own text and nothing else: no load hook is registered (a hook may answer other text or a format), no
     // resolve step named a source or format, the module's `_compile` is the engine's (a program's own is handed the
-    // text, so it must be read), and types are not stripped. Then the text is never read and never hashed. A tree
-    // with no digest for the file's current content, or no body by that name, leaves the load to the read below.
+    // text, so it must be read), and types are not stripped. The loader neither reads nor hashes the source for
+    // this key. The tree answers only a verified content digest; a packed adapter may verify the raw bytes on
+    // first use, retaining that verification for the immutable extent. A tree with no digest for the file's
+    // current content, or no body by that name, leaves the load to the read below.
     if (source === undefined && format === undefined && !(__hooks && __hooks.hasSyncLoad) && !resolvedPath.startsWith('data:')
       && (module as Module & { _compile?: unknown })._compile === Mod.__substrateOwnCompile
       && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> })) {
