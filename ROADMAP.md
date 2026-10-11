@@ -129,3 +129,9 @@ Status: active
 Substrate Article6 and engine correction toward Node. The retained World host spends0.863s inclusive in resolveModule; per-module require caches repeat sibling filesystem searches while Node shares successful paths across the process. Keep filesystem/process identities separate, missing/computed stand-ins local, and a bounded positive cache; replace exists-plus-stat with one stat. ADR0001 owns the decision.
 Completion:
 - The original Dub recipe reaches its real sign-in with this released engine and module-resolution work is reduced, with failures retained and the whole-load targets owned by c9.
+
+## G1: Carry Node text across shared-memory seams
+
+Status: built; consumer observation pending
+
+Article6: merge the existing shared-text binding correction, preserving Node Buffer.write/toString/TextDecoder behavior for shared and foreign-realm buffers. The bounded scratch is sized to text rather than the whole destination, and copied decoding bytes cannot be replaced by Buffer.slice’s shared view. Consumer byte-copy reductions are implemented in the substrate; this engine commit makes no speed claim. Bundle and declaration compilation are the coding lane’s only verification.

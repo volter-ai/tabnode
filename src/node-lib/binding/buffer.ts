@@ -34,6 +34,25 @@ export const BUFFER = 6;
 export const BASE64URL = 7;
 
 const encoder = new TextEncoder();
+
+/**
+ * A Buffer may be a view of shared memory: Node writes text into one and reads text out of one like any other
+ * (pino's thread-stream is that: a Buffer over a SharedArrayBuffer the main thread writes log lines into and its
+ * thread reads). The platform's encoder and decoder do not take one. The Encoding Standard marks both as allowing
+ * shared memory (`decode(optional AllowSharedBufferSource input)`, `encodeInto(source, [AllowShared] Uint8Array
+ * destination)`), and Chromium's declarations carry neither mark (blink text_decoder.idl `[PassAsSpan] BufferSource
+ * input`, text_encoder.idl `Uint8Array destination`), so Chrome throws "The provided Uint8Array value must not be
+ * shared". Where the bytes are shared, the text goes through an unshared copy of exactly those bytes: encoded into
+ * a scratch and copied in, or copied out and decoded. A buffer that is not shared takes the path it always took.
+ */
+/** By its tag, as `util.types.isSharedArrayBuffer` here tells one (internals/util.ts): `instanceof` is false for a buffer made in another realm. */
+export const isSharedView = (view: ArrayBufferView): boolean => Object.prototype.toString.call(view.buffer) === '[object SharedArrayBuffer]';
+/**
+ * The same bytes where the platform will take them: the view itself, or a copy of it that is not shared. The copy
+ * is `new Uint8Array(view)`, never `view.slice()`: the views this binding is handed are Buffers, and
+ * `Buffer.prototype.slice` is `subarray`, a view of the same shared memory.
+ */
+export const unsharedBytes = (view: Uint8Array): Uint8Array => (isSharedView(view) ? new Uint8Array(view) : view);
 /** A decoder per flavour: `fatal: false` is what Node's lossy decode is. */
 const utf8Decoder = new TextDecoder('utf-8');
 const latin1Decoder = new TextDecoder('latin1');
@@ -63,22 +82,17 @@ function clamp(buffer: Uint8Array, start: number, end: number): [number, number]
  * Uint8Array value must not be shared"), where Node's StringBytes read and write a Buffer over a SharedArrayBuffer
  * as any other: so a string goes into one through a private buffer, and comes out of one from a copy.
  */
-const shared = (buf: Uint8Array): boolean => typeof SharedArrayBuffer !== 'undefined' && buf.buffer instanceof SharedArrayBuffer;
-/** The same bytes, in memory a decoder takes. */
-const unshared = (bytes: Uint8Array): Uint8Array => shared(bytes) ? new Uint8Array(bytes) : bytes;
 
 /** Node's `StringWrite<UTF8>`: as many whole code points as fit. */
 export function utf8WriteStatic(buf: Uint8Array, string: string, offset = 0, length = buf.byteLength - offset): number {
   const room = Math.min(length, buf.byteLength - offset);
   if (room <= 0) return 0;
-  if (shared(buf)) {
-    const scratch = new Uint8Array(room);
-    const { written } = encoder.encodeInto(string, scratch);
-    buf.set(scratch.subarray(0, written ?? 0), offset);
-    return written ?? 0;
-  }
-  const { written } = encoder.encodeInto(string, buf.subarray(offset, offset + room));
-  return written ?? 0;
+  if (!isSharedView(buf)) return encoder.encodeInto(string, buf.subarray(offset, offset + room)).written ?? 0;
+  // encodeInto writes whole code points only, into the scratch as it would into the buffer's own room
+  // and no larger than the string can fill: UTF-8 is at most three bytes for each UTF-16 unit
+  const scratch = new Uint8Array(Math.min(room, string.length * 3)), written = encoder.encodeInto(string, scratch).written ?? 0;
+  buf.set(scratch.subarray(0, written), offset);
+  return written;
 }
 
 /** Node's `StringWrite<ASCII>`: the low seven bits of each unit, one byte each. */
@@ -183,7 +197,7 @@ export function base64urlWrite(buf: Uint8Array, string: string, offset = 0, leng
 
 export function utf8Slice(buf: Uint8Array, start?: number, end?: number): string {
   const [from, to] = clamp(buf, start as number, end as number);
-  return utf8Decoder.decode(unshared(buf.subarray(from, to)));
+  return utf8Decoder.decode(unsharedBytes(buf.subarray(from, to)));
 }
 
 export function asciiSlice(buf: Uint8Array, start?: number, end?: number): string {
@@ -195,7 +209,7 @@ export function asciiSlice(buf: Uint8Array, start?: number, end?: number): strin
 
 export function latin1Slice(buf: Uint8Array, start?: number, end?: number): string {
   const [from, to] = clamp(buf, start as number, end as number);
-  return latin1Decoder.decode(unshared(buf.subarray(from, to)));
+  return latin1Decoder.decode(unsharedBytes(buf.subarray(from, to)));
 }
 
 export function ucs2Slice(buf: Uint8Array, start?: number, end?: number): string {
@@ -204,8 +218,8 @@ export function ucs2Slice(buf: Uint8Array, start?: number, end?: number): string
   const whole = to - ((to - from) % 2);
   const bytes = buf.subarray(from, whole);
   // A view whose offset is odd cannot be a `Uint16Array`; copy that one.
-  const aligned = (bytes.byteOffset % 2) === 0 && !shared(bytes) ? bytes : new Uint8Array(bytes);
-  return ucs2Decoder.decode(aligned);
+  const aligned = (bytes.byteOffset % 2) === 0 ? bytes : new Uint8Array(bytes);
+  return ucs2Decoder.decode(unsharedBytes(aligned));
 }
 
 export function hexSlice(buf: Uint8Array, start?: number, end?: number): string {
@@ -440,7 +454,7 @@ export function swap64(buf: Uint8Array): Uint8Array {
 
 /** Node's `IsUtf8`: whether the bytes decode without a replacement. */
 export function isUtf8(buf: Uint8Array): boolean {
-  try { new TextDecoder('utf-8', { fatal: true }).decode(unshared(buf)); return true; } catch { return false; }
+  try { new TextDecoder('utf-8', { fatal: true }).decode(unsharedBytes(buf)); return true; } catch { return false; }
 }
 
 /** Node's `IsAscii`: every byte under 128. */
