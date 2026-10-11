@@ -9,6 +9,16 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## J2-liveness: Signal-zero existence belongs to the caller's process authority
+
+Status: active
+
+Node's process.kill(pid, 0) checks existence without delivering a signal. pidIsLive currently reads metadata lookup, and self/child shortcuts can bypass an embedding kernel's caller-relative answer. Use registry.signal(pid, "0") before those shortcuts; preserve signed targets and errors other than ESRCH. The standalone owner answers from its own process map without invoking signal handlers. No app or package is recognized. Browser-substrate consumes this contract through its kernel Kill operation (ADR-0129/0131; Constitution Article 6).
+
+Completion:
+- Library compilation passed (Vite library bundle and emitted TypeScript declarations); no incidental tests or runtime readings are authorized.
+- The consumer integrates the source candidate and retains same-namespace peer, signed-target, zombie/reap and error-preservation evidence. That runtime proof remains owed.
+
 ## guest-immediate-binding: Bare immediates use the guest's Node timer handle
 
 Status: active

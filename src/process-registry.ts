@@ -57,11 +57,12 @@ export interface ProcessRegistry {
   forget(token: string): void;
   lookup(pid: number): ProcessIdentity | undefined;
   /**
-   * `kill(pid, signal)` for a live process of another realm in this container:
-   * whether a process there took the signal. A machine lets a process signal
-   * any process of its user, including one its parent left behind.
+   * kill(2) in this registry's caller namespace. "0" checks existence without delivery, including a zombie until
+   * reaped: its false means ESRCH only; other errno and transport failures throw. Signed targets keep kill's process
+   * and group meanings. `callerPid` identifies the calling run for a standalone owner shared by several runs;
+   * a kernel-bound registry already knows its caller from its channel.
    */
-  signal(pid: number, signal: string): boolean;
+  signal(pid: number, signal: string, callerPid?: number): boolean;
   /** A group may remain live after its leader exits. */
   lookupGroup?(pgid: number): boolean;
   /** Deliver to every live group member; true when any member took it. */
@@ -216,8 +217,20 @@ export function createProcessRegistryOwner(): {
           held.delete(entry.pid);
         },
         lookup(pid) { active(); return live.get(pid); },
-        signal(pid, signal) {
+        signal(pid, signal, callerPid) {
           active();
+          // Node's signal-zero query never calls a signal receiver. A standalone anonymous runtime has allocated
+          // its own identity before a named run is published; only that caller can ask about its own allocation.
+          if (signal === '0') {
+            if (!Number.isInteger(pid) || pid < -0x80000000 || pid > 0x7fffffff) {
+              throw Object.assign(new Error('kill EINVAL'), { code: 'EINVAL', errno: -22, syscall: 'kill' });
+            }
+            if (pid > 0) return live.has(pid) || (pid === callerPid && allocated.has(pid));
+            if (pid === -1) return Array.from(live.values()).some(identity => identity.pid !== callerPid && identity.pid !== 1);
+            const pgid = pid === 0 ? live.get(callerPid ?? 0)?.pgid ?? callerPid : -pid;
+            return (pid === 0 && callerPid !== undefined && allocated.has(callerPid))
+              || Array.from(live.values()).some(identity => identity.pgid === pgid);
+          }
           if (!live.has(pid) || typeof signal !== 'string') return false;
           return receivers.get(pid)?.handler?.(pid, signal) === true;
         },
@@ -231,6 +244,7 @@ export function createProcessRegistryOwner(): {
           // Snapshot before delivery: a leader's handler may retire itself or
           // other members. Group membership is independent of leader liveness.
           const members = Array.from(live.values()).filter(identity => identity.pgid === pgid);
+          if (signal === '0') return members.length > 0;
           let delivered = false;
           for (const identity of members) {
             if (live.get(identity.pid) === identity && receivers.get(identity.pid)?.handler?.(identity.pid, signal) === true) delivered = true;

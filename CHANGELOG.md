@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- J2 (Constitution Article 6): process.kill(pid, 0) asks its registry's no-delivery signal-zero contract before self or child handles, keeping signed target meanings and errors other than ESRCH. Standalone process owners answer from their own map without raising a guest signal. Consumer integration and runtime proof remain owed.
+
 - Both module wrappers bind bare setImmediate and clearImmediate through the process’s existing guest timer face, so immediates return Node handles and participate in that process’s lifetime. Etherpad’s pinned queue rerun is pending.
 
 - esbuild.useHost returns the compiler thread’s attachment settlement so an embedder can finish initialization before a guest makes a synchronous call. Ending the host settles pending attachment and retires the worker’s blob URL. Companion and rerun proof pending.
