@@ -6,6 +6,7 @@
  */
 
 import { wrap, proxy, Remote } from 'comlink';
+import { prepareHttpParserModule } from './http-parser-module';
 import type { VirtualFS } from './virtual-fs';
 import type { IRuntime, IExecuteResult, IRuntimeOptions, VFSSnapshot } from './runtime-interface';
 
@@ -65,6 +66,9 @@ export class WorkerRuntime implements IRuntime {
     const workerOptions: IRuntimeOptions = {
       cwd: this.options.cwd,
       env: this.options.env,
+      // Comlink structured-clones the compiled code, never the instance or
+      // its memory. All workers created by this engine share one compile.
+      httpParserModule: this.options.httpParserModule ?? await prepareHttpParserModule(),
     };
 
     await this.workerApi.init(snapshot, workerOptions);

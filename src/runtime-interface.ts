@@ -8,6 +8,8 @@ export interface IRuntimeOptions {
   cwd?: string;
   env?: Record<string, string>;
   onConsole?: (method: string, args: unknown[]) => void;
+  /** llhttp compiled by the creating worker; structured-cloned into the guest realm. */
+  httpParserModule?: WebAssembly.Module;
 }
 
 export interface IModule {

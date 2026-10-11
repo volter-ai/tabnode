@@ -19,14 +19,15 @@
  * connection may be kept alive -- is llhttp's answer, read back through its
  * own exports.
  *
- * THE ONE ENVIRONMENTAL REQUIREMENT: the module is compiled synchronously,
- * on the first parser a program makes. A browser refuses a synchronous
- * compile of more than 4 KB on the MAIN thread, so `http` works where the
- * engine runs a guest -- the substrate's execution worker, a Node process --
- * and a main-thread realm that asks for it is told exactly that rather than
- * left with a parser that does nothing.
+ * The creating worker compiles the module once asynchronously and hands its
+ * code to each guest realm; only the instance and callbacks are realm-local.
+ * With no module handed in, the first parser keeps the synchronous compile.
+ * A browser refuses that compile above 4 KB on the MAIN thread, so `http`
+ * works where the engine runs a guest -- its execution worker, a Node
+ * process -- and the fallback's refusal remains ERR_HTTP_PARSER_UNAVAILABLE.
  */
 import { LLHTTP_WASM_BASE64 } from './llhttp-wasm';
+import { suppliedHttpParserModule, httpParserUnavailable } from '../../http-parser-module';
 
 /** llhttp's `llhttp_type`. */
 const TYPE_REQUEST = 1;
@@ -107,16 +108,14 @@ function bytes(): Uint8Array {
 
 function llhttp(): LlhttpExports {
   if (wasm !== undefined) return wasm;
-  let module: WebAssembly.Module;
-  try {
-    const binary = Uint8Array.from(atob(LLHTTP_WASM_BASE64), (character) => character.charCodeAt(0));
-    module = new WebAssembly.Module(binary);
-  } catch (error) {
-    throw Object.assign(new Error(
-      'http: llhttp could not be compiled in this realm. A browser refuses a synchronous ' +
-      'WebAssembly compile of more than 4 KB on the main thread; the engine parses HTTP ' +
-      'where it runs a guest, which is a worker.',
-    ), { cause: error, code: 'ERR_HTTP_PARSER_UNAVAILABLE' });
+  let module = suppliedHttpParserModule();
+  if (module === undefined) {
+    try {
+      const binary = Uint8Array.from(atob(LLHTTP_WASM_BASE64), (character) => character.charCodeAt(0));
+      module = new WebAssembly.Module(binary);
+    } catch (error) {
+      throw httpParserUnavailable(error);
+    }
   }
   const instance = new WebAssembly.Instance(module, {
     env: {
