@@ -2681,7 +2681,11 @@ function createRequire(
   const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, scoped = false): void => {
     __substrateLoadPhase(process, vfs, 'link');
     const loadClock = __substrateLoadClocks.get(process);
-    if (loadClock) { loadClock.bodies += 1; loadClock.bodyBytes += prepared.length; }
+    if (loadClock) {
+      loadClock.bodies += 1; loadClock.bodyBytes += prepared.length;
+      // K5's turn-order reading: the count so far, where the process's own http server can say it beside a request.
+      (process as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.k5.bodies')] = loadClock.bodies;
+    }
     let code = prepared;
     // Create require for this module
     const moduleRequire = createRequire(

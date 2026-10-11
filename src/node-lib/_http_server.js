@@ -404,6 +404,7 @@ ServerResponse.prototype._implicitHeader = function _implicitHeader() {
   this.writeHead(this.statusCode);
 };
 
+let k5Said = 0;
 ServerResponse.prototype.writeHead = writeHead;
 function writeHead(statusCode, reason, obj) {
 
@@ -1290,6 +1291,15 @@ function parserOnIncoming(server, socket, state, req, keepAlive) {
   }
 
   if (!handled) {
+    // K5's turn-order reading (an instrument, readings only): a server's first three requests say when their
+    // 'request' event is emitted and when their head is written, with the bodies the process had loaded by then.
+    if (k5Said < 3) {
+      const n = ++k5Said;
+      const say = (what, extra) => console.log(`[k5] server ${JSON.stringify({ n, what, url: req.url, at: Math.round((performance.timeOrigin + performance.now()) * 10) / 10, bodies: process[Symbol.for('tabnode.k5.bodies')] ?? 0, ...extra })}`);
+      say('request-event');
+      const writeHeadOwn = res.writeHead;
+      res.writeHead = function(statusCode, ...rest) { say('write-head', { status: statusCode }); res.writeHead = writeHeadOwn; return writeHeadOwn.call(this, statusCode, ...rest); };
+    }
     server.emit('request', req, res);
   }
 
