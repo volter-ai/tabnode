@@ -1,3 +1,5 @@
+import { processCredentialsOf } from './process-credentials';
+import type { ProcessCredentials } from './process-credentials';
 /**
  * Runtime - Execute user code with shimmed Node.js globals
  *
@@ -1330,6 +1332,8 @@ export interface Module {
 }
 
 export interface RuntimeOptions {
+  /** Host-configured numeric identity; absent preserves uid/gid 1000 and groups [1000]. */
+  credentials?: ProcessCredentials;
   cwd?: string;
   env?: Record<string, string>;
   onConsole?: (method: string, args: unknown[]) => void;
@@ -2962,10 +2966,11 @@ function createRequire(
     }
     // Worker threads run where a thread host is installed, a worker the
     // page owns per thread; the shim alone refuses to run one. The host
-    // registers itself under this symbol and answers the module for a guest.
+    // registers itself under this symbol and answers the module for a guest. Its fourth argument is the
+    // process-owned credential snapshot to pass through thread admission into RuntimeOptions.credentials.
     if (id === 'worker_threads') {
-      const bridge = (globalThis as Record<symbol, unknown>)[Symbol.for("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown) => unknown } | undefined;
-      const module = bridge && typeof bridge.module === "function" ? bridge.module(vfs, process, builtinModules.worker_threads) : undefined;
+      const bridge = (globalThis as Record<symbol, unknown>)[Symbol.for("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown, credentials?: Readonly<ProcessCredentials>) => unknown } | undefined;
+      const module = bridge && typeof bridge.module === "function" ? bridge.module(vfs, process, builtinModules.worker_threads, processCredentialsOf(process)) : undefined;
       return guestMessageModule(process, (module ?? workerThreadsShim) as Record<string, unknown>, !module);
     }
     if (id === 'module') {
@@ -3222,6 +3227,7 @@ export class Runtime {
     this.process = createProcess({
       cwd: options.cwd || '/',
       env: options.env,
+      credentials: options.credentials,
       onStdout: options.onStdout,
       onStderr: options.onStderr,
       ...(options.onStdoutBytes ? { onStdoutBytes: options.onStdoutBytes } : {}),

@@ -9,6 +9,14 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## process-credentials: Report and inherit configured process credentials
+
+Status: built; kernel integration and runtime qualification pending
+
+ADR-0129's configured uid/gid/supplementary groups are per process, inherited at fork and retained by the host at exec, with no setuid support. The permission family's retained NetAlertX run has image USER 0 but a guest identity of 1000; kernel ownership/permission work belongs to that family. The engine currently reports fixed 1000 through the shared OS shim and has no credential option or launch field. Add `credentials: { uid, gid, groups }` to Runtime/IRuntime, container runs and trusted Node launches. Copy and validate unsigned numeric ids, retain an immutable process-owned record, and return fresh group arrays with the effective gid included as Node does. Real/effective ids are equal because this engine has no setuid. Default uid/gid and groups stay 1000/[1000]. Bind Node's native OS and spawn answers to their actual NodeLibScope process, including an unnamed Runtime, rather than ambient globals or mutable guest getter methods. Carry the record through local/host child launches, shell runs, synchronous children and WorkerRuntime initialization. The host/kernel supplies retained credentials when creating a realm after exec; image USER resolution and permission enforcement stay in the substrate. Disproof: a concurrent sibling's credentials, input/returned-array mutation, or a child reverting to default identity. Compile the library/declarations, commit with ordinary hooks and push; no app/test/probe/measurement runs in this lane.
+
+Builder evidence: `npm run build:lib` passed on the final source (Vite bundle plus declarations). An earlier declaration compile caught a missing held flag in the temporary configured shell-run record; it was corrected. OS/process/spawn changes are in engine-owned TypeScript bindings, with vendored Node JavaScript unchanged. WorkerRuntime copies credentials to its worker, and the external Node worker-thread host receives the record as module’s fourth argument for its Runtime admission. Original-image USER resolution, retaining the kernel record at exec, consumer process/thread admission wiring and observed permission/identity behavior remain with the permissions family. No tests, probes, apps or timings ran.
+
 ## node-import-preloads: Settle --import before the entry
 
 Status: built; independent runtime qualification pending

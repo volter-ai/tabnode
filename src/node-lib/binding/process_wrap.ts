@@ -1,3 +1,4 @@
+import { processCredentialsOf, copyProcessCredentials, type ProcessCredentials } from '../../process-credentials';
 /**
  * `internalBinding('process_wrap')`: one run of the engine, seen as libuv sees
  * a child process.
@@ -76,6 +77,8 @@ export interface RunChannel {
 
 /** What the binding asks the engine's process model to run. */
 export interface RunRequest {
+  /** A snapshot of the actual spawning process, not its mutable guest getter methods. */
+  credentials: Readonly<ProcessCredentials>;
   /** The run whose `Process` handle spawns it: its parent (the handle's NodeLibScope's process), or null for none. */
   owner: ProcessToken | null;
   /** The program, as the caller named it: a path, a name, or the shell. */
@@ -227,6 +230,8 @@ export function inheritedWriter(fd: number, token: ProcessToken | null): Descrip
  * so a parent waiting on a child is not idle: Node's loop holds a process
  * handle exactly that way, and `unref()` is how a program gives it up.
  */
+const credentialsByHandle = new WeakMap<object, Readonly<ProcessCredentials>>();
+
 export class Process implements OwnedHandle {
   /** Set by `internal/child_process.js`; the only way an end is reported. */
   onexit: ((exitCode: number, signalCode: string | null) => void) | null = null;
@@ -290,6 +295,7 @@ export class Process implements OwnedHandle {
     this.spawned = options.file;
 
     const request: RunRequest = {
+      credentials: credentialsByHandle.get(this) ?? copyProcessCredentials(),
       owner: ownerOfInstance(this),
       file: options.file,
       args: options.args ?? [options.file],
@@ -498,6 +504,15 @@ export class Process implements OwnedHandle {
     }, 100);
     (timer as { unref?: () => void }).unref?.();
   }
+}
+
+/** NodeLibScope supplies the parent even for a Runtime without a named run token. */
+export function createProcessBinding(parent: object): { Process: typeof Process; constants: typeof constants } {
+  class ScopedProcess extends Process {
+    constructor() { super(); credentialsByHandle.set(this, processCredentialsOf(parent)); }
+  }
+  Object.defineProperty(ScopedProcess, 'name', { value: Process.name, configurable: true });
+  return { Process: ScopedProcess, constants };
 }
 
 export default { Process, constants };

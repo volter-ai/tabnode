@@ -19,7 +19,8 @@ const PROCESS_BINDING_ALLOWED = new Set(['buffer', 'cares_wrap', 'config', 'cons
 import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, type ProcessToken } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
 import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
-import { freemem as osFreemem, userInfo as osUserInfo } from './os';
+import { freemem as osFreemem } from './os';
+import { copyProcessCredentials, recordProcessCredentials, type ProcessCredentials } from '../process-credentials';
 import { version as acornVersion } from 'acorn';
 import { ERR_INVALID_ARG_TYPE } from '../node-internals';
 import { setSourceMapsSupportOf, sourceMapsSupportOf } from '../node-lib/internals/events-util';
@@ -557,6 +558,7 @@ function measuredMemory(): { rss: number; heapTotal: number; heapUsed: number; e
 }
 
 export function createProcess(options?: {
+  credentials?: ProcessCredentials;
   cwd?: string;
   env?: ProcessEnv;
   /** This process's own number and its parent's, as Node gives every process. */
@@ -592,6 +594,7 @@ export function createProcess(options?: {
    */
   tty?: boolean | readonly [boolean, boolean, boolean];
 }): Process {
+  const credentials = copyProcessCredentials(options?.credentials);
   let currentDir = options?.cwd || '/';
   // Node sets no NODE_ENV and neither does the `node` image, so an app that
   // reads it to choose its shape took its development path under a Dockerfile
@@ -667,13 +670,13 @@ export function createProcess(options?: {
     // What a program reads to learn it is Node at all: lib0, y-protocols, the `ai` SDK, sharp and OpenTelemetry
     // test `process.release.name`, and with no `release` each took its not-Node branch without a word.
     release: nodeRelease(__browserRuntimeNodeVersion(env)),
-    // The account every process of the tab runs as: the kernel's (uid and gid 1000, one supplementary group, its
-    // own), which is what `os.userInfo()` answers here too. One function is asked, so the two cannot disagree.
-    getuid: (): number => osUserInfo().uid,
-    geteuid: (): number => osUserInfo().uid,
-    getgid: (): number => osUserInfo().gid,
-    getegid: (): number => osUserInfo().gid,
-    getgroups: (): number[] => [osUserInfo().gid],
+    // Configured process credentials, inherited at fork and kept at exec by the host (ADR-0129).
+    // No setuid means real/effective ids are equal. Node always includes the effective gid in getgroups().
+    getuid: (): number => credentials.uid,
+    geteuid: (): number => credentials.uid,
+    getgid: (): number => credentials.gid,
+    getegid: (): number => credentials.gid,
+    getgroups: (): number[] => [...new Set([...credentials.groups, credentials.gid])],
     // Node's switch for source maps (lib/internal/process/per_thread and the source-map cache): one state, read
     // here and through `module.getSourceMapsSupport()`. Turning it on with this call covers every kind of code,
     // as Node's does. It remaps nothing here (see the cache's note).
@@ -1056,6 +1059,7 @@ export function createProcess(options?: {
   };
 
   processEndings.set(proc, () => { exiting = true; });
+  recordProcessCredentials(proc, credentials);
   return proc;
 }
 
