@@ -1,4 +1,6 @@
 import { copyProcessCredentials, type ProcessCredentials } from '../process-credentials';
+import { queueNativeFsTask } from '../native-fs-tasks';
+import { withGuestCallback } from '../guest-loop';
 /**
  * The engine's process model: what a run of a program IS here.
  *
@@ -84,9 +86,12 @@ import type { PackageJson } from '../types/package-json';
 const HostBroadcastChannel = globalThis.BroadcastChannel;
 const hostChannelName = globalThis.crypto?.randomUUID.bind(globalThis.crypto);
 const isWorkerRealm = typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined';
+const hostNow = globalThis.performance.now.bind(globalThis.performance);
 
-async function settlePrintedEntry(): Promise<void> {
-  await new Promise<void>(resolve => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, resolve, 0));
+async function settleEntry(): Promise<void> {
+  // A native loop checkpoint shares the existing host task channel. It is
+  // host work, not a guest timer, and does not depend on timer scheduling.
+  await new Promise<void>(resolve => { queueNativeFsTask(resolve); });
   if (!isWorkerRealm || nodeProcessRealmToken() === null) return;
   if (!HostBroadcastChannel || !hostChannelName) throw new Error('Native process rejection checkpoint is unavailable.');
   // HTML queues rejection reporting after the microtask checkpoint on the
@@ -1100,10 +1105,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // timer — as idle, with exit 0, three times over.
   const __ownsHandles = () => runToken !== null && (__ownedServerPorts(runToken).length > 0 || __ownedHandleCount(runToken) > 0);
   const __printedThenWorking = () => (streams?.stdinOpen === true && inputConsumed()) || pendingGuestTimers(proc) > 0 || heldWork().count > 0 || __ownsHandles();
-  if (printed > 0 && !__printedThenWorking()) {
+  if ((streams?.held || runToken === null) && printed > 0 && !__printedThenWorking()) {
     // Settling the command is host work. Killing guest timers must not
     // cancel this continuation and leave the command's promise unresolved.
-    await settlePrintedEntry();
+    await settleEntry();
     // Work that began during that tick is the program's still: a build
     // reached through a dynamic import's chain, a timer the entry set.
     // vue-pure-admin's mock loader, `import('bundle-import').then(...)`
@@ -1141,8 +1146,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // When an abort signal is present (e.g. watch mode), don't apply idle timeout —
     // only exit when aborted or process.exit is called.
     const isLongRunning = !!streams?.held;
-    // D2: Node ends a drained loop when nothing referenced remains. A printed program ends at its first
-    // empty look; a silent start retains its existing 2 s rule for work not yet counted by the engine.
+    // A named run's loop ends once its registered work is empty, after a
+    // native task/rejection checkpoint. Silence does not hold such a loop.
+    // An unregistered run cannot prove handle/request ownership and retains
+    // its previous idle rule. A caller-held run belongs to its caller.
     // Each look's time is put to every thing true at that look, and one line says them when the wait ends.
     const heldBy: Record<string, number> = {};
     // The same, counted only since the program last wrote: begun again at each write, so at the end it is what held
@@ -1157,75 +1164,110 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // that never wakes from an empty span was waited on by the idle rule for nothing it did.
     let emptyLooks = 0, emptyAt: number | undefined;
     const wokeAfterEmpty: Array<{ afterEmptyMs: number; by: string[] }> = [];
+    const checkWait = { count: 0, totalMs: 0, maxMs: 0 };
+    const checkWork = { totalMs: 0, maxMs: 0 };
+    const checkpoints = { count: 0, totalMs: 0, maxMs: 0 };
+    const checkpoint = async (): Promise<void> => {
+      const began = hostNow();
+      try { await settleEntry(); }
+      finally {
+        const ms = hostNow() - began;
+        checkpoints.count += 1; checkpoints.totalMs += ms; checkpoints.maxMs = Math.max(checkpoints.maxMs, ms);
+      }
+    };
+    const hasReferencedWork = (): boolean => stillWorking() || heldWork().count > 0;
 
     while (!exitCalled) {
       // Check abort signal for long-running commands (watch mode)
       if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
 
+      // A promise alone is not a loop reference. Let queued ticks, promise
+      // continuations and rejection reporting finish before proving that
+      // the named process's handles/requests are empty. No idle look is
+      // scheduled for an empty loop, whether the entry printed or not.
+      if (!isLongRunning && runToken !== null && !hasReferencedWork()) {
+        await checkpoint();
+        if (exitCalled) break;
+        if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
+        if (!hasReferencedWork()) {
+          try { enterRun(runToken, () => withGuestCallback(() => proc.emit('beforeExit', proc.exitCode ?? 0))); }
+          catch (error) { onUncaughtException(error); }
+          if (exitCalled) break;
+          await checkpoint();
+          if (exitCalled) break;
+          if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
+          if (!hasReferencedWork()) { endedBy = 'the referenced loop is empty'; break; }
+        }
+      }
+
       // Check if exitPromise resolved (non-blocking)
+      const waitBegan = hostNow();
       const raceResult = await Promise.race([
         exitPromise.then(() => 'exit' as const),
         new Promise<'tick'>(r => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, () => r('tick'), CHECK_MS)),
       ]);
+      const waited = hostNow() - waitBegan;
+      checkWait.count += 1; checkWait.totalMs += waited; checkWait.maxMs = Math.max(checkWait.maxMs, waited);
 
       if (raceResult === 'exit' || exitCalled) break;
       if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
-      let emptyLook = false;
-      {
-        const timers = pendingGuestTimers(proc), ports = runToken !== null ? __ownedServerPorts(runToken).length : 0, handles = runToken !== null ? __ownedHandleCount(runToken) : 0, held = heldWork().count;
-        const input = streams?.stdinOpen === true && inputConsumed();
-        if (input) note('its input is open and read');
-        // Named by kind as well as counted: run 5 of Rallly said "an open handle" 600 ms and "a timer" 350 ms for the
-        // World's `up` after it said it was up, and not which.
-        if (timers > 0) { note('a timer is pending'); for (const kind of new Set(pendingGuestTimerKinds(proc))) note(`a timer is pending: ${kind}`); }
-        if (ports > 0) note('it owns a listening port');
-        if (handles > 0) { note('it owns an open handle'); for (const kind of new Set(__ownedHandleKinds(runToken!))) note(`it owns an open handle: ${kind}`); }
-        if (held > 0) note('held work (a child or a build)');
-        if (!input && timers === 0 && ports === 0 && handles === 0 && held === 0) note('nothing: the idle rule alone');
-        const by = [...(printed > lastOutputLen ? ['output'] : []), ...(input ? ['input'] : []), ...(timers > 0 ? ['timer'] : []),
-          ...(ports > 0 ? ['port'] : []), ...(handles > 0 ? ['handle'] : []), ...(held > 0 ? ['held work'] : [])];
-        emptyLook = by.length === 0;
-        if (emptyLook) { emptyLooks += 1; emptyAt ??= Date.now(); }
-        else if (emptyAt !== undefined) {
-          if (wokeAfterEmpty.length < 8) wokeAfterEmpty.push({ afterEmptyMs: Date.now() - emptyAt, by });
-          emptyAt = undefined;
+      const workBegan = hostNow();
+      try {
+        let emptyLook = false;
+        {
+          const timers = pendingGuestTimers(proc), ports = runToken !== null ? __ownedServerPorts(runToken).length : 0, handles = runToken !== null ? __ownedHandleCount(runToken) : 0, held = heldWork().count;
+          const input = streams?.stdinOpen === true && inputConsumed();
+          if (input) note('its input is open and read');
+          // Named by kind as well as counted: run 5 of Rallly said "an open handle" 600 ms and "a timer" 350 ms for the
+          // World's `up` after it said it was up, and not which.
+          if (timers > 0) { note('a timer is pending'); for (const kind of new Set(pendingGuestTimerKinds(proc))) note(`a timer is pending: ${kind}`); }
+          if (ports > 0) note('it owns a listening port');
+          if (handles > 0) { note('it owns an open handle'); for (const kind of new Set(__ownedHandleKinds(runToken!))) note(`it owns an open handle: ${kind}`); }
+          if (held > 0) note('held work (a child or a build)');
+          if (!input && timers === 0 && ports === 0 && handles === 0 && held === 0) note('nothing: the idle rule alone');
+          const by = [...(printed > lastOutputLen ? ['output'] : []), ...(input ? ['input'] : []), ...(timers > 0 ? ['timer'] : []),
+            ...(ports > 0 ? ['port'] : []), ...(handles > 0 ? ['handle'] : []), ...(held > 0 ? ['held work'] : [])];
+          emptyLook = by.length === 0;
+          if (emptyLook) { emptyLooks += 1; emptyAt ??= Date.now(); }
+          else if (emptyAt !== undefined) {
+            if (wokeAfterEmpty.length < 8) wokeAfterEmpty.push({ afterEmptyMs: Date.now() - emptyAt, by });
+            emptyAt = undefined;
+          }
         }
-      }
 
-      const currentLen = printed;
-      if (currentLen > lastOutputLen) {
-        // New output — reset idle timer
-        lastOutputLen = currentLen;
-        idleMs = 0;
-        sinceLastOutput = {};
-      } else {
-        idleMs += CHECK_MS;
-      }
+        const currentLen = printed;
+        if (currentLen > lastOutputLen) {
+          // New output — reset idle timer
+          lastOutputLen = currentLen;
+          idleMs = 0;
+          sinceLastOutput = {};
+        } else {
+          idleMs += CHECK_MS;
+        }
 
-      // A caller-held run belongs to its caller. The observed empty look includes held children/builds.
-      if (!isLongRunning) {
-        if (heldWork().count > 0) idleMs = 0;
-        // A program ends when its loop has nothing left, in Node whether or
-        // not it printed. The break waited for output, so a program that
-        // wrote nothing, a passing test of Node's own suite, waited the
-        // whole minute. A silent program that has been idle for a while,
-        // with no build held and no timer of its own pending, is done; the
-        // longer wait is for a start that is quiet while it fetches, which
-        // the engine cannot yet see as work.
-        const silentIdle = SILENT_IDLE_TIMEOUT_MS;
-        if (lastOutputLen > 0 && emptyLook) { endedBy = 'the first empty look after output'; break; }
-        if (lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) { endedBy = `nothing of its own was pending and it wrote nothing at all, for ${silentIdle} ms`; break; }
-      }
+        // A caller-held run belongs to its caller. The observed empty look includes held children/builds.
+        if (!isLongRunning) {
+          if (heldWork().count > 0) idleMs = 0;
+          // Only an unregistered run needs these heuristic rules. Named
+          // processes recheck their actual references before another look.
+          const silentIdle = SILENT_IDLE_TIMEOUT_MS;
+          if (runToken === null && lastOutputLen > 0 && emptyLook) { endedBy = 'the first empty look after output'; break; }
+          if (runToken === null && lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) { endedBy = `nothing of its own was pending and it wrote nothing at all, for ${silentIdle} ms`; break; }
+        }
 
-      // The hard timeout is for a program whose work the engine cannot see:
-      // a start that is quiet while it fetches, a loop with nothing in the
-      // engine's own registries. A run that still holds a handle or a timer
-      // is not that -- Node's loop runs while one is open, for as long as it
-      // is open -- and cutting it at a minute ended a forked child that was
-      // a server, which is every extension host and every pty host. Work the
-      // host holds for it (a build, a pre-bundle) is seen work too: a dev
-      // server whose start passed a minute mid pre-bundle was cut with exit 0.
-      if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) { endedBy = `the ${MAX_TOTAL_MS} ms bound`; break; }
+        // The hard timeout is for a program whose work the engine cannot see:
+        // a start that is quiet while it fetches, a loop with nothing in the
+        // engine's own registries. A run that still holds a handle or a timer
+        // is not that -- Node's loop runs while one is open, for as long as it
+        // is open -- and cutting it at a minute ended a forked child that was
+        // a server, which is every extension host and every pty host. Work the
+        // host holds for it (a build, a pre-bundle) is seen work too: a dev
+        // server whose start passed a minute mid pre-bundle was cut with exit 0.
+        if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) { endedBy = `the ${MAX_TOTAL_MS} ms bound`; break; }
+      } finally {
+        const worked = hostNow() - workBegan;
+        checkWork.totalMs += worked; checkWork.maxMs = Math.max(checkWork.maxMs, worked);
+      }
     }
 
     // A process whose loop has drained emits `exit`, as Node's does (`process.emit('exit', process.exitCode || 0)`,
@@ -1242,10 +1284,13 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       if (typeof proc.exitCode === 'number') exitCode = proc.exitCode;
     }
     // Keep D1 evidence when the new first-empty decision is shorter than the old trace threshold.
-    if (emptyLooks > 0 || Date.now() - startTime >= 200) {
+    if (endedBy === 'the referenced loop is empty' || emptyLooks > 0 || Date.now() - startTime >= 200) {
       console.log('[boot-trace]', JSON.stringify({ event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: heldBy, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
         entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null,
-        emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt }));
+        emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt,
+        lookTimer: { realm: isWorkerRealm || nodeProcessRealmToken() !== null ? 'worker' : typeof window === 'undefined' ? 'host' : 'window',
+          source: globalThis.__browserRuntimeNativeSetTimeout ? 'host-captured setTimeout' : 'realm.setTimeout', requestedMs: CHECK_MS, ...checkWait },
+        lookWorkMs: checkWork, entryCheckpointMs: checkpoints }));
     }
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
     if (typeof proc !== 'undefined') (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);

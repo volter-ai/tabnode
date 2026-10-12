@@ -50,6 +50,39 @@ passed (0/0), sequentially inside nine seconds per invocation. The generated
 bundle retains all six explicit AST releases and the single declaration span
 assembly. This is compiler-artifact inspection, not runtime/body qualification.
 
+## S2-D3: End a proven empty Node loop without polling
+
+Status: built and compiled; independent N2 floors reading pending
+
+Articles 5/6/8/9: the mini's retained floors-875352ef/n2-dry1.log, engine a9cc8bf, records
+`node -e 0` returning its entry at 1791789718376 and draining 7116 ms later. The only counted
+hold is the idle rule: forty looks account for 2000 ms, with no wake after the first empty
+look about 199 ms after entry. The 485 wait-state messages are a page coordinator aggregate,
+not a guest work holder. The engine schedules each look with its realm's browser timer and
+adds a synthetic 50 ms, so delayed callbacks extend the forty-callback silent rule. The log
+does not distinguish timer task delay from other scheduling between looks; do not invent a
+specific browser throttle or attribute those messages to the Node guest's loop.
+
+After entry settlement, a named run's registered loop can establish no referenced timers,
+ports, handles, pending native I/O, held child/build/native host work or consumed open stdin.
+Recheck that state after the existing native task/rejection checkpoint, then emit beforeExit
+in its run and retain work that its listeners schedule. End immediately if it remains empty,
+without a 50 ms look or the silent idle counter. Caller-held runs retain their owner's
+lifetime; unregistered runs retain the existing uncertainty rules and 60 s bound. Use the
+existing native filesystem task channel for the checkpoint instead of a browser timer.
+Keep D1 fields; add actual timer-wait/body/checkpoint intervals and realm identity to its
+drain record, so a remaining counted-work delay is located by the next retained reading.
+
+Completion: bundle/declarations compile, normal hooks and push, and the independent floors
+job reads N2 on its next lap. No new runs, tests, probes or timings in the builder lane.
+
+Builder evidence: final `npm run build:lib` passed (Vite library bundle and TypeScript
+declarations). No substrate source change is required. The retained record does not identify
+the browser scheduling mechanism responsible for the extra timer wait; the new trace separates
+actual timer waits, synchronous look work and native checkpoints. Active references still use
+the existing wait loop; a newly observed empty named loop reaches the checkpoint before any
+further timer look. Runtime gain and lifecycle behavior remain the floors lane's reading.
+
 ## D2: End a printed program at its first empty look
 
 Status: built and compiled; independent five-app qualification pending

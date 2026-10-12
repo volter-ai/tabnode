@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- S2-D3 (substrate Articles 5/6/8/9): end a named Node process once its referenced loop remains empty after a native task/rejection checkpoint, including a silent entry. Recheck work scheduled by `beforeExit`; retain real references, caller holds and unregistered-run uncertainty rules. The checkpoint uses the existing native task channel, and drain traces retain D1 fields while adding actual timer wait, look work, checkpoint time and realm identity. Runtime cost and behavior remain with the independent N2 floors reading.
+
 - preparation-heap (substrate Articles1/2/6/8/9): assemble ESM declaration edits once with the shared span assembler, preserving source semicolons and stable ordering. Release AST references before output assembly and nested ESM lowering parses. Source recognition, transformations, body bytes/keys and heap limits stay unchanged; the original code-server image's build remains independent qualification.
 
 - D2 (substrate Articles 1/5/6/8/9): printed programs end at the first existing look with no new output and no referenced input, timers, ports, handles or held work. Remove the 500/100 ms idle waits and retain the 2 s silent rule, 60 s bound and caller-held lifetime. Short first-empty drains retain the D1 trace fields; five-app behavior remains the independent cycle's qualification.
