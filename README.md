@@ -97,3 +97,23 @@ This repository began as `macaly/almostnode` at its version 0.2.14, a Node-in-th
 ## License
 
 MIT, [`LICENSE`](LICENSE). Node's own library files under `src/node-lib/` are Node's, under Node's MIT licence beside them; what else is carried from elsewhere is listed in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+### Process credentials
+
+A host can pass numeric identity as `credentials: { uid: 0, gid: 0, groups: [] }`
+to `Runtime`, `createProcess`, `createRuntime` (including worker runtimes), or
+`createContainer`. `container.run` and `container.runNode` can also name the
+credentials of one admitted process. Without the option, uid/gid are 1000 and
+groups are [1000]. Configuration is copied; ids must be unsigned 32-bit integers.
+`process.getuid/geteuid/getgid/getegid` and `os.userInfo().uid/gid` report that
+process's identity. `process.getgroups()` returns a fresh array containing its
+supplementary groups and effective gid. The OS account's existing username,
+home and shell fields are unchanged.
+
+Children inherit a process-owned record, even if guest code overwrites its
+getter methods. `processCredentialsOf(process)` gives a copied, immutable record
+for a host to pass into another realm. Node process-host launches and synchronous
+host requests carry `credentials`; the worker-thread host's `module` receives
+the record as its fourth argument to carry into the thread's Runtime options.
+The kernel owns image USER resolution, permission enforcement and retaining
+credentials across exec. Credential setters are unsupported.

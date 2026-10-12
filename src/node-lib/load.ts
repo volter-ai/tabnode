@@ -1,3 +1,6 @@
+import { createOsBinding } from './binding/misc';
+import { createProcessBinding } from './binding/process_wrap';
+import { createSpawnSyncBinding } from './binding/spawn_sync';
 import { withGuestExecution } from '../guest-loop';
 /**
  * One loader for Node's own files.
@@ -402,6 +405,12 @@ class NodeLibScope {
         this.bindings.set('fs', bindingSurface(fs.fsBinding, this.owner));
         this.bindings.set('fs_dir', bindingSurface(fs.fsDirBinding, this.owner));
         this.bindings.set('fs_event_wrap', bindingSurface(fs.fsEventWrapBinding, this.owner));
+      } else if (name === 'os') {
+        this.bindings.set(name, createOsBinding(this.process));
+      } else if (name === 'process_wrap') {
+        this.bindings.set(name, bindingSurface(createProcessBinding(this.process), this.owner));
+      } else if (name === 'spawn_sync') {
+        this.bindings.set(name, bindingSurface(createSpawnSyncBinding(this.process), this.owner));
       } else if (name === 'errors') {
         this.bindings.set(name, { ...errorsBinding, getErrorSourcePositions: (error: object) => errorSourcePositions(this.process, error) });
       } else if (name === 'diagnostics_channel') {

@@ -1,3 +1,4 @@
+import { copyProcessCredentials, type ProcessCredentials } from '../process-credentials';
 /**
  * The engine's process model: what a run of a program IS here.
  *
@@ -188,6 +189,8 @@ const NODE_VALUE_OPTIONS = new Set([
 export type StdioKind = 'tty' | 'pipe' | 'file' | 'char';
 
 export interface RunStreams {
+  /** Credentials inherited by this run and every Node image it starts. */
+  credentials?: ProcessCredentials;
   stdinStream?: AsyncIterable<Uint8Array>;
   /** fd 0 as a shared ring a host writes from another thread (`stdin-ring.ts`); where given, fd 0's only source. */
   stdinShared?: SharedArrayBuffer;
@@ -467,6 +470,8 @@ const __listenForUnhandledRejections = (owner: object, report: (reason: unknown,
 
 /** One start of the engine's Node, however it was asked for. */
 export interface NodeLaunch {
+  /** Credentials inherited by this run and every Node image it starts. */
+  credentials?: ProcessCredentials;
   /** The whole vector, as `execve` takes it: `argv[0]` is the program's own name (`process.argv0`), and Node's options, the script and its arguments follow. */
   argv: readonly string[];
   cwd: string;
@@ -504,6 +509,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const nested = parentToken !== null && (shellRuns.has(parentToken) || hostedNodes.has(parentToken));
   const runToken = nested ? nestedNodeToken(parentToken!, args, launch.cwd) : parentToken;
   const streams = runToken === null ? undefined : runStreamsFor(runToken);
+  const credentials = copyProcessCredentials(launch.credentials ?? streams?.credentials);
   const processHost = nodeProcessHostFor(runToken);
   if (processHost && runToken !== null) {
     if (!nested) hostedNodes.add(runToken);
@@ -512,7 +518,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     let ran = false;
     try {
       const result = await runHostedNode(processHost, {
-        token: runToken, argv0: launch.argv[0] ?? 'node', argv: [...args], cwd: launch.cwd, filesystem: tree, env: { ...launch.env },
+        token: runToken, argv0: launch.argv[0] ?? 'node', argv: [...args], cwd: launch.cwd, filesystem: tree, env: { ...launch.env }, credentials,
         ...(launch.stdin !== undefined ? { stdin: launch.stdin } : {}), ...(streams ? { streams } : {}),
       });
       ran = true;
@@ -716,6 +722,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const runtime = new Runtime(tree, {
     cwd: launch.cwd,
     env: guestEnv,
+    credentials,
     onConsole: (method, consoleArgs) => {
       const msg = consoleArgs.map(a => String(a)).join(' ') + '\n';
       if (method === 'error') {
@@ -1808,6 +1815,8 @@ async function handleNpmList(ctx: CommandContext): Promise<JustBashExecResult> {
 
 /** What a host asks of `runCommand`, the engine's own door onto its shell. */
 export interface ExecOptions {
+  /** Credentials inherited by this run and every Node image it starts. */
+  credentials?: ProcessCredentials;
   cwd?: string;
   env?: Record<string, string>;
   /** What the shell reads on stdin, so a builtin reads what was piped to it. */
@@ -1862,6 +1871,7 @@ interface ChildProcessHostDescriptor {
 
 /** How a command is handed to that host. */
 interface ChildProcessHostRequest {
+  credentials?: ProcessCredentials;
   /**
    * The command as the list a guest's `spawn` gave, where it gave one: the
    * program, then its words. A host that starts programs from a list starts
@@ -1922,6 +1932,8 @@ interface CommandOutcome {
 
 /** What a caller gives one run of a command line. */
 interface CommandRun {
+  /** Credentials inherited by this run and every Node image it starts. */
+  credentials?: ProcessCredentials;
   command: string;
   /** The same run as its words, where the caller had a list (`ChildProcessHostRequest.argv`). */
   argv?: readonly string[];
@@ -2016,6 +2028,7 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
         ...(run.argv ? { argv: [...run.argv] } : {}),
         cwd: run.cwd,
         env: hostEnv,
+        ...(run.credentials ? { credentials: run.credentials } : {}),
         ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
         stdinStream: run.stdinStream ?? emptyStdinStream(),
         ...(run.terminal ? { terminal: run.terminal } : {}),
@@ -2238,10 +2251,20 @@ function emptyStdinStream(): AsyncIterable<Uint8Array> {
  * binding, and it knows nothing of a run's name.
  */
 export function runCommand(command: string, options: ExecOptions, callback?: ExecCallback): void {
+  const ownCredentialsToken = options.credentials && !options.processToken ? `credentials-${__nextChildRun++}` : undefined;
+  if (ownCredentialsToken) {
+    options = { ...options, processToken: ownCredentialsToken };
+    registerRunStreams(ownCredentialsToken, { credentials: copyProcessCredentials(options.credentials), held: false });
+  }
+  if (options.processToken && options.credentials) {
+    const streams = _runStreams.get(options.processToken);
+    if (streams) streams.credentials = copyProcessCredentials(options.credentials);
+  }
   void (async () => {
     try {
       const outcome = await routeCommand({
         command,
+        credentials: options.credentials,
         cwd: options.cwd,
         env: typeof options.processToken === 'string'
           ? { ...(options.env ?? {}), [PROCESS_TOKEN_ENV]: options.processToken }
@@ -2259,12 +2282,16 @@ export function runCommand(command: string, options: ExecOptions, callback?: Exe
       }
     } catch (error) {
       callback?.(error as Error & { code?: number }, '', '');
+    } finally {
+      if (ownCredentialsToken) releaseRunStreams(ownCredentialsToken);
     }
   })();
 }
 
 /** What a host gives one argv start of the engine's Node. */
 export interface NodeRunOptions {
+  /** Credentials inherited by this run and every Node image it starts. */
+  credentials?: ProcessCredentials;
   /** The process's working directory; `/` when absent, as the shell's. */
   cwd?: string;
   /** The process's whole environment, as `execve` takes it; empty when absent. */
@@ -2327,6 +2354,7 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
     argv: [...argv],
     cwd: options.cwd ?? '/',
     env,
+    ...(options.credentials ? { credentials: copyProcessCredentials(options.credentials) } : {}),
     ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
     token: options.processToken,
   });
@@ -2582,6 +2610,7 @@ function startChildRun(request: RunRequest): StartedRun {
   // with no text kept of them; a program that writes text (a shell builtin,
   // a host program) still arrives through the text sinks.
   const streams: RunStreams = {
+    credentials: request.credentials,
     onStdout: (data: string) => { streamedOut.push(data); request.stdout?.(data); },
     onStderr: (data: string) => { streamedErr.push(data); request.stderr?.(data); },
     onStdoutBytes: (bytes: Uint8Array) => { request.stdout?.(bytes); },
@@ -2677,17 +2706,19 @@ function startChildRun(request: RunRequest): StartedRun {
         delete env[PROCESS_TOKEN_ENV];
         outcome = processHost ? await runHostedNode(processHost, {
           token, argv0: request.args[0] ?? request.file, argv: request.args.slice(1), cwd: request.cwd ?? '/',
-          filesystem: currentVfs!, env, streams, ...(stdinBytes !== undefined ? { stdin: stdinBytes } : {}),
+          filesystem: currentVfs!, env, streams, credentials: request.credentials, ...(stdinBytes !== undefined ? { stdin: stdinBytes } : {}),
         }) : directNode ? await enterRun(token, () => launchNode(treeForRun() ?? currentVfs!, {
           argv: request.args.length > 0 ? request.args : [request.file],
           cwd: request.cwd ?? '/',
           env,
+          credentials: request.credentials,
           ...(stdinBytes !== undefined ? { stdin: stdinBytes } : {}),
           token,
         })) : await enterRun(token, () => routeCommand({
           command: __substrateLineFor(request.file, request.args, request.cwd),
           ...(((argv) => argv ? { argv } : {})(__substrateArgvFor(request.file, request.args, request.cwd))),
           engineFirst,
+          credentials: request.credentials,
           cwd: request.cwd,
           env: { ...request.env, [PROCESS_TOKEN_ENV]: token },
           stdin,

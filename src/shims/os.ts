@@ -1,3 +1,4 @@
+import type { ProcessCredentials } from '../process-credentials';
 /**
  * Node.js os module shim
  * Provides operating system utilities
@@ -93,7 +94,7 @@ export function networkInterfaces(): Record<
   };
 }
 
-export function userInfo(): {
+export function userInfo(credentials?: Pick<ProcessCredentials, 'uid' | 'gid'>): {
   username: string;
   uid: number;
   gid: number;
@@ -102,8 +103,8 @@ export function userInfo(): {
 } {
   return {
     username: 'user',
-    uid: 1000,
-    gid: 1000,
+    uid: credentials?.uid ?? 1000,
+    gid: credentials?.gid ?? 1000,
     shell: '/bin/bash',
     homedir: '/home/user',
   };

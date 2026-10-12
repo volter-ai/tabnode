@@ -1,3 +1,6 @@
+import { copyProcessCredentials, processCredentialsOf, type ProcessCredentials } from './process-credentials';
+export { processCredentialsOf } from './process-credentials';
+export type { ProcessCredentials } from './process-credentials';
 /**
  * tabnode's public surface.
  *
@@ -86,6 +89,8 @@ export interface RunResult {
 }
 
 export interface RunOptions {
+  /** The host's numeric credentials for this process; otherwise inherit the container's configured identity. */
+  credentials?: ProcessCredentials;
   cwd?: string;
   /** The environment the command runs in, as `child_process.exec` takes it. */
   env?: Record<string, string>;
@@ -276,7 +281,9 @@ export function createContainer(options?: ContainerOptions): {
     const processToken = typeof runOptions?.processToken === 'string' && runOptions.processToken.length > 0
       ? runOptions.processToken
       : `run-${__nextRunName++}`;
+    const credentials = copyProcessCredentials(runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()));
     registerRunStreams(processToken, {
+      credentials,
       onStdout: runOptions?.onStdout,
       onStderr: runOptions?.onStderr,
       signal: runOptions?.signal,
@@ -327,7 +334,7 @@ export function createContainer(options?: ContainerOptions): {
         // it before the shell. Both forward it, so a builtin reads what was
         // piped, as it does in a Node shell.
         return await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-          runCommand(command, { cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs }, (error, stdout, stderr) => {
+          runCommand(command, { credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()), cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs }, (error, stdout, stderr) => {
             resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
           });
         });
@@ -338,6 +345,7 @@ export function createContainer(options?: ContainerOptions): {
       }
     }),
     runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {
+      credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()),
       ...(runOptions?.filesystem ? { filesystem: runOptions.filesystem } : {}),
       ...(runOptions?.process ? { process: { pid: runOptions.process.pid, ppid: runOptions.process.ppid } } : {}),
       ...(runOptions?.registry ? { registry: runOptions.registry } : {}),

@@ -1,3 +1,4 @@
+import { copyProcessCredentials } from './process-credentials';
 /**
  * WorkerRuntime - Runs code in a Web Worker for non-blocking execution
  *
@@ -37,7 +38,7 @@ export class WorkerRuntime implements IRuntime {
 
   constructor(vfs: VirtualFS, options: IRuntimeOptions = {}) {
     this.vfs = vfs;
-    this.options = options;
+    this.options = { ...options, credentials: copyProcessCredentials(options.credentials) };
 
     // Create the worker
     // Using Vite's worker import syntax
@@ -66,6 +67,7 @@ export class WorkerRuntime implements IRuntime {
     const workerOptions: IRuntimeOptions = {
       cwd: this.options.cwd,
       env: this.options.env,
+      credentials: this.options.credentials,
       // Comlink structured-clones the compiled code, never the instance or
       // its memory. All workers created by this engine share one compile.
       httpParserModule: this.options.httpParserModule ?? await prepareHttpParserModule(),

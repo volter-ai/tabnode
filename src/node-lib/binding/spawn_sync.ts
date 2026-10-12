@@ -1,3 +1,4 @@
+import { processCredentialsOf, copyProcessCredentials, type ProcessCredentials } from '../../process-credentials';
 /**
  * `internalBinding('spawn_sync')`: a child run to its end before the call
  * returns.
@@ -47,6 +48,7 @@ interface SyncChildHost {
     argv?: readonly string[];
     cwd?: string;
     env?: Record<string, string>;
+    credentials?: ProcessCredentials;
     input?: Uint8Array;
     /** Which of fd 1 and fd 2 count toward `maxBuffer`: the ones the caller captures. */
     captured: [boolean, boolean];
@@ -100,7 +102,7 @@ function bufferClass(): { from(value: unknown, encoding?: string): Uint8Array & 
   return (libRequire('buffer') as { Buffer: { from(value: unknown, encoding?: string): Uint8Array & { toString(encoding?: string): string } } }).Buffer;
 }
 
-function spawn(options: SyncSpawnOptions): SyncSpawnResult {
+function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentials> = copyProcessCredentials()): SyncSpawnResult {
   const Buffer = bufferClass();
   const pid = nextPid++;
   const argv = options.args ?? [options.file];
@@ -172,6 +174,7 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
         ...(((list) => list ? { argv: list } : {})(__substrateArgvFor(options.file, argv, options.cwd))),
         ...(cwd ? { cwd } : {}),
         ...(env ? { env } : {}),
+        credentials,
         ...(input === undefined ? {} : { input: new Uint8Array(input) }),
         captured: [captured(1), captured(2)],
         ...(typeof options.maxBuffer === 'number' && options.maxBuffer >= 0 && Number.isFinite(options.maxBuffer) ? { maxBuffer: options.maxBuffer } : {}),
@@ -229,6 +232,7 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
       ...(__substrateRunsNode(options.file, options.cwd) ? { argv } : {}),
       cwd,
       env,
+      credentials,
       ...(input === undefined ? {} : { input: new Uint8Array(input) }),
       onStdout: sink(1),
       onStderr: sink(2),
@@ -278,3 +282,8 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
 }
 
 export default { spawn };
+
+/** The binding captures its caller's own process independently of ambient globals. */
+export function createSpawnSyncBinding(parent: object): { spawn: (options: SyncSpawnOptions) => SyncSpawnResult } {
+  return { spawn: options => spawn(options, processCredentialsOf(parent)) };
+}

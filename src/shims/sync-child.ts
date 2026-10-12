@@ -1,3 +1,4 @@
+import { copyProcessCredentials, type ProcessCredentials } from '../process-credentials';
 /**
  * A child process run to completion before the call returns, as
  * `child_process.spawnSync` and `execSync` do in Node.
@@ -54,6 +55,7 @@ export interface SyncChildResult {
  * reads and writes text.
  */
 export interface SyncChildRequest {
+  credentials?: ProcessCredentials;
   command: string;
   /** The tree of the run that asks; the last tree given to the engine where it has none. */
   tree?: VirtualFS;
@@ -231,7 +233,7 @@ function workerSource(): string {
     "      new Promise((resolve, reject) => setTimeout(() => reject(new Error('the thread could not load the engine within ' + (message.loadWaitMs / 1000) + ' s from ' + message.engineURL)), message.loadWaitMs)),",
     "    ]);",
     "    const vfs = new (proxyOf(engine.VirtualFS))();",
-    "    const container = engine.createContainer({ vfs, cwd: message.cwd, env: message.env });",
+    "    const container = engine.createContainer({ vfs, cwd: message.cwd, env: message.env, credentials: message.credentials });",
     // A Node child runs from its argv with its fds as bytes; a shell line
     // runs in the shell, which reads and writes text.
     "    const input = message.input ? toBytes(message.input.b64) : undefined;",
@@ -460,6 +462,7 @@ export function runSyncChild(request: SyncChildRequest): SyncChildResult {
     ...(request.argv ? { argv: [...request.argv] } : {}),
     cwd: request.cwd,
     env: request.env,
+    credentials: copyProcessCredentials(request.credentials),
     ...(request.input ? { input: { b64: base64(request.input) } } : {}),
     engineURL: engineModuleURL(),
     loadWaitMs: ENGINE_LOAD_WAIT_MS,
