@@ -33,9 +33,20 @@ export function traceOutput(prefix: string, payload: unknown, level: 'log' | 'in
 /** Keep expensive diagnostics in their producing realm until its owner captures
  * them after HTTP (or before that realm's terminal evidence handoff). The host
  * never transports the callback or its source inputs across a trace port. */
-export function deferredTraceOutput(prefix: string, payload: () => unknown, level: 'log' | 'info' | 'warn' = 'log'): void {
+export function deferredTraceOutput(prefix: string, payload: () => unknown, level: 'log' | 'info' | 'warn' = 'log', captured?: { retained: unknown; input?: object }): void {
   if (!traceReadingRequested() && level !== 'warn') return;
-  const sink = Reflect.get(globalThis, Symbol.for('tabnode.trace-output-deferred')) as ((prefix: string, payload: () => unknown, level: string) => void) | undefined;
-  if (sink) sink(prefix, payload, level);
+  const sink = Reflect.get(globalThis, Symbol.for('tabnode.trace-output-deferred')) as ((prefix: string, payload: () => unknown, level: string, captured?: { retained: unknown; input?: object }) => void) | undefined;
+  if (sink) sink(prefix, payload, level, captured);
   else traceOutput(prefix, payload(), level);
+}
+/** Local diagnostic input ownership. Old hosts collect as before; no source
+ * input, callback or opaque key crosses an evidence MessagePort. */
+export function retainTraceInput(key: object, bytes: number, release: () => void): boolean {
+  if (!traceReadingRequested()) return false;
+  const sink = Reflect.get(globalThis, Symbol.for('tabnode.trace-retained-input')) as ((key: object, bytes: number, release: () => void) => boolean) | undefined;
+  return sink ? sink(key, bytes, release) : true;
+}
+export function releaseTraceInput(key: object): void {
+  const sink = Reflect.get(globalThis, Symbol.for('tabnode.trace-release-input')) as ((key: object) => void) | undefined;
+  sink?.(key);
 }

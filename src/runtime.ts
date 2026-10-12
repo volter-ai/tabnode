@@ -1,5 +1,5 @@
 import { traceRound, traceRoundFields } from './trace-values';
-import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested } from './trace-output';
+import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested, retainTraceInput, releaseTraceInput } from './trace-output';
 import { processCredentialsOf } from './process-credentials';
 import type { ProcessCredentials } from './process-credentials';
 /**
@@ -921,6 +921,7 @@ type OutsideSplit = { vmMs: Record<VmScriptPhase, number>; guestBracketMs: numbe
 type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>;
   bodies: number; bodyBytes: number; preparedBodies: number; preparedBodyBytes: number; sourceBodies: number; sourceBodyBytes: number;
   byteBodies: Array<{ text?: string; prepared: boolean; preparedBytes?: number; sourceBytes?: number }>; countedBytes: number;
+  retainedInputBytes: number; byteTotalsDropped: boolean; releaseBytes: () => void; byteBase: number; byteBasePreparedBytes: number; byteBaseSourceBytes: number;
   linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
   outside: OutsideSplit; guestAt: number; began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
@@ -999,21 +1000,26 @@ function __substrateOutsideSnapshot(process: object, clock: LoadClock, now: numb
 /** Byte totals are evidence only. A snapshot keeps its prefix length, not a
  * source copy; count that prefix after HTTP, then release the text references.
  * Kept prefix totals also answer an older snapshot without recounting bodies. */
-function __substrateBodyByteTotals(clock: LoadClock, limit: number): { preparedBodyBytes: number; sourceBodyBytes: number; utf8DeferredMs: number } {
+function __substrateBodyByteTotals(clock: LoadClock, limit: number): { preparedBodyBytes: number | null; sourceBodyBytes: number | null; utf8DeferredMs: number } {
+  if (clock.byteTotalsDropped) return { preparedBodyBytes: null, sourceBodyBytes: null, utf8DeferredMs: 0 };
+  if (limit < clock.byteBase) return { preparedBodyBytes: null, sourceBodyBytes: null, utf8DeferredMs: 0 };
   const started = performance.now();
   const guestStarted = guestExecutionActiveMs(started);
   while (clock.countedBytes < limit) {
-    const body = clock.byteBodies[clock.countedBytes]!;
+    const body = clock.byteBodies[clock.countedBytes - clock.byteBase]!;
     const bytes = byteLengthUtf8(body.text!);
     if (body.prepared) clock.preparedBodyBytes += bytes; else clock.sourceBodyBytes += bytes;
     body.preparedBytes = clock.preparedBodyBytes; body.sourceBytes = clock.sourceBodyBytes;
+    if (body.text !== undefined) clock.retainedInputBytes -= body.text.length * 2;
     delete body.text; clock.countedBytes += 1;
   }
-  const last = clock.byteBodies[limit - 1], ended = performance.now(), elapsed = ended - started;
+  const last = clock.byteBodies[limit - clock.byteBase - 1], ended = performance.now(), elapsed = ended - started;
   // Evidence work is not guest execution or a module phase in later samples.
   __substrateDeferredByteMs += elapsed;
   __substrateDeferredGuestMs += guestExecutionActiveMs(ended) - guestStarted;
-  return { preparedBodyBytes: last?.preparedBytes ?? 0, sourceBodyBytes: last?.sourceBytes ?? 0, utf8DeferredMs: elapsed };
+  retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes);
+  return { preparedBodyBytes: last?.preparedBytes ?? clock.byteBasePreparedBytes,
+    sourceBodyBytes: last?.sourceBytes ?? clock.byteBaseSourceBytes, utf8DeferredMs: elapsed };
 }
 type LoadClockFs = { kernelBlockedMs?: () => number };
 /**
@@ -1046,10 +1052,14 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
     clock = { phase: 'outside', at: now, kernelAt: 0, wall: zero(), kernel: zero(), bodies: 0, bodyBytes: 0,
       preparedBodies: 0, preparedBodyBytes: 0, sourceBodies: 0, sourceBodyBytes: 0,
       byteBodies: [], countedBytes: 0,
+      retainedInputBytes: 512, byteBase: 0, byteBasePreparedBytes: 0, byteBaseSourceBytes: 0, byteTotalsDropped: false, releaseBytes: () => {
+        clock!.byteBodies.length = 0; clock!.retainedInputBytes = 0; clock!.byteTotalsDropped = true;
+      },
       linkSplit: { utf8CountMs: 0, byteCounts: 0 }, compileSplit: { sourceCaptureMs: 0, nativeEvalMs: 0, sourceCaptures: 0, evals: 0 },
       outside: { vmMs: { parse: 0, setup: 0, eval: 0 }, guestBracketMs: 0, unbracketedMs: 0, clippedBracketMs: 0 },
       guestAt: __substrateGuestAt(now), began: now, said: -1 };
     __substrateLoadClocks.set(process, clock);
+    retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes);
   }
   // The file system is the process's, known from the first caller that holds it (a `require` made through
   // `Module.prototype.require` holds none): its total is taken from then, so nothing before is counted to a phase.
@@ -1134,11 +1144,27 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
     requires,
     kernelFrom: { fileSystem: clock.fs ? (clock.fs as object).constructor?.name ?? 'unnamed' : null, total: typeof clock.fs?.kernelBlockedMs === 'function' ? traceRound(clock.fs.kernelBlockedMs()) : 'no kernelBlockedMs on it' } };
+  if (clock.byteTotalsDropped) {
+    traceOutput("[boot-trace]", { ...payload, preparedBodyBytes: null, sourceBodyBytes: null, byteTotalsOmitted: 'trace-retention-bound' });
+    return;
+  }
+  if (clock.byteBase > 0 && limit === clock.byteBase) {
+    traceOutput("[boot-trace]", { ...payload, preparedBodyBytes: clock.preparedBodyBytes,
+      sourceBodyBytes: clock.sourceBodyBytes, linkSplit: { ...payload.linkSplit, utf8DeferredMs: 0 } });
+    return;
+  }
   deferredTraceOutput("[boot-trace]", () => {
     const { preparedBodyBytes, sourceBodyBytes, utf8DeferredMs } = __substrateBodyByteTotals(clock, limit);
-    return { ...payload, preparedBodyBytes, sourceBodyBytes,
+    const materialized = { ...payload, preparedBodyBytes, sourceBodyBytes,
+      ...(preparedBodyBytes === null ? { byteTotalsOmitted: 'cohort-prefix-retired' } : {}),
       linkSplit: { ...payload.linkSplit, utf8DeferredMs: traceRound(utf8DeferredMs) } };
-  });
+    if (at === 'exit') {
+      clock.byteBodies.length = 0; clock.byteBase = clock.countedBytes; clock.retainedInputBytes = 512;
+      clock.byteBasePreparedBytes = clock.preparedBodyBytes; clock.byteBaseSourceBytes = clock.sourceBodyBytes;
+      releaseTraceInput(clock);
+    }
+    return materialized;
+  }, 'log', { retained: payload, input: clock });
 }
 observeNativeStreamClocks((owner, sample) => {
   // A binding's handle retains its actual run owner across native awaits;
@@ -3021,7 +3047,12 @@ function createRequire(
       // Preserve bodyBytes' existing string-length accounting. UTF8 totals
       // have no guest/budget consumer; retain an immutable reference for the
       // deferred evidence owner, without counting or copying it here.
-      loadClock.byteBodies.push({ text: prepared, prepared: bodySource === 'prepared' });
+      if (!loadClock.byteTotalsDropped) {
+        loadClock.retainedInputBytes += 64 + prepared.length * 2;
+        if (retainTraceInput(loadClock, loadClock.retainedInputBytes, loadClock.releaseBytes)) {
+          loadClock.byteBodies.push({ text: prepared, prepared: bodySource === 'prepared' });
+        }
+      }
       loadClock.linkSplit.byteCounts += 1;
       if (bodySource === 'prepared') loadClock.preparedBodies += 1;
       else loadClock.sourceBodies += 1;

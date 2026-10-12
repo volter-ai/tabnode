@@ -1,3 +1,24 @@
+## S2 R5: bounded retained diagnostic inputs
+
+Status: source implementation and full package production emission complete; application delivery/cost qualification pending
+
+Articles5/6/8/9; substrate ADR0124 and lead ruling under owner delegation,
+2026-10-12 (OWNER-RULINGS.md). Keep the exact deferred decoded-body UTF8
+counts, but declare all retained body text/code-unit and row metadata weights
+to the selected host's single256MiB trace retention owner. A dropped source
+cohort releases its entire prefix array and all associated factories. Later
+load clocks retain their phase/count scalars with explicit null byte totals;
+no partial prefix is presented as exact. Normal terminal materialization
+preserves its cohort, releases diagnostic inputs, and retains cumulative
+scalar byte totals. Old hosts ignore the additive local sink arguments.
+
+The compact successor must carry authenticated decoded-body UTF8 lengths
+beside prepared-body digests at preparation. Raw file lengths cannot replace
+decoded UTF8 lengths after BOM removal or malformed-byte replacement, and
+digests alone do not encode a length. The withdrawn raw-reader prototype has
+no source delta in this unit. No boot-time UTF8 scan, guest scheduling/cache
+change, tests or new measurements; consumer qualification is independent.
+
 ## S2 first request: partition the time outside module loading
 
 Status: source instrument coded; production emission and independent reading pending

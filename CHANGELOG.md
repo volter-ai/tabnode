@@ -4,6 +4,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- R5 retention (Articles5/6/8/9): declare deferred load-clock prefix inputs
+  to the host's requested256MiB trace bound; drop/release whole source cohorts
+  with explicit loss and null subsequent byte totals. Exact surviving UTF8
+  cohorts still materialize only after release or before terminal handoff.
+  Terminal ownership releases arrays while retaining cumulative scalars.
+  Old-host delivery remains compatible; no raw-file-length shortcut lands.
+
 - First-request attribution (substrate Articles5/6/8/9): add requested-only
   outsideSplit to the existing deferred load clock. Intersect synchronous VM
   phases with outside, then partition its remainder using existing realm guest
