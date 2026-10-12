@@ -1,3 +1,31 @@
+## S2 K5b: Reuse VM preparation and attribute execution excess
+
+Status: retained source/native-profile reading; generic reuse and process-owned phase capture intended
+
+Substrate Articles5/6/8/9. [K5b's source and profile reading](docs/readings/k5b-execution-2026-10-12.json)
+retains the historical4.1–4.6s evaluate+outside tab figure against3.1–3.3s
+native. Its matching tab logs were not retained; no exact current-head phase
+or saving is inferred. The native4.470s profile is retained with its raw hash.
+VM ancestry accounts for983ms of samples, including script/context creation
+and guest execution below it; CommonJS wrapSafe ancestry accounts for818ms.
+
+Intent before code: Node's Script keeps compiled preparation, while our
+runInNewContext reparses declarations with Acorn and reconstructs the same
+helper Function on each run. Reuse immutable declaration preparation by
+source and options in the owning process/realm, reuse the evaluator in its
+realm, and create a fresh sandbox/global/scope and activation for every call.
+Never cache evaluated exports or context objects, share a Script across realms,
+change app/library bytes, or expose importScripts/cachedData as a code-cache
+substitute. Add exclusive parse/setup/eval counters beside the existing deferred
+load clock, with actual process ownership and nesting accounted once. Eval
+includes browser parsing and guest execution; it is not a compile-only clock.
+Preserve return/exception/declaration behavior and current option handling.
+
+Completion: normal production library emission and hooks-on source push;
+independent engine review, then the mini's next five lap names cache hits,
+phase costs and actual app behavior. No tests/apps/probes/timing runs here.
+K5c's compile/evaluate ceiling remains a separate follow-up under C4.
+
 ## S2 R11: Keep missing package configurations for the process lifetime
 
 Follow-up intent (Articles5/6/8/9): the independent read cleared befbc6c,
