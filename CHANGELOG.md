@@ -6,6 +6,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Port the existing registry-derived `crypto.getCurves()` repair (39754de) onto
+  the current load-clock engine: return fresh sorted names from its genuine
+  P-256/P-384/P-521 binding through named/default crypto exports, with export
+  accounting updated (substrate Articles 5/6/9; actual Seerr start pending).
+
 - Defer diagnostic UTF8 body counts through the host-owned evidence seam and retain compiled scripts by their already-known names for Node error positions (C6; substrate Articles 5/6/8/9; runtime/app-time reading pending).
 
 - Restore the module-clock caller phase after every require and include current-phase kernel blocking in captures; keep require-depth/stat-window and guest loading behavior unchanged (C6; substrate Articles5/6/8/9; runtime attribution pending).

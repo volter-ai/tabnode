@@ -1,3 +1,9 @@
+## S1 crypto curve enumeration integration
+
+Status: source port coded; independent runtime qualification pending
+
+Restore Node's supported elliptic-curve enumeration at the existing native crypto seam (substrate Articles 5/6/9). The pinned Seerr stop names getCurves; engine afd222b still exports its platform-unavailable function, although its genuine EC registry carries P-256/P-384/P-521. Published preload commit 14126b0 is already an ancestor; curve repair 39754de, merged as c7a42fca, is not. Port only that registry-derived enumeration and its export accounting onto the current engine line. A getCurves implementation already present in afd222b, or a returned name absent from the real binding registry, would disprove this diagnosis. Production compilation is builder evidence; the independent sweep must prepare/rebind the integrated engine and observe the original pinned Seerr start. No tests, probes, applications or timing runs in this unit.
+
 C6 attribution (substrate Articles5/6/8/9; ADR0124): an entry body started through _load evaluates at require depth0. Its first child require returns to depth0 and currently forces outside even while its caller is still evaluating. Restore the saved phase instead; require depth continues to control only stat caching. The emitted kernel split omits blocking accumulated in the currently open phase; capture its delta without changing the live counter. Substrate runtime-file union and confinement wrappers independently need to forward kernelBlockedMs. Native whole-run floors do not separate the same bodies yet; new native capture is the substrate operator unit. Compiler evidence only; corrected phase attribution and app-time gap remain the mini reading.
 ## S1-npm-version: Report the image's npm identity
 

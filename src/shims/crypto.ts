@@ -1320,6 +1320,12 @@ function getCiphers(): string[] {
   return cipherNames();
 }
 
+function getCurves(): string[] {
+  // Node reports the curves its crypto binding supports. Derive the names from
+  // the same registry that generates and reads EC keys, as getCiphers does.
+  return asymmetric.curveNames();
+}
+
 function getHashes(): string[] {
   // What createHash accepts, no more: a name here that createHash rejects
   // sends a guest down a branch that then throws.
@@ -1735,7 +1741,7 @@ const nodeExports = {
   generatePrime: unavailable('generatePrime'),
   generatePrimeSync: unavailable('generatePrimeSync'),
   getCipherInfo: unavailable('getCipherInfo'),
-  getCurves: unavailable('getCurves'),
+  getCurves,
   getDiffieHellman: unavailable('getDiffieHellman'),
   privateDecrypt: unavailable('privateDecrypt'),
   privateEncrypt: unavailable('privateEncrypt'),
