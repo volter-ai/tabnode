@@ -23,7 +23,7 @@
  * guest's `process` when it enters one, so the filesystem is read off that
  * process at call time -- the same way a vendored file gets the right
  * `process` at all. An asynchronous call captures the tree here and carries
- * it into the tick, because that tick can run after another guest has put
+ * it into the completion turn, because that turn can run after another guest has put
  * its own process on the realm. One `fs` module, many runs, each seeing its
  * own tree.
  */
@@ -38,6 +38,7 @@ import { allocateFd, handleForFd } from './fds';
 import { treeDescriptorsOf, type TreeDescriptors, type TreeDescriptorStats } from '../../tree-descriptors';
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
 import { errname, UV_ENOENT } from './uv';
+import { queueNativeFsTask } from '../../native-fs-tasks';
 
 /**
  * An errno error, as the filesystem makes one. The tree's own maker knows the
@@ -499,23 +500,41 @@ function statArray(stats: VfsStats | TreeDescriptorStats, bigint: boolean, path?
   return bigint ? BigInt64Array.from(values, (value) => BigInt(Math.floor(value))) : Float64Array.from(values);
 }
 
-/** A request object `fs.js` hands an asynchronous call, answered on a tick. */
+/** A request object `fs.js` hands an asynchronous call, answered from the loop. */
 interface FSReq { oncomplete?: (error: Error | null, ...rest: unknown[]) => void }
 
-/** The next tick of whatever realm this is: a guest's process, else the microtask queue. */
-function onNextTick(fn: () => void): void {
-  const tick = (globalThis as unknown as { process?: { nextTick?: (fn: () => void) => void } }).process?.nextTick;
-  if (typeof tick === 'function') tick(fn); else queueMicrotask(fn);
+/** Pending native fs work holds its process until completion; process exit cancels work not yet begun. */
+class FSRequest {
+  private cancel?: () => void;
+  private ended = false;
+
+  constructor(owner: ProcessToken | null, run: () => void) {
+    ownedRun(owner, () => registerHandle(this));
+    try {
+      this.cancel = queueNativeFsTask(() => {
+        if (this.ended) return;
+        try { ownedRun(owner, run, true); }
+        finally { this.close(); }
+      });
+    } catch (cause) { this.close(); throw cause; }
+  }
+
+  close(): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.cancel?.();
+    releaseHandle(this);
+  }
 }
 
 /**
  * Every operation below is written once, synchronously, and this is what
  * makes one asynchronous: Node passes a request object as the last argument
- * when it wants a callback, and the answer arrives on the next tick rather
- * than in the caller's own stack -- which is the whole of the difference a
- * program can observe between `fs.readFile` and `fs.readFileSync` here.
+ * when it wants a callback, and the answer arrives from a host task, as a
+ * libuv filesystem completion arrives from the loop. Delivering it on a tick
+ * or microtask let asynchronous fs chains run ahead of queued server accepts.
  *
- * The tree and the cwd are captured on this stack, not on that tick. The
+ * The tree and the cwd are captured on this stack, not on that turn. The
  * realm's process is swapped per run, so a `vfs()` or `process.cwd()` inside
  * the work would read whichever guest is executing then -- another run's
  * view, or none -- and a file `ls` listed (synchronous readdir) was ENOENT
@@ -542,7 +561,7 @@ function answer<T>(req: FSReq | undefined, work: () => T): T | undefined {
   const run = (): T => withFilesystem(tree, () => withCwd(cwd, work));
   if (usePromises) {
     return new Promise<T>((resolve, reject) => {
-      onNextTick(() => { try { resolve(run()); } catch (error) { reject(error); } });
+      new FSRequest(currentOwner(), () => { try { resolve(run()); } catch (error) { reject(error); } });
     }) as unknown as T;
   }
   // Node's binding invokes `req.oncomplete` as a method of the request:
@@ -554,7 +573,7 @@ function answer<T>(req: FSReq | undefined, work: () => T): T | undefined {
   const complete = request.oncomplete!;
   // Called as MakeCallback calls it: in the request's owner's run, its throw that run's uncaught exception.
   const owner = ownerOfInstance(request as object);
-  onNextTick(() => {
+  new FSRequest(owner, () => {
     let value: T;
     try { value = run(); } catch (error) { ownedRun(owner, () => complete.call(request, error as Error), true); return; }
     ownedRun(owner, () => complete.call(request, null, value as unknown), true);
