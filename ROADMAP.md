@@ -1,14 +1,14 @@
+## S2 unused response client removal
+
+Status: source cleanup intended; independent response reading pending
+
+Articles 5/6/8/9: all five retained server entries already use the native stream holder and its existing loopback client/parser. Remove65fc5ef's redundant requestServer method/import and52c07d47's unused adapter in normal follow-ups after the instrument-only push. Preserve generic writev gathering and bounded observer fields. No cause or saving is claimed for the4.8s after write-head; current instruments must identify actual vector submission/receipt/completion. The policy-confined native-stream omission has no named reached image and stays a recorded gap, with no behavior addition. Production emission only.
+
 ## S2 bounded native write evidence
 
 Status: instrumentation intended; no delay cause claimed
 
 Articles 5/6/8/9: retained Dub head-to-answer4.8s is unclassified. Full launch sequences show Rallly/Twenty/Cal/Dub use runNodeOnItsTree→the store-owner Node process bridge, while LibreChat's server is a further Node child through the descendant bridge. Both already supply native streams; private entry filenames are not a route discriminator. The existing holder loopback client means the earlier client relocation account was incorrect, and65fc5ef gathering is compiled but has no measured attribution. Add nativeStreams/nodeProcessMode to the existing host-init mark, then bounded accepted-TCP write-vector and chunk submission/owner-receipt/owner-completion/client-completion records. Correlate scope-local listener/handle/vector/chunk/request, with shared timestamps, byte counts and bounded iovec lengths; no bytes, ports, caller authority or behavior changes. First3 vectors per listener and first3 chunks per vector are sampled; completion summaries retain full counts. The next independent Dub capture must identify whether its307 is split and when the bytes actually leave before naming a cause. Remove the unused API/adapter as a later ordinary commit. The policy-confined stream omission is a known gap, with no named reached image; do not build it here. Production emitting compilation only, no tests/apps/timings.
-
-## S2 first-answer socket delivery
-
-Status: implementation intended; independent image reading pending
-
-Restore Node's external-client boundary (substrate Articles 5/6/8/9). Retained Dub next15.5.8 on f65c4b79/1322079 writes its first307 head at459 bodies but posts the answer4.80–4.92s later, after the1523-body preload cohort. Native writes/answers at457 bodies. The lock-authenticated upstream preload uses promise continuations between synchronous webpack requires, with no immediate/task yield. Preserve that program scheduling. Our confined server adapter creates the response client/parser in the server worker, and native writev awaits the worker's completion event between each iovec. Move the trusted external client/parser to the stream holder, validating the actual listening handle belongs to that process scope; gather consecutive iovecs up to the existing transport chunk ceiling before waiting for completion. Keep per-handle ordering, credit, buffer retention, transferred descriptor lifetime and request/port retirement. No guest/package/vendor changes. A holder that still requires a server-worker turn to parse accepted response bytes, exposes another scope's listener, exceeds chunk credit, or misorders writes would disprove the design. Production emission is builder evidence only; response timing/interleaving and original apps remain the mini's reading.
 
 ## S1 crypto curve enumeration integration
 

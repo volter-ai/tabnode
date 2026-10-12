@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Remove the unused S2 scoped HTTP-client API after tracing all five server launches to their already native-backed holder/client. Keep bounded writev gathering and write evidence. The earlier response-delay attribution is withdrawn; runtime interleaving remains unqualified (Articles 5/6/8/9).
+
 - S2 write evidence (substrate Articles 5/6/8/9): sample the first three accepted TCP write vectors per native listener and their first three transport chunks, recording vector sizes/iovec lengths, submission and completion. Diagnostic fields remain bounded and carry no bytes or capabilities; write ordering/credit is unchanged. No delay cause or runtime gain is claimed.
 
 - S2 first-answer (substrate Articles 5/6/8/9): provide a holder-loop HTTP client/parser scoped to the process's actual native listener, with cancellation through the existing stream client. Gather writev buffers within the existing transport chunk credit so small response heads/bodies/terminators are submitted together; keep asynchronous completions and larger-write backpressure. Vendored files and guest promise/preload scheduling are unchanged. Production compilation only; response interleaving remains independently unqualified.
