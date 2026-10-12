@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- K5 (substrate Articles 5/6/8): asynchronous fs callback and promise operations complete from host task turns instead of nextTick/microtasks, retaining the captured tree/cwd and owning run. Pending operations keep the run alive and cancel when it ends; synchronous fs calls are unchanged. Targeted source bundle emission passed; runtime and first-answer effect remain unqualified.
+
 - Node commands load --require/-r preloads before awaited --import preloads from NODE_OPTIONS and the command line, using the entry’s process cache and cwd. Imports settle before file or eval execution; execArgv remains available for child inheritance. Runtime qualification is pending.
 
 - C6: each existing `load-clock` line adds `script` (the basename of the process's entry argument), `preparedBodies`/`preparedBodyBytes` and `sourceBodies`/`sourceBodyBytes`. The new byte counters measure UTF-8 bodies before wrapping; bodies prepared and kept during this process count as source. Startup-stream files reach the same filesystem paths. Runtime counts and the native comparison await the metrics cycle.

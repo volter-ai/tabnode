@@ -9,6 +9,39 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## K5: Deliver asynchronous filesystem completions from the event loop
+
+Status: built; independent runtime qualification pending
+
+Substrate Articles 5/6/8: an asynchronous filesystem request completes from Node's loop, never from its next-tick
+or promise queue. The native fs binding currently sends both callback and promise work through nextTick or
+queueMicrotask. An application initializing its server through a chain of asynchronous fs calls can consequently
+enter synchronous preload work before the worker handles its queued incoming request. In the retained Dub
+production run c031fb53 / engine eeab9cb / World 3.0.2183 (mini, carried reuse build, scored dry-run2), the probe
+starts at shared epoch 1791758780688.2449 and the first guest request event arrives at 1791758789347.8, after 1521
+module bodies; the 307 head follows at 1791758789457.1. This establishes pre-dispatch delay, not its complete cause.
+Next 15.5.8's unchanged startup awaits filesystem operations before handlersReady; the same native binding defect
+is present in engine 14126b0, this change's base.
+
+Queue each asynchronous fs operation as a host MessagePort task, retaining the captured filesystem, cwd and owner.
+Keep one private, lazily created channel per realm; native host ports are referenced only while work is pending.
+Each pending operation also holds its guest run and is cancelled when that run ends. Deliver the existing callback
+in its owner's MakeCallback scope and resolve or reject the existing promise in its owner's scope. Synchronous fs
+calls and guest nextTick/promise scheduling keep their behavior. Do not reorder a framework's preload or interrupt
+its synchronous work. Node's loop contract owns the correction:
+https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick
+
+Completion:
+- Source bundle emission passes, ordinary hooks remain enabled, and the source branch is pushed normally.
+- The mini's unchanged Dub image establishes request dispatch before preload completes, first document behavior
+  and the app-time effect. A request that already arrived before preload in the failing arm disproves the proposed
+  connection between the native binding defect and K5. This builder runs no app, test or timing.
+
+Builder evidence: Bun emitted the fs binding and native task helper for the browser (93 modules), with package
+dependencies and unchanged Vite raw-source assets external. This is targeted source bundle emission, not the full
+Vite library/declaration build or a typecheck. Its existing availableParallelism export warning is unrelated to the
+changed paths. No tests or measurements ran.
+
 ## node-import-preloads: Settle --import before the entry
 
 Status: built; independent runtime qualification pending
