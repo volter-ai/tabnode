@@ -1,5 +1,5 @@
 import { traceRound, traceRoundFields } from './trace-values';
-import { captureTraceConsoleLine, deferredTraceOutput, traceOutput } from './trace-output';
+import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested } from './trace-output';
 import { processCredentialsOf } from './process-credentials';
 import type { ProcessCredentials } from './process-credentials';
 /**
@@ -879,7 +879,7 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
   if (own) said.own = true;
   const exists = (path: string): boolean | string => { try { return vfs.existsSync(path); } catch (cause) { return cause instanceof Error ? cause.message : String(cause); } };
   const key = preparedModuleKey(content, resolvedPath);
-  traceOutput("[boot-trace]", {
+  if (traceReadingRequested()) traceOutput("[boot-trace]", {
     event: 'prepared-bodies', where: 'compile', which, at: Date.now(), file: resolvedPath, bytes: content.length,
     rawIsOwn: compiling?.raw === content, handedRaw: compiling !== undefined, format: compiling?.format ?? null,
     transformsTypes: transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }),
@@ -990,6 +990,7 @@ type LoadClockFs = { kernelBlockedMs?: () => number };
 type ReadSplit = { digestAsk: number; source: number; key: number; prepared: number; transform: number; sources: number; keys: number; preparedReads: number; transforms: number };
 const __substrateReadSplits = new WeakMap<object, ReadSplit>();
 function __substrateTimeRead<T>(process: object, part: 'digestAsk' | 'source' | 'key' | 'prepared' | 'transform', fn: () => T): T {
+  if (!traceReadingRequested()) return fn();
   const began = performance.now();
   try { return fn(); } finally {
     let split = __substrateReadSplits.get(process);
@@ -1002,6 +1003,7 @@ function __substrateTimeRead<T>(process: object, part: 'digestAsk' | 'source' | 
 const QUIET_SAID_AFTER_MS = 2000;
 /** Ends the process's current phase now and begins `phase`; answers the phase that ended, for its caller to return to. */
 function __substrateLoadPhase(process: object, vfs: object | undefined, phase: LoadPhase): LoadPhase {
+  if (!traceReadingRequested()) return 'outside';
   const now = __substrateLoadNow();
   let clock = __substrateLoadClocks.get(process);
   if (!clock) {
@@ -1111,6 +1113,7 @@ const __substrateK5Servers = new WeakSet<object>();
 /** Observe Node's real request emission on the owned side, never in its
  * vendored parser. HTTP and HTTPS share the actual process's three slots. */
 function __substrateObserveHttp(process: object, module: unknown): void {
+  if (!traceReadingRequested()) return;
   const Server = (module as { Server?: unknown } | null)?.Server;
   if (typeof Server !== 'function') return;
   const prototype = Server.prototype as K5ServerPrototype | undefined;
@@ -1130,7 +1133,7 @@ function __substrateObserveHttp(process: object, module: unknown): void {
               const url = req.url, owner = __tokenForProcess(process as Process);
               const pid = runPid(owner)?.pid ?? (process as { pid?: unknown }).pid;
               const capturedUrl = typeof url === 'string' ? url : null;
-              traceOutput('[k5] server', { n, what, url: capturedUrl,
+              if (traceReadingRequested()) traceOutput('[k5] server', { n, what, url: capturedUrl,
                 at: Math.round((performance.timeOrigin + performance.now()) * 10) / 10,
                 bodies: __substrateLoadClocks.get(process)?.bodies ?? 0,
                 pid: typeof pid === 'number' ? pid : null, ...extra });
@@ -1200,9 +1203,10 @@ function __substrateSayPrepared(process: object, counts: PreparedCounts, at: str
   const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
   if (total === counts.said) return;
   counts.said = total;
-  traceOutput("[boot-trace]", { event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: __substrateResolutionKept.get(process)?.probes ? { ...__substrateResolutionKept.get(process)!.probes } : null });
+  if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: __substrateResolutionKept.get(process)?.probes ? { ...__substrateResolutionKept.get(process)!.probes } : null });
 }
 function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCounts, 'said' | 'timer'>): void {
+  if (!traceReadingRequested()) return;
   let counts = __substratePreparedCounts.get(process);
   if (!counts) {
     counts = { digest: 0, carried: 0, hash: 0, kept: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
@@ -1229,7 +1233,7 @@ function __substrateSayRowsUsed(process: object): void {
   for (const entry of view.moduleLoadList ?? []) if (entry.startsWith('NativeModule ')) rows[`engine.${entry.slice(13)}`] = 1;
   for (const name of nodeLibBindingsAsked()) rows[`engine.binding.${name}`] = 1;
   const program = String(view.argv0 ?? 'node').split('/').pop() || 'node';
-  traceOutput("[rows-used]", { pid: view.pid ?? null, program, rows });
+  if (traceReadingRequested()) traceOutput("[rows-used]", { pid: view.pid ?? null, program, rows });
 }
 Object.defineProperty(globalThis, '__substratePreparedExit', {
   configurable: true,
@@ -1373,6 +1377,8 @@ function __substrateDataModuleSource(url: string): string | undefined {
 }
 
 const __substratePending = Symbol.for('substrate.pending');
+// Loading state belongs to the module, not to properties of a guest's arbitrary exports object.
+const __substratePendingModules = new WeakMap<Module, object>();
 export function __substratePendingOf(value: unknown): Promise<void> | undefined {
   if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return undefined;
   const pending = (value as Record<symbol, unknown>)[__substratePending];
@@ -1388,9 +1394,24 @@ export function __substratePendingOf(value: unknown): Promise<void> | undefined 
 function __substrateKeepPending(module: Module, body: Promise<unknown>, forget: () => void): void {
   const exports = module.exports as Record<symbol, unknown>;
   const holds = exports !== null && (typeof exports === 'object' || typeof exports === 'function');
+  const token = {};
+  __substratePendingModules.set(module, token);
   const settled: Promise<void> = body.then(
-    () => { module.loaded = true; if (holds) delete exports[__substratePending]; },
-    (error: unknown) => { forget(); if (holds) delete exports[__substratePending]; throw error; },
+    () => {
+      if (__substratePendingModules.get(module) === token) {
+        __substratePendingModules.delete(module);
+        module.loaded = true;
+        if (holds) delete exports[__substratePending];
+      }
+    },
+    (error: unknown) => {
+      if (__substratePendingModules.get(module) === token) {
+        __substratePendingModules.delete(module);
+        forget();
+        if (holds) delete exports[__substratePending];
+      }
+      throw error;
+    },
   );
   if (holds) Object.defineProperty(exports, __substratePending, { value: settled, configurable: true, enumerable: false, writable: true });
 }
@@ -2324,6 +2345,8 @@ function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string): boolean {
 const __substrateModuleClasses = new WeakMap<Record<string, Module>, any>();
 /** What a module being loaded carries past its extension's handler, whose signature has no room for it. */
 const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined } }>();
+// Nested load hooks replace shared compile callbacks; a failed body still belongs to its admission parent.
+const __substrateAdmissionParents = new WeakMap<Module, Module | null>();
 /** Node's `findLongestRegisteredExtension`: the longest registered extension the file's name ends with, else `.js`. */
 function __substrateRegisteredExtension(filename: string, extensions: Record<string, unknown>): string {
   const name = filename.slice(filename.lastIndexOf('/') + 1);
@@ -2346,9 +2369,11 @@ function __substrateRegisteredExtension(filename: string, extensions: Record<str
 const __substrateResolutionKept = new WeakMap<object, ResolutionKept & { depth: number }>();
 function __substrateKeptFor(process: object): ResolutionKept & { depth: number } {
   let kept = __substrateResolutionKept.get(process);
-  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0,
-    packageConfigs: { lookups: 0, positiveHits: 0, negativeHits: 0, checks: 0, reads: 0, missingKept: 0 },
-    probes: { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 } }; __substrateResolutionKept.set(process, kept); }
+  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0 }; __substrateResolutionKept.set(process, kept); }
+  if (traceReadingRequested()) {
+    kept.packageConfigs ??= { lookups: 0, positiveHits: 0, negativeHits: 0, checks: 0, reads: 0, missingKept: 0 };
+    kept.probes ??= { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 };
+  }
   return kept;
 }
 /**
@@ -2359,9 +2384,9 @@ const __substrateWindowSaid = new WeakSet<object>();
 function __substrateInStatWindow<T>(process: object, run: () => T): T {
   const keeping = __substrateKeptFor(process);
   // An instrument: at a process's first module body, whether its stat window opens and the require depth it saw.
-  if (!__substrateWindowSaid.has(process)) {
+  if (traceReadingRequested() && !__substrateWindowSaid.has(process)) {
     __substrateWindowSaid.add(process);
-    traceOutput("[boot-trace]", { event: 'stat-window', at: Date.now(), pid: (process as { pid?: number }).pid ?? null, opened: keeping.depth === 0 && keeping.stats === undefined, depth: keeping.depth });
+    if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'stat-window', at: Date.now(), pid: (process as { pid?: number }).pid ?? null, opened: keeping.depth === 0 && keeping.stats === undefined, depth: keeping.depth });
   }
   if (keeping.depth !== 0 || keeping.stats !== undefined) return run();
   keeping.stats = new Map();
@@ -2499,9 +2524,9 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module.prototype.load = function (this: any, filename: string) {
     this.filename = filename;
     this.paths = Module._nodeModulePaths(pathShim.dirname(filename));
-    const extension = pathShim.extname(filename);
-    (Module._extensions[extension] ?? Module._extensions[".js"])(this, filename);
-    this.loaded = true;
+    Module._extensions[__substrateRegisteredExtension(filename, Module._extensions)](this, filename);
+    // A lowered body that is still awaiting an import keeps the engine's existing pending state.
+    if (!__substratePendingModules.has(this)) this.loaded = true;
   };
   Module.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
   Module.wrap = (code: string) => Module.wrapper[0] + code + Module.wrapper[1];
@@ -2747,6 +2772,7 @@ function createRequire(
     Object.setPrototypeOf(module, __substrateModule().prototype);
     (module as Module & { path: string }).path = pathShim.dirname(resolvedPath);
     module.paths = __substrateModule()._nodeModulePaths(pathShim.dirname(resolvedPath));
+    __substrateAdmissionParents.set(module, parentModule || null);
     if (parentModule && Array.isArray(parentModule.children)) parentModule.children.push(module);
 
     // Cache before loading to handle circular dependencies
@@ -2767,16 +2793,25 @@ function createRequire(
     // second time: two live copies of a module that holds state, such as Next's
     // request store, and the second copy empty.
 
-    // Node's `Module.prototype.load`: the handler registered for the file's extension loads it, and that is the one
-    // path. The built-in handlers are the engine's own load step (`builtinLoad`, below) and compile through
-    // `module._compile`; a handler a program registered (ts-node, @babel/register, pirates) is called here because
-    // it is the one in the table, and the `_compile` it replaced on the module is called because the handler it
-    // chains to calls it.
+    // Node's Module._load calls module.load after caching the module (v24.21 loader.js:1348).
+    // A program can wrap that method to publish exports after evaluation; calling the extension here bypassed
+    // that completed-load work and returned uninitialized live exports. The method owns extension selection
+    // and _compile delegation; cached circular requires still return the same partial exports without loading.
     if (resolvedAs) __substrateLoading.set(module, { resolvedAs });
     const Mod = __substrateModule();
     Mod.__substrateBuiltinLoad = builtinLoad;
     Mod.__substrateCompileRaw = compileRaw;
-    try { Mod._extensions[__substrateRegisteredExtension(resolvedPath, Mod._extensions)](module, resolvedPath); }
+    try { (module as Module & { load(filename: string): void }).load(resolvedPath); }
+    catch (error) {
+      // A load wrapper can throw after its extension finished. Node forgets every failed load, including that case.
+      delete moduleCache[resolvedPath];
+      const children = parentModule?.children;
+      if (Array.isArray(children)) {
+        const index = children.indexOf(module);
+        if (index >= 0) children.splice(index, 1);
+      }
+      throw error;
+    }
     finally { __substrateLoading.delete(module); }
     return module;
   };
@@ -3042,7 +3077,14 @@ function createRequire(
       // is counted outside from here too.
       __substrateLoadPhase(process, vfs, __substrateKeptFor(process).depth === 0 ? 'outside' : 'link');
       const settling = __substrateDriveBody(bodyKind, body, module);
-      if (settling) __substrateKeepPending(module, settling, () => { delete moduleCache[resolvedPath]; });
+      if (settling) __substrateKeepPending(module, settling, () => {
+        if (moduleCache[resolvedPath] === module) delete moduleCache[resolvedPath];
+        const children = __substrateAdmissionParents.get(module)?.children;
+        if (Array.isArray(children)) {
+          const index = children.indexOf(module);
+          if (index >= 0) children.splice(index, 1);
+        }
+      });
       else module.loaded = true;
     } catch (error) {
       // Remove from cache on error
@@ -3063,7 +3105,7 @@ function createRequire(
   const require: RequireFunction = (id: string): unknown => {
     const Module = __substrateModule();
     if (Module.prototype.require !== Module.__substrateRequire) {
-      __substrateRequirePathsFor(process).replacedPrototypeRequire += 1;
+      if (traceReadingRequested()) __substrateRequirePathsFor(process).replacedPrototypeRequire += 1;
       return Module.prototype.require.call(parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, id);
     }
     // A program that replaced `Module._load` sees every require from here on,
@@ -3072,7 +3114,7 @@ function createRequire(
     if (Module._load !== Module.__substrateLoad) {
       const keeping = __substrateKeptFor(process);
       keeping.depth += 1;
-      __substrateRequirePathsFor(process).replacedLoad += 1;
+      if (traceReadingRequested()) __substrateRequirePathsFor(process).replacedLoad += 1;
       // The clock, as `requireRaw` keeps it: the require is resolving from here (the program's own `_load` is part
       // of that), and when it returns the caller is where it was. Without the two marks nothing on this path was
       // counted to `resolve`, and a parent's body went on in its child's last phase (`link`).
@@ -3097,7 +3139,7 @@ function createRequire(
   const requireRaw = (id: string): unknown => {
     const keeping = __substrateKeptFor(process);
     keeping.depth += 1;
-    __substrateRequirePathsFor(process).requireRaw += 1;
+    if (traceReadingRequested()) __substrateRequirePathsFor(process).requireRaw += 1;
     const phase = __substrateLoadPhase(process, vfs, 'resolve');
     try { return requireCounted(id); } finally { keeping.depth -= 1; __substrateLoadPhase(process, vfs, phase); }
   };
@@ -3352,11 +3394,14 @@ function createRequire(
   // Counted by how it was reached, and on the load clock: it resolves from here, and its caller is where it was when
   // it returns (a `_load` is not a `require` call, so the depth is its caller's).
   (require as any).__loadRaw = (id: string): unknown => {
-    const paths = __substrateRequirePathsFor(process), via = __substrateLoadVia;
+    const via = __substrateLoadVia;
     __substrateLoadVia = undefined;
-    paths.engineLoad[via === 'engine-prototype-require' ? 'fromEnginePrototypeRequire' : via === 'replaced-load' ? 'fromReplacedLoad' : 'direct'] += 1;
-    if (paths.replacedPrototypeRequire > 0 && !paths.replaced.prototypeRequire) paths.replaced.prototypeRequire = __substrateSaidReplacement(__substrateModule().prototype.require);
-    if (via === 'replaced-load' && !paths.replaced.load) paths.replaced.load = __substrateSaidReplacement(__substrateModule()._load);
+    if (traceReadingRequested()) {
+      const paths = __substrateRequirePathsFor(process);
+      paths.engineLoad[via === 'engine-prototype-require' ? 'fromEnginePrototypeRequire' : via === 'replaced-load' ? 'fromReplacedLoad' : 'direct'] += 1;
+      if (paths.replacedPrototypeRequire > 0 && !paths.replaced.prototypeRequire) paths.replaced.prototypeRequire = __substrateSaidReplacement(__substrateModule().prototype.require);
+      if (via === 'replaced-load' && !paths.replaced.load) paths.replaced.load = __substrateSaidReplacement(__substrateModule()._load);
+    }
     const phase = __substrateLoadPhase(process, vfs, 'resolve');
     try { return requireCounted(id); } finally { __substrateLoadPhase(process, vfs, phase); }
   };
@@ -3498,7 +3543,7 @@ export class Runtime {
     (this.process as unknown as Record<symbol, unknown>)[kRunFilesystem] = vfs;
     // The Node line this process answers as, and where it came from (node-line.ts).
     const namedVersion = options.env?.NODE_VERSION;
-    traceOutput("[boot-trace]", { event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
+    if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
       line: nodeLineOf(this.process.version), from: this.process.version === `v${String(namedVersion ?? '').replace(/^v/, '')}` ? 'NODE_VERSION of the image' : 'default',
       // The variable as this process was given it, so a reader need not infer it: null when it has none.
       env: typeof namedVersion === 'string' ? namedVersion : null });
@@ -3706,7 +3751,7 @@ export class Runtime {
       )));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
-      if (settling) __substrateKeepPending(module, settling, () => { delete this.moduleCache[filename]; });
+      if (settling) __substrateKeepPending(module, settling, () => { if (this.moduleCache[filename] === module) delete this.moduleCache[filename]; });
       else module.loaded = true;
     } catch (error) {
       delete this.moduleCache[filename];

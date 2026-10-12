@@ -52,6 +52,53 @@ phase costs and boot/walk behavior. No tests/apps/probes/new timing runs here.
 No app-time gain is claimed. K5c's compile/evaluate ceiling remains a separate
 follow-up under C4; actual direct eval stays, with no imported/cached guest code.
 
+## S2 R5: request instrumentation at its producers
+
+Status: requested producer unit emitted and pushed; independent delivery/cost reading pending
+
+Independent-review correction implemented (Articles5/6/8/9): preserve an old
+substrate host sink's default reading when neither selection symbol exists;
+propagate the explicit request through the authenticated cross-origin iframe
+hop. Failure warnings/errors remain reports when readings are off. Select
+the page's first-page snapshot and require-path counters at their producers.
+Early dedicated-worker record delivery remains an independent live reading.
+
+Articles 5/6/8/9; ADR-0124. Deferring serialization leaves unconditional
+per-module/per-filesystem timestamps, diagnostic maps and quiet timers in boot.
+The retained inventory names265 matching sites in60 source files at substrate
+9c50cad5 and engine d82b143. The high-frequency classes are module phase/read
+clocks, resolver probes/package-config counters, kernel exchange/path/read
+costs, and socket evidence. Boot receipt payload helpers can themselves issue
+getcwd/stat/read calls before their queued output is captured.
+
+The host requests a realm's diagnostic readings before its program starts.
+The existing trace attachment carries that request independently of execution
+ownership. Producers return before diagnostic timestamps, per-operation
+allocations/counters and timers on an unrequested path. Preserve all functional module caches, filesystem
+search proofs, admission/liveness deadlines, transport accounting, ordinary
+program output and capture/retirement ownership. The dry-run explicitly asks
+for the existing complete reading so the independent mini laps retain their
+fields; ordinary product openings do not. The driver supplies the request to
+its paused targets before resume, and child trace attachments inherit it.
+Older trace clocks must retain their documented reading rather than silently
+losing it. No vendor Node bytes, graph semantics, credential/policy or pinned
+package change. Producer inventory is source evidence, not a measurement.
+
+Completion: source gating throughout the named producer classes, engine and
+production package emitters, ordinary pushes and an independent reading of
+both selected record delivery and unrequested cost. Raw blocking/terminal
+checkpoint transfers and a global retention bound remain distinct open parts
+of R5; a64-record transport batch is not a bound on retained evidence.
+## S1 CJS module.load delegation (2026-10-12)
+
+Status: production bundle/declarations compiled and bounded independent source review cleared at freeze3. Unchanged image qualification pending.
+
+Articles5/8/9; engine invariants: the retained Wekan image60f4ee53 on6990d634/d82b1431 throws in npm-require.js:57 with an absent pathIsAbsolute function. Original Meteor3.6-rc.0 runtime.js:35-43 wraps Module.prototype.load to call the unchanged Reify0.25.4 runSetters after loading. The engine inserts the module into its cache but calls the extension handler directly, bypassing that wrapper. mini-files registers getters before initializing its const path exports; Reify's completed-load setter publishes them. These source paths establish a matching mechanism; the original run did not capture its resolved mini-files input or export identity. Node24.21 CJS loader.js:1348 calls module.load, which selects the registered extension at1542. Restore that delegation for every uncached file, keep cache-before-evaluation and actual module.exports identity, and remove failed loads from the cache/parent children. Pending loaded-state decisions use engine-owned module bookkeeping, without inspecting arbitrary guest exports. A late rejected body retires only that module's cache generation and original admission parent edge, independently of nested hooks replacing shared compile callbacks. Keep the existing longest registered extension selection. Neither package-config absence caching nor image preparation needs changing for this source-proven bypass.
+
+A newer pre-fix take on d490248d reports a committed-exec reactor-descriptor retirement timeout and no application stderr/load-clock lines. It supplies no positive Meteor call boundary and no evidence of intermittent Reify behavior; the kernel lane owns that earlier stop ([retained reading](evidence/module-load/d490248d-reading.json)). The module.load correction receives no runtime credit from it.
+
+Disproof: a retained resolved-path/body witness shows a different mini-files input or a called completed-load wrapper with its initialized exports still absent. Completion: production bundle/declaration emission and an independent frozen source review; the sweep's unchanged real image supplies behavior, never a synthetic app/module probe.
+
 ## S2 R11: Keep missing package configurations for the process lifetime
 
 Follow-up intent (Articles5/6/8/9): the independent read cleared befbc6c,
