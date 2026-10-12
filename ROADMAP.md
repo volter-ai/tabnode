@@ -1,3 +1,9 @@
+## S2 bounded native write evidence
+
+Status: instrumentation intended; no delay cause claimed
+
+Articles 5/6/8/9: retained Dub head-to-answer4.8s is unclassified. Full launch sequences show Rallly/Twenty/Cal/Dub use runNodeOnItsTree→the store-owner Node process bridge, while LibreChat's server is a further Node child through the descendant bridge. Both already supply native streams; private entry filenames are not a route discriminator. The existing holder loopback client means the earlier client relocation account was incorrect, and65fc5ef gathering is compiled but has no measured attribution. Add nativeStreams/nodeProcessMode to the existing host-init mark, then bounded accepted-TCP write-vector and chunk submission/owner-receipt/owner-completion/client-completion records. Correlate scope-local listener/handle/vector/chunk/request, with shared timestamps, byte counts and bounded iovec lengths; no bytes, ports, caller authority or behavior changes. First3 vectors per listener and first3 chunks per vector are sampled; completion summaries retain full counts. The next independent Dub capture must identify whether its307 is split and when the bytes actually leave before naming a cause. Remove the unused API/adapter as a later ordinary commit. The policy-confined stream omission is a known gap, with no named reached image; do not build it here. Production emitting compilation only, no tests/apps/timings.
+
 ## S2 first-answer socket delivery
 
 Status: implementation intended; independent image reading pending

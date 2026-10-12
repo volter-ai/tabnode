@@ -32,6 +32,8 @@ export type NativeStreamOperation =
   | { operation: 'readStart' | 'readStop' | 'ref' | 'unref' | 'getsockname' | 'getpeername'; id: number }
   | { operation: 'shutdown' | 'close' | 'reset'; id: number; request: number };
 export interface NativeStreamReply { status: number; handle?: NativeStreamDescriptor; handleType?: 'TCP' | 'PIPE'; address?: Partial<SockName> }
+/** Bounded evidence only; no stream authority or payload bytes. */
+export interface NativeStreamWriteTrace { listener: number; vector: number; chunk: number }
 export interface NativeStreamTransport {
   readonly limits: Readonly<NativeStreamLimits>;
   call(operation: NativeStreamOperation): NativeStreamReply;
@@ -42,7 +44,7 @@ export interface NativeStreamTransport {
    * read, a shutdown as its completion. Optional; without it each is a call.
    */
   post?(operation: { operation: 'readStart'; id: number } | { operation: 'shutdown'; id: number; request: number }): void;
-  write(id: number, bytes: Uint8Array, handle?: number): Promise<number>;
+  write(id: number, bytes: Uint8Array, handle?: number, trace?: NativeStreamWriteTrace): Promise<number>;
   onEvent(listener: (event: NativeStreamEvent) => void): () => void;
 }
 

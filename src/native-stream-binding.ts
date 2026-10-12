@@ -63,10 +63,10 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
       }
     },
     ...(next.post ? { post(operation: Parameters<NonNullable<NativeStreamTransport['post']>>[0]): void { tally(`post:${operation.operation}`, 0); next.post!(operation); } } : {}),
-    write(id, bytes, handle) {
+    write(id, bytes, handle, trace) {
       const from = performance.now();
       const size = bytes.byteLength;
-      const written = next.write(id, bytes, handle);
+      const written = next.write(id, bytes, handle, trace);
       const done = (): void => tally('write', performance.now() - from, size);
       written.then(done, done);
       return written;
@@ -187,6 +187,7 @@ interface PendingWrite {
   bytes: number;
   sent?: number;
   ended: boolean;
+  trace?: { listener: number; vector: number; at: number; chunks: number };
   release(): void;
 }
 interface LocalEndpoint { handles: Set<Stream>; peer?: LocalEndpoint }
@@ -217,6 +218,7 @@ function* writeChunks(parts: Uint8Array[], limit: number): Generator<Uint8Array>
 }
 
 export class NativeStreamDriver {
+  private acceptedWrites?: { listener: number; count: number };
   private readingCredit = false;
   private buffered = false;
   private readEnded = false;
@@ -375,6 +377,13 @@ export class NativeStreamDriver {
       retained = result.handle.id;
     }
     const write: PendingWrite = { request, parts, bytes, sent: retained, ended: false, release: holdRequest(this.handle) };
+    const sample = this.acceptedWrites;
+    if (sample && sample.count < 3) {
+      write.trace = { listener: sample.listener, vector: ++sample.count, at: performance.timeOrigin + performance.now(), chunks: 0 };
+      traceOutput('[socket-write]', { event: 'vector-submitted', at: write.trace.at, realmEpoch: performance.timeOrigin,
+        listener: sample.listener, id: this.descriptor.id, vector: write.trace.vector, bytes, parts: parts.length,
+        partBytes: parts.slice(0, 8).map(part => part.byteLength), omittedParts: Math.max(0, parts.length - 8), chunkLimit: this.channel.limits.maxReadChunkBytes });
+    }
     // Node retains the caller's buffers until completion, even for a write
     // larger than the transport budget. The channel bounds copied chunks and
     // waits for capacity; rejecting this whole write breaks normal streaming.
@@ -410,7 +419,10 @@ export class NativeStreamDriver {
       // larger writes still retain their buffers and wait for owner credit.
       for (const chunk of writeChunks(write.parts, this.channel.limits.maxReadChunkBytes)) {
         if (this.closing || stopped) { status = UV_ECANCELED; break; }
-        status = await this.channel.write(this.descriptor.id, chunk, write.sent);
+        const trace = write.trace;
+        const ordinal = trace ? ++trace.chunks : 0;
+        status = await this.channel.write(this.descriptor.id, chunk, write.sent,
+          trace && ordinal <= 3 ? { listener: trace.listener, vector: trace.vector, chunk: ordinal } : undefined);
         if (write.sent !== undefined) { closeDescriptor(write.sent); write.sent = undefined; }
         if (status !== 0) break;
         this.handle.bytesWritten += chunk.byteLength;
@@ -422,6 +434,10 @@ export class NativeStreamDriver {
   private finishWrite(write: PendingWrite, status: number): void {
     if (write.ended) return;
     write.ended = true;
+    if (write.trace) traceOutput('[socket-write]', { event: 'vector-completed', at: performance.timeOrigin + performance.now(),
+      realmEpoch: performance.timeOrigin, listener: write.trace.listener, id: this.descriptor.id, vector: write.trace.vector,
+      bytes: write.bytes, chunks: write.trace.chunks, sampledChunks: Math.min(3, write.trace.chunks), status,
+      elapsedMs: performance.timeOrigin + performance.now() - write.trace.at });
     const index = this.writes.indexOf(write);
     if (index >= 0) this.writes.splice(index, 1);
     this.handle.writeQueueSize -= write.bytes;
@@ -496,6 +512,10 @@ export class NativeStreamDriver {
     } else if (event.type === 'connection') {
       if (this.closing || !this.handle.onconnection) { if (event.handle) closeDescriptor(event.handle.id); return; }
       const accepted = event.handle ? adopt(event.handle, this.handle) : undefined;
+      if (accepted && event.handle?.kind === 'tcp') {
+        this.acceptedWrites ??= { listener: this.descriptor.id, count: 0 };
+        drivers.get(accepted)!.acceptedWrites = this.acceptedWrites;
+      }
       withGuestCallback(() => (this.handle.onconnection as (status: number, handle?: Stream) => void)(event.status, accepted));
     } else {
       const complete = this.completions.get(event.request);
