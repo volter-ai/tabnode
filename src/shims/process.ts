@@ -9,6 +9,8 @@ import { EventEmitter } from '../node-lib/events-module';
 import type { EventListener } from '../node-lib/events-module';
 import { Readable } from '../node-lib/stream-module';
 import { loadNodeLibFor } from '../node-lib/load';
+import { kRunFilesystem, withFilesystem } from '../node-lib/binding/fs';
+import { createNodeError, type VirtualFS } from '../virtual-fs';
 import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
 import { nodeLibBinding } from '../node-lib/binding/index';
@@ -179,6 +181,7 @@ type ProcessReadableStream = ProcessStdin;
 
 export interface Process {
   env: ProcessEnv;
+  loadEnvFile: (path?: string | Uint8Array | URL) => void;
   title: string;
   cwd: () => string;
   chdir: (directory: string) => void;
@@ -639,6 +642,48 @@ export function createProcess(options?: {
   const own = options?.pid === undefined ? ownProcessIdentity() : undefined;
   const proc: Process = {
     env,
+    // Node's native process method reads synchronously and uses the same
+    // parser as util.parseEnv. Capture the tree/cwd even when this
+    // method is called without a receiver or while another run is current.
+    // Loading NODE_OPTIONS adds an environment value; it does not reparse
+    // interpreter options after the process has already started.
+    loadEnvFile(path: unknown = undefined): void {
+      const { getValidatedPath } = loadNodeLibFor(proc, 'internal/fs/utils') as {
+        getValidatedPath(path: unknown): string | Uint8Array;
+      };
+      const filename = getValidatedPath(path ?? '.env');
+      const written = typeof filename === 'string' ? filename : new TextDecoder().decode(new Uint8Array(filename));
+      if (written === '') throw createNodeError('ENOENT', 'open', written);
+      const absolute = written.startsWith('/') ? written : `${proc.cwd()}/${written}`;
+      const tree = (proc as unknown as Record<symbol, unknown>)[kRunFilesystem] as VirtualFS | undefined;
+      if (tree === undefined) {
+        throw Object.assign(new Error('fs: this process has no filesystem; the engine gives a run one when it starts'), { code: 'ENOSYS' });
+      }
+      // Use native bindings: replacing fs.readFileSync or util.parseEnv in
+      // a public module does not replace Node's native process method.
+      const fs = nodeLibBinding('fs')!() as {
+        open(path: string, flags: number, mode: number): number;
+        readFileUtf8(fd: number, flags: number): string;
+        close(fd: number): void;
+      };
+      const util = nodeLibBinding('util')!() as { parseEnv(content: string): Record<string, string> };
+      let fd: number;
+      try { fd = withFilesystem(tree, () => fs.open(absolute, 0, 0o666)); }
+      catch {
+        // Node's LoadEnvFile maps a failed open to ENOENT and reports the
+        // path as requested, including `.env` when no argument was given.
+        throw createNodeError('ENOENT', 'open', written);
+      }
+      let content: string;
+      try { content = fs.readFileUtf8(fd, 0); }
+      catch {
+        throw Object.assign(new TypeError(`Contents of '${written}' should be a valid string.`), { code: 'ERR_INVALID_ARG_TYPE' });
+      } finally { fs.close(fd); }
+      const parsed = util.parseEnv(content);
+      for (const [key, value] of Object.entries(parsed)) {
+        if (!Object.prototype.hasOwnProperty.call(proc.env, key)) proc.env[key] = value;
+      }
+    },
     // Node exposes a writable title even before application code sets it.
     // Packages use its presence when distinguishing Node from a browser.
     title: 'node',

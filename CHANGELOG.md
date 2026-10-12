@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- process-load-env-file (substrate Articles 6/8/9): expose Node's synchronous `process.loadEnvFile`, reading the default `.env` or a validated string/byte/file-URL path through the process's native filesystem scope. Reuse the existing `util.parseEnv` binding, retain existing environment keys and interpreter options, and report Node's open/read errors while closing the descriptor. Bundle/declaration compilation and independent image qualification are recorded separately in the roadmap.
+
 - R4 (substrate Articles 3/5/6/8/9): extend socket-connect evidence through the actual TCP request callback, socket connect/timeout events and internal timeout firing. Retain native descriptor/request and guest socket identity, with connecting/destroyed state, connect listener count and timer cancellation state. Vendored Node files, callback ownership, connection and timer behavior stay unchanged; the historical Twenty timeout remains unresolved until its application socket trace is held.
 
 - C6-module-allocation (substrate Articles 1/6/8): the load-clock's exact UTF-8 body counters use the existing Node buffer binding, avoiding the legacy polyfill's temporary array of every encoded byte. The same trace adds `linkSplit.utf8CountMs` / `byteCounts` and `compileSplit.sourceCaptureMs` / `nativeEvalMs` / `sourceCaptures` / `evals`; compile splits cover the module compile phase only. Existing fields, source retention and guest execution stay unchanged. Bundle and declarations compile; app-time gain and the largest remaining phase await the mini.

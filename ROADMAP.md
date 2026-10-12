@@ -9,6 +9,27 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## process-load-env-file: Load a process environment file
+
+Status: built; independent runtime qualification pending
+
+Substrate Articles 6/8/9 (ADR-0007/0021): Reactive Resume's retained dc6d37c0 start stops at
+`process.loadEnvFile is not a function` in its unchanged server entry. `createProcess` does not
+provide the method, although the native util binding already parses environment files. Restore
+Node's synchronous default `.env` read, validated string/byte/file-URL paths, existing-key
+precedence and missing-file error through the calling process's native filesystem and parser.
+Use its existing builtin scope, including child and worker processes; do not change the app,
+vendor library files or interpreter options. A present method followed by a different stop
+would disprove this missing-method diagnosis for that later start.
+
+Completion:
+- Library bundle and declarations compile; normal hooks and push retain the source correction.
+- The independent image lane qualifies the unchanged start. No app, test or probe runs here.
+
+Builder evidence: the final `npm run build:lib` passed (Vite bundle and TypeScript declarations).
+The source implementation uses the calling process's tree/cwd and native fs/util bindings.
+Existing parser parity and unchanged-image behavior remain unqualified; no tests or probes ran.
+
 ## R4: Identify socket completion and timeout cancellation
 
 Status: instrument built; historical Redis timeout cause unresolved
