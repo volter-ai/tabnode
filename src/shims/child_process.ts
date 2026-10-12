@@ -138,11 +138,6 @@ function shellOf(tree: VirtualFS | null | undefined): { bash: Bash; adapter: Vir
   return bashInstance && vfsAdapter ? { bash: bashInstance, adapter: vfsAdapter } : null;
 }
 
-// Track active forked child processes so the node command can detect when children exit.
-// When the last child exits, the node command uses a shorter idle timeout.
-let _activeForkedChildren = 0;
-let _onForkedChildExit: (() => void) | null = null;
-
 // Patch Object.defineProperty globally to force configurable: true on globalThis properties.
 // In real Node.js, each process has its own globalThis. In our browser environment,
 // all forks share globalThis, so libraries like vitest that define non-configurable
@@ -1131,22 +1126,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // No output yet — script likely has async work (e.g. vitest test runner).
   // Wait for process.exit() or until output stabilizes.
 
-  // Listen for forked child exits to shorten the idle timeout.
-  // Many CLI tools (vitest, jest, etc.) fork workers and exit shortly after
-  // all children complete. We use a shorter timeout once children are done.
-  let childrenExited = false;
-  const prevChildExitHandler = _onForkedChildExit;
-  _onForkedChildExit = () => {
-    if (_activeForkedChildren <= 0) childrenExited = true;
-    prevChildExitHandler?.();
-  };
-
   try {
     // Poll until process.exit is called, output stabilizes, or we time out
     const MAX_TOTAL_MS = 60000;
-    const IDLE_TIMEOUT_MS = 500;
     const SILENT_IDLE_TIMEOUT_MS = 2000;
-    const POST_CHILD_EXIT_IDLE_MS = 100; // short timeout after children finish
     const CHECK_MS = 50;
     const startTime = Date.now();
     let lastOutputLen = printed;
@@ -1158,11 +1141,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // When an abort signal is present (e.g. watch mode), don't apply idle timeout —
     // only exit when aborted or process.exit is called.
     const isLongRunning = !!streams?.held;
-    // WHAT HELD THIS PROGRAM AFTER ITS ENTRY RETURNED, AND WHY THE WAIT ENDED. A program that has done its work
-    // ends only when this loop lets it: when nothing of its own is pending and it has written nothing for
-    // IDLE_TIMEOUT_MS (2 s where it wrote nothing at all, 100 ms once its children have exited), looked at every
-    // CHECK_MS. A World's `up` said "returning: the World is up" and its process ended 0.55 s later for one
-    // application and 1.9 s later for another, the page waiting on it both times, and no line said what held it.
+    // D2: Node ends a drained loop when nothing referenced remains. A printed program ends at its first
+    // empty look; a silent start retains its existing 2 s rule for work not yet counted by the engine.
     // Each look's time is put to every thing true at that look, and one line says them when the wait ends.
     const heldBy: Record<string, number> = {};
     // The same, counted only since the program last wrote: begun again at each write, so at the end it is what held
@@ -1190,6 +1170,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
 
       if (raceResult === 'exit' || exitCalled) break;
       if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
+      let emptyLook = false;
       {
         const timers = pendingGuestTimers(proc), ports = runToken !== null ? __ownedServerPorts(runToken).length : 0, handles = runToken !== null ? __ownedHandleCount(runToken) : 0, held = heldWork().count;
         const input = streams?.stdinOpen === true && inputConsumed();
@@ -1203,7 +1184,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         if (!input && timers === 0 && ports === 0 && handles === 0 && held === 0) note('nothing: the idle rule alone');
         const by = [...(printed > lastOutputLen ? ['output'] : []), ...(input ? ['input'] : []), ...(timers > 0 ? ['timer'] : []),
           ...(ports > 0 ? ['port'] : []), ...(handles > 0 ? ['handle'] : []), ...(held > 0 ? ['held work'] : [])];
-        if (by.length === 0) { emptyLooks += 1; emptyAt ??= Date.now(); }
+        emptyLook = by.length === 0;
+        if (emptyLook) { emptyLooks += 1; emptyAt ??= Date.now(); }
         else if (emptyAt !== undefined) {
           if (wokeAfterEmpty.length < 8) wokeAfterEmpty.push({ afterEmptyMs: Date.now() - emptyAt, by });
           emptyAt = undefined;
@@ -1220,10 +1202,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         idleMs += CHECK_MS;
       }
 
-      // Use shorter idle timeout once all forked children have exited
-      // Skip idle timeout for long-running commands (watch mode)
+      // A caller-held run belongs to its caller. The observed empty look includes held children/builds.
       if (!isLongRunning) {
-        const effectiveIdle = childrenExited ? POST_CHILD_EXIT_IDLE_MS : IDLE_TIMEOUT_MS;
         if (heldWork().count > 0) idleMs = 0;
         // A program ends when its loop has nothing left, in Node whether or
         // not it printed. The break waited for output, so a program that
@@ -1233,7 +1213,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         // longer wait is for a start that is quiet while it fetches, which
         // the engine cannot yet see as work.
         const silentIdle = SILENT_IDLE_TIMEOUT_MS;
-        if (lastOutputLen > 0 && !stillWorking() && idleMs >= effectiveIdle) { endedBy = `nothing of its own was pending and it had written nothing for ${effectiveIdle} ms${childrenExited ? ' (its children had exited)' : ''}`; break; }
+        if (lastOutputLen > 0 && emptyLook) { endedBy = 'the first empty look after output'; break; }
         if (lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) { endedBy = `nothing of its own was pending and it wrote nothing at all, for ${silentIdle} ms`; break; }
       }
 
@@ -1261,8 +1241,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       try { proc.emit('exit', exitCode); } catch (error) { __reportUncaughtException(proc, error); } finally { emittingExit = false; }
       if (typeof proc.exitCode === 'number') exitCode = proc.exitCode;
     }
-    // Said only where the wait was long enough to matter to whoever waits on this program.
-    if (Date.now() - startTime >= 200) {
+    // Keep D1 evidence when the new first-empty decision is shorter than the old trace threshold.
+    if (emptyLooks > 0 || Date.now() - startTime >= 200) {
       console.log('[boot-trace]', JSON.stringify({ event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: heldBy, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
         entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null,
         emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt }));
@@ -1272,7 +1252,6 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     return { stdout, stderr, exitCode: runEnd = exitCalled ? exitCode : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
   } finally {
     if (streams) streams.stdin = null;
-    _onForkedChildExit = prevChildExitHandler;
   }
   } finally {
     detachRejections();
@@ -2646,7 +2625,6 @@ function startChildRun(request: RunRequest): StartedRun {
     finished = true;
     wakeInput?.();
     wakeInput = undefined;
-    _activeForkedChildren -= 1;
     releaseRunStreams(token);
     releaseRunFds(token);
     // The child's end is the kernel's: a child this realm ran itself (or that never started) exits here; one the host
@@ -2656,7 +2634,6 @@ function startChildRun(request: RunRequest): StartedRun {
     // A run that has ended is no longer a process: its number answers ESRCH.
     forgetRunPid(token);
     __substrateChildrenOf(request.owner).delete(pid);
-    _onForkedChildExit?.();
     request.exit(ended.code, ended.signal);
   };
 
@@ -2747,7 +2724,6 @@ function startChildRun(request: RunRequest): StartedRun {
     })();
   };
 
-  _activeForkedChildren += 1;
   if (request.stdinIsPipe && !admittedNode) (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, begin, 0);
   else begin();
 
