@@ -1,3 +1,36 @@
+## S2 R11: Capture a server's module clock at its first HTTP boundary
+
+Status: source library bundle/declarations compiled; independent first-request delivery and phase reading pending
+
+Substrate Articles 5/6/7/8/9: LibreChat's retained ff89a4c4/3fd5031
+server answers after 5.54–6.01 s from its worker initialization, loading
+6173 bodies. Its native phase arm loads 6171 bodies and answers after
+2253 ms since first require, with its ESM coverage gap retained. The tab
+has no load-clock record, so no remaining phase can be attributed yet.
+Source readings live in browser-substrate ffa1726e,
+docs/readings/s2-r11-librechat-2026-10-12.json.
+
+Intent before code: use the existing process-owned, bounded K5 observer
+to capture the same private module clock at the first request and first
+successful writeHead. Capture scalar request identity and phase fields;
+defer body byte totals through the existing R5 evidence owner. Boundary
+samples do not consume/suppress quiet or exit records. Native-stream
+clock capture remains as it is. Delegate to Node's unchanged request
+and writeHead implementations, without a second observer or guest timer.
+No project/package recognition or changes to HTTP or loader scheduling.
+
+Builder evidence: own locked npm ci and npm run build:lib both exit0.
+The actual Vite library bundle and TypeScript emitted declarations are
+retained with every emitted worker/helper product in the owned
+s2-r11-librechat-artifact/engine-production-receipt.json, SHA-256
+2c2de0a33b83dcb7f71fe7e117527b2bf0cd440bb6c770f032b4fc72f53ac18d.
+No runtime delivery, speed gain, tests or app/probe execution is claimed.
+
+Completion: actual library bundle and declarations emit; ordinary hooks,
+commit and push; the independent cycle joins first-request/head body and
+source/phase fields to native. Runtime delay correction remains pending
+that attribution. No tests, probes, apps or new measurement runs here.
+
 ## S2 initialization boundary evidence
 
 Status: bounded instrumentation coded; initialization attribution pending

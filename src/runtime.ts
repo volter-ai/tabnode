@@ -981,12 +981,14 @@ function __substrateSaidReplacement(replacement: unknown): { source: string; sta
   try { source = String(replacement).replace(/\s+/gu, ' ').slice(0, 160); } catch { /* a function that cannot be printed */ }
   return { source, stack: (new Error().stack ?? '').split('\n').slice(2, 10).map(line => line.trim().slice(0, 200)) };
 }
-function __substrateSayLoadClock(process: object, at: string, nativeStream?: NativeStreamClockSample): void {
+type HttpLoadClockSample = { n: number; what: string; url: string | null } & Record<string, unknown>;
+function __substrateSayLoadClock(process: object, at: string, nativeStream?: NativeStreamClockSample, http?: HttpLoadClockSample): void {
   const clock = __substrateLoadClocks.get(process);
-  if (!clock || (!nativeStream && clock.bodies === clock.said)) return;
+  const boundary = nativeStream !== undefined || http !== undefined;
+  if (!clock || (!boundary && clock.bodies === clock.said)) return;
   // Boundary captures can have the same body prefix with different outside
   // time. They neither consume nor suppress the existing quiet/exit line.
-  if (!nativeStream) clock.said = clock.bodies;
+  if (!boundary) clock.said = clock.bodies;
   const round = (values: Record<LoadPhase, number>): unknown => traceRoundFields({ ...values });
   // The phase open now is counted to this instant, in a copy: the clock itself goes on.
   const wall = { ...clock.wall }, kernel = { ...clock.kernel }, now = __substrateLoadNow();
@@ -1003,6 +1005,7 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
   const limit = clock.bodies;
   const payload = { event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
     ...(nativeStream ? { epoch: nativeStream.at, nativeStream: { ...nativeStream } } : {}),
+    ...(http ? { http: { ...http } } : {}),
     script: entry === undefined ? null : pathShim.posix.basename(entry),
     preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
     linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
@@ -1048,31 +1051,52 @@ function __substrateObserveHttp(process: object, module: unknown): void {
         const req = args[0] as { url?: string } | undefined, res = args[1] as K5Response | undefined;
         if (req && res && typeof res.writeHead === 'function' && !/^\/(__volter|_twin)\//u.test(req.url ?? '')) {
           const n = ++requests.said;
-          const say = (what: string, extra: Record<string, unknown> = {}): void => {
+          const say = (what: string, extra: Record<string, unknown> = {}): string | null | undefined => {
             try {
               const url = req.url, owner = __tokenForProcess(process as Process);
               const pid = runPid(owner)?.pid ?? (process as { pid?: unknown }).pid;
-              traceOutput('[k5] server', { n, what, url: typeof url === 'string' ? url : null,
+              const capturedUrl = typeof url === 'string' ? url : null;
+              traceOutput('[k5] server', { n, what, url: capturedUrl,
                 at: Math.round((performance.timeOrigin + performance.now()) * 10) / 10,
                 bodies: __substrateLoadClocks.get(process)?.bodies ?? 0,
                 pid: typeof pid === 'number' ? pid : null, ...extra });
-            } catch { /* Evidence cannot change the request or response. */ }
+              return capturedUrl;
+            } catch { return undefined; /* Evidence cannot change the request or response. */ }
           };
-          say('request-event');
+          const requestUrl = say('request-event');
+          // R11: a persistent server may never produce a quiet/exit clock
+          // before its first page. Reuse this existing process-owned slot;
+          // capture phases now and defer source-byte work through R5.
+          if (n === 1 && requestUrl !== undefined) {
+            try { __substrateSayLoadClock(process, 'first-request', undefined, { n, what: 'request-event', url: requestUrl }); }
+            catch { /* Evidence cannot change Node's request delivery. */ }
+          }
           const writeHead = res.writeHead;
           let headSaid = false;
           const observedHead = function writeHeadObserved(this: unknown, status: unknown, ...rest: unknown[]): unknown {
+            let headClock: HttpLoadClockSample | undefined;
             if (!headSaid) {
               headSaid = true;
               // Caller objects can carry functions or ports. Capture scalar
               // evidence only; Node alone coerces the actual status argument.
               const scalar = status == null || ['number', 'string', 'boolean'].includes(typeof status);
-              say('write-head', scalar ? { status } : { status: null, statusType: typeof status });
+              const extra = scalar ? { status } : { status: null, statusType: typeof status };
+              const url = say('write-head', extra);
+              if (n === 1 && url !== undefined) headClock = { n, what: 'write-head', url,
+                statusArgument: extra.status, ...(!scalar ? { statusType: typeof status } : {}) };
             }
             // A response can be frozen or wrapped again by its caller. The
             // observer must still delegate and preserve that replacement.
             try { if (res.writeHead === observedHead) res.writeHead = writeHead; } catch { /* Read-only after capture. */ }
-            return Reflect.apply(writeHead, this, [status, ...rest]);
+            const result = Reflect.apply(writeHead, this, [status, ...rest]);
+            // Only a successful Node call has this boundary. Reuse its
+            // captured scalar URL/status; do not read caller properties or
+            // perform their coercion a second time.
+            if (headClock) {
+              try { __substrateSayLoadClock(process, 'first-write-head', undefined, headClock); }
+              catch { /* Evidence cannot change the response. */ }
+            }
+            return result;
           };
           if (requests.said === 3) {
             for (const detach of requests.detach) { try { detach(); } catch { /* A caller can freeze its prototype. */ } }
