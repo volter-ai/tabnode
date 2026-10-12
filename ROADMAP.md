@@ -1,3 +1,9 @@
+## S2 initialization boundary evidence
+
+Status: bounded instrumentation coded; initialization attribution pending
+
+Articles 5/6/8/9: retained Dub request-event to head is499–516ms, but native first-require to first-answer416–417ms includes startup. Native listen to head230ms and the tab's first quiet clock includes the later1525-body preload, so those cumulative captures cannot identify the excess initialization phase. Extend the existing deferred load-clock evidence at the first positive read of each of the first3 accepted TCP sockets per listener and at the already sampled first3 vector submissions/completions. Resolve the process through the handle's actual run owner, retain every existing field, and add stream correlation and a shared performance timestamp. Positive native read is a transport boundary, not an HTTP request event. Preserve quiet/exit de-duplication, defer byte materialization through R5, and add no handles, timers, guest hooks or scheduling changes. No initialization cause or saving claimed before an independent matched capture; production emission only.
+
 ## S2 unused response client removal
 
 Status: source cleanup intended; independent response reading pending

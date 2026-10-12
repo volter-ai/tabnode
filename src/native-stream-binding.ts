@@ -3,6 +3,7 @@ import { traceOutput } from './trace-output';
 /** Worker-side libuv delegation. The capability channel never becomes a handle property. */
 import { withGuestCallback, queueBindingTask } from './guest-loop';
 import type { NativeStreamDescriptor, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport } from './native-stream-owner';
+import type { ProcessToken } from './process-tokens';
 import type { TCP } from './node-lib/binding/tcp_wrap';
 import type { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, type WriteWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './node-lib/binding/stream_wrap';
@@ -18,6 +19,29 @@ let allocated = false;
 let stopped = false;
 let incoming: NativeStreamDescriptor | undefined;
 let nextRequest = 1;
+
+/** Scalar evidence only: the observer cannot grant a stream or affect its completion. */
+export interface NativeStreamClockSample {
+  when: 'native-server-read' | 'native-vector-submitted' | 'native-vector-completed';
+  at: number;
+  listener: number;
+  id: number;
+  bytes: number;
+  read?: number;
+  vector?: number;
+  chunks?: number;
+  status?: number;
+  elapsedMs?: number;
+}
+let streamClockObserver: ((owner: ProcessToken | null, sample: NativeStreamClockSample) => void) | undefined;
+/** Engine-internal module-clock seam; no guest callback or new loop work. */
+export function observeNativeStreamClocks(observer: NonNullable<typeof streamClockObserver>): void {
+  streamClockObserver = observer;
+}
+function sayStreamClock(handle: Stream, sample: NativeStreamClockSample): void {
+  try { streamClockObserver?.(ownerOf(handle), sample); }
+  catch { /* Evidence failure must not change a native read or write. */ }
+}
 
 // Register after each concrete binding class is defined. Importing TCP/Pipe
 // here at runtime would cycle through StreamWrap before their base class exists.
@@ -218,7 +242,8 @@ function* writeChunks(parts: Uint8Array[], limit: number): Generator<Uint8Array>
 }
 
 export class NativeStreamDriver {
-  private acceptedWrites?: { listener: number; count: number };
+  private acceptedWrites?: { listener: number; count: number; reads: number };
+  private readClockSaid = false;
   private readingCredit = false;
   private buffered = false;
   private readEnded = false;
@@ -380,6 +405,8 @@ export class NativeStreamDriver {
     const sample = this.acceptedWrites;
     if (sample && sample.count < 3) {
       write.trace = { listener: sample.listener, vector: ++sample.count, at: performance.timeOrigin + performance.now(), chunks: 0 };
+      sayStreamClock(this.handle, { when: 'native-vector-submitted', at: write.trace.at,
+        listener: sample.listener, id: this.descriptor.id, vector: write.trace.vector, bytes });
       traceOutput('[socket-write]', { event: 'vector-submitted', at: write.trace.at, realmEpoch: performance.timeOrigin,
         listener: sample.listener, id: this.descriptor.id, vector: write.trace.vector, bytes, parts: parts.length,
         partBytes: parts.slice(0, 8).map(part => part.byteLength), omittedParts: Math.max(0, parts.length - 8), chunkLimit: this.channel.limits.maxReadChunkBytes });
@@ -413,9 +440,8 @@ export class NativeStreamDriver {
     if (!write || write.ended) return;
     let status = 0;
     try {
-      // libuv takes an iovec write as consecutive bytes. Waiting for a worker
-      // event between a small head, body and terminator held the last bytes
-      // behind unrelated promise work. Submit one bounded gather at a time;
+      // libuv takes an iovec write as consecutive bytes. Submit the buffers
+      // together within the transport's byte credit, one bounded gather at a time;
       // larger writes still retain their buffers and wait for owner credit.
       for (const chunk of writeChunks(write.parts, this.channel.limits.maxReadChunkBytes)) {
         if (this.closing || stopped) { status = UV_ECANCELED; break; }
@@ -434,10 +460,15 @@ export class NativeStreamDriver {
   private finishWrite(write: PendingWrite, status: number): void {
     if (write.ended) return;
     write.ended = true;
-    if (write.trace) traceOutput('[socket-write]', { event: 'vector-completed', at: performance.timeOrigin + performance.now(),
-      realmEpoch: performance.timeOrigin, listener: write.trace.listener, id: this.descriptor.id, vector: write.trace.vector,
-      bytes: write.bytes, chunks: write.trace.chunks, sampledChunks: Math.min(3, write.trace.chunks), status,
-      elapsedMs: performance.timeOrigin + performance.now() - write.trace.at });
+    if (write.trace) {
+      const at = performance.timeOrigin + performance.now();
+      const sample = { when: 'native-vector-completed' as const, at, listener: write.trace.listener,
+        id: this.descriptor.id, vector: write.trace.vector, bytes: write.bytes, chunks: write.trace.chunks,
+        status, elapsedMs: at - write.trace.at };
+      sayStreamClock(this.handle, sample);
+      traceOutput('[socket-write]', { ...sample, event: 'vector-completed', realmEpoch: performance.timeOrigin,
+        sampledChunks: Math.min(3, write.trace.chunks) });
+    }
     const index = this.writes.indexOf(write);
     if (index >= 0) this.writes.splice(index, 1);
     this.handle.writeQueueSize -= write.bytes;
@@ -507,13 +538,23 @@ export class NativeStreamDriver {
       this.readingCredit = false;
       if (this.closing) { if (event.handle) closeDescriptor(event.handle.id); return; }
       this.buffered = true;
-      if (event.status > 0 && event.bytes) this.handle.receive(event.bytes, event.handle ? adopt(event.handle, this.handle) : undefined);
+      if (event.status > 0 && event.bytes) {
+        const sample = this.acceptedWrites;
+        // Before delivering bytes to Node's parser. This is the socket's
+        // first positive read, not an HTTP request event or a message boundary.
+        if (!this.readClockSaid && sample && sample.reads < 3) {
+          this.readClockSaid = true;
+          sayStreamClock(this.handle, { when: 'native-server-read', at: performance.timeOrigin + performance.now(),
+            listener: sample.listener, id: this.descriptor.id, read: ++sample.reads, bytes: event.bytes.byteLength });
+        }
+        this.handle.receive(event.bytes, event.handle ? adopt(event.handle, this.handle) : undefined);
+      }
       else { this.readEnded = true; this.handle.receiveError(event.status); }
     } else if (event.type === 'connection') {
       if (this.closing || !this.handle.onconnection) { if (event.handle) closeDescriptor(event.handle.id); return; }
       const accepted = event.handle ? adopt(event.handle, this.handle) : undefined;
       if (accepted && event.handle?.kind === 'tcp') {
-        this.acceptedWrites ??= { listener: this.descriptor.id, count: 0 };
+        this.acceptedWrites ??= { listener: this.descriptor.id, count: 0, reads: 0 };
         drivers.get(accepted)!.acceptedWrites = this.acceptedWrites;
       }
       withGuestCallback(() => (this.handle.onconnection as (status: number, handle?: Stream) => void)(event.status, accepted));

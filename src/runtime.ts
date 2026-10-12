@@ -61,7 +61,8 @@ import {
 } from './node-lib/small-modules';
 import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
-import { sayNativeStreamCounts } from './native-stream-binding';
+import { observeNativeStreamClocks, sayNativeStreamCounts, type NativeStreamClockSample } from './native-stream-binding';
+import { __runFor } from './process-tokens';
 import { nodeLibBindingsAsked } from './node-lib/load';
 import type { ResolutionKept } from './node-resolution';
 import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
@@ -980,10 +981,12 @@ function __substrateSaidReplacement(replacement: unknown): { source: string; sta
   try { source = String(replacement).replace(/\s+/gu, ' ').slice(0, 160); } catch { /* a function that cannot be printed */ }
   return { source, stack: (new Error().stack ?? '').split('\n').slice(2, 10).map(line => line.trim().slice(0, 200)) };
 }
-function __substrateSayLoadClock(process: object, at: string): void {
+function __substrateSayLoadClock(process: object, at: string, nativeStream?: NativeStreamClockSample): void {
   const clock = __substrateLoadClocks.get(process);
-  if (!clock || clock.bodies === clock.said) return;
-  clock.said = clock.bodies;
+  if (!clock || (!nativeStream && clock.bodies === clock.said)) return;
+  // Boundary captures can have the same body prefix with different outside
+  // time. They neither consume nor suppress the existing quiet/exit line.
+  if (!nativeStream) clock.said = clock.bodies;
   const round = (values: Record<LoadPhase, number>): unknown => traceRoundFields({ ...values });
   // The phase open now is counted to this instant, in a copy: the clock itself goes on.
   const wall = { ...clock.wall }, kernel = { ...clock.kernel }, now = __substrateLoadNow();
@@ -999,6 +1002,7 @@ function __substrateSayLoadClock(process: object, at: string): void {
   const requires = paths ? { ...paths, engineLoad: { ...paths.engineLoad }, replaced: { ...paths.replaced } } : null;
   const limit = clock.bodies;
   const payload = { event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
+    ...(nativeStream ? { epoch: nativeStream.at, nativeStream: { ...nativeStream } } : {}),
     script: entry === undefined ? null : pathShim.posix.basename(entry),
     preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
     linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
@@ -1015,6 +1019,12 @@ function __substrateSayLoadClock(process: object, at: string): void {
       linkSplit: { ...payload.linkSplit, utf8DeferredMs: traceRound(utf8DeferredMs) } };
   });
 }
+observeNativeStreamClocks((owner, sample) => {
+  // A binding's handle retains its actual run owner across native awaits;
+  // the current guest globals and the last runtime created cannot name it.
+  const process = owner === null ? undefined : __runFor(owner)?.process;
+  if (process) __substrateSayLoadClock(process, sample.when, sample);
+});
 function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
   if (counts.timer !== undefined) { clearTimeout(counts.timer); counts.timer = undefined; }
   __substrateSayLoadClock(process, at);

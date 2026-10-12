@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- S2 initialization evidence (substrate Articles 5/6/8/9): capture the existing module clock at bounded native accepted-socket read and write-vector boundaries, attributed to the handle's actual process. Add shared timestamps and scalar stream correlation while preserving every existing field and quiet/exit emission. Byte totals remain deferred; no guest scheduling or application behavior changes. Initialization attribution awaits an independent matched capture.
+
 - Remove the unused S2 scoped HTTP-client API after tracing all five server launches to their already native-backed holder/client. Keep bounded writev gathering and write evidence. The earlier response-delay attribution is withdrawn; runtime interleaving remains unqualified (Articles 5/6/8/9).
 
 - S2 write evidence (substrate Articles 5/6/8/9): sample the first three accepted TCP write vectors per native listener and their first three transport chunks, recording vector sizes/iovec lengths, submission and completion. Diagnostic fields remain bounded and carry no bytes or capabilities; write ordering/credit is unchanged. No delay cause or runtime gain is claimed.
