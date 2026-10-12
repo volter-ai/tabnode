@@ -14,6 +14,7 @@
  * before either is used.
  */
 import { createDnsModule } from '../shims/dns';
+import { processHostsReaderOf } from '../process-hostname';
 import * as clusterShim from '../shims/cluster';
 import * as dgramShim from '../shims/dgram';
 import asyncHooksShim from '../shims/async_hooks';
@@ -36,6 +37,7 @@ import { AsyncResource } from './internals/runtime';
 // eslint-disable-next-line no-var, vars-on-top
 var __table: Record<string, () => unknown> | undefined;
 export function nodeLibPublic(name: string, require?: (name: string) => any, _process?: object): (() => unknown) | undefined {
+  if (_process && name === 'dns') return () => createDnsModule(processHostsReaderOf(_process));
   if (_process && name === 'timers') return () => createTimersModule(guestTimerFunctions(_process, globalThis as unknown as Record<string, unknown>));
   if (require && name === 'crypto') return () => cryptoShim.createCryptoModule(require);
   if (require && name === 'tls') return () => tlsShim.createTlsModule(require);

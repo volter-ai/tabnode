@@ -43,6 +43,19 @@ function literalFamily(hostname: string): 4 | 6 | 0 {
   return 0;
 }
 
+/** /etc/hosts aliases from this process's mounted file, in file order. */
+function hostsAddresses(content: string, hostname: string): Array<{ address: string; family: number }> | undefined {
+  const name = hostname.toLowerCase().replace(/\.$/, '');
+  const addresses: Array<{ address: string; family: number }> = [];
+  for (const line of content.split(/\r?\n/)) {
+    const [address, ...names] = line.split('#', 1)[0].trim().split(/\s+/);
+    const family = literalFamily(address ?? '');
+    if (family && names.some(alias => alias.toLowerCase().replace(/\.$/, '') === name)
+      && !addresses.some(row => row.address === address && row.family === family)) addresses.push({ address, family });
+  }
+  return addresses.length ? addresses : undefined;
+}
+
 /**
  * Node's getaddrinfo shape over the names this host can actually reach.
  */
@@ -65,6 +78,15 @@ export function lookup(
   optionsOrCallback: number | LookupOptions | LookupCallback,
   callback?: LookupCallback | LookupAllCallback
 ): void {
+  lookupWithHosts(undefined, hostname, optionsOrCallback, callback);
+}
+
+function lookupWithHosts(
+  readHosts: (() => string) | undefined,
+  hostname: string,
+  optionsOrCallback: number | LookupOptions | LookupCallback,
+  callback?: LookupCallback | LookupAllCallback,
+): void {
   const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
   const options = typeof optionsOrCallback === 'number' ? { family: optionsOrCallback } : typeof optionsOrCallback === 'object' && optionsOrCallback ? optionsOrCallback : {};
   if (typeof cb !== 'function') throw Object.assign(new TypeError('The callback argument must be a function'), { code: 'ERR_INVALID_ARG_TYPE' });
@@ -84,6 +106,22 @@ export function lookup(
       const address = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
       if (options.all) (cb as LookupAllCallback)(null, [{ address, family }]);
       else (cb as LookupCallback)(null, address, family);
+      return;
+    }
+    // hosts(5) belongs to the requesting process. Preserve the actual addresses and families,
+    // including aliases, rather than making every held name an IPv4/IPv6 wildcard.
+    let fileAddresses: Array<{ address: string; family: number }> | undefined;
+    try { fileAddresses = readHosts ? hostsAddresses(readHosts(), hostname) : undefined; }
+    catch (cause) { cb(cause instanceof Error ? cause : new Error(String(cause))); return; }
+    if (fileAddresses !== undefined) {
+      let addresses = fileAddresses.filter(row => !requested || row.family === requested);
+      if (options.order === 'ipv4first' || options.order === 'ipv6first') {
+        const first = options.order === 'ipv6first' ? 6 : 4;
+        addresses = [...addresses.filter(row => row.family === first), ...addresses.filter(row => row.family !== first)];
+      }
+      if (!addresses.length) { cb(notFound(hostname)); return; }
+      if (options.all) (cb as LookupAllCallback)(null, addresses);
+      else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
       return;
     }
     if (hostname.toLowerCase().replace(/\.$/, '') === 'localhost' || heldByHost(hostname)) {
@@ -242,9 +280,19 @@ const dnsCodes = {
   LOADIPHLPAPI: "ELOADIPHLPAPI", ADDRGETNETWORKPARAMS: "EADDRGETNETWORKPARAMS", CANCELLED: "ECANCELLED"
 };
 
-export function createDnsModule() {
-  const promiseModule = { ...promises, ...dnsCodes };
-  return { ...dnsModule, ...dnsCodes, promises: promiseModule };
+export function createDnsModule(readHosts?: () => string) {
+  const processLookup = ((hostname: string, optionsOrCallback: number | LookupOptions | LookupCallback, callback?: LookupCallback | LookupAllCallback) => {
+    lookupWithHosts(readHosts, hostname, optionsOrCallback, callback);
+  }) as typeof lookup;
+  const promiseModule = { ...promises, ...dnsCodes, lookup: (hostname: string, options?: number | LookupOptions) =>
+    new Promise((resolve, reject) => {
+      if (typeof options === 'object' && options?.all) {
+        processLookup(hostname, options, (err: Error | null, addresses?: Array<{ address: string; family: number }>) => err ? reject(err) : resolve(addresses ?? []));
+      } else {
+        processLookup(hostname, options ?? {}, (err, address, family) => err ? reject(err) : resolve({ address, family }));
+      }
+    }) };
+  return { ...dnsModule, ...dnsCodes, lookup: processLookup, promises: promiseModule };
 }
 
 export default dnsModule;

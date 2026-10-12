@@ -1,5 +1,7 @@
 # Changelog
 
+Container hostname review correction: Node lookup uses the caller's mounted /etc/hosts, Docker image Hostname is ignored, and container domain defaults to (none). Admission requires a trusted identity; missing UTS transport returns ENOSYS; standalone DNS aliases stay outside identified containers. Older-engine adapters are guarded and the0.9.0 pin stays. Changed production outputs and full engine declarations emit; independent re-read and cycle execution remain.
+
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
 ## Unreleased
