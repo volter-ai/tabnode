@@ -1,5 +1,6 @@
 import { traceRound, traceRoundFields } from './trace-values';
 import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested } from './trace-output';
+import { recordProcessHostname } from './process-hostname';
 import { processCredentialsOf } from './process-credentials';
 import type { ProcessCredentials } from './process-credentials';
 /**
@@ -3583,6 +3584,9 @@ export class Runtime {
     // so the binding reads the tree off the process whose code is executing --
     // the same door every vendored file gets its `process` through.
     (this.process as unknown as Record<symbol, unknown>)[kRunFilesystem] = vfs;
+    // Capture the host method before guest code executes, but read its mutable kernel UTS afresh on each call.
+    const hostnameReader = vfs.processHostname?.bind(vfs);
+    recordProcessHostname(this.process, hostnameReader ?? (() => 'localhost'));
     // The Node line this process answers as, and where it came from (node-line.ts).
     const namedVersion = options.env?.NODE_VERSION;
     if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
