@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- R11 follow-up (substrate Articles5/6/8/9): stop self-reference and #imports package-scope walks before root/node_modules, matching Node24.21 TraverseParent; a nearest config without imports ends that lookup. Document statSync's undefined-only-ENOENT/ENOTDIR contract. The kernel-backed implementation already throws EACCES/EIO; source evidence is retained, with no kernel behavior change or measured gain claimed.
+
 - R11 (substrate Articles5/6/8/9): retain proved ENOENT/ENOTDIR/EISDIR package-config absences for the process and filesystem lifetime, matching Node24.21 GetPackageJSON. A later-created package.json remains unseen by that process. General file/stat misses, invalid/unreadable configs and other process/trees do not acquire sticky absences. Existing deferred module-clock records add resolveSplit.packageConfigs lookup/positive-hit/negative-hit/check/read/retained-miss counters. Production library bundle/declarations pass; independent first-request cost and behavior remain unqualified.
 
 - R9 post-merge (substrate Articles 1/5/6/8/9): deliver native owner-stop read/close callbacks as deferred binding work after the current call and Node's write-error ticks. A write that discovers transport loss returns EPIPE before stopped is set; late completions cannot change bytesWritten or submit remaining chunks after their request ended. The paired transport pauses sync attempts for100ms after a handoff and documents conservative channel-close priority. Production bundle/declarations pass; independent Dub reading owed, with no measured saving claimed.

@@ -1,5 +1,28 @@
 ## S2 R11: Keep missing package configurations for the process lifetime
 
+Follow-up intent (Articles5/6/8/9): the independent read cleared befbc6c,
+merged with substrate772e4b9b, and identified inherited scope overreach.
+Node24.21 src/node_modules.cc:311-350 stops TraverseParent before root and
+before a directory whose leaf is node_modules. CJS loader.js:662/1529 uses
+that binding for self-reference and #imports. Bound both shared resolver
+walks the same way, ending #imports at its nearest config even when it has
+no imports map. Keep installed-package LOAD_NODE_MODULES/global-root search
+separate. No cache invalidation or new instrumentation is needed.
+
+Kernel-backed stat source check: KernelVirtualFS.statAtNow returns undefined
+for syscall-2/-20 only, and throws all other negative results; missing()
+recognizes only ENOENT/ENOTDIR. Local absence requires a searched current
+namespace witness; an unavailable/denied search returns to the kernel. The
+kernel therefore already throws EACCES/EIO, so change no kernel behavior.
+Document the same undefined-only-absence contract on ResolutionFs.statSync.
+Disproof: a scope reads /package.json or crosses node_modules, #imports
+escapes a nearer config, or an EACCES/EIO becomes a retained config miss.
+Follow-up builder evidence: owned install0 and actual build:lib0 produce
+158 files, including150 declarations, under5120MB preflight/plain mutex.
+Production bundle/declarations and ordinary push are the coding evidence;
+independent first-request/cache-hit/gain qualification remains owed.
+
+
 Status: production library bundle/declarations pass; independent static read and first-request qualification pending
 
 Substrate Articles5/6/8/9. Three retained LibreChat6fd6febc quiet clocks

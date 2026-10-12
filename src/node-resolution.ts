@@ -16,6 +16,8 @@ export interface ResolutionFs {
   /**
    * `contentDigest`: where the filesystem's stat carries it (a kernel tree's stat of a regular file, links followed,
    * KernelVirtualFS `statWithDigest`), the file's content digest from the same walk as the stat.
+   * With throwIfNoEntry:false, only ENOENT/ENOTDIR return undefined. Permission/I/O failures still throw,
+   * so the package-config cache never mistakes them for a persistent absence.
    */
   statSync(path: string, options?: { throwIfNoEntry?: boolean }): { isFile(): boolean; isDirectory(): boolean; contentDigest?: string } | undefined;
   readFileSync(path: string, encoding: "utf8"): string | Uint8Array;
@@ -317,22 +319,25 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
   // LOAD_PACKAGE_SELF: a package importing itself by name through its exports. The package is the nearest manifest
   // above the importer and no other (Node's `trySelf` reads `getNearestParentPackageJSON` and answers false unless
   // that one has `exports` and the name asked for), so the walk ends at the first manifest it meets.
+  // Node24.21 src/node_modules.cc:311-350 stops before / and a directory named node_modules.
   const loadPackageSelf = (specifier: string, fromDir: string): string | null => {
     const packageName = packageNameOf(specifier);
     let directory = fromDir;
-    for (;;) {
+    while (directory !== "/" && !directory.endsWith("/node_modules")) {
       const pkg = manifest(directory);
       if (pkg) return pkg.name === packageName && pkg.exports !== undefined && pkg.exports !== null ? loadPackageExports(directory, pkg, specifier, packageName) : null;
-      if (directory === "/") return null;
       directory = parent(directory);
     }
+    return null;
   };
   // `#name`: the nearest manifest's imports map.
   const loadPackageImports = (specifier: string, fromDir: string): string | null => {
     let directory = fromDir;
-    for (;;) {
+    while (directory !== "/" && !directory.endsWith("/node_modules")) {
       const pkg = manifest(directory);
-      if (pkg && pkg.imports) {
+      if (pkg) {
+        // The nearest config owns this scope; no imports map there does not authorize a parent map.
+        if (!pkg.imports) return null;
         for (const conditions of options.conditionSets) {
           let targets: string[];
           try { targets = targetsOf(options.exports.imports(pkg, specifier, { conditions, unsafe: true })); } catch { continue; }
@@ -344,9 +349,9 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
         }
         return null;
       }
-      if (directory === "/") return null;
       directory = parent(directory);
     }
+    return null;
   };
 
   const resolve = (specifier: string, fromDir: string, keeping?: ResolutionKept): string | null => {
