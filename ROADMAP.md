@@ -1,3 +1,34 @@
+## S2 R5: request instrumentation at its producers
+
+Status: source inventory and implementation intent recorded; source build in progress
+
+Articles 5/6/8/9; ADR-0124. Deferring serialization leaves unconditional
+per-module/per-filesystem timestamps, diagnostic maps and quiet timers in boot.
+The retained inventory names265 matching sites in60 source files at substrate
+9c50cad5 and engine d82b143. The high-frequency classes are module phase/read
+clocks, resolver probes/package-config counters, kernel exchange/path/read
+costs, and socket evidence. Boot receipt payload helpers can themselves issue
+getcwd/stat/read calls before their queued output is captured.
+
+Request a realm's diagnostic readings before its program starts, carry the
+request through the existing trace attachment independently of execution
+ownership, and return before timestamps, diagnostic allocations/counters or
+timers on an unrequested path. Preserve all functional module caches, filesystem
+search proofs, admission/liveness deadlines, transport accounting, ordinary
+program output and capture/retirement ownership. The dry-run explicitly asks
+for the existing complete reading so the independent mini laps retain their
+fields; ordinary product openings do not. The driver supplies the request to
+its paused targets before resume, and child trace attachments inherit it.
+Older trace clocks must retain their documented reading rather than silently
+losing it. No vendor Node bytes, graph semantics, credential/policy or pinned
+package change. Producer inventory is source evidence, not a measurement.
+
+Completion: source gating throughout the named producer classes, engine and
+production package emitters, ordinary pushes and an independent reading of
+both selected record delivery and unrequested cost. Raw blocking/terminal
+checkpoint transfers and a global retention bound remain distinct open parts
+of R5; a64-record transport batch is not a bound on retained evidence.
+
 ## S2 R11: Keep missing package configurations for the process lifetime
 
 Follow-up intent (Articles5/6/8/9): the independent read cleared befbc6c,
