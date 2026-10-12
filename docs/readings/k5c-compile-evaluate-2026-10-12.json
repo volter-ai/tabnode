@@ -1,0 +1,120 @@
+{
+  "kind": "tabnode.k5c.compile-evaluate-source-reading",
+  "version": 1,
+  "branch": "w3/s2-k5c",
+  "baseCommit": "68c87606fbeb34b90e6e0581d0fcc811b248d2c5",
+  "question": "Compile plus evaluate against C4; separate engine preparation from real browser parsing and unchanged guest execution.",
+  "inputs": {
+    "src/runtime.ts": {
+      "bytes": 250632,
+      "sha256": "7df884f875517a044ba6357c2eb96cf632d54c32797edae5b687a66ba7884b26"
+    },
+    "src/shims/vm.ts": {
+      "bytes": 5938,
+      "sha256": "c75e1ff9e4ef2f28f02465a09cc356a239ee3201c4bd438eb97aa86d582fc3a9"
+    },
+    "src/vm-script-state.ts": {
+      "bytes": 4633,
+      "sha256": "0c3daf87d47986bf95e6fde837d1eb1c00564c07554d569a71c5cfd42cf5c5e6"
+    },
+    "src/error-source.ts": {
+      "bytes": 2713,
+      "sha256": "ce473ca5574862e0f2aa4d65352474a72031fedec5c62da9cc6a8b910fa6e5d9"
+    }
+  },
+  "nativeProfile": {
+    "bytes": 806014,
+    "sha256": "f05ed9c58f608bb01a854a7f12976f9b865b3b0cb4e462bbb85d2f1fd2c69f82",
+    "originalMiniPath": "/Users/aaronclaw/heavy-lead/native/dub/t/prof/CPU.20261010.234752.4991.0.001.cpuprofile",
+    "durationMs": 4470.167,
+    "sampleTimeMs": 4467.583,
+    "cjsWrapSafeAncestryMs": 818.0390000000001,
+    "vmAncestryMs": 983.1650000000003,
+    "method": [
+      "VM: any ancestor with url node:vm, including script/context creation and guest script work below it",
+      "CJS compile: any wrapSafe/node:internal/modules/cjs/loader ancestor, excluding VM category",
+      "Other: every remaining sample, including idle/GC/unattributed frames"
+    ],
+    "meaning": "CPU-profile sampled ancestry, not an elapsed wall-clock phase or pure compilation stopwatch. VM includes native preparation and guest work below VM calls."
+  },
+  "historicalTab": {
+    "source": "/Users/yueranyuan/volter/heavy-runs/review/five-on-the-ledger/SPEED-CHECKLIST.md K5",
+    "pins": "substrate b3097571/1997b2bb; engine 9af051b",
+    "bodies": 1525,
+    "bodyBytesApproximate": 85000000,
+    "compileMsRange": [
+      740,
+      840
+    ],
+    "evaluateMsRange": [
+      870,
+      930
+    ],
+    "outsideMsRange": [
+      3200,
+      3700
+    ],
+    "matchingLogsRetained": false,
+    "currentHeadMeasurement": false,
+    "comparisonLimit": "The historical compile range numerically spans 818 ms native ancestry. Sampled CPU and tab wall time differ; this does not establish parity, residual, current-head cost or saving."
+  },
+  "sourcePaths": {
+    "anchors": {
+      "compileBody": 549,
+      "wrapper": 3032,
+      "compile": 3044,
+      "evaluate": 3063,
+      "phase": 1008,
+      "snapshot": 1061,
+      "vmPhase": 944
+    },
+    "commonJsCompile": "Actual indirect sloppy eval compiles the actual wrapped source. rememberCompiledSource retains immutable strings for true error positions. compileSplit separates sourceCaptureMs/nativeEvalMs and counts actual sourceCaptures/evals.",
+    "commonJsEvaluation": "Actual module function with fresh require/module/exports/importMeta and guest globals. Nested synchronous requires enter their own module phases. Async continuation after body return remains outside.",
+    "wrapper": {
+      "headerCodeUnitsBeforeBody": 3072,
+      "getterDefinitionsBeforeBody": 19,
+      "setterDefinitionsBeforeBody": 19,
+      "semantics": "Accessors close over each activation's mutable globalThis binding. Sharing a process-global scope is not equivalent when a module reassigns its local globalThis. No wrapper rewrite or saving is claimed."
+    },
+    "vmPreparation": "K5b source-only weak preparation stays process-owned, evaluator stays frozen in its realm, actual direct eval has fresh scopes/declaration array/activation.",
+    "clockOverlap": "vmSplit is exclusive among synchronous VM phases but overlays module phases. Do not add VM milliseconds to module totals or blindly subtract VM eval from module evaluate: VM eval can call require and span read/resolve/compile/outside.",
+    "vmEvalLimit": "VM eval combines browser parsing, guest execution and nested loads. Separating compilation inside direct eval requires a behavior-preserving runtime design; the current clock does not supply that split."
+  },
+  "C4": {
+    "recordedStatus": "closed carrier/code-cache route in C4/L4",
+    "constraints": [
+      "ADR-0022 confinement refuses importScripts.",
+      "ES-module carriers cannot contain sloppy with; source chunks retain one final sourceURL.",
+      "No engine API transfers compiled JavaScript between realms.",
+      "Source metadata/evaluator reuse does not cache compiled guest code."
+    ],
+    "policy": "Preserve script source/stack naming, sandbox and process ownership; no cached exports or invented cachedData substitute."
+  },
+  "pendingCurrentReading": {
+    "miniMessage": "m-5e10bdc2",
+    "asReported": "No Dub clock on 68c87606 or later yet. Current d82b143 and queued e89b8d4 do not contain K5b.",
+    "watcher": "/Users/aaronclaw/heavy-lead/cycle/k5c-dub.sh",
+    "receiptPath": "/Users/aaronclaw/heavy-lead/dub/k5c.txt",
+    "keptLogPattern": "/Users/aaronclaw/heavy-lead/dub/logs-kept/dub-scored-<head>-k5c/",
+    "fields": [
+      "substrate/engine pins",
+      "job end and first HTTP",
+      "PID and HTTP/handoff boundary",
+      "compileSplit sourceCaptureMs/nativeEvalMs/sourceCaptures/evals",
+      "vmSplit phaseMs/calls/runs/codeUnits/cacheHits/cacheMisses/acornParses/declarationScanSkips/parseFailures",
+      "module wallMs/kernelMs/body counts and bytes"
+    ],
+    "nextDecision": "Read the matching retained process and boundary before naming the largest current engine-owned residual. Source retention and Acorn/setup are separable candidates; intrinsic compilation and unchanged guest code remain real costs."
+  },
+  "artifactRoot": "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k5c-artifact",
+  "producer": {
+    "bytes": 6927,
+    "sha256": "0e80c633d92cc25fd7e490b9ce6e31e4344eb8eae62ee726bf3aaf849adb9455"
+  },
+  "runtimeChanged": false,
+  "testsRun": false,
+  "appsRun": false,
+  "newTimingRun": false,
+  "savingClaimed": false,
+  "rowClosed": false
+}

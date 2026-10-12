@@ -1,6 +1,31 @@
+## S2 K5c: attribute compile and evaluate within the C4 ceiling
+
+Status: source/native-profile checkpoint; current K5b-head Dub reading pending
+
+Substrate Articles 5/6/8/9. [The K5c reading](docs/readings/k5c-compile-evaluate-2026-10-12.json)
+binds engine 68c8760 and the retained native profile: 818 ms of disjoint CJS
+wrapSafe ancestry, 983 ms of VM ancestry. These are sampled CPU buckets; the
+lost historical tab logs only supply a 740–840 ms compile range. They do not
+establish a current residual or a saving.
+
+Intent before a cut: use the retained process PID and HTTP boundary to split
+compileSplit source retention from real native eval, and vmSplit parse/setup/
+eval preparation from unchanged guest execution. VM spans overlay module
+phases and cannot be added to or blindly subtracted from them. VM eval still
+combines browser parsing and guest work. Module wrapper accessors capture each
+activation's mutable globalThis; sharing a process-global scope would change
+that behavior. Keep C4's confinement and actual source/stack names; metadata
+reuse is not compiled-code caching. Do not change image or vendor bytes.
+
+The mini's existing cycle/k5c-dub.sh watcher retains both clocks and ownership
+under dub/logs-kept/dub-scored-<head>-k5c/ and writes dub/k5c.txt. Its current
+and queued engine pins predate K5b, so no current reading exists yet. Read that
+retained record when the cycle reaches 68c8760 or a descendant, then name and
+fix any engine-owned residual. No new app run or runtime change in this audit.
+
 ## S2 K5b: Reuse VM preparation and attribute execution excess
 
-Status: generic reuse and process-owned phase capture compiled; independent review and next-lap attribution pending
+Status: corrected source independently approved and merged at 68c8760; next-lap attribution pending
 
 Substrate Articles5/6/8/9. [K5b's source and profile reading](docs/readings/k5b-execution-2026-10-12.json)
 retains the historical4.1–4.6s evaluate+outside tab figure against3.1–3.3s
@@ -54,8 +79,8 @@ These phases overlay module phases, so their milliseconds are not added to
 module wall totals. Eval includes browser parsing, guest execution and nested
 loads; returned asynchronous work is outside the synchronous VM span.
 
-Completion: ordinary hooks-on source push, independent engine review, full
-consumer pack emission, then the mini's next five lap names real cache hits,
+Source push and independent review are complete at 68c8760. Full consumer
+pack emission and the mini's next five lap still owe real cache hits,
 phase costs and boot/walk behavior. No tests/apps/probes/new timing runs here.
 No app-time gain is claimed. K5c's compile/evaluate ceiling remains a separate
 follow-up under C4; actual direct eval stays, with no imported/cached guest code.
