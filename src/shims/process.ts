@@ -1,4 +1,4 @@
-import { traceOutput } from '../trace-output';
+import { traceReadingRequested, traceOutput } from '../trace-output';
 /**
  * Node.js process shim
  * Provides minimal process object for browser environment
@@ -838,7 +838,7 @@ export function createProcess(options?: {
         // table still lists it.
         if (signal !== 0) {
           const token = __tokenForProcess(proc);
-          traceOutput("[boot-trace]", { event: 'group-signal', at: Date.now(), from: proc.pid, pgid: -pid, signal: name, delivered: result ?? 'this host has no group operations', listedAfter: groupIsLive(-pid, token) ?? null, leaderListed: pidIsLive(-pid, token) });
+          if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'group-signal', at: Date.now(), from: proc.pid, pgid: -pid, signal: name, delivered: result ?? 'this host has no group operations', listedAfter: groupIsLive(-pid, token) ?? null, leaderListed: pidIsLive(-pid, token) });
         }
         if (result === true) return true;
         if (result === false) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });

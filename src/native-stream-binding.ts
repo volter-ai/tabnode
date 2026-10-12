@@ -1,5 +1,5 @@
 import { traceEntries, traceRound, traceRows } from './trace-values';
-import { traceOutput } from './trace-output';
+import { traceReadingRequested, traceOutput } from './trace-output';
 /** Worker-side libuv delegation. The capability channel never becomes a handle property. */
 import { withGuestCallback, queueBindingTask } from './guest-loop';
 import type { NativeStreamDescriptor, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport } from './native-stream-owner';
@@ -79,6 +79,7 @@ function tally(operation: string, ms: number, bytes?: number): void {
   if (bytes !== undefined) count.bytes = (count.bytes ?? 0) + bytes;
 }
 function counting(next: NativeStreamTransport): NativeStreamTransport {
+  if (!traceReadingRequested()) return next;
   return {
     limits: next.limits,
     call(operation) {
@@ -123,6 +124,7 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
 }
 /** Says the counts so far, once per change: a process says them at its exit. */
 export function sayNativeStreamCounts(pid: number | null, when: string): void {
+  if (!traceReadingRequested()) return;
   let total = 0;
   for (const count of streamCounts.values()) total += count.calls;
   if (total === streamCountsSaid) return;
@@ -131,7 +133,7 @@ export function sayNativeStreamCounts(pid: number | null, when: string): void {
   for (const [operation, count] of streamCounts) rows.push({ operation, calls: count.calls, ms: count.ms, max: count.max,
     over: [...count.over], ...(count.bytes === undefined ? {} : { bytes: count.bytes }) });
   const operations = traceRows(rows, { orderBy: 'ms', columns: ['operation', 'calls', 'ms', 'max', 'over', 'bytes'], round: ['ms', 'max'], trimUndefined: true });
-  traceOutput('[stream-calls]', { event: when, at: Date.now(), pid, columns: ['operation', 'calls', 'blockedMs', 'maxMs', `over ${OVER_MS.join('/')} ms`, 'bytes'], operations, events: traceEntries([...streamEvents]) });
+  if (traceReadingRequested()) traceOutput('[stream-calls]', { event: when, at: Date.now(), pid, columns: ['operation', 'calls', 'blockedMs', 'maxMs', `over ${OVER_MS.join('/')} ms`, 'bytes'], operations, events: traceEntries([...streamEvents]) });
 }
 
 /** Host bootstrap only, before any TCP/Pipe exists in this process realm. */
@@ -436,7 +438,7 @@ export class NativeStreamDriver {
       write.trace = { listener: sample.listener, vector: ++sample.count, at: performance.timeOrigin + performance.now(), chunks: 0 };
       sayStreamClock(this.handle, { when: 'native-vector-submitted', at: write.trace.at,
         listener: sample.listener, id: this.descriptor.id, vector: write.trace.vector, bytes });
-      traceOutput('[socket-write]', { event: 'vector-submitted', at: write.trace.at, realmEpoch: performance.timeOrigin,
+      if (traceReadingRequested()) traceOutput('[socket-write]', { event: 'vector-submitted', at: write.trace.at, realmEpoch: performance.timeOrigin,
         listener: sample.listener, id: this.descriptor.id, vector: write.trace.vector, bytes, parts: parts.length,
         partBytes: parts.slice(0, 8).map(part => part.byteLength), omittedParts: Math.max(0, parts.length - 8), chunkLimit: this.channel.limits.maxReadChunkBytes });
     }
@@ -537,7 +539,7 @@ export class NativeStreamDriver {
         id: this.descriptor.id, vector: write.trace.vector, bytes: write.bytes, chunks: write.trace.chunks,
         status, elapsedMs: at - write.trace.at, synchronous };
       sayStreamClock(this.handle, sample);
-      traceOutput('[socket-write]', { ...sample, event: 'vector-completed', realmEpoch: performance.timeOrigin,
+      if (traceReadingRequested()) traceOutput('[socket-write]', { ...sample, event: 'vector-completed', realmEpoch: performance.timeOrigin,
         sampledChunks: Math.min(3, write.trace.chunks) });
     }
     const index = this.writes.indexOf(write);
@@ -610,7 +612,7 @@ export class NativeStreamDriver {
       // An instrument: bytes the owner read for a handle its realm had stopped reading. The grant is taken back when
       // a handle stops (endRead), so this stays 0 except for a chunk already on its way; a socket being handed to
       // another process loses to this realm whatever is counted here.
-      if (event.bytes && !this.handle.reading && !this.closing) streamEvents.set('read-while-stopped', (streamEvents.get('read-while-stopped') ?? 0) + 1);
+      if (traceReadingRequested() && event.bytes && !this.handle.reading && !this.closing) streamEvents.set('read-while-stopped', (streamEvents.get('read-while-stopped') ?? 0) + 1);
       this.readingCredit = false;
       if (this.closing) { if (event.handle) closeDescriptor(event.handle.id); return; }
       this.buffered = true;
@@ -629,7 +631,7 @@ export class NativeStreamDriver {
     } else if (event.type === 'connection') {
       if (this.closing || !this.handle.onconnection) { if (event.handle) closeDescriptor(event.handle.id); return; }
       const accepted = event.handle ? adopt(event.handle, this.handle) : undefined;
-      if (accepted && event.handle?.kind === 'tcp') {
+      if (traceReadingRequested() && accepted && event.handle?.kind === 'tcp') {
         this.acceptedWrites ??= { listener: this.descriptor.id, count: 0, reads: 0 };
         drivers.get(accepted)!.acceptedWrites = this.acceptedWrites;
       }

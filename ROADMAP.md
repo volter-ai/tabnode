@@ -1,6 +1,6 @@
 ## S2 R5: request instrumentation at its producers
 
-Status: source inventory and implementation intent recorded; source build in progress
+Status: producer selection implemented; production emission and independent delivery/cost reading pending
 
 Articles 5/6/8/9; ADR-0124. Deferring serialization leaves unconditional
 per-module/per-filesystem timestamps, diagnostic maps and quiet timers in boot.
@@ -10,10 +10,10 @@ clocks, resolver probes/package-config counters, kernel exchange/path/read
 costs, and socket evidence. Boot receipt payload helpers can themselves issue
 getcwd/stat/read calls before their queued output is captured.
 
-Request a realm's diagnostic readings before its program starts, carry the
-request through the existing trace attachment independently of execution
-ownership, and return before timestamps, diagnostic allocations/counters or
-timers on an unrequested path. Preserve all functional module caches, filesystem
+The host requests a realm's diagnostic readings before its program starts.
+The existing trace attachment carries that request independently of execution
+ownership. Producers return before diagnostic timestamps, per-operation
+allocations/counters and timers on an unrequested path. Preserve all functional module caches, filesystem
 search proofs, admission/liveness deadlines, transport accounting, ordinary
 program output and capture/retirement ownership. The dry-run explicitly asks
 for the existing complete reading so the independent mini laps retain their

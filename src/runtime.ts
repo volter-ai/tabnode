@@ -1,5 +1,5 @@
 import { traceRound, traceRoundFields } from './trace-values';
-import { captureTraceConsoleLine, deferredTraceOutput, traceOutput } from './trace-output';
+import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested } from './trace-output';
 import { processCredentialsOf } from './process-credentials';
 import type { ProcessCredentials } from './process-credentials';
 /**
@@ -846,7 +846,7 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
   if (own) said.own = true;
   const exists = (path: string): boolean | string => { try { return vfs.existsSync(path); } catch (cause) { return cause instanceof Error ? cause.message : String(cause); } };
   const key = preparedModuleKey(content, resolvedPath);
-  traceOutput("[boot-trace]", {
+  if (traceReadingRequested()) traceOutput("[boot-trace]", {
     event: 'prepared-bodies', where: 'compile', which, at: Date.now(), file: resolvedPath, bytes: content.length,
     rawIsOwn: compiling?.raw === content, handedRaw: compiling !== undefined, format: compiling?.format ?? null,
     transformsTypes: transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }),
@@ -919,6 +919,7 @@ type LoadClockFs = { kernelBlockedMs?: () => number };
 type ReadSplit = { digestAsk: number; source: number; key: number; prepared: number; transform: number; sources: number; keys: number; preparedReads: number; transforms: number };
 const __substrateReadSplits = new WeakMap<object, ReadSplit>();
 function __substrateTimeRead<T>(process: object, part: 'digestAsk' | 'source' | 'key' | 'prepared' | 'transform', fn: () => T): T {
+  if (!traceReadingRequested()) return fn();
   const began = performance.now();
   try { return fn(); } finally {
     let split = __substrateReadSplits.get(process);
@@ -931,6 +932,7 @@ function __substrateTimeRead<T>(process: object, part: 'digestAsk' | 'source' | 
 const QUIET_SAID_AFTER_MS = 2000;
 /** Ends the process's current phase now and begins `phase`; answers the phase that ended, for its caller to return to. */
 function __substrateLoadPhase(process: object, vfs: object | undefined, phase: LoadPhase): LoadPhase {
+  if (!traceReadingRequested()) return 'outside';
   const now = __substrateLoadNow();
   let clock = __substrateLoadClocks.get(process);
   if (!clock) {
@@ -1039,6 +1041,7 @@ const __substrateK5Servers = new WeakSet<object>();
 /** Observe Node's real request emission on the owned side, never in its
  * vendored parser. HTTP and HTTPS share the actual process's three slots. */
 function __substrateObserveHttp(process: object, module: unknown): void {
+  if (!traceReadingRequested()) return;
   const Server = (module as { Server?: unknown } | null)?.Server;
   if (typeof Server !== 'function') return;
   const prototype = Server.prototype as K5ServerPrototype | undefined;
@@ -1058,7 +1061,7 @@ function __substrateObserveHttp(process: object, module: unknown): void {
               const url = req.url, owner = __tokenForProcess(process as Process);
               const pid = runPid(owner)?.pid ?? (process as { pid?: unknown }).pid;
               const capturedUrl = typeof url === 'string' ? url : null;
-              traceOutput('[k5] server', { n, what, url: capturedUrl,
+              if (traceReadingRequested()) traceOutput('[k5] server', { n, what, url: capturedUrl,
                 at: Math.round((performance.timeOrigin + performance.now()) * 10) / 10,
                 bodies: __substrateLoadClocks.get(process)?.bodies ?? 0,
                 pid: typeof pid === 'number' ? pid : null, ...extra });
@@ -1128,9 +1131,10 @@ function __substrateSayPrepared(process: object, counts: PreparedCounts, at: str
   const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
   if (total === counts.said) return;
   counts.said = total;
-  traceOutput("[boot-trace]", { event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: __substrateResolutionKept.get(process)?.probes ? { ...__substrateResolutionKept.get(process)!.probes } : null });
+  if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: __substrateResolutionKept.get(process)?.probes ? { ...__substrateResolutionKept.get(process)!.probes } : null });
 }
 function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCounts, 'said' | 'timer'>): void {
+  if (!traceReadingRequested()) return;
   let counts = __substratePreparedCounts.get(process);
   if (!counts) {
     counts = { digest: 0, carried: 0, hash: 0, kept: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
@@ -1157,7 +1161,7 @@ function __substrateSayRowsUsed(process: object): void {
   for (const entry of view.moduleLoadList ?? []) if (entry.startsWith('NativeModule ')) rows[`engine.${entry.slice(13)}`] = 1;
   for (const name of nodeLibBindingsAsked()) rows[`engine.binding.${name}`] = 1;
   const program = String(view.argv0 ?? 'node').split('/').pop() || 'node';
-  traceOutput("[rows-used]", { pid: view.pid ?? null, program, rows });
+  if (traceReadingRequested()) traceOutput("[rows-used]", { pid: view.pid ?? null, program, rows });
 }
 Object.defineProperty(globalThis, '__substratePreparedExit', {
   configurable: true,
@@ -2274,9 +2278,11 @@ function __substrateRegisteredExtension(filename: string, extensions: Record<str
 const __substrateResolutionKept = new WeakMap<object, ResolutionKept & { depth: number }>();
 function __substrateKeptFor(process: object): ResolutionKept & { depth: number } {
   let kept = __substrateResolutionKept.get(process);
-  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0,
-    packageConfigs: { lookups: 0, positiveHits: 0, negativeHits: 0, checks: 0, reads: 0, missingKept: 0 },
-    probes: { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 } }; __substrateResolutionKept.set(process, kept); }
+  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0 }; __substrateResolutionKept.set(process, kept); }
+  if (traceReadingRequested()) {
+    kept.packageConfigs ??= { lookups: 0, positiveHits: 0, negativeHits: 0, checks: 0, reads: 0, missingKept: 0 };
+    kept.probes ??= { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 };
+  }
   return kept;
 }
 /**
@@ -2287,9 +2293,9 @@ const __substrateWindowSaid = new WeakSet<object>();
 function __substrateInStatWindow<T>(process: object, run: () => T): T {
   const keeping = __substrateKeptFor(process);
   // An instrument: at a process's first module body, whether its stat window opens and the require depth it saw.
-  if (!__substrateWindowSaid.has(process)) {
+  if (traceReadingRequested() && !__substrateWindowSaid.has(process)) {
     __substrateWindowSaid.add(process);
-    traceOutput("[boot-trace]", { event: 'stat-window', at: Date.now(), pid: (process as { pid?: number }).pid ?? null, opened: keeping.depth === 0 && keeping.stats === undefined, depth: keeping.depth });
+    if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'stat-window', at: Date.now(), pid: (process as { pid?: number }).pid ?? null, opened: keeping.depth === 0 && keeping.stats === undefined, depth: keeping.depth });
   }
   if (keeping.depth !== 0 || keeping.stats !== undefined) return run();
   keeping.stats = new Map();
@@ -3426,7 +3432,7 @@ export class Runtime {
     (this.process as unknown as Record<symbol, unknown>)[kRunFilesystem] = vfs;
     // The Node line this process answers as, and where it came from (node-line.ts).
     const namedVersion = options.env?.NODE_VERSION;
-    traceOutput("[boot-trace]", { event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
+    if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
       line: nodeLineOf(this.process.version), from: this.process.version === `v${String(namedVersion ?? '').replace(/^v/, '')}` ? 'NODE_VERSION of the image' : 'default',
       // The variable as this process was given it, so a reader need not infer it: null when it has none.
       env: typeof namedVersion === 'string' ? namedVersion : null });

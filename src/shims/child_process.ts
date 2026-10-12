@@ -1,4 +1,4 @@
-import { traceOutput } from '../trace-output';
+import { traceReadingRequested, traceOutput } from '../trace-output';
 import { copyProcessCredentials, type ProcessCredentials } from '../process-credentials';
 import { queueNativeFsTask } from '../native-fs-tasks';
 import { withGuestCallback } from '../guest-loop';
@@ -947,7 +947,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       const printed = String(error.stack ?? '');
       const formed = stackFormedBy.get(error);
       const hook = (Error as { prepareStackTrace?: unknown }).prepareStackTrace;
-      traceOutput("[boot-trace]", { event: 'uncaught-stack-text', at: Date.now(), pid: proc.pid, name: error.name, messageBytes: String(error.message ?? '').length, messageIsOwn: Object.prototype.hasOwnProperty.call(error, 'message'), messageIsAccessor: typeof Object.getOwnPropertyDescriptor(error, 'message')?.get === 'function', message: String(error.message ?? '').slice(0, 300), ownKeys: Reflect.ownKeys(error).map(String).slice(0, 12), printedFirstLine: printed.split('\n', 1)[0]!.slice(0, 160), printedCarriesMessage: printed.startsWith(now) || (String(error.message ?? '') === '' ? null : printed.includes(String(error.message).slice(0, 80))), formedBy: formed ? formed.by : "V8's own text, or before this realm's hook was asked", errorTextWhenFormed: formed?.errorTextThen ?? null, prepareStackTraceNow: typeof hook === 'function' ? (hook.name || 'a function') : String(hook) });
+      if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'uncaught-stack-text', at: Date.now(), pid: proc.pid, name: error.name, messageBytes: String(error.message ?? '').length, messageIsOwn: Object.prototype.hasOwnProperty.call(error, 'message'), messageIsAccessor: typeof Object.getOwnPropertyDescriptor(error, 'message')?.get === 'function', message: String(error.message ?? '').slice(0, 300), ownKeys: Reflect.ownKeys(error).map(String).slice(0, 12), printedFirstLine: printed.split('\n', 1)[0]!.slice(0, 160), printedCarriesMessage: printed.startsWith(now) || (String(error.message ?? '') === '' ? null : printed.includes(String(error.message).slice(0, 80))), formedBy: formed ? formed.by : "V8's own text, or before this realm's hook was asked", errorTextWhenFormed: formed?.errorTextThen ?? null, prepareStackTraceNow: typeof hook === 'function' ? (hook.name || 'a function') : String(hook) });
     }
     appendStderr(`${error instanceof Error ? uncaughtText(error) : String(error)}\n`);
     writeHostReceipt('uncaught', error);
@@ -1287,7 +1287,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     }
     // Keep D1 evidence when the new first-empty decision is shorter than the old trace threshold.
     if (endedBy === 'the referenced loop is empty' || emptyLooks > 0 || Date.now() - startTime >= 200) {
-      traceOutput("[boot-trace]", { event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: { ...heldBy }, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
+      if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: { ...heldBy }, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
         entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null,
         emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt,
         lookTimer: { realm: isWorkerRealm || nodeProcessRealmToken() !== null ? 'worker' : typeof window === 'undefined' ? 'host' : 'window',
@@ -2209,7 +2209,7 @@ function shellReadsProgram(path: string, tree: VirtualFS): string | undefined {
   const kind = HOST_EXECUTABLE.test(text) ? "a host program's handle" : PROGRAM_STUB.test(text) ? "a registered program's stub" : isBinaryImage(head) ? 'a binary image' : undefined;
   if (kind === undefined) return undefined;
   const handle = kind === "a host program's handle";
-  traceOutput("[boot-trace]", { event: 'shell-read-program-as-text', at: Date.now(), path, kind, ...(handle ? { identity: text.split('\n')[1] } : {}), lines: shellLinesRunning.map((line) => line.slice(0, 400)), answered: !handle ? 'read as before' : shellCommandNames().has(path.slice(path.lastIndexOf('/') + 1)) ? "the shell's own command of that name" : 'exit 126 with a sentence' });
+  if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'shell-read-program-as-text', at: Date.now(), path, kind, ...(handle ? { identity: text.split('\n')[1] } : {}), lines: shellLinesRunning.map((line) => line.slice(0, 400)), answered: !handle ? 'read as before' : shellCommandNames().has(path.slice(path.lastIndexOf('/') + 1)) ? "the shell's own command of that name" : 'exit 126 with a sentence' });
   if (!handle) return undefined;
   // A HANDLE NAMED AS ONE OF THIS SHELL'S OWN COMMANDS IS THAT COMMAND. An image carries `/usr/local/bin/npm`; the tab
   // lays its handle there; the shell's walk of PATH meets that file before the directories where it keeps its own
