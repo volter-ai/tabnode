@@ -819,12 +819,18 @@ export function createProcess(options?: {
       if (signal !== 0 && (typeof name !== "string" || __substrateSignals[name] === void 0)) {
         throw Object.assign(new TypeError("Unknown signal: " + signal), { code: "ERR_UNKNOWN_SIGNAL" });
       }
+      // Node's kill(pid, 0) asks the caller's process authority before self/child handles. A saved handle is
+      // not evidence of an existing kernel PID; signed targets must reach that authority without abs(pid).
+      if (signal === 0) {
+        if (pidIsLive(pid, __tokenForProcess(proc), proc.pid)) return true;
+        throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
+      }
       // POSIX negative targets name a group, not abs(pid). World teardown
       // probes that group then signals every member from another realm; the
       // former abs(pid) probe succeeded while both termination signals failed.
       // Keep the legacy path only for hosts without the optional operations.
       if (pid < 0) {
-        const result = signal === 0 ? groupIsLive(-pid, __tokenForProcess(proc)) : signalGroup(-pid, name, __tokenForProcess(proc));
+        const result = signalGroup(-pid, name, __tokenForProcess(proc));
         // An instrument (langfuse, 3.0.2176: a World's `down` signalled its Redis twin's group, asked for a minute
         // whether the group was still there, and gave up, "retirement unconfirmed"): for a signal that is not the
         // question, whether any member took it and whether the group is there before and after. Three ends look the
@@ -844,22 +850,15 @@ export function createProcess(options?: {
       if (pid !== proc.pid) {
         const child = __substrateChildrenOf(__tokenForProcess(proc)).get(Math.abs(pid));
         if (child === void 0 || child.exitCode !== null || child.signalCode !== null) {
-          // Signal 0 is the question "is that process there?", and a program
-          // asks it about processes that are not its own children: a pid out
-          // of a lock file, a parent's. A live run answers yes and carries no
-          // signal; anything else is `ESRCH`, as it is on a machine.
-          if (signal === 0 && pidIsLive(Math.abs(pid), __tokenForProcess(proc))) return true;
           // Any other live process of the container takes the signal too,
           // including one whose parent has exited; otherwise nothing could
           // ever end it.
           if (signal !== 0 && child === void 0 && pid > 0 && signalPid(pid, name, __tokenForProcess(proc))) return true;
           throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
         }
-        if (signal === 0) return true;
         child.kill(name);
         return true;
       }
-      if (signal === 0) return true;
       if (name !== "SIGKILL" && name !== "SIGSTOP" && emitter.listenerCount(name) > 0) {
         emitter.emit(name, name);
         return true;
