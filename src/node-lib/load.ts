@@ -2,6 +2,7 @@ import { createOsBinding } from './binding/misc';
 import { createProcessBinding } from './binding/process_wrap';
 import { createSpawnSyncBinding } from './binding/spawn_sync';
 import { withGuestExecution } from '../guest-loop';
+import { traceSocketConnect } from '../socket-connect-trace';
 /**
  * One loader for Node's own files.
  *
@@ -506,7 +507,10 @@ function bootstrapNodeLib(name: string, exports: unknown, process: object): void
     const prototype = (exports as { prototype: { emit: (...args: unknown[]) => unknown } }).prototype;
     const emit = prototype.emit;
     prototype.emit = function(this: unknown, ...args: unknown[]) {
-      return withGuestExecution(() => emit.apply(this, args));
+      return withGuestExecution(() => {
+        if (args[0] === 'connect' || args[0] === 'timeout') traceSocketConnect(`socket-${args[0]}`, this, undefined);
+        return emit.apply(this, args);
+      });
     };
     const original = events.getMaxListeners;
     events.getMaxListeners = (target) => {

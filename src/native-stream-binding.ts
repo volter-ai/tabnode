@@ -288,8 +288,9 @@ export class NativeStreamDriver {
     } catch (cause) { this.completions.delete(operation.request); release(); throw cause; }
   }
 
-  connect(address: string, port: number | undefined, ipv6: boolean, callback: (status: number) => void): number {
-    return this.complete({ operation: 'connect', id: this.descriptor.id, request: requestId(), address, port, ipv6 }, callback);
+  connect(address: string, port: number | undefined, ipv6: boolean, callback: (status: number, request: number) => void): number {
+    const request = requestId();
+    return this.complete({ operation: 'connect', id: this.descriptor.id, request, address, port, ipv6 }, status => callback(status, request));
   }
 
   shutdown(callback: (status: number) => void): number {
