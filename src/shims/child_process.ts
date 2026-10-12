@@ -550,6 +550,23 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // openvscode-server forks its pty host with, `<server>/out/bootstrap-fork`
   // for the file `bootstrap-fork.js`, was ENOENT and the pty host died at
   // its first fork.
+  const preloads: string[] = [], imports: string[] = [];
+  const takePreloads = (words: readonly string[]): void => {
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index]!;
+      if (word === '-r' || word === '--require' || word === '--import') {
+        const name = words[++index];
+        if (name !== undefined) (word === '--import' ? imports : preloads).push(name);
+      } else {
+        const inline = /^--(require|import)=([\s\S]+)$/.exec(word);
+        if (inline) (inline[1] === 'import' ? imports : preloads).push(inline[2]!);
+        else if (word === '-e' || word === '--eval' || word === '-p' || word === '--print' || word === '-pe') break;
+        else if (NODE_VALUE_OPTIONS.has(word)) index += 1;
+      }
+    }
+  };
+  const inheritedOptions = launch.env.NODE_OPTIONS?.match(/(?:[^\s"]+|"[^"]*")+/gu)?.map(word => word.replace(/^"|"$/gu, '')) ?? [];
+  takePreloads(inheritedOptions);
   const execArgv: string[] = [];
   let first = 0;
   // `-e`/`--eval` and `-p`/`--print` carry the program itself as their
@@ -573,6 +590,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       first += 2;
       break;
     }
+    if ((option === '-r' || option === '--require' || option === '--import') && first + 1 >= args.length) return { stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 };
     // An option that takes its value as the next word consumes it here, as Node's option parser does.
     if (NODE_VALUE_OPTIONS.has(option) && first + 1 < args.length) {
       execArgv.push(option, args[first + 1]!);
@@ -582,6 +600,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     execArgv.push(option);
     first += 1;
   }
+  takePreloads(execArgv);
   if (args[first] === '--') first += 1;
   const resolver = __nodeResolverFor(tree, 'runtime');
   const fileNamed = (word: string): string | null => {
@@ -993,6 +1012,14 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
 
   let entrySettling: Promise<unknown> | undefined;
   try {
+    if (preloads.length > 0 || imports.length > 0) {
+      const prepare = () => runtime.preloadModules(preloads, imports);
+      const settling = runToken === null ? prepare() : enterRun(runToken, prepare);
+      syncExecution = false;
+      await Promise.race([settling, exitPromise]);
+      if (exitCalled) { settling.catch(() => {}); return { stdout, stderr, exitCode }; }
+      syncExecution = true;
+    }
     // Run the script (synchronous part)
     // The entry runs AS this run: the token a `spawn` inside it reads is
     // this program's, not whichever run started last. The engine's storage

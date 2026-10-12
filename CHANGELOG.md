@@ -10,6 +10,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   the implemented curves; ECDH and other absent crypto APIs keep their named
   refusals. Actual image proofs and engine release remain pending.
 
+- Node commands load --require/-r preloads before awaited --import preloads from NODE_OPTIONS and the command line, using the entry’s process cache and cwd. Imports settle before file or eval execution; execArgv remains available for child inheritance. Runtime qualification is pending.
+
 - C6: each existing `load-clock` line adds `script` (the basename of the process's entry argument), `preparedBodies`/`preparedBodyBytes` and `sourceBodies`/`sourceBodyBytes`. The new byte counters measure UTF-8 bodies before wrapping; bodies prepared and kept during this process count as source. Startup-stream files reach the same filesystem paths. Runtime counts and the native comparison await the metrics cycle.
 
 - K5a (substrate Articles 1/6): clarify that a filesystem's image digest is answered only after the bytes match that record, before first use. Packed adapters may retain verification by immutable generation and extent. The existing loader already derives prepared keys from that content digest; its key format and kernel path are unchanged. Compilation is the builder's check; runtime proof is separate.

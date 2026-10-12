@@ -9,6 +9,18 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## node-import-preloads: Settle --import before the entry
+
+Status: built; independent runtime qualification pending
+
+Node loads all --require preloads before --import preloads and awaits imports, including their top-level awaits, before evaluating an entry or -e. The engine currently parses these options but executes neither in its Node command. Add a process-runtime preload method using the same working-directory require, dynamic import and module cache as the entry, and read preloads from NODE_OPTIONS before command-line options. Preserve the original execArgv for fork inheritance. Await imports through the existing process-exit/error path before admitting the entry; no package or provider is recognized. The substrate's native-binding bootstrap separately awaits explicitly declared provider initializers and uses awaited imports for its generated preloads.
+
+Completion:
+- The library and declarations compile, ordinary hooks remain enabled, and the branch is pushed normally.
+- Runtime behavior and original-image qualification stay with the independent sweep lane; no app or test runs here.
+
+Builder evidence: `npm run build:lib` passed, including the Vite bundle and declaration compiler. No tests, probes, app starts or measurements ran.
+
 ## C6: Name the load-clock process and distinguish body sources
 
 Status: built; independent metrics observation pending
