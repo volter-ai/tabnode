@@ -1,4 +1,5 @@
 Restore Node/libuv spawn uid/gid in async and sync child setup and registry admission; preserve private-record inheritance and default 1000. Source build validation only; runtime qualification pending.
+- K5b (substrate Articles5/6/8/9): reuse process-owned VM declaration preparation by source/options and a realm-local evaluator, preserve fresh sandbox scopes/arrays, skip impossible declaration scans, and report parse/setup/eval/cache counts in the existing deferred load clock. Runtime graph and151 declarations emit; independent review/full consumer emission/five-lap attribution remain.
 
 # Changelog
 

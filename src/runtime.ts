@@ -11,6 +11,8 @@ import type { ProcessCredentials } from './process-credentials';
 
 import { VirtualFS } from './virtual-fs';
 import { rememberCompiledSource } from './error-source';
+import { attachVmScriptEnvironment, VmScriptPreparationCache } from './vm-script-state';
+import type { VmScriptObserver, VmScriptPhase } from './vm-script-state';
 import { startGuestLoop, withGuestExecution } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { guestFetch, rememberRequestBodySource } from './fetch-transport';
@@ -152,11 +154,42 @@ const __substrateGuestVms = new WeakMap<Process, unknown>();
 function __substrateGuestVm(process: Process): unknown {
   let vm = __substrateGuestVms.get(process);
   if (vm) return vm;
-  const run = (code: string): unknown => __substrateScriptScope(__substrateGuestGlobal(process), String(code));
+  const cache = new VmScriptPreparationCache();
+  const observer: VmScriptObserver = {
+    phase: (phase, operation) => __substrateVmPhase(process, phase, operation),
+    run: (kind, codeUnits) => {
+      const clock = __substrateVmClock(process);
+      clock.runs[kind] += 1; clock.codeUnits += codeUnits;
+    },
+    preparation: (hit, failed, parsed) => {
+      const clock = __substrateVmClock(process);
+      if (hit) clock.cacheHits += 1; else clock.cacheMisses += 1;
+      if (failed) clock.parseFailures += 1;
+      if (parsed) clock.acornParses += 1;
+      else if (!hit) clock.declarationScanSkips += 1;
+    },
+  };
+  const run = (code: string): unknown => {
+    // Preserve the original argument order: acquire the actual guest-global
+    // scope, then perform the single existing code coercion.
+    const { globals, source } = observer.phase('setup', () => {
+      const globals = __substrateGuestGlobal(process);
+      return { globals, source: String(code) };
+    });
+    observer.run('thisContext', source.length);
+    return observer.phase('eval', () => __substrateScriptScope(globals, source));
+  };
   class Script extends vmShim.Script {
+    constructor(code: string, options?: object) {
+      super(code, options);
+      attachVmScriptEnvironment(this, { cache, observer });
+    }
     override runInThisContext(_options?: object): unknown { return run((this as unknown as { code: string }).code); }
   }
-  vm = { ...vmShim, Script, runInThisContext: (code: string, _options?: object) => run(code), default: undefined };
+  vm = { ...vmShim, Script, runInThisContext: (code: string, _options?: object) => run(code),
+    runInNewContext: (code: string, context?: object, options?: object) => new Script(code, options).runInNewContext(context, options),
+    runInContext: (code: string, context: object, options?: object) => new Script(code, options).runInContext(context, options),
+    default: undefined };
   (vm as { default: unknown }).default = vm;
   __substrateGuestVms.set(process, vm);
   return vm;
@@ -888,6 +921,44 @@ type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: num
   linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
   began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
+type VmClock = { phase: VmScriptPhase | undefined; at: number; wall: Record<VmScriptPhase, number>;
+  calls: Record<VmScriptPhase, number>; runs: { context: number; thisContext: number };
+  codeUnits: number; cacheHits: number; cacheMisses: number; parseFailures: number; acornParses: number; declarationScanSkips: number };
+const __substrateVmClocks = new WeakMap<object, VmClock>();
+function __substrateVmClock(process: object): VmClock {
+  let clock = __substrateVmClocks.get(process);
+  if (!clock) {
+    clock = { phase: undefined, at: __substrateLoadNow(), wall: { parse: 0, setup: 0, eval: 0 },
+      calls: { parse: 0, setup: 0, eval: 0 }, runs: { context: 0, thisContext: 0 },
+      codeUnits: 0, cacheHits: 0, cacheMisses: 0, parseFailures: 0, acornParses: 0, declarationScanSkips: 0 };
+    __substrateVmClocks.set(process, clock);
+  }
+  return clock;
+}
+/** Exclusive among VM phases, including nested VM calls. These spans overlay
+ * the existing module phases; never add them to that clock's wall totals.
+ * Eval includes browser parsing, guest execution and synchronous nested loads.
+ */
+function __substrateVmPhase<T>(process: object, phase: VmScriptPhase, operation: () => T): T {
+  const clock = __substrateVmClock(process), previous = clock.phase;
+  const account = (): void => {
+    const now = __substrateLoadNow();
+    if (clock.phase) clock.wall[clock.phase] += now - clock.at;
+    clock.at = now;
+  };
+  account(); clock.phase = phase; clock.calls[phase] += 1;
+  try { return operation(); }
+  finally { account(); clock.phase = previous; }
+}
+function __substrateVmSnapshot(process: object): unknown {
+  const clock = __substrateVmClocks.get(process);
+  if (!clock) return null;
+  const wall = { ...clock.wall };
+  if (clock.phase) wall[clock.phase] += __substrateLoadNow() - clock.at;
+  return { phaseMs: traceRoundFields(wall), calls: { ...clock.calls }, runs: { ...clock.runs },
+    codeUnits: clock.codeUnits, cacheHits: clock.cacheHits, cacheMisses: clock.cacheMisses, parseFailures: clock.parseFailures,
+    acornParses: clock.acornParses, declarationScanSkips: clock.declarationScanSkips };
+}
 // All process clocks in this realm share observer intervals. Counting A's
 // diagnostics must not appear as work in B's concurrently open module phase.
 let __substrateDeferredByteMs = 0;
@@ -1011,6 +1082,7 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
     linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
     compileSplit: { sourceCaptureMs: traceRound(clock.compileSplit.sourceCaptureMs), nativeEvalMs: traceRound(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals },
+    vmSplit: __substrateVmSnapshot(process),
     readSplit: split ? traceRoundFields({ ...split }) : null,
     resolveSplit: { packageConfigs: configs ? { ...configs } : null },
     bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: traceRound(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: traceRound(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(kernel),

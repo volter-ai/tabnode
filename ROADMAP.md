@@ -1,6 +1,6 @@
 ## S2 K5b: Reuse VM preparation and attribute execution excess
 
-Status: retained source/native-profile reading; generic reuse and process-owned phase capture intended
+Status: generic reuse and process-owned phase capture compiled; independent review and next-lap attribution pending
 
 Substrate Articles5/6/8/9. [K5b's source and profile reading](docs/readings/k5b-execution-2026-10-12.json)
 retains the historical4.1–4.6s evaluate+outside tab figure against3.1–3.3s
@@ -21,10 +21,36 @@ load clock, with actual process ownership and nesting accounted once. Eval
 includes browser parsing and guest execution; it is not a compile-only clock.
 Preserve return/exception/declaration behavior and current option handling.
 
-Completion: normal production library emission and hooks-on source push;
-independent engine review, then the mini's next five lap names cache hits,
-phase costs and actual app behavior. No tests/apps/probes/timing runs here.
-K5c's compile/evaluate ceiling remains a separate follow-up under C4.
+Builder evidence: [the source/production receipt](docs/readings/k5b-execution-build.json)
+binds the actual Vite runtime graph (384 modules,2.11s,exit0) and all151 package
+declarations (exit0). The full public/worker bundle stopped at7s and8.5s and
+is not a completed pack. The focused graph uses the original config/plugins/
+flags and emits every changed VM path. Locked production/compiler dependencies
+installed normally in3s after two full installs stopped at7s; no repository
+lock or published0.9.0 pin changed. All155 emitted products are retained.
+
+The cache holds immutable declaration preparation, never a compiled Script
+or sandbox. Script instances retain their own preparation; process-local
+shared values are weak, and finalization removes their source keys. Keys use
+exact source and opaque constructor/run option identities, reading no option
+getter or value. Parser options remain constant and existing VM options are
+otherwise unchanged. A conservative no-var/no-function/no-escape source scan
+skips impossible declaration discovery; possible declarations use the original
+Acorn parser. Each eval receives a fresh declaration array as well as fresh
+sandbox views and activation. One evaluator Function stays in its own realm.
+
+vmSplit accompanies the existing deferred load-clock line. It records exclusive
+synchronous parse/setup/eval phaseMs and calls; context/thisContext runs; UTF16
+codeUnits; cacheHits/cacheMisses; acornParses/declarationScanSkips/parseFailures.
+These phases overlay module phases, so their milliseconds are not added to
+module wall totals. Eval includes browser parsing, guest execution and nested
+loads; returned asynchronous work is outside the synchronous VM span.
+
+Completion: ordinary hooks-on source push, independent engine review, full
+consumer pack emission, then the mini's next five lap names real cache hits,
+phase costs and boot/walk behavior. No tests/apps/probes/new timing runs here.
+No app-time gain is claimed. K5c's compile/evaluate ceiling remains a separate
+follow-up under C4; actual direct eval stays, with no imported/cached guest code.
 
 ## S2 R11: Keep missing package configurations for the process lifetime
 

@@ -9,13 +9,20 @@
  * manifest exactly that way and read an empty object.
  */
 
-import { parse } from 'acorn';
+import { prepareVmScript, vmScriptPhase, vmScriptRun } from '../vm-script-state';
+
+// One host evaluator per realm. Each call still has its own activation,
+// direct eval and sandbox scope; no guest code or globals are closed over.
+const evaluateSandbox = new Function('__substrateScope', '__substrateCode', '__substrateDeclared', 'with (__substrateScope) { const __substrateResult = eval(__substrateCode); for (const name of __substrateDeclared) { try { __substrateScope[name] = eval(name); } catch {} } return __substrateResult; }');
+const copyDeclarations = Function.prototype.call.bind(Array.prototype.slice) as (names: readonly string[]) => string[];
 
 export class Script {
   private code: string;
+  #constructorOptions: object | undefined;
 
   constructor(code: string, _options?: object) {
     this.code = code;
+    this.#constructorOptions = _options;
   }
 
   runInThisContext(_options?: object): unknown {
@@ -23,50 +30,46 @@ export class Script {
   }
 
   runInNewContext(contextObject?: object, _options?: object): unknown {
-    const sandbox: Record<string | symbol, unknown> = contextObject && typeof contextObject === 'object' ? contextObject as Record<string | symbol, unknown> : {};
+    const source = this.code;
+    vmScriptRun(this, 'context', source);
     // A script's top-level `var` and function declarations are properties of
     // its context's global, as they are of Node's; they are read off the
     // script and copied onto the sandbox once it has run.
-    const declared: string[] = [];
-    try {
-      const ast = parse(this.code, { ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
-      for (const node of ast.body) {
-        if (node.type === 'FunctionDeclaration' && node.id) declared.push(node.id.name);
-        if (node.type === 'VariableDeclaration' && node.kind === 'var') for (const d of node.declarations) if (d.id.type === 'Identifier') declared.push(d.id.name);
-      }
-    } catch {
-      // A script the parser refuses still runs; its declarations stay its own.
-    }
-    // The scope answers every name but the evaluator's own and the script's declarations.
-    const own = new Set(['__substrateScope', '__substrateCode', '__substrateDeclared', ...declared]);
-    // The context's global as the script sees it through `globalThis`: the
-    // sandbox's own properties answer `in`, a read of a name it lacks
-    // falls back to the host's, a write lands on the sandbox.
-    const globalView: Record<string | symbol, unknown> = new Proxy(sandbox, {
-      has: (target, name) => name in target,
-      get: (target, name) => {
-        if (name === 'globalThis' || name === 'global' || name === 'self') return name in target ? target[name] : globalView;
-        return name in target ? target[name] : (globalThis as unknown as Record<string | symbol, unknown>)[name];
-      },
-      set: (target, name, value) => { target[name] = value; return true; },
-      deleteProperty: (target, name) => { delete target[name]; return true; },
+    const { declared, own } = vmScriptPhase(this, 'parse', () => prepareVmScript(this, source, this.#constructorOptions, _options));
+    const { scope, declaredForRun } = vmScriptPhase(this, 'setup', () => {
+      // The evaluator's original parameter is script-visible by its helper
+      // name. Give it a fresh array, never the cached declaration metadata.
+      const declaredForRun = copyDeclarations(declared);
+      const sandbox: Record<string | symbol, unknown> = contextObject && typeof contextObject === 'object' ? contextObject as Record<string | symbol, unknown> : {};
+      // The context's global as the script sees it through `globalThis`: the
+      // sandbox's own properties answer `in`, a read of a name it lacks
+      // falls back to the host's, a write lands on the sandbox.
+      const globalView: Record<string | symbol, unknown> = new Proxy(sandbox, {
+        has: (target, name) => name in target,
+        get: (target, name) => {
+          if (name === 'globalThis' || name === 'global' || name === 'self') return name in target ? target[name] : globalView;
+          return name in target ? target[name] : (globalThis as unknown as Record<string | symbol, unknown>)[name];
+        },
+        set: (target, name, value) => { target[name] = value; return true; },
+        deleteProperty: (target, name) => { delete target[name]; return true; },
+      });
+      // The scope every bare name resolves through: the sandbox first, the
+      // host's global after, and the evaluator's own names and the script's
+      // declarations left to the function that holds them.
+      const scope = new Proxy(sandbox, {
+        has: (_target, name) => !own.has(name as string),
+        get: (target, name) => {
+          if (name === Symbol.unscopables) return void 0;
+          if (name === 'globalThis' || name === 'global' || name === 'self') return name in target ? target[name] : globalView;
+          if (name in target) return target[name];
+          return (globalThis as unknown as Record<string | symbol, unknown>)[name];
+        },
+        set: (target, name, value) => { target[name] = value; return true; },
+        deleteProperty: (target, name) => { delete target[name]; return true; },
+      });
+      return { scope, declaredForRun };
     });
-    // The scope every bare name resolves through: the sandbox first, the
-    // host's global after, and the evaluator's own names and the script's
-    // declarations left to the function that holds them.
-    const scope = new Proxy(sandbox, {
-      has: (_target, name) => !own.has(name as string),
-      get: (target, name) => {
-        if (name === Symbol.unscopables) return void 0;
-        if (name === 'globalThis' || name === 'global' || name === 'self') return name in target ? target[name] : globalView;
-        if (name in target) return target[name];
-        return (globalThis as unknown as Record<string | symbol, unknown>)[name];
-      },
-      set: (target, name, value) => { target[name] = value; return true; },
-      deleteProperty: (target, name) => { delete target[name]; return true; },
-    });
-    const fn = new Function('__substrateScope', '__substrateCode', '__substrateDeclared', 'with (__substrateScope) { const __substrateResult = eval(__substrateCode); for (const name of __substrateDeclared) { try { __substrateScope[name] = eval(name); } catch {} } return __substrateResult; }');
-    return fn(scope, this.code, declared);
+    return vmScriptPhase(this, 'eval', () => evaluateSandbox(scope, this.code, declaredForRun));
   }
 
   runInContext(_context: object, _options?: object): unknown {
