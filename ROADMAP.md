@@ -2,6 +2,13 @@
 
 Status: requested producer unit emitted and pushed; independent delivery/cost reading pending
 
+Independent-review correction implemented (Articles5/6/8/9): preserve an old
+substrate host sink's default reading when neither selection symbol exists;
+propagate the explicit request through the authenticated cross-origin iframe
+hop. Failure warnings/errors remain reports when readings are off. Select
+the page's first-page snapshot and require-path counters at their producers.
+Early dedicated-worker record delivery remains an independent live reading.
+
 Articles 5/6/8/9; ADR-0124. Deferring serialization leaves unconditional
 per-module/per-filesystem timestamps, diagnostic maps and quiet timers in boot.
 The retained inventory names265 matching sites in60 source files at substrate

@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- R5 compatibility correction (substrate Articles5/6/8/9): an installed old-host trace sink without selection symbols retains full readings across independently updated heads; explicit selection remains authoritative. Skip require-path counters/replacement source/stack capture when unrequested, while warning reports retain their host/console path. Production library bundle/declarations pass; early dedicated-worker delivery still requires the independent lap.
+
 - R5 (substrate Articles5/6/8/9): collect module clocks, resolver counters, HTTP boundary samples and native-stream/socket evidence only for a host-requested reading. Unrequested browser realms retain their functional caches, guest output and stream accounting; standalone/file hosts retain their existing readings unless explicitly deselected. Producer timestamps and quiet timers are skipped before payload construction. Production library bundle/declarations emitted; record delivery and cost remain independently unqualified.
 
 - R11 follow-up (substrate Articles5/6/8/9): stop self-reference and #imports package-scope walks before root/node_modules, matching Node24.21 TraverseParent; a nearest config without imports ends that lookup. Document statSync's undefined-only-ENOENT/ENOTDIR contract. The kernel-backed implementation already throws EACCES/EIO; source evidence is retained, with no kernel behavior change or measured gain claimed.

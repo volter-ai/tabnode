@@ -2997,7 +2997,7 @@ function createRequire(
   const require: RequireFunction = (id: string): unknown => {
     const Module = __substrateModule();
     if (Module.prototype.require !== Module.__substrateRequire) {
-      __substrateRequirePathsFor(process).replacedPrototypeRequire += 1;
+      if (traceReadingRequested()) __substrateRequirePathsFor(process).replacedPrototypeRequire += 1;
       return Module.prototype.require.call(parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, id);
     }
     // A program that replaced `Module._load` sees every require from here on,
@@ -3006,7 +3006,7 @@ function createRequire(
     if (Module._load !== Module.__substrateLoad) {
       const keeping = __substrateKeptFor(process);
       keeping.depth += 1;
-      __substrateRequirePathsFor(process).replacedLoad += 1;
+      if (traceReadingRequested()) __substrateRequirePathsFor(process).replacedLoad += 1;
       // The clock, as `requireRaw` keeps it: the require is resolving from here (the program's own `_load` is part
       // of that), and when it returns the caller is where it was. Without the two marks nothing on this path was
       // counted to `resolve`, and a parent's body went on in its child's last phase (`link`).
@@ -3031,7 +3031,7 @@ function createRequire(
   const requireRaw = (id: string): unknown => {
     const keeping = __substrateKeptFor(process);
     keeping.depth += 1;
-    __substrateRequirePathsFor(process).requireRaw += 1;
+    if (traceReadingRequested()) __substrateRequirePathsFor(process).requireRaw += 1;
     const phase = __substrateLoadPhase(process, vfs, 'resolve');
     try { return requireCounted(id); } finally { keeping.depth -= 1; __substrateLoadPhase(process, vfs, phase); }
   };
@@ -3286,11 +3286,14 @@ function createRequire(
   // Counted by how it was reached, and on the load clock: it resolves from here, and its caller is where it was when
   // it returns (a `_load` is not a `require` call, so the depth is its caller's).
   (require as any).__loadRaw = (id: string): unknown => {
-    const paths = __substrateRequirePathsFor(process), via = __substrateLoadVia;
+    const via = __substrateLoadVia;
     __substrateLoadVia = undefined;
-    paths.engineLoad[via === 'engine-prototype-require' ? 'fromEnginePrototypeRequire' : via === 'replaced-load' ? 'fromReplacedLoad' : 'direct'] += 1;
-    if (paths.replacedPrototypeRequire > 0 && !paths.replaced.prototypeRequire) paths.replaced.prototypeRequire = __substrateSaidReplacement(__substrateModule().prototype.require);
-    if (via === 'replaced-load' && !paths.replaced.load) paths.replaced.load = __substrateSaidReplacement(__substrateModule()._load);
+    if (traceReadingRequested()) {
+      const paths = __substrateRequirePathsFor(process);
+      paths.engineLoad[via === 'engine-prototype-require' ? 'fromEnginePrototypeRequire' : via === 'replaced-load' ? 'fromReplacedLoad' : 'direct'] += 1;
+      if (paths.replacedPrototypeRequire > 0 && !paths.replaced.prototypeRequire) paths.replaced.prototypeRequire = __substrateSaidReplacement(__substrateModule().prototype.require);
+      if (via === 'replaced-load' && !paths.replaced.load) paths.replaced.load = __substrateSaidReplacement(__substrateModule()._load);
+    }
     const phase = __substrateLoadPhase(process, vfs, 'resolve');
     try { return requireCounted(id); } finally { __substrateLoadPhase(process, vfs, phase); }
   };
