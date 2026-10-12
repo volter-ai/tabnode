@@ -9,6 +9,38 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## D2: End a printed program at its first empty look
+
+Status: built and compiled; independent five-app qualification pending
+
+Substrate Articles 1/5/6/8/9; engine invariant: correct toward Node at source.
+D1 bf43898 records whether work returns after a look with neither new output
+nor pending guest input, timers, ports, handles or held child/build work.
+The retained review logs contain 57 run-drained readings: Rallly40, Twenty12,
+Dub4 and Cal1; all have empty wokeAfterEmpty. No retained LibreChat reading
+is available. The coordinator explicitly assigns phase-1 implementation now;
+LibreChat and the other four remain the independent cycle's behavioral gate.
+No five-app measurement or gain is claimed by the builder.
+
+After a printed program's entry settles, end at the first existing 50 ms
+look with no new output and none of the counted work. Remove the redundant
+500 ms wait and its 100 ms child-exit variant. A look that sees new output
+is not empty. Silent programs retain the existing 2000 ms idle rule; the
+60000 ms bound, caller-held runs, aborts, exits and entry settlement stay
+unchanged. Input, timers, sockets/ports and held work retain the program.
+Keep all D1 trace field names and emit the drain record for a short empty
+look too, so the next cycle still sees its decision. Remove the obsolete
+child-exit idle-shortening observer; child ownership/reaping remain intact.
+
+Disproof: a program with counted work ends, a silent run loses its 2 s rule,
+a caller-held run drains itself, or an unchanged app's walk breaks on D2.
+Completion: library bundle and declarations compile, ordinary commit/push,
+and the independent cycle qualifies all five. No apps, tests or timing here.
+
+Builder evidence: the full Vite library bundle and TypeScript declaration
+compiler completed successfully (0/0), sequentially within nine seconds each.
+The D1 evidence above is retained log reading, not a new run.
+
 ## R4: Identify socket completion and timeout cancellation
 
 Status: instrument built; historical Redis timeout cause unresolved
