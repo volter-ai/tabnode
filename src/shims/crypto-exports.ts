@@ -59,7 +59,7 @@ export const NODE_CRYPTO_EXPORTS = {
   generatePrimeSync: 'throws',
   getCipherInfo: 'throws',
   getCiphers: 'implemented',
-  getCurves: 'throws',
+  getCurves: 'implemented',
   getDiffieHellman: 'throws',
   getFips: 'implemented',
   getHashes: 'implemented',

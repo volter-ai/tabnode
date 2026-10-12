@@ -12,6 +12,7 @@ dist/
 
 # OS
 .DS_Store
+.metadata_never_index
 Thumbs.db
 
 # Claude Code

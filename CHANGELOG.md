@@ -7,6 +7,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 ## Unreleased
 
 - Acknowledge listening-port registration/primary mapping on the controlling service-worker channel without invoking Node's HTTP handler; report actual document-response metadata for preview selection (E18; substrate Articles 5/6/8/9). Pending checks follow channel reconnects and reject closure/supersession/unsupported old workers. Bundle/declaration compilation only; runtime and cycle gain pending.
+- Port the existing registry-derived `crypto.getCurves()` repair (39754de) onto
+  the current load-clock engine: return fresh sorted names from its genuine
+  P-256/P-384/P-521 binding through named/default crypto exports, with export
+  accounting updated (substrate Articles 5/6/9; actual Seerr start pending).
 
 - Defer diagnostic UTF8 body counts through the host-owned evidence seam and retain compiled scripts by their already-known names for Node error positions (C6; substrate Articles 5/6/8/9; runtime/app-time reading pending).
 
