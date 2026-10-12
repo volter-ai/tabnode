@@ -6,7 +6,7 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
-- R9 (substrate Articles 1/5/6/8/9): restore Node's native try-write/async flag for fully accepted bounded TCP/Pipe writes. Actual receive capacity decides acceptance through the synchronous operation channel; queued writes, EAGAIN, larger vectors and descriptor sends retain ordered asynchronous completion. Node's own JS invokes synchronous callbacks; request lifetime and queue accounting settle once. Paired substrate transport and independent static/Dub reading required; no measured saving claimed.
+- R9 (substrate Articles 1/5/6/8/9): restore Node's native try-write/async flag for fully accepted bounded TCP/Pipe writes. The paired holder limits its synchronous wait to1ms, then atomically hands the same submission to ordered async completion. The driver awaits its Promise without resending bytes; EAGAIN, larger vectors and descriptor sends keep their native queue. Transport failure returns ECANCELED/EPIPE through Node's write-error path and emits completion evidence. Synchronous callbacks, request lifetime and queue accounting settle once. Older holders without the bounded method stay async. Corrected bundle/declaration compilation passes; independent static/Dub reading owed, with no measured saving claimed.
 
 - R11 (substrate Articles 5/6/7/8/9): capture the existing module clock at the process-owned first HTTP request and successful writeHead. Reuse K5's scalar identity and deferred evidence owner, preserving quiet/exit records and Node delegation. Production bundle/declarations compile; actual phase attribution and runtime gain remain pending.
 

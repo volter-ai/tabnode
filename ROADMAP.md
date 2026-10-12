@@ -87,7 +87,7 @@ Child process credentials: restore Node/libuv spawn uid/gid for asynchronous and
 
 ## R9: complete fully accepted native stream writes synchronously
 
-Status: built; production bundle/declarations pass; independent static/runtime reading owed
+Status: corrections built; production bundle/declarations pass; independent static/runtime reading owed
 
 Substrate Articles 1/5/6/8/9. Retained Dub ff89a4c4/16fdf1aa records show
 the first 249-byte write accepted by its native owner, then its worker's
@@ -109,6 +109,15 @@ authority, resource ceiling or timeout changes.
 Completion: production bundle/declarations and the paired substrate compile;
 independent review checks write/callback/descriptor lifetime; the next Dub
 source-route reading establishes completion and first-response behavior.
+
+Review correction: native transport failure returns ECANCELED/EPIPE through
+the normal synchronous write result, including the completion sample, without
+throwing or replaying. A new bounded transport method waits at most 1 ms for
+full acceptance. If the owner has not answered, an atomic per-write handoff
+leaves that same submitted buffer owned by the ordered async path. A Promise
+result is its one completion; the driver never resubmits it. Older transports
+without this bounded method remain async. The substrate owns the named wait
+constant and atomic protocol; no process/module-specific restriction.
 
 # tabnode roadmap (Volter's fork)
 

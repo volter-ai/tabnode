@@ -3,7 +3,7 @@ import { TCP, TCPConnectWrap, type SockName } from './node-lib/binding/tcp_wrap'
 import { Pipe, PipeConnectWrap } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset } from './node-lib/binding/stream_wrap';
 import { __adoptHandle } from './node-lib/binding/handles';
-import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOBUFS, UV_ENOTSUP, UV_EPIPE, UV_EMFILE, UV_EBUSY, UV_EALREADY } from './node-lib/binding/uv';
+import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOBUFS, UV_ENOTSUP, UV_EPIPE, UV_EMFILE, UV_EBUSY, UV_EALREADY, UV_ENOSYS } from './node-lib/binding/uv';
 
 const UV_EAGAIN = uv.UV_EAGAIN as number;
 
@@ -26,7 +26,6 @@ export type NativeStreamOperation =
   | { operation: 'fdType'; fd: number }
   | { operation: 'pair'; id: number; peer: number }
   | { operation: 'duplicate'; id: number }
-  | { operation: 'tryWrite'; id: number; bytes: Uint8Array }
   | { operation: 'bind'; id: number; address: string; port?: number; ipv6?: boolean; flags?: number }
   | { operation: 'listen'; id: number; backlog: number }
   | { operation: 'connect'; id: number; request: number; address: string; port?: number; ipv6?: boolean }
@@ -49,8 +48,10 @@ export interface NativeStreamTransport {
   write(id: number, bytes: Uint8Array, handle?: number, trace?: NativeStreamWriteTrace): Promise<number>;
   /** Whole bounded write, without a descriptor: 0 means all bytes accepted.
    * EAGAIN (or undefined when local credit prevents an attempt) accepts none.
-   * Older holders omit this native operation; their ordered writes stay async. */
-  tryWrite?(id: number, bytes: Uint8Array, trace?: NativeStreamWriteTrace): number | undefined;
+   * The host bounds the synchronous wait. A Promise owns the ALREADY submitted
+   * write's async completion: do not submit its bytes again. Older holders omit
+   * this bounded method and their ordered writes stay async. */
+  tryWriteWithinBudget?(id: number, bytes: Uint8Array, trace?: NativeStreamWriteTrace): number | Promise<number> | undefined;
   onEvent(listener: (event: NativeStreamEvent) => void): () => void;
 }
 
@@ -173,7 +174,6 @@ export class NativeStreamScope {
     if (!entry) return { status: UV_EBADF };
     const handle = entry.handle;
     switch (operation.operation) {
-      case 'tryWrite': return { status: this.tryWrite(operation.id, operation.bytes) };
       case 'duplicate': {
         // A connection is duplicated whether or not its other end is still
         // there (the copy reads its EOF); a listening server is not one.
@@ -275,6 +275,14 @@ export class NativeStreamScope {
     if (!handle.peer) return UV_EPIPE;
     if (handle.peerQueuedBytes + bytes.byteLength > this.limits.maxQueuedBytes) return UV_EAGAIN;
     return handle.writeBuffer(new WriteWrap(), bytes);
+  }
+
+  /** The caller's short wait ended after we claimed its attempt. Only the
+   * native statuses that accepted NO bytes may enter the ordinary write queue.
+   * Otherwise that same submission completes with its actual native status. */
+  finishTryWrite(id: number, bytes: Uint8Array, status: number): Promise<number> {
+    return status === UV_EAGAIN || status === UV_ENOSYS
+      ? this.write(id, bytes) : Promise.resolve(status);
   }
 
   /**

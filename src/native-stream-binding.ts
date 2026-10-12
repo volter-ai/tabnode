@@ -90,9 +90,16 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
       }
     },
     ...(next.post ? { post(operation: Parameters<NonNullable<NativeStreamTransport['post']>>[0]): void { tally(`post:${operation.operation}`, 0); next.post!(operation); } } : {}),
-    ...(next.tryWrite ? { tryWrite(id: number, bytes: Uint8Array, trace: Parameters<NonNullable<NativeStreamTransport['tryWrite']>>[2]): number | undefined {
+    ...(next.tryWriteWithinBudget ? { tryWriteWithinBudget(id: number, bytes: Uint8Array, trace: Parameters<NonNullable<NativeStreamTransport['tryWriteWithinBudget']>>[2]): number | Promise<number> | undefined {
       const from = performance.now();
-      try { return next.tryWrite!(id, bytes, trace); }
+      try {
+        const result = next.tryWriteWithinBudget!(id, bytes, trace);
+        if (result !== undefined && typeof result !== 'number') {
+          const done = (): void => tally('write', performance.now() - from, bytes.byteLength);
+          result.then(done, done);
+        }
+        return result;
+      }
       finally { tally('tryWrite', performance.now() - from, bytes.byteLength); }
     } } : {}),
     write(id, bytes, handle, trace) {
@@ -218,6 +225,8 @@ interface PendingWrite {
   parts: Uint8Array[];
   bytes: number;
   sent?: number;
+  /** The bounded attempt already submitted these bytes; await it, never resend. */
+  submitted?: Promise<number>;
   ended: boolean;
   trace?: { listener: number; vector: number; at: number; chunks: number };
   release(): void;
@@ -425,25 +434,28 @@ export class NativeStreamDriver {
     // A bounded whole write needs no subsequent MessagePort completion. Never
     // overtake a queued vector or send a descriptor through this operation.
     if (retained === undefined && !this.writes.length && !this.pumping
-      && bytes <= this.channel.limits.maxReadChunkBytes && this.channel.tryWrite) {
-      let status: number | undefined;
+      && bytes <= this.channel.limits.maxReadChunkBytes && this.channel.tryWriteWithinBudget) {
+      let result: number | Promise<number> | undefined;
       try {
         const chunk = writeChunks(parts, this.channel.limits.maxReadChunkBytes).next().value!;
-        status = this.channel.tryWrite(this.descriptor.id, chunk, write.trace
+        result = this.channel.tryWriteWithinBudget(this.descriptor.id, chunk, write.trace
           ? { listener: write.trace.listener, vector: write.trace.vector, chunk: 1 } : undefined);
-      } catch (cause) {
-        // Transport failure may follow an accepted write. Release this request
-        // and propagate it; never submit the same bytes a second time.
-        write.parts = []; write.ended = true; write.release();
-        throw cause;
+      } catch {
+        // A transport failure may follow acceptance. Never replay the bytes,
+        // and return a native write error to Node's own JS, as the async path
+        // does, rather than throwing from socket.write/res.end.
+        const status = stopped ? UV_ECANCELED : UV_EPIPE;
+        this.finishWrite(write, status, true);
+        return status;
       }
-      if (status !== undefined && status !== UV_EAGAIN && status !== UV_ENOSYS) {
-        if (status === 0) {
+      if (result !== undefined && typeof result !== 'number') write.submitted = result;
+      else if (result !== undefined && result !== UV_EAGAIN && result !== UV_ENOSYS) {
+        if (result === 0) {
           this.handle.bytesWritten += bytes;
           if (write.trace) write.trace.chunks = 1;
         }
-        this.finishWrite(write, status, true);
-        return status;
+        this.finishWrite(write, result, true);
+        return result;
       }
     }
     // Node retains the caller's buffers until completion, even for a write
@@ -475,6 +487,17 @@ export class NativeStreamDriver {
     if (!write || write.ended) return;
     let status = 0;
     try {
+      if (write.submitted) {
+        // The owner may have claimed the attempt as its short wait expired.
+        // Its async completion refers to the SAME whole bounded write. Sending
+        // another chunk here could duplicate already accepted bytes.
+        if (write.trace) write.trace.chunks = 1;
+        status = await write.submitted;
+        write.submitted = undefined;
+        if (status === 0) this.handle.bytesWritten += write.bytes;
+        this.finishWrite(write, status);
+        return;
+      }
       // libuv takes an iovec write as consecutive bytes. Submit the buffers
       // together within the transport's byte credit, one bounded gather at a time;
       // larger writes still retain their buffers and wait for owner credit.
