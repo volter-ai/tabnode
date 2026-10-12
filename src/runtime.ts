@@ -1,5 +1,5 @@
 import { traceRound, traceRoundFields } from './trace-values';
-import { deferredTraceOutput, traceOutput } from './trace-output';
+import { captureTraceConsoleLine, deferredTraceOutput, traceOutput } from './trace-output';
 import { processCredentialsOf } from './process-credentials';
 import type { ProcessCredentials } from './process-credentials';
 /**
@@ -3236,30 +3236,32 @@ function createRequire(
 function createConsoleWrapper(
   onConsole?: (method: string, args: unknown[]) => void
 ): Console {
+  const emit = (method: 'log' | 'error' | 'warn' | 'info' | 'debug' | 'trace', args: unknown[]): void => {
+    // Owned instrumentation is evidence, so the host's R5 owner delivers it
+    // once after HTTP. Ordinary console calls keep both existing output paths.
+    if ((method === 'log' || method === 'info' || method === 'warn' || method === 'error' || method === 'debug')
+      && captureTraceConsoleLine(args, method === 'debug' ? 'log' : method)) return;
+    console[method](...args);
+    onConsole?.(method, args);
+  };
   const wrapper = {
     log: (...args: unknown[]) => {
-      console.log(...args);
-      onConsole?.('log', args);
+      emit('log', args);
     },
     error: (...args: unknown[]) => {
-      console.error(...args);
-      onConsole?.('error', args);
+      emit('error', args);
     },
     warn: (...args: unknown[]) => {
-      console.warn(...args);
-      onConsole?.('warn', args);
+      emit('warn', args);
     },
     info: (...args: unknown[]) => {
-      console.info(...args);
-      onConsole?.('info', args);
+      emit('info', args);
     },
     debug: (...args: unknown[]) => {
-      console.debug(...args);
-      onConsole?.('debug', args);
+      emit('debug', args);
     },
     trace: (...args: unknown[]) => {
-      console.trace(...args);
-      onConsole?.('trace', args);
+      emit('trace', args);
     },
     dir: (obj: unknown) => {
       console.dir(obj);

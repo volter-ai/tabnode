@@ -470,3 +470,9 @@ An older worker must update; no GET substitutes. Actual document-response
 metadata supplies unnamed-port selection. Consumer first HTTP remains the
 frame's response, so cold route work moves rather than disappears. Compile the
 library/declarations; independent consumer laps must establish behavior and gain.
+## R5: send engine console instruments to the evidence owner
+
+Status: source correction coded; runtime qualification pending
+
+Articles 5/6/8/9; ADR-0124: the runtime's guest console wrapper sends owned instrument lines to both the realm console and onConsole/stdout transport. Route recognized existing instrumentation through the installed host evidence sink before either output path; retain normal console behavior when no sink is installed and for ordinary program output. No source/bundle rewriting, guest timing change or new output authority. Vendored K5 still serializes at its producer; the repository rule prohibits editing src/node-lib. This unit removes onward synchronous output, not that remaining formatting work. Production library/declaration emission only; full R5 cost/delivery qualification remains independent.
+

@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- R5 (substrate Articles 5/6/8/9): route existing engine instrument lines from the guest console wrapper to the host evidence owner once, preventing synchronous duplicate console/stdout transport. Ordinary output keeps its existing path. Vendored K5 still formats JSON at its producer; runtime delivery and first-page cost remain unqualified.
+
 - S2 initialization evidence (substrate Articles 5/6/8/9): capture the existing module clock at bounded native accepted-socket read and write-vector boundaries, attributed to the handle's actual process. Add shared timestamps and scalar stream correlation while preserving every existing field and quiet/exit emission. Byte totals remain deferred; no guest scheduling or application behavior changes. Initialization attribution awaits an independent matched capture.
 
 - Remove the unused S2 scoped HTTP-client API after tracing all five server launches to their already native-backed holder/client. Keep bounded writev gathering and write evidence. The earlier response-delay attribution is withdrawn; runtime interleaving remains unqualified (Articles 5/6/8/9).
