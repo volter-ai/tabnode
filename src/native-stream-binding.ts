@@ -191,6 +191,31 @@ interface PendingWrite {
 }
 interface LocalEndpoint { handles: Set<Stream>; peer?: LocalEndpoint }
 
+/** A writev submits consecutive buffers together, within the owner's byte credit. */
+function* writeChunks(parts: Uint8Array[], limit: number): Generator<Uint8Array> {
+  let part = 0, offset = 0;
+  while (part < parts.length) {
+    if (offset === parts[part]!.byteLength) { part++; offset = 0; continue; }
+    const first = parts[part]!.subarray(offset, offset + limit);
+    offset += first.byteLength;
+    // A single buffer needs no gather allocation. Skip empty trailing iovecs.
+    let next = part + 1;
+    while (next < parts.length && parts[next]!.byteLength === 0) next++;
+    if (first.byteLength === limit || next === parts.length) { yield first; continue; }
+    const gathered = new Uint8Array(limit);
+    gathered.set(first);
+    let used = first.byteLength;
+    while (used < limit && part < parts.length) {
+      if (offset === parts[part]!.byteLength) { part++; offset = 0; continue; }
+      const bytes = parts[part]!.subarray(offset, offset + limit - used);
+      gathered.set(bytes, used);
+      used += bytes.byteLength;
+      offset += bytes.byteLength;
+    }
+    yield gathered.subarray(0, used);
+  }
+}
+
 export class NativeStreamDriver {
   private readingCredit = false;
   private buffered = false;
@@ -379,15 +404,16 @@ export class NativeStreamDriver {
     if (!write || write.ended) return;
     let status = 0;
     try {
-      outer: for (const part of write.parts) {
-        for (let offset = 0; offset < part.byteLength; offset += this.channel.limits.maxReadChunkBytes) {
-          if (this.closing || stopped) { status = UV_ECANCELED; break outer; }
-          const chunk = part.subarray(offset, offset + this.channel.limits.maxReadChunkBytes);
-          status = await this.channel.write(this.descriptor.id, chunk, write.sent);
-          if (write.sent !== undefined) { closeDescriptor(write.sent); write.sent = undefined; }
-          if (status !== 0) break outer;
-          this.handle.bytesWritten += chunk.byteLength;
-        }
+      // libuv takes an iovec write as consecutive bytes. Waiting for a worker
+      // event between a small head, body and terminator held the last bytes
+      // behind unrelated promise work. Submit one bounded gather at a time;
+      // larger writes still retain their buffers and wait for owner credit.
+      for (const chunk of writeChunks(write.parts, this.channel.limits.maxReadChunkBytes)) {
+        if (this.closing || stopped) { status = UV_ECANCELED; break; }
+        status = await this.channel.write(this.descriptor.id, chunk, write.sent);
+        if (write.sent !== undefined) { closeDescriptor(write.sent); write.sent = undefined; }
+        if (status !== 0) break;
+        this.handle.bytesWritten += chunk.byteLength;
       }
     } catch { status = stopped ? UV_ECANCELED : UV_EPIPE; }
     this.finishWrite(write, status);

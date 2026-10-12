@@ -1,5 +1,6 @@
 /** Host-owned native handles. Node's JS socket and IPC libraries stay in the guest. */
-import { TCP, TCPConnectWrap, type SockName } from './node-lib/binding/tcp_wrap';
+import { TCP, TCPConnectWrap, listenerOnPort, type SockName } from './node-lib/binding/tcp_wrap';
+import { __streamOverLoopback, type ResponseData } from './node-lib/http-bridge';
 import { Pipe, PipeConnectWrap } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset } from './node-lib/binding/stream_wrap';
 import { __adoptHandle } from './node-lib/binding/handles';
@@ -89,6 +90,38 @@ export class NativeStreamScope {
     return [...this.entries.values()].map(({ handle, descriptor }) => ({
       ...(pid !== undefined ? { pid } : {}), id: descriptor.id, kind: descriptor.kind, listening: !!handle.listening,
     }));
+  }
+
+  /**
+   * The bridge is an external client, running on the holder's loop. Parsing
+   * its response in the server worker made accepted socket bytes wait for
+   * that worker's unrelated promise continuations. Node's external client
+   * can read those bytes while the server continues synchronous work.
+   * This host-only scope capability admits its own actual listener, never
+   * another process's port or a replaced registration. The existing socket
+   * client/parser keeps HTTP framing and closes its connection on completion;
+   * closing this scope closes the accepted peer and ends pending reads.
+   */
+  requestServer(port: number, method: string, url: string, headers: Record<string, string>, body?: Uint8Array, signal?: AbortSignal): Promise<ResponseData> {
+    const listener = listenerOnPort(port);
+    if (this.disposed || !listener || scopes.get(listener) !== this) {
+      return Promise.reject(new Error('Native server listener is closed or belongs to another process.'));
+    }
+    const response: ResponseData = { statusCode: 502, headers: {} };
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    // Reuse the existing socket and HTTP parser, including cancellation. The
+    // bridge's buffered API still collects the same body, on this loop.
+    return __streamOverLoopback(port, method, url, headers, body as Parameters<typeof __streamOverLoopback>[4],
+      (statusCode, statusMessage, headers) => { Object.assign(response, { statusCode, statusMessage, headers }); },
+      chunk => { const bytes = Uint8Array.from(chunk); chunks.push(bytes); size += bytes.byteLength; },
+      () => {}, { signal }).then(() => {
+        const body = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+        response.body = body;
+        return response;
+      });
   }
 
   private entry(id: number): Entry | undefined {

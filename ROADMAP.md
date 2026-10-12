@@ -1,3 +1,9 @@
+## S2 first-answer socket delivery
+
+Status: implementation intended; independent image reading pending
+
+Restore Node's external-client boundary (substrate Articles 5/6/8/9). Retained Dub next15.5.8 on f65c4b79/1322079 writes its first307 head at459 bodies but posts the answer4.80–4.92s later, after the1523-body preload cohort. Native writes/answers at457 bodies. The lock-authenticated upstream preload uses promise continuations between synchronous webpack requires, with no immediate/task yield. Preserve that program scheduling. Our confined server adapter creates the response client/parser in the server worker, and native writev awaits the worker's completion event between each iovec. Move the trusted external client/parser to the stream holder, validating the actual listening handle belongs to that process scope; gather consecutive iovecs up to the existing transport chunk ceiling before waiting for completion. Keep per-handle ordering, credit, buffer retention, transferred descriptor lifetime and request/port retirement. No guest/package/vendor changes. A holder that still requires a server-worker turn to parse accepted response bytes, exposes another scope's listener, exceeds chunk credit, or misorders writes would disprove the design. Production emission is builder evidence only; response timing/interleaving and original apps remain the mini's reading.
+
 ## S1 crypto curve enumeration integration
 
 Status: source port coded; independent runtime qualification pending

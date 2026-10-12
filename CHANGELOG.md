@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- S2 first-answer (substrate Articles 5/6/8/9): provide a holder-loop HTTP client/parser scoped to the process's actual native listener, with cancellation through the existing stream client. Gather writev buffers within the existing transport chunk credit so small response heads/bodies/terminators are submitted together; keep asynchronous completions and larger-write backpressure. Vendored files and guest promise/preload scheduling are unchanged. Production compilation only; response interleaving remains independently unqualified.
+
 - Acknowledge listening-port registration/primary mapping on the controlling service-worker channel without invoking Node's HTTP handler; report actual document-response metadata for preview selection (E18; substrate Articles 5/6/8/9). Pending checks follow channel reconnects and reject closure/supersession/unsupported old workers. Bundle/declaration compilation only; runtime and cycle gain pending.
 - Port the existing registry-derived `crypto.getCurves()` repair (39754de) onto
   the current load-clock engine: return fresh sorted names from its genuine
