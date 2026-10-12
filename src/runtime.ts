@@ -3474,6 +3474,16 @@ export class Runtime {
     return result;
   }
 
+  /** Node's pre-entry modules share this process's cache, cwd and import settlement. */
+  async preloadModules(requires: readonly string[], imports: readonly string[]): Promise<void> {
+    const cwd = this.process.cwd();
+    const require = createRequire(this.vfs, this.fsShim, this.process,
+      cwd, this.moduleCache, this.options, this.processedCodeCache);
+    for (const request of requires) require(request);
+    const load = createDynamicImport(require, this.process, `file://${pathShim.resolve(cwd, '[preload]')}`);
+    for (const request of imports) await load(request);
+  }
+
   /**
    * Run a file from the virtual file system (synchronous - backward compatible)
    */
