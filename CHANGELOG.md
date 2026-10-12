@@ -6,7 +6,9 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
-- R5 (substrate Articles 5/6/8/9): route existing engine instrument lines from the guest console wrapper to the host evidence owner once, preventing synchronous duplicate console/stdout transport. Ordinary output keeps its existing path. Vendored K5 still formats JSON at its producer; runtime delivery and first-page cost remain unqualified.
+- R5/K5 (substrate Articles 5/6/8/9): restore the HTTP server to the unchanged Node24.21 bytes from495fed2 and move its bounded request/writeHead observer into owned runtime source. HTTP/HTTPS share three process-owned slots, with the existing private World-path exclusion and exact K5 fields/rounding plus pid for deferred producer identity. Raw evidence uses the deferred host owner; detach the emitter observer after sampling. Compilation and source identity only; delivery/cost qualification remains independent.
+
+- R5 (substrate Articles 5/6/8/9): route existing engine instrument lines from the guest console wrapper to the host evidence owner once, preventing synchronous duplicate console/stdout transport. Ordinary output keeps its existing path. R5/K5 above removes the remaining diagnostic insertion from Node's file; runtime delivery and first-page cost remain unqualified.
 
 - S2 initialization evidence (substrate Articles 5/6/8/9): capture the existing module clock at bounded native accepted-socket read and write-vector boundaries, attributed to the handle's actual process. Add shared timestamps and scalar stream correlation while preserving every existing field and quiet/exit emission. Byte totals remain deferred; no guest scheduling or application behavior changes. Initialization attribution awaits an independent matched capture.
 

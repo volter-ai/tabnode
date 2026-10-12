@@ -1025,6 +1025,68 @@ observeNativeStreamClocks((owner, sample) => {
   const process = owner === null ? undefined : __runFor(owner)?.process;
   if (process) __substrateSayLoadClock(process, sample.when, sample);
 });
+
+type K5ServerPrototype = { emit: (event: string | symbol, ...args: unknown[]) => unknown };
+type K5Response = { writeHead: (status: unknown, ...args: unknown[]) => unknown };
+type K5Requests = { said: number; detach: Set<() => void> };
+const __substrateK5Requests = new WeakMap<object, K5Requests>();
+const __substrateK5Servers = new WeakSet<object>();
+/** Observe Node's real request emission on the owned side, never in its
+ * vendored parser. HTTP and HTTPS share the actual process's three slots. */
+function __substrateObserveHttp(process: object, module: unknown): void {
+  const Server = (module as { Server?: unknown } | null)?.Server;
+  if (typeof Server !== 'function') return;
+  const prototype = Server.prototype as K5ServerPrototype | undefined;
+  if (!prototype || __substrateK5Servers.has(prototype) || typeof prototype.emit !== 'function') return;
+  let state = __substrateK5Requests.get(process);
+  if (!state) { state = { said: 0, detach: new Set() }; __substrateK5Requests.set(process, state); }
+  if (state.said >= 3) return;
+  const requests = state, descriptor = Object.getOwnPropertyDescriptor(prototype, 'emit'), emit = prototype.emit;
+  const observed = function emitRequest(this: unknown, event: string | symbol, ...args: unknown[]): unknown {
+    if (event === 'request' && requests.said < 3) {
+      try {
+        const req = args[0] as { url?: string } | undefined, res = args[1] as K5Response | undefined;
+        if (req && res && typeof res.writeHead === 'function' && !/^\/(__volter|_twin)\//u.test(req.url ?? '')) {
+          const n = ++requests.said;
+          const say = (what: string, extra: Record<string, unknown> = {}): void => {
+            try {
+              traceOutput('[k5] server', { n, what, url: req.url,
+                at: Math.round((performance.timeOrigin + performance.now()) * 10) / 10,
+                bodies: (process as Record<symbol, unknown>)[Symbol.for('tabnode.k5.bodies')] ?? 0,
+                pid: (process as { pid?: number }).pid ?? null, ...extra });
+            } catch { /* Evidence cannot change the request or response. */ }
+          };
+          say('request-event');
+          const writeHead = res.writeHead;
+          let headSaid = false;
+          const observedHead = function writeHeadObserved(this: unknown, status: unknown, ...rest: unknown[]): unknown {
+            if (!headSaid) { headSaid = true; say('write-head', { status }); }
+            // A response can be frozen or wrapped again by its caller. The
+            // observer must still delegate and preserve that replacement.
+            try { if (res.writeHead === observedHead) res.writeHead = writeHead; } catch { /* Read-only after capture. */ }
+            return Reflect.apply(writeHead, this, [status, ...rest]);
+          };
+          if (requests.said === 3) {
+            for (const detach of requests.detach) { try { detach(); } catch { /* A caller can freeze its prototype. */ } }
+            requests.detach.clear();
+          }
+          res.writeHead = observedHead;
+        }
+      } catch { /* A custom request/response must retain its ordinary emission. */ }
+    }
+    return Reflect.apply(emit, this, [event, ...args]);
+  };
+  Object.defineProperty(prototype, 'emit', { value: observed, configurable: true, writable: true,
+    enumerable: descriptor?.enumerable ?? true });
+  __substrateK5Servers.add(prototype);
+  requests.detach.add(() => {
+    // Leave a caller's own replacement intact. Otherwise restore the exact
+    // inherited/own property shape, with no observer on later requests.
+    if (prototype.emit !== observed) return;
+    if (descriptor) Object.defineProperty(prototype, 'emit', descriptor);
+    else Reflect.deleteProperty(prototype, 'emit');
+  });
+}
 function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
   if (counts.timer !== undefined) { clearTimeout(counts.timer); counts.timer = undefined; }
   __substrateSayLoadClock(process, at);
@@ -3064,7 +3126,13 @@ function createRequire(
       __browserRuntimeFillStreams(table, loadNodeLibFor(process, 'buffer').Buffer);
       return table[id];
     });
-    if (hasNodeLibModule(id)) return loadNodeLibFor(process, id);
+    if (hasNodeLibModule(id)) {
+      const loaded = loadNodeLibFor(process, id);
+      if (id === 'http' || id === 'https' || id === '_http_server') {
+        try { __substrateObserveHttp(process, loaded); } catch { /* Instrumentation cannot refuse a builtin. */ }
+      }
+      return loaded;
+    }
     if (builtinModules[id] && !__substrateInstalledWins(id) && !(id === 'fsevents' || id === 'chokidar' || id === 'readdirp')) {
       return id === 'esbuild' ? __substrateGuestEsbuild(process) : id === 'rollup' ? __substrateGuestRollup(process) : nativeModuleFor(process, id, () => builtinModules[id]);
     }
