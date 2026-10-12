@@ -81,6 +81,7 @@ import { setSyncChildVfs, warmSyncChild } from './sync-child';
 import { installShellJobs } from './shell-jobs';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
+import { installedNpmVersion } from '../npm/version';
 
 // Capture host capabilities before the guest's authority is restricted. These
 // endpoints are private, carry no guest bytes, and close at each checkpoint.
@@ -1415,6 +1416,10 @@ export function initChildProcess(vfs: VirtualFS): void {
 
     const subcommand = args[0];
 
+    if (args.length === 1 && (subcommand === '-v' || subcommand === '--version')) {
+      return npmVersionResult(tree, ctx.cwd, guestEnvironmentOf(ctx));
+    }
+
     if (!subcommand || subcommand === 'help' || subcommand === '--help') {
       return {
         stdout: 'Usage: npm <command>\n\nCommands:\n  run <script>   Run a script from package.json\n  start          Run the start script\n  test           Run the test script\n  install [pkg]  Install packages\n  ls             List installed packages\n',
@@ -1501,6 +1506,11 @@ export function initChildProcess(vfs: VirtualFS): void {
     },
     start: startChildRun,
   });
+}
+
+function npmVersionResult(tree: VirtualFS, cwd: string, env: Record<string, string>, executable = 'npm'): JustBashExecResult {
+  try { return { stdout: `${installedNpmVersion(tree, cwd, env, executable)}\n`, stderr: '', exitCode: 0 }; }
+  catch (error) { return { stdout: '', stderr: `npm ERR! ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 }; }
 }
 
 /**
@@ -2079,6 +2089,12 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
   }
 
   if (!bash) throw new Error('child_process not initialized');
+  // Direct argv retains an explicitly selected npm pathname. Shell text
+  // queries use the custom command's own PATH and the same metadata reader.
+  if (tree && run.argv?.length === 2 && run.argv[0]?.split('/').pop() === 'npm'
+    && (run.argv[1] === '-v' || run.argv[1] === '--version')) {
+    return npmVersionResult(tree, run.cwd ?? '/', run.env ?? {}, run.argv[0]);
+  }
   shellLinesRunning.push(run.command);
   setShellReadWatch(shellReadsProgram);
   try {
