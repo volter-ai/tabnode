@@ -13,7 +13,7 @@ import { VirtualFS } from './virtual-fs';
 import { rememberCompiledSource } from './error-source';
 import { attachVmScriptEnvironment, VmScriptPreparationCache } from './vm-script-state';
 import type { VmScriptObserver, VmScriptPhase } from './vm-script-state';
-import { startGuestLoop, withGuestExecution } from './guest-loop';
+import { startGuestLoop, withGuestExecution, guestExecutionActiveMs } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { guestFetch, rememberRequestBodySource } from './fetch-transport';
 import { installNodeResponse } from './node-response';
@@ -917,11 +917,12 @@ const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
  * field is zero and the phase is not split. The process's entry script is run elsewhere and is in `outside`.
  */
 type LoadPhase = 'outside' | 'resolve' | 'read' | 'link' | 'compile' | 'evaluate';
+type OutsideSplit = { vmMs: Record<VmScriptPhase, number>; guestBracketMs: number; unbracketedMs: number; clippedBracketMs: number };
 type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>;
   bodies: number; bodyBytes: number; preparedBodies: number; preparedBodyBytes: number; sourceBodies: number; sourceBodyBytes: number;
   byteBodies: Array<{ text?: string; prepared: boolean; preparedBytes?: number; sourceBytes?: number }>; countedBytes: number;
   linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
-  began: number; said: number };
+  outside: OutsideSplit; guestAt: number; began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
 type VmClock = { phase: VmScriptPhase | undefined; at: number; wall: Record<VmScriptPhase, number>;
   calls: Record<VmScriptPhase, number>; runs: { context: number; thisContext: number };
@@ -945,6 +946,10 @@ function __substrateVmPhase<T>(process: object, phase: VmScriptPhase, operation:
   if (!traceReadingRequested()) return operation();
   const clock = __substrateVmClock(process), previous = clock.phase;
   const account = (): void => {
+    // Intersect VM spans with module phases, rather than subtracting the VM's
+    // inclusive time (which can contain nested requires) from outside later.
+    const load = __substrateLoadClocks.get(process);
+    if (load) __substrateLoadPhase(process, undefined, load.phase);
     const now = __substrateLoadNow();
     if (clock.phase) clock.wall[clock.phase] += now - clock.at;
     clock.at = now;
@@ -965,12 +970,38 @@ function __substrateVmSnapshot(process: object): unknown {
 // All process clocks in this realm share observer intervals. Counting A's
 // diagnostics must not appear as work in B's concurrently open module phase.
 let __substrateDeferredByteMs = 0;
+let __substrateDeferredGuestMs = 0;
 function __substrateLoadNow(): number { return performance.now() - __substrateDeferredByteMs; }
+function __substrateGuestAt(now: number): number {
+  return guestExecutionActiveMs(now + __substrateDeferredByteMs) - __substrateDeferredGuestMs;
+}
+/** Fixed scalar account, exclusive within outside. Dispatch brackets are
+ * realm-scoped, not CPU samples or a proof that the remainder was waiting.
+ * VM phases have priority; filesystem blocking remains the kernelMs overlay.
+ */
+function __substrateOutsideInterval(split: OutsideSplit, elapsed: number, bracketed: number, vm: VmScriptPhase | undefined): void {
+  if (vm) { split.vmMs[vm] += elapsed; return; }
+  const taken = Math.min(elapsed, Math.max(0, bracketed));
+  split.guestBracketMs += taken;
+  split.unbracketedMs += elapsed - taken;
+  // Preserve evidence of clock clipping, including the existing quiet-tail
+  // omission, rather than presenting a bounded value as an exact active delta.
+  split.clippedBracketMs += Math.abs(bracketed - taken);
+}
+function __substrateOutsideSnapshot(process: object, clock: LoadClock, now: number, omitted: number): unknown {
+  const split = { ...clock.outside, vmMs: { ...clock.outside.vmMs } };
+  if (clock.phase === 'outside') __substrateOutsideInterval(split, now - clock.at - omitted,
+    __substrateGuestAt(now) - clock.guestAt, __substrateVmClocks.get(process)?.phase);
+  return { scope: 'realm-dispatch-brackets', vmMs: traceRoundFields(split.vmMs),
+    guestBracketMs: traceRound(split.guestBracketMs), unbracketedMs: traceRound(split.unbracketedMs),
+    clippedBracketMs: traceRound(split.clippedBracketMs) };
+}
 /** Byte totals are evidence only. A snapshot keeps its prefix length, not a
  * source copy; count that prefix after HTTP, then release the text references.
  * Kept prefix totals also answer an older snapshot without recounting bodies. */
 function __substrateBodyByteTotals(clock: LoadClock, limit: number): { preparedBodyBytes: number; sourceBodyBytes: number; utf8DeferredMs: number } {
   const started = performance.now();
+  const guestStarted = guestExecutionActiveMs(started);
   while (clock.countedBytes < limit) {
     const body = clock.byteBodies[clock.countedBytes]!;
     const bytes = byteLengthUtf8(body.text!);
@@ -978,9 +1009,10 @@ function __substrateBodyByteTotals(clock: LoadClock, limit: number): { preparedB
     body.preparedBytes = clock.preparedBodyBytes; body.sourceBytes = clock.sourceBodyBytes;
     delete body.text; clock.countedBytes += 1;
   }
-  const last = clock.byteBodies[limit - 1], elapsed = performance.now() - started;
+  const last = clock.byteBodies[limit - 1], ended = performance.now(), elapsed = ended - started;
   // Evidence work is not guest execution or a module phase in later samples.
   __substrateDeferredByteMs += elapsed;
+  __substrateDeferredGuestMs += guestExecutionActiveMs(ended) - guestStarted;
   return { preparedBodyBytes: last?.preparedBytes ?? 0, sourceBodyBytes: last?.sourceBytes ?? 0, utf8DeferredMs: elapsed };
 }
 type LoadClockFs = { kernelBlockedMs?: () => number };
@@ -1014,7 +1046,9 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
     clock = { phase: 'outside', at: now, kernelAt: 0, wall: zero(), kernel: zero(), bodies: 0, bodyBytes: 0,
       preparedBodies: 0, preparedBodyBytes: 0, sourceBodies: 0, sourceBodyBytes: 0,
       byteBodies: [], countedBytes: 0,
-      linkSplit: { utf8CountMs: 0, byteCounts: 0 }, compileSplit: { sourceCaptureMs: 0, nativeEvalMs: 0, sourceCaptures: 0, evals: 0 }, began: now, said: -1 };
+      linkSplit: { utf8CountMs: 0, byteCounts: 0 }, compileSplit: { sourceCaptureMs: 0, nativeEvalMs: 0, sourceCaptures: 0, evals: 0 },
+      outside: { vmMs: { parse: 0, setup: 0, eval: 0 }, guestBracketMs: 0, unbracketedMs: 0, clippedBracketMs: 0 },
+      guestAt: __substrateGuestAt(now), began: now, said: -1 };
     __substrateLoadClocks.set(process, clock);
   }
   // The file system is the process's, known from the first caller that holds it (a `require` made through
@@ -1027,8 +1061,11 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
   if (offered && (!clock.fs || (typeof clock.fs.kernelBlockedMs !== 'function' && typeof offered.kernelBlockedMs === 'function'))) { clock.fs = offered; clock.kernelAt = clock.fs.kernelBlockedMs?.() ?? 0; }
   const kernelNow = clock.fs?.kernelBlockedMs?.() ?? 0;
   const was = clock.phase;
+  const guestNow = __substrateGuestAt(now);
+  if (was === 'outside') __substrateOutsideInterval(clock.outside, now - clock.at, guestNow - clock.guestAt,
+    __substrateVmClocks.get(process)?.phase);
   clock.wall[was] += now - clock.at; clock.kernel[was] += kernelNow - clock.kernelAt;
-  clock.phase = phase; clock.at = now; clock.kernelAt = kernelNow;
+  clock.phase = phase; clock.at = now; clock.kernelAt = kernelNow; clock.guestAt = guestNow;
   return was;
 }
 /**
@@ -1059,6 +1096,7 @@ function __substrateSaidReplacement(replacement: unknown): { source: string; sta
 }
 type HttpLoadClockSample = { n: number; what: string; url: string | null } & Record<string, unknown>;
 function __substrateSayLoadClock(process: object, at: string, nativeStream?: NativeStreamClockSample, http?: HttpLoadClockSample): void {
+  if (!traceReadingRequested()) return;
   const clock = __substrateLoadClocks.get(process);
   const boundary = nativeStream !== undefined || http !== undefined;
   if (!clock || (!boundary && clock.bodies === clock.said)) return;
@@ -1088,6 +1126,7 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
     compileSplit: { sourceCaptureMs: traceRound(clock.compileSplit.sourceCaptureMs), nativeEvalMs: traceRound(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals },
     vmSplit: __substrateVmSnapshot(process),
+    outsideSplit: __substrateOutsideSnapshot(process, clock, now, saidAfter),
     readSplit: split ? traceRoundFields({ ...split }) : null,
     resolveSplit: { packageConfigs: configs ? { ...configs } : null },
     bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: traceRound(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: traceRound(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(kernel),

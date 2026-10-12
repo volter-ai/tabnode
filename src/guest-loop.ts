@@ -146,6 +146,13 @@ export interface EventLoopUtilization {
   utilization: number;
 }
 
+/** Internal reading of the existing realm dispatch account. The caller supplies
+ * its host monotonic timestamp; this neither starts the loop nor reads a clock.
+ * Time outside our brackets may be host execution, not just an idle loop. */
+export function guestExecutionActiveMs(now: number): number {
+  return active + (clock && (depth > 0 || continuation) ? now - activeSince : 0);
+}
+
 /** Node's current/previous and explicit two-snapshot subtraction forms. */
 export function eventLoopUtilization(first?: EventLoopUtilization, second?: EventLoopUtilization): EventLoopUtilization {
   let latest: { idle: number; active: number };

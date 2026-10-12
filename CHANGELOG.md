@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- First-request attribution (substrate Articles5/6/8/9): add requested-only
+  outsideSplit to the existing deferred load clock. Intersect synchronous VM
+  phases with outside, then partition its remainder using existing realm guest
+  dispatch brackets. Retain an explicitly unbracketed remainder, report clock
+  clipping, and exclude deferred byte-count work from the bracket account.
+  Filesystem blocking remains a nested overlay. No new timer, guest hook,
+  scheduling change or compile-cache claim; runtime figures await the mini.
+
 - Restore Node/libuv spawn uid/gid in async and sync child setup and registry admission; preserve private-record inheritance and default 1000. Source build validation only; runtime qualification pending.
 
 - K5b (substrate Articles 5/6/8/9): reuse process-owned VM declaration preparation by source and a frozen realm-local evaluator, preserve fresh sandbox scopes/arrays and captured source, and gate parse/setup/eval/cache counters on the R5 reading request. Runtime graph and package declarations emit; independent review/full consumer emission/five-lap attribution remain.

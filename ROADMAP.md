@@ -1,3 +1,42 @@
+## S2 first request: partition the time outside module loading
+
+Status: source instrument coded; production emission and independent reading pending
+
+Substrate Articles5/6/8/9. The retained Rallly fe60311f+a279af1 median
+request-to-head interval is1,294.7ms. Its662 new prepared bodies add441ms
+of native eval and468ms outside module phases; the filesystem's cumulative
+blocking accounts for14ms of that outside interval. The remaining454ms has
+no operation attribution. C4/L4's confined sloppy-wrapper boundary remains:
+prepared text and verified artifacts are not serialized browser code caches.
+
+Add a requested-only, fixed-size outsideSplit to the existing deferred
+load-clock record. Intersect outside intervals with the current VM phase and
+the engine's existing realm guest-execution brackets. VM parse/setup/eval,
+other bracketed execution and the unbracketed remainder partition outside;
+filesystem blocking stays a nested overlay. Brackets name engine dispatch,
+not CPU time, and the unbracketed remainder can contain host work as well as
+waiting. Native continuations and simultaneous processes in one realm retain
+that explicit scope. Never infer an await or scheduler cause from it.
+
+Close intervals at existing load and synchronous VM boundaries, with scalar
+counters only: no polling, source/stack retention, timers, handles, guest
+hooks, cache format, wrapper or scheduling change. Unrequested paths do not
+read an additional clock or allocate this account. Preserve every existing
+load-clock field, deferred byte accounting and snapshot ownership. Production
+bundle/declaration emission only; the scheduled mini reading determines
+which operation class can actually be removed. No saving is claimed here.
+
+The account uses the host timestamps already read by the load clock; reading
+the existing bracket total neither starts that loop nor reads another clock.
+clippedBracketMs reports active deltas bounded to their wall interval,
+including quiet's existing omitted tail. Deferred body-byte materialization
+is excluded from both wall and bracket totals. VM phase boundaries close only
+an existing module clock, so they cannot move its first-require origin.
+Snapshots copy the scalar partition before deferred transport; no later VM
+or guest callback can rewrite an earlier boundary's reading. Scope remains
+the owning process's module clock intersected with its realm's dispatch
+account; another process running in that same realm can contribute brackets.
+
 ## S2 K5b: Reuse VM preparation and attribute execution excess
 
 Status: generic reuse and process-owned phase capture compiled; independent review and next-lap attribution pending
