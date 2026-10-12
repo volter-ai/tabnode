@@ -1059,7 +1059,7 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
       outside: { vmMs: { parse: 0, setup: 0, eval: 0 }, guestBracketMs: 0, unbracketedMs: 0, clippedBracketMs: 0 },
       guestAt: __substrateGuestAt(now), began: now, said: -1 };
     __substrateLoadClocks.set(process, clock);
-    retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes);
+    if (!retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes)) clock.releaseBytes();
   }
   // The file system is the process's, known from the first caller that holds it (a `require` made through
   // `Module.prototype.require` holds none): its total is taken from then, so nothing before is counted to a phase.
@@ -1158,10 +1158,14 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     const materialized = { ...payload, preparedBodyBytes, sourceBodyBytes,
       ...(preparedBodyBytes === null ? { byteTotalsOmitted: 'cohort-prefix-retired' } : {}),
       linkSplit: { ...payload.linkSplit, utf8DeferredMs: traceRound(utf8DeferredMs) } };
-    if (at === 'exit') {
-      clock.byteBodies.length = 0; clock.byteBase = clock.countedBytes; clock.retainedInputBytes = 512;
-      clock.byteBasePreparedBytes = clock.preparedBodyBytes; clock.byteBaseSourceBytes = clock.sourceBodyBytes;
-      releaseTraceInput(clock);
+    if (at === 'exit' && !clock.byteTotalsDropped && limit >= clock.byteBase) {
+      const retired = limit - clock.byteBase;
+      clock.byteBodies = clock.byteBodies.slice(retired); clock.byteBase = limit;
+      clock.retainedInputBytes -= retired * 64;
+      clock.byteBasePreparedBytes = preparedBodyBytes ?? 0; clock.byteBaseSourceBytes = sourceBodyBytes ?? 0;
+      if (clock.byteBodies.length) {
+        if (!retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes)) clock.releaseBytes();
+      } else releaseTraceInput(clock);
     }
     return materialized;
   }, 'log', { retained: payload, input: clock });
@@ -3051,7 +3055,7 @@ function createRequire(
         loadClock.retainedInputBytes += 64 + prepared.length * 2;
         if (retainTraceInput(loadClock, loadClock.retainedInputBytes, loadClock.releaseBytes)) {
           loadClock.byteBodies.push({ text: prepared, prepared: bodySource === 'prepared' });
-        }
+        } else loadClock.releaseBytes();
       }
       loadClock.linkSplit.byteCounts += 1;
       if (bodySource === 'prepared') loadClock.preparedBodies += 1;

@@ -5,7 +5,7 @@ Status: source implementation and full package production emission complete; app
 Articles5/6/8/9; substrate ADR0124 and lead ruling under owner delegation,
 2026-10-12 (OWNER-RULINGS.md). Keep the exact deferred decoded-body UTF8
 counts, but declare all retained body text/code-unit and row metadata weights
-to the selected host's single256MiB trace retention owner. A dropped source
+to the selected host's allocation within the tab's single 256 MiB trace retention owner. A dropped source
 cohort releases its entire prefix array and all associated factories. Later
 load clocks retain their phase/count scalars with explicit null byte totals;
 no partial prefix is presented as exact. Normal terminal materialization
@@ -829,3 +829,7 @@ Status: unchanged vendor restoration and owned observer coded; runtime qualifica
 
 Articles 5/6/8/9:9bd59f3/17a5dba inserted the diagnostic K5 counter/console block into the otherwise unchanged Node24.21 HTTP server. Restore that file byte-for-byte from495fed2, enforcing the repository's unmodified-vendor rule. Observe the actual scoped HTTP/HTTPS Server request emission from owned runtime source, with one shared process counter, first3 non-/__volter/ or /_twin/ requests, and the existing response writeHead capture. Preserve n/what/url/at/bodies/status and rounding; add pid to retain producer identity after document delivery. Send owned scalar fields to R5, with no producer JSON or duplicate stdout. Detach the emitter observer once its slots are used; preserve any caller's replacement. Request/return/error and writeHead delegation remain Node's. Production bundle/declarations and exact restored-source identity only; runtime delivery/cost remains independent. No authored implementation edits to Node's file.
 
+
+R5 review correction: every refused source input explicitly drops its byte
+account; terminal materialization retires only its captured prefix and keeps
+any later bodies. The host partitions one tab budget across its realms.

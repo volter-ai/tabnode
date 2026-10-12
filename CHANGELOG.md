@@ -5,7 +5,7 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 ## Unreleased
 
 - R5 retention (Articles5/6/8/9): declare deferred load-clock prefix inputs
-  to the host's requested256MiB trace bound; drop/release whole source cohorts
+  to the host's share of the requested 256 MiB tab trace bound; drop/release whole source cohorts
   with explicit loss and null subsequent byte totals. Exact surviving UTF8
   cohorts still materialize only after release or before terminal handoff.
   Terminal ownership releases arrays while retaining cumulative scalars.
