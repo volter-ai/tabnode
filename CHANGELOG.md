@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Defer diagnostic UTF8 body counts through the host-owned evidence seam and retain compiled scripts by their already-known names for Node error positions (C6; substrate Articles 5/6/8/9; runtime/app-time reading pending).
+
 - Restore the module-clock caller phase after every require and include current-phase kernel blocking in captures; keep require-depth/stat-window and guest loading behavior unchanged (C6; substrate Articles5/6/8/9; runtime attribution pending).
 
 - Send engine instrumentation as owned fields through the host trace seam; defer summaries/JSON while preserving producer clocks and guest console behavior (R5; app-time qualification pending).

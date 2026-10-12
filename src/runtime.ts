@@ -1,5 +1,5 @@
 import { traceRound, traceRoundFields } from './trace-values';
-import { traceOutput } from './trace-output';
+import { deferredTraceOutput, traceOutput } from './trace-output';
 import { processCredentialsOf } from './process-credentials';
 import type { ProcessCredentials } from './process-credentials';
 /**
@@ -199,12 +199,12 @@ function __substrateModuleTypes(code: string, resolvedPath: string, format: stri
  * hold — a `data:` module whose URL carries a line break — names nothing,
  * since a broken directive would be read as code.
  */
-function __substrateSourceURL(resolvedPath: string): string {
+function __substrateScriptName(resolvedPath: string): string | undefined {
   let name = resolvedPath;
   if (name.startsWith('file://')) {
     try { name = decodeURIComponent(new URL(name).pathname); } catch { /* a URL that will not parse names itself */ }
   }
-  return /[\n\r]/u.test(name) ? '' : `\n//# sourceURL=${name}`;
+  return /[\n\r]/u.test(name) ? undefined : name;
 }
 function __substrateScopeGlobalCalls(code: string): string {
   if (!/\b(?:new|fetch|Promise)\b/u.test(code)) return code;
@@ -510,17 +510,17 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
 // compiled through this alias, which is an indirect eval: global scope, sloppy.
 // The guest helpers are then out of scope by name, so they are arguments.
 const __substrateSloppyEval = eval;
-function __substrateCompileBody(source: string, owner: object): any {
+function __substrateCompileBody(source: string, owner: object, scriptName: string | undefined): any {
   const clock = __substrateLoadClocks.get(owner);
   // C6: split this phase's source retention from V8's own eval. The entry's separate run path is outside the
   // module compile phase, so it does not enter these counters either. Preserve the actual source and sloppy eval.
   if (!clock || clock.phase !== 'compile') {
-    rememberCompiledSource(owner, source);
+    rememberCompiledSource(owner, source, scriptName);
     return __substrateSloppyEval(source);
   }
   const captureAt = performance.now();
   clock.compileSplit.sourceCaptures += 1;
-  try { rememberCompiledSource(owner, source); }
+  try { rememberCompiledSource(owner, source, scriptName); }
   finally { clock.compileSplit.sourceCaptureMs += performance.now() - captureAt; }
   const evalAt = performance.now();
   clock.compileSplit.evals += 1;
@@ -883,9 +883,27 @@ const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
 type LoadPhase = 'outside' | 'resolve' | 'read' | 'link' | 'compile' | 'evaluate';
 type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>;
   bodies: number; bodyBytes: number; preparedBodies: number; preparedBodyBytes: number; sourceBodies: number; sourceBodyBytes: number;
+  byteBodies: Array<{ text?: string; prepared: boolean; preparedBytes?: number; sourceBytes?: number }>; countedBytes: number;
   linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
   began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
+/** Byte totals are evidence only. A snapshot keeps its prefix length, not a
+ * source copy; count that prefix after HTTP, then release the text references.
+ * Kept prefix totals also answer an older snapshot without recounting bodies. */
+function __substrateBodyByteTotals(clock: LoadClock, limit: number): { preparedBodyBytes: number; sourceBodyBytes: number; utf8DeferredMs: number } {
+  const started = performance.now();
+  while (clock.countedBytes < limit) {
+    const body = clock.byteBodies[clock.countedBytes]!;
+    const bytes = byteLengthUtf8(body.text!);
+    if (body.prepared) clock.preparedBodyBytes += bytes; else clock.sourceBodyBytes += bytes;
+    body.preparedBytes = clock.preparedBodyBytes; body.sourceBytes = clock.sourceBodyBytes;
+    delete body.text; clock.countedBytes += 1;
+  }
+  const last = clock.byteBodies[limit - 1], elapsed = performance.now() - started;
+  // Evidence work is not guest execution or a module phase in later samples.
+  clock.at += elapsed; clock.began += elapsed;
+  return { preparedBodyBytes: last?.preparedBytes ?? 0, sourceBodyBytes: last?.sourceBytes ?? 0, utf8DeferredMs: elapsed };
+}
 type LoadClockFs = { kernelBlockedMs?: () => number };
 /**
  * An instrument (K5a on the speed checklist): the 'read' phase's parts, per process, in ms and counts. On Dub the
@@ -914,6 +932,7 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
     const zero = (): Record<LoadPhase, number> => ({ outside: 0, resolve: 0, read: 0, link: 0, compile: 0, evaluate: 0 });
     clock = { phase: 'outside', at: now, kernelAt: 0, wall: zero(), kernel: zero(), bodies: 0, bodyBytes: 0,
       preparedBodies: 0, preparedBodyBytes: 0, sourceBodies: 0, sourceBodyBytes: 0,
+      byteBodies: [], countedBytes: 0,
       linkSplit: { utf8CountMs: 0, byteCounts: 0 }, compileSplit: { sourceCaptureMs: 0, nativeEvalMs: 0, sourceCaptures: 0, evals: 0 }, began: now, said: -1 };
     __substrateLoadClocks.set(process, clock);
   }
@@ -974,7 +993,8 @@ function __substrateSayLoadClock(process: object, at: string): void {
   const entry = (process as { argv?: string[] }).argv?.[1];
   const split = __substrateReadSplits.get(process), paths = __substrateRequirePaths.get(process);
   const requires = paths ? { ...paths, engineLoad: { ...paths.engineLoad }, replaced: { ...paths.replaced } } : null;
-  traceOutput("[boot-trace]", { event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
+  const limit = clock.bodies;
+  const payload = { event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
     script: entry === undefined ? null : pathShim.posix.basename(entry),
     preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
     linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
@@ -984,7 +1004,12 @@ function __substrateSayLoadClock(process: object, at: string): void {
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
     requires,
-    kernelFrom: { fileSystem: clock.fs ? (clock.fs as object).constructor?.name ?? 'unnamed' : null, total: typeof clock.fs?.kernelBlockedMs === 'function' ? traceRound(clock.fs.kernelBlockedMs()) : 'no kernelBlockedMs on it' } });
+    kernelFrom: { fileSystem: clock.fs ? (clock.fs as object).constructor?.name ?? 'unnamed' : null, total: typeof clock.fs?.kernelBlockedMs === 'function' ? traceRound(clock.fs.kernelBlockedMs()) : 'no kernelBlockedMs on it' } };
+  deferredTraceOutput("[boot-trace]", () => {
+    const { preparedBodyBytes, sourceBodyBytes, utf8DeferredMs } = __substrateBodyByteTotals(clock, limit);
+    return { ...payload, preparedBodyBytes, sourceBodyBytes,
+      linkSplit: { ...payload.linkSplit, utf8DeferredMs: traceRound(utf8DeferredMs) } };
+  });
 }
 function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
   if (counts.timer !== undefined) { clearTimeout(counts.timer); counts.timer = undefined; }
@@ -2732,15 +2757,13 @@ function createRequire(
       loadClock.bodies += 1; loadClock.bodyBytes += prepared.length;
       // C6: count the body actually handed off, not a prepared read attempt or a module-cache hit. Newly kept
       // bodies still came from source in this process. Startup streams feed the tree and use these same paths.
-      // Preserve bodyBytes' existing string-length accounting; the new fields give each body's UTF-8 byte size.
-      // The legacy Buffer polyfill encodes into a JS number array just to get its length. Node's existing binding
-      // counts without producing those bytes; neither prepared nor freshly transformed bodies need that copy.
-      const countAt = performance.now();
-      const bytes = byteLengthUtf8(prepared);
-      loadClock.linkSplit.utf8CountMs += performance.now() - countAt;
+      // Preserve bodyBytes' existing string-length accounting. UTF8 totals
+      // have no guest/budget consumer; retain an immutable reference for the
+      // deferred evidence owner, without counting or copying it here.
+      loadClock.byteBodies.push({ text: prepared, prepared: bodySource === 'prepared' });
       loadClock.linkSplit.byteCounts += 1;
-      if (bodySource === 'prepared') { loadClock.preparedBodies += 1; loadClock.preparedBodyBytes += bytes; }
-      else { loadClock.sourceBodies += 1; loadClock.sourceBodyBytes += bytes; }
+      if (bodySource === 'prepared') loadClock.preparedBodies += 1;
+      else loadClock.sourceBodies += 1;
       // K5's turn-order reading: the count so far, where the process's own http server can say it beside a request.
       (process as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.k5.bodies')] = loadClock.bodies;
     }
@@ -2777,14 +2800,16 @@ function createRequire(
       // header's `var` statements are the module's scope, `globalThis` and
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
-      // `const` shadow that scope. `__substrateSourceURL` names the script.
+      // `const` shadow that scope. The generated sourceURL names the script.
       // Bare immediates use the guest's timer face too: Etherpad's tsx called
       // setImmediate(...).unref() through the browser's numeric timer because
       // only timeout/interval names were bound here. The guest face already
       // returns Node handles and owns their ref/unref lifetime.
+      const scriptName = __substrateScriptName(resolvedPath);
+      const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
       const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get window() { return globalThis.window; }, set window(value) { globalThis.window = value; }, get document() { return globalThis.document; }, set document(value) { globalThis.document = value; }, get location() { return globalThis.location; }, set location(value) { globalThis.location = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
-})${__substrateSourceURL(resolvedPath)}`;
+})${sourceURL}`;
 
       // A lowered ES module body is a generator that yields at each import
       // still settling; a body that must wait, on a top-level `await` of its
@@ -2794,7 +2819,7 @@ function createRequire(
       let fn;
       __substrateLoadPhase(process, vfs, 'compile');
       try {
-        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, process);
+        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, process, scriptName);
       } catch (evalError) {
         const msg = evalError instanceof Error ? evalError.message : String(evalError);
       // A module with top-level await runs. Node runs a `.js` file of a package
@@ -2804,7 +2829,7 @@ function createRequire(
       // an async function body instead.
         if (!(evalError instanceof SyntaxError)) throw evalError;
         bodyKind = 'async';
-        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), process); }
+        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), process, scriptName); }
         catch { throw new SyntaxError(`${msg} (in ${resolvedPath})`); }
       }
       __substrateLoadPhase(process, vfs, 'link');
@@ -3445,14 +3470,16 @@ export class Runtime {
       // header's `var` statements are the module's scope, `globalThis` and
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
-      // `const` shadow that scope. `__substrateSourceURL` names the script.
+      // `const` shadow that scope. The generated sourceURL names the script.
       // Bare immediates use the guest's timer face too: Etherpad's tsx called
       // setImmediate(...).unref() through the browser's numeric timer because
       // only timeout/interval names were bound here. The guest face already
       // returns Node handles and owns their ref/unref lifetime.
+      const scriptName = __substrateScriptName(filename);
+      const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
       const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get window() { return globalThis.window; }, set window(value) { globalThis.window = value; }, get document() { return globalThis.document; }, set document(value) { globalThis.document = value; }, get location() { return globalThis.location; }, set location(value) { globalThis.location = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
-})${__substrateSourceURL(filename)}`;
+})${sourceURL}`;
 
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(require, this.process, filename.startsWith('data:') ? filename : `file://${filename}`);
@@ -3465,11 +3492,11 @@ export class Runtime {
       let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
       let fn;
       try {
-        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, this.process);
+        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, this.process, scriptName);
       } catch (syntaxError) {
         if (!(syntaxError instanceof SyntaxError)) throw syntaxError;
         bodyKind = 'async';
-        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), this.process); }
+        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), this.process, scriptName); }
         catch { throw syntaxError; }
       }
       const body = __substrateInStatWindow(this.process, () => withGuestExecution(() => fn(
