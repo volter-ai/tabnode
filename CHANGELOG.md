@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Keep K5 evidence data-only: capture body totals from the private process clock and prefer the recorded run PID, with scalar-only URL/PID/status fields. Non-scalar status arguments retain their Node coercion/delegation and record null plus statusType; caller functions/ports never enter trace transport (R5/K5; Articles 5/6/8/9; compiler evidence only).
+
 - R5/K5 (substrate Articles 5/6/8/9): restore the HTTP server to the unchanged Node24.21 bytes from495fed2 and move its bounded request/writeHead observer into owned runtime source. HTTP/HTTPS share three process-owned slots, with the existing private World-path exclusion and exact K5 fields/rounding plus pid for deferred producer identity. Raw evidence uses the deferred host owner; detach the emitter observer after sampling. Compilation and source identity only; delivery/cost qualification remains independent.
 
 - R5 (substrate Articles 5/6/8/9): route existing engine instrument lines from the guest console wrapper to the host evidence owner once, preventing synchronous duplicate console/stdout transport. Ordinary output keeps its existing path. R5/K5 above removes the remaining diagnostic insertion from Node's file; runtime delivery and first-page cost remain unqualified.

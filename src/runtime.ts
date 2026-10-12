@@ -62,7 +62,7 @@ import {
 import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
 import { observeNativeStreamClocks, sayNativeStreamCounts, type NativeStreamClockSample } from './native-stream-binding';
-import { __runFor } from './process-tokens';
+import { __runFor, __tokenForProcess, runPid } from './process-tokens';
 import { nodeLibBindingsAsked } from './node-lib/load';
 import type { ResolutionKept } from './node-resolution';
 import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
@@ -1050,17 +1050,25 @@ function __substrateObserveHttp(process: object, module: unknown): void {
           const n = ++requests.said;
           const say = (what: string, extra: Record<string, unknown> = {}): void => {
             try {
-              traceOutput('[k5] server', { n, what, url: req.url,
+              const url = req.url, owner = __tokenForProcess(process as Process);
+              const pid = runPid(owner)?.pid ?? (process as { pid?: unknown }).pid;
+              traceOutput('[k5] server', { n, what, url: typeof url === 'string' ? url : null,
                 at: Math.round((performance.timeOrigin + performance.now()) * 10) / 10,
-                bodies: (process as Record<symbol, unknown>)[Symbol.for('tabnode.k5.bodies')] ?? 0,
-                pid: (process as { pid?: number }).pid ?? null, ...extra });
+                bodies: __substrateLoadClocks.get(process)?.bodies ?? 0,
+                pid: typeof pid === 'number' ? pid : null, ...extra });
             } catch { /* Evidence cannot change the request or response. */ }
           };
           say('request-event');
           const writeHead = res.writeHead;
           let headSaid = false;
           const observedHead = function writeHeadObserved(this: unknown, status: unknown, ...rest: unknown[]): unknown {
-            if (!headSaid) { headSaid = true; say('write-head', { status }); }
+            if (!headSaid) {
+              headSaid = true;
+              // Caller objects can carry functions or ports. Capture scalar
+              // evidence only; Node alone coerces the actual status argument.
+              const scalar = status == null || ['number', 'string', 'boolean'].includes(typeof status);
+              say('write-head', scalar ? { status } : { status: null, statusType: typeof status });
+            }
             // A response can be frozen or wrapped again by its caller. The
             // observer must still delegate and preserve that replacement.
             try { if (res.writeHead === observedHead) res.writeHead = writeHead; } catch { /* Read-only after capture. */ }
