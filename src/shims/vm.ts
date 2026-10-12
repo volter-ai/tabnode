@@ -13,16 +13,17 @@ import { prepareVmScript, vmScriptPhase, vmScriptRun } from '../vm-script-state'
 
 // One host evaluator per realm. Each call still has its own activation,
 // direct eval and sandbox scope; no guest code or globals are closed over.
-const evaluateSandbox = new Function('__substrateScope', '__substrateCode', '__substrateDeclared', 'with (__substrateScope) { const __substrateResult = eval(__substrateCode); for (const name of __substrateDeclared) { try { __substrateScope[name] = eval(name); } catch {} } return __substrateResult; }');
+// A guest function can reach its caller. Freeze the reused helper and its
+// prototype so that reach cannot store properties for another sandbox run.
+const evaluateSandbox = Object.freeze(new Function('__substrateScope', '__substrateCode', '__substrateDeclared', 'with (__substrateScope) { const __substrateResult = eval(__substrateCode); for (const name of __substrateDeclared) { try { __substrateScope[name] = eval(name); } catch {} } return __substrateResult; }'));
+Object.freeze(evaluateSandbox.prototype);
 const copyDeclarations = Function.prototype.call.bind(Array.prototype.slice) as (names: readonly string[]) => string[];
 
 export class Script {
   private code: string;
-  #constructorOptions: object | undefined;
 
   constructor(code: string, _options?: object) {
     this.code = code;
-    this.#constructorOptions = _options;
   }
 
   runInThisContext(_options?: object): unknown {
@@ -35,7 +36,7 @@ export class Script {
     // A script's top-level `var` and function declarations are properties of
     // its context's global, as they are of Node's; they are read off the
     // script and copied onto the sandbox once it has run.
-    const { declared, own } = vmScriptPhase(this, 'parse', () => prepareVmScript(this, source, this.#constructorOptions, _options));
+    const { declared, own } = vmScriptPhase(this, 'parse', () => prepareVmScript(this, source));
     const { scope, declaredForRun } = vmScriptPhase(this, 'setup', () => {
       // The evaluator's original parameter is script-visible by its helper
       // name. Give it a fresh array, never the cached declaration metadata.
@@ -69,7 +70,7 @@ export class Script {
       });
       return { scope, declaredForRun };
     });
-    return vmScriptPhase(this, 'eval', () => evaluateSandbox(scope, this.code, declaredForRun));
+    return vmScriptPhase(this, 'eval', () => evaluateSandbox(scope, source, declaredForRun));
   }
 
   runInContext(_context: object, _options?: object): unknown {

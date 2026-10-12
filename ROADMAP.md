@@ -12,7 +12,7 @@ and guest execution below it; CommonJS wrapSafe ancestry accounts for818ms.
 Intent before code: Node's Script keeps compiled preparation, while our
 runInNewContext reparses declarations with Acorn and reconstructs the same
 helper Function on each run. Reuse immutable declaration preparation by
-source and options in the owning process/realm, reuse the evaluator in its
+source in the owning process/realm, reuse the evaluator in its
 realm, and create a fresh sandbox/global/scope and activation for every call.
 Never cache evaluated exports or context objects, share a Script across realms,
 change app/library bytes, or expose importScripts/cachedData as a code-cache
@@ -32,14 +32,22 @@ lock or published0.9.0 pin changed. All155 emitted products are retained.
 The cache holds immutable declaration preparation, never a compiled Script
 or sandbox. Script instances retain their own preparation; process-local
 shared values are weak, and finalization removes their source keys. Keys use
-exact source and opaque constructor/run option identities, reading no option
-getter or value. Parser options remain constant and existing VM options are
-otherwise unchanged. A conservative no-var/no-function/no-escape source scan
+exact source alone, reading no option getter or value and retaining no option
+buckets. Parser options remain constant and existing VM options are otherwise
+unchanged. A conservative no-var/no-function/no-escape source scan
 skips impossible declaration discovery; possible declarations use the original
 Acorn parser. Each eval receives a fresh declaration array as well as fresh
-sandbox views and activation. One evaluator Function stays in its own realm.
+sandbox views and activation. One frozen evaluator Function and frozen prototype
+stay in their own realm; the actual evaluator receives the captured source.
 
-vmSplit accompanies the existing deferred load-clock line. It records exclusive
+Independent-review correction: merge R5 producer head e89b8d4 and gate VM
+phase/run/preparation observers before clocks, timestamps or counter allocation
+when no reading is requested. The original 84ad5425 receipt remains retained;
+[The correction receipt](docs/readings/k5b-execution-review-correction.json)
+binds successful runtime-graph and entire package declaration emissions, with
+all corrected sources and emitted products retained.
+
+vmSplit accompanies the existing deferred load-clock line only when requested. It records exclusive
 synchronous parse/setup/eval phaseMs and calls; context/thisContext runs; UTF16
 codeUnits; cacheHits/cacheMisses; acornParses/declarationScanSkips/parseFailures.
 These phases overlay module phases, so their milliseconds are not added to

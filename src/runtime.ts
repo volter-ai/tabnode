@@ -158,10 +158,12 @@ function __substrateGuestVm(process: Process): unknown {
   const observer: VmScriptObserver = {
     phase: (phase, operation) => __substrateVmPhase(process, phase, operation),
     run: (kind, codeUnits) => {
+      if (!traceReadingRequested()) return;
       const clock = __substrateVmClock(process);
       clock.runs[kind] += 1; clock.codeUnits += codeUnits;
     },
     preparation: (hit, failed, parsed) => {
+      if (!traceReadingRequested()) return;
       const clock = __substrateVmClock(process);
       if (hit) clock.cacheHits += 1; else clock.cacheMisses += 1;
       if (failed) clock.parseFailures += 1;
@@ -940,6 +942,7 @@ function __substrateVmClock(process: object): VmClock {
  * Eval includes browser parsing, guest execution and synchronous nested loads.
  */
 function __substrateVmPhase<T>(process: object, phase: VmScriptPhase, operation: () => T): T {
+  if (!traceReadingRequested()) return operation();
   const clock = __substrateVmClock(process), previous = clock.phase;
   const account = (): void => {
     const now = __substrateLoadNow();

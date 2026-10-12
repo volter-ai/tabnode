@@ -13,32 +13,20 @@ interface PreparedScript {
 }
 type SourceBucket = Map<string, WeakRef<PreparedScript>>;
 
-/** Options are opaque identities: no getter, serialization or extra coercion. */
-class OptionBuckets<T> {
-  private readonly objects = new WeakMap<object, T>();
-  private readonly primitives = new Map<unknown, T>();
-  constructor(private readonly create: () => T) {}
-  get(option: unknown): T {
-    const object = option !== null && (typeof option === 'object' || typeof option === 'function');
-    const cache = object ? this.objects : this.primitives;
-    let value = cache.get(option as object);
-    if (!value) { value = this.create(); cache.set(option as object, value); }
-    return value;
-  }
-}
-
 /** One cache per owning process; module-local default callers stay in this realm.
  * Weak values retire a source key after its last Script releases preparation.
  * A cache hit never retains a Script, scope, sandbox, result or caller options.
+ * Preparation depends only on source: parser settings are constant and VM
+ * options remain handled by the public shim, without being read by this cache.
  */
 export class VmScriptPreparationCache {
-  private readonly options = new OptionBuckets(() => new OptionBuckets<SourceBucket>(() => new Map()));
-  private readonly retired = new FinalizationRegistry<{ bucket: SourceBucket; source: string; reference: WeakRef<PreparedScript> }>(held => {
-    if (held.bucket.get(held.source) === held.reference) held.bucket.delete(held.source);
+  private readonly sources: SourceBucket = new Map();
+  private readonly retired = new FinalizationRegistry<{ source: string; reference: WeakRef<PreparedScript> }>(held => {
+    if (this.sources.get(held.source) === held.reference) this.sources.delete(held.source);
   });
-  prepare(source: string, constructorOptions: unknown, runOptions: unknown): { prepared: PreparedScript; hit: boolean; failed: boolean; parsed: boolean } {
+  prepare(source: string): { prepared: PreparedScript; hit: boolean; failed: boolean; parsed: boolean } {
     const cacheable = typeof source === 'string';
-    const bucket = cacheable ? this.options.get(constructorOptions).get(runOptions) : undefined;
+    const bucket = cacheable ? this.sources : undefined;
     const kept = bucket?.get(source)?.deref();
     if (kept) return { prepared: kept, hit: true, failed: false, parsed: false };
     const declared: string[] = [];
@@ -61,7 +49,7 @@ export class VmScriptPreparationCache {
     if (bucket) {
       const reference = new WeakRef(prepared);
       bucket.set(source, reference);
-      this.retired.register(prepared, { bucket, source, reference });
+      this.retired.register(prepared, { source, reference });
     }
     return { prepared, hit: false, failed, parsed };
   }
@@ -70,7 +58,7 @@ export class VmScriptPreparationCache {
 const realmCache = new VmScriptPreparationCache();
 interface Environment { cache: VmScriptPreparationCache; observer?: VmScriptObserver }
 const environments = new WeakMap<object, Environment>();
-const preparations = new WeakMap<object, { source: string; constructorOptions: unknown; runOptions: unknown;
+const preparations = new WeakMap<object, { source: string;
   environment: Environment | undefined; prepared: PreparedScript }>();
 
 /** Internal seam: the guest VM facade supplies its actual process owner. */
@@ -84,16 +72,15 @@ export function vmScriptPhase<T>(script: object, phase: VmScriptPhase, operation
   const observer = environments.get(script)?.observer;
   return observer ? observer.phase(phase, operation) : operation();
 }
-export function prepareVmScript(script: object, source: string, constructorOptions: unknown, runOptions: unknown): PreparedScript {
+export function prepareVmScript(script: object, source: string): PreparedScript {
   const environment = environments.get(script), observer = environment?.observer;
   const prior = preparations.get(script);
-  if (typeof source === 'string' && prior && prior.source === source && prior.constructorOptions === constructorOptions
-    && prior.runOptions === runOptions && prior.environment === environment) {
+  if (typeof source === 'string' && prior && prior.source === source && prior.environment === environment) {
     observer?.preparation(true, false, false);
     return prior.prepared;
   }
-  const result = (environment?.cache ?? realmCache).prepare(source, constructorOptions, runOptions);
-  if (typeof source === 'string') preparations.set(script, { source, constructorOptions, runOptions, environment, prepared: result.prepared });
+  const result = (environment?.cache ?? realmCache).prepare(source);
+  if (typeof source === 'string') preparations.set(script, { source, environment, prepared: result.prepared });
   observer?.preparation(result.hit, result.failed, result.parsed);
   return result.prepared;
 }
