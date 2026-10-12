@@ -1001,6 +1001,7 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
   kernel[clock.phase] += (clock.fs?.kernelBlockedMs?.() ?? clock.kernelAt) - clock.kernelAt;
   const entry = (process as { argv?: string[] }).argv?.[1];
   const split = __substrateReadSplits.get(process), paths = __substrateRequirePaths.get(process);
+  const configs = __substrateResolutionKept.get(process)?.packageConfigs;
   const requires = paths ? { ...paths, engineLoad: { ...paths.engineLoad }, replaced: { ...paths.replaced } } : null;
   const limit = clock.bodies;
   const payload = { event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
@@ -1011,6 +1012,7 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
     compileSplit: { sourceCaptureMs: traceRound(clock.compileSplit.sourceCaptureMs), nativeEvalMs: traceRound(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals },
     readSplit: split ? traceRoundFields({ ...split }) : null,
+    resolveSplit: { packageConfigs: configs ? { ...configs } : null },
     bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: traceRound(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: traceRound(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
@@ -2272,7 +2274,9 @@ function __substrateRegisteredExtension(filename: string, extensions: Record<str
 const __substrateResolutionKept = new WeakMap<object, ResolutionKept & { depth: number }>();
 function __substrateKeptFor(process: object): ResolutionKept & { depth: number } {
   let kept = __substrateResolutionKept.get(process);
-  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0, probes: { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 } }; __substrateResolutionKept.set(process, kept); }
+  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0,
+    packageConfigs: { lookups: 0, positiveHits: 0, negativeHits: 0, checks: 0, reads: 0, missingKept: 0 },
+    probes: { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 } }; __substrateResolutionKept.set(process, kept); }
   return kept;
 }
 /**

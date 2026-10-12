@@ -1,3 +1,52 @@
+## S2 R11: Keep missing package configurations for the process lifetime
+
+Status: production library bundle/declarations pass; independent static read and first-request qualification pending
+
+Substrate Articles5/6/8/9. Three retained LibreChat6fd6febc quiet clocks
+put resolution at1179/1224/1307ms, beside29015 absent engine stat probes;
+the native first-head phase arm reports242ms. The old clocks do not identify
+which missing candidates are configs, and their outside times are not a
+matched first-request capture. Input hashes and boundary limits live in
+browser-substrate docs/readings/s2-r11-resolution-reuse-2026-10-12.json.
+
+Required Node contract: v24.21.0 src/node_modules.cc:95-110 returns the
+BindingData package_configs_ entry even when it is nullopt;115-135 inserts
+nullopt for ENOENT/ENOTDIR/EISDIR. There is no invalidation during the realm's
+life. A config created after its earlier absence stays unseen in that process.
+The engine retains parsed configs but clears nulls at every resolution,
+repeating nearest-parent package.json probes for different import specifiers.
+ResolutionKept.probes.absent increments only in the engine resolver's ask;
+KernelVirtualFS's nested view-search checks own separate counters.
+
+Intent before code: retain only proved missing configuration facts with the
+existing process owner and actual filesystem resolver. Directory configs and
+ENOENT/ENOTDIR/EISDIR read failures count as missing; other stat/read errors,
+malformed configs and arbitrary non-file nodes do not become persistent
+absences. Leave general missing-module/stat candidates and their cache
+lifetimes alone. No invalidation, application/profile/name exception, policy
+change or negative module-resolution cache. Add scalar package-config lookup,
+positive/negative-hit, check/read and retained-absence counts to the existing
+deferred module clock. No new timer, hot JSON producer or guest execution.
+
+Disproof: a later config becomes visible after a cached miss, a fresh process
+or different filesystem reuses it, invalid/unreadable configs are retained
+as missing, or config-only caching makes unrelated file misses sticky.
+Builder evidence: own locked npm ci and actual npm run build:lib exit0,
+with the plain compile mutex and5120MB disk preflight. All158 products,
+including150 emitted declarations, are retained with source/compiler hashes.
+No vendored Node library, application, installed0.9.0 pin or shared catalog
+was changed. Negative facts live in ResolutionKept.missingManifests, keyed
+by the actual filesystem, and survive resolver reconstruction and stat-window
+closure. resolveSplit.packageConfigs names lookups, positiveHits,
+negativeHits, checks, reads and missingKept. checks is an uncached config
+lookup, which may use an already held stat; it is not a kernel syscall count.
+Other parse/read/stat-error behavior remains outside this cache-only unit.
+
+Completion: actual production library bundle/declarations, hooks-on commit
+and push; independent static read and current-head first-request capture
+qualify behavior, removed probes and any gain. No tests/apps/probes/timings
+in this coding lane. The total5.5-6.0s backend gap remains unqualified.
+
 ## S2 R11: Capture a server's module clock at its first HTTP boundary
 
 Status: source library bundle/declarations compiled; independent first-request delivery and phase reading pending

@@ -56,9 +56,14 @@ export interface NodeResolverOptions {
 export interface ResolutionKept {
   /**
    * `package.json` files read and parsed, by path, for the process's life: Node's package reader keeps each one it
-   * has read. One that is absent or does not parse is not kept, so a package linked in later is found.
+   * has read. Missing configs are retained separately by this resolver for the same process and filesystem,
+   * as Node's GetPackageJSON does; malformed or unreadable configs are not kept as missing.
    */
   manifests: Map<string, Record<string, unknown>>;
+  /** Node's missing package configs persist with the process, shared by its resolvers for the same filesystem. */
+  missingManifests?: WeakMap<ResolutionFs, Set<string>>;
+  /** Scalar evidence for package-config reuse; published through the existing deferred module clock. */
+  packageConfigs?: { lookups: number; positiveHits: number; negativeHits: number; checks: number; reads: number; missingKept: number };
   /** Real paths answered, for the process's life: Node's `realpathCache` (helpers.js `toRealPath`). */
   realPaths: Map<string, string>;
   /**
@@ -107,6 +112,10 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     return `/${parts.join("/")}`;
   };
   const manifests = new Map<string, Record<string, unknown> | null>();
+  // Node24.21 src/node_modules.cc:95-110 looks up package_configs_, including nullopt;115-135 keeps
+  // ENOENT/ENOTDIR/EISDIR there for the realm lifetime, without invalidation. A later-created config
+  // remains unseen in that process. ResolutionKept owns the absence set for each filesystem, so another
+  // resolver of the same tree shares it, while another process/tree does not. General misses stay uncached.
   /** The same fact by path, while one stat window stands (`ResolutionKept.stats`): a stat it holds asks nothing, so no digest. */
   const stubsInWindow = new WeakMap<Map<string, 0 | 1>, Map<string, boolean>>();
   /** Whether `found`, a `.cjs` file, is a stub whose whole content is a `throw`: read once per digest, or once per window. */
@@ -134,44 +143,71 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
    * What the resolution in hand has been answered, absences too: one resolution is one synchronous walk and nothing
    * changes the tree under it, so it asks each path once. Emptied when a resolution begins; nothing outlives it.
    */
-  const asked = new Map<string, 0 | 1 | -1>();
+  // -1 is proved absence, -2 an unclassified non-file or failed stat. Both mean no candidate, but only
+  // proved absence may become a persistent package-config miss. Keep this in the existing probe map.
+  const asked = new Map<string, 0 | 1 | -1 | -2>();
+  const missingConfigError = (cause: unknown): boolean => {
+    const code = (cause as { code?: unknown } | null | undefined)?.code;
+    return code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR";
+  };
   /** The content digest each file stat of the resolution in hand carried, by path; emptied with `asked`. */
   const digests = new Map<string, string>();
-  /** 0 a file, 1 a directory, -1 neither or absent. */
-  const kind = (path: string): 0 | 1 | -1 => {
+  /** 0 a file, 1 a directory, -1 absent, -2 another non-file or failed stat. */
+  const kind = (path: string): 0 | 1 | -1 | -2 => {
     const again = asked.get(path);
     if (again !== undefined) return again;
     const answer = ask(path);
     asked.set(path, answer);
     return answer;
   };
-  const ask = (path: string): 0 | 1 | -1 => {
+  const ask = (path: string): 0 | 1 | -1 | -2 => {
     const held = kept?.stats?.get(path);
     const probes = kept?.probes;
     if (held !== undefined) { if (probes) probes.held += 1; return held; }
-    let found: 0 | 1 | -1 = -1;
+    let found: 0 | 1 | -1 | -2;
     try {
       const stat = fs.statSync(path, { throwIfNoEntry: false });
-      found = stat?.isFile() ? 0 : stat?.isDirectory() ? 1 : -1;
+      found = stat === undefined ? -1 : stat.isFile() ? 0 : stat.isDirectory() ? 1 : -2;
       if (found === 0 && typeof stat?.contentDigest === "string") digests.set(path, stat.contentDigest);
-    } catch { found = -1; }
+    } catch (cause) { found = missingConfigError(cause) ? -1 : -2; }
     if (probes) {
       if (found === 0) probes.file += 1; else if (found === 1) probes.directory += 1; else probes.absent += 1;
       if (kept?.stats === undefined) probes.outside += 1;
     }
-    if (found !== -1) kept?.stats?.set(path, found);
+    if (found === 0 || found === 1) kept?.stats?.set(path, found);
     return found;
   };
   const isFile = (path: string): boolean => kind(path) === 0;
   const isDirectory = (path: string): boolean => kind(path) === 1;
   const manifest = (directory: string): Record<string, unknown> | null => {
     const path = `${directory === "/" ? "" : directory}/package.json`;
+    const counts = kept?.packageConfigs;
+    if (counts) counts.lookups += 1;
+    if (kept?.missingManifests?.get(fs)?.has(path)) {
+      if (counts) counts.negativeHits += 1;
+      return null;
+    }
     const held = kept?.manifests.get(path);
-    if (held) return held;
+    if (held) { if (counts) counts.positiveHits += 1; return held; }
     if (manifests.has(path)) return manifests.get(path)!;
+    if (counts) counts.checks += 1;
     let parsed: Record<string, unknown> | null = null;
+    let missing = false;
     if (isFile(path)) {
-      try { const text = fs.readFileSync(path, "utf8"); parsed = JSON.parse(typeof text === "string" ? text : new TextDecoder().decode(text)) as Record<string, unknown>; } catch { parsed = null; }
+      try {
+        if (counts) counts.reads += 1;
+        const text = fs.readFileSync(path, "utf8");
+        parsed = JSON.parse(typeof text === "string" ? text : new TextDecoder().decode(text)) as Record<string, unknown>;
+      } catch (cause) { missing = missingConfigError(cause); parsed = null; }
+    } else {
+      // A directory config is EISDIR. An unclassified non-file or failed stat is not a missing fact.
+      missing = asked.get(path) === 1 || asked.get(path) === -1;
+    }
+    if (missing && kept) {
+      let paths = kept.missingManifests?.get(fs);
+      if (!paths) { paths = new Set(); (kept.missingManifests ??= new WeakMap()).set(fs, paths); }
+      paths.add(path);
+      if (counts) counts.missingKept += 1;
     }
     manifests.set(path, parsed);
     if (parsed && typeof parsed === "object") kept?.manifests.set(path, parsed);
@@ -316,7 +352,7 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
   const resolve = (specifier: string, fromDir: string, keeping?: ResolutionKept): string | null => {
     // Without a process's own store, manifests are read once per resolution and never kept across: this resolver
     // outlives processes, the tree changes under it, an install links a package in. A process's store keeps the
-    // ones it read, as Node's does; an absent manifest is asked again in the next resolution either way.
+    // ones it read, and proved absences, as Node's does. Callers without a process owner retain no configs.
     manifests.clear();
     asked.clear();
     digests.clear();
