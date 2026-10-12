@@ -82,6 +82,7 @@ export function getErrorMap(): Map<number, [string, string]> {
 const uvBinding: Record<string, unknown> = { errname, getErrorMap };
 for (const [name, [value]] of Object.entries(codes)) uvBinding[name] = value;
 
+export const UV_EPERM = codes.UV_EPERM[0];
 export const UV_EOF = codes.UV_EOF[0];
 export const UV_ECONNREFUSED = codes.UV_ECONNREFUSED[0];
 export const UV_ECONNRESET = codes.UV_ECONNRESET[0];

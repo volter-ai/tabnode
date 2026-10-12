@@ -1,4 +1,4 @@
-import { processCredentialsOf, copyProcessCredentials, type ProcessCredentials } from '../../process-credentials';
+import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials, type ProcessCredentials } from '../../process-credentials';
 /**
  * `internalBinding('process_wrap')`: one run of the engine, seen as libuv sees
  * a child process.
@@ -24,7 +24,7 @@ import {
 } from './stream_wrap';
 import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { nativeStreamFor } from '../../native-stream-binding';
-import { UV_EBADF, UV_ENOENT, UV_ESRCH } from './uv';
+import { UV_EBADF, UV_ENOENT, UV_ESRCH, UV_EPERM, UV_EINVAL } from './uv';
 import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
   ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
@@ -79,6 +79,8 @@ export interface RunChannel {
 export interface RunRequest {
   /** A snapshot of the actual spawning process, not its mutable guest getter methods. */
   credentials: Readonly<ProcessCredentials>;
+  /** Present only for an explicit spawn uid/gid declaration; passed to new-child admission. */
+  runAs?: Readonly<ProcessCredentials>;
   /** The run whose `Process` handle spawns it: its parent (the handle's NodeLibScope's process), or null for none. */
   owner: ProcessToken | null;
   /** The program, as the caller named it: a path, a name, or the shell. */
@@ -290,12 +292,17 @@ export class Process implements OwnedHandle {
       windowsHide: (flags & constants.kProcessFlagWindowsHide) !== 0,
     };
     if (!runner) return UV_ENOENT;
+    const parentCredentials = credentialsByHandle.get(this) ?? copyProcessCredentials();
+    let credentials: Readonly<ProcessCredentials>;
+    try { credentials = spawnedProcessCredentials(parentCredentials, uid, gid); }
+    catch (cause) { return (cause as { code?: string })?.code === 'EPERM' ? UV_EPERM : UV_EINVAL; }
     const env = environmentOf(options.envPairs);
     this.stdio = options.stdio ?? [];
     this.spawned = options.file;
 
     const request: RunRequest = {
-      credentials: credentialsByHandle.get(this) ?? copyProcessCredentials(),
+      credentials,
+      ...(uid != null || gid != null ? { runAs: credentials } : {}),
       owner: ownerOfInstance(this),
       file: options.file,
       args: options.args ?? [options.file],
@@ -379,7 +386,14 @@ export class Process implements OwnedHandle {
       return UV_ENOENT;
     }
 
-    this.run = runner.start(request);
+    try { this.run = runner.start(request); }
+    catch (cause) {
+      this.closeFarEnds();
+      const code = (cause as { code?: string })?.code;
+      if (code === 'EPERM') return UV_EPERM;
+      if (code === 'EINVAL') return UV_EINVAL;
+      throw cause;
+    }
     // A handle unref'd before its child started is not waited for either.
     if (!handleHasRef(this)) this.run.setRef?.(false);
     // The number the parent reads off the handle is the child's own

@@ -1,3 +1,4 @@
+import type { ProcessCredentials } from './process-credentials';
 /**
  * A run the embedding host has named, and the registry the container answers
  * about it from.
@@ -273,9 +274,9 @@ export function ownProcessIdentity(): { pid: number; ppid: number } {
 }
 
 /** fork: a new process numbered by `parent`'s registry (the run that forks it; null for the realm process). */
-export function mintPid(parentPid?: number, newSession = false, parent: ProcessToken | null = null): number {
+export function mintPid(parentPid?: number, newSession = false, parent: ProcessToken | null = null, runAs?: Readonly<ProcessCredentials>): number {
   registryUsed = true;
-  return registryFor(parent).allocate(parentPid !== undefined && parentPid > 0 ? parentPid : undefined, newSession);
+  return registryFor(parent).allocate(parentPid !== undefined && parentPid > 0 ? parentPid : undefined, newSession, runAs);
 }
 
 /**

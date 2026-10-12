@@ -1,3 +1,5 @@
+Restore Node/libuv spawn uid/gid in async and sync child setup and registry admission; preserve private-record inheritance and default 1000. Source build validation only; runtime qualification pending.
+
 # Changelog
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.

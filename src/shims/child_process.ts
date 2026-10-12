@@ -2533,7 +2533,7 @@ function startChildRun(request: RunRequest): StartedRun {
   // The parent is the run whose `Process` handle spawned it (its NodeLibScope's process, the request's owner), never a
   // frame or a global; a spawn no run owns is the realm process's own.
   const parentPid = runPid(nodeProcessRealmToken() ?? request.owner)?.pid ?? 0;
-  const pid = mintPid(parentPid, request.detached === true, request.owner);
+  const pid = mintPid(parentPid, request.detached === true, request.owner, request.runAs);
   setRunPid(token, pid, parentPid,
     { detached: request.detached, argv: request.args.length ? request.args : [request.file], ...(request.cwd ? { cwd: request.cwd } : {}) }, request.owner);
   const controller = new AbortController();

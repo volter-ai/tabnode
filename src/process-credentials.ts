@@ -27,3 +27,13 @@ export function recordProcessCredentials(process: object, credentials: Readonly<
 export function processCredentialsOf(process: object): Readonly<ProcessCredentials> {
   return copyProcessCredentials(credentialsByProcess.get(process));
 }
+
+/** libuv's child setup: clear root's supplementary groups, then set gid and uid before exec. */
+export function spawnedProcessCredentials(parent: Readonly<ProcessCredentials>, uid?: number, gid?: number): Readonly<ProcessCredentials> {
+  if (uid == null && gid == null) return copyProcessCredentials(parent);
+  const credentials = copyProcessCredentials({ uid: uid ?? parent.uid, gid: gid ?? parent.gid, groups: parent.uid === 0 ? [] : parent.groups });
+  if (parent.uid !== 0 && (credentials.uid !== parent.uid || credentials.gid !== parent.gid)) {
+    throw Object.assign(new Error('EPERM: child uid/gid differ from the non-root parent'), { code: 'EPERM' });
+  }
+  return credentials;
+}
