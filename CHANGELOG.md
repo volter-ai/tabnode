@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- S1-npm-version (substrate Articles 5/6/8/9): answer npm -v/--version from the calling image’s installed npm manifest and verified bin relationship, including symlinked CLI paths and catalog-replaced global aliases. Refuse absent, malformed or ambiguous metadata; no invented vendor version or install exemption. Image behavior remains independently unqualified.
+
 - Send engine instrumentation as owned fields through the host trace seam; defer summaries/JSON while preserving producer clocks and guest console behavior (R5; app-time qualification pending).
 - S2-D3 (substrate Articles 5/6/8/9): end a named Node process once its referenced loop remains empty after a native task/rejection checkpoint, including a silent entry. Recheck work scheduled by `beforeExit`; retain real references, caller holds and unregistered-run uncertainty rules. The checkpoint uses the existing native task channel, and drain traces retain D1 fields while adding actual timer wait, look work, checkpoint time and realm identity. Runtime cost and behavior remain with the independent N2 floors reading.
 

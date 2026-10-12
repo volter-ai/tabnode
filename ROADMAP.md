@@ -1,3 +1,28 @@
+## S1-npm-version: Report the image's npm identity
+
+Status: built; independent image qualification pending
+
+Substrate Articles 5/6/8/9: MeshCentral's retained start calls npm -v, while
+this engine's npm command rejects both version flags as unknown commands. No
+upstream npm package is bundled in the engine. For version-only queries,
+read the calling tree's npm package.json, resolving the CLI and manifest
+through that tree's realpath. A held npm CLI identifies its own nearest npm
+manifest and bin entry. Catalog markers replace PATH aliases, so their
+metadata belongs to the actual global npm installation under the image's
+PATH prefixes; verify its declared npm bin exists and resolves within that
+package. Require one unambiguous installation, a manifest named npm and a
+valid version. Do not use the app's version, registry requirements, host npm,
+engine package version, or a constant. Missing/malformed/ambiguous metadata
+returns an explicit nonzero refusal. Keep install behavior and traps intact.
+
+Disproof: a query prints a version with no matching held npm manifest/bin,
+borrows another tree, ignores a conflicting installation, or invents a value.
+Builder receipt: full Vite library bundle0 and full declaration compiler0,
+sequentially within nine seconds each. Normal hooks/push retain the source.
+No tests, apps or runtime queries ran here. Images whose catalog placement
+stripped the original npm package still refuse; ADR-0130 row11 remains intact.
+No npm distribution is bundled in this engine.
+
 R5 host-owned evidence: the engine currently stringifies its boot/socket/stream trace records before the host can defer delivery. Capture stable fields and hand them to the host trace seam, using portable formatting instructions for mutable counter summaries. Guest console and execution APIs remain unchanged. The source companion is built against the load-clock line e5f87f8; Rallly/Dub app-time qualification remains with the coordinator. No tests, probes or app measurements in this builder.
 Child process credentials: restore Node/libuv spawn uid/gid for asynchronous and synchronous children, including kernel-backed admission. Parent records are private; numeric declarations are checked, and a root parent clears supplementary groups before its declared child identity. Existing inheritance and default 1000 remain. Runtime qualification pending.
 
