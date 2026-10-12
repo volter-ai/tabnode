@@ -887,6 +887,10 @@ type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: num
   linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
   began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
+// All process clocks in this realm share observer intervals. Counting A's
+// diagnostics must not appear as work in B's concurrently open module phase.
+let __substrateDeferredByteMs = 0;
+function __substrateLoadNow(): number { return performance.now() - __substrateDeferredByteMs; }
 /** Byte totals are evidence only. A snapshot keeps its prefix length, not a
  * source copy; count that prefix after HTTP, then release the text references.
  * Kept prefix totals also answer an older snapshot without recounting bodies. */
@@ -901,7 +905,7 @@ function __substrateBodyByteTotals(clock: LoadClock, limit: number): { preparedB
   }
   const last = clock.byteBodies[limit - 1], elapsed = performance.now() - started;
   // Evidence work is not guest execution or a module phase in later samples.
-  clock.at += elapsed; clock.began += elapsed;
+  __substrateDeferredByteMs += elapsed;
   return { preparedBodyBytes: last?.preparedBytes ?? 0, sourceBodyBytes: last?.sourceBytes ?? 0, utf8DeferredMs: elapsed };
 }
 type LoadClockFs = { kernelBlockedMs?: () => number };
@@ -926,7 +930,7 @@ function __substrateTimeRead<T>(process: object, part: 'digestAsk' | 'source' | 
 const QUIET_SAID_AFTER_MS = 2000;
 /** Ends the process's current phase now and begins `phase`; answers the phase that ended, for its caller to return to. */
 function __substrateLoadPhase(process: object, vfs: object | undefined, phase: LoadPhase): LoadPhase {
-  const now = performance.now();
+  const now = __substrateLoadNow();
   let clock = __substrateLoadClocks.get(process);
   if (!clock) {
     const zero = (): Record<LoadPhase, number> => ({ outside: 0, resolve: 0, read: 0, link: 0, compile: 0, evaluate: 0 });
@@ -982,7 +986,7 @@ function __substrateSayLoadClock(process: object, at: string): void {
   clock.said = clock.bodies;
   const round = (values: Record<LoadPhase, number>): unknown => traceRoundFields({ ...values });
   // The phase open now is counted to this instant, in a copy: the clock itself goes on.
-  const wall = { ...clock.wall }, kernel = { ...clock.kernel }, now = performance.now();
+  const wall = { ...clock.wall }, kernel = { ...clock.kernel }, now = __substrateLoadNow();
   // A 'quiet' line is said by a timer that waits QUIET_SAID_AFTER_MS after the process's last body: that wait is the
   // line's own and none of the load's. Counted in, every process's line held two seconds of it in whatever phase
   // was open (2,029 of a twins' host's 2,579 ms and 2,002 of an attach's 2,185 were this wait). Taken off the open
