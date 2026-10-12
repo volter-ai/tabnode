@@ -1,3 +1,32 @@
+## S2 K1: reuse internal require contexts
+
+Status: intent recorded before code; source emission and independent review pending
+
+Substrate Articles5/6/7/8/9. The paired substrate reading
+docs/readings/s2-k1-cal-stage-account-2026-10-12.json at6bda016e
+retains Cal fe60311f+a279af1's median first-request-to-head3645ms,
+including1383ms resolution and8104 new bodies. Its live require hook
+reaches the engine's prototype require26560 times. The original Module._load
+calls requireFor(parent) on every turn, constructing the entire createRequire
+closure graph even when the parent and module cache already exist. These
+counts establish a repeated construction path, not its exclusive time.
+
+Reuse only the engine's private internal context for an admitted parent with
+an own string filename, inside the owning module-cache class. Re-read that
+filename and replace the context when it changes. Arbitrary parents, filename
+accessors and public Module.createRequire retain fresh construction. Preserve
+live Module hooks and parent/children/export identity. Clear the context's
+invocation-local resolution and package maps before every internal use and
+restore createRequire's currentVfs binding; no miss gains a longer lifetime.
+Existing process-owned successful paths and Node package-config absences
+remain unchanged. Weak parent ownership retains at most one context per
+parent, with no global path or permission cache.
+
+Production library/worker bundle and declarations only; no tests, probes,
+application or timing runs here. Independent review precedes integration;
+the mini's matched capture determines any saving. The native6.028s comparator
+in this old cohort ran through World and remains subject to N9's restatement.
+
 ## S2 first request: partition the time outside module loading
 
 Status: source instrument coded; production emission and independent reading pending
