@@ -1,6 +1,6 @@
 ## S2 R5: request instrumentation at its producers
 
-Status: producer selection implemented; production emission and independent delivery/cost reading pending
+Status: requested producer unit emitted and pushed; independent delivery/cost reading pending
 
 Articles 5/6/8/9; ADR-0124. Deferring serialization leaves unconditional
 per-module/per-filesystem timestamps, diagnostic maps and quiet timers in boot.
