@@ -85,6 +85,31 @@ C6 attribution/body observer cost (substrate Articles 5/6/8/9; ADR0124): caller 
 R5 host-owned evidence: the engine sends stable boot/socket/stream fields to the host trace seam, using portable formatting instructions for mutable counter summaries. Source-dependent byte totals remain local until capture. Ordinary program output and execution APIs retain their behavior. The R5/K5 follow-up removes the remaining diagnostic insertion from Node's file; app-time and delivery qualification remain with the independent lane. No tests, probes or app measurements in this builder.
 Child process credentials: restore Node/libuv spawn uid/gid for asynchronous and synchronous children, including kernel-backed admission. Parent records are private; numeric declarations are checked, and a root parent clears supplementary groups before its declared child identity. Existing inheritance and default 1000 remain. Runtime qualification pending.
 
+## R9: complete fully accepted native stream writes synchronously
+
+Status: built; production bundle/declarations pass; independent static/runtime reading owed
+
+Substrate Articles 1/5/6/8/9. Retained Dub ff89a4c4/16fdf1aa records show
+the first 249-byte write accepted by its native owner, then its worker's
+MessagePort completion handled 5669/5456/5248 ms later. NativeStreamDriver
+forces every remote write asynchronous. Node v24.21.0 StreamBase::Write
+(src/stream_base.cc) first calls DoTryWrite and reports async=false when all
+bytes were accepted; stream_wrap.cc preserves queued writes on EAGAIN.
+
+Restore that native seam through the existing synchronous operation channel.
+Try only a whole write within one bounded chunk, with no descriptor send or
+earlier queued write. The owner accepts it only with actual receive capacity;
+EAGAIN mutates nothing and retains the existing ordered asynchronous path.
+Success sets the native async flag false, releases the request once and leaves
+Node's own JS to call its callback. Larger writes, capacity waits and descriptor
+sends keep their current bounded queue. Preserve sampled vector/chunk evidence
+with a scalar synchronous field. No guest scheduling, vendor bytes, stream
+authority, resource ceiling or timeout changes.
+
+Completion: production bundle/declarations and the paired substrate compile;
+independent review checks write/callback/descriptor lifetime; the next Dub
+source-route reading establishes completion and first-response behavior.
+
 # tabnode roadmap (Volter's fork)
 
 Open work on tabnode, Volter's fork of `macaly/almostnode`, Node in the browser patched toward Node as source. One

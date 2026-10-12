@@ -8,7 +8,9 @@ import type { TCP } from './node-lib/binding/tcp_wrap';
 import type { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, type WriteWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './node-lib/binding/stream_wrap';
 import { __adoptHandle, ownerOf, registerHandle, releaseHandle } from './node-lib/binding/handles';
-import { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EPIPE, errname } from './node-lib/binding/uv';
+import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EPIPE, UV_ENOSYS, errname } from './node-lib/binding/uv';
+
+const UV_EAGAIN = uv.UV_EAGAIN as number;
 
 type Stream = TCP | Pipe;
 const drivers = new WeakMap<LibuvStreamWrap, NativeStreamDriver>();
@@ -32,6 +34,7 @@ export interface NativeStreamClockSample {
   chunks?: number;
   status?: number;
   elapsedMs?: number;
+  synchronous?: boolean;
 }
 let streamClockObserver: ((owner: ProcessToken | null, sample: NativeStreamClockSample) => void) | undefined;
 /** Engine-internal module-clock seam; no guest callback or new loop work. */
@@ -87,6 +90,11 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
       }
     },
     ...(next.post ? { post(operation: Parameters<NonNullable<NativeStreamTransport['post']>>[0]): void { tally(`post:${operation.operation}`, 0); next.post!(operation); } } : {}),
+    ...(next.tryWrite ? { tryWrite(id: number, bytes: Uint8Array, trace: Parameters<NonNullable<NativeStreamTransport['tryWrite']>>[2]): number | undefined {
+      const from = performance.now();
+      try { return next.tryWrite!(id, bytes, trace); }
+      finally { tally('tryWrite', performance.now() - from, bytes.byteLength); }
+    } } : {}),
     write(id, bytes, handle, trace) {
       const from = performance.now();
       const size = bytes.byteLength;
@@ -387,6 +395,7 @@ export class NativeStreamDriver {
 
   write(request: WriteWrap, parts: Uint8Array[], sent?: unknown): number {
     streamBaseState[kLastWriteWasAsync] = 0;
+    request.async = false;
     const bytes = parts.reduce((total, part) => total + part.byteLength, 0);
     streamBaseState[kBytesWritten] = bytes;
     if (this.closing || stopped) return UV_EBADF;
@@ -410,6 +419,32 @@ export class NativeStreamDriver {
       traceOutput('[socket-write]', { event: 'vector-submitted', at: write.trace.at, realmEpoch: performance.timeOrigin,
         listener: sample.listener, id: this.descriptor.id, vector: write.trace.vector, bytes, parts: parts.length,
         partBytes: parts.slice(0, 8).map(part => part.byteLength), omittedParts: Math.max(0, parts.length - 8), chunkLimit: this.channel.limits.maxReadChunkBytes });
+    }
+    // Node's StreamBase::Write tries the native write first, and lets its own
+    // afterWriteDispatched call the callback when all bytes were accepted.
+    // A bounded whole write needs no subsequent MessagePort completion. Never
+    // overtake a queued vector or send a descriptor through this operation.
+    if (retained === undefined && !this.writes.length && !this.pumping
+      && bytes <= this.channel.limits.maxReadChunkBytes && this.channel.tryWrite) {
+      let status: number | undefined;
+      try {
+        const chunk = writeChunks(parts, this.channel.limits.maxReadChunkBytes).next().value!;
+        status = this.channel.tryWrite(this.descriptor.id, chunk, write.trace
+          ? { listener: write.trace.listener, vector: write.trace.vector, chunk: 1 } : undefined);
+      } catch (cause) {
+        // Transport failure may follow an accepted write. Release this request
+        // and propagate it; never submit the same bytes a second time.
+        write.parts = []; write.ended = true; write.release();
+        throw cause;
+      }
+      if (status !== undefined && status !== UV_EAGAIN && status !== UV_ENOSYS) {
+        if (status === 0) {
+          this.handle.bytesWritten += bytes;
+          if (write.trace) write.trace.chunks = 1;
+        }
+        this.finishWrite(write, status, true);
+        return status;
+      }
     }
     // Node retains the caller's buffers until completion, even for a write
     // larger than the transport budget. The channel bounds copied chunks and
@@ -457,27 +492,32 @@ export class NativeStreamDriver {
     this.finishWrite(write, status);
   }
 
-  private finishWrite(write: PendingWrite, status: number): void {
+  private finishWrite(write: PendingWrite, status: number, synchronous = false): void {
     if (write.ended) return;
     write.ended = true;
     if (write.trace) {
       const at = performance.timeOrigin + performance.now();
       const sample = { when: 'native-vector-completed' as const, at, listener: write.trace.listener,
         id: this.descriptor.id, vector: write.trace.vector, bytes: write.bytes, chunks: write.trace.chunks,
-        status, elapsedMs: at - write.trace.at };
+        status, elapsedMs: at - write.trace.at, synchronous };
       sayStreamClock(this.handle, sample);
       traceOutput('[socket-write]', { ...sample, event: 'vector-completed', realmEpoch: performance.timeOrigin,
         sampledChunks: Math.min(3, write.trace.chunks) });
     }
     const index = this.writes.indexOf(write);
-    if (index >= 0) this.writes.splice(index, 1);
-    this.handle.writeQueueSize -= write.bytes;
+    if (index >= 0) {
+      this.writes.splice(index, 1);
+      this.handle.writeQueueSize -= write.bytes;
+    }
     write.parts = [];
     try { if (write.sent !== undefined) closeDescriptor(write.sent); }
     catch (cause) {
       status = UV_ECANCELED;
       write.request.error = cause instanceof Error ? cause.message : String(cause);
     } finally { write.sent = undefined; }
+    // A fully accepted synchronous native write has no uv request completion;
+    // Node's unmodified JS owns that callback. Errors return to it the same way.
+    if (synchronous) { write.release(); return; }
     // A Node callback throws as a native callback, not as a rejection of this
     // bridge's private async function.
     queueBindingTask(() => { try { withGuestCallback(() => write.request.oncomplete?.(status)); } finally { write.release(); } });
