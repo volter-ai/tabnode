@@ -1,3 +1,4 @@
+import { traceOutput } from '../../trace-output';
 import { processCredentialsOf, copyProcessCredentials, type ProcessCredentials } from '../../process-credentials';
 /**
  * `internalBinding('process_wrap')`: one run of the engine, seen as libuv sees
@@ -500,7 +501,7 @@ export class Process implements OwnedHandle {
         late.push({ fd: index, native: nativeStreamFor(entry.handle as never) !== undefined, reading: handle.reading === true, endOfFileQueued: handle.streamEndpoint?.eof === true,
           unread: handle.streamEndpoint?.inbound?.length ?? null, otherEndHeldBy: handle.streamEndpoint?.peer ? handle.streamEndpoint.peer.handles?.size ?? null : 0 });
       });
-      if (late.length > 0) console.log('[boot-trace]', JSON.stringify({ event: 'child-close-late', at: Date.now(), file, stdio: entries.map((entry) => entry.type), late }));
+      if (late.length > 0) traceOutput("[boot-trace]", { event: 'child-close-late', at: Date.now(), file, stdio: entries.map((entry) => entry.type), late });
     }, 100);
     (timer as { unref?: () => void }).unref?.();
   }

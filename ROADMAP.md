@@ -1,3 +1,5 @@
+R5 host-owned evidence: the engine currently stringifies its boot/socket/stream trace records before the host can defer delivery. Capture stable fields and hand them to the host trace seam, using portable formatting instructions for mutable counter summaries. Guest console and execution APIs remain unchanged. The source companion is built against the load-clock line e5f87f8; Rallly/Dub app-time qualification remains with the coordinator. No tests, probes or app measurements in this builder.
+
 # tabnode roadmap (Volter's fork)
 
 Open work on tabnode, Volter's fork of `macaly/almostnode`, Node in the browser patched toward Node as source. One

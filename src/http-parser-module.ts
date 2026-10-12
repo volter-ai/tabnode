@@ -1,3 +1,4 @@
+import { traceOutput } from './trace-output';
 /**
  * llhttp's code is immutable and structured-cloneable; its instance, memory
  * and callbacks belong to the realm that runs the guest. The worker that
@@ -29,7 +30,7 @@ async function compile(): Promise<WebAssembly.Module> {
     const module = await WebAssembly.compile(binary);
     // A count, without timings: this line appears once in the creating
     // worker, beside one install line in each of its N receiving realms.
-    console.log('[boot-trace]', JSON.stringify({ event: 'llhttp-module', where: 'compile', compiles: compilations }));
+    traceOutput("[boot-trace]", { event: 'llhttp-module', where: 'compile', compiles: compilations });
     return module;
   } catch (error) {
     throw httpParserUnavailable(error);
@@ -39,7 +40,7 @@ async function compile(): Promise<WebAssembly.Module> {
 /** Install only the code; the binding still makes its own instance lazily. */
 export function installHttpParserModule(module: WebAssembly.Module): void {
   suppliedModule = module;
-  console.log('[boot-trace]', JSON.stringify({ event: 'llhttp-module', where: 'install' }));
+  traceOutput("[boot-trace]", { event: 'llhttp-module', where: 'install' });
 }
 
 /** The synchronous binding's handoff, absent for a standalone realm. */

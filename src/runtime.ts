@@ -1,3 +1,5 @@
+import { traceRound, traceRoundFields } from './trace-values';
+import { traceOutput } from './trace-output';
 import { processCredentialsOf } from './process-credentials';
 import type { ProcessCredentials } from './process-credentials';
 /**
@@ -838,12 +840,12 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
   if (own) said.own = true;
   const exists = (path: string): boolean | string => { try { return vfs.existsSync(path); } catch (cause) { return cause instanceof Error ? cause.message : String(cause); } };
   const key = preparedModuleKey(content, resolvedPath);
-  console.log('[boot-trace]', JSON.stringify({
+  traceOutput("[boot-trace]", {
     event: 'prepared-bodies', where: 'compile', which, at: Date.now(), file: resolvedPath, bytes: content.length,
     rawIsOwn: compiling?.raw === content, handedRaw: compiling !== undefined, format: compiling?.format ?? null,
     transformsTypes: transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }),
     directory: exists(PREPARED_MODULES_DIR), key: key ?? null, body: key ? exists(`${PREPARED_MODULES_DIR}/${key}`) : false,
-  }));
+  });
 }
 
 /**
@@ -954,7 +956,7 @@ function __substrateSayLoadClock(process: object, at: string): void {
   const clock = __substrateLoadClocks.get(process);
   if (!clock || clock.bodies === clock.said) return;
   clock.said = clock.bodies;
-  const round = (values: Record<LoadPhase, number>): Record<string, number> => Object.fromEntries(Object.entries(values).map(([name, ms]) => [name, Math.round(ms)]));
+  const round = (values: Record<LoadPhase, number>): unknown => traceRoundFields({ ...values });
   // The phase open now is counted to this instant, in a copy: the clock itself goes on.
   const wall = { ...clock.wall }, now = performance.now();
   // A 'quiet' line is said by a timer that waits QUIET_SAID_AFTER_MS after the process's last body: that wait is the
@@ -964,17 +966,19 @@ function __substrateSayLoadClock(process: object, at: string): void {
   const saidAfter = at === 'quiet' ? Math.min(QUIET_SAID_AFTER_MS, Math.max(0, now - clock.at)) : 0;
   wall[clock.phase] += now - clock.at - saidAfter;
   const entry = (process as { argv?: string[] }).argv?.[1];
-  console.log('[boot-trace]', JSON.stringify({ event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
+  const split = __substrateReadSplits.get(process), paths = __substrateRequirePaths.get(process);
+  const requires = paths ? { ...paths, engineLoad: { ...paths.engineLoad }, replaced: { ...paths.replaced } } : null;
+  traceOutput("[boot-trace]", { event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
     script: entry === undefined ? null : pathShim.posix.basename(entry),
     preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
-    linkSplit: { utf8CountMs: Math.round(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
-    compileSplit: { sourceCaptureMs: Math.round(clock.compileSplit.sourceCaptureMs), nativeEvalMs: Math.round(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals },
-    readSplit: (() => { const split = __substrateReadSplits.get(process); return split ? Object.fromEntries(Object.entries(split).map(([name, value]) => [name, Math.round(value)])) : null; })(),
-    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: Math.round(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(clock.kernel),
+    linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
+    compileSplit: { sourceCaptureMs: traceRound(clock.compileSplit.sourceCaptureMs), nativeEvalMs: traceRound(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals },
+    readSplit: split ? traceRoundFields({ ...split }) : null,
+    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: traceRound(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: traceRound(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(clock.kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
-    requires: __substrateRequirePaths.get(process) ?? null,
-    kernelFrom: { fileSystem: clock.fs ? (clock.fs as object).constructor?.name ?? 'unnamed' : null, total: typeof clock.fs?.kernelBlockedMs === 'function' ? Math.round(clock.fs.kernelBlockedMs()) : 'no kernelBlockedMs on it' } }));
+    requires,
+    kernelFrom: { fileSystem: clock.fs ? (clock.fs as object).constructor?.name ?? 'unnamed' : null, total: typeof clock.fs?.kernelBlockedMs === 'function' ? traceRound(clock.fs.kernelBlockedMs()) : 'no kernelBlockedMs on it' } });
 }
 function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
   if (counts.timer !== undefined) { clearTimeout(counts.timer); counts.timer = undefined; }
@@ -983,7 +987,7 @@ function __substrateSayPrepared(process: object, counts: PreparedCounts, at: str
   const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
   if (total === counts.said) return;
   counts.said = total;
-  console.log('[boot-trace]', JSON.stringify({ event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: __substrateResolutionKept.get(process)?.probes ?? null }));
+  traceOutput("[boot-trace]", { event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: __substrateResolutionKept.get(process)?.probes ? { ...__substrateResolutionKept.get(process)!.probes } : null });
 }
 function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCounts, 'said' | 'timer'>): void {
   let counts = __substratePreparedCounts.get(process);
@@ -1012,7 +1016,7 @@ function __substrateSayRowsUsed(process: object): void {
   for (const entry of view.moduleLoadList ?? []) if (entry.startsWith('NativeModule ')) rows[`engine.${entry.slice(13)}`] = 1;
   for (const name of nodeLibBindingsAsked()) rows[`engine.binding.${name}`] = 1;
   const program = String(view.argv0 ?? 'node').split('/').pop() || 'node';
-  console.log('[rows-used]', JSON.stringify({ pid: view.pid ?? null, program, rows }));
+  traceOutput("[rows-used]", { pid: view.pid ?? null, program, rows });
 }
 Object.defineProperty(globalThis, '__substratePreparedExit', {
   configurable: true,
@@ -2140,7 +2144,7 @@ function __substrateInStatWindow<T>(process: object, run: () => T): T {
   // An instrument: at a process's first module body, whether its stat window opens and the require depth it saw.
   if (!__substrateWindowSaid.has(process)) {
     __substrateWindowSaid.add(process);
-    console.log('[boot-trace]', JSON.stringify({ event: 'stat-window', at: Date.now(), pid: (process as { pid?: number }).pid ?? null, opened: keeping.depth === 0 && keeping.stats === undefined, depth: keeping.depth }));
+    traceOutput("[boot-trace]", { event: 'stat-window', at: Date.now(), pid: (process as { pid?: number }).pid ?? null, opened: keeping.depth === 0 && keeping.stats === undefined, depth: keeping.depth });
   }
   if (keeping.depth !== 0 || keeping.stats !== undefined) return run();
   keeping.stats = new Map();
@@ -3269,10 +3273,10 @@ export class Runtime {
     (this.process as unknown as Record<symbol, unknown>)[kRunFilesystem] = vfs;
     // The Node line this process answers as, and where it came from (node-line.ts).
     const namedVersion = options.env?.NODE_VERSION;
-    console.log('[boot-trace]', JSON.stringify({ event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
+    traceOutput("[boot-trace]", { event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
       line: nodeLineOf(this.process.version), from: this.process.version === `v${String(namedVersion ?? '').replace(/^v/, '')}` ? 'NODE_VERSION of the image' : 'default',
       // The variable as this process was given it, so a reader need not infer it: null when it has none.
-      env: typeof namedVersion === 'string' ? namedVersion : null }));
+      env: typeof namedVersion === 'string' ? namedVersion : null });
     // Create fs shim with cwd getter for relative path resolution
     this.fsShim = createFsShim(vfs, () => this.process.cwd());
     this.options = options;

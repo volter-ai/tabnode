@@ -1,3 +1,5 @@
+import { traceEntries, traceRound, traceRows } from './trace-values';
+import { traceOutput } from './trace-output';
 /** Worker-side libuv delegation. The capability channel never becomes a handle property. */
 import { withGuestCallback, queueBindingTask } from './guest-loop';
 import type { NativeStreamDescriptor, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport } from './native-stream-owner';
@@ -57,7 +59,7 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
       finally {
         const ms = performance.now() - from;
         tally(operation.operation, ms);
-        if (ms >= SLOW_CALL_MS) console.log('[stream-calls]', JSON.stringify({ event: 'slow', at: Date.now(), operation: operation.operation, id: 'id' in operation ? operation.id : null, blockedMs: Math.round(ms) }));
+        if (ms >= SLOW_CALL_MS) traceOutput("[stream-calls]", { event: 'slow', at: Date.now(), operation: operation.operation, id: 'id' in operation ? operation.id : null, blockedMs: traceRound(ms) });
       }
     },
     ...(next.post ? { post(operation: Parameters<NonNullable<NativeStreamTransport['post']>>[0]): void { tally(`post:${operation.operation}`, 0); next.post!(operation); } } : {}),
@@ -85,9 +87,11 @@ export function sayNativeStreamCounts(pid: number | null, when: string): void {
   for (const count of streamCounts.values()) total += count.calls;
   if (total === streamCountsSaid) return;
   streamCountsSaid = total;
-  const operations = [...streamCounts].sort((a, b) => b[1].ms - a[1].ms)
-    .map(([operation, count]) => [operation, count.calls, Math.round(count.ms), Math.round(count.max), count.over, ...(count.bytes === undefined ? [] : [count.bytes])]);
-  console.log('[stream-calls]', JSON.stringify({ event: when, at: Date.now(), pid, columns: ['operation', 'calls', 'blockedMs', 'maxMs', `over ${OVER_MS.join('/')} ms`, 'bytes'], operations, events: Object.fromEntries(streamEvents) }));
+  const rows: Array<Record<string, unknown>> = [];
+  for (const [operation, count] of streamCounts) rows.push({ operation, calls: count.calls, ms: count.ms, max: count.max,
+    over: [...count.over], ...(count.bytes === undefined ? {} : { bytes: count.bytes }) });
+  const operations = traceRows(rows, { orderBy: 'ms', columns: ['operation', 'calls', 'ms', 'max', 'over', 'bytes'], round: ['ms', 'max'], trimUndefined: true });
+  traceOutput('[stream-calls]', { event: when, at: Date.now(), pid, columns: ['operation', 'calls', 'blockedMs', 'maxMs', `over ${OVER_MS.join('/')} ms`, 'bytes'], operations, events: traceEntries([...streamEvents]) });
 }
 
 /** Host bootstrap only, before any TCP/Pipe exists in this process realm. */

@@ -1,3 +1,4 @@
+import { traceOutput } from '../trace-output';
 import { copyProcessCredentials, type ProcessCredentials } from '../process-credentials';
 /**
  * The engine's process model: what a run of a program IS here.
@@ -939,13 +940,13 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // error printed: whether the text printed begins with the error's present text, what formed the stack's text
     // and what the error's text was then, and what `Error.prepareStackTrace` is now.
     if (error instanceof Error) {
-      if (!stackHeaderAsked) { stackHeaderAsked = true; console.log(`[boot-trace] ${JSON.stringify({ event: 'stack-header-rule', at: Date.now(), ...stackHeaderRule() })}`); }
+      if (!stackHeaderAsked) { stackHeaderAsked = true; traceOutput("[boot-trace]", { event: 'stack-header-rule', at: Date.now(), ...stackHeaderRule() }); }
       let now = '';
       try { now = Error.prototype.toString.call(error); } catch { now = '(its text could not be read)'; }
       const printed = String(error.stack ?? '');
       const formed = stackFormedBy.get(error);
       const hook = (Error as { prepareStackTrace?: unknown }).prepareStackTrace;
-      console.log(`[boot-trace] ${JSON.stringify({ event: 'uncaught-stack-text', at: Date.now(), pid: proc.pid, name: error.name, messageBytes: String(error.message ?? '').length, messageIsOwn: Object.prototype.hasOwnProperty.call(error, 'message'), messageIsAccessor: typeof Object.getOwnPropertyDescriptor(error, 'message')?.get === 'function', message: String(error.message ?? '').slice(0, 300), ownKeys: Reflect.ownKeys(error).map(String).slice(0, 12), printedFirstLine: printed.split('\n', 1)[0]!.slice(0, 160), printedCarriesMessage: printed.startsWith(now) || (String(error.message ?? '') === '' ? null : printed.includes(String(error.message).slice(0, 80))), formedBy: formed ? formed.by : "V8's own text, or before this realm's hook was asked", errorTextWhenFormed: formed?.errorTextThen ?? null, prepareStackTraceNow: typeof hook === 'function' ? (hook.name || 'a function') : String(hook) })}`);
+      traceOutput("[boot-trace]", { event: 'uncaught-stack-text', at: Date.now(), pid: proc.pid, name: error.name, messageBytes: String(error.message ?? '').length, messageIsOwn: Object.prototype.hasOwnProperty.call(error, 'message'), messageIsAccessor: typeof Object.getOwnPropertyDescriptor(error, 'message')?.get === 'function', message: String(error.message ?? '').slice(0, 300), ownKeys: Reflect.ownKeys(error).map(String).slice(0, 12), printedFirstLine: printed.split('\n', 1)[0]!.slice(0, 160), printedCarriesMessage: printed.startsWith(now) || (String(error.message ?? '') === '' ? null : printed.includes(String(error.message).slice(0, 80))), formedBy: formed ? formed.by : "V8's own text, or before this realm's hook was asked", errorTextWhenFormed: formed?.errorTextThen ?? null, prepareStackTraceNow: typeof hook === 'function' ? (hook.name || 'a function') : String(hook) });
     }
     appendStderr(`${error instanceof Error ? uncaughtText(error) : String(error)}\n`);
     writeHostReceipt('uncaught', error);
@@ -1263,9 +1264,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     }
     // Said only where the wait was long enough to matter to whoever waits on this program.
     if (Date.now() - startTime >= 200) {
-      console.log('[boot-trace]', JSON.stringify({ event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: heldBy, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
+      traceOutput("[boot-trace]", { event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: { ...heldBy }, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
         entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null,
-        emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt }));
+        emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt });
     }
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
     if (typeof proc !== 'undefined') (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
@@ -2168,7 +2169,7 @@ function shellReadsProgram(path: string, tree: VirtualFS): string | undefined {
   const kind = HOST_EXECUTABLE.test(text) ? "a host program's handle" : PROGRAM_STUB.test(text) ? "a registered program's stub" : isBinaryImage(head) ? 'a binary image' : undefined;
   if (kind === undefined) return undefined;
   const handle = kind === "a host program's handle";
-  console.log(`[boot-trace] ${JSON.stringify({ event: 'shell-read-program-as-text', at: Date.now(), path, kind, ...(handle ? { identity: text.split('\n')[1] } : {}), lines: shellLinesRunning.map((line) => line.slice(0, 400)), answered: !handle ? 'read as before' : shellCommandNames().has(path.slice(path.lastIndexOf('/') + 1)) ? "the shell's own command of that name" : 'exit 126 with a sentence' })}`);
+  traceOutput("[boot-trace]", { event: 'shell-read-program-as-text', at: Date.now(), path, kind, ...(handle ? { identity: text.split('\n')[1] } : {}), lines: shellLinesRunning.map((line) => line.slice(0, 400)), answered: !handle ? 'read as before' : shellCommandNames().has(path.slice(path.lastIndexOf('/') + 1)) ? "the shell's own command of that name" : 'exit 126 with a sentence' });
   if (!handle) return undefined;
   // A HANDLE NAMED AS ONE OF THIS SHELL'S OWN COMMANDS IS THAT COMMAND. An image carries `/usr/local/bin/npm`; the tab
   // lays its handle there; the shell's walk of PATH meets that file before the directories where it keeps its own

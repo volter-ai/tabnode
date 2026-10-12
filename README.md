@@ -117,3 +117,16 @@ host requests carry `credentials`; the worker-thread host's `module` receives
 the record as its fourth argument to carry into the thread's Runtime options.
 The kernel owns image USER resolution, permission enforcement and retaining
 credentials across exec. Credential setters are unsupported.
+
+### Host-owned instrumentation
+
+The engine's own diagnostic traces pass raw, owned fields to the host function at
+`Symbol.for('tabnode.trace-output')` when installed. It receives prefix, payload and
+console level; ordinary guest console output is separate. Portable `value.v1`
+formatting instructions in `trace-values.ts` defer numeric rounding, sorting and
+summary construction to the host's JSON drain. Without that host, the engine prints
+the existing prefix/JSON text. Producer clocks and sampled counters are captured
+before later requests mutate them; the substrate owns transport and delivery after
+first HTTP. This restores the ordinary Node behavior that its server's response is
+not held by engine diagnostics. Buildability is verified separately from app-time
+qualification; no speed gain is established by this source change alone.
