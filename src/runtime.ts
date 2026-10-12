@@ -2389,6 +2389,9 @@ const __substrateModuleClasses = new WeakMap<Record<string, Module>, any>();
 const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined } }>();
 // Nested load hooks replace shared compile callbacks; a failed body still belongs to its admission parent.
 const __substrateAdmissionParents = new WeakMap<Module, Module | null>();
+// Internal reuse must not lengthen the lifetime of createRequire's invocation-local maps.
+// This private reset is never exposed on a guest require function.
+const __substrateRequireResets = new WeakMap<RequireFunction, () => void>();
 /** Node's `findLongestRegisteredExtension`: the longest registered extension the file's name ends with, else `.js`. */
 function __substrateRegisteredExtension(filename: string, extensions: Record<string, unknown>): string {
   const name = filename.slice(filename.lastIndexOf('/') + 1);
@@ -2467,6 +2470,25 @@ function __substrateModuleDir(parent: any, currentDir: string): string {
 function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireFor: (parent: any) => any): any {
   let Module = __substrateModuleClasses.get(moduleCache);
   if (Module) return Module;
+  // Node's module loader reuses the parent's context instead of constructing a whole loader per _load.
+  // Keep that construction private to this module-cache class and admitted parent. Guest-made parents and
+  // filename accessors retain the original fresh path; a live filename change replaces its sole context.
+  const freshFor = requireFor;
+  const contexts = new WeakMap<Module, { filename: string; require: RequireFunction }>();
+  requireFor = (parent: any) => {
+    if (!__substrateAdmissionParents.has(parent)) return freshFor(parent);
+    const filename = Object.getOwnPropertyDescriptor(parent, 'filename');
+    if (!filename || typeof filename.value !== 'string' || filename.value === '') return freshFor(parent);
+    let context = contexts.get(parent);
+    if (!context || context.filename !== filename.value) {
+      context = { filename: filename.value, require: freshFor(parent) };
+      contexts.set(parent, context);
+    }
+    // The old factory supplied empty transient maps and rebound currentVfs on every call. Preserve both;
+    // successful process paths and live hooks still have their original owners and lifetimes.
+    __substrateRequireResets.get(context.require)!();
+    return context.require;
+  };
   Module = function Module(this: any, id = "", parent?: any) {
     this.id = id; this.filename = id; this.exports = {}; this.loaded = false; this.children = []; this.paths = []; this.parent = parent;
   };
@@ -3490,6 +3512,11 @@ function createRequire(
     };
   }
 
+  __substrateRequireResets.set(require, () => {
+    currentVfs = vfs;
+    resolutionCache.clear();
+    packageJsonCache.clear();
+  });
   return require;
 }
 

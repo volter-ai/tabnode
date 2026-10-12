@@ -4,6 +4,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Reuse the private internal require context for an admitted module parent
+  within its module-cache class. Keep the filename live, preserve fresh public
+  createRequire/arbitrary-parent behavior and live hooks, and reset both
+  transient maps plus currentVfs before reuse. Existing successful-path and
+  package-config cache lifetimes are unchanged (substrate Articles5/6/7/8/9;
+  production emission/review and Cal runtime saving pending).
+
 - First-request attribution (substrate Articles5/6/8/9): add requested-only
   outsideSplit to the existing deferred load clock. Intersect synchronous VM
   phases with outside, then partition its remainder using existing realm guest
