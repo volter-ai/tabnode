@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- R9 post-merge (substrate Articles 1/5/6/8/9): deliver native owner-stop read/close callbacks as deferred binding work after the current call and Node's write-error ticks. A write that discovers transport loss returns EPIPE before stopped is set; late completions cannot change bytesWritten or submit remaining chunks after their request ended. The paired transport pauses sync attempts for100ms after a handoff and documents conservative channel-close priority. Production bundle/declarations pass; independent Dub reading owed, with no measured saving claimed.
+
 - R9 (substrate Articles 1/5/6/8/9): restore Node's native try-write/async flag for fully accepted bounded TCP/Pipe writes. The paired holder limits its synchronous wait to1ms, then atomically hands the same submission to ordered async completion. The driver awaits its Promise without resending bytes; EAGAIN, larger vectors and descriptor sends keep their native queue. Transport failure returns ECANCELED/EPIPE through Node's write-error path and emits completion evidence. Synchronous callbacks, request lifetime and queue accounting settle once. Older holders without the bounded method stay async. Corrected bundle/declaration compilation passes; independent static/Dub reading owed, with no measured saving claimed.
 
 - R11 (substrate Articles 5/6/7/8/9): capture the existing module clock at the process-owned first HTTP request and successful writeHead. Reuse K5's scalar identity and deferred evidence owner, preserving quiet/exit records and Node delegation. Production bundle/declarations compile; actual phase attribution and runtime gain remain pending.

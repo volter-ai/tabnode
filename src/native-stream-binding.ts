@@ -19,6 +19,7 @@ const constructors: Partial<Record<'tcp' | 'pipe', new (type: number) => Stream>
 let transport: NativeStreamTransport | undefined;
 let allocated = false;
 let stopped = false;
+let ownerStopQueued = false;
 let incoming: NativeStreamDescriptor | undefined;
 let nextRequest = 1;
 
@@ -140,12 +141,22 @@ export function installNativeStreamTransport(next: NativeStreamTransport): void 
   transport = next;
   next.onEvent(event => {
     if (event.type === 'closed') {
-      stopped = true;
-      const failures: unknown[] = [];
-      for (const handle of [...handles.values()]) {
-        try { drivers.get(handle)?.ownerStopped(); } catch (cause) { failures.push(cause); }
-      }
-      if (failures.length) throw new AggregateError(failures, 'Native stream owner stopped during callbacks.');
+      if (stopped || ownerStopQueued) return;
+      ownerStopQueued = true;
+      // The client revokes its channel immediately, including inside a write.
+      // Native read/close callbacks belong to the loop after that call returns.
+      // Leave Node's write-error/nextTick delivery ahead of close callbacks,
+      // as the local libuv close binding does. Do not set stopped in this stack:
+      // the write that discovers transport failure must still return EPIPE.
+      queueBindingTask(() => queueBindingTask(() => {
+        stopped = true;
+        ownerStopQueued = false;
+        const failures: unknown[] = [];
+        for (const handle of [...handles.values()]) {
+          try { drivers.get(handle)?.ownerStopped(); } catch (cause) { failures.push(cause); }
+        }
+        if (failures.length) throw new AggregateError(failures, 'Native stream owner stopped during callbacks.');
+      }));
       return;
     }
     const handle = handles.get(event.id);
@@ -494,6 +505,7 @@ export class NativeStreamDriver {
         if (write.trace) write.trace.chunks = 1;
         status = await write.submitted;
         write.submitted = undefined;
+        if (write.ended) return;
         if (status === 0) this.handle.bytesWritten += write.bytes;
         this.finishWrite(write, status);
         return;
@@ -507,6 +519,7 @@ export class NativeStreamDriver {
         const ordinal = trace ? ++trace.chunks : 0;
         status = await this.channel.write(this.descriptor.id, chunk, write.sent,
           trace && ordinal <= 3 ? { listener: trace.listener, vector: trace.vector, chunk: ordinal } : undefined);
+        if (write.ended) return;
         if (write.sent !== undefined) { closeDescriptor(write.sent); write.sent = undefined; }
         if (status !== 0) break;
         this.handle.bytesWritten += chunk.byteLength;

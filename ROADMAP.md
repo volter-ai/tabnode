@@ -87,7 +87,7 @@ Child process credentials: restore Node/libuv spawn uid/gid for asynchronous and
 
 ## R9: complete fully accepted native stream writes synchronously
 
-Status: corrections built; production bundle/declarations pass; independent static/runtime reading owed
+Status: post-merge follow-up built; production bundle/declarations pass; Dub reading owed
 
 Substrate Articles 1/5/6/8/9. Retained Dub ff89a4c4/16fdf1aa records show
 the first 249-byte write accepted by its native owner, then its worker's
@@ -118,6 +118,15 @@ leaves that same submitted buffer owned by the ordered async path. A Promise
 result is its one completion; the driver never resubmits it. Older transports
 without this bounded method remain async. The substrate owns the named wait
 constant and atomic protocol; no process/module-specific restriction.
+
+Post-merge review follow-up: queue owner-stop delivery as binding work after
+the current guest call returns, preserving EPIPE for a failure discovered in
+that call and preventing read/close re-entry from inside socket.write. Ignore
+late submitted or ordinary chunk completions after their write already ended;
+they must not change bytesWritten or send another chunk. The paired transport
+pauses try-write for a fixed100ms channel window after an async handoff, using
+only a monotonic comparison and the existing async path. It keeps conservative
+channel-CLOSED priority over a racing DONE result, with no byte replay.
 
 # tabnode roadmap (Volter's fork)
 
