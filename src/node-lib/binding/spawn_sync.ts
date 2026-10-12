@@ -1,4 +1,4 @@
-import { processCredentialsOf, copyProcessCredentials, type ProcessCredentials } from '../../process-credentials';
+import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials, type ProcessCredentials } from '../../process-credentials';
 /**
  * `internalBinding('spawn_sync')`: a child run to its end before the call
  * returns.
@@ -12,7 +12,7 @@ import { processCredentialsOf, copyProcessCredentials, type ProcessCredentials }
  * `UV_ENOSYS`, which is what Node reports for a child it could not start.
  */
 import { libRequire } from '../require-hook';
-import { UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ETIMEDOUT, UV_EBADF } from './uv';
+import { UV_EPERM, UV_EINVAL, UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ETIMEDOUT, UV_EBADF } from './uv';
 import { runSyncChild, syncChildRefusal } from '../../shims/sync-child';
 import { __substrateArgvFor, __substrateHostRuns, __substrateLineFor, __substrateRunsNode, __substrateShellLine } from '../../shims/command-line';
 import { inheritedWriter } from './process_wrap';
@@ -28,6 +28,8 @@ interface SyncStdioEntry {
 /** What `child_process.js`'s `spawnSync` hands the binding. */
 interface SyncSpawnOptions {
   file: string;
+  uid?: number;
+  gid?: number;
   args?: string[];
   cwd?: string;
   envPairs?: string[];
@@ -109,6 +111,11 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
   const stdio = options.stdio ?? [];
   const nothing = (error: number, of: number = pid): SyncSpawnResult => ({ pid: of, output: null, status: null, signal: null, error });
 
+  const parentCredentials = credentials;
+  const declaredIdentity = options.uid != null || options.gid != null;
+  try { credentials = spawnedProcessCredentials(credentials, options.uid, options.gid); }
+  catch (cause) { return nothing((cause as { code?: string })?.code === 'EPERM' ? UV_EPERM : UV_EINVAL, 0); }
+
   // A realm that cannot run a synchronous child at all says which of its reasons it is. libuv's record has room for
   // an errno only, and Node's own `spawnSync` (internal/child_process.js) makes the Error from it and stores it back
   // on the record's `error`; the reason is added to that Error's message as it is stored, so `result.error.message`
@@ -155,11 +162,18 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
   // the rule its asynchronous child goes by. It is a process as that one is: forked here, under this run, before
   // the wait; run by the host as that process; reaped here when the wait ends, by the wait every child's end takes.
   const host = (globalThis as unknown as Record<symbol, SyncChildHost | undefined>)[hostExecutorSymbol];
-  if (host && typeof host.runSync === 'function' && __substrateHostRuns(options.file, cwd, env ?? {})) {
+  if (host && typeof host.runSync === 'function' && (__substrateHostRuns(options.file, cwd, env ?? {}) || (declaredIdentity && __substrateRunsNode(options.file, cwd)))) {
     const owner = __currentProcessToken();
     const parentPid = runPid(owner)?.pid ?? 0;
     const token = `sync-child-${nextSyncChild++}`;
-    const childPid = mintPid(parentPid, false, owner);
+    let childPid: number;
+    try { childPid = mintPid(parentPid, false, owner, declaredIdentity ? credentials : undefined); }
+    catch (cause) {
+      releaseSinks();
+      const code = (cause as { code?: string })?.code;
+      if (code === 'EPERM' || code === 'EINVAL') return nothing(code === 'EPERM' ? UV_EPERM : UV_EINVAL, 0);
+      throw cause;
+    }
     setRunPid(token, childPid, parentPid, { argv, ...(cwd ? { cwd } : {}) }, owner);
     const kept: [Uint8Array[], Uint8Array[]] = [[], []];
     const take = (index: 0 | 1) => (bytes: Uint8Array): void => {
@@ -218,6 +232,14 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
     };
   }
 
+
+  // The fallback worker proxies filesystem calls through the parent tree. It cannot act as a different
+  // kernel identity: declared Node children use the host door above; an embedding without it is refused.
+  if (credentials.uid !== parentCredentials.uid || credentials.gid !== parentCredentials.gid
+    || credentials.groups.length !== parentCredentials.groups.length
+    || credentials.groups.some((group, index) => group !== parentCredentials.groups[index])) {
+    releaseSinks(); return refusedBecause('a synchronous child with different credentials requires a kernel host child door');
+  }
   // A realm that cannot run a synchronous child of the engine's own says which of its reasons it is.
   const refusal = syncChildRefusal();
   if (refusal !== null) { releaseSinks(); return refusedBecause(refusal); }

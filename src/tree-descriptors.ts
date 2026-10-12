@@ -64,6 +64,9 @@ export interface TreeDescriptors {
   ftruncate(fd: number, length: number): void;
   fsync(fd: number): void;
   fchmod(fd: number, mode: number): void;
+  /** Ownership is supplied only by a filesystem that enforces the calling process's authority. */
+  chown?(path: string, uid: number, gid: number, follow: boolean): void;
+  fchown?(fd: number, uid: number, gid: number): void;
   /** futimens(2), in seconds. */
   futimes(fd: number, atime: number, mtime: number): void;
   /**

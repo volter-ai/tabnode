@@ -1,3 +1,5 @@
+Child process credentials: restore Node/libuv spawn uid/gid for asynchronous and synchronous children, including kernel-backed admission. Parent records are private; numeric declarations are checked, and a root parent clears supplementary groups before its declared child identity. Existing inheritance and default 1000 remain. Runtime qualification pending.
+
 # tabnode roadmap (Volter's fork)
 
 Open work on tabnode, Volter's fork of `macaly/almostnode`, Node in the browser patched toward Node as source. One

@@ -1371,9 +1371,27 @@ const fsBinding = {
       return undefined;
     });
   },
-  chown(_path: unknown, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => unsupportedMetadata('chown')); },
-  fchown(_fd: number, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => unsupportedMetadata('fchown')); },
-  lchown(_path: unknown, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => unsupportedMetadata('lchown')); },
+  chown(path: unknown, uid: number, gid: number, req?: FSReq): undefined {
+    return answer(req, () => {
+      const owner = treeDescriptorsOf(vfs());
+      if (!owner?.chown) return unsupportedMetadata('chown');
+      owner.chown(asPath(path), uid, gid, true); return undefined;
+    });
+  },
+  fchown(fd: number, uid: number, gid: number, req?: FSReq): undefined {
+    return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (!owner?.fchown) return unsupportedMetadata('fchown');
+      owner.fchown(fd, uid, gid); return undefined;
+    });
+  },
+  lchown(path: unknown, uid: number, gid: number, req?: FSReq): undefined {
+    return answer(req, () => {
+      const owner = treeDescriptorsOf(vfs());
+      if (!owner?.chown) return unsupportedMetadata('lchown');
+      owner.chown(asPath(path), uid, gid, false); return undefined;
+    });
+  },
   utimes(path: unknown, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => { vfs().utimesSync(asPath(path), new Date(atime * 1000), new Date(mtime * 1000)); return undefined; }); },
   futimes(fd: number, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => { const owner = ownerOf(fd); if (owner) { owner.futimes(fd, atime, mtime); return undefined; } const file = fileFor(fd); file.tree.utimesSync(file.path, new Date(atime * 1000), new Date(mtime * 1000)); return undefined; }); },
   lutimes(path: unknown, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => {

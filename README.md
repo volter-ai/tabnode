@@ -117,3 +117,6 @@ host requests carry `credentials`; the worker-thread host's `module` receives
 the record as its fourth argument to carry into the thread's Runtime options.
 The kernel owns image USER resolution, permission enforcement and retaining
 credentials across exec. Credential setters are unsupported.
+
+Node child identity: `child_process.spawn` and `spawnSync` honour numeric `uid`/`gid` options using the actual parent record. A root parent clears supplementary groups before declaring its child; an unprivileged parent cannot select different ids. The host registry's optional third `allocate` argument carries the explicit child credential declaration for kernel admission. Ordinary fork inherits and exec retains its admitted credentials.
+The optional `TreeDescriptors.chown`/`fchown` filesystem capability answers ownership changes under the filesystem's own credential checks; trees that do not supply it still refuse the operation. A changed-identity synchronous Node child requires the kernel host child door; the parent-tree proxy fallback refuses it.
