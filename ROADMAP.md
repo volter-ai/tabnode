@@ -1,3 +1,5 @@
+Container UTS hostname: Node's native OS binding must ask the calling process's kernel-owned UTS through its own filesystem channel. The host supplies a private per-process reader; it is retained by the binding and never inferred from mutable process.env, pid getters or the hosting realm. Standalone VirtualFS retains localhost. Vendored Node JavaScript stays unchanged. Substrate ADR-0129 and docs/readings/container-uts-hostname-ruling-2026-10-12.json own the namespace, creation files and setter permissions: lead ruling under owner delegation, 2026-10-12, OWNER-RULINGS.md “decisions are delegated to the lead”. This record precedes behavior. Runtime qualification remains the cycle's reading.
+
 ## S2 first request: partition the time outside module loading
 
 Status: source instrument coded; production emission and independent reading pending
