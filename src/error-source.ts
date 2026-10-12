@@ -3,8 +3,9 @@
  * invented position in the original file. Source-map remapping is separate. */
 import { stackOverrideMap } from './stack-overrides';
 const sources = new WeakMap<object, Map<string, string>>();
-export function rememberCompiledSource(owner: object, source: string): void {
-  const name = /(?:^|\n)\/\/# sourceURL=([^\r\n]+)\s*$/.exec(source)?.[1];
+export function rememberCompiledSource(owner: object, source: string, name: string | undefined): void {
+  // The loader generated this name and the directive together. Retain the
+  // immutable script for Node's error-position binding without scanning it.
   if (!name) return;
   let files = sources.get(owner);
   if (!files) { files = new Map(); sources.set(owner, files); }
