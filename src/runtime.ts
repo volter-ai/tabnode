@@ -2269,6 +2269,8 @@ function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string): boolean {
 const __substrateModuleClasses = new WeakMap<Record<string, Module>, any>();
 /** What a module being loaded carries past its extension's handler, whose signature has no room for it. */
 const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined } }>();
+// Nested load hooks replace shared compile callbacks; a failed body still belongs to its admission parent.
+const __substrateAdmissionParents = new WeakMap<Module, Module | null>();
 /** Node's `findLongestRegisteredExtension`: the longest registered extension the file's name ends with, else `.js`. */
 function __substrateRegisteredExtension(filename: string, extensions: Record<string, unknown>): string {
   const name = filename.slice(filename.lastIndexOf('/') + 1);
@@ -2692,6 +2694,7 @@ function createRequire(
     Object.setPrototypeOf(module, __substrateModule().prototype);
     (module as Module & { path: string }).path = pathShim.dirname(resolvedPath);
     module.paths = __substrateModule()._nodeModulePaths(pathShim.dirname(resolvedPath));
+    __substrateAdmissionParents.set(module, parentModule || null);
     if (parentModule && Array.isArray(parentModule.children)) parentModule.children.push(module);
 
     // Cache before loading to handle circular dependencies
@@ -2998,7 +3001,7 @@ function createRequire(
       const settling = __substrateDriveBody(bodyKind, body, module);
       if (settling) __substrateKeepPending(module, settling, () => {
         if (moduleCache[resolvedPath] === module) delete moduleCache[resolvedPath];
-        const children = parentModule?.children;
+        const children = __substrateAdmissionParents.get(module)?.children;
         if (Array.isArray(children)) {
           const index = children.indexOf(module);
           if (index >= 0) children.splice(index, 1);

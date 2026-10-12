@@ -1,6 +1,6 @@
 {
   "kind": "s1.cjs-module-load-delegation-source-reading",
-  "version": 2,
+  "version": 3,
   "articles": [
     5,
     6,
@@ -114,7 +114,7 @@
       "Module.prototype.load1528-1547 longest extension then handler, loaded state and exports snapshot"
     ]
   },
-  "correction": "Uncached file loading delegates through actual module.load with existing longest-extension selection. Engine-owned WeakMap tokens determine pending loaded state without reading arbitrary guest exports. Late failed bodies remove only their own cached module identity and parent edge, preserving later replacements. Cache-before-evaluation and cached/circular exports remain.",
+  "correction": "Uncached file loading delegates through actual module.load with existing longest-extension selection. Engine-owned WeakMap tokens determine pending loaded state without reading arbitrary guest exports. Late failed bodies remove only their own cached module identity and original cache-admission parent edge, preserving later replacements even when a wrapper starts nested loads and replaces shared compile callbacks. Cache-before-evaluation and cached/circular exports remain.",
   "compiler": {
     "command": [
       "npm",
@@ -122,22 +122,37 @@
       "build:lib"
     ],
     "exitCode": 0,
-    "dfBefore": "Filesystem   1M-blocks   Used Available Capacity  iused    ifree %iused  Mounted on\n/dev/disk5s1    956215 940377      6286   100% 19139750 64370000   23%   /Volumes/PeakSSD\n",
+    "dfBefore": "Filesystem   1M-blocks   Used Available Capacity  iused    ifree %iused  Mounted on\n/dev/disk5s1    956215 937786      8877   100% 19044764 90904960   17%   /Volumes/PeakSSD\n",
     "packageLockSha256": "dfc28e7c30a52ccc3550a53163e10b509d37cb2c2a2673489fce2d13a097b874",
-    "sourceSha256": "9663816dd96117f9f930913c85ec7edaa2c74304cbc52f6fb562c9d593d3f3fa",
+    "sourceSha256": "72fcb8102415d2f25425f9b7bcf8f66beeff9a2baea4c11bc05e5a3b1033d3d2",
     "scope": "Production library bundle and declaration emission only; no tests/apps/probes/reviews"
   },
   "independentReview": {
-    "status": "frozen2 requested after completed revised production emission",
-    "freeze": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/review-freeze-2/manifest.json",
-    "patchSha256": "16ba49d14b98a84d13987879f6f7398327f120997aae5ba0ff8f9b32b57a3aba",
-    "sourceSha256": "9663816dd96117f9f930913c85ec7edaa2c74304cbc52f6fb562c9d593d3f3fa",
-    "priorReview": {
-      "message": "m-86e44e68",
-      "patchSha256": "47e7a785731762e56470dbdeb02c74b3b1ac7aafa4fcabfe7448ca7e5912883c",
-      "result": "changes required: ordinary guest export Proxy inspection and stale pending rejection cache eviction; both corrected in frozen2, reread pending"
-    },
-    "requestMessage": "m-1c2e85b1"
+    "status": "bounded source clearance; no remaining blocker in requested cumulative correction",
+    "reviewer": "codex-01a12c4d-b034-7a02-97cc-cb65577317f1",
+    "message": "m-bc2a73b0",
+    "freeze": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/review-freeze-3/manifest.json",
+    "patchSha256": "d67c4522d1bd3b52952366aa32f9234b12d5ef215d93c90b02d2d1e832224873",
+    "sourceSha256": "72fcb8102415d2f25425f9b7bcf8f66beeff9a2baea4c11bc05e5a3b1033d3d2",
+    "checks": [
+      "Both source hashes and cumulative patch hash independently verified",
+      "Reverse patch reconstructs exact d82b1431 source bytes",
+      "Image-source and production-retention receipt digests verified",
+      "Private pending tokens, replacement cache identity, original admission parent and original delegation/hooks/circular behavior read"
+    ],
+    "priorFindings": [
+      {
+        "message": "m-86e44e68",
+        "patchSha256": "47e7a785731762e56470dbdeb02c74b3b1ac7aafa4fcabfe7448ca7e5912883c",
+        "findings": "Guest export Proxy inspection and stale pending rejection cache eviction; corrected and independently verified"
+      },
+      {
+        "message": "m-aa04e5d2",
+        "patchSha256": "16ba49d14b98a84d13987879f6f7398327f120997aae5ba0ff8f9b32b57a3aba",
+        "finding": "Shared nested-load callbacks can supply wrong pending failure parent; original admission parent now independently verified"
+      }
+    ],
+    "scope": "Independent static source reading/hash/base comparison only; no author edits, compilers, tests, probes, apps or login; no runtime or Wekan qualification"
   },
   "scope": "Source reading and production bundle/declaration emission; no tests/probes/apps/World/guest execution or own-page claim",
   "unqualified": [
@@ -150,9 +165,9 @@
   "appsRun": false,
   "buildRetention": {
     "outputArchive": {
-      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/production-emissions-v2.tar.gz",
-      "bytes": 2410818,
-      "sha256": "916dade42982bc27987347b99217c29a60c097999e14fa5a2691237472e5468a"
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/production-emissions-v3.tar.gz",
+      "bytes": 2410965,
+      "sha256": "e1308e77354643ea7ae87906a6dea445cf11b424f86e4e4e212b767c2552744f"
     },
     "dependencyArchive": {
       "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/compiler-dependencies.tar.gz",
@@ -174,17 +189,41 @@
         "version": "5.9.3"
       }
     },
-    "priorEmissionsRelocatedTo": {
-      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/production-emissions-v1.tar.gz",
-      "bytes": 2410612,
-      "sha256": "723c2c2ed03643b889fe4cd5386ce466328d7488df99e9d07e69be383dd6bf67"
-    },
-    "receiptSha256": "4a545983d6371603751554805bdcd8db1fc2276a7d16697981f847d2402181bb",
+    "priorEmissions": [
+      {
+        "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/production-emissions-v1.tar.gz",
+        "bytes": 2410612,
+        "sha256": "723c2c2ed03643b889fe4cd5386ce466328d7488df99e9d07e69be383dd6bf67"
+      },
+      {
+        "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/production-emissions-v2.tar.gz",
+        "bytes": 2410818,
+        "sha256": "916dade42982bc27987347b99217c29a60c097999e14fa5a2691237472e5468a"
+      }
+    ],
+    "priorBuildReceipts": [
+      {
+        "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/build-result-v2.json",
+        "bytes": 549,
+        "sha256": "f2a69aa3b1190e915c058cccf1b3cf6521c6a5b4f8f0683436558ff3dba0161b"
+      },
+      {
+        "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/build-retention-v2.json",
+        "bytes": 24958,
+        "sha256": "4a545983d6371603751554805bdcd8db1fc2276a7d16697981f847d2402181bb"
+      }
+    ],
+    "receiptSha256": "59d5a6b0fec09bbe1124620518dda7fa9e49fc2e51b2d81805d369dd8059bd55",
     "emittedFiles": 158
   },
   "cleanup": {
-    "receipt": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/completed-build-cleanup-v2.json",
-    "sha256": "608c3504c325526a1504f62a1bb01fc1c154791a72e001c37bfd28f9868687ce",
+    "receipt": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/completed-build-cleanup-v3.json",
+    "sha256": "05c12a7bb50168e9e33f6c7c772290c74cd8e79a335ff9dcaf3998bf127f5973",
     "ownFinishedCompilerScratchRemoved": true
+  },
+  "newerPreFixTake": {
+    "reading": "evidence/module-load/d490248d-reading.json",
+    "head": "d490248d64c2419077cd4745fdcf4b5463faabbd",
+    "conclusion": "Observed committed-exec reactor-descriptor retirement timeout; no positive Meteor boundary or intermittent-error evidence; no module.load behavior credit"
   }
 }
