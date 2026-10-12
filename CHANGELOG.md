@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Restore the module-clock caller phase after every require and include current-phase kernel blocking in captures; keep require-depth/stat-window and guest loading behavior unchanged (C6; substrate Articles5/6/8/9; runtime attribution pending).
+
 - Send engine instrumentation as owned fields through the host trace seam; defer summaries/JSON while preserving producer clocks and guest console behavior (R5; app-time qualification pending).
 - S2-D3 (substrate Articles 5/6/8/9): end a named Node process once its referenced loop remains empty after a native task/rejection checkpoint, including a silent entry. Recheck work scheduled by `beforeExit`; retain real references, caller holds and unregistered-run uncertainty rules. The checkpoint uses the existing native task channel, and drain traces retain D1 fields while adding actual timer wait, look work, checkpoint time and realm identity. Runtime cost and behavior remain with the independent N2 floors reading.
 

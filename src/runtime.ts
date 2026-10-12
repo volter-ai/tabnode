@@ -963,13 +963,14 @@ function __substrateSayLoadClock(process: object, at: string): void {
   clock.said = clock.bodies;
   const round = (values: Record<LoadPhase, number>): unknown => traceRoundFields({ ...values });
   // The phase open now is counted to this instant, in a copy: the clock itself goes on.
-  const wall = { ...clock.wall }, now = performance.now();
+  const wall = { ...clock.wall }, kernel = { ...clock.kernel }, now = performance.now();
   // A 'quiet' line is said by a timer that waits QUIET_SAID_AFTER_MS after the process's last body: that wait is the
   // line's own and none of the load's. Counted in, every process's line held two seconds of it in whatever phase
   // was open (2,029 of a twins' host's 2,579 ms and 2,002 of an attach's 2,185 were this wait). Taken off the open
   // phase and off the total, and said beside them.
   const saidAfter = at === 'quiet' ? Math.min(QUIET_SAID_AFTER_MS, Math.max(0, now - clock.at)) : 0;
   wall[clock.phase] += now - clock.at - saidAfter;
+  kernel[clock.phase] += (clock.fs?.kernelBlockedMs?.() ?? clock.kernelAt) - clock.kernelAt;
   const entry = (process as { argv?: string[] }).argv?.[1];
   const split = __substrateReadSplits.get(process), paths = __substrateRequirePaths.get(process);
   const requires = paths ? { ...paths, engineLoad: { ...paths.engineLoad }, replaced: { ...paths.replaced } } : null;
@@ -979,7 +980,7 @@ function __substrateSayLoadClock(process: object, at: string): void {
     linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
     compileSplit: { sourceCaptureMs: traceRound(clock.compileSplit.sourceCaptureMs), nativeEvalMs: traceRound(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals },
     readSplit: split ? traceRoundFields({ ...split }) : null,
-    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: traceRound(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: traceRound(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(clock.kernel),
+    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: traceRound(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: traceRound(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
     requires,
@@ -2208,7 +2209,7 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     keeping.depth += 1;
     const phase = __substrateLoadPhase(process, undefined, 'resolve');
     __substrateLoadVia = 'engine-prototype-require';
-    try { return Module._load(id, this, false); } finally { __substrateLoadVia = undefined; keeping.depth -= 1; __substrateLoadPhase(process, undefined, keeping.depth === 0 ? 'outside' : phase); }
+    try { return Module._load(id, this, false); } finally { __substrateLoadVia = undefined; keeping.depth -= 1; __substrateLoadPhase(process, undefined, phase); }
   };
   Module.__substrateRequire = Module.prototype.require;
   // `Module.prototype._compile(content, filename)` is the seam every loader
@@ -2868,7 +2869,7 @@ function createRequire(
       // counted to `resolve`, and a parent's body went on in its child's last phase (`link`).
       const phase = __substrateLoadPhase(process, vfs, 'resolve');
       __substrateLoadVia = 'replaced-load';
-      try { return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false); } finally { __substrateLoadVia = undefined; keeping.depth -= 1; __substrateLoadPhase(process, vfs, keeping.depth === 0 ? 'outside' : phase); }
+      try { return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false); } finally { __substrateLoadVia = undefined; keeping.depth -= 1; __substrateLoadPhase(process, vfs, phase); }
     }
     return requireRaw(id);
   };
@@ -2889,7 +2890,7 @@ function createRequire(
     keeping.depth += 1;
     __substrateRequirePathsFor(process).requireRaw += 1;
     const phase = __substrateLoadPhase(process, vfs, 'resolve');
-    try { return requireCounted(id); } finally { keeping.depth -= 1; __substrateLoadPhase(process, vfs, keeping.depth === 0 ? 'outside' : phase); }
+    try { return requireCounted(id); } finally { keeping.depth -= 1; __substrateLoadPhase(process, vfs, phase); }
   };
   const requireCounted = (id: string): unknown => {
     // A data: URL is a module of its own, loaded at that URL.
