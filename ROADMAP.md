@@ -152,6 +152,20 @@ Substrate Article6 and engine correction toward Node. The retained World host sp
 Completion:
 - The original Dub recipe reaches its real sign-in with this released engine and module-resolution work is reduced, with failures retained and the whole-load targets owned by c9.
 
+## crypto-curve-enumeration: Report the binding's supported curves
+
+Status: coded, unbuilt and unreleased
+
+Node's getCurves returns the supported elliptic-curve names. The engine already
+carries genuine P-256, P-384 and P-521 key arithmetic, but its enumeration
+throws. Derive fresh results from that binding's registry; no application,
+package or OpenSSL-only curve is recognized by the answer.
+Completion:
+- Pinned Homepage and Seerr image starts pass their recorded getCurves stop
+  on the prepared engine. State each subsequent stop or own-page evidence.
+- Normal engine preparation, LOCAL catalog rebind and product release proof
+  complete before the image cycle moves to the engine. No probe or test run.
+
 ## G1: Carry Node text across shared-memory seams
 
 Status: built; consumer observation pending
