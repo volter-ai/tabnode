@@ -1,6 +1,7 @@
 import { withGuestExecution, withGuestCallback, drainGuestNextTicks } from '../../guest-loop';
 import { AsyncLocalStorage } from '../../shims/async_hooks';
 import { kCancelTimer } from '../../timer-cancellation';
+import { traceSocketConnect } from '../../socket-connect-trace';
 import { registerHandle, refHandle, unrefHandle, releaseHandle, currentOwner, __adoptHandle } from '../binding/handles';
 /**
  * The internals Node's `net` names that are neither vendored nor a binding:
@@ -148,6 +149,7 @@ export class UnrefTimeout {
       this.id = null;
       this._destroyed = true;
       releaseHandle(this);
+      traceSocketConnect('timer-fired', this.arg, this);
       withGuestCallback(() => this.restore(() => this.onTimeout(this.arg)));
     }, this.msecs);
     if (!referenced) (this.id as { unref?: () => void } | null)?.unref?.();

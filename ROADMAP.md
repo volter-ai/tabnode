@@ -9,6 +9,31 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## R4: Identify socket completion and timeout cancellation
+
+Status: instrument built; historical Redis timeout cause unresolved
+
+Substrate Articles 3/5/6/8/9: Twenty's retained gate-10 and d670 runs report node-redis 4.7.0's
+ConnectionTimeoutError from socket.js:177. Its unchanged @redis/client 1.6.0 clears the socket timeout in its
+connect listener. The newer 008d1bf4 runs have only World-up PID 2 socket-connect readings: the app exits on a
+separately owned permissions defect before opening its sockets. The existing client-dispatched trace says a
+transport listener returned, but does not establish that the TCP request callback ran or that the socket's
+timeout was cancelled. Extend that same trace at the engine's binding callback, recording descriptor/request
+identity, guest PID, socket connecting/destroyed state, connect listener count and the existing timeout's
+destroyed state before and after Node's own callback. Trace timeout firing with the same socket identity.
+Keep vendored Node files, connection behavior, timers, deadlines and callback ownership unchanged. Do not
+attribute the later d670 storage-lock failures to this timeout without matching evidence.
+
+Completion:
+- Library and declarations compile, ordinary hooks stay on, and the source branch is pushed normally.
+- The existing Twenty cycle after its permissions repair supplies application socket completion and timer
+  readings. A delivered callback that cancels the timer disproves missing connect as that socket's cause.
+- The actual general defect is corrected from that evidence and Twenty's cycle walk reaches 13/13. An
+  instrument commit alone does not complete this row. This builder runs no app, test or timing.
+
+Builder evidence: the Vite library bundle and TypeScript declarations compile. No test, application or timing ran.
+The next application trace remains required; the 008d1bf4 PID 2 probes establish only World readiness.
+
 ## process-credentials: Report and inherit configured process credentials
 
 Status: built; kernel integration and runtime qualification pending
