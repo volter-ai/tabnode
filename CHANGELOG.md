@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Acknowledge listening-port registration/primary mapping on the controlling service-worker channel without invoking Node's HTTP handler; report actual document-response metadata for preview selection (E18; substrate Articles 5/6/8/9). Pending checks follow channel reconnects and reject closure/supersession/unsupported old workers. Bundle/declaration compilation only; runtime and cycle gain pending.
+
 - Defer diagnostic UTF8 body counts through the host-owned evidence seam and retain compiled scripts by their already-known names for Node error positions (C6; substrate Articles 5/6/8/9; runtime/app-time reading pending).
 
 - Restore the module-clock caller phase after every require and include current-phase kernel blocking in captures; keep require-depth/stat-window and guest loading behavior unchanged (C6; substrate Articles5/6/8/9; runtime attribution pending).

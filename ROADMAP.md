@@ -432,3 +432,17 @@ Substrate Articles 5/6: merge origin/w3/item-B6 so the engine creator asynchrono
 Completion:
 - Library bundle and declarations compile on the combined K5a/read-clock/G1/B6 engine line.
 - The independently integrated engine is delivered to confined workers and records one compilation with N realm installations; runtime and speed proof remain unverified in this coding lane.
+
+## E18: Preview navigation without a synthetic request
+
+Status: source implementation; runtime qualification pending
+
+Completion: the consumer frame is the first real HTTP client after a listening
+port's mapping acknowledgement, with redirects and declared health gates intact.
+`PortBridge.waitForPrimaryPortMapping` carries only metadata and a caller signal;
+FIFO registration/primary selection and a current-channel acknowledgement prove
+the mapping, including reconnect. Node's handler sees only real client requests.
+An older worker must update; no GET substitutes. Actual document-response
+metadata supplies unnamed-port selection. Consumer first HTTP remains the
+frame's response, so cold route work moves rather than disappears. Compile the
+library/declarations; independent consumer laps must establish behavior and gain.

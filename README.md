@@ -134,3 +134,15 @@ Node child identity: `child_process.spawn` and `spawnSync` honour numeric `uid`/
 The optional `TreeDescriptors.chown`/`fchown` filesystem capability answers ownership changes under the filesystem's own credential checks; trees that do not supply it still refuse the operation. A changed-identity synchronous Node child requires the kernel host child door; the parent-tree proxy fallback refuses it.
 
 The optional `Symbol.for('tabnode.trace-output-deferred')` host hook receives prefix, a local payload materializer and level. It owns when expensive diagnostic inputs are materialized, after first HTTP or before a normal realm terminal handoff; callbacks and source references remain in their producer, and only resulting scalar records cross trace ports. With no hook, evidence uses the existing direct output. Module-byte snapshots retain their exact body-prefix totals; `linkSplit.utf8DeferredMs` reports materialization work, excluded from subsequent live module-clock spans. Forced termination can lose unposted evidence.
+
+## Preview port mapping
+
+After attaching the service worker and selecting a listening primary port with
+`setPrimaryPort(port)`, await `waitForPrimaryPortMapping(port, { signal })`
+before navigating its preview. This door acknowledges registration on the
+controlling worker's initialized channel without sending an HTTP request to
+the app. The caller supplies cancellation and its existing deadline. Worker
+reconnects resend pending checks; superseded channels cannot acknowledge them.
+An older worker without `portMapping:1` needs an update and rejects explicitly.
+`document-response` events carry only metadata from actual browser document
+responses (port, method, URL, status and headers); no selection probe is made.
