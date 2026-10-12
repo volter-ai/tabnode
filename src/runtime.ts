@@ -48,6 +48,7 @@ import { getServerBridge } from './server-bridge';
 import * as moduleShim from './shims/module';
 import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
 import { kRunFilesystem } from './node-lib/binding/fs';
+import { byteLengthUtf8 } from './node-lib/binding/buffer';
 import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor } from './node-lib/load';
 import { fsModule, fsModuleFor } from './node-lib/fs-module';
 import {
@@ -504,8 +505,21 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
 // The guest helpers are then out of scope by name, so they are arguments.
 const __substrateSloppyEval = eval;
 function __substrateCompileBody(source: string, owner: object): any {
-  rememberCompiledSource(owner, source);
-  return __substrateSloppyEval(source);
+  const clock = __substrateLoadClocks.get(owner);
+  // C6: split this phase's source retention from V8's own eval. The entry's separate run path is outside the
+  // module compile phase, so it does not enter these counters either. Preserve the actual source and sloppy eval.
+  if (!clock || clock.phase !== 'compile') {
+    rememberCompiledSource(owner, source);
+    return __substrateSloppyEval(source);
+  }
+  const captureAt = performance.now();
+  clock.compileSplit.sourceCaptures += 1;
+  try { rememberCompiledSource(owner, source); }
+  finally { clock.compileSplit.sourceCaptureMs += performance.now() - captureAt; }
+  const evalAt = performance.now();
+  clock.compileSplit.evals += 1;
+  try { return __substrateSloppyEval(source); }
+  finally { clock.compileSplit.nativeEvalMs += performance.now() - evalAt; }
 }
 // An ES module stays strict, as Node keeps one: the lowering marks its output.
 const __substrateModuleMarker = '/*__substrate_module__*/';
@@ -859,7 +873,9 @@ const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
  */
 type LoadPhase = 'outside' | 'resolve' | 'read' | 'link' | 'compile' | 'evaluate';
 type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>;
-  bodies: number; bodyBytes: number; preparedBodies: number; preparedBodyBytes: number; sourceBodies: number; sourceBodyBytes: number; began: number; said: number };
+  bodies: number; bodyBytes: number; preparedBodies: number; preparedBodyBytes: number; sourceBodies: number; sourceBodyBytes: number;
+  linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
+  began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
 type LoadClockFs = { kernelBlockedMs?: () => number };
 /**
@@ -888,7 +904,8 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
   if (!clock) {
     const zero = (): Record<LoadPhase, number> => ({ outside: 0, resolve: 0, read: 0, link: 0, compile: 0, evaluate: 0 });
     clock = { phase: 'outside', at: now, kernelAt: 0, wall: zero(), kernel: zero(), bodies: 0, bodyBytes: 0,
-      preparedBodies: 0, preparedBodyBytes: 0, sourceBodies: 0, sourceBodyBytes: 0, began: now, said: -1 };
+      preparedBodies: 0, preparedBodyBytes: 0, sourceBodies: 0, sourceBodyBytes: 0,
+      linkSplit: { utf8CountMs: 0, byteCounts: 0 }, compileSplit: { sourceCaptureMs: 0, nativeEvalMs: 0, sourceCaptures: 0, evals: 0 }, began: now, said: -1 };
     __substrateLoadClocks.set(process, clock);
   }
   // The file system is the process's, known from the first caller that holds it (a `require` made through
@@ -948,6 +965,8 @@ function __substrateSayLoadClock(process: object, at: string): void {
   console.log('[boot-trace]', JSON.stringify({ event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
     script: entry === undefined ? null : pathShim.posix.basename(entry),
     preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
+    linkSplit: { utf8CountMs: Math.round(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
+    compileSplit: { sourceCaptureMs: Math.round(clock.compileSplit.sourceCaptureMs), nativeEvalMs: Math.round(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals },
     readSplit: (() => { const split = __substrateReadSplits.get(process); return split ? Object.fromEntries(Object.entries(split).map(([name, value]) => [name, Math.round(value)])) : null; })(),
     bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: Math.round(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: Math.round(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(clock.kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
@@ -2698,7 +2717,12 @@ function createRequire(
       // C6: count the body actually handed off, not a prepared read attempt or a module-cache hit. Newly kept
       // bodies still came from source in this process. Startup streams feed the tree and use these same paths.
       // Preserve bodyBytes' existing string-length accounting; the new fields give each body's UTF-8 byte size.
-      const bytes = BufferPolyfill.byteLength(prepared, 'utf8');
+      // The legacy Buffer polyfill encodes into a JS number array just to get its length. Node's existing binding
+      // counts without producing those bytes; neither prepared nor freshly transformed bodies need that copy.
+      const countAt = performance.now();
+      const bytes = byteLengthUtf8(prepared);
+      loadClock.linkSplit.utf8CountMs += performance.now() - countAt;
+      loadClock.linkSplit.byteCounts += 1;
       if (bodySource === 'prepared') { loadClock.preparedBodies += 1; loadClock.preparedBodyBytes += bytes; }
       else { loadClock.sourceBodies += 1; loadClock.sourceBodyBytes += bytes; }
       // K5's turn-order reading: the count so far, where the process's own http server can say it beside a request.

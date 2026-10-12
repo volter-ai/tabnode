@@ -43,6 +43,39 @@ Builder evidence: the `build:lib` Vite bundle step passed; the combined command 
 script cap during declaration generation, then its exact `tsc -p tsconfig.build.json` step passed separately.
 There is no installed Git commit hook in this checkout; the commit uses ordinary hook-enabled Git.
 
+## C6-module-allocation: Count body bytes without materializing them
+
+Status: built; independent app-time qualification required
+
+Serves substrate Articles 1/6/8: loading the same prepared bodies must not allocate an encoded copy merely for an
+instrument. At 2697bc6, `runModuleBody` calls the legacy `buffer` package's `Buffer.byteLength` for every body. Its
+UTF-8 implementation builds a JavaScript array, pushing every encoded byte, then returns only the array's length.
+This is additional work over the body read and V8 compilation, including prepared bodies; no native app-time
+reading apportions its milliseconds yet. Use the existing Node buffer binding's allocation-free `byteLengthUtf8`
+counter, which counts ASCII, multibyte characters, surrogate pairs and lone surrogates without creating bytes.
+Keep all existing load-clock fields and their units. Add `linkSplit.utf8CountMs` and `compileSplit.sourceCaptureMs` /
+`compileSplit.nativeEvalMs`, in milliseconds, with counts, to that same product trace. Capture and V8 time are disjoint
+within the existing compile phase; the V8 span is indirect eval, including any parsing V8 performs there, and
+does not claim to measure deferred parsing inside a later body invocation. Source retention and sloppy wrapper
+execution stay the same.
+
+The source trace also rules out a code-cache implementation on this route: each body uses indirect eval; no
+`cachedData` API exists here. The substrate checklist closes C4 and L4 because confinement forbids exposing
+`importScripts` and the guest's sloppy `with` wrapper cannot be an ES module. Those boundaries remain in force.
+Resolve/read kernel time is already separate in the load clock; its ownership/read subdivisions are the substrate's
+R1 ledger. Without the next phase readings, neither that work nor V8 can be named as the largest remaining gap.
+
+Completion:
+- The bundle and declarations compile separately within the coding lane's script bound; hooks stay enabled and
+  the branch is pushed normally. No app, browser, World, test or timing runs here.
+- The mini's paired app times establish the gain; phase and new split readings identify the next remaining cost.
+  An unchanged or worse app-time reading leaves C6 open.
+
+Builder evidence: the exact Vite bundle and `tsc -p tsconfig.build.json` declaration steps passed separately under
+the nine-second subprocess bound. Ordinary hooks remain enabled; this checkout has no installed pre-commit hook.
+No application, browser, World, automated test or measurement ran. Exact runtime counters and app-time gain remain
+unverified; the code alone establishes removal of the legacy encoder's temporary byte array.
+
 ## guest-immediate-binding: Bare immediates use the guest's Node timer handle
 
 Status: active
