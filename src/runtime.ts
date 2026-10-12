@@ -1301,6 +1301,8 @@ function __substrateDataModuleSource(url: string): string | undefined {
 }
 
 const __substratePending = Symbol.for('substrate.pending');
+// Loading state belongs to the module, not to properties of a guest's arbitrary exports object.
+const __substratePendingModules = new WeakMap<Module, object>();
 export function __substratePendingOf(value: unknown): Promise<void> | undefined {
   if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return undefined;
   const pending = (value as Record<symbol, unknown>)[__substratePending];
@@ -1316,9 +1318,24 @@ export function __substratePendingOf(value: unknown): Promise<void> | undefined 
 function __substrateKeepPending(module: Module, body: Promise<unknown>, forget: () => void): void {
   const exports = module.exports as Record<symbol, unknown>;
   const holds = exports !== null && (typeof exports === 'object' || typeof exports === 'function');
+  const token = {};
+  __substratePendingModules.set(module, token);
   const settled: Promise<void> = body.then(
-    () => { module.loaded = true; if (holds) delete exports[__substratePending]; },
-    (error: unknown) => { forget(); if (holds) delete exports[__substratePending]; throw error; },
+    () => {
+      if (__substratePendingModules.get(module) === token) {
+        __substratePendingModules.delete(module);
+        module.loaded = true;
+        if (holds) delete exports[__substratePending];
+      }
+    },
+    (error: unknown) => {
+      if (__substratePendingModules.get(module) === token) {
+        __substratePendingModules.delete(module);
+        forget();
+        if (holds) delete exports[__substratePending];
+      }
+      throw error;
+    },
   );
   if (holds) Object.defineProperty(exports, __substratePending, { value: settled, configurable: true, enumerable: false, writable: true });
 }
@@ -2429,7 +2446,7 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     this.paths = Module._nodeModulePaths(pathShim.dirname(filename));
     Module._extensions[__substrateRegisteredExtension(filename, Module._extensions)](this, filename);
     // A lowered body that is still awaiting an import keeps the engine's existing pending state.
-    if (!__substratePendingOf(this.exports)) this.loaded = true;
+    if (!__substratePendingModules.has(this)) this.loaded = true;
   };
   Module.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
   Module.wrap = (code: string) => Module.wrapper[0] + code + Module.wrapper[1];
@@ -2979,7 +2996,14 @@ function createRequire(
       // is counted outside from here too.
       __substrateLoadPhase(process, vfs, __substrateKeptFor(process).depth === 0 ? 'outside' : 'link');
       const settling = __substrateDriveBody(bodyKind, body, module);
-      if (settling) __substrateKeepPending(module, settling, () => { delete moduleCache[resolvedPath]; });
+      if (settling) __substrateKeepPending(module, settling, () => {
+        if (moduleCache[resolvedPath] === module) delete moduleCache[resolvedPath];
+        const children = parentModule?.children;
+        if (Array.isArray(children)) {
+          const index = children.indexOf(module);
+          if (index >= 0) children.splice(index, 1);
+        }
+      });
       else module.loaded = true;
     } catch (error) {
       // Remove from cache on error
@@ -3643,7 +3667,7 @@ export class Runtime {
       )));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
-      if (settling) __substrateKeepPending(module, settling, () => { delete this.moduleCache[filename]; });
+      if (settling) __substrateKeepPending(module, settling, () => { if (this.moduleCache[filename] === module) delete this.moduleCache[filename]; });
       else module.loaded = true;
     } catch (error) {
       delete this.moduleCache[filename];

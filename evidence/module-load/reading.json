@@ -1,8 +1,9 @@
 {
   "kind": "s1.cjs-module-load-delegation-source-reading",
-  "version": 1,
+  "version": 2,
   "articles": [
     5,
+    6,
     8,
     9
   ],
@@ -103,7 +104,8 @@
     "Reify index.js141-154 registers getters while loaded=false; entry.js195-219 publishes their values on runSetters",
     "Engine loadModule inserted the cached module then bypassed module.load by calling the extension handler directly",
     "The direct handler bypass supplies a concrete source counterexample for completed-load publication; there is no observed per-require export object capture",
-    "R11 negative package-config cache does not publish export values; no config-cache defect is established by this failure"
+    "R11 negative package-config cache does not publish export values; no config-cache defect is established by this failure",
+    "Independent frozen1 reading also confirms main.js enables runtime.js before boot.js; original load wrapper then runs setters after getter constants initialize"
   ],
   "nodeReference": {
     "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/lib/internal/modules/cjs/loader.js",
@@ -112,7 +114,7 @@
       "Module.prototype.load1528-1547 longest extension then handler, loaded state and exports snapshot"
     ]
   },
-  "correction": "Uncached file loading uses actual module.load; default load uses the existing longest-extension selector and pending export marker; cache-before-evaluation/current exports and failed-load parent cleanup retained",
+  "correction": "Uncached file loading delegates through actual module.load with existing longest-extension selection. Engine-owned WeakMap tokens determine pending loaded state without reading arbitrary guest exports. Late failed bodies remove only their own cached module identity and parent edge, preserving later replacements. Cache-before-evaluation and cached/circular exports remain.",
   "compiler": {
     "command": [
       "npm",
@@ -120,15 +122,22 @@
       "build:lib"
     ],
     "exitCode": 0,
-    "dfBefore": "Filesystem   1M-blocks   Used Available Capacity  iused    ifree %iused  Mounted on\n/dev/disk5s1    956215 937277      9387   100% 19043634 96123200   17%   /Volumes/PeakSSD\n",
+    "dfBefore": "Filesystem   1M-blocks   Used Available Capacity  iused    ifree %iused  Mounted on\n/dev/disk5s1    956215 940377      6286   100% 19139750 64370000   23%   /Volumes/PeakSSD\n",
     "packageLockSha256": "dfc28e7c30a52ccc3550a53163e10b509d37cb2c2a2673489fce2d13a097b874",
-    "sourceSha256": "540dee29a609e7c201a4f5f6bed0071db248b9a6c23ac4fe4471f4903ba17629",
+    "sourceSha256": "9663816dd96117f9f930913c85ec7edaa2c74304cbc52f6fb562c9d593d3f3fa",
     "scope": "Production library bundle and declaration emission only; no tests/apps/probes/reviews"
   },
   "independentReview": {
-    "status": "requested after complete code and finished production compilation",
-    "freeze": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/review-freeze/manifest.json",
-    "patchSha256": "47e7a785731762e56470dbdeb02c74b3b1ac7aafa4fcabfe7448ca7e5912883c"
+    "status": "frozen2 requested after completed revised production emission",
+    "freeze": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/review-freeze-2/manifest.json",
+    "patchSha256": "16ba49d14b98a84d13987879f6f7398327f120997aae5ba0ff8f9b32b57a3aba",
+    "sourceSha256": "9663816dd96117f9f930913c85ec7edaa2c74304cbc52f6fb562c9d593d3f3fa",
+    "priorReview": {
+      "message": "m-86e44e68",
+      "patchSha256": "47e7a785731762e56470dbdeb02c74b3b1ac7aafa4fcabfe7448ca7e5912883c",
+      "result": "changes required: ordinary guest export Proxy inspection and stale pending rejection cache eviction; both corrected in frozen2, reread pending"
+    },
+    "requestMessage": "m-1c2e85b1"
   },
   "scope": "Source reading and production bundle/declaration emission; no tests/probes/apps/World/guest execution or own-page claim",
   "unqualified": [
@@ -141,9 +150,9 @@
   "appsRun": false,
   "buildRetention": {
     "outputArchive": {
-      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/production-emissions.tar.gz",
-      "bytes": 2410612,
-      "sha256": "723c2c2ed03643b889fe4cd5386ce466328d7488df99e9d07e69be383dd6bf67"
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/production-emissions-v2.tar.gz",
+      "bytes": 2410818,
+      "sha256": "916dade42982bc27987347b99217c29a60c097999e14fa5a2691237472e5468a"
     },
     "dependencyArchive": {
       "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/compiler-dependencies.tar.gz",
@@ -165,11 +174,17 @@
         "version": "5.9.3"
       }
     },
-    "receiptSha256": "5ab48dd12dfd4937b9b9e8b03fafba4d3078ac223c146fdcbcdca2b43e0c82f2"
+    "priorEmissionsRelocatedTo": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/production-emissions-v1.tar.gz",
+      "bytes": 2410612,
+      "sha256": "723c2c2ed03643b889fe4cd5386ce466328d7488df99e9d07e69be383dd6bf67"
+    },
+    "receiptSha256": "4a545983d6371603751554805bdcd8db1fc2276a7d16697981f847d2402181bb",
+    "emittedFiles": 158
   },
   "cleanup": {
-    "receipt": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/completed-build-cleanup.json",
-    "sha256": "7ec00c0440bc9b6b8d7ea41914285b1780450d8c65bd439800e146c313f36178",
+    "receipt": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/completed-build-cleanup-v2.json",
+    "sha256": "608c3504c325526a1504f62a1bb01fc1c154791a72e001c37bfd28f9868687ce",
     "ownFinishedCompilerScratchRemoved": true
   }
 }
