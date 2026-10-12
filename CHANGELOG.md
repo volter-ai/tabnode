@@ -1,3 +1,5 @@
+Restore Node/libuv spawn uid/gid in async and sync child setup and registry admission; preserve private-record inheritance and default 1000. Source build validation only; runtime qualification pending.
+
 # Changelog
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
@@ -5,6 +7,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 ## Unreleased
 
 - Send engine instrumentation as owned fields through the host trace seam; defer summaries/JSON while preserving producer clocks and guest console behavior (R5; app-time qualification pending).
+- preparation-heap (substrate Articles1/2/6/8/9): assemble ESM declaration edits once with the shared span assembler, preserving source semicolons and stable ordering. Release AST references before output assembly and nested ESM lowering parses. Source recognition, transformations, body bytes/keys and heap limits stay unchanged; the original code-server image's build remains independent qualification.
+
+- D2 (substrate Articles 1/5/6/8/9): printed programs end at the first existing look with no new output and no referenced input, timers, ports, handles or held work. Remove the 500/100 ms idle waits and retain the 2 s silent rule, 60 s bound and caller-held lifetime. Short first-empty drains retain the D1 trace fields; five-app behavior remains the independent cycle's qualification.
+- process-load-env-file (substrate Articles 6/8/9): expose Node's synchronous `process.loadEnvFile`, reading the default `.env` or a validated string/byte/file-URL path through the process's native filesystem scope. Reuse the existing `util.parseEnv` binding, retain existing environment keys and interpreter options, and report Node's open/read errors while closing the descriptor. Bundle/declaration compilation and independent image qualification are recorded separately in the roadmap.
 
 - R4 (substrate Articles 3/5/6/8/9): extend socket-connect evidence through the actual TCP request callback, socket connect/timeout events and internal timeout firing. Retain native descriptor/request and guest socket identity, with connecting/destroyed state, connect listener count and timer cancellation state. Vendored Node files, callback ownership, connection and timer behavior stay unchanged; the historical Twenty timeout remains unresolved until its application socket trace is held.
 

@@ -1,4 +1,5 @@
 R5 host-owned evidence: the engine currently stringifies its boot/socket/stream trace records before the host can defer delivery. Capture stable fields and hand them to the host trace seam, using portable formatting instructions for mutable counter summaries. Guest console and execution APIs remain unchanged. The source companion is built against the load-clock line e5f87f8; Rallly/Dub app-time qualification remains with the coordinator. No tests, probes or app measurements in this builder.
+Child process credentials: restore Node/libuv spawn uid/gid for asynchronous and synchronous children, including kernel-backed admission. Parent records are private; numeric declarations are checked, and a root parent clears supplementary groups before its declared child identity. Existing inheritance and default 1000 remain. Runtime qualification pending.
 
 # tabnode roadmap (Volter's fork)
 
@@ -10,6 +11,97 @@ is made of. The consumer is `volter-ai/browser-substrate`, which pins the engine
 changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
+
+## preparation-heap: Release syntax trees before assembling bodies
+
+Status: built and compiled; original-image preparation qualification pending
+
+Substrate Articles 1/2/6/8/9; ADR-0051/0092. code-server owner3216 at
+substrate dc6d37c0 / engine eeab9cb7 aborts in named-file modules job3 with
+SIGABRT and V8 heap exhaustion at the unchanged1024 MiB limit. Its preceding
+jobs0/1/2 completed113/229/877 named files; job3 has no archives. The owned
+request and asset were removed, so the exact failed file/pass is unknown.
+No archive-expansion, application-runtime or deadline cause is established.
+
+The source still assembles ESM declaration replacements by repeated whole-
+module slice/concatenate, unlike the other linear edit assemblers. Each
+replacement copies surrounding source again. Runtime's outer ESM AST also
+remains referenced while the nested declaration/live-import lowerer parses
+its modified source. Other passes retain their AST during output assembly.
+These are concrete unnecessary allocations independent of which asset failed.
+
+Collect the existing exact edits first, release each syntax-tree reference
+before assembly/any nested parser, and assemble the final ESM declaration
+edits with the shared linear span assembler. Preserve stable edit order,
+source-coordinate semicolons, hoisted exports and every existing fallback.
+Syntax recognition, live bindings, await/global/dynamic-import rewrites and
+prepared format/output identity remain unchanged. The companion host derives
+keys from its already computed native SHA-256 instead of encoding/hashing the
+same source again; its own trace retains largest sources and memory snapshots.
+No new process/heap/batch/deadline limit, skip or retry is introduced.
+
+Disproof: changed body bytes/keys, a syntax tree held across nested lowering,
+repeated full-source assembly, or continued abort in the original image.
+Completion: full library/declarations compile and normal source push; the
+independent original-image build qualifies actual heap behavior. No test,
+application preparation or timing runs on this builder.
+
+Builder evidence: full Vite library bundle and TypeScript declaration compiler
+passed (0/0), sequentially inside nine seconds per invocation. The generated
+bundle retains all six explicit AST releases and the single declaration span
+assembly. This is compiler-artifact inspection, not runtime/body qualification.
+
+## D2: End a printed program at its first empty look
+
+Status: built and compiled; independent five-app qualification pending
+
+Substrate Articles 1/5/6/8/9; engine invariant: correct toward Node at source.
+D1 bf43898 records whether work returns after a look with neither new output
+nor pending guest input, timers, ports, handles or held child/build work.
+The retained review logs contain 57 run-drained readings: Rallly40, Twenty12,
+Dub4 and Cal1; all have empty wokeAfterEmpty. No retained LibreChat reading
+is available. The coordinator explicitly assigns phase-1 implementation now;
+LibreChat and the other four remain the independent cycle's behavioral gate.
+No five-app measurement or gain is claimed by the builder.
+
+After a printed program's entry settles, end at the first existing 50 ms
+look with no new output and none of the counted work. Remove the redundant
+500 ms wait and its 100 ms child-exit variant. A look that sees new output
+is not empty. Silent programs retain the existing 2000 ms idle rule; the
+60000 ms bound, caller-held runs, aborts, exits and entry settlement stay
+unchanged. Input, timers, sockets/ports and held work retain the program.
+Keep all D1 trace field names and emit the drain record for a short empty
+look too, so the next cycle still sees its decision. Remove the obsolete
+child-exit idle-shortening observer; child ownership/reaping remain intact.
+
+Disproof: a program with counted work ends, a silent run loses its 2 s rule,
+a caller-held run drains itself, or an unchanged app's walk breaks on D2.
+Completion: library bundle and declarations compile, ordinary commit/push,
+and the independent cycle qualifies all five. No apps, tests or timing here.
+
+Builder evidence: the full Vite library bundle and TypeScript declaration
+compiler completed successfully (0/0), sequentially within nine seconds each.
+The D1 evidence above is retained log reading, not a new run.
+## process-load-env-file: Load a process environment file
+
+Status: built; independent runtime qualification pending
+
+Substrate Articles 6/8/9 (ADR-0007/0021): Reactive Resume's retained dc6d37c0 start stops at
+`process.loadEnvFile is not a function` in its unchanged server entry. `createProcess` does not
+provide the method, although the native util binding already parses environment files. Restore
+Node's synchronous default `.env` read, validated string/byte/file-URL paths, existing-key
+precedence and missing-file error through the calling process's native filesystem and parser.
+Use its existing builtin scope, including child and worker processes; do not change the app,
+vendor library files or interpreter options. A present method followed by a different stop
+would disprove this missing-method diagnosis for that later start.
+
+Completion:
+- Library bundle and declarations compile; normal hooks and push retain the source correction.
+- The independent image lane qualifies the unchanged start. No app, test or probe runs here.
+
+Builder evidence: the final `npm run build:lib` passed (Vite bundle and TypeScript declarations).
+The source implementation uses the calling process's tree/cwd and native fs/util bindings.
+Existing parser parity and unchanged-image behavior remain unqualified; no tests or probes ran.
 
 ## R4: Identify socket completion and timeout cancellation
 

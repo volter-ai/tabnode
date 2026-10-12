@@ -226,6 +226,8 @@ function __substrateScopeGlobalCalls(code: string): string {
     const called = node.type === "CallExpression" ? node.callee : node.type === "TaggedTemplateExpression" ? node.tag : undefined;
     if (called?.type === "Identifier" && (called.name === "fetch" || called.name === "Promise")) positions.push([called.start, called.end, "(0," + code.slice(called.start, called.end) + ")"]);
   });
+  // Preparation needs only source-coordinate edits after the walk, not the full tree during assembly.
+  ast = undefined;
   return applySourceEdits(code, positions.sort((a,b) => b[0] - a[0]));
 }
 /**
@@ -571,6 +573,7 @@ function __substrateRewriteDynamicImportsInScript(code: string): string {
     collectDirectEval(node, replacements);
   });
   if (replacements.length === 0) return code;
+  ast = undefined;
   return applyReplacements(code, replacements);
 }
 
@@ -668,9 +671,11 @@ function __substrateFollowAwaits(code: string): string {
     for (const [at, text] of leading) insert(at, text);
   };
   visit(ast, false, undefined);
+  const topLevelAwait = __substrateTopLevelAwait(ast);
+  ast = undefined;
   // applyReplacements' sort is stable and lands edits at one offset in reverse of their order: closings after openings
   const followed = edits.length || closings.length ? applyReplacements(code, [...edits, ...closings]) : code;
-  return __substrateTopLevelAwait(ast) ? `${followed}\n${__substrateTopLevelAwaitMarker}` : followed;
+  return topLevelAwait ? `${followed}\n${__substrateTopLevelAwaitMarker}` : followed;
 }
 
 /**
@@ -1059,7 +1064,7 @@ function transformEsmToCjs(code: string, filename: string): string {
  * Step 3 re-parses the modified code via transformEsmToCjsSimple.
  */
 function transformEsmToCjsAst(code: string, filename: string): string {
-  const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' }) as any;
+  let ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' }) as any;
 
   // Collect deep replacements: import.meta → import_meta, import() → __dynamicImport()
   const deepReplacements: Array<[number, number, string]> = [];
@@ -1080,6 +1085,8 @@ function transformEsmToCjsAst(code: string, filename: string): string {
   // Check for actual import/export declarations
   const hasImportDecl = ast.body.some((n: any) => n.type === 'ImportDeclaration');
   const hasExportDecl = ast.body.some((n: any) => n.type?.startsWith('Export'));
+  // The nested lowerer parses modified source. Retaining this tree through that call doubles its live ASTs.
+  ast = undefined;
 
   // Apply deep replacements from end to start (preserves earlier positions)
   let transformed = applyReplacements(code, deepReplacements);

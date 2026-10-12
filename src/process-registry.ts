@@ -1,3 +1,4 @@
+import type { ProcessCredentials } from './process-credentials';
 /** Native process identity shared by the container's worker realms. */
 export interface ProcessIdentity {
   readonly pid: number;
@@ -35,7 +36,7 @@ export interface ProcessRegistry {
    * says it leads a session of its own (a detached spawn): a registry over a kernel makes the process there and then,
    * as fork (and setsid) do (browser-substrate ADR-0129); tabnode's own ignores both.
    */
-  allocate(parentPid?: number, newSession?: boolean): number;
+  allocate(parentPid?: number, newSession?: boolean, runAs?: Readonly<ProcessCredentials>): number;
   publish(token: string, identity: ProcessIdentity): void;
   /**
    * execve(2) into a process forked elsewhere: an image starts in this realm in a process whose fork already made it
