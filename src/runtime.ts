@@ -2427,9 +2427,9 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module.prototype.load = function (this: any, filename: string) {
     this.filename = filename;
     this.paths = Module._nodeModulePaths(pathShim.dirname(filename));
-    const extension = pathShim.extname(filename);
-    (Module._extensions[extension] ?? Module._extensions[".js"])(this, filename);
-    this.loaded = true;
+    Module._extensions[__substrateRegisteredExtension(filename, Module._extensions)](this, filename);
+    // A lowered body that is still awaiting an import keeps the engine's existing pending state.
+    if (!__substratePendingOf(this.exports)) this.loaded = true;
   };
   Module.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
   Module.wrap = (code: string) => Module.wrapper[0] + code + Module.wrapper[1];
@@ -2695,16 +2695,25 @@ function createRequire(
     // second time: two live copies of a module that holds state, such as Next's
     // request store, and the second copy empty.
 
-    // Node's `Module.prototype.load`: the handler registered for the file's extension loads it, and that is the one
-    // path. The built-in handlers are the engine's own load step (`builtinLoad`, below) and compile through
-    // `module._compile`; a handler a program registered (ts-node, @babel/register, pirates) is called here because
-    // it is the one in the table, and the `_compile` it replaced on the module is called because the handler it
-    // chains to calls it.
+    // Node's Module._load calls module.load after caching the module (v24.21 loader.js:1348).
+    // A program can wrap that method to publish exports after evaluation; calling the extension here bypassed
+    // that completed-load work and returned uninitialized live exports. The method owns extension selection
+    // and _compile delegation; cached circular requires still return the same partial exports without loading.
     if (resolvedAs) __substrateLoading.set(module, { resolvedAs });
     const Mod = __substrateModule();
     Mod.__substrateBuiltinLoad = builtinLoad;
     Mod.__substrateCompileRaw = compileRaw;
-    try { Mod._extensions[__substrateRegisteredExtension(resolvedPath, Mod._extensions)](module, resolvedPath); }
+    try { (module as Module & { load(filename: string): void }).load(resolvedPath); }
+    catch (error) {
+      // A load wrapper can throw after its extension finished. Node forgets every failed load, including that case.
+      delete moduleCache[resolvedPath];
+      const children = parentModule?.children;
+      if (Array.isArray(children)) {
+        const index = children.indexOf(module);
+        if (index >= 0) children.splice(index, 1);
+      }
+      throw error;
+    }
     finally { __substrateLoading.delete(module); }
     return module;
   };

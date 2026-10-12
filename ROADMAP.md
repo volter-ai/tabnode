@@ -1,3 +1,11 @@
+## S1 CJS module.load delegation (2026-10-12)
+
+Status: production bundle/declarations compiled; independent source review and unchanged image qualification pending.
+
+Articles5/8/9; engine invariants: the retained Wekan image60f4ee53 on6990d634/d82b1431 throws in npm-require.js:57 because mini-files' const pathIsAbsolute export has not been published. Original Meteor3.6-rc.0 runtime.js:35-43 wraps Module.prototype.load to call the unchanged Reify0.25.4 runSetters after loading. The engine inserts the module into its cache but calls the extension handler directly, bypassing that wrapper. mini-files registers getters before initializing its const path exports; Reify's completed-load setter publishes them. Node24.21 CJS loader.js:1348 calls module.load, which selects the registered extension at1542. Restore that delegation for every uncached file, keep cache-before-evaluation and actual module.exports identity, and remove failed loads from the cache/parent children. Keep the engine's existing pending-body convention and longest registered extension selection. Neither package-config absence caching nor image preparation needs changing for this source-proven bypass.
+
+Disproof: a retained resolved-path/body witness shows a different mini-files input or a called completed-load wrapper with its initialized exports still absent. Completion: production bundle/declaration emission and an independent frozen source review; the sweep's unchanged real image supplies behavior, never a synthetic app/module probe.
+
 ## S2 R11: Keep missing package configurations for the process lifetime
 
 Follow-up intent (Articles5/6/8/9): the independent read cleared befbc6c,

@@ -1,0 +1,175 @@
+{
+  "kind": "s1.cjs-module-load-delegation-source-reading",
+  "version": 1,
+  "articles": [
+    5,
+    8,
+    9
+  ],
+  "engineBase": "d82b143170cbc5a88aa27a1b102ae9fa3f099564",
+  "image": "ghcr.io/wekan/wekan@sha256:60f4ee5347c8031f2999c072907b2110d67199fa25b2fd695a4b2473523a0150",
+  "manifestSha256": "b5a49626d4d42dea5ef59c2d66b3f137011937cb1219d09b386521cec5eb2625",
+  "meteorRelease": "METEOR@3.6-rc.0",
+  "reifyVersion": "0.25.4",
+  "job": {
+    "path": "/Users/yueranyuan/volter/heavy-runs/sweep/image-cycle/jobs/0009-2026-10-12T194700.093063+0000-wekan~wekan",
+    "head": "6990d6340e91d7e46e885cb4513e5cfb257b1e78",
+    "engine": "d82b1431",
+    "owner": 21141,
+    "dryRunSha256": "cae52ef288fa8b3209884222c33941416bce081a7acf49dc9d2bf8e92b49fd99",
+    "errorLine": 48,
+    "error": "TypeError: files.pathIsAbsolute is not a function",
+    "firstGuestFrame": "addByPath (/build/programs/server/npm-require.js:57:17)"
+  },
+  "originalFiles": {
+    "/build/programs/server/boot.js": {
+      "layer": "sha256:ebe1e07f31a07bee45ba5d546f99b536e628aa03054e938369844a3ea3fb8cd3",
+      "kind": "file",
+      "bytes": 17612,
+      "sha256": "ff2a81017d7f0ce6ebce00de869bc48b2b9426230e232df6e36b8717def9da6a",
+      "mode": 292,
+      "uid": 0,
+      "gid": 0
+    },
+    "/build/programs/server/config.json": {
+      "layer": "sha256:ebe1e07f31a07bee45ba5d546f99b536e628aa03054e938369844a3ea3fb8cd3",
+      "kind": "file",
+      "bytes": 116,
+      "sha256": "c50d426bdcbcb67e2a6144f7b0863af4aa1c34439104c755e48ee9ce3cd580f6",
+      "mode": 292,
+      "uid": 0,
+      "gid": 0
+    },
+    "/build/programs/server/mini-files.js": {
+      "layer": "sha256:ebe1e07f31a07bee45ba5d546f99b536e628aa03054e938369844a3ea3fb8cd3",
+      "kind": "file",
+      "bytes": 4234,
+      "sha256": "10b0fb0f448517e565eaef9e909b6c141367e15603eeb443211af30e3be09d7a",
+      "mode": 292,
+      "uid": 0,
+      "gid": 0
+    },
+    "/build/programs/server/node_modules/@meteorjs/reify/lib/runtime/entry.js": {
+      "layer": "sha256:ebe1e07f31a07bee45ba5d546f99b536e628aa03054e938369844a3ea3fb8cd3",
+      "kind": "file",
+      "bytes": 18409,
+      "sha256": "72a10c9c05919eab96c447a822f142d32211bf1c74d5187370da9ce4c55422da",
+      "mode": 420,
+      "uid": 0,
+      "gid": 0
+    },
+    "/build/programs/server/node_modules/@meteorjs/reify/lib/runtime/index.js": {
+      "layer": "sha256:ebe1e07f31a07bee45ba5d546f99b536e628aa03054e938369844a3ea3fb8cd3",
+      "kind": "file",
+      "bytes": 10989,
+      "sha256": "cb6cb307b0ab95407afda5f60bfac8f4c9188ea7e9737f37a91305cbdd368e1b",
+      "mode": 420,
+      "uid": 0,
+      "gid": 0
+    },
+    "/build/programs/server/node_modules/@meteorjs/reify/package.json": {
+      "layer": "sha256:ebe1e07f31a07bee45ba5d546f99b536e628aa03054e938369844a3ea3fb8cd3",
+      "kind": "file",
+      "bytes": 1123,
+      "sha256": "aa13b3c7cdfa7715687ee3199afaabdebbeeb0dfb76cf41bdf534873f3668b8f",
+      "mode": 420,
+      "uid": 0,
+      "gid": 0
+    },
+    "/build/programs/server/npm-require.js": {
+      "layer": "sha256:ebe1e07f31a07bee45ba5d546f99b536e628aa03054e938369844a3ea3fb8cd3",
+      "kind": "file",
+      "bytes": 5671,
+      "sha256": "65cc9a2808b8b552063a53f9c10551dabe402b7ad714f184fca84089b50543d4",
+      "mode": 292,
+      "uid": 0,
+      "gid": 0
+    },
+    "/build/programs/server/runtime.js": {
+      "layer": "sha256:ebe1e07f31a07bee45ba5d546f99b536e628aa03054e938369844a3ea3fb8cd3",
+      "kind": "file",
+      "bytes": 4967,
+      "sha256": "c6ec4b7da2a33aa77c7e33a443a988befe541fb6a7e998d33f2b0bed65ffc0a9",
+      "mode": 292,
+      "uid": 0,
+      "gid": 0
+    }
+  },
+  "laterLayerWhiteouts": [],
+  "sourceFindings": [
+    "boot.js6-7 requires mini-files before npm-require; npm-require6 independently requires mini-files through the same module cache",
+    "mini-files.js1-24 registers getters, pathIsAbsolute is a const initialized at114, and its only imported modules are path/os",
+    "runtime.js35-43 wraps Module.prototype.load and invokes unchanged Reify runSetters after the original load finishes",
+    "Reify index.js141-154 registers getters while loaded=false; entry.js195-219 publishes their values on runSetters",
+    "Engine loadModule inserted the cached module then bypassed module.load by calling the extension handler directly",
+    "The direct handler bypass supplies a concrete source counterexample for completed-load publication; there is no observed per-require export object capture",
+    "R11 negative package-config cache does not publish export values; no config-cache defect is established by this failure"
+  ],
+  "nodeReference": {
+    "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/lib/internal/modules/cjs/loader.js",
+    "sites": [
+      "Module._load1348 module.load(filename), cache inserted at1326, failed load cleanup1351-1360",
+      "Module.prototype.load1528-1547 longest extension then handler, loaded state and exports snapshot"
+    ]
+  },
+  "correction": "Uncached file loading uses actual module.load; default load uses the existing longest-extension selector and pending export marker; cache-before-evaluation/current exports and failed-load parent cleanup retained",
+  "compiler": {
+    "command": [
+      "npm",
+      "run",
+      "build:lib"
+    ],
+    "exitCode": 0,
+    "dfBefore": "Filesystem   1M-blocks   Used Available Capacity  iused    ifree %iused  Mounted on\n/dev/disk5s1    956215 937277      9387   100% 19043634 96123200   17%   /Volumes/PeakSSD\n",
+    "packageLockSha256": "dfc28e7c30a52ccc3550a53163e10b509d37cb2c2a2673489fce2d13a097b874",
+    "sourceSha256": "540dee29a609e7c201a4f5f6bed0071db248b9a6c23ac4fe4471f4903ba17629",
+    "scope": "Production library bundle and declaration emission only; no tests/apps/probes/reviews"
+  },
+  "independentReview": {
+    "status": "requested after complete code and finished production compilation",
+    "freeze": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/review-freeze/manifest.json",
+    "patchSha256": "47e7a785731762e56470dbdeb02c74b3b1ac7aafa4fcabfe7448ca7e5912883c"
+  },
+  "scope": "Source reading and production bundle/declaration emission; no tests/probes/apps/World/guest execution or own-page claim",
+  "unqualified": [
+    "Actual corrected Wekan start and first page",
+    "Observed resolved mini-files input/export identity for the original failure",
+    "Runtime effects of arbitrary user load hooks or pending bodies"
+  ],
+  "externalArtifactRoot": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact",
+  "testsRun": false,
+  "appsRun": false,
+  "buildRetention": {
+    "outputArchive": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/production-emissions.tar.gz",
+      "bytes": 2410612,
+      "sha256": "723c2c2ed03643b889fe4cd5386ce466328d7488df99e9d07e69be383dd6bf67"
+    },
+    "dependencyArchive": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/compiler-dependencies.tar.gz",
+      "bytes": 48432797,
+      "sha256": "af35ef685134e85c24c7881ae249500288ce550efef9a36d93e31c41873d01c8"
+    },
+    "originalImageSources": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/original-image-sources.tar.gz",
+      "bytes": 100257,
+      "sha256": "74fd403e94f7633a9b72d21ac54bd09216fa9e894070272c60cf799ac8db3e17"
+    },
+    "compilerInputs": {
+      "vite": {
+        "sha256": "e9802045cdc313b6da55ec2e2dd79312074645816089d64f6021f567c10c0a03",
+        "version": "5.4.21"
+      },
+      "typescript": {
+        "sha256": "822ef7ca6452205657b6288b066481ecf508bfbf43455d715cf7d3ec457561e6",
+        "version": "5.9.3"
+      }
+    },
+    "receiptSha256": "5ab48dd12dfd4937b9b9e8b03fafba4d3078ac223c146fdcbcdca2b43e0c82f2"
+  },
+  "cleanup": {
+    "receipt": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/completed-build-cleanup.json",
+    "sha256": "7ec00c0440bc9b6b8d7ea41914285b1780450d8c65bd439800e146c313f36178",
+    "ownFinishedCompilerScratchRemoved": true
+  }
+}

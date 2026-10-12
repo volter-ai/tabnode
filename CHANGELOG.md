@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Delegate uncached CommonJS files through their actual `module.load` so caller-installed completed-load hooks publish exports. Preserve the longest extension selector, cached circular partial exports and pending-body convention; discard failed load/cache-parent edges (substrate Articles5/8/9; [source/build receipt](evidence/module-load/reading.json), independent review and unchanged Wekan start pending).
+
 - R11 follow-up (substrate Articles5/6/8/9): stop self-reference and #imports package-scope walks before root/node_modules, matching Node24.21 TraverseParent; a nearest config without imports ends that lookup. Document statSync's undefined-only-ENOENT/ENOTDIR contract. The kernel-backed implementation already throws EACCES/EIO; source evidence is retained, with no kernel behavior change or measured gain claimed.
 
 - R11 (substrate Articles5/6/8/9): retain proved ENOENT/ENOTDIR/EISDIR package-config absences for the process and filesystem lifetime, matching Node24.21 GetPackageJSON. A later-created package.json remains unseen by that process. General file/stat misses, invalid/unreadable configs and other process/trees do not acquire sticky absences. Existing deferred module-clock records add resolveSplit.packageConfigs lookup/positive-hit/negative-hit/check/read/retained-miss counters. Production library bundle/declarations pass; independent first-request cost and behavior remain unqualified.
