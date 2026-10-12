@@ -1305,6 +1305,8 @@ function __substrateDataModuleSource(url: string): string | undefined {
 }
 
 const __substratePending = Symbol.for('substrate.pending');
+// Loading state belongs to the module, not to properties of a guest's arbitrary exports object.
+const __substratePendingModules = new WeakMap<Module, object>();
 export function __substratePendingOf(value: unknown): Promise<void> | undefined {
   if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return undefined;
   const pending = (value as Record<symbol, unknown>)[__substratePending];
@@ -1320,9 +1322,24 @@ export function __substratePendingOf(value: unknown): Promise<void> | undefined 
 function __substrateKeepPending(module: Module, body: Promise<unknown>, forget: () => void): void {
   const exports = module.exports as Record<symbol, unknown>;
   const holds = exports !== null && (typeof exports === 'object' || typeof exports === 'function');
+  const token = {};
+  __substratePendingModules.set(module, token);
   const settled: Promise<void> = body.then(
-    () => { module.loaded = true; if (holds) delete exports[__substratePending]; },
-    (error: unknown) => { forget(); if (holds) delete exports[__substratePending]; throw error; },
+    () => {
+      if (__substratePendingModules.get(module) === token) {
+        __substratePendingModules.delete(module);
+        module.loaded = true;
+        if (holds) delete exports[__substratePending];
+      }
+    },
+    (error: unknown) => {
+      if (__substratePendingModules.get(module) === token) {
+        __substratePendingModules.delete(module);
+        forget();
+        if (holds) delete exports[__substratePending];
+      }
+      throw error;
+    },
   );
   if (holds) Object.defineProperty(exports, __substratePending, { value: settled, configurable: true, enumerable: false, writable: true });
 }
@@ -2256,6 +2273,8 @@ function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string): boolean {
 const __substrateModuleClasses = new WeakMap<Record<string, Module>, any>();
 /** What a module being loaded carries past its extension's handler, whose signature has no room for it. */
 const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined } }>();
+// Nested load hooks replace shared compile callbacks; a failed body still belongs to its admission parent.
+const __substrateAdmissionParents = new WeakMap<Module, Module | null>();
 /** Node's `findLongestRegisteredExtension`: the longest registered extension the file's name ends with, else `.js`. */
 function __substrateRegisteredExtension(filename: string, extensions: Record<string, unknown>): string {
   const name = filename.slice(filename.lastIndexOf('/') + 1);
@@ -2433,9 +2452,9 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module.prototype.load = function (this: any, filename: string) {
     this.filename = filename;
     this.paths = Module._nodeModulePaths(pathShim.dirname(filename));
-    const extension = pathShim.extname(filename);
-    (Module._extensions[extension] ?? Module._extensions[".js"])(this, filename);
-    this.loaded = true;
+    Module._extensions[__substrateRegisteredExtension(filename, Module._extensions)](this, filename);
+    // A lowered body that is still awaiting an import keeps the engine's existing pending state.
+    if (!__substratePendingModules.has(this)) this.loaded = true;
   };
   Module.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
   Module.wrap = (code: string) => Module.wrapper[0] + code + Module.wrapper[1];
@@ -2681,6 +2700,7 @@ function createRequire(
     Object.setPrototypeOf(module, __substrateModule().prototype);
     (module as Module & { path: string }).path = pathShim.dirname(resolvedPath);
     module.paths = __substrateModule()._nodeModulePaths(pathShim.dirname(resolvedPath));
+    __substrateAdmissionParents.set(module, parentModule || null);
     if (parentModule && Array.isArray(parentModule.children)) parentModule.children.push(module);
 
     // Cache before loading to handle circular dependencies
@@ -2701,16 +2721,25 @@ function createRequire(
     // second time: two live copies of a module that holds state, such as Next's
     // request store, and the second copy empty.
 
-    // Node's `Module.prototype.load`: the handler registered for the file's extension loads it, and that is the one
-    // path. The built-in handlers are the engine's own load step (`builtinLoad`, below) and compile through
-    // `module._compile`; a handler a program registered (ts-node, @babel/register, pirates) is called here because
-    // it is the one in the table, and the `_compile` it replaced on the module is called because the handler it
-    // chains to calls it.
+    // Node's Module._load calls module.load after caching the module (v24.21 loader.js:1348).
+    // A program can wrap that method to publish exports after evaluation; calling the extension here bypassed
+    // that completed-load work and returned uninitialized live exports. The method owns extension selection
+    // and _compile delegation; cached circular requires still return the same partial exports without loading.
     if (resolvedAs) __substrateLoading.set(module, { resolvedAs });
     const Mod = __substrateModule();
     Mod.__substrateBuiltinLoad = builtinLoad;
     Mod.__substrateCompileRaw = compileRaw;
-    try { Mod._extensions[__substrateRegisteredExtension(resolvedPath, Mod._extensions)](module, resolvedPath); }
+    try { (module as Module & { load(filename: string): void }).load(resolvedPath); }
+    catch (error) {
+      // A load wrapper can throw after its extension finished. Node forgets every failed load, including that case.
+      delete moduleCache[resolvedPath];
+      const children = parentModule?.children;
+      if (Array.isArray(children)) {
+        const index = children.indexOf(module);
+        if (index >= 0) children.splice(index, 1);
+      }
+      throw error;
+    }
     finally { __substrateLoading.delete(module); }
     return module;
   };
@@ -2976,7 +3005,14 @@ function createRequire(
       // is counted outside from here too.
       __substrateLoadPhase(process, vfs, __substrateKeptFor(process).depth === 0 ? 'outside' : 'link');
       const settling = __substrateDriveBody(bodyKind, body, module);
-      if (settling) __substrateKeepPending(module, settling, () => { delete moduleCache[resolvedPath]; });
+      if (settling) __substrateKeepPending(module, settling, () => {
+        if (moduleCache[resolvedPath] === module) delete moduleCache[resolvedPath];
+        const children = __substrateAdmissionParents.get(module)?.children;
+        if (Array.isArray(children)) {
+          const index = children.indexOf(module);
+          if (index >= 0) children.splice(index, 1);
+        }
+      });
       else module.loaded = true;
     } catch (error) {
       // Remove from cache on error
@@ -3643,7 +3679,7 @@ export class Runtime {
       )));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
-      if (settling) __substrateKeepPending(module, settling, () => { delete this.moduleCache[filename]; });
+      if (settling) __substrateKeepPending(module, settling, () => { if (this.moduleCache[filename] === module) delete this.moduleCache[filename]; });
       else module.loaded = true;
     } catch (error) {
       delete this.moduleCache[filename];

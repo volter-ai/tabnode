@@ -35,6 +35,15 @@ production package emitters, ordinary pushes and an independent reading of
 both selected record delivery and unrequested cost. Raw blocking/terminal
 checkpoint transfers and a global retention bound remain distinct open parts
 of R5; a64-record transport batch is not a bound on retained evidence.
+## S1 CJS module.load delegation (2026-10-12)
+
+Status: production bundle/declarations compiled and bounded independent source review cleared at freeze3. Unchanged image qualification pending.
+
+Articles5/8/9; engine invariants: the retained Wekan image60f4ee53 on6990d634/d82b1431 throws in npm-require.js:57 with an absent pathIsAbsolute function. Original Meteor3.6-rc.0 runtime.js:35-43 wraps Module.prototype.load to call the unchanged Reify0.25.4 runSetters after loading. The engine inserts the module into its cache but calls the extension handler directly, bypassing that wrapper. mini-files registers getters before initializing its const path exports; Reify's completed-load setter publishes them. These source paths establish a matching mechanism; the original run did not capture its resolved mini-files input or export identity. Node24.21 CJS loader.js:1348 calls module.load, which selects the registered extension at1542. Restore that delegation for every uncached file, keep cache-before-evaluation and actual module.exports identity, and remove failed loads from the cache/parent children. Pending loaded-state decisions use engine-owned module bookkeeping, without inspecting arbitrary guest exports. A late rejected body retires only that module's cache generation and original admission parent edge, independently of nested hooks replacing shared compile callbacks. Keep the existing longest registered extension selection. Neither package-config absence caching nor image preparation needs changing for this source-proven bypass.
+
+A newer pre-fix take on d490248d reports a committed-exec reactor-descriptor retirement timeout and no application stderr/load-clock lines. It supplies no positive Meteor call boundary and no evidence of intermittent Reify behavior; the kernel lane owns that earlier stop ([retained reading](evidence/module-load/d490248d-reading.json)). The module.load correction receives no runtime credit from it.
+
+Disproof: a retained resolved-path/body witness shows a different mini-files input or a called completed-load wrapper with its initialized exports still absent. Completion: production bundle/declaration emission and an independent frozen source review; the sweep's unchanged real image supplies behavior, never a synthetic app/module probe.
 
 ## S2 R11: Keep missing package configurations for the process lifetime
 
