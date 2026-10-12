@@ -1,0 +1,995 @@
+{
+  "schemaVersion": 1,
+  "recordedUtc": "2026-10-12T16:02:51.193676+00:00",
+  "method": "Read-only retained mini files; no executions, apps, probes, tests or new timings. Original full bytes retained in builder notes.",
+  "machine": "Aarons-Mac-mini.local",
+  "engineAuditHead": "f8948f7962f7cea209314b611a96aef53acd4b41",
+  "existingChanges": {
+    "D2": "6ce7c9f888d35faac244e00c45bced1344ad43f6",
+    "D3": "1418c013c27af3dcb92c7bf0033eb0ce59c45654"
+  },
+  "summary": {
+    "logs": 17,
+    "drainRecords": 13,
+    "observedEmptyLooks": 0,
+    "recordedWakes": 0,
+    "interpretation": "No timed empty span observed. Empty wake arrays do not prove the five-app D1 prerequisite. Current named-loop D3 exit happens before a timed look."
+  },
+  "logs": [
+    {
+      "app": "twenty",
+      "remotePath": "/Users/aaronclaw/heavy-lead/twenty/runs.noindex/twenty-sn-ff89a4c4/dry-run1.log",
+      "bytes": 6383427,
+      "sha256": "e0ee47172e3628582b84e77f1a99175a241b39cfd4802df8ccbf959902198f9e",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 0,
+      "drains": []
+    },
+    {
+      "app": "twenty",
+      "remotePath": "/Users/aaronclaw/heavy-lead/twenty/runs.noindex/twenty-sn-ff89a4c4/dry-run2.log",
+      "bytes": 6331196,
+      "sha256": "c92b9ddc1ecb1dc8a2c870108d81c4725242ea51834d088e76e0c57a2f5a3d4a",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 0,
+      "drains": []
+    },
+    {
+      "app": "twenty",
+      "remotePath": "/Users/aaronclaw/heavy-lead/twenty/runs.noindex/twenty-sn-ff89a4c4/dry-run3.log",
+      "bytes": 6303642,
+      "sha256": "afd62acdcc2c5e145ae9f38578905155f8f6ce8345c6f6920279bb2d690be4db",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 0,
+      "drains": []
+    },
+    {
+      "app": "twenty",
+      "remotePath": "/Users/aaronclaw/heavy-lead/twenty/runs.noindex/twenty-sn-ff89a4c4/dry-run4.log",
+      "bytes": 6390186,
+      "sha256": "4481787b0168a4cb2332092c9b073e719d6add317e1e395291df46540edc37d6",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 0,
+      "drains": []
+    },
+    {
+      "app": "rallly",
+      "remotePath": "/Users/aaronclaw/heavy-lead/rallly/runs.noindex/rallly-sn-ff89a4c4/dry-run1.log",
+      "bytes": 1462706,
+      "sha256": "b2646f1261e69682f9c80e913f988ed536b7ad9d97c2eeb5030bfd17e0b675e0",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 1,
+      "drains": [
+        {
+          "line": 3982,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791816639045,
+            "pid": 10007,
+            "afterEntryMs": 121,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {},
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791816638924,
+            "lastWrite": {
+              "at": 1791816639044,
+              "fd": 1,
+              "bytes": 38,
+              "head": "",
+              "writes": 1,
+              "beforeDrainMs": 1
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 0,
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "lookWorkMs": {
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "entryCheckpointMs": {
+              "count": 2,
+              "totalMs": 119.97499990463257,
+              "maxMs": 119.8899998664856
+            }
+          },
+          "program": {
+            "line": 3944,
+            "at": 1791816638814,
+            "pid": 10007,
+            "argv": [
+              "node",
+              "/workspace/worlds/cx-tabruns-rallly-p3-bf799844-v31/node_modules/@volter/world-runtime/dist/src/cli.js",
+              "url",
+              "cx-tabruns-rallly-p3-bf799844-v31"
+            ],
+            "firstPagePath": false
+          }
+        }
+      ]
+    },
+    {
+      "app": "rallly",
+      "remotePath": "/Users/aaronclaw/heavy-lead/rallly/runs.noindex/rallly-sn-ff89a4c4/dry-run2.log",
+      "bytes": 1461929,
+      "sha256": "28c780e5a60d5e1e9a3ac4e7bc94fa04ccc41d9462d8663c18a53875c84555f8",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 1,
+      "drains": [
+        {
+          "line": 3982,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791816705915,
+            "pid": 10007,
+            "afterEntryMs": 96,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {},
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791816705819,
+            "lastWrite": {
+              "at": 1791816705914,
+              "fd": 1,
+              "bytes": 38,
+              "head": "",
+              "writes": 1,
+              "beforeDrainMs": 1
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 0,
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "lookWorkMs": {
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "entryCheckpointMs": {
+              "count": 2,
+              "totalMs": 96.15500020980835,
+              "maxMs": 96.08000016212463
+            }
+          },
+          "program": {
+            "line": 3944,
+            "at": 1791816705736,
+            "pid": 10007,
+            "argv": [
+              "node",
+              "/workspace/worlds/cx-tabruns-rallly-p3-bf799844-v31/node_modules/@volter/world-runtime/dist/src/cli.js",
+              "url",
+              "cx-tabruns-rallly-p3-bf799844-v31"
+            ],
+            "firstPagePath": false
+          }
+        }
+      ]
+    },
+    {
+      "app": "rallly",
+      "remotePath": "/Users/aaronclaw/heavy-lead/rallly/runs.noindex/rallly-sn-ff89a4c4/dry-run3.log",
+      "bytes": 1463100,
+      "sha256": "4570c4ad2e4f81f37ec8059712e6c8fe6f6f8ff3902d6dca898334af157cb37d",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 1,
+      "drains": [
+        {
+          "line": 3981,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791816772867,
+            "pid": 10007,
+            "afterEntryMs": 95,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {},
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791816772772,
+            "lastWrite": {
+              "at": 1791816772866,
+              "fd": 1,
+              "bytes": 38,
+              "head": "",
+              "writes": 1,
+              "beforeDrainMs": 1
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 0,
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "lookWorkMs": {
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "entryCheckpointMs": {
+              "count": 2,
+              "totalMs": 95.03999996185303,
+              "maxMs": 94.86500000953674
+            }
+          },
+          "program": {
+            "line": 3943,
+            "at": 1791816772688,
+            "pid": 10007,
+            "argv": [
+              "node",
+              "/workspace/worlds/cx-tabruns-rallly-p3-bf799844-v31/node_modules/@volter/world-runtime/dist/src/cli.js",
+              "url",
+              "cx-tabruns-rallly-p3-bf799844-v31"
+            ],
+            "firstPagePath": false
+          }
+        }
+      ]
+    },
+    {
+      "app": "rallly",
+      "remotePath": "/Users/aaronclaw/heavy-lead/rallly/runs.noindex/rallly-sn-ff89a4c4/dry-run4.log",
+      "bytes": 1466960,
+      "sha256": "22432c93ca30aa0e78651418ebe3b294a6b736bb1b8d6744a72322bfc3784d42",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 1,
+      "drains": [
+        {
+          "line": 3984,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791816840494,
+            "pid": 10007,
+            "afterEntryMs": 96,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {},
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791816840398,
+            "lastWrite": {
+              "at": 1791816840493,
+              "fd": 1,
+              "bytes": 38,
+              "head": "",
+              "writes": 1,
+              "beforeDrainMs": 1
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 0,
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "lookWorkMs": {
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "entryCheckpointMs": {
+              "count": 2,
+              "totalMs": 96.74000000953674,
+              "maxMs": 96.58500003814697
+            }
+          },
+          "program": {
+            "line": 3946,
+            "at": 1791816840317,
+            "pid": 10007,
+            "argv": [
+              "node",
+              "/workspace/worlds/cx-tabruns-rallly-p3-bf799844-v31/node_modules/@volter/world-runtime/dist/src/cli.js",
+              "url",
+              "cx-tabruns-rallly-p3-bf799844-v31"
+            ],
+            "firstPagePath": false
+          }
+        }
+      ]
+    },
+    {
+      "app": "librechat",
+      "remotePath": "/Users/aaronclaw/heavy-lead/librechat/runs.noindex/librechat-sn-ff89a4c4/dry-run1.log",
+      "bytes": 2098487,
+      "sha256": "fdb5d4b96858d1eda516a351cde05e41580860150203b9666ed30453cd9f23fb",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 0,
+      "drains": []
+    },
+    {
+      "app": "librechat",
+      "remotePath": "/Users/aaronclaw/heavy-lead/librechat/runs.noindex/librechat-sn-ff89a4c4/dry-run2.log",
+      "bytes": 2096250,
+      "sha256": "f26c7d8b42fe68f7a9b953bf127d5356d192b2e05fbd448ec2153776dedfc573",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 0,
+      "drains": []
+    },
+    {
+      "app": "librechat",
+      "remotePath": "/Users/aaronclaw/heavy-lead/librechat/runs.noindex/librechat-sn-ff89a4c4/dry-run3.log",
+      "bytes": 2094642,
+      "sha256": "0996cb77450672fb38d7270b033d18094528548fdc0c620c21ded097077d7ef2",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 0,
+      "drains": []
+    },
+    {
+      "app": "librechat",
+      "remotePath": "/Users/aaronclaw/heavy-lead/librechat/runs.noindex/librechat-sn-ff89a4c4/dry-run4.log",
+      "bytes": 2095800,
+      "sha256": "4acb53bdbd7d6cd1192e4842cec128426ac728fe58106182b053b8aee55587f2",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": null,
+      "drainCount": 0,
+      "drains": []
+    },
+    {
+      "app": "dub",
+      "remotePath": "/Users/aaronclaw/heavy-lead/dub/runs.noindex/dub-first-ff89a4c4/dry-run1.log",
+      "bytes": 3641801,
+      "sha256": "a77a5f878c4a33a26f253fa59d30b524b6c3732d9ea54c59567998826b32f890",
+      "getExitCode": 0,
+      "sourceHeadLabel": "ff89a4c4",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": "2026-10-12T15:51:26Z",
+      "drainCount": 1,
+      "drains": [
+        {
+          "line": 12244,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791820337470,
+            "pid": 10049,
+            "afterEntryMs": 106,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {},
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791820337364,
+            "lastWrite": {
+              "at": 1791820337469,
+              "fd": 1,
+              "bytes": 23,
+              "head": "",
+              "writes": 1,
+              "beforeDrainMs": 1
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 0,
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "lookWorkMs": {
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "entryCheckpointMs": {
+              "count": 2,
+              "totalMs": 105.40000033378601,
+              "maxMs": 105.34000015258789
+            }
+          },
+          "program": {
+            "line": 12200,
+            "at": 1791820337242,
+            "pid": 10049,
+            "argv": [
+              "node",
+              "/workspace/worlds/dub-2169-scratch/node_modules/@volter/world-runtime/dist/src/cli.js",
+              "url",
+              "dub-2169-scratch"
+            ],
+            "firstPagePath": false
+          }
+        }
+      ]
+    },
+    {
+      "app": "cal",
+      "remotePath": "/Users/aaronclaw/heavy-lead/cal/logs-kept/cal-scored-f65c4b79/dry-run1.log",
+      "bytes": 3694566,
+      "sha256": "a07d87280bce32f207142fcd17c5d94665a426f47b21d5748983e431193e136f",
+      "getExitCode": 0,
+      "sourceHeadLabel": "f65c4b79",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": "2026-10-12T13:21:44Z",
+      "drainCount": 2,
+      "drains": [
+        {
+          "line": 8635,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791811323216,
+            "pid": 14,
+            "afterEntryMs": 1311,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {
+              "it owns an open handle": 950,
+              "it owns an open handle: TCP": 950,
+              "it owns an open handle: Object": 850,
+              "nothing: the idle rule alone": 50
+            },
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791811321905,
+            "lastWrite": {
+              "at": 1791811323069,
+              "fd": 1,
+              "bytes": 23,
+              "head": "\ud83d\udcf2 Created app: 'zoom'\n",
+              "writes": 112,
+              "beforeDrainMs": 147
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 20,
+              "totalMs": 1160.0350005626678,
+              "maxMs": 176.66499996185303
+            },
+            "lookWorkMs": {
+              "totalMs": 0.45999979972839355,
+              "maxMs": 0.07999992370605469
+            },
+            "entryCheckpointMs": {
+              "count": 3,
+              "totalMs": 150.94000005722046,
+              "maxMs": 150.63000011444092
+            }
+          },
+          "program": {
+            "command": "npx ts-node --transpile-only /calcom/scripts/seed-app-store.ts",
+            "attribution": "preceding host-exec request, owned Node initialization, drain, request completion, then yarn start; pid namespaces differ",
+            "request": {
+              "line": 8557,
+              "at": 1791811321247,
+              "pid": 10029,
+              "argv": [
+                "npx",
+                "ts-node",
+                "--transpile-only",
+                "/calcom/scripts/seed-app-store.ts"
+              ]
+            },
+            "nodeInitialization": {
+              "line": 8573,
+              "at": 1791811321255,
+              "pid": 14,
+              "command": "node /tmp/.browser-runtime-node-entry-9e62e476-c438-448f-9ef4-84de657c59ce/entry.cjs"
+            },
+            "firstPagePath": true
+          }
+        },
+        {
+          "line": 10769,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791811368436,
+            "pid": 10059,
+            "afterEntryMs": 266,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {},
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791811368170,
+            "lastWrite": {
+              "at": 1791811368435,
+              "fd": 1,
+              "bytes": 38,
+              "head": "",
+              "writes": 1,
+              "beforeDrainMs": 1
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 0,
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "lookWorkMs": {
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "entryCheckpointMs": {
+              "count": 2,
+              "totalMs": 266.13500022888184,
+              "maxMs": 265.9650001525879
+            }
+          },
+          "program": {
+            "line": 10724,
+            "at": 1791811367950,
+            "pid": 10059,
+            "argv": [
+              "node",
+              "/workspace/worlds/thread-b-calcom-darwin/node_modules/@volter/world-runtime/dist/src/cli.js",
+              "url",
+              "thread-b-calcom-darwin"
+            ],
+            "firstPagePath": false
+          }
+        }
+      ]
+    },
+    {
+      "app": "cal",
+      "remotePath": "/Users/aaronclaw/heavy-lead/cal/logs-kept/cal-scored-f65c4b79/dry-run2.log",
+      "bytes": 3693100,
+      "sha256": "bae6bdfe12ae29371cc2792c4fe8ef0d1064cb2c9ef44f1f363357624c6957cf",
+      "getExitCode": 0,
+      "sourceHeadLabel": "f65c4b79",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": "2026-10-12T13:23:05Z",
+      "drainCount": 2,
+      "drains": [
+        {
+          "line": 8640,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791811403747,
+            "pid": 14,
+            "afterEntryMs": 1489,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {
+              "it owns an open handle": 1050,
+              "it owns an open handle: TCP": 1050,
+              "it owns an open handle: Object": 1000,
+              "nothing: the idle rule alone": 50
+            },
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791811402258,
+            "lastWrite": {
+              "at": 1791811403562,
+              "fd": 1,
+              "bytes": 23,
+              "head": "\ud83d\udcf2 Created app: 'zoom'\n",
+              "writes": 112,
+              "beforeDrainMs": 185
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 22,
+              "totalMs": 1319.3700006008148,
+              "maxMs": 198.77999997138977
+            },
+            "lookWorkMs": {
+              "totalMs": 0.484999418258667,
+              "maxMs": 0.059999942779541016
+            },
+            "entryCheckpointMs": {
+              "count": 3,
+              "totalMs": 168.05999970436096,
+              "maxMs": 167.66999983787537
+            }
+          },
+          "program": {
+            "command": "npx ts-node --transpile-only /calcom/scripts/seed-app-store.ts",
+            "attribution": "preceding host-exec request, owned Node initialization, drain, request completion, then yarn start; pid namespaces differ",
+            "request": {
+              "line": 8559,
+              "at": 1791811401637,
+              "pid": 10029,
+              "argv": [
+                "npx",
+                "ts-node",
+                "--transpile-only",
+                "/calcom/scripts/seed-app-store.ts"
+              ]
+            },
+            "nodeInitialization": {
+              "line": 8575,
+              "at": 1791811401652,
+              "pid": 14,
+              "command": "node /tmp/.browser-runtime-node-entry-8dd71556-4630-4d8b-a028-a584c18de5a2/entry.cjs"
+            },
+            "firstPagePath": true
+          }
+        },
+        {
+          "line": 10834,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791811448369,
+            "pid": 10059,
+            "afterEntryMs": 380,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {},
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791811447989,
+            "lastWrite": {
+              "at": 1791811448368,
+              "fd": 1,
+              "bytes": 38,
+              "head": "",
+              "writes": 1,
+              "beforeDrainMs": 1
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 0,
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "lookWorkMs": {
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "entryCheckpointMs": {
+              "count": 2,
+              "totalMs": 379.04499983787537,
+              "maxMs": 378.9649999141693
+            }
+          },
+          "program": {
+            "line": 10795,
+            "at": 1791811447760,
+            "pid": 10059,
+            "argv": [
+              "node",
+              "/workspace/worlds/thread-b-calcom-darwin/node_modules/@volter/world-runtime/dist/src/cli.js",
+              "url",
+              "thread-b-calcom-darwin"
+            ],
+            "firstPagePath": false
+          }
+        }
+      ]
+    },
+    {
+      "app": "cal",
+      "remotePath": "/Users/aaronclaw/heavy-lead/cal/logs-kept/cal-scored-f65c4b79/dry-run3.log",
+      "bytes": 3701335,
+      "sha256": "6212cedd07ecbd23dc2a99ff2a306b05e89f89dc3891b6d692c86cc2cb488d27",
+      "getExitCode": 0,
+      "sourceHeadLabel": "f65c4b79",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": "2026-10-12T13:24:24Z",
+      "drainCount": 2,
+      "drains": [
+        {
+          "line": 8638,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791811483471,
+            "pid": 14,
+            "afterEntryMs": 1274,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {
+              "it owns an open handle": 1000,
+              "it owns an open handle: TCP": 1000,
+              "it owns an open handle: Object": 850,
+              "nothing: the idle rule alone": 50
+            },
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791811482197,
+            "lastWrite": {
+              "at": 1791811483439,
+              "fd": 1,
+              "bytes": 23,
+              "head": "\ud83d\udcf2 Created app: 'zoom'\n",
+              "writes": 112,
+              "beforeDrainMs": 32
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 21,
+              "totalMs": 1116.4399998188019,
+              "maxMs": 71.7649998664856
+            },
+            "lookWorkMs": {
+              "totalMs": 0.46000027656555176,
+              "maxMs": 0.059999942779541016
+            },
+            "entryCheckpointMs": {
+              "count": 3,
+              "totalMs": 156.72499990463257,
+              "maxMs": 156.47499990463257
+            }
+          },
+          "program": {
+            "command": "npx ts-node --transpile-only /calcom/scripts/seed-app-store.ts",
+            "attribution": "preceding host-exec request, owned Node initialization, drain, request completion, then yarn start; pid namespaces differ",
+            "request": {
+              "line": 8560,
+              "at": 1791811481559,
+              "pid": 10029,
+              "argv": [
+                "npx",
+                "ts-node",
+                "--transpile-only",
+                "/calcom/scripts/seed-app-store.ts"
+              ]
+            },
+            "nodeInitialization": {
+              "line": 8576,
+              "at": 1791811481567,
+              "pid": 14,
+              "command": "node /tmp/.browser-runtime-node-entry-a3da2378-3b4c-43c7-8d8a-86cdad213900/entry.cjs"
+            },
+            "firstPagePath": true
+          }
+        },
+        {
+          "line": 10825,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791811528622,
+            "pid": 10059,
+            "afterEntryMs": 370,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {},
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791811528252,
+            "lastWrite": {
+              "at": 1791811528621,
+              "fd": 1,
+              "bytes": 38,
+              "head": "",
+              "writes": 1,
+              "beforeDrainMs": 1
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 0,
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "lookWorkMs": {
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "entryCheckpointMs": {
+              "count": 2,
+              "totalMs": 369.789999961853,
+              "maxMs": 369.6400001049042
+            }
+          },
+          "program": {
+            "line": 10786,
+            "at": 1791811528019,
+            "pid": 10059,
+            "argv": [
+              "node",
+              "/workspace/worlds/thread-b-calcom-darwin/node_modules/@volter/world-runtime/dist/src/cli.js",
+              "url",
+              "thread-b-calcom-darwin"
+            ],
+            "firstPagePath": false
+          }
+        }
+      ]
+    },
+    {
+      "app": "cal",
+      "remotePath": "/Users/aaronclaw/heavy-lead/cal/logs-kept/cal-scored-f65c4b79/dry-run4.log",
+      "bytes": 3697418,
+      "sha256": "f8c1c8b35e973c48b3bf8b87715f221fac20c072fe7d5013b610866ed39ef639",
+      "getExitCode": 0,
+      "sourceHeadLabel": "f65c4b79",
+      "sourceHeadLabelEvidence": "retained directory name, not an independently recovered engine pin",
+      "logStartUtc": "2026-10-12T13:25:44Z",
+      "drainCount": 2,
+      "drains": [
+        {
+          "line": 8639,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791811562997,
+            "pid": 14,
+            "afterEntryMs": 1417,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {
+              "it owns an open handle": 1050,
+              "it owns an open handle: TCP": 1050,
+              "it owns an open handle: Object": 950,
+              "nothing: the idle rule alone": 50
+            },
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791811561580,
+            "lastWrite": {
+              "at": 1791811562838,
+              "fd": 1,
+              "bytes": 23,
+              "head": "\ud83d\udcf2 Created app: 'zoom'\n",
+              "writes": 112,
+              "beforeDrainMs": 159
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 22,
+              "totalMs": 1249.3900005817413,
+              "maxMs": 170.6449999809265
+            },
+            "lookWorkMs": {
+              "totalMs": 0.5299997329711914,
+              "maxMs": 0.059999942779541016
+            },
+            "entryCheckpointMs": {
+              "count": 3,
+              "totalMs": 166.86000037193298,
+              "maxMs": 166.63000011444092
+            }
+          },
+          "program": {
+            "command": "npx ts-node --transpile-only /calcom/scripts/seed-app-store.ts",
+            "attribution": "preceding host-exec request, owned Node initialization, drain, request completion, then yarn start; pid namespaces differ",
+            "request": {
+              "line": 8558,
+              "at": 1791811560928,
+              "pid": 10029,
+              "argv": [
+                "npx",
+                "ts-node",
+                "--transpile-only",
+                "/calcom/scripts/seed-app-store.ts"
+              ]
+            },
+            "nodeInitialization": {
+              "line": 8574,
+              "at": 1791811560937,
+              "pid": 14,
+              "command": "node /tmp/.browser-runtime-node-entry-b65fc13b-53c6-45bc-ad3a-f8f6c8365fee/entry.cjs"
+            },
+            "firstPagePath": true
+          }
+        },
+        {
+          "line": 10764,
+          "reading": {
+            "event": "run-drained",
+            "at": 1791811607816,
+            "pid": 10059,
+            "afterEntryMs": 265,
+            "endedBy": "the referenced loop is empty",
+            "heldByMs": {},
+            "sinceLastOutputMs": {},
+            "checkMs": 50,
+            "entryReturnedAt": 1791811607551,
+            "lastWrite": {
+              "at": 1791811607816,
+              "fd": 1,
+              "bytes": 38,
+              "head": "",
+              "writes": 1,
+              "beforeDrainMs": 0
+            },
+            "emptyLooks": 0,
+            "wokeAfterEmpty": [],
+            "lastEmptyMs": null,
+            "lookTimer": {
+              "realm": "worker",
+              "source": "realm.setTimeout",
+              "requestedMs": 50,
+              "count": 0,
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "lookWorkMs": {
+              "totalMs": 0,
+              "maxMs": 0
+            },
+            "entryCheckpointMs": {
+              "count": 2,
+              "totalMs": 265.539999961853,
+              "maxMs": 265.34500002861023
+            }
+          },
+          "program": {
+            "line": 10719,
+            "at": 1791811607329,
+            "pid": 10059,
+            "argv": [
+              "node",
+              "/workspace/worlds/thread-b-calcom-darwin/node_modules/@volter/world-runtime/dist/src/cli.js",
+              "url",
+              "thread-b-calcom-darwin"
+            ],
+            "firstPagePath": false
+          }
+        }
+      ]
+    }
+  ]
+}

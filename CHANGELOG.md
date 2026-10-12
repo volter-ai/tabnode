@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- D2 audit (substrate Articles 1/5/6/8/9): retain hashes and drain fields from 17 mini logs. The first-empty cut and named-loop completion are already on the head; current records observe zero timed empty looks. Identify Cal's pre-page seed separately from later World URL queries. Runtime behavior is unchanged.
+
 - J2 (substrate Articles5/6/8/9): make shell kill -0 use the caller's signal-zero authority before retained child handles and preserve signed query targets. Record the merged process.kill path through the shared kernel table and the existing World reclaimer/client-holder instruments; sibling runtime proof remains owed.
 
 - Keep K5 evidence data-only: capture body totals from the private process clock and prefer the recorded run PID, with scalar-only URL/PID/status fields. Non-scalar status arguments retain their Node coercion/delegation and record null plus statusType; caller functions/ports never enter trace transport (R5/K5; Articles 5/6/8/9; compiler evidence only).

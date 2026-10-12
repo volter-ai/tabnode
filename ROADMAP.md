@@ -137,7 +137,7 @@ further timer look. Runtime gain and lifecycle behavior remain the floors lane's
 
 ## D2: End a printed program at its first empty look
 
-Status: built and compiled; independent five-app qualification pending
+Status: already on the engine head as 6ce7c9f; D3 1418c013 owns named-loop completion. Coordinator closed the phase-1 code row on 2026-10-12; no gain or five-app empty-span proof is claimed.
 
 Substrate Articles 1/5/6/8/9; engine invariant: correct toward Node at source.
 D1 bf43898 records whether work returns after a look with neither new output
@@ -166,6 +166,25 @@ and the independent cycle qualifies all five. No apps, tests or timing here.
 Builder evidence: the full Vite library bundle and TypeScript declaration
 compiler completed successfully (0/0), sequentially within nine seconds each.
 The D1 evidence above is retained log reading, not a new run.
+
+2026-10-12 audit on f8948f7: [retained readings and source hashes](docs/readings/s2-d2-2026-10-12.json)
+cover 17 mini logs: Twenty 4, Rallly 4, LibreChat 4 and Dub 1 from ff89a4c4
+directories, plus Cal 4 from the archived f65c4b79 directory. Cal's current
+runs directory was empty; its archived arm is labeled separately. Rallly 4,
+Dub 1 and Cal 8 supply 13 drain records. Each ends by the referenced loop
+being empty, with emptyLooks=0, wokeAfterEmpty=[] and lastEmptyMs=null.
+Twenty and LibreChat have no drain record. These logs observe no timed
+empty span, so the empty arrays do not establish the original five-app D1
+condition. D3 reaches its completion checkpoint before scheduling a look.
+
+The recorded world-runtime URL drains in Rallly, Dub and Cal belong to
+later walk steps, after first HTTP. Cal's other drain, Node pid14 running
+npx ts-node --transpile-only /calcom/scripts/seed-app-store.ts, completes
+before yarn start and is on its first-page path. Its host-exec request
+uses pid10029; retain both namespaces instead of equating those numbers.
+The World's up drain stays beside the app after its last line (substrate
+packages/browser-substrate/src/index.ts, E5); a persistent server's exit
+is not a prerequisite for its first answer. No additional cut was made.
 ## process-load-env-file: Load a process environment file
 
 Status: built; independent runtime qualification pending
