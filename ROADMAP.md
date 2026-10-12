@@ -9,6 +9,45 @@ changelog records what each version changed in the tab. What shipped is in
 [`CHANGELOG.md`](CHANGELOG.md), one section per release; the fork's rules are
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`RELEASING.md`](RELEASING.md).
 
+## preparation-heap: Release syntax trees before assembling bodies
+
+Status: built and compiled; original-image preparation qualification pending
+
+Substrate Articles 1/2/6/8/9; ADR-0051/0092. code-server owner3216 at
+substrate dc6d37c0 / engine eeab9cb7 aborts in named-file modules job3 with
+SIGABRT and V8 heap exhaustion at the unchanged1024 MiB limit. Its preceding
+jobs0/1/2 completed113/229/877 named files; job3 has no archives. The owned
+request and asset were removed, so the exact failed file/pass is unknown.
+No archive-expansion, application-runtime or deadline cause is established.
+
+The source still assembles ESM declaration replacements by repeated whole-
+module slice/concatenate, unlike the other linear edit assemblers. Each
+replacement copies surrounding source again. Runtime's outer ESM AST also
+remains referenced while the nested declaration/live-import lowerer parses
+its modified source. Other passes retain their AST during output assembly.
+These are concrete unnecessary allocations independent of which asset failed.
+
+Collect the existing exact edits first, release each syntax-tree reference
+before assembly/any nested parser, and assemble the final ESM declaration
+edits with the shared linear span assembler. Preserve stable edit order,
+source-coordinate semicolons, hoisted exports and every existing fallback.
+Syntax recognition, live bindings, await/global/dynamic-import rewrites and
+prepared format/output identity remain unchanged. The companion host derives
+keys from its already computed native SHA-256 instead of encoding/hashing the
+same source again; its own trace retains largest sources and memory snapshots.
+No new process/heap/batch/deadline limit, skip or retry is introduced.
+
+Disproof: changed body bytes/keys, a syntax tree held across nested lowering,
+repeated full-source assembly, or continued abort in the original image.
+Completion: full library/declarations compile and normal source push; the
+independent original-image build qualifies actual heap behavior. No test,
+application preparation or timing runs on this builder.
+
+Builder evidence: full Vite library bundle and TypeScript declaration compiler
+passed (0/0), sequentially inside nine seconds per invocation. The generated
+bundle retains all six explicit AST releases and the single declaration span
+assembly. This is compiler-artifact inspection, not runtime/body qualification.
+
 ## D2: End a printed program at its first empty look
 
 Status: built and compiled; independent five-app qualification pending

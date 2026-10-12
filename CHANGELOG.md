@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- preparation-heap (substrate Articles1/2/6/8/9): assemble ESM declaration edits once with the shared span assembler, preserving source semicolons and stable ordering. Release AST references before output assembly and nested ESM lowering parses. Source recognition, transformations, body bytes/keys and heap limits stay unchanged; the original code-server image's build remains independent qualification.
+
 - D2 (substrate Articles 1/5/6/8/9): printed programs end at the first existing look with no new output and no referenced input, timers, ports, handles or held work. Remove the 500/100 ms idle waits and retain the 2 s silent rule, 60 s bound and caller-held lifetime. Short first-empty drains retain the D1 trace fields; five-app behavior remains the independent cycle's qualification.
 
 - R4 (substrate Articles 3/5/6/8/9): extend socket-connect evidence through the actual TCP request callback, socket connect/timeout events and internal timeout firing. Retain native descriptor/request and guest socket identity, with connecting/destroyed state, connect listener count and timer cancellation state. Vendored Node files, callback ownership, connection and timer behavior stay unchanged; the historical Twenty timeout remains unresolved until its application socket trace is held.

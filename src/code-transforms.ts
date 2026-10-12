@@ -350,6 +350,7 @@ function __substrateLiveImportBindings(code: any) {
   };
 
   visit(ast, new Set(reads.keys()));
+  ast = undefined;
   edits.sort((a, b) => b[0] - a[0]);
   return applySourceEdits(code, edits);
 }
@@ -357,7 +358,7 @@ function __substrateLiveImportBindings(code: any) {
 /** AST-based ESM→CJS transform using acorn. */
 function transformEsmToCjsAst(code: string): string {
   code = __substrateLiveImportBindings(code);
-  const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  let ast: acorn.Program | undefined = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
 
   // Collect replacements as [start, end, replacement] sorted by start descending
   const replacements: Array<[number, number, string]> = [];
@@ -521,18 +522,13 @@ function transformEsmToCjsAst(code: string): string {
     }
   }
 
-  // Apply replacements from end to start to preserve positions
-  let result = code;
+  // Keep the original statement's semicolon using source coordinates. Descending disjoint edits never
+  // changed that character in the old repeated concatenation; assembling spans once gives the same bytes
+  // without copying a generated module for every import/export. Release its AST before allocating output.
+  ast = undefined;
   replacements.sort((a, b) => b[0] - a[0]);
-  for (const [start, end, replacement] of replacements) {
-    // A minified module puts its imports on one line,
-    // `;import{...}from"a";import{...}from"b"`, and each declaration's span takes
-    // its own semicolon with it: the rewrite glued `require("a")const {...} =
-    // require("b")` together, and V8 read an unexpected `const` in
-    // @tailwindcss/vite's plugin. A replaced statement that ended in a semicolon
-    // ends in one still.
-    result = result.slice(0, start) + replacement + (result.charAt(end - 1) === ';' ? ';' : '') + result.slice(end);
-  }
+  for (const edit of replacements) if (code.charAt(edit[1] - 1) === ';') edit[2] += ';';
+  const result = applySourceEdits(code, replacements);
 
   return hoisted.join(' ') + result;
 }
