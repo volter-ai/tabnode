@@ -1,12 +1,12 @@
 ## S2 K1: reuse internal require contexts
 
-Status: intent recorded before code; source emission and independent review pending
+Status: approved source pushed at 912010ec; full production bundle/declarations emitted; matched Cal reading pending
 
-Substrate Articles5/6/7/8/9. The paired substrate reading
-docs/readings/s2-k1-cal-stage-account-2026-10-12.json at6bda016e
-retains Cal fe60311f+a279af1's median first-request-to-head3645ms,
-including1383ms resolution and8104 new bodies. Its live require hook
-reaches the engine's prototype require26560 times. The original Module._load
+Substrate Articles 5/6/7/8/9. The paired substrate reading
+docs/readings/s2-k1-cal-stage-account-2026-10-12.json at 6bda016e
+retains Cal fe60311f+a279af1's median first request to head of 3645 ms,
+including 1383 ms resolution and 8104 new bodies. Its live require hook
+reaches the engine's prototype require 26560 times. The original Module._load
 calls requireFor(parent) on every turn, constructing the entire createRequire
 closure graph even when the parent and module cache already exist. These
 counts establish a repeated construction path, not its exclusive time.
@@ -22,10 +22,29 @@ Existing process-owned successful paths and Node package-config absences
 remain unchanged. Weak parent ownership retains at most one context per
 parent, with no global path or permission cache.
 
+Independent review approved the frozen source, including reentrancy, transient
+miss lifetime, ownership and guest visibility. Two retained tradeoffs: each
+createRequire also allocates its private reset closure and WeakMap entry; an
+internal cached call no longer repeats the factory's repair of a deleted
+process.getBuiltinModule. Public/fallback factory calls still run that code.
+The private context is distinct from the module body's public require, so its
+reset cannot clear that public function's local caches. No guest-visible
+require function or evaluated exports are newly shared.
+
 Production library/worker bundle and declarations only; no tests, probes,
 application or timing runs here. Independent review precedes integration;
-the mini's matched capture determines any saving. The native6.028s comparator
+the mini's matched capture determines any saving. The native 6.028 s comparator
 in this old cohort ran through World and remains subject to N9's restatement.
+
+[The production receipt](docs/readings/s2-k1-cal-require-contexts.json) binds
+the unchanged full Vite library/public and runtime-worker build (exit 0) and
+all package declarations (exit 0): 159 products, including 151 declarations,
+10,243,584 bytes. Original source/config/lock bytes and all completed products
+are retained in measured archives. Two full installs and the first bundle
+stopped at their recorded bounds; those attempts remain explicitly incomplete.
+The own compiler closure was installed normally from registry/cache, with
+every selected version/URL/integrity matching the original repository lock.
+No repository manifest, vendor source, package pin or publication changed.
 
 ## S2 first request: partition the time outside module loading
 
