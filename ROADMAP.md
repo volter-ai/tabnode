@@ -863,3 +863,5 @@ Articles 5/6/8/9:9bd59f3/17a5dba inserted the diagnostic K5 counter/console bloc
 
 
 Container UTS resolver correction (ADR-0129): process-owned /etc/hosts readers now feed callback/promises lookup through the captured NodeLibScope, preserving file address families. Changed JS modules and complete declarations emitted. Paired merge with substrate is required; whole Vite bundle still incomplete and cycle reading pending.
+
+Container hosts-error follow-up (m-5b8a48e2): missing hosts no longer becomes an empty string at capture, and EIO is not suppressed. Production all declarations and changed JS emit; cycle qualification pending. Receipt /Volumes/PeakSSD/heavy-runs-out/builders/s1-container-hostname-artifact/hostname-hosts-error-followup.json SHA256 e128facd7b9414c88c819a0224c1e7878ad230eaf1b4a27f9989ed6eab5430bd.
