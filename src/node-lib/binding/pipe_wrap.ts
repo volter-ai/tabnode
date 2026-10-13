@@ -13,7 +13,7 @@
  */
 import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
-import { UV_EACCES, UV_EADDRINUSE, UV_ENOENT, UV_ENOTDIR, UV_EBADF } from './uv';
+import { UV_EACCES, UV_EADDRINUSE, UV_ECONNREFUSED, UV_ENOENT, UV_ENOTDIR, UV_EBADF } from './uv';
 import { handleForFd, registerFd, releaseFd } from './fds';
 import { __adoptHandle, ownerOf, invokeOwned } from './handles';
 import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
@@ -47,9 +47,23 @@ interface SocketTree {
   unlinkSync(path: string): void;
 }
 const kRunFilesystem = Symbol.for('tabnode.run.vfs');
+function runTree(): SocketTree | undefined {
+  return (globalThis as unknown as { process?: Record<symbol, unknown> }).process?.[kRunFilesystem] as SocketTree | undefined;
+}
 function socketTree(): SocketTree | undefined {
-  const tree = (globalThis as unknown as { process?: Record<symbol, unknown> }).process?.[kRunFilesystem] as SocketTree | undefined;
+  const tree = runTree();
   return typeof tree?.createSocketSync === 'function' ? tree : undefined;
+}
+/**
+ * A connect no listener answers: ECONNREFUSED where something is at the path (a socket node left by a server that
+ * ended without closing, as Linux answers: unix_find_bsd finds the inode, no socket listens), ENOENT where nothing is.
+ * A program that finds a stale socket so unlinks it and binds again (pm2's axon on its pub.sock and rpc.sock).
+ */
+function noListener(path: string): number {
+  if (path.length === 0 || path.charCodeAt(0) === 0) return UV_ECONNREFUSED;
+  const tree = runTree();
+  if (!tree || typeof tree.lstatSync !== 'function') return UV_ENOENT;
+  try { tree.lstatSync(path); return UV_ECONNREFUSED; } catch { return UV_ENOENT; }
 }
 
 /** The listening pipe a connect to this path reaches, if any. */
@@ -82,9 +96,14 @@ export class Pipe extends LibuvStreamWrap {
   bind(path: string): number {
     const made = this.makeNode(path);
     if (made !== 0) return made;
-    const native = nativeStreamFor(this);
-    const status = native ? native.call({ operation: 'bind', id: native.descriptor.id, address: path }).status : this.bindName(path);
-    if (status !== 0) this.dropNode();
+    let status = UV_EBADF;
+    try {
+      const native = nativeStreamFor(this);
+      status = native ? native.call({ operation: 'bind', id: native.descriptor.id, address: path }).status : this.bindName(path);
+    } finally {
+      // A bind refused, or a channel that threw, leaves no node behind.
+      if (status !== 0) this.dropNode();
+    }
     return status;
   }
 
@@ -111,13 +130,14 @@ export class Pipe extends LibuvStreamWrap {
 
   connect(req: PipeConnectWrap, path: string): number {
     const native = nativeStreamFor(this);
-    if (native) return native.connect(path, undefined, false, status => invokeOwned(req, 'oncomplete', status, this, req, true, true));
+    // The owner's registry knows names, not nodes: its "no such name" is said here, where the run's tree is.
+    if (native) return native.connect(path, undefined, false, status => invokeOwned(req, 'oncomplete', status === UV_ENOENT ? noListener(path) : status, this, req, true, true));
     // libuv answers a connect through the request, never from the call.
     queueBindingTask(() => {
       if (this.closed) return;
       const server = listenerOnPath(path);
       if (!server) {
-        invokeOwned(req, 'oncomplete', UV_ENOENT, this, req, true, true);
+        invokeOwned(req, 'oncomplete', noListener(path), this, req, true, true);
         return;
       }
       const accepted = new (server.constructor as typeof Pipe)(server.type === constants.IPC ? constants.IPC : constants.SOCKET);
