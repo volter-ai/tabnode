@@ -236,6 +236,7 @@ export class NativeStreamScope {
             if (held.handle.getsockname(local) === 0 && held.handle.getpeername(remote) === 0) handle.adoptNames(local as SockName, remote as SockName);
           }
           handle.takeOverFrom(held.handle);
+          this.uncredit(inherited!);
           this.entries.delete(inherited!);
           scopes.delete(held.handle);
           held.handle.close();
@@ -293,12 +294,15 @@ export class NativeStreamScope {
 
   /**
    * S2 T14: `word` becomes this handle's send credit, published now, after every write made for it, and whenever its
-   * peer reads. One per handle; a handle without a peer is given none (its word stays at 0).
+   * peer reads. One per handle. A handle without a peer is given a word that publishes no room and never reopens (it
+   * has no peer to read). Refused where the window and a chunk could pass 2^31: the realm compares the wrapping
+   * counters by the sign of their 32-bit difference.
    */
   creditWrites(id: number, word: Int32Array): number {
     const handle = this.entry(id)?.handle;
     if (!handle || handle.closed) return UV_EBADF;
-    if (this.credits.has(id) || !(word.buffer instanceof SharedArrayBuffer) || word.length < 1) return UV_EINVAL;
+    if (this.credits.has(id) || !(word.buffer instanceof SharedArrayBuffer) || word.length < 1
+      || this.limits.maxQueuedBytes + this.limits.maxReadChunkBytes >= 2 ** 31) return UV_EINVAL;
     const credit = { word, written: 0, unsubscribe: (): void => {} };
     this.credits.set(id, credit);
     credit.unsubscribe = handle.onPeerReadCapacity(() => this.publishCredit(id));
@@ -319,6 +323,15 @@ export class NativeStreamScope {
       : !handle.peer ? UV_EPIPE : handle.writeBuffer(new WriteWrap(), bytes);
     this.publishCredit(id);
     return status;
+  }
+
+  /** A handle's credit ends with its entry: the word closes at its processed count, so no further write is accepted against it. */
+  private uncredit(id: number): void {
+    const credit = this.credits.get(id);
+    if (!credit) return;
+    this.credits.delete(id);
+    credit.unsubscribe();
+    Atomics.store(credit.word, 0, credit.written);
   }
 
   private publishCredit(id: number): void {
@@ -414,8 +427,7 @@ export class NativeStreamScope {
     this.writes.get(id)?.(UV_ECANCELED);
     // Credit-accepted writes are already in the peer's queue (port order): nothing of them is cancelled. The word is
     // closed to its processed count, so no further write is accepted against it.
-    const credit = this.credits.get(id);
-    if (credit) { this.credits.delete(id); credit.unsubscribe(); Atomics.store(credit.word, 0, credit.written); }
+    this.uncredit(id);
     const connecting = this.connects.get(id);
     this.connects.delete(id);
     if (connecting !== undefined) this.publish({ type: 'connect', id, request: connecting, status: UV_ECANCELED });
