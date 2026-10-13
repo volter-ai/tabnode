@@ -6,6 +6,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- PLACEMENT-LOADER-RECORDS (substrate Articles1/2/5/6/8/9): replace filename
+  arrays with the host's private observes predicate over frozen records.
+  Own module state uses captured reflection and frozen argument records with
+  no prototype, excluding inherited array setters and mutable selection.
+  Changed worker/library bundles, runtime module closure and all declarations
+  emit within the original fixed bound; [build receipt](evidence/placement-loader/records-build-record.json).
+  Real paused-inspector/loader transport and manifest identity remain unqualified.
+
 - PLACEMENT-LOADER-INTRINSICS (substrate Articles1/2/5/6/8/9): capture
   requested observer Reflect/Object/Set intrinsics before guest entry,
   populate selection with indexed access, and observe only own loaded/export

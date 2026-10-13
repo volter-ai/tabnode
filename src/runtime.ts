@@ -97,12 +97,7 @@ import { applySourceEdits } from './source-edits';
 import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typescript-module';
 import * as acorn from 'acorn';
 
-// Requested evidence must not use intrinsics replaced by a guest in this shared
-// realm. Capture them at module import, before the first guest can execute.
-const __moduleObserverSet = Set;
-const __moduleObserverSetAdd = Set.prototype.add, __moduleObserverSetHas = Set.prototype.has;
-const __moduleObserverApply = Reflect.apply;
-const __moduleObserverDescriptor = Object.getOwnPropertyDescriptor, __moduleObserverHasOwn = Object.hasOwn;
+import { observerDescriptor, observerHasOwn } from './module-observer-records';
 
 /**
  * Walk an acorn AST recursively, calling the callback for every node.
@@ -1667,7 +1662,7 @@ export interface Module {
 
 /** Host-only execution evidence. No observer function is installed in Node globals or Module exports. */
 export interface ModuleEvaluationObserver {
-  filenames: readonly string[];
+  observes(filename: string): boolean;
   onEvaluated(filename: string, exports: unknown): void;
 }
 
@@ -3211,19 +3206,17 @@ function createRequire(
   // Node's host debugger observes completed execution outside its program's globals. The analogous requested
   // observer is private to this require context; ordinary execution installs no wrapper or per-body check.
   if (options.moduleEvaluationObserver) {
-    const { filenames, onEvaluated } = options.moduleEvaluationObserver;
-    const selected = new __moduleObserverSet<string>(), originalBody = runModuleBody;
-    for (let index = 0; index < filenames.length; index++) {
-      __moduleObserverApply(__moduleObserverSetAdd, selected, [filenames[index]]);
-    }
+    const observes = options.moduleEvaluationObserver.observes;
+    const onEvaluated = options.moduleEvaluationObserver.onEvaluated;
+    const originalBody = runModuleBody;
     runModuleBody = (module, prepared, resolvedPath, dirname, bodySource, scoped = false): void => {
       originalBody(module, prepared, resolvedPath, dirname, bodySource, scoped);
-      if (__moduleObserverApply(__moduleObserverSetHas, selected, [resolvedPath])) {
+      if (observes(resolvedPath)) {
         try {
-          const loaded = __moduleObserverApply(__moduleObserverDescriptor, undefined, [module, 'loaded']);
-          const exports = __moduleObserverApply(__moduleObserverDescriptor, undefined, [module, 'exports']);
-          if (loaded && exports && __moduleObserverApply(__moduleObserverHasOwn, undefined, [loaded, 'value'])
-            && loaded.value === true && __moduleObserverApply(__moduleObserverHasOwn, undefined, [exports, 'value'])) {
+          const loaded = observerDescriptor(module, 'loaded');
+          const exports = observerDescriptor(module, 'exports');
+          if (loaded && exports && observerHasOwn(loaded, 'value')
+            && loaded.value === true && observerHasOwn(exports, 'value')) {
             onEvaluated(resolvedPath, exports.value);
           }
         } catch { /* Evidence failure cannot change the original module's result or error. */ }
