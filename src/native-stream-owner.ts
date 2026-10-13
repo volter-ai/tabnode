@@ -78,12 +78,8 @@ export class NativeStreamScope {
   private readonly entries = new Map<number, Entry>();
   private readonly descriptors = new Map<number, number>();
   private readonly writes = new Map<number, (status: number) => void>();
-  /**
-   * S2 T14, a socket's send buffer: per handle, the shared word a writing realm accepts writes against without a
-   * round trip. The word holds `written + free`: the bytes of posted writes processed here (failed ones included), and
-   * the peer queue's room (`maxQueuedBytes`, the send buffer's size). Both count as wrapping 32-bit integers.
-   */
-  private readonly credits = new Map<number, { word: Int32Array; written: number; unsubscribe(): void }>();
+  /** S2 T14: each credited handle's connection end's send credit (SendCredit), with the handle it was taken for. */
+  private readonly credits = new Map<number, { credit: SendCredit; handle: LibuvStreamWrap }>();
   private readonly connects = new Map<number, number>();
   private nextId = 1;
   private pendingWriteBytes = 0;
@@ -293,21 +289,29 @@ export class NativeStreamScope {
   }
 
   /**
-   * S2 T14: `word` becomes this handle's send credit, published now, after every write made for it, and whenever its
-   * peer reads. One per handle. A handle without a peer is given a word that publishes no room and never reopens (it
-   * has no peer to read). Refused where the window and a chunk could pass 2^31: the realm compares the wrapping
-   * counters by the sign of their 32-bit difference.
+   * S2 T14: this handle's connection end's send credit (SendCredit). The first credited descriptor of an end gives its
+   * `word`; a duplicate is answered with the end's word, which the realm then reserves from. Published now, after every
+   * write made through any holder, and whenever the peer reads. A handle without a peer holds a word that publishes no
+   * room and never reopens (it has no peer to read). Refused where the window and a chunk could pass 2^31.
    */
-  creditWrites(id: number, word: Int32Array): number {
+  creditWrites(id: number, word: Int32Array): { status: number; word?: Int32Array } {
     const handle = this.entry(id)?.handle;
-    if (!handle || handle.closed) return UV_EBADF;
-    if (this.credits.has(id) || !(word.buffer instanceof SharedArrayBuffer) || word.length < 1
-      || this.limits.maxQueuedBytes + this.limits.maxReadChunkBytes >= 2 ** 31) return UV_EINVAL;
-    const credit = { word, written: 0, unsubscribe: (): void => {} };
-    this.credits.set(id, credit);
-    credit.unsubscribe = handle.onPeerReadCapacity(() => this.publishCredit(id));
-    this.publishCredit(id);
-    return 0;
+    if (!handle || handle.closed) return { status: UV_EBADF };
+    if (this.credits.has(id) || !(word.buffer instanceof SharedArrayBuffer) || word.length < SEND_CREDIT_WORDS
+      || this.limits.maxQueuedBytes + this.limits.maxReadChunkBytes >= 2 ** 31) return { status: UV_EINVAL };
+    // One send buffer per socket: a duplicate of a connection end already credited (here or in another scope of this
+    // worker) is given that end's word, and its writes reserve from the same window.
+    const end = handle.connectionEnd;
+    let credit = sendCredits.get(end);
+    if (!credit) {
+      credit = { word, written: 0, maxQueuedBytes: this.limits.maxQueuedBytes, holders: new Map() };
+      sendCredits.set(end, credit);
+    }
+    const shared = credit;
+    shared.holders.set(handle, handle.onPeerReadCapacity(() => publishSendCredit(shared)));
+    this.credits.set(id, { credit: shared, handle });
+    publishSendCredit(shared);
+    return { status: 0, word: shared.word };
   }
 
   /**
@@ -316,7 +320,7 @@ export class NativeStreamScope {
    * is the realm's to report on the handle's next write (a failure); success has no answer.
    */
   postWrite(id: number, bytes: Uint8Array): number {
-    const credit = this.credits.get(id);
+    const credit = this.credits.get(id)?.credit;
     if (credit) credit.written = (credit.written + bytes.byteLength) | 0;
     const handle = this.entry(id)?.handle;
     const status = !handle || handle.closed ? UV_EBADF : !(bytes instanceof Uint8Array) ? UV_EINVAL
@@ -325,27 +329,25 @@ export class NativeStreamScope {
     return status;
   }
 
-  /** A handle's credit ends with its entry: the word closes at its processed count, so no further write is accepted against it. */
+  /**
+   * A handle's credit ends with its entry. Its connection end's credit goes on for the duplicates still holding it;
+   * with the last, the word closes at its processed count, so no further write is accepted against it.
+   */
   private uncredit(id: number): void {
-    const credit = this.credits.get(id);
-    if (!credit) return;
+    const held = this.credits.get(id);
+    if (!held) return;
     this.credits.delete(id);
-    credit.unsubscribe();
-    Atomics.store(credit.word, 0, credit.written);
+    const { credit, handle } = held;
+    credit.holders.get(handle)?.();
+    credit.holders.delete(handle);
+    if (credit.holders.size > 0) { publishSendCredit(credit); return; }
+    Atomics.store(credit.word, SEND_CREDIT_LIMIT, credit.written);
+    sendCredits.delete(handle.connectionEnd);
   }
 
-  /**
-   * Each credited descriptor gets the peer queue's whole free room. Native has one send buffer per socket, which its
-   * duplicated descriptors share; here k credited descriptors of one socket can each be accepted a window at once, so
-   * the peer queue can pass maxQueuedBytes by up to k windows (never reordered or dropped). Shared credit per endpoint
-   * is not built.
-   */
   private publishCredit(id: number): void {
-    const credit = this.credits.get(id);
-    if (!credit) return;
-    const handle = this.entry(id)?.handle;
-    const free = handle && !handle.closed && handle.peer ? Math.max(0, this.limits.maxQueuedBytes - handle.peerQueuedBytes) : 0;
-    Atomics.store(credit.word, 0, (credit.written + free) | 0);
+    const held = this.credits.get(id);
+    if (held) publishSendCredit(held.credit);
   }
 
   /** The caller's short wait ended after we claimed its attempt. Only the
@@ -456,6 +458,29 @@ export class NativeStreamScope {
     }
     if (failures.length) throw new AggregateError(failures, 'Native stream scope cleanup failed.');
   }
+}
+
+/**
+ * S2 T14, a socket's send buffer, one per connection end as native's is one per socket, shared by every credited
+ * duplicate of it in this worker's scopes. Its word: LIMIT, `written + free` (the bytes of credit-accepted writes
+ * processed, failed ones included, and the peer queue's room, maxQueuedBytes being the send buffer's size), and
+ * RESERVED, the bytes the realms holding it have accepted against it, which each takes by compare-exchange, so two
+ * writers never take the same room. Both count as wrapping 32-bit integers, compared by the sign of their difference.
+ */
+interface SendCredit { readonly word: Int32Array; written: number; readonly maxQueuedBytes: number; readonly holders: Map<LibuvStreamWrap, () => void> }
+const SEND_CREDIT_LIMIT = 0;
+/** LIMIT and RESERVED. */
+const SEND_CREDIT_WORDS = 2;
+const sendCredits = new WeakMap<object, SendCredit>();
+
+function publishSendCredit(credit: SendCredit): void {
+  let free = 0;
+  for (const handle of credit.holders.keys()) {
+    if (handle.closed || !handle.peer) continue;
+    free = Math.max(0, credit.maxQueuedBytes - handle.peerQueuedBytes);
+    break;
+  }
+  Atomics.store(credit.word, SEND_CREDIT_LIMIT, (credit.written + free) | 0);
 }
 
 /** The process a handle opened for another worker's process belongs to, where a scope holds it. */

@@ -116,6 +116,8 @@ export class LibuvStreamWrap implements OwnedHandle {
   fd = -1;
 
   private streamEndpoint = new StreamEndpoint(this);
+  /** The connection end this descriptor shares with its duplicates: one socket, one send buffer (S2 T14's shared credit). */
+  get connectionEnd(): object { return this.streamEndpoint; }
   /** A live wrapper on the other end, including after the original was closed. */
   get peer(): LibuvStreamWrap | null {
     const native = nativeStreamFor(this);
