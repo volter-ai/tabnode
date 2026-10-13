@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.10.1 — 2026-10-13
+
 ## v0.10.0 — 2026-10-13
 
 - `import()` inside a function made with `new Function` loads through the module that made the function, so its
