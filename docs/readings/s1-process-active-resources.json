@@ -1,6 +1,6 @@
 {
   "kind": "tabnode.process-active-resources-source-reading",
-  "version": 4,
+  "version": 5,
   "articles": [
     5,
     6,
@@ -8,7 +8,7 @@
     9
   ],
   "base": "1ef1b4d8e89a23c90efa5080ad0e0885757297a1",
-  "at": "2026-10-13T22:14:10.927031+00:00",
+  "at": "2026-10-13T22:41:39.299107+00:00",
   "cause": {
     "repo": "activepieces/activepieces",
     "recordStart": "2026-10-13T20:40:11Z",
@@ -84,11 +84,11 @@
     },
     {
       "path": "src/node-lib/binding/fs.ts",
-      "sha256": "61c4ad1fdaa03b950aaeb6f9703d5ebaa9f4d01dabd8c517ea2e5c59494e50a2"
+      "sha256": "7ec64c37c75aab7f69494237ef9cc54dc335252ee4781e20d8435ced96f98a06"
     },
     {
       "path": "src/node-lib/binding/handles.ts",
-      "sha256": "6743e2758d5b8308c67f28d7c95d3a6d005599dcd43b6880f89d0f37a4d393c1"
+      "sha256": "3b3a28228943185d0878ee3ff103bb3b72743abf9240a48fbffaf319838aa439"
     },
     {
       "path": "src/node-lib/binding/pipe_wrap.ts",
@@ -96,11 +96,11 @@
     },
     {
       "path": "src/node-lib/binding/process_wrap.ts",
-      "sha256": "d69d87b7050b4e22adb5ce7250a7c470f3bed128c5c66486276bc85d3da9e517"
+      "sha256": "847c3c35b66512c1014acf466cba617a70013dfa79a5b3c99ea604347fe8449a"
     },
     {
       "path": "src/node-lib/binding/stream_wrap.ts",
-      "sha256": "aaf88d4c7a350a8351138d3e853ae63666acc756f061be445c6ec3300004cfab"
+      "sha256": "465402bf27e94257e4fe2e2aebd8bb3c01a3a898d203aa67c496f37d44c74f9b"
     },
     {
       "path": "src/node-lib/binding/tcp_wrap.ts",
@@ -149,6 +149,9 @@
     "Explicit standalone/registered binding ownership takes precedence over ambient tokens. The private observation scope only spans synchronous native constructors/dispatch and restores nesting in finally.",
     "IPC-transferred stream requests use the adopted operation handle\u2019s owner, including standalone scope identities, rather than the sender facade\u2019s original prototype scope.",
     "Returned directory read/close methods and deferred filesystem work capture the actual binding scope; unscoped re-observation preserves an initialized request\u2019s custody.",
-    "process.binding returns the same per-process binding cache/surface as vendored internalBinding, preserving its allowlist and deprecation warning."
+    "process.binding returns the same per-process binding cache/surface as vendored internalBinding, preserving its allowlist and deprecation warning.",
+    "Adopt observations from the supplied receiver resource row before an ambient liveness token; intentional null host custody without a receiver remains unenumerated.",
+    "Ignore Process reference toggles before native initialization and after completed close; attempted spawn observes its initialized referenced wrapper, including ENOENT.",
+    "Allow FSEvent reference changes through pending close, including failed-start close, and report hasRef from initialized observation state until completion."
   ]
 }

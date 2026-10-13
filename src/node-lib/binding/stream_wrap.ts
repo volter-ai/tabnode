@@ -29,8 +29,8 @@ function ownedBytes(view: Uint8Array): Uint8Array {
   return copy;
 }
 import {
-  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, stopHandle,
-  type OwnedHandle, invokeOwned, observeNodeRequest, forgetNodeRequest } from './handles';
+  registerHandle, refHandle, unrefHandle, releaseHandle, stopHandle,
+  type OwnedHandle, nodeHandleHasRef, invokeOwned, observeNodeRequest, forgetNodeRequest } from './handles';
 import { withGuestCallback, queueBindingTask } from '../../guest-loop';
 
 /** The four slots libuv's `StreamBase` reports a read or a write through. */
@@ -160,7 +160,7 @@ export class LibuvStreamWrap implements OwnedHandle {
   }
 
   hasRef(): boolean {
-    return handleHasRef(this);
+    return nodeHandleHasRef(this);
   }
 
   readStart(): number {

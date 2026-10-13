@@ -105,6 +105,12 @@ export function observeNodeHandle(handle: object, referenced: (handle: object) =
   observeResource(handleRows, handleRowByObject, handle, resourceOwnerKey(handle));
 }
 function nodeHandleReferenced(handle: object): boolean { return closingReferences.get(handle) ?? refHeld.has(handle as OwnedHandle); }
+/** HandleWrap's initialized/ref state includes closing, until native completion. */
+export function nodeHandleHasRef(handle: object): boolean {
+  return handleRowByObject.has(handle) && (handleReferenced.get(handle)?.(handle) ?? false);
+}
+export function nodeHandleIsInitialized(handle: object): boolean { return handleRowByObject.has(handle); }
+export function nodeHandleIsClosing(handle: object): boolean { return closingReferences.has(handle); }
 export function forgetNodeHandle(handle: object): void {
   forgetResource(handleRows, handleRowByObject, handle);
   handleReferenced.delete(handle);
@@ -375,7 +381,8 @@ export function __adoptHandle(handle: OwnedHandle | null | undefined, token: Pro
   if (handleRowByObject.has(handle)) {
     // A standalone server has no run token. Its accepted/transferred wrapper
     // still belongs to that server's private binding scope, not a null bucket.
-    const next = token ?? (resourceSource ? handleRowByObject.get(resourceSource)?.owner ?? null : null);
+    const sourceRow = resourceSource && handleRowByObject.get(resourceSource);
+    const next = sourceRow ? sourceRow.owner : token;
     observeResource(handleRows, handleRowByObject, handle, next);
   }
   if (token !== null) {

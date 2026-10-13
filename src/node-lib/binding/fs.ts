@@ -28,7 +28,7 @@
  * own tree.
  */
 import { createNodeError as vfsError } from '../../virtual-fs';
-import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner, ownedRun, ownerOfInstance, observeNodeHandle, forgetNodeHandle, observeNodeRequest, forgetNodeRequest, captureNodeResourceScope } from './handles';
+import { registerHandle, releaseHandle, refHandle, unrefHandle, currentOwner, ownedRun, ownerOfInstance, observeNodeHandle, forgetNodeHandle, observeNodeRequest, forgetNodeRequest, captureNodeResourceScope, nodeHandleHasRef, nodeHandleIsClosing } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
 import { queueBindingTask } from '../../guest-loop';
 import { kStdinRing, type StdinRingReader } from '../../stdin-ring';
@@ -788,10 +788,10 @@ class FSEvent {
     this.#watcher = null;
   }
 
-  ref(): void { if (this.initialized) refHandle(this); }
-  unref(): void { unrefHandle(this); }
+  ref(): void { if (this.initialized || nodeHandleIsClosing(this)) refHandle(this); }
+  unref(): void { if (this.initialized || nodeHandleIsClosing(this)) unrefHandle(this); }
   getAsyncId(): number { return 0; }
-  hasRef(): boolean { return this.initialized && handleHasRef(this); }
+  hasRef(): boolean { return nodeHandleHasRef(this); }
 }
 
 /**
