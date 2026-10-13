@@ -404,8 +404,8 @@ export type DescriptorWriter = ((chunk: string | Uint8Array) => void) & {
 };
 
 export function descriptorWriter(fd: number): DescriptorWriter | null {
-  const writer = descriptorWriterOf(fd);
-  return fd > 2 && traceReadingRequested() ? tracedDescriptorWriter(fd, writer) : writer;
+  if (fd > 2 && traceReadingRequested()) return tracedDescriptorWriter(fd, descriptorWriterOf(fd, { sayFailures: true }));
+  return descriptorWriterOf(fd, { sayFailures: false });
 }
 
 /**
@@ -441,7 +441,8 @@ function tracedDescriptorWriter(fd: number, writer: DescriptorWriter | null): De
   return traced;
 }
 
-function descriptorWriterOf(fd: number): DescriptorWriter | null {
+/** `sayFailures`: an owner's failed write is thrown to the instrument that wraps this writer, which says and drops it; elsewhere it is dropped here. */
+function descriptorWriterOf(fd: number, { sayFailures }: { sayFailures: boolean }): DescriptorWriter | null {
   // A descriptor takes bytes; a chunk a child wrote as bytes goes on as them.
   const bytesOf = (chunk: string | Uint8Array): Uint8Array => typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
   // A description a tree owns is written through it: one offset, the
@@ -456,7 +457,7 @@ function descriptorWriterOf(fd: number): DescriptorWriter | null {
     const writer: DescriptorWriter = (chunk) => {
       const bytes = bytesOf(chunk);
       try { owner.write(target, bytes, 0, bytes.length, null); }
-      catch (cause) { if (traceReadingRequested()) throw cause; /* a closed description drops the child's output */ }
+      catch (cause) { if (sayFailures) throw cause; /* a closed description drops the child's output */ }
     };
     if (own !== undefined) {
       let released = false;
