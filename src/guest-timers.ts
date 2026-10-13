@@ -77,7 +77,7 @@ export function guestTimerFunctions(process: object, host: Record<string, unknow
   // A callback with no owning program (the engine imported as a library) is
   // rethrown, so the host reports it as it always did.
   const inProcess = (fn: (...a: unknown[]) => void) => (...args: unknown[]): void => {
-    try { withGuestCallback(() => fn(...args)); }
+    try { withGuestCallback(() => fn(...args), 'timer', fn); }
     catch (error) { if (!__reportUncaughtException(process, error)) throw error; }
   };
   const track = (id: unknown, kind?: string): unknown => {

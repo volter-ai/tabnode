@@ -510,7 +510,7 @@ function bootstrapNodeLib(name: string, exports: unknown, process: object): void
       return withGuestExecution(() => {
         if (args[0] === 'connect' || args[0] === 'timeout') traceSocketConnect(`socket-${args[0]}`, this, undefined);
         return emit.apply(this, args);
-      });
+      }, 'emit', args[0]);
     };
     const original = events.getMaxListeners;
     events.getMaxListeners = (target) => {

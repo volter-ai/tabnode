@@ -56,11 +56,11 @@ export function ownerOfInstance(instance: object): ProcessToken | null {
  * `fn` inside `owner`'s run (enterRun), unless that run is current already. A guest callback's throw is its owner's
  * uncaught exception, as Node's MakeCallback reports one to the process the wrap belongs to.
  */
-export function ownedRun<T>(owner: ProcessToken | null, fn: () => T, callback = false): T | undefined {
+export function ownedRun<T>(owner: ProcessToken | null, fn: () => T, callback = false, kind = 'callback', source?: unknown): T | undefined {
   const call = (): T | undefined => {
     if (!callback) return fn();
     // Drain ticks before leaving the owning run, as MakeCallback does.
-    try { return withGuestCallback(fn); }
+    try { return withGuestCallback(fn, kind, source); }
     catch (error) { if (owner !== null && __runFor(owner)?.reportUncaught(error)) return undefined; throw error; }
   };
   return owner === null || __currentProcessToken() === owner ? call() : enterRun(owner, call);
@@ -70,7 +70,8 @@ export function ownedRun<T>(owner: ProcessToken | null, fn: () => T, callback = 
 export function invokeOwned(target: object, name: string, ...args: unknown[]): unknown {
   const fn = (target as Record<string, unknown>)[name];
   if (typeof fn !== 'function') return undefined;
-  return ownedRun(ownerOfInstance(target), () => (fn as (...values: unknown[]) => unknown).apply(target, args), true);
+  // `wrap`: a binding wrap's callback (`onread`'s onStreamRead, a write's oncomplete), named by the function the wrap holds.
+  return ownedRun(ownerOfInstance(target), () => (fn as (...values: unknown[]) => unknown).apply(target, args), true, 'wrap', fn);
 }
 
 function hold(handle: OwnedHandle): void {

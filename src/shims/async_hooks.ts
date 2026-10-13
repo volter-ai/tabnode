@@ -120,7 +120,7 @@ export class AsyncResource {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   runInAsyncScope<T>(fn: (...args: any[]) => T, thisArg?: unknown, ...args: any[]): T {
-    return withGuestExecution(() => withFrame(this.frame, () => fn.apply(thisArg, args)));
+    return withGuestExecution(() => withFrame(this.frame, () => fn.apply(thisArg, args)), 'async-resource', fn);
   }
 
   emitDestroy(): this { return this; }
@@ -160,24 +160,25 @@ forGuestRealm(() => {
   if ((globalThis as unknown as Record<string, unknown>).__substrateCarried) return;
   // `task`: a timer, immediate or microtask, whose throw is its run's uncaught exception; a `then` callback's throw
   // rejects its promise instead, and is left to.
-  const carried = <T>(callback: T, task = false, bindingCallback = false): T => {
+  // `kind`: which door the callback came through, for the realm's entry account (guest-loop.ts, S2 R27).
+  const carried = <T>(callback: T, task = false, bindingCallback = false, kind = 'then'): T => {
     if (typeof callback !== "function") return callback;
     const restore = AsyncLocalStorage.snapshot();
     const call = callback as (...values: unknown[]) => unknown;
     // The engine's own deferred work for a binding is not program code: it takes no bracket here (guest-loop.ts).
-    const enter = bindingCallback ? withGuestCallback : isBindingTask(callback) ? (<R>(run: () => R): R => run()) : withGuestExecution;
+    const enter = bindingCallback ? withGuestCallback : isBindingTask(callback) ? (<R>(run: () => R, _kind?: string, _source?: unknown): R => run()) : withGuestExecution;
     return function (this: unknown, ...args: unknown[]) {
       return enter(() => restore(() => {
         if (!task) return call.apply(this, args);
         try { return call.apply(this, args); }
         catch (error) { if (routeUncaught?.(error)) return undefined; throw error; }
-      }));
+      }), kind, call);
     } as T;
   };
   for (const name of ["setTimeout", "setInterval", "setImmediate", "queueMicrotask"]) {
     const original = (globalThis as unknown as Record<string, unknown>)[name];
     if (typeof original !== "function") continue;
-    const wrapped = function (this: unknown, callback: unknown, ...rest: unknown[]) { return original.call(this, carried(callback, true, name !== 'queueMicrotask'), ...rest); };
+    const wrapped = function (this: unknown, callback: unknown, ...rest: unknown[]) { return original.call(this, carried(callback, true, name !== 'queueMicrotask', name), ...rest); };
     Object.defineProperty(wrapped, "name", { value: name });
     takeFromHost(globalThis, name, wrapped);
   }

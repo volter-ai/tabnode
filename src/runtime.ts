@@ -14,7 +14,7 @@ import { VirtualFS } from './virtual-fs';
 import { rememberCompiledSource } from './error-source';
 import { attachVmScriptEnvironment, VmScriptPreparationCache } from './vm-script-state';
 import type { VmScriptObserver, VmScriptPhase } from './vm-script-state';
-import { startGuestLoop, withGuestExecution, guestExecutionActiveMs } from './guest-loop';
+import { startGuestLoop, withGuestExecution, guestExecutionActiveMs, enableGuestEntryAccount, guestEntryAccount, guestEntryKinds } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { guestFetch, rememberRequestBodySource } from './fetch-transport';
 import { installNodeResponse } from './node-response';
@@ -1077,7 +1077,18 @@ function __substrateOutsideSnapshot(process: object, clock: LoadClock, now: numb
     __substrateGuestAt(now) - clock.guestAt, __substrateVmClocks.get(process)?.phase);
   return { scope: 'realm-dispatch-brackets', vmMs: traceRoundFields(split.vmMs),
     guestBracketMs: traceRound(split.guestBracketMs), unbracketedMs: traceRound(split.unbracketedMs),
-    clippedBracketMs: traceRound(split.clippedBracketMs) };
+    clippedBracketMs: traceRound(split.clippedBracketMs), ...__substrateEntrySplit() };
+}
+/**
+ * The realm's guest time by what entered it (S2 R27; guest-loop.ts's entry account): `byKind` { kind: [count, ms] }
+ * and `byEntry`, the 16 longest [kind:name, count, ms]. The realm's, since the account began (its first load clock);
+ * the brackets inside module loading are among them, as kind `module`. Absent where no reading started the account.
+ */
+function __substrateEntrySplit(): { byKind?: Record<string, [number, number]>; byEntry?: Array<[string, number, number]> } {
+  const kinds = guestEntryKinds(), entries = guestEntryAccount(16);
+  if (!kinds || !entries) return {};
+  return { byKind: Object.fromEntries(Object.entries(kinds).map(([kind, [count, ms]]): [string, [number, number]] => [kind, [count, traceRound(ms)]])),
+    byEntry: entries.map(([key, count, ms]): [string, number, number] => [key, count, traceRound(ms)]) };
 }
 /** Byte totals are evidence only. A snapshot keeps its prefix length, not a
  * source copy; count that prefix after HTTP, then release the text references.
@@ -1142,6 +1153,8 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
       outside: { vmMs: { parse: 0, setup: 0, eval: 0 }, guestBracketMs: 0, unbracketedMs: 0, clippedBracketMs: 0 },
       guestAt: __substrateGuestAt(now), began: now, said: -1 };
     __substrateLoadClocks.set(process, clock);
+    // the realm's entry account (S2 R27), from a reading's first load clock on
+    enableGuestEntryAccount();
     if (!retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes)) clock.releaseBytes();
   }
   // The file system is the process's, known from the first caller that holds it (a `require` made through
@@ -1625,15 +1638,15 @@ function __substrateDriveBody(kind: 'sync' | 'generator' | 'async', body: unknow
   if (kind === 'sync') return undefined;
   if (kind === 'async') return (module as { __substrateBodyDone?: boolean }).__substrateBodyDone ? undefined : body as Promise<unknown>;
   const iterator = body as Iterator<unknown>;
-  let step: IteratorResult<unknown> = withGuestExecution(() => iterator.next());
-  while (!step.done && !step.value) step = withGuestExecution(() => iterator.next());
+  let step: IteratorResult<unknown> = withGuestExecution(() => iterator.next(), 'entry');
+  while (!step.done && !step.value) step = withGuestExecution(() => iterator.next(), 'entry');
   if (step.done) return undefined;
   return (async () => {
     let current: IteratorResult<unknown> = step;
     while (!current.done) {
       await current.value;
-      current = withGuestExecution(() => iterator.next());
-      while (!current.done && !current.value) current = withGuestExecution(() => iterator.next());
+      current = withGuestExecution(() => iterator.next(), 'entry');
+      while (!current.done && !current.value) current = withGuestExecution(() => iterator.next(), 'entry');
     }
   })();
 }
@@ -3316,7 +3329,7 @@ function createRequire(
         __substrateGuestGlobal,
         __substrateGuestConstructor,
         __substrateGuestScope(process)
-      )));
+      ), 'module'));
 
       // The body has returned. With no require in flight it was an entry's (started through `_load`, at depth 0), and
       // what follows is the program's life, not a load: left as 'evaluate', every process's line counted its wait
@@ -4033,7 +4046,7 @@ export class Runtime {
         __substrateGuestGlobal,
         __substrateGuestConstructor,
         __substrateGuestScope(this.process)
-      )));
+      ), 'module'));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
       if (settling) __substrateKeepPending(module, settling, () => { if (this.moduleCache[filename] === module) delete this.moduleCache[filename]; });

@@ -77,7 +77,7 @@ export class AsyncResource {
   }
 
   runInAsyncScope<T>(fn: (...args: never[]) => T, thisArg?: unknown, ...args: never[]): T {
-    return withGuestExecution(() => this.#restore(() => fn.apply(thisArg, args))) as T;
+    return withGuestExecution(() => this.#restore(() => fn.apply(thisArg, args)), 'async-resource', fn) as T;
   }
 
   emitDestroy(): this { return this; }
@@ -87,7 +87,7 @@ export class AsyncResource {
   static bind<T extends (...args: never[]) => unknown>(fn: T, _type?: string): T {
     const restore = AsyncLocalStorage.snapshot();
     return function(this: unknown, ...args: never[]) {
-      return withGuestExecution(() => restore(() => fn.apply(this, args)));
+      return withGuestExecution(() => restore(() => fn.apply(this, args)), 'async-resource', fn);
     } as T;
   }
 }
@@ -153,7 +153,7 @@ export class UnrefTimeout {
       this._destroyed = true;
       releaseHandle(this);
       traceSocketConnect('timer-fired', this.arg, this);
-      withGuestCallback(() => this.restore(() => this.onTimeout(this.arg)));
+      withGuestCallback(() => this.restore(() => this.onTimeout(this.arg)), 'timer', this.onTimeout);
     }, this.msecs);
     if (!referenced) (this.id as { unref?: () => void } | null)?.unref?.();
   }

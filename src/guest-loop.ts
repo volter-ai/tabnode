@@ -22,6 +22,46 @@ let drainingTicks = false;
 let callbackDepth = 0;
 
 /**
+ * AN INSTRUMENT (S2 R27): the outermost brackets' time by what entered them, a kind (a timer, a stream's read or
+ * write completion, a promise continuation, a module's body...) and the guest function's own name where the entry
+ * names one. The realm's guest time was one number (guestBracketMs: 554 ms of Cal's seed client, about 1 ms a query
+ * against its PostgreSQL), and nothing said whose callbacks it was. Off until a reading asks (enableGuestEntryAccount,
+ * called where the load clock starts): a bracket then looks up one map entry when it ends; otherwise nothing is
+ * counted and no name is read. Realm-scoped, as the brackets are. At most ENTRY_KEYS distinct entries; the rest are
+ * counted under their kind.
+ */
+const ENTRY_KEYS = 256;
+let entryAccount: Map<string, { count: number; ms: number }> | undefined;
+let outerKind = 'other';
+let outerSource: unknown;
+export function enableGuestEntryAccount(): void { entryAccount ??= new Map(); }
+/** The account, the longest first, at most `limit` entries: [kind or kind:name, count, ms]. */
+export function guestEntryAccount(limit = 16): Array<[string, number, number]> | undefined {
+  if (!entryAccount) return undefined;
+  return [...entryAccount].sort((a, b) => b[1].ms - a[1].ms).slice(0, limit).map(([key, held]) => [key, held.count, held.ms]);
+}
+/** The account by kind alone: { kind: [count, ms] }. */
+export function guestEntryKinds(): Record<string, [number, number]> | undefined {
+  if (!entryAccount) return undefined;
+  const kinds: Record<string, [number, number]> = {};
+  for (const [key, held] of entryAccount) {
+    const kind = key.includes(':') ? key.slice(0, key.indexOf(':')) : key;
+    const entry = kinds[kind] ??= [0, 0];
+    entry[0] += held.count; entry[1] += held.ms;
+  }
+  return kinds;
+}
+function countEntry(kind: string, source: unknown, ms: number): void {
+  const account = entryAccount!;
+  // a function by its own name; an event by its name (an emit's first argument, where it is a string)
+  const name = typeof source === 'function' && source.name ? source.name : typeof source === 'string' ? source.slice(0, 64) : undefined;
+  let key = name ? `${kind}:${name}` : kind;
+  if (!account.has(key) && account.size >= ENTRY_KEYS) key = kind;
+  const held = account.get(key);
+  if (held) { held.count += 1; held.ms += ms; } else account.set(key, { count: 1, ms });
+}
+
+/**
  * Node drains its FIFO, including ticks queued by ticks, before returning to
  * promises. One browser microtask per tick let a promise continuation run
  * between a stream's destroy tick and its nested close tick.
@@ -38,7 +78,7 @@ function scheduleTickDrain(): void {
   // still get one drain, rather than one microtask for each queued tick.
   enqueue(() => {
     tickDrainScheduled = false;
-    withGuestExecution(drainGuestNextTicks);
+    withGuestExecution(drainGuestNextTicks, 'ticks');
   });
 }
 
@@ -72,7 +112,7 @@ export function drainGuestNextTicks(): void {
  * microtask its queueing scheduled. So a callback drains only a queue that was empty when it was entered: its own
  * ticks, and theirs. (The same spawn from an `abort` listener emitted its `error` before the listener was there.)
  */
-export function withGuestCallback<T>(fn: () => T): T {
+export function withGuestCallback<T>(fn: () => T, kind = 'callback', source?: unknown): T {
   const fromTheLoop = depth === 0 && !continuation && ticks.length === 0;
   return withGuestExecution(() => {
     callbackDepth++;
@@ -81,7 +121,7 @@ export function withGuestCallback<T>(fn: () => T): T {
       if (fromTheLoop && callbackDepth === 1) drainGuestNextTicks();
       return result;
     } finally { callbackDepth--; }
-  });
+  }, kind, source ?? fn);
 }
 
 /**
@@ -112,19 +152,24 @@ export function startGuestLoop(): void {
   started = clock();
 }
 
-function begin(): void {
+function begin(kind: string, source: unknown): void {
   startGuestLoop();
-  if (depth === 0 && !continuation) activeSince = clock!();
+  if (depth === 0 && !continuation) { activeSince = clock!(); if (entryAccount) { outerKind = kind; outerSource = source; } }
   depth++;
 }
 
 function end(): void {
   depth--;
-  if (depth === 0 && !continuation) active += clock!() - activeSince;
+  if (depth === 0 && !continuation) {
+    const took = clock!() - activeSince;
+    active += took;
+    if (entryAccount) { countEntry(outerKind, outerSource, took); outerSource = undefined; }
+  }
 }
 
-export function withGuestExecution<T>(fn: () => T): T {
-  begin();
+/** `kind`, `source`: what entered the bracket, for the entry account (S2 R27); read only while it is on. */
+export function withGuestExecution<T>(fn: () => T, kind = 'other', source?: unknown): T {
+  begin(kind, source ?? fn);
   try { return fn(); } finally { end(); }
 }
 
@@ -136,7 +181,7 @@ export function resumeGuestTurn(): void {
   continuation = true;
   enqueue(() => {
     continuation = false;
-    if (depth === 0) active += clock!() - activeSince;
+    if (depth === 0) { const took = clock!() - activeSince; active += took; if (entryAccount) countEntry('await', undefined, took); }
   });
 }
 
