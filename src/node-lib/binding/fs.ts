@@ -1294,15 +1294,25 @@ const fsBinding = {
     return answer(req, () => {
       const name = asPath(path);
       const tree = vfs();
-      const wanted = mode & 0o777;
+      // Node's: the mode under the process's umask (uv_fs_mkdir is mkdir(2), which applies it), for every directory
+      // a recursive mkdir makes; it set the mode bare, so mkdirSync(p) made 0o777 where Node makes 0o755.
+      const realm = globalThis as unknown as { process?: { umask?: () => number } };
+      const mask = typeof realm.process?.umask === 'function' ? realm.process.umask() : 0o022;
+      const wanted = mode & 0o777 & ~mask;
       if (tree.existsSync(name)) {
         const stats = tree.statSync(name);
         if (!recursive || !stats.isDirectory()) throw createNodeError('EEXIST', 'mkdir', name);
         return undefined;
       }
+      // The directories this makes, shallowest first: a recursive mkdir answers the first (Node's
+      // MKDirpSync/MKDirpAsync: the first directory created).
+      const made = [name];
+      if (recursive) {
+        for (let parent = made[0]!.slice(0, made[0]!.lastIndexOf('/')); parent && !tree.existsSync(parent); parent = parent.slice(0, parent.lastIndexOf('/'))) made.unshift(parent);
+      }
       tree.mkdirSync(name, { recursive });
-      tree.chmodSync(name, wanted);
-      return undefined;
+      for (const directory of made) tree.chmodSync(directory, wanted);
+      return recursive ? made[0] : undefined;
     });
   },
 
