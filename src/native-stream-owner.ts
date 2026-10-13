@@ -334,6 +334,12 @@ export class NativeStreamScope {
     Atomics.store(credit.word, 0, credit.written);
   }
 
+  /**
+   * Each credited descriptor gets the peer queue's whole free room. Native has one send buffer per socket, which its
+   * duplicated descriptors share; here k credited descriptors of one socket can each be accepted a window at once, so
+   * the peer queue can pass maxQueuedBytes by up to k windows (never reordered or dropped). Shared credit per endpoint
+   * is not built.
+   */
   private publishCredit(id: number): void {
     const credit = this.credits.get(id);
     if (!credit) return;
