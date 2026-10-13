@@ -14,7 +14,7 @@
  */
 import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap } from './stream_wrap';
-import { __adoptHandle, ownerOf, ownerOfInstance, invokeOwned } from './handles';
+import { __adoptHandle, ownerOf, ownerOfInstance, invokeOwned, observeNodeRequest, forgetNodeRequest } from './handles';
 import { __runFor } from '../../process-tokens';
 import { internalAsyncHooks, internalTimers } from '../internals/runtime';
 import { rememberSocketConnect, traceSocketConnect } from '../../socket-connect-trace';
@@ -201,7 +201,14 @@ export class TCP extends LibuvStreamWrap {
       try { return invokeOwned(req, 'oncomplete', status, this, req, true, true); }
       finally { traceSocketConnect('binding-returned', socket, timer(), status, request); }
     };
-    if (native) return native.connect(address, port, family === 'IPv6', complete);
+    observeNodeRequest(req);
+    if (native) {
+      try {
+        const status = native.connect(address, port, family === 'IPv6', complete);
+        if (status !== 0) forgetNodeRequest(req);
+        return status;
+      } catch (cause) { forgetNodeRequest(req); throw cause; }
+    }
     const target = Number(port);
     const reachable = isThisHost(address);
     if (!this.local) {
@@ -215,23 +222,25 @@ export class TCP extends LibuvStreamWrap {
     // refused connection is `oncomplete(UV_ECONNREFUSED)`, which is what
     // `afterConnect` turns into the socket's `ECONNREFUSED` error.
     queueBindingTask(() => {
-      if (this.closed) return;
-      const server = reachable ? listenerOnPort(target, family) : undefined;
-      if (!server) {
-        complete(UV_ECONNREFUSED);
-        return;
-      }
-      const accepted = new (server.constructor as typeof TCP)(constants.SOCKET);
-      accepted.local = { ...(server.local as SockName), port: target };
-      accepted.remote = { ...(this.local as SockName) };
-      // An accepted connection is a handle of the loop that is serving, not of
-      // the one that connected: the pairing is made inside the connector's own
-      // turn, so without this the server's end of every connection would hold
-      // the connecting run alive until the server closed it.
-      __adoptHandle(accepted, ownerOf(server));
-      LibuvStreamWrap.pair(this, accepted);
-      invokeOwned(server, 'onconnection', 0, accepted);
-      complete(0);
+      try {
+        if (this.closed) { forgetNodeRequest(req); return; }
+        const server = reachable ? listenerOnPort(target, family) : undefined;
+        if (!server) {
+          complete(UV_ECONNREFUSED);
+          return;
+        }
+        const accepted = new (server.constructor as typeof TCP)(constants.SOCKET);
+        accepted.local = { ...(server.local as SockName), port: target };
+        accepted.remote = { ...(this.local as SockName) };
+        // An accepted connection is a handle of the loop that is serving, not of
+        // the one that connected: the pairing is made inside the connector's own
+        // turn, so without this the server's end of every connection would hold
+        // the connecting run alive until the server closed it.
+        __adoptHandle(accepted, ownerOf(server));
+        LibuvStreamWrap.pair(this, accepted);
+        invokeOwned(server, 'onconnection', 0, accepted);
+        complete(0);
+      } finally { forgetNodeRequest(req); }
     });
     return 0;
   }

@@ -15,6 +15,7 @@ import { createNodeError, type VirtualFS } from '../virtual-fs';
 import { constantsBinding } from './constants';
 import ttyWrapBinding from '../node-lib/binding/tty_wrap';
 import { nodeLibBinding } from '../node-lib/binding/index';
+import { nodeActiveHandles, nodeActiveRequests } from '../node-lib/binding/handles';
 
 /** The names Node 24's `process.binding` answers with `internalBinding(name)` (lib/internal/bootstrap/realm.js). */
 const PROCESS_BINDING_ALLOWED = new Set(['buffer', 'cares_wrap', 'config', 'constants', 'contextify', 'fs', 'fs_event_wrap', 'icu', 'inspector',
@@ -181,6 +182,8 @@ function processStdinClass(ReadableClass: typeof Readable): new () => ProcessStd
 type ProcessReadableStream = ProcessStdin;
 
 export interface Process {
+  _getActiveHandles(): object[];
+  _getActiveRequests(): object[];
   env: ProcessEnv;
   loadEnvFile: (path?: string | Uint8Array | URL) => void;
   title: string;
@@ -642,6 +645,8 @@ export function createProcess(options?: {
   // A process object no run names is the realm's own process, never a second one forked for it.
   const own = options?.pid === undefined ? ownProcessIdentity() : undefined;
   const proc: Process = {
+    _getActiveHandles: () => nodeActiveHandles(proc, __tokenForProcess(proc)),
+    _getActiveRequests: () => nodeActiveRequests(proc, __tokenForProcess(proc)),
     env,
     // Node's native process method reads synchronously and uses the same
     // parser as util.parseEnv. Capture the tree/cwd even when this

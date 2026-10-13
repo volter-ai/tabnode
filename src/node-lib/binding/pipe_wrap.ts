@@ -15,7 +15,7 @@ import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
 import { UV_EACCES, UV_EADDRINUSE, UV_ECONNREFUSED, UV_ENOENT, UV_ENOTDIR, UV_EBADF } from './uv';
 import { handleForFd, registerFd, releaseFd } from './fds';
-import { __adoptHandle, ownerOf, invokeOwned } from './handles';
+import { __adoptHandle, ownerOf, invokeOwned, observeNodeRequest, forgetNodeRequest } from './handles';
 import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
 
 /** libuv's `uv_pipe_t` flavours, and the two chmod bits `listen` reads. */
@@ -131,22 +131,31 @@ export class Pipe extends LibuvStreamWrap {
   connect(req: PipeConnectWrap, path: string): number {
     const native = nativeStreamFor(this);
     // The owner's registry knows names, not nodes: its "no such name" is said here, where the run's tree is.
-    if (native) return native.connect(path, undefined, false, status => invokeOwned(req, 'oncomplete', status === UV_ENOENT ? noListener(path) : status, this, req, true, true));
+    observeNodeRequest(req);
+    if (native) {
+      try {
+        const status = native.connect(path, undefined, false, status => invokeOwned(req, 'oncomplete', status === UV_ENOENT ? noListener(path) : status, this, req, true, true));
+        if (status !== 0) forgetNodeRequest(req);
+        return status;
+      } catch (cause) { forgetNodeRequest(req); throw cause; }
+    }
     // libuv answers a connect through the request, never from the call.
     queueBindingTask(() => {
-      if (this.closed) return;
-      const server = listenerOnPath(path);
-      if (!server) {
-        invokeOwned(req, 'oncomplete', noListener(path), this, req, true, true);
-        return;
-      }
-      const accepted = new (server.constructor as typeof Pipe)(server.type === constants.IPC ? constants.IPC : constants.SOCKET);
-      accepted.path = path;
-      // The serving run owns what it accepted, not the connecting one.
-      __adoptHandle(accepted, ownerOf(server));
-      LibuvStreamWrap.pair(this, accepted);
-      invokeOwned(server, 'onconnection', 0, accepted);
-      invokeOwned(req, 'oncomplete', 0, this, req, true, true);
+      try {
+        if (this.closed) { forgetNodeRequest(req); return; }
+        const server = listenerOnPath(path);
+        if (!server) {
+          invokeOwned(req, 'oncomplete', noListener(path), this, req, true, true);
+          return;
+        }
+        const accepted = new (server.constructor as typeof Pipe)(server.type === constants.IPC ? constants.IPC : constants.SOCKET);
+        accepted.path = path;
+        // The serving run owns what it accepted, not the connecting one.
+        __adoptHandle(accepted, ownerOf(server));
+        LibuvStreamWrap.pair(this, accepted);
+        invokeOwned(server, 'onconnection', 0, accepted);
+        invokeOwned(req, 'oncomplete', 0, this, req, true, true);
+      } finally { forgetNodeRequest(req); }
     });
     return 0;
   }

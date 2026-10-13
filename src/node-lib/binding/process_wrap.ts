@@ -27,7 +27,7 @@ import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { nativeStreamFor } from '../../native-stream-binding';
 import { UV_EBADF, UV_ENOENT, UV_ESRCH, UV_EPERM, UV_EINVAL } from './uv';
 import {
-  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
+  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle, observeNodeHandle,
   ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
 } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
@@ -400,6 +400,7 @@ export class Process implements OwnedHandle {
     // The number the parent reads off the handle is the child's own
     // `process.pid`, made at its fork, as it is in Node.
     this.pid = this.run.pid;
+    observeNodeHandle(this);
     if (stdinFar) this.readStdinFrom(stdinFar);
     return 0;
   }
@@ -418,7 +419,7 @@ export class Process implements OwnedHandle {
   close(callback?: () => void): void {
     if (!this.closed) {
       this.closed = true;
-      releaseHandle(this);
+      releaseHandle(this, true);
     }
     if (callback) queueBindingTask(() => withGuestCallback(callback));
   }

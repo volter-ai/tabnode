@@ -28,7 +28,7 @@
  * own tree.
  */
 import { createNodeError as vfsError } from '../../virtual-fs';
-import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner, ownedRun, ownerOfInstance } from './handles';
+import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner, ownedRun, ownerOfInstance, observeNodeHandle, forgetNodeHandle, observeNodeRequest, forgetNodeRequest } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
 import { kStdinRing, type StdinRingReader } from '../../stdin-ring';
 // The guest stdin stream's engine-side read (shims/process.ts `kEngineStdinRead`),
@@ -551,11 +551,13 @@ interface FSReq { oncomplete?: (error: Error | null, ...rest: unknown[]) => void
 class FSRequest {
   private cancel?: () => void;
   private ended = false;
+  private readonly request: object;
 
   /** `source`: the guest function the request answers (its `oncomplete`), which names it in the realm's entry account
    *  (guest-loop.ts, S2 R27); the outer bracket is the one counted, so it carries the name. */
-  constructor(owner: ProcessToken | null, run: () => void, source?: unknown) {
-    ownedRun(owner, () => registerHandle(this));
+  constructor(owner: ProcessToken | null, run: () => void, source?: unknown, request?: object) {
+    this.request = request ?? this;
+    ownedRun(owner, () => { registerHandle(this); observeNodeRequest(this.request); });
     try {
       this.cancel = queueNativeFsTask(() => {
         if (this.ended) return;
@@ -569,9 +571,13 @@ class FSRequest {
     if (this.ended) return;
     this.ended = true;
     this.cancel?.();
+    forgetNodeRequest(this.request);
     releaseHandle(this);
   }
 }
+
+/** The actual pending promise filesystem operation, corresponding to Node’s FSReqPromise. */
+class FSReqPromise extends FSRequest {}
 
 /**
  * Every operation below is written once, synchronously, and this is what
@@ -607,7 +613,7 @@ function answer<T>(req: FSReq | undefined, work: () => T): T | undefined {
   const run = (): T => withFilesystem(tree, () => withCwd(cwd, work));
   if (usePromises) {
     return new Promise<T>((resolve, reject) => {
-      new FSRequest(currentOwner(), () => { try { resolve(run()); } catch (error) { reject(error); } });
+      new FSReqPromise(currentOwner(), () => { try { resolve(run()); } catch (error) { reject(error); } });
     }) as unknown as T;
   }
   // Node's binding invokes `req.oncomplete` as a method of the request:
@@ -623,7 +629,7 @@ function answer<T>(req: FSReq | undefined, work: () => T): T | undefined {
     let value: T;
     try { value = run(); } catch (error) { ownedRun(owner, () => complete.call(request, error as Error), true, 'fs', complete); return; }
     ownedRun(owner, () => complete.call(request, null, value as unknown), true, 'fs', complete);
-  }, complete);
+  }, complete, request);
   return undefined;
 }
 
@@ -681,7 +687,7 @@ function asPath(path: unknown): string {
 class FSReqCallback {
   oncomplete: ((error: Error | null, ...rest: unknown[]) => void) | undefined;
   context: unknown;
-  constructor(public bigint = false) {}
+  constructor(public bigint = false) { observeNodeRequest(this); }
 }
 
 /** The symbol `fs.promises` passes where a callback would go. */
@@ -760,7 +766,7 @@ class FSEvent {
         ownedRun(owner, notify, true, 'fs', this.onchange);
       }) as never) as unknown as { close(): void };
       this.initialized = true;
-      registerHandle(this);
+      registerHandle(this, true);
       if (persistent === false) unrefHandle(this);
       return 0;
     } catch (error) {
@@ -789,6 +795,7 @@ class FSEvent {
 /** The fields of one stat as the binding passes them (Node's kFsStatsFieldsNumber, 18 in v24.21.0). */
 const FS_STATS_FIELDS = 18;
 class StatWatcher {
+  #referenced = true;
   /** Node's callback: the poll's status (0, or libuv's error for a file that is not there) and ONE array, the new stat's fields then the old one's. */
   onchange: ((status: number, stats: Float64Array | BigInt64Array) => void) | null = null;
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -822,15 +829,16 @@ class StatWatcher {
       this.onchange?.(status, both);
     }, interval);
     (this.#timer as unknown as { unref?: () => void }).unref?.();
+    observeNodeHandle(this, handle => { const watcher = handle as StatWatcher; return watcher.#timer !== null && watcher.#referenced; });
     return 0;
   }
 
-  stop(): void { if (this.#timer !== null) { clearInterval(this.#timer); this.#timer = null; } }
+  stop(): void { forgetNodeHandle(this); if (this.#timer !== null) { clearInterval(this.#timer); this.#timer = null; } }
   close(): void { this.stop(); }
-  ref(): void {}
-  unref(): void {}
+  ref(): void { this.#referenced = true; }
+  unref(): void { this.#referenced = false; }
   getAsyncId(): number { return 0; }
-  hasRef(): boolean { return this.#timer !== null; }
+  hasRef(): boolean { return this.#timer !== null && this.#referenced; }
 }
 
 const fsEventWrapBinding = { FSEvent };
