@@ -193,7 +193,7 @@ export class LibuvStreamWrap implements OwnedHandle {
   shutdown(req: ShutdownWrap): number {
     if (this.closed) return UV_EBADF;
     const native = nativeStreamFor(this);
-    observeNodeRequest(req);
+    observeNodeRequest(req, this);
     if (native) {
       try {
         const status = native.shutdown(status => invokeOwned(req, 'oncomplete', status));

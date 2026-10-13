@@ -131,7 +131,7 @@ export class Pipe extends LibuvStreamWrap {
   connect(req: PipeConnectWrap, path: string): number {
     const native = nativeStreamFor(this);
     // The owner's registry knows names, not nodes: its "no such name" is said here, where the run's tree is.
-    observeNodeRequest(req);
+    observeNodeRequest(req, this);
     if (native) {
       try {
         const status = native.connect(path, undefined, false, status => invokeOwned(req, 'oncomplete', status === UV_ENOENT ? noListener(path) : status, this, req, true, true));

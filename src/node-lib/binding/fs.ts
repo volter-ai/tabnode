@@ -28,7 +28,7 @@
  * own tree.
  */
 import { createNodeError as vfsError } from '../../virtual-fs';
-import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner, ownedRun, ownerOfInstance, observeNodeHandle, forgetNodeHandle, observeNodeRequest, forgetNodeRequest } from './handles';
+import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner, ownedRun, ownerOfInstance, observeNodeHandle, forgetNodeHandle, observeNodeRequest, forgetNodeRequest, captureNodeResourceScope } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
 import { queueBindingTask } from '../../guest-loop';
 import { kStdinRing, type StdinRingReader } from '../../stdin-ring';
@@ -558,11 +558,12 @@ class FSRequest {
    *  (guest-loop.ts, S2 R27); the outer bracket is the one counted, so it carries the name. */
   constructor(owner: ProcessToken | null, run: () => void, source?: unknown, request?: object) {
     this.request = request ?? this;
+    const inScope = captureNodeResourceScope();
     ownedRun(owner, () => { registerHandle(this); observeNodeRequest(this.request); });
     try {
       this.cancel = queueNativeFsTask(() => {
         if (this.ended) return;
-        try { ownedRun(owner, run, true, 'fs', source ?? run); }
+        try { ownedRun(owner, () => inScope(run), true, 'fs', source ?? run); }
         finally { this.close(); }
       });
     } catch (cause) { this.close(); throw cause; }
@@ -700,6 +701,7 @@ class FSReqCallback {
  * a flat list of name and type, and `null` when there is nothing left.
  */
 class DirHandle {
+  readonly #inScope = captureNodeResourceScope();
   #entries: Array<[string, number]>;
   #at = 0;
   #encoding: unknown;
@@ -717,7 +719,7 @@ class DirHandle {
     });
   }
   read(encoding?: string, bufferSize = 32, req?: FSReq): unknown {
-    return answer(req, () => {
+    return this.#inScope(() => answer(req, () => {
       if (this.#at >= this.#entries.length) return null;
       const batch: unknown[] = [];
       const enc = encoding ?? this.#encoding;
@@ -726,10 +728,10 @@ class DirHandle {
         batch.push(encodeFsName(name, enc), type);
       }
       return batch;
-    });
+    }));
   }
   close(req?: FSReq): undefined {
-    return answer(req, () => { this.#at = this.#entries.length; return undefined; });
+    return this.#inScope(() => answer(req, () => { this.#at = this.#entries.length; return undefined; }));
   }
 }
 

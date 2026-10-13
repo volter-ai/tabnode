@@ -9,11 +9,10 @@ import { queueGuestNextTick } from '../guest-loop';
 import { EventEmitter } from '../node-lib/events-module';
 import type { EventListener } from '../node-lib/events-module';
 import { Readable } from '../node-lib/stream-module';
-import { loadNodeLibFor } from '../node-lib/load';
+import { loadNodeLibFor, nodeLibBindingFor } from '../node-lib/load';
 import { kRunFilesystem, withFilesystem } from '../node-lib/binding/fs';
 import { createNodeError, type VirtualFS } from '../virtual-fs';
 import { constantsBinding } from './constants';
-import ttyWrapBinding from '../node-lib/binding/tty_wrap';
 import { nodeLibBinding } from '../node-lib/binding/index';
 import { nodeActiveHandles, nodeActiveRequests } from '../node-lib/binding/handles';
 
@@ -894,14 +893,14 @@ export function createProcess(options?: {
         proc.emitWarning("process.binding() is deprecated. Please use public APIs instead.", "DeprecationWarning", "DEP0111");
       }
       if (name === "constants") return constantsBinding();
-      if (name === "tty_wrap") return ttyWrapBinding;
+      if (name === "tty_wrap") return nodeLibBindingFor(proc, name);
       // Node answers `internalBinding(name)` for a name on its allow list (lib/internal/bootstrap/realm.js,
       // processBindingAllowList, Node 24), and the engine's internal bindings are the ones Node's own vendored lib
       // runs on: `fs` among them, whose `stat` and `FSReqCallback` a fast stat reaches for (audiobookshelf's
       // ripstat: `const { stat, FSReqCallback } = process.binding('fs')`, which threw here at load). A listed name
       // the engine holds no binding for raises Node's own error, as an unlisted one does.
       const binding = PROCESS_BINDING_ALLOWED.has(name) ? nodeLibBinding(name) : undefined;
-      if (binding) return binding();
+      if (binding) return nodeLibBindingFor(proc, name);
       throw new Error("No such module: " + name);
     },
 

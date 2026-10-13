@@ -1,6 +1,6 @@
 {
   "kind": "tabnode.process-active-resources-source-reading",
-  "version": 3,
+  "version": 4,
   "articles": [
     5,
     6,
@@ -80,19 +80,19 @@
   "implementationFiles": [
     {
       "path": "src/native-stream-binding.ts",
-      "sha256": "c5461e18e5ecde842a95554ea683fd0708d7309dea40dca0654ee4a6f8600664"
+      "sha256": "27cf0aba3cb0101754b026cc39f07260db876f3d5577942454cbfb5a67c20599"
     },
     {
       "path": "src/node-lib/binding/fs.ts",
-      "sha256": "9d35f4a9b0bf27fae1b3969a3338bc8271a6dfc07cfe985937b02569efadbbb4"
+      "sha256": "61c4ad1fdaa03b950aaeb6f9703d5ebaa9f4d01dabd8c517ea2e5c59494e50a2"
     },
     {
       "path": "src/node-lib/binding/handles.ts",
-      "sha256": "044a2ba2df4ae417f20f5874f2f8a81c98aa536a4cef51d142e4741576bf31eb"
+      "sha256": "6743e2758d5b8308c67f28d7c95d3a6d005599dcd43b6880f89d0f37a4d393c1"
     },
     {
       "path": "src/node-lib/binding/pipe_wrap.ts",
-      "sha256": "8e318a38c2adc54ca52f6906ace4765cdee0bb4adf1a9f074b47b1f4c6992d01"
+      "sha256": "bb2620693fe10dfb3f732ce75bb8bf3ca716cb5bd29c76de6e947732165014eb"
     },
     {
       "path": "src/node-lib/binding/process_wrap.ts",
@@ -100,11 +100,11 @@
     },
     {
       "path": "src/node-lib/binding/stream_wrap.ts",
-      "sha256": "e5d94f9609a2a861ce5d69b62341c1eaeea7cccb2d06c646d6690338096fcec2"
+      "sha256": "aaf88d4c7a350a8351138d3e853ae63666acc756f061be445c6ec3300004cfab"
     },
     {
       "path": "src/node-lib/binding/tcp_wrap.ts",
-      "sha256": "fea866ff31d18836e5f03713474a7c8d6d0720e843742f2b2213a38ab342fe90"
+      "sha256": "d863b48e20a760ff64ddca0972c2e08fe0574381b886cce9f83fbd715983ccd5"
     },
     {
       "path": "src/node-lib/binding/tty_wrap.ts",
@@ -116,11 +116,11 @@
     },
     {
       "path": "src/node-lib/load.ts",
-      "sha256": "32bdf32d18aa02ec47b77a60db352cf8c0d4f85cc08e00914a4ce0dedf86eeb5"
+      "sha256": "e123fdd566cb6e6625af81550cb45f9d8c7cec10e30cac7dc52a9d9798e7de35"
     },
     {
       "path": "src/shims/process.ts",
-      "sha256": "d8b3206722d9d1896be5917d345a1bfb706b5d7284667826bf1ccb5dc80e769a"
+      "sha256": "166bf2b6d46a7ae0bf5ea0032f94b9d731a553be3b85d552c633de4627069d74"
     },
     {
       "path": "src/node-lib/binding/owner-symbol.ts",
@@ -146,6 +146,9 @@
     "Keep filesystem watcher observations until close completion with reference state preserved; repeated close cannot clear the reference early.",
     "Process close observations retire at its existing single queued task before the close callback; stream close retains its existing two-task boundary.",
     "FSEvent initializes before the watch attempt; failed starts keep a referenced closing wrapper until pending-close completion, without adding liveness ownership.",
-    "Explicit standalone/registered binding ownership takes precedence over ambient tokens. The private observation scope only spans synchronous native constructors/dispatch and restores nesting in finally."
+    "Explicit standalone/registered binding ownership takes precedence over ambient tokens. The private observation scope only spans synchronous native constructors/dispatch and restores nesting in finally.",
+    "IPC-transferred stream requests use the adopted operation handle\u2019s owner, including standalone scope identities, rather than the sender facade\u2019s original prototype scope.",
+    "Returned directory read/close methods and deferred filesystem work capture the actual binding scope; unscoped re-observation preserves an initialized request\u2019s custody.",
+    "process.binding returns the same per-process binding cache/surface as vendored internalBinding, preserving its allowlist and deprecation warning."
   ]
 }

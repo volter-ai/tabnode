@@ -56,6 +56,11 @@ export function withNodeResourceScope<T>(process: object, call: () => T): T {
   resourceScope = process;
   try { return call(); } finally { resourceScope = previous; }
 }
+/** Deferred native fs work/returned directory methods retain their actual binding scope. */
+export function captureNodeResourceScope(): <T>(call: () => T) => T {
+  const process = resourceScope;
+  return <T>(call: () => T): T => process ? withNodeResourceScope(process, call) : call();
+}
 function resourceOwnerKey(object: object): ResourceOwner {
   // Observations are made synchronously in a scoped constructor/dispatch.
   // That explicit process owns them even when another run is ambient.
@@ -106,8 +111,12 @@ export function forgetNodeHandle(handle: object): void {
   closingReferences.delete(handle);
 }
 /** Observe the actual dispatched request; its operation already owns its lifetime. */
-export function observeNodeRequest(request: object): void {
-  observeResource(requestRows, requestRowByObject, request, resourceOwnerKey(request));
+export function observeNodeRequest(request: object, operationHandle?: object): void {
+  // An IPC facade can retain the sender's JS prototype/scope. The adopted
+  // native handle, rather than that facade, owns its dispatched operation.
+  const target = operationHandle && handleRowByObject.get(operationHandle);
+  observeResource(requestRows, requestRowByObject, request, target ? target.owner : resourceScope ? resourceOwnerKey(request)
+    : requestRowByObject.get(request)?.owner ?? resourceOwnerKey(request));
 }
 export function forgetNodeRequest(request: object): void { forgetResource(requestRows, requestRowByObject, request); }
 

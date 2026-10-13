@@ -398,7 +398,7 @@ class NodeLibScope {
     return this.surfaces.get(name);
   }
 
-  private readonly binding = (name: string): unknown => {
+  readonly binding = (name: string): unknown => {
     if (!this.bindings.has(name)) {
       if (['fs', 'fs_dir', 'fs_event_wrap'].includes(name)) {
         // Exported handles and encoded names belong to this graph; the fd
@@ -447,6 +447,9 @@ function scopeFor(owner: object): NodeLibScope {
   if (!scope) { scope = new NodeLibScope(owner); byOwner.set(owner, scope); }
   return scope;
 }
+/** process.binding and vendored internalBinding share the same process-owned native surface. */
+export function nodeLibBindingFor(owner: object, name: string): unknown { return scopeFor(owner).binding(name); }
+
 export function loadNodeLibFor(owner: object, name: string): any {
   return scopeFor(owner).require(name);
 }

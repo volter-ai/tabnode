@@ -201,7 +201,7 @@ export class TCP extends LibuvStreamWrap {
       try { return invokeOwned(req, 'oncomplete', status, this, req, true, true); }
       finally { traceSocketConnect('binding-returned', socket, timer(), status, request); }
     };
-    observeNodeRequest(req);
+    observeNodeRequest(req, this);
     if (native) {
       try {
         const status = native.connect(address, port, family === 'IPv6', complete);

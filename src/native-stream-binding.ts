@@ -492,7 +492,7 @@ export class NativeStreamDriver {
     // larger than the transport budget. The channel bounds copied chunks and
     // waits for capacity; rejecting this whole write breaks normal streaming.
     this.handle.writeQueueSize += bytes;
-    observeNodeRequest(request);
+    observeNodeRequest(request, this.handle);
     this.writes.push(write);
     request.async = true;
     streamBaseState[kLastWriteWasAsync] = 1;
