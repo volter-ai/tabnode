@@ -1084,11 +1084,11 @@ function __substrateOutsideSnapshot(process: object, clock: LoadClock, now: numb
  * and `byEntry`, the 16 longest [kind:name, count, ms]. The realm's, since the account began (its first load clock);
  * the brackets inside module loading are among them, as kind `module`. Absent where no reading started the account.
  */
-function __substrateEntrySplit(): { byKind?: Record<string, [number, number]>; byEntry?: Array<[string, number, number]> } {
+function __substrateEntrySplit(): { byKind?: Record<string, [number, unknown]>; byEntry?: Array<[string, number, unknown]> } {
   const kinds = guestEntryKinds(), entries = guestEntryAccount(16);
   if (!kinds || !entries) return {};
-  return { byKind: Object.fromEntries(Object.entries(kinds).map(([kind, [count, ms]]): [string, [number, number]] => [kind, [count, traceRound(ms)]])),
-    byEntry: entries.map(([key, count, ms]): [string, number, number] => [key, count, traceRound(ms)]) };
+  return { byKind: Object.fromEntries(Object.entries(kinds).map(([kind, [count, ms]]): [string, [number, unknown]] => [kind, [count, traceRound(ms)]])),
+    byEntry: entries.map(([key, count, ms]): [string, number, unknown] => [key, count, traceRound(ms)]) };
 }
 /** Byte totals are evidence only. A snapshot keeps its prefix length, not a
  * source copy; count that prefix after HTTP, then release the text references.
