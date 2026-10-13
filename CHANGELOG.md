@@ -33,6 +33,23 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   config; [source/build receipt](evidence/placement-loader/build-record.json).
   Actual application observation and consumer transport remain unqualified.
 
+- R5 reading: the load clock says its body-count input's declared retained
+  bytes, now and at their peak (`retainedInputBytes`, `peakRetainedInputBytes`),
+  beside the exact-or-null byte totals. Readings only.
+
+- R5 counted bodies (substrate Articles5/6/9): where a reading is requested and
+  the tree says a prepared body's exact UTF-8 length beside its text (the
+  substrate's `readTextCounted`), the body is counted at once and only 64 bytes
+  are retained for it, not its text. A tree that says no length leaves the
+  body to the deferred count, unchanged. Source only.
+
+- R5 retention (Articles5/6/8/9): declare deferred load-clock prefix inputs
+  to the host's share of the requested 256 MiB tab trace bound; drop/release whole source cohorts
+  with explicit loss and null subsequent byte totals. Exact surviving UTF8
+  cohorts still materialize only after release or before terminal handoff.
+  Terminal ownership releases arrays while retaining cumulative scalars.
+  Old-host delivery remains compatible; no raw-file-length shortcut lands.
+
 - S2 K1 compile (substrate Articles5/6/8/9): a body's wrapper no longer carries
   the 19 guest-global accessors as an object literal. One null-prototype scope
   of the same live, sloppy-silent accessors is made per process and passed in,

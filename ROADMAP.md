@@ -1,3 +1,24 @@
+## S2 R5: bounded retained diagnostic inputs
+
+Status: source implementation and full package production emission complete; application delivery/cost qualification pending
+
+Articles5/6/8/9; substrate ADR0124 and lead ruling under owner delegation,
+2026-10-12 (OWNER-RULINGS.md). Keep the exact deferred decoded-body UTF8
+counts, but declare all retained body text/code-unit and row metadata weights
+to the selected host's allocation within the tab's single 256 MiB trace retention owner. A dropped source
+cohort releases its entire prefix array and all associated factories. Later
+load clocks retain their phase/count scalars with explicit null byte totals;
+no partial prefix is presented as exact. Normal terminal materialization
+preserves its cohort, releases diagnostic inputs, and retains cumulative
+scalar byte totals. Old hosts ignore the additive local sink arguments.
+
+The compact successor must carry authenticated decoded-body UTF8 lengths
+beside prepared-body digests at preparation. Raw file lengths cannot replace
+decoded UTF8 lengths after BOM removal or malformed-byte replacement, and
+digests alone do not encode a length. The withdrawn raw-reader prototype has
+no source delta in this unit. No boot-time UTF8 scan, guest scheduling/cache
+change, tests or new measurements; consumer qualification is independent.
+
 ## S2 K1: reuse internal require contexts
 
 Status: approved source pushed at 912010ec; full production bundle/declarations emitted; matched Cal reading pending
@@ -878,6 +899,10 @@ source patches, vendor calls or diagnostic environment flags. The consumer
 privately captures/removes its CDP binding before guest entry and attests
 the actual process root. Production library/declaration emission only; no
 tests, probes, apps or timing runs. Runtime observation remains unqualified.
+
+R5 review correction: every refused source input explicitly drops its byte
+account; terminal materialization retires only its captured prefix and keeps
+any later bodies. The host partitions one tab budget across its realms.
 
 Container UTS resolver correction (ADR-0129): process-owned /etc/hosts readers now feed callback/promises lookup through the captured NodeLibScope, preserving file address families. Changed JS modules and complete declarations emitted. Paired merge with substrate is required; whole Vite bundle still incomplete and cycle reading pending.
 

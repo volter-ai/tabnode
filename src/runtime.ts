@@ -1,5 +1,5 @@
 import { traceRound, traceRoundFields } from './trace-values';
-import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested } from './trace-output';
+import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested, retainTraceInput, releaseTraceInput } from './trace-output';
 import { recordProcessHostname, recordProcessHosts } from './process-hostname';
 import { processCredentialsOf } from './process-credentials';
 import type { ProcessCredentials } from './process-credentials';
@@ -98,6 +98,8 @@ import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typ
 import * as acorn from 'acorn';
 
 import { observerDescriptor, observerHasOwn } from './module-observer-records';
+// Receiver-independent native own check adds no diagnostic allocation for ordinary contexts.
+const __moduleObserverOwn = Object.hasOwn;
 
 /**
  * Walk an acorn AST recursively, calling the callback for every node.
@@ -948,7 +950,8 @@ type LoadPhase = 'outside' | 'resolve' | 'read' | 'link' | 'compile' | 'evaluate
 type OutsideSplit = { vmMs: Record<VmScriptPhase, number>; guestBracketMs: number; unbracketedMs: number; clippedBracketMs: number };
 type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>;
   bodies: number; bodyBytes: number; preparedBodies: number; preparedBodyBytes: number; sourceBodies: number; sourceBodyBytes: number;
-  byteBodies: Array<{ text?: string; prepared: boolean; preparedBytes?: number; sourceBytes?: number }>; countedBytes: number;
+  byteBodies: Array<{ text?: string; bytes?: number; prepared: boolean; preparedBytes?: number; sourceBytes?: number }>; countedBytes: number;
+  retainedInputBytes: number; peakRetainedInputBytes: number; byteTotalsDropped: boolean; releaseBytes: () => void; byteBase: number; byteBasePreparedBytes: number; byteBaseSourceBytes: number;
   linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
   outside: OutsideSplit; guestAt: number; began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
@@ -1027,21 +1030,27 @@ function __substrateOutsideSnapshot(process: object, clock: LoadClock, now: numb
 /** Byte totals are evidence only. A snapshot keeps its prefix length, not a
  * source copy; count that prefix after HTTP, then release the text references.
  * Kept prefix totals also answer an older snapshot without recounting bodies. */
-function __substrateBodyByteTotals(clock: LoadClock, limit: number): { preparedBodyBytes: number; sourceBodyBytes: number; utf8DeferredMs: number } {
+function __substrateBodyByteTotals(clock: LoadClock, limit: number): { preparedBodyBytes: number | null; sourceBodyBytes: number | null; utf8DeferredMs: number } {
+  if (clock.byteTotalsDropped) return { preparedBodyBytes: null, sourceBodyBytes: null, utf8DeferredMs: 0 };
+  if (limit < clock.byteBase) return { preparedBodyBytes: null, sourceBodyBytes: null, utf8DeferredMs: 0 };
   const started = performance.now();
   const guestStarted = guestExecutionActiveMs(started);
   while (clock.countedBytes < limit) {
-    const body = clock.byteBodies[clock.countedBytes]!;
-    const bytes = byteLengthUtf8(body.text!);
+    const body = clock.byteBodies[clock.countedBytes - clock.byteBase]!;
+    // A body whose length the read said holds no text: its count is that length (runModuleBody).
+    const bytes = body.text !== undefined ? byteLengthUtf8(body.text) : body.bytes!;
     if (body.prepared) clock.preparedBodyBytes += bytes; else clock.sourceBodyBytes += bytes;
     body.preparedBytes = clock.preparedBodyBytes; body.sourceBytes = clock.sourceBodyBytes;
+    if (body.text !== undefined) clock.retainedInputBytes -= body.text.length * 2;
     delete body.text; clock.countedBytes += 1;
   }
-  const last = clock.byteBodies[limit - 1], ended = performance.now(), elapsed = ended - started;
+  const last = clock.byteBodies[limit - clock.byteBase - 1], ended = performance.now(), elapsed = ended - started;
   // Evidence work is not guest execution or a module phase in later samples.
   __substrateDeferredByteMs += elapsed;
   __substrateDeferredGuestMs += guestExecutionActiveMs(ended) - guestStarted;
-  return { preparedBodyBytes: last?.preparedBytes ?? 0, sourceBodyBytes: last?.sourceBytes ?? 0, utf8DeferredMs: elapsed };
+  retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes);
+  return { preparedBodyBytes: last?.preparedBytes ?? clock.byteBasePreparedBytes,
+    sourceBodyBytes: last?.sourceBytes ?? clock.byteBaseSourceBytes, utf8DeferredMs: elapsed };
 }
 type LoadClockFs = { kernelBlockedMs?: () => number };
 /**
@@ -1074,10 +1083,14 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
     clock = { phase: 'outside', at: now, kernelAt: 0, wall: zero(), kernel: zero(), bodies: 0, bodyBytes: 0,
       preparedBodies: 0, preparedBodyBytes: 0, sourceBodies: 0, sourceBodyBytes: 0,
       byteBodies: [], countedBytes: 0,
+      retainedInputBytes: 512, peakRetainedInputBytes: 512, byteBase: 0, byteBasePreparedBytes: 0, byteBaseSourceBytes: 0, byteTotalsDropped: false, releaseBytes: () => {
+        clock!.byteBodies.length = 0; clock!.retainedInputBytes = 0; clock!.byteTotalsDropped = true;
+      },
       linkSplit: { utf8CountMs: 0, byteCounts: 0 }, compileSplit: { sourceCaptureMs: 0, nativeEvalMs: 0, sourceCaptures: 0, evals: 0 },
       outside: { vmMs: { parse: 0, setup: 0, eval: 0 }, guestBracketMs: 0, unbracketedMs: 0, clippedBracketMs: 0 },
       guestAt: __substrateGuestAt(now), began: now, said: -1 };
     __substrateLoadClocks.set(process, clock);
+    if (!retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes)) clock.releaseBytes();
   }
   // The file system is the process's, known from the first caller that holds it (a `require` made through
   // `Module.prototype.require` holds none): its total is taken from then, so nothing before is counted to a phase.
@@ -1151,6 +1164,8 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     ...(http ? { http: { ...http } } : {}),
     script: entry === undefined ? null : pathShim.posix.basename(entry),
     preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
+    // R5's reading: the body-count input's declared bytes against the tab bound, now and at its highest.
+    retainedInputBytes: clock.retainedInputBytes, peakRetainedInputBytes: clock.peakRetainedInputBytes,
     linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
     compileSplit: { sourceCaptureMs: traceRound(clock.compileSplit.sourceCaptureMs), nativeEvalMs: traceRound(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals },
     vmSplit: __substrateVmSnapshot(process),
@@ -1162,11 +1177,31 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
     requires,
     kernelFrom: { fileSystem: clock.fs ? (clock.fs as object).constructor?.name ?? 'unnamed' : null, total: typeof clock.fs?.kernelBlockedMs === 'function' ? traceRound(clock.fs.kernelBlockedMs()) : 'no kernelBlockedMs on it' } };
+  if (clock.byteTotalsDropped) {
+    traceOutput("[boot-trace]", { ...payload, preparedBodyBytes: null, sourceBodyBytes: null, byteTotalsOmitted: 'trace-retention-bound' });
+    return;
+  }
+  if (clock.byteBase > 0 && limit === clock.byteBase) {
+    traceOutput("[boot-trace]", { ...payload, preparedBodyBytes: clock.preparedBodyBytes,
+      sourceBodyBytes: clock.sourceBodyBytes, linkSplit: { ...payload.linkSplit, utf8DeferredMs: 0 } });
+    return;
+  }
   deferredTraceOutput("[boot-trace]", () => {
     const { preparedBodyBytes, sourceBodyBytes, utf8DeferredMs } = __substrateBodyByteTotals(clock, limit);
-    return { ...payload, preparedBodyBytes, sourceBodyBytes,
+    const materialized = { ...payload, preparedBodyBytes, sourceBodyBytes,
+      ...(preparedBodyBytes === null ? { byteTotalsOmitted: 'cohort-prefix-retired' } : {}),
       linkSplit: { ...payload.linkSplit, utf8DeferredMs: traceRound(utf8DeferredMs) } };
-  });
+    if (at === 'exit' && !clock.byteTotalsDropped && limit >= clock.byteBase) {
+      const retired = limit - clock.byteBase;
+      clock.byteBodies = clock.byteBodies.slice(retired); clock.byteBase = limit;
+      clock.retainedInputBytes -= retired * 64;
+      clock.byteBasePreparedBytes = preparedBodyBytes ?? 0; clock.byteBaseSourceBytes = sourceBodyBytes ?? 0;
+      if (clock.byteBodies.length) {
+        if (!retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes)) clock.releaseBytes();
+      } else releaseTraceInput(clock);
+    }
+    return materialized;
+  }, 'log', { retained: payload, input: clock });
 }
 observeNativeStreamClocks((owner, sample) => {
   // A binding's handle retains its actual run owner across native awaits;
@@ -1314,10 +1349,24 @@ Object.defineProperty(globalThis, '__substratePreparedExit', {
     __substrateSayRowsUsed(process);
   },
 });
-/** A prepared body's text, or undefined where the tree holds none by that name: the read's own miss is the answer. */
+/**
+ * A prepared body's text, or undefined where the tree holds none by that name: the read's own miss is the answer.
+ * Where a reading is requested and the tree says a text's exact UTF-8 length beside it (R5, the substrate's
+ * `readTextCounted`: its bytes decoded as valid UTF-8, less a dropped BOM), the length comes too, and the body is
+ * counted at once rather than held until the deferred count. A tree that says none leaves the body to that count.
+ */
+let __substratePreparedUtf8Bytes: number | undefined;
 function __substrateReadPrepared(vfs: { readFileSync(path: string, encoding: 'utf8'): string }, key: string): string | undefined {
-  try { return vfs.readFileSync(`${PREPARED_MODULES_DIR}/${key}`, 'utf8'); }
-  catch { return undefined; }
+  // Said for the read just made, and read by its caller at once; an unrequested read allocates nothing for it.
+  __substratePreparedUtf8Bytes = undefined;
+  const path = `${PREPARED_MODULES_DIR}/${key}`;
+  try {
+    if (traceReadingRequested()) {
+      const counted = (vfs as { readTextCounted?: (path: string) => { text: string; utf8Bytes?: number } }).readTextCounted;
+      if (typeof counted === 'function') { const read = counted.call(vfs, path); __substratePreparedUtf8Bytes = read.utf8Bytes; return read.text; }
+    }
+    return vfs.readFileSync(path, 'utf8');
+  } catch { return undefined; }
 }
 
 function transformEsmToCjs(code: string, filename: string): string {
@@ -2978,11 +3027,12 @@ function createRequire(
       if (kind && carried !== undefined) __substrateCountPrepared(process, 'carried');
       const digest = kind ? (carried ?? __substrateTimeRead(process, 'digestAsk', () => vfs.contentDigest(resolvedPath))) : undefined;
       const body = kind && digest ? __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest))) : undefined;
+      const bodyUtf8Bytes = __substratePreparedUtf8Bytes;
       if (body !== undefined) {
         __substrateCountPrepared(process, 'digest');
         (module as Module & { filename?: string }).filename = resolvedPath;
         if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
-        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true);
+        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true, bodyUtf8Bytes);
         return;
       }
     }
@@ -3009,9 +3059,10 @@ function createRequire(
     const key = compiling?.raw === content && format === undefined && !strips ? __substrateTimeRead(process, 'key', () => preparedModuleKey(rawCode, resolvedPath)) : undefined;
     if (key) {
       const taken = __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, key));
+      const takenUtf8Bytes = __substratePreparedUtf8Bytes;
       if (taken !== undefined) {
         __substrateCountPrepared(process, 'hash');
-        runModuleBody(module, taken, resolvedPath, dirname, 'prepared', true);
+        runModuleBody(module, taken, resolvedPath, dirname, 'prepared', true, takenUtf8Bytes);
         return;
       }
       // A file the image carries no body for (a package installed in the
@@ -3069,7 +3120,7 @@ function createRequire(
    * hands the result to it; the engine's own pipeline is what makes the
    * body Node-shaped here.
    */
-  let runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false): void => {
+  let runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false, utf8Bytes?: number): void => {
     __substrateLoadPhase(process, vfs, 'link');
     const loadClock = __substrateLoadClocks.get(process);
     if (loadClock) {
@@ -3079,7 +3130,15 @@ function createRequire(
       // Preserve bodyBytes' existing string-length accounting. UTF8 totals
       // have no guest/budget consumer; retain an immutable reference for the
       // deferred evidence owner, without counting or copying it here.
-      loadClock.byteBodies.push({ text: prepared, prepared: bodySource === 'prepared' });
+      if (!loadClock.byteTotalsDropped) {
+        // A length the read said (an exact UTF-8 count, R5) is kept instead of the text: 64 bytes, not the body.
+        const said = utf8Bytes !== undefined && Number.isSafeInteger(utf8Bytes) && utf8Bytes >= 0;
+        loadClock.retainedInputBytes += 64 + (said ? 0 : prepared.length * 2);
+        if (loadClock.retainedInputBytes > loadClock.peakRetainedInputBytes) loadClock.peakRetainedInputBytes = loadClock.retainedInputBytes;
+        if (retainTraceInput(loadClock, loadClock.retainedInputBytes, loadClock.releaseBytes)) {
+          loadClock.byteBodies.push(said ? { bytes: utf8Bytes, prepared: bodySource === 'prepared' } : { text: prepared, prepared: bodySource === 'prepared' });
+        } else loadClock.releaseBytes();
+      }
       loadClock.linkSplit.byteCounts += 1;
       if (bodySource === 'prepared') loadClock.preparedBodies += 1;
       else loadClock.sourceBodies += 1;
@@ -3205,12 +3264,12 @@ function createRequire(
 
   // Node's host debugger observes completed execution outside its program's globals. The analogous requested
   // observer is private to this require context; ordinary execution installs no wrapper or per-body check.
-  if (options.moduleEvaluationObserver) {
+  if (__moduleObserverOwn(options, 'moduleEvaluationObserver') && options.moduleEvaluationObserver) {
     const observes = options.moduleEvaluationObserver.observes;
     const onEvaluated = options.moduleEvaluationObserver.onEvaluated;
     const originalBody = runModuleBody;
-    runModuleBody = (module, prepared, resolvedPath, dirname, bodySource, scoped = false): void => {
-      originalBody(module, prepared, resolvedPath, dirname, bodySource, scoped);
+    runModuleBody = (module, prepared, resolvedPath, dirname, bodySource, scoped = false, utf8Bytes): void => {
+      originalBody(module, prepared, resolvedPath, dirname, bodySource, scoped, utf8Bytes);
       if (observes(resolvedPath)) {
         try {
           const loaded = observerDescriptor(module, 'loaded');
