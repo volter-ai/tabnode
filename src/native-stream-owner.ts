@@ -384,6 +384,9 @@ export class NativeStreamScope {
     return { status: 0 };
   }
 
+  /** nativeStreamPeerEntry, where a host holds the class (a host on an older engine finds no such method). */
+  static peerEntry(handle: object): { scope: NativeStreamScope; id: number } | undefined { return nativeStreamPeerEntry(handle); }
+
   /** The id this scope gives a handle it holds. */
   idOf(handle: NativeHandle): number | undefined {
     if (this.disposed) return undefined;
