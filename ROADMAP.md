@@ -8,6 +8,22 @@ descriptor copies on confirmed launch failure. Source defects are established; M
 op43 timeout is a hypothesis until the next retained rejection diagnostic names
 the failed child. Independent review and normal image-cycle qualification remain.
 
+## native-advisory-locks: Native addon file locks reach their descriptor owner
+
+Articles 5/6/9. A native addon linked through the host port may ask the
+captured fs binding for advisory locks on a descriptor it already opened.
+Node's native addons use the OS descriptor and process lock owner; the tab
+must reach that same owner through TREE_DESCRIPTORS, with no private lock
+table or Emscripten success stub. The caller token/tree are captured before
+proxy turns; an absent capability is ENOSYS and another tree's fd is EBADF.
+POSIX logical dup-close releases process locks without closing a still-held
+kernel description. Ordinary fs and the vendored Node library are unchanged.
+
+Status: source prepared for independent paired review.
+Completion: the substrate's matching owner seam serves actual locks and
+close/release semantics through an ordinary admitted provider/image reading.
+No test, compiler, typecheck or guest run was performed by this source lane.
+
 ## S2 R5: bounded retained diagnostic inputs
 
 Status: source implementation and full package production emission complete; application delivery/cost qualification pending
