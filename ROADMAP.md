@@ -1,6 +1,6 @@
 ## Native addon advisory file locks
 
-Articles 5/6/9. Restore the real OS locking available to native addons over the existing TREE_DESCRIPTORS capability. Optional record-lock and flock operations are exposed only at a private symbol in the fs binding, never a second lock table or a guest-global hook. Record locks belong to a process and end on any close of that file; flock belongs to an open description. Unsupported owners refuse ENOSYS. The substrate owns ABI translation, and the real-image reading remains separate. Lead m-aaf65f6e; no tests or apps.
+Articles 5/6/9. Restore the real OS locking available to native addons over the existing TREE_DESCRIPTORS capability. Optional record-lock and flock operations use an unadvertised fs-binding symbol limited to the caller's own descriptors, never a second lock table or a guest-global hook. Record locks belong to a process and end on any close of that file; flock belongs to an open description. The host gates logical-close release locally before asking the kernel. Unsupported lock owners refuse ENOSYS. The substrate owns ABI translation, and the real-image reading remains separate. Lead m-aaf65f6e; review corrections m-9810dede stay unmerged until supported SDK supply. No tests or apps.
 
 ## S2 R5: bounded retained diagnostic inputs
 

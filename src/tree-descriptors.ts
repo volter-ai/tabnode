@@ -31,6 +31,8 @@ export interface TreeAdvisoryLocks {
   fcntl(fd: number, command: number, record: TreeRecordLock): TreeRecordLock;
   /** Locks the open description, released by its last close, including duplicates. */
   flock(fd: number, operation: number): void;
+  /** NODERAWFS's logical dup close; the owner skips files with no POSIX lock. */
+  releasePosixOnClose(fd: number): void;
 }
 
 /** What the stat of an open description answers, in the shape a tree's `statSync` answers. */

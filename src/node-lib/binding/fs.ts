@@ -841,6 +841,9 @@ const fsBinding = {
       flock(fd, operation) {
         ownedRun(token, () => withFilesystem(tree, () => advisoryOwner(fd, caller).flock(fd, operation)));
       },
+      releasePosixOnClose(fd) {
+        ownedRun(token, () => withFilesystem(tree, () => advisoryOwner(fd, caller).releasePosixOnClose(fd)));
+      },
     } satisfies TreeAdvisoryLocks);
   },
   FSReqCallback,

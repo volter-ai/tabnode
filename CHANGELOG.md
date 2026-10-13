@@ -1,6 +1,6 @@
 ## Native descriptor advisory locks
 
-Add an optional host descriptor capability for native addon fcntl/flock ports under a private fs-binding symbol. Calls retain the caller’s descriptor owner, and unsupported owners refuse ENOSYS. No public fs API, lock table or native ABI is invented. Source review/compilation only; real-image qualification remains with the substrate.
+Add an optional host descriptor capability for native addon fcntl/flock ports under an unadvertised fs-binding symbol, limited to the caller’s own descriptors. Calls retain the caller’s descriptor owner, and unsupported owners refuse ENOSYS. Logical-close release is gated by the host's POSIX-lock hints. No public fs API, lock table or native ABI is invented. Source review/compilation only; real-image qualification remains with the substrate.
 
 # Changelog
 
