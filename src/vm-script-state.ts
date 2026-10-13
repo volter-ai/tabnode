@@ -160,17 +160,27 @@ function collectDeclared(program: Walked, declared: string[], functions: string[
  */
 export function mayDeclare(source: string): boolean {
   if (!source.includes('var') && !source.includes('function') && !source.includes('\\')) return false;
+  // A string's body is skipped by the engine's own searches, not a character at a time (S2 T11: Dub's 715 manifests are
+  // almost all string text; the per-character walk was 161 ms of its server's start). The next backslash, line feed
+  // and carriage return are each searched for once and kept until the scan passes them, so the whole text is read a
+  // bounded number of times; -2 is "not searched yet", -1 "none further".
+  let nextBackslash = -2, nextLf = -2, nextCr = -2;
   for (let i = 0, n = source.length; i < n;) {
     const c = source.charCodeAt(i);
     if (c === 0x22 /* " */ || c === 0x27 /* ' */) {
-      for (i++; ; i++) {
-        if (i >= n) return true;
-        const d = source.charCodeAt(i);
-        if (d === c) break;
-        if (d === 0x5c /* \\ */) i++;
-        else if (d === 0x0a || d === 0x0d) return true;
+      const quote = c === 0x22 ? '"' : "'";
+      for (let from = i + 1; ;) {
+        const close = source.indexOf(quote, from);
+        if (close < 0) return true;
+        if (nextBackslash !== -1 && nextBackslash < from) nextBackslash = source.indexOf('\\', from);
+        // An escape before the quote: the escaped character (a quote, or a line break continuing the line) is passed.
+        if (nextBackslash !== -1 && nextBackslash < close) { from = nextBackslash + 2; continue; }
+        if (nextLf !== -1 && nextLf < from) nextLf = source.indexOf('\n', from);
+        if (nextCr !== -1 && nextCr < from) nextCr = source.indexOf('\r', from);
+        if ((nextLf !== -1 && nextLf < close) || (nextCr !== -1 && nextCr < close)) return true;
+        i = close + 1;
+        break;
       }
-      i++;
       continue;
     }
     if (c === 0x2f /* / */) {
