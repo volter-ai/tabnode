@@ -2878,8 +2878,6 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   // the fast path Node keeps too. They hang off the Module class because that
   // class is this run's -- one per module cache -- and Node's are per process.
   Module.__substrateHooks = void 0;
-  // ADR-0094's native-binding map, once per run, as data the resolver reads only where it can apply (SubstrateAddons).
-  // A prelude that finds no such door (real Node, the host's qualification instrument) registers its hook instead.
   // ADR-0094's native-binding maps of this run, as data the resolver reads only where they can apply (SubstrateAddons):
   // each prelude that runs over this Module class gives its map once (one node entry can require another, the run's
   // wrapper and a generated entry: S2 B10), and they compose as the chained resolve hooks did, the most recently given
