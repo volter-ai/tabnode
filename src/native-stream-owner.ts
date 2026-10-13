@@ -75,10 +75,12 @@ export class NativeStreamScope {
   private readonly writes = new Map<number, (status: number) => void>();
   private readonly connects = new Map<number, number>();
   /**
-   * Entries whose bytes another realm carries (R14, takeDirected). That realm hands them back before it duplicates,
-   * passes, pairs or lets a child inherit one (returnDirected); refusing those here is the backstop, never the path.
+   * Entries whose bytes another realm carries (R14, takeExclusive). That realm hands them back before it duplicates,
+   * passes, pairs or lets a child inherit one (returnExclusive); refusing those here is the backstop, never the path.
    */
-  private readonly directed = new Set<number>();
+  private readonly exclusive = new Set<number>();
+  /** Who waits for an entry's bytes to settle (watchSettled). */
+  private readonly settledWatchers = new Map<number, Set<() => void>>();
   private nextId = 1;
   private pendingWriteBytes = 0;
   private disposed = false;
@@ -178,7 +180,7 @@ export class NativeStreamScope {
     const entry = this.entry(operation.id);
     if (!entry) return { status: UV_EBADF };
     const handle = entry.handle;
-    if (this.directed.has(operation.id) && (operation.operation === 'duplicate' || operation.operation === 'pair')) return { status: UV_ENOTSUP };
+    if (this.exclusive.has(operation.id) && (operation.operation === 'duplicate' || operation.operation === 'pair')) return { status: UV_ENOTSUP };
     switch (operation.operation) {
       case 'duplicate': {
         // A connection is duplicated whether or not its other end is still
@@ -191,7 +193,7 @@ export class NativeStreamScope {
         return { status: 0, handle: descriptor };
       }
       case 'pair': {
-        if (this.directed.has(operation.peer)) return { status: UV_ENOTSUP };
+        if (this.exclusive.has(operation.peer)) return { status: UV_ENOTSUP };
         const other = this.entry(operation.peer)?.handle;
         if (!other || handle.peer || other.peer || handle.listening || other.listening || other === handle) return { status: UV_EINVAL };
         LibuvStreamWrap.pair(handle, other);
@@ -305,7 +307,7 @@ export class NativeStreamScope {
       || this.pendingWriteBytes + bytes.byteLength > this.limits.maxPendingWriteBytes) return Promise.resolve(UV_ENOBUFS);
     const sent = sentId === undefined ? undefined : this.entry(sentId)?.handle;
     if (sentId !== undefined && !sent) return Promise.resolve(UV_EBADF);
-    if (sentId !== undefined && this.directed.has(sentId)) return Promise.resolve(UV_ENOTSUP);
+    if (sentId !== undefined && this.exclusive.has(sentId)) return Promise.resolve(UV_ENOTSUP);
     // A connection crosses whether or not its other end is still there: Node
     // passes a socket whose peer has closed, and the receiver reads its EOF.
     // Refusing it failed the whole channel write (`write ENOTSUP`), which ended
@@ -327,6 +329,7 @@ export class NativeStreamScope {
         unsubscribe();
         this.writes.delete(id);
         this.pendingWriteBytes -= owned.byteLength;
+        queueMicrotask(() => this.settled(id));
         try { retained?.close(); }
         catch (cause) { reject(cause); return; }
         if (failure !== undefined) reject(failure);
@@ -355,7 +358,7 @@ export class NativeStreamScope {
     if (this.entries.size >= this.limits.maxHandles) return { status: UV_EMFILE };
     const handle = source.entry(id)?.handle;
     if (!handle) return { status: UV_EBADF };
-    if (handle.listening || source.directed.has(id)) return { status: UV_ENOTSUP };
+    if (handle.listening || source.exclusive.has(id)) return { status: UV_ENOTSUP };
     const copy = handle.duplicate();
     const descriptor = this.claim(copy);
     if (!descriptor) { copy.close(); return { status: UV_EMFILE }; }
@@ -371,7 +374,8 @@ export class NativeStreamScope {
     this.connects.delete(id);
     if (connecting !== undefined) this.publish({ type: 'connect', id, request: connecting, status: UV_ECANCELED });
     this.entries.delete(id);
-    this.directed.delete(id);
+    this.exclusive.delete(id);
+    this.settledWatchers.delete(id);
     scopes.delete(entry.handle);
     for (const [fd, held] of this.descriptors) if (held === id) this.descriptors.delete(fd);
     const complete = request === undefined ? undefined : () => this.publish({ type: 'close', id, request, status: 0 });
@@ -391,17 +395,35 @@ export class NativeStreamScope {
   writing(id: number): boolean { return this.writes.has(id); }
 
   /**
-   * Hand an entry's bytes to another realm (R14): the bytes that arrived and were not yet read are taken, and from
+   * Called when what an entry carries may have settled: its pending write finished, or its peer read (so the bytes
+   * the entry wrote moved on). A host waiting for both directions to drain rechecks there, never on a timer.
+   */
+  watchSettled(id: number, listener: () => void): () => void {
+    const entry = this.entry(id);
+    if (!entry) return () => {};
+    let watchers = this.settledWatchers.get(id);
+    if (!watchers) { watchers = new Set(); this.settledWatchers.set(id, watchers); }
+    watchers.add(listener);
+    const unsubscribe = entry.handle.onPeerReadCapacity(listener);
+    return () => { unsubscribe(); watchers!.delete(listener); if (!watchers!.size && this.settledWatchers.get(id) === watchers) this.settledWatchers.delete(id); };
+  }
+
+  private settled(id: number): void {
+    for (const listener of [...this.settledWatchers.get(id) ?? []]) listener();
+  }
+
+  /**
+   * Hand an entry's bytes to another realm exclusively (R14): the bytes that arrived and were not yet read are taken, and from
    * here the entry carries only its control (connect, names, shutdown, close, EOF and errors). Undefined, changing
    * nothing, where the entry cannot move: absent, listening, shared with another descriptor, waiting to write, or
    * holding anything but bytes.
    */
-  takeDirected(id: number): Uint8Array | undefined {
+  takeExclusive(id: number): Uint8Array | undefined {
     const entry = this.entry(id);
-    if (!entry || entry.handle.closed || entry.handle.listening || this.directed.has(id) || this.writes.has(id) || this.connects.has(id)
+    if (!entry || entry.handle.closed || entry.handle.listening || this.exclusive.has(id) || this.writes.has(id) || this.connects.has(id)
       || [...this.descriptors.values()].includes(id)) return undefined;
     const bytes = entry.handle.takeQueuedReads();
-    if (bytes) this.directed.add(id);
+    if (bytes) this.exclusive.add(id);
     return bytes;
   }
 
@@ -409,9 +431,9 @@ export class NativeStreamScope {
    * The other realm hands the entry's bytes back (before a duplicate, an inheritance, a pass or a pairing, or as it
    * stops): what it took and did not read is read first, and the entry is an ordinary one again.
    */
-  returnDirected(id: number, unread: Uint8Array): boolean {
+  returnExclusive(id: number, unread: Uint8Array): boolean {
     const entry = this.entry(id);
-    if (!entry || !this.directed.delete(id)) return false;
+    if (!entry || !this.exclusive.delete(id)) return false;
     entry.handle.returnQueuedReads(unread);
     return true;
   }
