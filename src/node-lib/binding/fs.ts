@@ -1018,7 +1018,7 @@ const fsBinding = {
         if (stats?.isFile()) return utf8KeepingBom.decode(tree.readFileSync(name) as Uint8Array);
         // ABSENT, BY THE TREE'S OWN STAT (S2 T11): the ENOENT the open below would fetch from the kernel, thrown here
         // as the tree's open builds it. Only a stat that answered undefined and that the tree knows was ENOENT:
-        // ENOTDIR answers undefined too and keeps the open, and a stat that fails leaves the read to the open above.
+        // ENOTDIR answers undefined too and keeps the open, and a stat that fails leaves the read to the open below.
         // A kept miss holds only while its directories' search does (the tree moves its namespace word on a chmod or
         // chown of a directory). Dub's Next server read its optional manifests this way at
         // its start (c6a11f38, the scored warm-up, worker 49, pid 10002: 292 ms of openAt -> syscall under
