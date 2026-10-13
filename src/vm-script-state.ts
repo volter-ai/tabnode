@@ -31,22 +31,18 @@ export class VmScriptPreparationCache {
     if (kept) return { prepared: kept, hit: true, failed: false, parsed: false };
     const declared: string[] = [];
     let failed = false;
-    // No top-level declaration can exist without its keyword as a word at
-    // bracket depth 0 (mayDeclareAtTop). This only rules out discovery work;
+    // No declaration can exist without its keyword as a word outside
+    // strings and comments (mayDeclare). This only rules out discovery work;
     // real eval still parses every script and decides syntax/completion.
     // Possible declarations keep the same parser.
-    const parsed = !cacheable || mayDeclareAtTop(source);
+    const parsed = !cacheable || mayDeclare(source);
     if (parsed) try {
       const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
-      for (const node of ast.body) {
-        if (node.type === 'FunctionDeclaration' && node.id) declared.push(node.id.name);
-        if (node.type === 'VariableDeclaration' && node.kind === 'var') {
-          for (const declaration of node.declarations) if (declaration.id.type === 'Identifier') declared.push(declaration.id.name);
-        }
-      }
+      collectDeclared(ast as unknown as Walked, declared);
     } catch { failed = true; /* The actual evaluator still decides syntax/errors. */ }
-    const prepared: PreparedScript = { declared,
-      own: new Set(['__substrateScope', '__substrateCode', '__substrateDeclared', ...declared]) };
+    const unique = [...new Set(declared)];
+    const prepared: PreparedScript = { declared: unique,
+      own: new Set(['__substrateScope', '__substrateCode', '__substrateDeclared', ...unique]) };
     if (bucket) {
       const reference = new WeakRef(prepared);
       bucket.set(source, reference);
@@ -59,25 +55,78 @@ export class VmScriptPreparationCache {
 function isWordChar(c: number): boolean {
   return (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a) || (c >= 0x30 && c <= 0x39) || c === 0x5f || c === 0x24;
 }
+/** The ESTree shape the walk reads; acorn's nodes carry more. */
+interface Walked { type: string; body?: Walked | Walked[]; id?: Walked | null; name?: string; kind?: string;
+  declarations?: Walked[]; consequent?: Walked | Walked[]; alternate?: Walked | null; cases?: Walked[];
+  init?: Walked | null; left?: Walked; block?: Walked; handler?: Walked | null; finalizer?: Walked | null;
+  properties?: Walked[]; elements?: (Walked | null)[]; value?: Walked; argument?: Walked;
+  async?: boolean; generator?: boolean; expression?: Walked; directive?: string }
 /**
- * Whether a top-level statement of the script can begin with `var` or
- * `function`: the only statements the parser's walk above collects. Next's
- * server evaluates one client-reference manifest per app route at start
- * (Dub: 715 routes before its first page), each an object literal whose
- * module paths contain the text (packages/ui/src/rich-text-area/variables.tsx,
- * packages/utils/src/functions/), so the substring test sent every manifest
- * through acorn. This reads the text once,
- * outside strings and comments, counting bracket depth; a `var` or `function`
- * word at depth 0 answers yes. Whatever it cannot read without a parser (a
- * template, a regular expression or a division, an escape outside a string,
- * an unterminated string or comment, unbalanced brackets) also answers yes,
- * and acorn decides as before. A word is ASCII only: a non-ASCII character
- * ends one, so `var` after any Unicode space is still seen; a non-ASCII
- * identifier character can only add a false yes.
+ * The names a script declares in its context's global, as Node's
+ * vm.runInContext leaves them on the context: every `var` bound anywhere
+ * outside a function (in blocks, loop heads and catch bodies too, with
+ * destructured names), every top-level function declaration, and in sloppy
+ * code each plain function declared in a block (Annex B.3.3). The walk
+ * descends statements only; a function or class body is its own scope.
+ * Annex B's exception for a name a lexical declaration shadows is left to
+ * the evaluator: such a name has no binding there, its read throws and is
+ * skipped as before.
  */
-export function mayDeclareAtTop(source: string): boolean {
+function collectDeclared(program: Walked, declared: string[]): void {
+  const statements = (program.body ?? []) as Walked[];
+  let strict = false;
+  for (const statement of statements) {
+    if (statement.type !== 'ExpressionStatement' || typeof statement.directive !== 'string') break;
+    if (statement.directive === 'use strict') strict = true;
+  }
+  const bound = (pattern: Walked | null | undefined): void => {
+    if (!pattern) return;
+    switch (pattern.type) {
+      case 'Identifier': declared.push(pattern.name!); return;
+      case 'ObjectPattern': for (const property of pattern.properties ?? []) bound(property.type === 'RestElement' ? property.argument : property.value); return;
+      case 'ArrayPattern': for (const element of pattern.elements ?? []) bound(element); return;
+      case 'RestElement': bound(pattern.argument); return;
+      case 'AssignmentPattern': bound(pattern.left); return;
+    }
+  };
+  const declaration = (node: Walked | null | undefined): void => {
+    if (node?.type === 'VariableDeclaration' && node.kind === 'var') for (const one of node.declarations ?? []) bound(one.id);
+  };
+  const walk = (node: Walked | null | undefined, top: boolean): void => {
+    if (!node) return;
+    switch (node.type) {
+      case 'FunctionDeclaration':
+        if (node.id && (top || (!strict && !node.async && !node.generator))) declared.push(node.id.name!);
+        return;
+      case 'VariableDeclaration': declaration(node); return;
+      case 'BlockStatement': for (const child of node.body as Walked[]) walk(child, false); return;
+      case 'IfStatement': walk(node.consequent as Walked, false); walk(node.alternate, false); return;
+      case 'ForStatement': declaration(node.init); walk(node.body as Walked, false); return;
+      case 'ForInStatement': case 'ForOfStatement': declaration(node.left); walk(node.body as Walked, false); return;
+      case 'WhileStatement': case 'DoWhileStatement': case 'LabeledStatement': case 'WithStatement': walk(node.body as Walked, false); return;
+      case 'TryStatement': walk(node.block, false); walk(node.handler?.body as Walked | undefined, false); walk(node.finalizer, false); return;
+      case 'SwitchStatement': for (const one of node.cases ?? []) for (const child of one.consequent as Walked[]) walk(child, false); return;
+    }
+  };
+  for (const statement of statements) walk(statement, true);
+}
+
+/**
+ * Whether the script can declare a name in its context's global at all: a
+ * `var` or `function` word outside strings and comments. Next's server
+ * evaluates one client-reference manifest per app route at start (Dub: 715
+ * routes before its first page), each an object literal whose module paths
+ * contain the text (packages/ui/src/rich-text-area/variables.tsx,
+ * packages/utils/src/functions/), so a substring test sent every manifest
+ * through acorn. This reads the text once. Whatever it cannot read without a
+ * parser (a template, a regular expression or a division, an escape outside
+ * a string, an unterminated string or comment) also answers yes, and acorn
+ * decides. A word is ASCII only: a non-ASCII character ends one, so `var`
+ * after any Unicode space is still seen; a non-ASCII identifier character can
+ * only add a false yes.
+ */
+export function mayDeclare(source: string): boolean {
   if (!source.includes('var') && !source.includes('function') && !source.includes('\\')) return false;
-  let depth = 0;
   for (let i = 0, n = source.length; i < n;) {
     const c = source.charCodeAt(i);
     if (c === 0x22 /* " */ || c === 0x27 /* ' */) {
@@ -106,19 +155,11 @@ export function mayDeclareAtTop(source: string): boolean {
       return true;
     }
     if (c === 0x60 /* ` */ || c === 0x5c /* \\ */) return true;
-    if (c === 0x7b || c === 0x28 || c === 0x5b) { depth++; i++; continue; }
-    if (c === 0x7d || c === 0x29 || c === 0x5d) {
-      if (--depth < 0) return true;
-      i++;
-      continue;
-    }
     if (isWordChar(c)) {
       const start = i;
       for (i++; i < n && isWordChar(source.charCodeAt(i)); i++);
-      if (depth === 0) {
-        const length = i - start;
-        if (length === 3 ? source.startsWith('var', start) : length === 8 && source.startsWith('function', start)) return true;
-      }
+      const length = i - start;
+      if (length === 3 ? source.startsWith('var', start) : length === 8 && source.startsWith('function', start)) return true;
       continue;
     }
     i++;
