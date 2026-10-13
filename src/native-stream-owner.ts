@@ -337,7 +337,7 @@ export class NativeStreamScope {
   /**
    * Each credited descriptor gets the peer queue's whole free room. Native has one send buffer per socket, which its
    * duplicated descriptors share; here k credited descriptors of one socket can each be accepted a window at once, so
-   * the peer queue can pass maxQueuedBytes by up to k windows (never reordered or dropped). Shared credit per endpoint
+   * the peer queue can hold up to k windows, k−1 windows past its one (never reordered or dropped). Shared credit per endpoint
    * is not built.
    */
   private publishCredit(id: number): void {
