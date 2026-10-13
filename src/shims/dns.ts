@@ -112,7 +112,14 @@ function lookupWithHosts(
     // including aliases, rather than making every held name an IPv4/IPv6 wildcard.
     let fileAddresses: Array<{ address: string; family: number }> | undefined;
     try { fileAddresses = readHosts ? hostsAddresses(readHosts(), hostname) : undefined; }
-    catch (cause) { cb(cause instanceof Error ? cause : new Error(String(cause))); return; }
+    catch (cause) {
+      // nss_files reports an unreadable hosts source as unavailable; lookup continues with
+      // the next resolver source. Kernel-owner/protocol and programming failures still surface.
+      const code = cause && typeof cause === 'object' ? (cause as { code?: string }).code : undefined;
+      if (!["ENOENT", "ENOTDIR", "EACCES", "EPERM", "EISDIR", "EIO", "ELOOP", "EMFILE", "ENFILE"].includes(code ?? '')) {
+        cb(cause instanceof Error ? cause : new Error(String(cause))); return;
+      }
+    }
     if (fileAddresses !== undefined) {
       let addresses = fileAddresses.filter(row => !requested || row.family === requested);
       if (options.order === 'ipv4first' || options.order === 'ipv6first') {

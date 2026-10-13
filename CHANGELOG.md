@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+Container hostname fork/inspect correction: the inherited kernel channel supplies the fork's container identity to root/pthread UTS and resolver policy. Docker inspect reports the prepared identity and creation hostname; Node lookup skips an unreadable hosts file. Changed production closures and full engine declarations pass; independent re-read and cycle qualification remain.
+
 - First-request attribution (substrate Articles5/6/8/9): add requested-only
   outsideSplit to the existing deferred load clock. Intersect synchronous VM
   phases with outside, then partition its remainder using existing realm guest
