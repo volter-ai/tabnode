@@ -1005,7 +1005,9 @@ type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: num
   byteBodies: Array<{ text?: string; bytes?: number; prepared: boolean; preparedBytes?: number; sourceBytes?: number }>; countedBytes: number;
   retainedInputBytes: number; peakRetainedInputBytes: number; byteTotalsDropped: boolean; releaseBytes: () => void; byteBase: number; byteBasePreparedBytes: number; byteBaseSourceBytes: number;
   linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
-  outside: OutsideSplit; guestAt: number; began: number; said: number };
+  outside: OutsideSplit; guestAt: number; began: number; said: number;
+  /** When its 'quiet' line was said, and whether its 'exit' line has been (S2 R71): an exit after quiet is said once. */
+  quietSaidAt?: number; exitSaid?: boolean };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
 type VmClock = { phase: VmScriptPhase | undefined; at: number; wall: Record<VmScriptPhase, number>;
   calls: Record<VmScriptPhase, number>; runs: { context: number; thisContext: number };
@@ -1205,7 +1207,10 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
   if (!traceReadingRequested()) return;
   const clock = __substrateLoadClocks.get(process);
   const boundary = nativeStream !== undefined || http !== undefined;
-  if (!clock || (!boundary && clock.bodies === clock.said)) return;
+  // A process that went quiet and then ran on (a seed script's queries after its last require: Cal's seed-app-store,
+  // 1.9 s of its 2.7 s) says its exit too, once, though it loaded nothing more: without it that run had no line.
+  const exitAfterQuiet = at === 'exit' && clock?.quietSaidAt !== undefined && !clock.exitSaid;
+  if (!clock || (!boundary && !exitAfterQuiet && clock.bodies === clock.said)) return;
   // Boundary captures can have the same body prefix with different outside
   // time. They neither consume nor suppress the existing quiet/exit line.
   if (!boundary) clock.said = clock.bodies;
@@ -1217,6 +1222,9 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
   // was open (2,029 of a twins' host's 2,579 ms and 2,002 of an attach's 2,185 were this wait). Taken off the open
   // phase and off the total, and said beside them.
   const saidAfter = at === 'quiet' ? Math.min(QUIET_SAID_AFTER_MS, Math.max(0, now - clock.at)) : 0;
+  const sinceQuiet = at === 'exit' && clock.quietSaidAt !== undefined ? now - clock.quietSaidAt : undefined;
+  if (at === 'quiet') clock.quietSaidAt = now;
+  if (at === 'exit') clock.exitSaid = true;
   wall[clock.phase] += now - clock.at - saidAfter;
   kernel[clock.phase] += (clock.fs?.kernelBlockedMs?.() ?? clock.kernelAt) - clock.kernelAt;
   const entry = (process as { argv?: string[] }).argv?.[1];
@@ -1237,7 +1245,8 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     outsideSplit: __substrateOutsideSnapshot(process, clock, now, saidAfter),
     readSplit: split ? traceRoundFields({ ...split }) : null,
     resolveSplit: { packageConfigs: configs ? { ...configs } : null, keptPaths: __substratePathCountsBy.has(process) ? { ...__substratePathCountsBy.get(process)! } : null },
-    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: traceRound(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: traceRound(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(kernel),
+    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: traceRound(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: traceRound(saidAfter) } : {}),
+    ...(sinceQuiet !== undefined ? { sinceQuietMs: traceRound(sinceQuiet) } : {}), wallMs: round(wall), kernelMs: round(kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
     requires,
