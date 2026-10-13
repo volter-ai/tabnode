@@ -6,6 +6,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Failed child host handoff (substrate Articles5/6/8/9): a synchronous throw or
+  rejected host run returns exit ownership to the spawning realm, which publishes
+  the failed run before reaping it. Preserve an already reported kernel exit and
+  descriptor-close ordering. Print the rejection reason, child pid and command
+  path on the parent's stderr, including when the child's stderr is redirected.
+  Full production declarations emit against load-clock1e4e9e6; independent review
+  and the paired substrate cleanup's application reading remain pending.
+
 - K1/R16 evaluate (substrate Articles5/6/9; lead ruling m-71c68f37): a module
   body runs in Node's own wrapper form, with no `with`. Preparation rewrites only
   the free references to the 19 guest-global names (reads, writes, `typeof`,

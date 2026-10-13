@@ -2004,6 +2004,8 @@ interface CommandRun {
   descriptors?: { fd: number; pipe: Pipe }[];
   /** Told when the host's process host takes the run: its end is then the host's, not the engine's. */
   onHostRun?: () => void;
+  /** A rejected handoff gives its uncompleted end back to the forking realm. */
+  onHostRunRejected?: (cause: unknown) => void;
   /** The parent's wait for this run, as its handle's ref state has it (`ChildProcessHostRequest.hold`). */
   hold?: { value: boolean; changed?: () => void };
 }
@@ -2062,23 +2064,29 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     // run's end is its end of them, whatever it did not close itself.
     const opened = (run.descriptors ?? []).map(({ fd, pipe }) => ({ fd, ...descriptorOver(pipe) }));
     try {
-      const result = await bridge.run(run.command, {
-        ...(run.argv ? { argv: [...run.argv] } : {}),
-        cwd: run.cwd,
-        env: hostEnv,
-        ...(run.credentials ? { credentials: run.credentials } : {}),
-        ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
-        stdinStream: run.stdinStream ?? emptyStdinStream(),
-        ...(run.terminal ? { terminal: run.terminal } : {}),
-        signal: controller.signal,
-        hold: run.hold ?? { value: true },
-        onStdout,
-        onStderr,
-        ...byteSinks,
-        ...(opened.length > 0
-          ? { descriptors: Object.fromEntries(opened.map(({ fd, descriptor }) => [fd, descriptor])) }
-          : {}),
-      });
+      let result: ChildProcessHostResult;
+      try {
+        result = await bridge.run(run.command, {
+          ...(run.argv ? { argv: [...run.argv] } : {}),
+          cwd: run.cwd,
+          env: hostEnv,
+          ...(run.credentials ? { credentials: run.credentials } : {}),
+          ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
+          stdinStream: run.stdinStream ?? emptyStdinStream(),
+          ...(run.terminal ? { terminal: run.terminal } : {}),
+          signal: controller.signal,
+          hold: run.hold ?? { value: true },
+          onStdout,
+          onStderr,
+          ...byteSinks,
+          ...(opened.length > 0
+            ? { descriptors: Object.fromEntries(opened.map(({ fd, descriptor }) => [fd, descriptor])) }
+            : {}),
+        });
+      } catch (cause) {
+        run.onHostRunRejected?.(cause);
+        throw cause;
+      }
       const stdout = bytesOut ? '' : result.stdout || streamedOut;
       const stderr = bytesErr ? '' : result.stderr || streamedErr;
       if (!bytesOut && !streamedOut && result.stdout) run.onStdout?.(result.stdout);
@@ -2627,6 +2635,7 @@ function startChildRun(request: RunRequest): StartedRun {
   let hosted = false;
   /** The host's process host runs this child (a program pack, a WALI image): it says when the child ends. */
   let hostRun = false;
+  let hostRunRejected = false;
   // The parent's wait for a child a host runs, read by that host: its handle's ref state (`Process.ref`, `unref`).
   const hold: { value: boolean; changed?: () => void } = { value: true };
   /** What the parent wrote to the child's fd 0 before the command began. */
@@ -2774,10 +2783,31 @@ function startChildRun(request: RunRequest): StartedRun {
           onStderrBytes: streams.onStderrBytes,
           descriptors: request.descriptors,
           onHostRun: () => { hostRun = true; },
+          onHostRunRejected: cause => {
+            // An exec handoff that failed cannot own an exit it never reported.
+            // Publish the failed run's death before wait4; a host's existing zombie
+            // and outstanding descriptor closes remain the kernel's authority.
+            hostRun = false;
+            hostRunRejected = true;
+            try {
+              const reason = cause instanceof Error ? cause.message : String(cause);
+              const line = `[child bridge rejected] pid=${pid} command=${JSON.stringify(request.file.slice(0, 4096))} reason=${JSON.stringify(reason.slice(0, 2048))}\n`;
+              const parent = request.owner === null ? undefined : runStreamsFor(request.owner);
+              if (parent?.onStderrBytes) parent.onStderrBytes(new TextEncoder().encode(line));
+              else if (parent?.onStderr) parent.onStderr(line);
+              else if (request.stderr) request.stderr(line);
+              else console.error(line.trimEnd());
+            } catch { /* The diagnostic cannot replace the failed handoff's end. */ }
+          },
           hold,
         }));
       } catch (error) {
-        outcome = { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
+        outcome = {
+          stdout: '',
+          stderr: `${error instanceof Error ? error.message : String(error)}\n`,
+          exitCode: hostRunRejected ? 0 : 1,
+          ...(hostRunRejected ? { signal: 'SIGKILL' } : {}),
+        };
       }
       // A command the engine's shell ran to the end and did not stream --
       // every builtin -- delivers its output here; the `node` command streamed
