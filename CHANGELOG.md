@@ -4,6 +4,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- R5 counted bodies (substrate Articles5/6/9): where a reading is requested and
+  the tree says a prepared body's exact UTF-8 length beside its text (the
+  substrate's `readTextCounted`), the body is counted at once and only 64 bytes
+  are retained for it, not its text. A tree that says no length leaves the
+  body to the deferred count, unchanged. Source only.
+
 - R5 retention (Articles5/6/8/9): declare deferred load-clock prefix inputs
   to the host's share of the requested 256 MiB tab trace bound; drop/release whole source cohorts
   with explicit loss and null subsequent byte totals. Exact surviving UTF8

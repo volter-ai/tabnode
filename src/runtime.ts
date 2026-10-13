@@ -920,7 +920,7 @@ type LoadPhase = 'outside' | 'resolve' | 'read' | 'link' | 'compile' | 'evaluate
 type OutsideSplit = { vmMs: Record<VmScriptPhase, number>; guestBracketMs: number; unbracketedMs: number; clippedBracketMs: number };
 type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>;
   bodies: number; bodyBytes: number; preparedBodies: number; preparedBodyBytes: number; sourceBodies: number; sourceBodyBytes: number;
-  byteBodies: Array<{ text?: string; prepared: boolean; preparedBytes?: number; sourceBytes?: number }>; countedBytes: number;
+  byteBodies: Array<{ text?: string; bytes?: number; prepared: boolean; preparedBytes?: number; sourceBytes?: number }>; countedBytes: number;
   retainedInputBytes: number; byteTotalsDropped: boolean; releaseBytes: () => void; byteBase: number; byteBasePreparedBytes: number; byteBaseSourceBytes: number;
   linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
   outside: OutsideSplit; guestAt: number; began: number; said: number };
@@ -1007,7 +1007,8 @@ function __substrateBodyByteTotals(clock: LoadClock, limit: number): { preparedB
   const guestStarted = guestExecutionActiveMs(started);
   while (clock.countedBytes < limit) {
     const body = clock.byteBodies[clock.countedBytes - clock.byteBase]!;
-    const bytes = byteLengthUtf8(body.text!);
+    // A body whose length the read said holds no text: its count is that length (runModuleBody).
+    const bytes = body.text !== undefined ? byteLengthUtf8(body.text) : body.bytes!;
     if (body.prepared) clock.preparedBodyBytes += bytes; else clock.sourceBodyBytes += bytes;
     body.preparedBytes = clock.preparedBodyBytes; body.sourceBytes = clock.sourceBodyBytes;
     if (body.text !== undefined) clock.retainedInputBytes -= body.text.length * 2;
@@ -1316,9 +1317,16 @@ Object.defineProperty(globalThis, '__substratePreparedExit', {
     __substrateSayRowsUsed(process);
   },
 });
-/** A prepared body's text, or undefined where the tree holds none by that name: the read's own miss is the answer. */
-function __substrateReadPrepared(vfs: { readFileSync(path: string, encoding: 'utf8'): string }, key: string): string | undefined {
-  try { return vfs.readFileSync(`${PREPARED_MODULES_DIR}/${key}`, 'utf8'); }
+/**
+ * A prepared body's text, or undefined where the tree holds none by that name: the read's own miss is the answer.
+ * Where a reading is requested and the tree says a text's exact UTF-8 length beside it (R5, the substrate's
+ * `readTextCounted`: its bytes decoded as valid UTF-8, less a dropped BOM), the length comes too, and the body is
+ * counted at once rather than held until the deferred count. A tree that says none leaves the body to that count.
+ */
+function __substrateReadPrepared(vfs: { readFileSync(path: string, encoding: 'utf8'): string }, key: string): { text: string; utf8Bytes?: number } | undefined {
+  const path = `${PREPARED_MODULES_DIR}/${key}`;
+  const counted = traceReadingRequested() ? (vfs as { readTextCounted?: (path: string) => { text: string; utf8Bytes?: number } }).readTextCounted : undefined;
+  try { return typeof counted === 'function' ? counted.call(vfs, path) : { text: vfs.readFileSync(path, 'utf8') }; }
   catch { return undefined; }
 }
 
@@ -2954,7 +2962,7 @@ function createRequire(
         __substrateCountPrepared(process, 'digest');
         (module as Module & { filename?: string }).filename = resolvedPath;
         if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
-        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true);
+        runModuleBody(module, body.text, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true, body.utf8Bytes);
         return;
       }
     }
@@ -2983,7 +2991,7 @@ function createRequire(
       const taken = __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, key));
       if (taken !== undefined) {
         __substrateCountPrepared(process, 'hash');
-        runModuleBody(module, taken, resolvedPath, dirname, 'prepared', true);
+        runModuleBody(module, taken.text, resolvedPath, dirname, 'prepared', true, taken.utf8Bytes);
         return;
       }
       // A file the image carries no body for (a package installed in the
@@ -3041,7 +3049,7 @@ function createRequire(
    * hands the result to it; the engine's own pipeline is what makes the
    * body Node-shaped here.
    */
-  const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false): void => {
+  const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false, utf8Bytes?: number): void => {
     __substrateLoadPhase(process, vfs, 'link');
     const loadClock = __substrateLoadClocks.get(process);
     if (loadClock) {
@@ -3052,9 +3060,11 @@ function createRequire(
       // have no guest/budget consumer; retain an immutable reference for the
       // deferred evidence owner, without counting or copying it here.
       if (!loadClock.byteTotalsDropped) {
-        loadClock.retainedInputBytes += 64 + prepared.length * 2;
+        // A length the read said (an exact UTF-8 count, R5) is kept instead of the text: 64 bytes, not the body.
+        const said = utf8Bytes !== undefined && Number.isSafeInteger(utf8Bytes) && utf8Bytes >= 0;
+        loadClock.retainedInputBytes += 64 + (said ? 0 : prepared.length * 2);
         if (retainTraceInput(loadClock, loadClock.retainedInputBytes, loadClock.releaseBytes)) {
-          loadClock.byteBodies.push({ text: prepared, prepared: bodySource === 'prepared' });
+          loadClock.byteBodies.push(said ? { bytes: utf8Bytes, prepared: bodySource === 'prepared' } : { text: prepared, prepared: bodySource === 'prepared' });
         } else loadClock.releaseBytes();
       }
       loadClock.linkSplit.byteCounts += 1;
