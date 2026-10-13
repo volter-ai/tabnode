@@ -978,6 +978,8 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
  */
 type PreparedCounts = { digest: number; carried: number; hash: number; kept: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
 const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
+/** The processes whose prepared-body directory refused a body (EACCES, EPERM, EROFS): they keep none after (S2 R24). */
+const __substrateKeepingRefused = new WeakSet<object>();
 /**
  * An instrument: WHERE A PROCESS'S MODULE LOADING SPENDS ITS TIME, by this realm's own clock, said beside the counts
  * above (when its loading has been quiet for two seconds, and at its exit). A load is about a millisecond a module in
@@ -3155,8 +3157,15 @@ function createRequire(
         // What was kept is also said, one key a line, in a list beside the bodies: a reader that wants the bodies
         // made in the tab (a dry run's capture) reads the list, where telling them from an image's own tens of
         // thousands meant listing the directory.
-        try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${key}`, body); vfs.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${key}\n`); }
-        catch { /* a process that may not write there prepares its own */ }
+        // A process the directory refuses (an image's user under a root-owned directory: Rallly's, ten EACCES a boot)
+        // prepares its own and asks no more: the refusal is its credentials' (one that changes them later only keeps less).
+        if (!__substrateKeepingRefused.has(process as object)) {
+          try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${key}`, body); vfs.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${key}\n`); }
+          catch (cause) {
+            const code = (cause as { code?: unknown } | null)?.code;
+            if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') __substrateKeepingRefused.add(process as object);
+          }
+        }
         __substrateCountPrepared(process, 'kept');
         runModuleBody(module, body, resolvedPath, dirname, 'source', true);
         return;
