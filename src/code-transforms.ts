@@ -581,7 +581,7 @@ function transformEsmToCjsRegex(code: string): string {
  * a body in its wrapper with no `with`: every free name resolves lexically, then on the global. The `with` made every
  * free name of every function in the body a dynamic lookup through that object, at every call. Here only the free
  * references to those names become `<scope>.<name>`, as reads, writes, `typeof` and update operands, a bare call
- * keeping Node's undefined receiver (`(0,<scope>.<name>)(...)`) and a shorthand property its key; every other free
+ * keeping Node's undefined receiver (`(0,<scope>["<name>"])(...)`) and a shorthand property its key; every other free
  * name resolves as Node resolves it. A `new X(...)` callee is wrapped as before (`<construct>(X)`), with a guest name
  * inside it rewritten too. Answers undefined where name resolution is dynamic in the body itself (a `with` statement,
  * or a direct `eval`), and the body keeps the `with` wrapper.
@@ -614,18 +614,29 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
       hoisted(node[key], names, sloppy, false);
     }
   };
+  // Each shape is told apart by its own text, which names the scope: a read is `<scope>.<name>`, a bare call
+  // `(0,<scope>["<name>"])`, a shorthand property `<name>: <scope>['<name>']`. A body that names the scope itself is
+  // never given to this walker, so every occurrence of it in the result is one of these three, and a function's
+  // text is given back exactly (runtime.ts __substrateUnscopeGuestNames). A name written with escapes
+  // (`\u0073elf`) would come back unescaped: the body declines.
   const read = (name: string): string => `${scope}.${name}`;
+  const called = (name: string): string => `(0,${scope}["${name}"])`;
+  const shorthand = (name: string): string => `${name}: ${scope}['${name}']`;
+  const edit = (node: any, text: string): void => {
+    if (code.slice(node.start, node.end) !== node.name) { dynamic = true; return; }
+    edits.push([node.start, node.end, text]);
+  };
   const target = (node: any, visible: Set<string>): void => {
     if (!node || typeof node !== "object") return;
-    if (node.type === "Identifier") { if (visible.has(node.name)) edits.push([node.start, node.end, read(node.name)]); return; }
+    if (node.type === "Identifier") { if (visible.has(node.name)) edit(node, read(node.name)); return; }
     if (node.type === "ObjectPattern") {
       for (const property of node.properties) {
         if (property.type === "RestElement") { target(property.argument, visible); continue; }
         if (property.computed) visit(property.key, visible);
         const value = property.value;
-        if (property.shorthand && value?.type === "Identifier" && visible.has(value.name)) { edits.push([value.start, value.end, `${value.name}: ${read(value.name)}`]); continue; }
+        if (property.shorthand && value?.type === "Identifier" && visible.has(value.name)) { edit(value, shorthand(value.name)); continue; }
         if (property.shorthand && value?.type === "AssignmentPattern" && value.left?.type === "Identifier" && visible.has(value.left.name)) {
-          edits.push([value.left.start, value.left.end, `${value.left.name}: ${read(value.left.name)}`]); visit(value.right, visible); continue;
+          edit(value.left, shorthand(value.left.name)); visit(value.right, visible); continue;
         }
         target(value, visible);
       }
@@ -645,7 +656,7 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
     if (node.type === "RestElement") declared(node.argument, visible);
   };
   const callee = (node: any, visible: Set<string>): void => {
-    if (node?.type === "Identifier" && visible.has(node.name)) edits.push([node.start, node.end, `(0,${read(node.name)})`]);
+    if (node?.type === "Identifier" && visible.has(node.name)) edit(node, called(node.name));
     else visit(node, visible);
   };
   const visit = (node: any, visible: Set<string>): void => {
@@ -659,7 +670,7 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
       case "PrivateIdentifier": case "Literal": case "Super": case "ThisExpression":
         return;
       case "Identifier":
-        if (visible.has(node.name)) edits.push([node.start, node.end, read(node.name)]);
+        if (visible.has(node.name)) edit(node, read(node.name));
         return;
       case "CallExpression":
         // A direct eval resolves names at run time in this scope: the body keeps the `with`.
@@ -670,7 +681,8 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
       case "NewExpression":
         if (node.callee?.type === "Identifier") {
           const name = node.callee.name;
-          edits.push([node.callee.start, node.callee.end, construct(visible.has(name) ? read(name) : code.slice(node.callee.start, node.callee.end))]);
+          if (visible.has(name)) edit(node.callee, construct(read(name)));
+          else edits.push([node.callee.start, node.callee.end, construct(code.slice(node.callee.start, node.callee.end))]);
         } else visit(node.callee, visible);
         visit(node.arguments, visible);
         return;
@@ -681,7 +693,7 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
       case "Property": {
         if (node.computed) visit(node.key, visible);
         const value = node.value;
-        if (node.shorthand && value?.type === "Identifier" && visible.has(value.name)) { edits.push([value.start, value.end, `${value.name}: ${read(value.name)}`]); return; }
+        if (node.shorthand && value?.type === "Identifier" && visible.has(value.name)) { edit(value, shorthand(value.name)); return; }
         visit(value, visible);
         return;
       }
@@ -743,11 +755,13 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
         return;
       }
       case "CatchClause": {
-        const bound = new Set<string>();
-        __substrateBindingNames(node.param, bound);
+        // The parameter's defaults see the parameter alone, never the body's declarations, as a function's do.
+        const parameters = new Set<string>();
+        __substrateBindingNames(node.param, parameters);
+        if (node.param) declared(node.param, __substrateShadow(visible, parameters));
+        const bound = new Set<string>(parameters);
         __substrateLexicalNames(node.body.body, bound);
         const inner = __substrateShadow(visible, bound);
-        if (node.param) declared(node.param, inner);
         for (const statement of node.body.body) visit(statement, inner);
         return;
       }

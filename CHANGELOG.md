@@ -16,11 +16,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   that does not parse, keeps the `with` wrapper. Prepared bodies move to format
   `tabnode-prepared-5`. Unchanged from before: a bare read of a guest name the
   guest lacks gives `undefined` where Node throws. A function's text
-  (`Function.prototype.toString`) reads as written, the rewrite undone; scopes
-  follow Node's (parameters do not see body declarations, a block's class or a
-  strict block's function is not hoisted, a static block is its own var scope);
-  an escaped name parses before the fast path; a source's own guest-scoped mark
-  is blanked, never trusted. Source only.
+  (`Function.prototype.toString`) reads as written: each edit's shape names the
+  reserved scope and is told apart by its own text, a body that names the
+  reserved names or writes a guest name with escapes keeps the `with` wrapper,
+  and a `new` callee's constructor wrap is undone too. Scopes follow Node's
+  (function and catch parameters do not see body declarations, a block's class
+  or a strict block's function is not hoisted, a static block is its own var
+  scope); a source's own guest-scoped mark is blanked, never trusted. Source only.
 
 - PLACEMENT-LOADER current-head integration (substrate Articles1/2/5/6/8/9):
   merge approved private observation with34b5101's counted bodies, forwarding

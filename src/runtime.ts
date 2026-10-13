@@ -270,17 +270,20 @@ function __substrateScopeGlobalCalls(source: string): string {
   // Every body comes here once, as written or as lowered: a mark already in it is the source's own text, not this
   // pass's, and is never trusted (review of 2eaa5f41).
   const code = __substrateUnclaimGuestScoped(source);
+  // A body that names the scope or the constructor wrap itself keeps the `with` wrapper: a function's text is given
+  // back by reading those names as this pass's own (__substrateUnscopeGuestNames).
+  const reserved = code.includes('__substrateGuestScope') || code.includes('__substrateGuestConstructor');
   // No guest name, no constructor, nothing dynamic and no escaped name: nothing to rewrite, and Node's wrapper
   // form as it stands.
-  if (!code.includes('\\u') && !__substrateGuestNamePattern.test(code)) return __substrateMarkGuestScoped(code);
+  if (!reserved && !code.includes('\\u') && !__substrateGuestNamePattern.test(code)) return __substrateMarkGuestScoped(code);
   let ast;
   try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true }); }
   catch { return code; }
   const construct = (callee: string): string => "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + ",$process):" + callee + ")";
-  const guestEdits = __substrateGuestNameEdits(ast, code, new Set(__substrateGuestScopeNames), '__substrateGuestScope', construct);
+  const guestEdits = reserved ? undefined : __substrateGuestNameEdits(ast, code, new Set(__substrateGuestScopeNames), '__substrateGuestScope', construct);
   if (guestEdits) return __substrateMarkGuestScoped(applySourceEdits(code, guestEdits.sort((a, b) => b[0] - a[0])));
-  // A `with` statement or a direct eval in the body: its names resolve at run time, so it keeps the `with` wrapper
-  // and the old rewrite below.
+  // A `with` statement or a direct eval in the body, whose names resolve at run time, an escaped guest name, or the
+  // reserved names above: the body keeps the `with` wrapper and the old rewrite below.
   const positions: Array<[number, number, string]> = [];
   walkAst(ast, node => {
     // A function's source is also data: a program sends `String(fn)` to be
@@ -818,17 +821,21 @@ function __substrateUnfollowAwaits(source: string): string {
     .replaceAll(FOLLOW_RESUME_TAKEN, '');
 }
 /**
- * A function's text with the guest-name rewrite undone (__substrateGuestNameEdits): its three shapes are exact, so the
- * text reads as written. A function is also data: `page.evaluate(() => document.title)` and `String(fn)` handed to a
- * worker run it where the scope does not exist, and `String(() => fetch)` is Node's text (review of 2eaa5f41).
+ * A function's text with this pass's edits undone, exactly: a function is also data (`page.evaluate(() =>
+ * document.title)`, `String(fn)` handed to a worker run it where none of these names exist), and `String(() => fetch)`
+ * is Node's text (reviews of 2eaa5f41 and 6cbfbfc). Every edit's text names `__substrateGuestScope` or
+ * `__substrateGuestConstructor`, which a rewritten body never names itself (__substrateScopeGlobalCalls), and each of
+ * its shapes is told apart by its own text (__substrateGuestNameEdits): the constructor wrap around a callee, a bare
+ * call `(0,__substrateGuestScope["X"])`, a shorthand `X: __substrateGuestScope['X']`, a read `__substrateGuestScope.X`.
+ * Guest text around them is never read as one.
  */
 const __substrateGuestNamesText = __substrateGuestScopeNames.join('|');
-const __substrateGuestCallShape = new RegExp(`\\(0,__substrateGuestScope\\.(${__substrateGuestNamesText})\\)`, 'gu');
-const __substrateGuestShorthandShape = new RegExp(`\\b(${__substrateGuestNamesText}): __substrateGuestScope\\.\\1\\b`, 'gu');
-const __substrateGuestReadShape = new RegExp(`__substrateGuestScope\\.(${__substrateGuestNamesText})\\b`, 'gu');
+const __substrateGuestConstructShape = /\(typeof __substrateGuestConstructor==='function'\?__substrateGuestConstructor\(([^,()]+),\$process\):\1\)/gu;
+const __substrateGuestEditShape = new RegExp(`\\(0,__substrateGuestScope\\["(${__substrateGuestNamesText})"\\]\\)|(${__substrateGuestNamesText}): __substrateGuestScope\\['\\2'\\]|__substrateGuestScope\\.(${__substrateGuestNamesText})(?![\\p{ID_Continue}$\\u200c\\u200d])`, 'gu');
 function __substrateUnscopeGuestNames(source: string): string {
-  if (!source.includes('__substrateGuestScope.')) return source;
-  return source.replace(__substrateGuestCallShape, '$1').replace(__substrateGuestShorthandShape, '$1').replace(__substrateGuestReadShape, '$1');
+  if (!source.includes('__substrateGuest')) return source;
+  return source.replace(__substrateGuestConstructShape, '$1')
+    .replace(__substrateGuestEditShape, (shape: string, call: string | undefined, shorthand: string | undefined, read: string | undefined) => call ?? shorthand ?? read ?? shape);
 }
 forGuestRealm(() => {
   const native = Function.prototype.toString;
