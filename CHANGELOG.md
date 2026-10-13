@@ -4,6 +4,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- `import()` inside a function made with `new Function` loads through the module that made the function, so its
+  specifiers resolve as that module's own would (#12). The lowered module text changed with it, so
+  `PREPARED_MODULES_FORMAT` is now `tabnode-prepared-5`, and modules prepared by an earlier version are prepared
+  again: a minor release under CONTRIBUTING's rule (#13).
+
 ## v0.9.1 — 2026-10-13
 
 - To follow, not yet changed: four optional members added in v0.9.0 and before
