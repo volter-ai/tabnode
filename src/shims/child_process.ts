@@ -2004,7 +2004,7 @@ interface CommandRun {
   descriptors?: { fd: number; pipe: Pipe }[];
   /** Told when the host's process host takes the run: its end is then the host's, not the engine's. */
   onHostRun?: () => void;
-  /** A rejected handoff gives its uncompleted end back to the forking realm. */
+  /** A rejected handoff returns exit ownership only with an explicit failed-start receipt. */
   onHostRunRejected?: (cause: unknown) => void;
   /** The parent's wait for this run, as its handle's ref state has it (`ChildProcessHostRequest.hold`). */
   hold?: { value: boolean; changed?: () => void };
@@ -2635,7 +2635,7 @@ function startChildRun(request: RunRequest): StartedRun {
   let hosted = false;
   /** The host's process host runs this child (a program pack, a WALI image): it says when the child ends. */
   let hostRun = false;
-  let hostRunRejected = false;
+  let hostRunRejectionExitCode: 126 | 127 | undefined;
   // The parent's wait for a child a host runs, read by that host: its handle's ref state (`Process.ref`, `unref`).
   const hold: { value: boolean; changed?: () => void } = { value: true };
   /** What the parent wrote to the child's fd 0 before the command began. */
@@ -2784,19 +2784,29 @@ function startChildRun(request: RunRequest): StartedRun {
           descriptors: request.descriptors,
           onHostRun: () => { hostRun = true; },
           onHostRunRejected: cause => {
-            // An exec handoff that failed cannot own an exit it never reported.
-            // Publish the failed run's death before wait4; a host's existing zombie
-            // and outstanding descriptor closes remain the kernel's authority.
-            hostRun = false;
-            hostRunRejected = true;
+            // A transport rejection does not mean a live child has died. Only
+            // the holder's explicit never-started/no-end answer returns exit
+            // ownership; unknown state and real image ends remain the host's.
+            let started: boolean | undefined;
+            let endPosted: boolean | undefined;
+            let code = 'EHOSTCHILD';
             try {
-              const reason = cause instanceof Error ? cause.message : String(cause);
-              const line = `[child bridge rejected] pid=${pid} command=${JSON.stringify(request.file.slice(0, 4096))} reason=${JSON.stringify(reason.slice(0, 2048))}\n`;
-              const parent = request.owner === null ? undefined : runStreamsFor(request.owner);
-              if (parent?.onStderrBytes) parent.onStderrBytes(new TextEncoder().encode(line));
-              else if (parent?.onStderr) parent.onStderr(line);
-              else if (request.stderr) request.stderr(line);
-              else console.error(line.trimEnd());
+              const failure = cause as { code?: unknown; hostChildState?: {
+                started?: boolean; endPosted?: boolean; exitCode?: number;
+              } } | null;
+              const state = failure?.hostChildState;
+              started = state?.started;
+              endPosted = state?.endPosted;
+              const launchCode = state?.exitCode === 126 ? 126 : 127;
+              const reportedCode = failure?.code;
+              if (typeof reportedCode === 'string' && /^[A-Z0-9_]{1,32}$/.test(reportedCode)) code = reportedCode;
+              if (started === false && endPosted === false) {
+                hostRun = false;
+                hostRunRejectionExitCode = launchCode;
+              }
+            } catch { /* Unreadable lifecycle state stays with the host. */ }
+            try {
+              console.warn(`[child bridge rejected] pid=${pid} path=${JSON.stringify(request.file.slice(0, 4096))} code=${code} started=${started ?? 'unknown'} endPosted=${endPosted ?? 'unknown'}`);
             } catch { /* The diagnostic cannot replace the failed handoff's end. */ }
           },
           hold,
@@ -2805,8 +2815,7 @@ function startChildRun(request: RunRequest): StartedRun {
         outcome = {
           stdout: '',
           stderr: `${error instanceof Error ? error.message : String(error)}\n`,
-          exitCode: hostRunRejected ? 0 : 1,
-          ...(hostRunRejected ? { signal: 'SIGKILL' } : {}),
+          exitCode: hostRunRejectionExitCode ?? 1,
         };
       }
       // A command the engine's shell ran to the end and did not stream --

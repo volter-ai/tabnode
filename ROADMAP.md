@@ -2,8 +2,9 @@
 
 Substrate Articles5/6/8/9. Restore the kernel child's exit-before-reap contract
 when a host handoff throws or rejects, preserving the kernel's real reported
-end and pending descriptor closes. The paired substrate change retires unused
-descriptor copies on failure. Source defects are established; Mastodon owner43668's
+end and pending descriptor closes. Only an explicit never-started/no-posted-end
+receipt permits a local launch failure. The paired substrate change retires unused
+descriptor copies on confirmed launch failure. Source defects are established; Mastodon owner43668's
 op43 timeout is a hypothesis until the next retained rejection diagnostic names
 the failed child. Independent review and normal image-cycle qualification remain.
 

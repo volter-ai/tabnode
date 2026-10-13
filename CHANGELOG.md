@@ -7,10 +7,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 ## Unreleased
 
 - Failed child host handoff (substrate Articles5/6/8/9): a synchronous throw or
-  rejected host run returns exit ownership to the spawning realm, which publishes
-  the failed run before reaping it. Preserve an already reported kernel exit and
-  descriptor-close ordering. Print the rejection reason, child pid and command
-  path on the parent's stderr, including when the child's stderr is redirected.
+  rejected host run returns exit ownership only when the holder confirms no image
+  started and no end was posted. Publish a launch failure as127 (126 for permission
+  denial); live images, unknown lifecycle and already posted ends keep their host
+  exit ownership and descriptor-close ordering. Print a bounded code, child pid
+  and command path in the console without writing to a parent's protocol stderr.
   Full production declarations emit against load-clock1e4e9e6; independent review
   and the paired substrate cleanup's application reading remain pending.
 
