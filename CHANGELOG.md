@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- S2 K1 compile (substrate Articles5/6/8/9): a body's wrapper no longer carries
+  the 19 guest-global accessors as an object literal. One null-prototype scope
+  of the same live, sloppy-silent accessors is made per process and passed in,
+  so V8 no longer parses ~2,100 characters and 38 accessor functions per
+  compiled body or makes 38 closures per run (Cal: 8,456 bodies to first head,
+  compile 743 ms). Its accessors are non-configurable, so one body's `delete`
+  cannot strip a name from later bodies. Saving awaits a mini Cal lap.
+
 - Reuse the private internal require context for an admitted module parent
   within its module-cache class. Keep the filename live, preserve fresh public
   createRequire/arbitrary-parent behavior and live hooks, and reset both
