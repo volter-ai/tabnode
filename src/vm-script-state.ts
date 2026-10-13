@@ -161,23 +161,28 @@ function collectDeclared(program: Walked, declared: string[], functions: string[
 export function mayDeclare(source: string): boolean {
   if (!source.includes('var') && !source.includes('function') && !source.includes('\\')) return false;
   // A string's body is skipped by the engine's own searches, not a character at a time (S2 T11: Dub's 715 manifests are
-  // almost all string text; the per-character walk was 161 ms of its server's start). The next backslash, line feed
-  // and carriage return are each searched for once and kept until the scan passes them, so the whole text is read a
-  // bounded number of times; -2 is "not searched yet", -1 "none further".
+  // almost all string text; the per-character walk cost 161 ms of its server's start before this change, measured in
+  // c6a11f38's warm-up profile; no reading after it yet). The string's closing quote, the next backslash, line feed and
+  // carriage return are each searched for and kept until the scan passes them, so each is found at most once per
+  // position and the whole text is read a bounded number of times however many escapes a string holds; -2 is "not
+  // searched yet", -1 "none further".
   let nextBackslash = -2, nextLf = -2, nextCr = -2;
   for (let i = 0, n = source.length; i < n;) {
     const c = source.charCodeAt(i);
     if (c === 0x22 /* " */ || c === 0x27 /* ' */) {
       const quote = c === 0x22 ? '"' : "'";
+      let close = -2;
       for (let from = i + 1; ;) {
-        const close = source.indexOf(quote, from);
+        // Searched again only once an escape has carried the reading past it (an escaped quote), never per escape.
+        if (close !== -1 && close < from) close = source.indexOf(quote, from);
         if (close < 0) return true;
         if (nextBackslash !== -1 && nextBackslash < from) nextBackslash = source.indexOf('\\', from);
         if (nextLf !== -1 && nextLf < from) nextLf = source.indexOf('\n', from);
         if (nextCr !== -1 && nextCr < from) nextCr = source.indexOf('\r', from);
         // Up to the nearer of an escape and the quote, an unescaped line break ends the string's reading: yes. An escape
-        // before the quote passes the character after it (a quote, or a line break continuing the line), and the
-        // reading goes on after it (lane A's review of d2a7d3001: a break before the escape was not looked for).
+        // before the quote passes the one character after it (a quote, or a line feed continuing the line; after a
+        // backslash and a CR, the LF that follows is a break of its own, answered yes as the per-character loop did),
+        // and the reading goes on after it (lane A's review of d2a7d3001: a break before the escape was not looked for).
         const stop = nextBackslash !== -1 && nextBackslash < close ? nextBackslash : close;
         if ((nextLf !== -1 && nextLf < stop) || (nextCr !== -1 && nextCr < stop)) return true;
         if (stop !== close) { from = nextBackslash + 2; continue; }
