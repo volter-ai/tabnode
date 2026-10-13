@@ -3,7 +3,7 @@ import { TCP, TCPConnectWrap, type SockName } from './node-lib/binding/tcp_wrap'
 import { Pipe, PipeConnectWrap } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset } from './node-lib/binding/stream_wrap';
 import { __adoptHandle } from './node-lib/binding/handles';
-import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOBUFS, UV_ENOTSUP, UV_EPIPE, UV_EMFILE, UV_EBUSY, UV_EALREADY, UV_ENOSYS } from './node-lib/binding/uv';
+import uv, { UV_EBADF, UV_ECANCELED, UV_ECONNRESET, UV_EINVAL, UV_ENOBUFS, UV_ENOTSUP, UV_EPIPE, UV_EMFILE, UV_EBUSY, UV_EALREADY, UV_ENOSYS } from './node-lib/binding/uv';
 
 const UV_EAGAIN = uv.UV_EAGAIN as number;
 
@@ -79,6 +79,11 @@ export class NativeStreamScope {
    * passes, pairs or lets a child inherit one (returnExclusive); refusing those here is the backstop, never the path.
    */
   private readonly exclusive = new Set<number>();
+  /**
+   * Entries released before their bytes came back (releaseExclusive), by id, kept after the entry itself closes: a
+   * duplicate shares the end and its reads wait for those bytes (review of 4cd376f, item 3).
+   */
+  private readonly released = new Map<number, NativeHandle>();
   /** Who waits for an entry's bytes to settle (watchSettled). */
   private readonly settledWatchers = new Map<number, Set<() => void>>();
   private nextId = 1;
@@ -436,14 +441,28 @@ export class NativeStreamScope {
    * ordinary one again.
    */
   returnExclusive(id: number, unread: Uint8Array, ended = false, endGiven = false): boolean {
-    const entry = this.entry(id);
-    if (!entry) return false;
-    // Possibly released already (releaseExclusive), while the bytes were still on their way back.
+    // Released already (releaseExclusive), the entry possibly closed since: the bytes still go to the end.
+    const handle = this.entry(id)?.handle ?? this.released.get(id);
+    if (!handle) return false;
+    this.released.delete(id);
     this.exclusive.delete(id);
     // takeExclusive refuses an end with its EOF or error pending, so one read here since was read while the other
     // realm held the bytes: it is read again after them (review of 2d9217a, item 3), unless that realm already gave
     // it to its reader (`endGiven`; review of c38dd87, item D).
-    entry.handle.returnQueuedReads(unread, ended || (entry.handle.readEnded && !endGiven));
+    handle.returnQueuedReads(unread, ended || (handle.readEnded && !endGiven));
+    return true;
+  }
+
+  /**
+   * The bytes of a released entry will never come back (the realm holding them is gone): the end's reads are held no
+   * longer and read ECONNRESET after what they have, as a connection whose peer vanished.
+   */
+  abandonExclusive(id: number): boolean {
+    const handle = this.released.get(id);
+    this.released.delete(id);
+    this.exclusive.delete(id);
+    if (!handle) return false;
+    handle.abandonHeldReads(UV_ECONNRESET);
     return true;
   }
 
@@ -455,6 +474,7 @@ export class NativeStreamScope {
   releaseExclusive(id: number): boolean {
     const entry = this.entry(id);
     if (!entry || !this.exclusive.delete(id)) return false;
+    this.released.set(id, entry.handle);
     // A duplicate made from here reads nothing, not even an EOF, before the returned bytes (review of c38dd87, item C).
     entry.handle.holdReads();
     return true;
@@ -464,6 +484,8 @@ export class NativeStreamScope {
     if (this.disposed) return;
     this.disposed = true;
     liveScopes.delete(this);
+    // Nothing returns to a disposed scope: a duplicate waiting on held reads reads ECONNRESET.
+    for (const id of [...this.released.keys()]) this.abandonExclusive(id);
     const failures: unknown[] = [];
     for (const id of [...this.entries.keys()]) {
       try { this.close(id); } catch (cause) { failures.push(cause); }

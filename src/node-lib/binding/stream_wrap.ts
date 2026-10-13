@@ -406,10 +406,19 @@ export class LibuvStreamWrap implements OwnedHandle {
    * `ended`: that reader also holds the EOF or error this end already read for it, so it is read again after them.
    */
   returnQueuedReads(bytes: Uint8Array, ended = false): void {
-    this.streamEndpoint.readsHeld = false;
-    if (this.closed) return;
-    if (bytes.byteLength) this.streamEndpoint.inbound.unshift({ bytes });
-    if (ended && this.eofDelivered) this.eofDelivered = false;
+    // The end's, not this wrapper's: a duplicate still reads them after this wrapper closed (review of 4cd376f, 3).
+    const endpoint = this.streamEndpoint;
+    endpoint.readsHeld = false;
+    if (bytes.byteLength) endpoint.inbound.unshift({ bytes });
+    if (ended && !this.closed && this.eofDelivered) this.eofDelivered = false;
+    this.scheduleFlush();
+  }
+
+  /** The held bytes will never come back (their realm is gone): the end reads `code` once what it has is read. */
+  abandonHeldReads(code: number): void {
+    const endpoint = this.streamEndpoint;
+    endpoint.readsHeld = false;
+    if (endpoint.error === null && !endpoint.eof) endpoint.error = code;
     this.scheduleFlush();
   }
 
