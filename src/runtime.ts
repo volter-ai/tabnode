@@ -940,6 +940,8 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
  * every process's memory.
  */
 export const PREPARED_MODULES_DIR = '/opt/.tabnode/prepared';
+/** The prefix a handed TypeScript text is hashed under for its kept body's name (compileRaw): never a file's own digest. */
+const HANDED_TYPESCRIPT_SALT = 'tabnode handed typescript text\0';
 export { PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey };
 /** The name a prepared body goes under, for a caller that has the file's text: its bytes are hashed here. Undefined for a file no body is prepared for. */
 export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
@@ -3172,7 +3174,16 @@ function createRequire(
     __substrateTracePreparedGate(vfs, process, compiling, content, resolvedPath);
     // A body prepared for the file's own text; a program's `_compile` that handed on other text compiles that text.
     const strips = transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> });
-    const key = compiling?.raw === content && format === undefined && !strips ? __substrateTimeRead(process, 'key', () => preparedModuleKey(rawCode, resolvedPath)) : undefined;
+    // TEXT A TYPESCRIPT LOADER HANDED ON (S2, Cal's seed): ts-node wraps the module's `_compile` and hands it the file
+    // transpiled, so the text is not the file's own and no image body names it. It was prepared again by every run
+    // (Cal c670b965 dry-run2: 102 such bodies, 1.75 MB, in the seed's 809 ms load). Kept like a file's own body, under
+    // the digest of the handed text salted with this rule, so it names that text at this kind of path alone and no
+    // file's own digest ever reaches it; the body is the one this path prepares (types stripped as for any .ts).
+    const handedTypeScript = compiling !== undefined && compiling.raw !== content && format === undefined && !strips
+      && /\.(?:ts|mts|cts)$/u.test(resolvedPath) && !resolvedPath.endsWith('.d.ts');
+    const key = compiling?.raw === content && format === undefined && !strips ? __substrateTimeRead(process, 'key', () => preparedModuleKey(rawCode, resolvedPath))
+      : handedTypeScript ? __substrateTimeRead(process, 'key', () => preparedModuleKeyOf(resolvedPath.endsWith('.cts') ? 'cjs' : 'js',
+        bytesToHex(sha256(new TextEncoder().encode(`${HANDED_TYPESCRIPT_SALT}${content}`))))) : undefined;
     if (key) {
       const taken = __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, key));
       const takenUtf8Bytes = __substratePreparedUtf8Bytes;
