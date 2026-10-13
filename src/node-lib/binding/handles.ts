@@ -15,10 +15,10 @@
  * with the run that made it when it is constructed, `ref`/`unref` toggle it,
  * and closing it gives it up.
  */
-import { __currentProcessToken, __runFor, enterRun, type ProcessToken } from '../../process-tokens';
+import { __currentProcessToken, __runFor, __tokenForProcess, enterRun, type ProcessToken } from '../../process-tokens';
 import { withGuestCallback, queueBindingTask } from '../../guest-loop';
 import { handleOwnerSymbol } from './owner-symbol';
-import { AsyncLocalStorage } from '../../shims/async_hooks';
+import type { Process } from '../../shims/process';
 
 /** What the count needs of a handle: a way to close it when its run ends. */
 export interface OwnedHandle {
@@ -43,7 +43,7 @@ const refHeld = new WeakSet<OwnedHandle>();
 const activeHandles = new WeakSet<OwnedHandle>();
 
 type ResourceOwner = ProcessToken | symbol | null;
-const resourceScope = new AsyncLocalStorage<object>();
+let resourceScope: object | undefined;
 const scopeIds = new WeakMap<object, symbol>();
 function scopeId(process: object): symbol {
   let id = scopeIds.get(process);
@@ -52,12 +52,15 @@ function scopeId(process: object): symbol {
 }
 /** A standalone Runtime has no run token; its binding scope still owns its resources. */
 export function withNodeResourceScope<T>(process: object, call: () => T): T {
-  return resourceScope.run(process, call);
+  const previous = resourceScope;
+  resourceScope = process;
+  try { return call(); } finally { resourceScope = previous; }
 }
 function resourceOwnerKey(object: object): ResourceOwner {
-  const token = ownerOfInstance(object) ?? currentOwner();
-  const process = resourceScope.getStore();
-  return token ?? (process ? scopeId(process) : null);
+  // Observations are made synchronously in a scoped constructor/dispatch.
+  // That explicit process owns them even when another run is ambient.
+  if (resourceScope) return __tokenForProcess(resourceScope as Process) ?? scopeId(resourceScope);
+  return ownerOfInstance(object) ?? currentOwner();
 }
 type ResourceRow = { owner: ResourceOwner; ref: WeakRef<object> };
 const handleRows = new Map<ResourceOwner, Set<ResourceRow>>();
@@ -241,13 +244,19 @@ export function handleHasRef(handle: OwnedHandle): boolean {
 }
 
 /** A closed handle holds nothing. */
-export function releaseHandle(handle: OwnedHandle, closePending = false): void {
+export function releaseHandle(handle: OwnedHandle, closePending = false, closeTurns: 1 | 2 = 2): void {
   if (closePending && handleRowByObject.has(handle)) {
     const pending = closingReferences.has(handle);
-    if (!pending) closingReferences.set(handle, refHeld.has(handle));
-    // The existing local close callback follows two binding tasks. Keep the
-    // referenced wrapper until that close turn, without changing liveness.
-    if (!pending) queueBindingTask(() => queueBindingTask(() => forgetNodeHandle(handle)));
+    if (!pending) {
+      closingReferences.set(handle, handleReferenced.get(handle)?.(handle) ?? false);
+      handleReferenced.set(handle, nodeHandleReferenced);
+    }
+    // Follow this binding’s existing close callback boundary. Preserve the
+    // referenced wrapper until that turn, without changing liveness.
+    if (!pending) queueBindingTask(() => {
+      if (closeTurns === 1) forgetNodeHandle(handle);
+      else queueBindingTask(() => forgetNodeHandle(handle));
+    });
   } else forgetNodeHandle(handle);
   drop(handle);
   const token = heldBy.get(handle);

@@ -756,6 +756,8 @@ class FSEvent {
     const tree = vfs();
     const cwd = callingCwd();
     const owner = currentOwner();
+    // uv_fs_event_init initializes a referenced handle before start can fail.
+    observeNodeHandle(this, () => true);
     try {
       this.#watcher = tree.watch(name, { recursive: Boolean(recursive) }, ((event: string, filename: string | null) => {
         // libuv names a change `change` and a create or a remove `rename`,
@@ -771,6 +773,7 @@ class FSEvent {
       if (persistent === false) unrefHandle(this);
       return 0;
     } catch (error) {
+      releaseHandle(this, true);
       const code = (error as { code?: string }).code;
       return code === 'ENOENT' ? -2 : -22;
     }

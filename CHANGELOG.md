@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Preserve failed watcher-start and exact Process close-callback observations; give explicit binding ownership priority over ambient guest tokens in nested standalone runtimes (substrate Articles 5/6/8/9).
+
 - Correct standalone accepted-handle custody, failed-spawn initialization and polling-watcher initialization/close observations in process enumeration; preserve real resource identity and existing liveness/transport behavior (substrate Articles 5/6/8/9).
 
 - Add process._getActiveHandles and process._getActiveRequests over real process-owned binding wrappers and requests, following Node’s owner links and reference filtering. Preserve resource identity, liveness accounting and transport behavior; remove observations on completion, close and exit. Activepieces’ pm2 caller previously threw because these APIs were absent (substrate Articles 5/6/8/9; [source reading](docs/readings/s1-process-active-resources.json)). Source only; application qualification remains open.

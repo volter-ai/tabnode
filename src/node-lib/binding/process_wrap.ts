@@ -421,7 +421,7 @@ export class Process implements OwnedHandle {
   close(callback?: () => void): void {
     if (!this.closed) {
       this.closed = true;
-      releaseHandle(this, true);
+      releaseHandle(this, true, 1);
     }
     if (callback) queueBindingTask(() => withGuestCallback(callback));
   }

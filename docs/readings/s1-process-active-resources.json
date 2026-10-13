@@ -1,6 +1,6 @@
 {
   "kind": "tabnode.process-active-resources-source-reading",
-  "version": 2,
+  "version": 3,
   "articles": [
     5,
     6,
@@ -74,7 +74,7 @@
     "Node24 GetActiveHandles enumerates initialized referenced HandleWraps; uv_is_active is not a filter. Follow object-valued owner_symbol links to the actual Socket, Server, ChildProcess or watcher; suppress owner-getter exceptions.",
     "Node24 GetActiveRequests enumerates actual ReqWrap objects and follows the same owner link. TCP/Pipe connects, asynchronous stream writes/shutdowns and filesystem operations retain their actual request identity through their completion. Synchronous writes and failed dispatch do not leave a request entry.",
     "Weak rows, collection finalizers and explicit completion/close/exit cleanup avoid retaining any resource. Handle ref/unref state controls enumeration independently of the existing active-and-referenced liveness count.",
-    "Registered guests use their existing process token. Standalone Runtime binding scopes receive private symbol identities, so unrelated unregistered process objects do not share a null-owner list. Existing token-bearing calls avoid the additional standalone scope context.",
+    "Registered guests use their existing process token. Every binding call/constructor carries its explicit process through a private synchronous observation scope; standalone Runtime processes receive private symbol identities. This explicit scope takes precedence over an ambient guest token, and try/finally restores nesting without adding asynchronous scheduling or an async-local frame to each binding call.",
     "Local closing wrappers remain visible until the existing close-task boundary; native streams remain visible until their owner reports close. Accepted and transferred handles follow existing handle adoption."
   ],
   "implementationFiles": [
@@ -84,11 +84,11 @@
     },
     {
       "path": "src/node-lib/binding/fs.ts",
-      "sha256": "cb14756637025004a27868513da1d149419397952866ec35c160d25f4f34a59f"
+      "sha256": "9d35f4a9b0bf27fae1b3969a3338bc8271a6dfc07cfe985937b02569efadbbb4"
     },
     {
       "path": "src/node-lib/binding/handles.ts",
-      "sha256": "c07abe81ea62be4a7175f4554c13f6787017dc44a73368e58964b4aed2ae5820"
+      "sha256": "044a2ba2df4ae417f20f5874f2f8a81c98aa536a4cef51d142e4741576bf31eb"
     },
     {
       "path": "src/node-lib/binding/pipe_wrap.ts",
@@ -96,7 +96,7 @@
     },
     {
       "path": "src/node-lib/binding/process_wrap.ts",
-      "sha256": "de285082e4b3a7905099a8b45ee57aa7f0f684a0c0145136db6f61df1abbe41c"
+      "sha256": "d69d87b7050b4e22adb5ce7250a7c470f3bed128c5c66486276bc85d3da9e517"
     },
     {
       "path": "src/node-lib/binding/stream_wrap.ts",
@@ -116,7 +116,7 @@
     },
     {
       "path": "src/node-lib/load.ts",
-      "sha256": "91f6e00cb462cfad1135a6a36997abb41a05a89be8fd41808694a4534a86dafa"
+      "sha256": "32bdf32d18aa02ec47b77a60db352cf8c0d4f85cc08e00914a4ce0dedf86eeb5"
     },
     {
       "path": "src/shims/process.ts",
@@ -143,6 +143,9 @@
     "Transfer the actual receiver resource-scope identity during standalone TCP/Pipe accept, descriptor receive and native adoption; intentional null custody remains unenumerated.",
     "Observe ProcessWrap at the attempted spawn initialization boundary, including ENOENT, and keep its closing observation through the existing close task.",
     "Observe StatWatcher at native constructor initialization, independent of whether polling is active; stop leaves a referenced wrapper observable.",
-    "Keep filesystem watcher observations until close completion with reference state preserved; repeated close cannot clear the reference early."
+    "Keep filesystem watcher observations until close completion with reference state preserved; repeated close cannot clear the reference early.",
+    "Process close observations retire at its existing single queued task before the close callback; stream close retains its existing two-task boundary.",
+    "FSEvent initializes before the watch attempt; failed starts keep a referenced closing wrapper until pending-close completion, without adding liveness ownership.",
+    "Explicit standalone/registered binding ownership takes precedence over ambient tokens. The private observation scope only spans synchronous native constructors/dispatch and restores nesting in finally."
   ]
 }

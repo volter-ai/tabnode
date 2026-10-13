@@ -317,7 +317,7 @@ export function moduleSurface(value: any, seen = new Map<object, any>()): any {
  * whatever frame the call came from (a native await in Node's own library included). `owner` is the scope's run.
  */
 function bindingSurface(value: unknown, owner: () => ProcessToken | null, process: object): unknown {
-  const inScope = <T>(call: () => T): T => owner() === null ? withNodeResourceScope(process, call) : call();
+  const inScope = <T>(call: () => T): T => withNodeResourceScope(process, call);
   const surface = moduleSurface(value);
   for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(surface))) {
     const implementation = descriptor.value;
