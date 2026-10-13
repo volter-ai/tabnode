@@ -11,6 +11,7 @@ import type { ProcessCredentials } from './process-credentials';
  */
 
 import { VirtualFS } from './virtual-fs';
+import { preparedTreeOf } from './prepared-tree';
 import { rememberCompiledSource } from './error-source';
 import { attachVmScriptEnvironment, VmScriptPreparationCache } from './vm-script-state';
 import type { VmScriptObserver, VmScriptPhase } from './vm-script-state';
@@ -1490,6 +1491,18 @@ function __substrateReadPrepared(vfs: { readFileSync(path: string, encoding: 'ut
   // Said for the read just made, and read by its caller at once; an unrequested read allocates nothing for it.
   __substratePreparedUtf8Bytes = undefined;
   const path = `${PREPARED_MODULES_DIR}/${key}`;
+  // The container's own tree first, where the run named one (prepared-tree.ts): the same body by the same name, with
+  // no view walk. A body only the process's tree holds (one kept in the tab under its view) is read there, as before.
+  const container = preparedTreeOf(vfs as object);
+  if (container) {
+    try {
+      if (traceReadingRequested()) {
+        const counted = (container as { readTextCounted?: (path: string) => { text: string; utf8Bytes?: number } }).readTextCounted;
+        if (typeof counted === 'function') { const read = counted.call(container, path); __substratePreparedUtf8Bytes = read.utf8Bytes; return read.text; }
+      }
+      return container.readFileSync(path, 'utf8') as string;
+    } catch { /* not the container's: the process's tree, below */ }
+  }
   try {
     if (traceReadingRequested()) {
       const counted = (vfs as { readTextCounted?: (path: string) => { text: string; utf8Bytes?: number } }).readTextCounted;

@@ -44,6 +44,7 @@ import { EventEmitter } from '../node-lib/events-module';
 import { __substrateExitCode, __substrateProcessEnding, __substrateUncaughtCapture } from './process';
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
+import { readPreparedFrom } from '../prepared-tree';
 import { treeDescriptorsOf } from '../tree-descriptors';
 import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
 import { stackFormedBy } from '../stack-overrides';
@@ -2396,6 +2397,8 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
   if (options.filesystem && !shells.has(options.filesystem)) shellForRunTree(options.filesystem);
   const shell = shells.get(tree);
   if (!shell) throw new Error('child_process not initialized for this tree');
+  // A run on a tree of its own takes prepared bodies from the container's tree first (S2 R44b, prepared-tree.ts).
+  if (options.filesystem) readPreparedFrom(options.filesystem, options.vfs);
   currentVfs = tree;
   bashInstance = shell.bash;
   vfsAdapter = shell.adapter;
