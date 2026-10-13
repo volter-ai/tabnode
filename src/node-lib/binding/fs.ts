@@ -1014,12 +1014,14 @@ const fsBinding = {
         const stats = tree.statSync(name, { throwIfNoEntry: false });
         if (stats?.isFile()) return utf8KeepingBom.decode(tree.readFileSync(name) as Uint8Array);
         // ABSENT, BY THE TREE'S OWN STAT (S2 T11): the ENOENT the open below would fetch from the kernel, thrown here
-        // as the tree's open builds it. Only a stat that answered undefined, which is ENOENT alone: EACCES, ENOTDIR
-        // and ELOOP throw from the stat and keep the open. Dub's Next server read its optional manifests this way at
+        // as the tree's open builds it. Only a stat that answered undefined and that the tree knows was ENOENT:
+        // ENOTDIR answers undefined too and keeps the open, and EACCES and ELOOP throw from the stat. Dub's Next server read its optional manifests this way at
         // its start (c6a11f38, the scored warm-up, worker 49, pid 10002: 292 ms of openAt -> syscall under
         // readFileUtf8). A file made between the stat and where the open would have run is answered absent; native
         // has the same window between two syscalls.
-        if (stats === undefined && descriptors.absent) throw descriptors.absent(name);
+        // The tree says whether that absence was ENOENT; an ENOTDIR (a file on the way) is left to the open's own error.
+        const absent = stats === undefined ? descriptors.absent?.(name) : undefined;
+        if (absent) throw absent;
       }
     }
     const fd = owned ? fsBinding.open(path, flags, 0o666) as number : path as number;
