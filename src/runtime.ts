@@ -3083,6 +3083,7 @@ function createRequire(
    * the file's source and format, through the run's load hooks where it has any; JSON parsed; anything else
    * compiled through `module._compile`, which a program may have replaced on this module.
    */
+  let preparedSourceEvidence: ((module: Module, filename: string, digest: string) => (() => void) | undefined) | undefined;
   const builtinLoad = (module: Module, resolvedPath: string): void => {
     __substrateLoadPhase(process, vfs, 'read');
     const Mod = __substrateModule();
@@ -3145,7 +3146,9 @@ function createRequire(
         __substrateCountPrepared(process, 'digest');
         (module as Module & { filename?: string }).filename = resolvedPath;
         if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
-        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true, bodyUtf8Bytes);
+        const retireEvidence = preparedSourceEvidence?.(module, resolvedPath, digest!);
+        try { runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true, bodyUtf8Bytes); }
+        finally { retireEvidence?.(); }
         return;
       }
     }
@@ -3394,6 +3397,21 @@ function createRequire(
     const sources = typeof observesSource === 'function'
       ? new ObserverWeakMap<Module, { sourceSha256: string; initialExports: unknown }>() : undefined;
     if (sources && observesSource) {
+      preparedSourceEvidence = (module, filename, digest) => {
+        try {
+          if (!observesSource(filename)) return undefined;
+          const exports = observerDescriptor(module, 'exports');
+          if (!exports || !observerHasOwn(exports, 'value')) return undefined;
+          const source = observerRecord<{ sourceSha256: string; initialExports: unknown }>();
+          // This path deliberately does not call _compile. Use the tree's
+          // verified original-content digest that selected this prepared body.
+          // No source reread, encoding or hashing is added to a cache hit.
+          observerWrite(source, 'sourceSha256', digest);
+          observerWrite(source, 'initialExports', exports.value);
+          observerMapSet(sources, module, observerFreeze(source));
+          return () => { observerMapDelete(sources, module); };
+        } catch { return undefined; }
+      };
       const originalCompile = compileRaw;
       compileRaw = (module, content, filename, dirname): void => {
         observerMapDelete(sources, module);
