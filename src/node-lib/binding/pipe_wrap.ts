@@ -13,7 +13,7 @@
  */
 import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
-import { UV_EADDRINUSE, UV_ENOENT, UV_EBADF } from './uv';
+import { UV_EACCES, UV_EADDRINUSE, UV_ENOENT, UV_ENOTDIR, UV_EBADF } from './uv';
 import { handleForFd, registerFd, releaseFd } from './fds';
 import { __adoptHandle, ownerOf, invokeOwned } from './handles';
 import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
@@ -36,6 +36,22 @@ export class PipeConnectWrap {
 /** Every path this engine holds, bound or listening. */
 const boundPaths = new Map<string, Pipe>();
 
+/**
+ * The tree of the run whose code is executing, where it can make a socket's node: an AF_UNIX bind to a path makes an
+ * S_IFSOCK node there (net/unix/af_unix.c unix_bind_bsd), which `chmod`, `stat` and `unlink` then find. A tree that
+ * cannot make one (no `createSocketSync`) keeps the name in the registry alone, as before.
+ */
+interface SocketTree {
+  createSocketSync?(path: string, mode: number): void;
+  lstatSync(path: string): { isSocket(): boolean };
+  unlinkSync(path: string): void;
+}
+const kRunFilesystem = Symbol.for('tabnode.run.vfs');
+function socketTree(): SocketTree | undefined {
+  const tree = (globalThis as unknown as { process?: Record<symbol, unknown> }).process?.[kRunFilesystem] as SocketTree | undefined;
+  return typeof tree?.createSocketSync === 'function' ? tree : undefined;
+}
+
 /** The listening pipe a connect to this path reaches, if any. */
 export function listenerOnPath(path: string): Pipe | undefined {
   const bound = boundPaths.get(path);
@@ -49,6 +65,8 @@ export class Pipe extends LibuvStreamWrap {
 
   private path: string | null = null;
   private ownFd: number | null = null;
+  /** The socket node this handle's bind made in its run's tree, and the tree: removed at close, as libuv's is. */
+  private node: { path: string; tree: SocketTree } | null = null;
 
   constructor(type: number = constants.SOCKET) {
     super();
@@ -56,9 +74,22 @@ export class Pipe extends LibuvStreamWrap {
     this.attachNative('pipe', type);
   }
 
+  /**
+   * A bind to a path makes the socket's node in the run's tree (the mode 0777, less the umask the tree's process
+   * applies), then takes the name: a path that exists is EADDRINUSE, as Linux answers even for a stale socket. A
+   * bind the name refuses takes its node away again.
+   */
   bind(path: string): number {
+    const made = this.makeNode(path);
+    if (made !== 0) return made;
     const native = nativeStreamFor(this);
-    if (native) return native.call({ operation: 'bind', id: native.descriptor.id, address: path }).status;
+    const status = native ? native.call({ operation: 'bind', id: native.descriptor.id, address: path }).status : this.bindName(path);
+    if (status !== 0) this.dropNode();
+    return status;
+  }
+
+  /** The name alone, in the registry a connect looks in: what the native-stream owner binds (the guest made the node). */
+  bindName(path: string): number {
     const held = boundPaths.get(path);
     if (held && held !== this) return UV_EADDRINUSE;
     this.path = path;
@@ -179,7 +210,33 @@ export class Pipe extends LibuvStreamWrap {
     return status;
   }
 
+  private makeNode(path: string): number {
+    if (path.length === 0 || path.charCodeAt(0) === 0) return 0; // an abstract name has no node
+    const tree = socketTree();
+    if (!tree) return 0;
+    try { tree.createSocketSync!(path, 0o777); }
+    catch (cause) {
+      const code = (cause as { code?: unknown } | null)?.code;
+      if (code === 'EEXIST') return UV_EADDRINUSE;
+      if (code === 'ENOENT') return UV_ENOENT;
+      if (code === 'ENOTDIR') return UV_ENOTDIR;
+      if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') return UV_EACCES;
+      return 0; // a tree that makes no socket node keeps the name alone
+    }
+    this.node = { path, tree };
+    return 0;
+  }
+
+  /** The node this bind made, removed while it is still a socket (libuv's uv__pipe_close unlinks the bound name). */
+  private dropNode(): void {
+    const node = this.node;
+    this.node = null;
+    if (!node) return;
+    try { if (node.tree.lstatSync(node.path).isSocket()) node.tree.unlinkSync(node.path); } catch { /* gone already */ }
+  }
+
   protected override onCloseHandle(): void {
+    this.dropNode();
     this.listening = false;
     this.onconnection = null;
     if (this.path !== null && boundPaths.get(this.path) === this) boundPaths.delete(this.path);

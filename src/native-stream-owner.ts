@@ -192,7 +192,8 @@ export class NativeStreamScope {
       }
       case 'bind': {
         if (typeof operation.address !== 'string') return { status: UV_EINVAL };
-        if (handle instanceof Pipe) return { status: handle.bind(operation.address) };
+        // The guest's realm made the socket's node in its own tree; the owner takes the name alone.
+        if (handle instanceof Pipe) return { status: handle.bindName(operation.address) };
         if (!Number.isInteger(operation.port) || operation.port! < 0 || operation.port! > 65535) return { status: UV_EINVAL };
         return { status: operation.ipv6 ? handle.bind6(operation.address, operation.port!, operation.flags) : handle.bind(operation.address, operation.port!, operation.flags) };
       }
