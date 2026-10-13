@@ -107,7 +107,7 @@ import { observerDescriptor, observerHasOwn, observerRecord, observerWrite, obse
  * `refuse` are the prelude's own, so a provided addon's diagnostics and a refusal's error are the hook's exactly.
  */
 interface SubstrateAddons {
-  readonly bindings: ReadonlySet<string>;
+  readonly bindings: { has(path: string): boolean };
   readonly roots: readonly string[];
   provide(path: string): string;
   refuse(path: string, cause?: unknown): never;
@@ -2883,7 +2883,12 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module.__substrateAddons = void 0;
   Module.__substrateSetAddons = (map: { bindings: readonly string[]; roots: readonly string[]; provide(path: string): string; refuse(path: string, cause?: unknown): never }) => {
     if (Module.__substrateAddons) throw new Error('This run was already given its native-binding map.');
-    Module.__substrateAddons = Object.freeze({ bindings: new Set(map.bindings), roots: Object.freeze([...map.roots]), provide: map.provide, refuse: map.refuse }) satisfies SubstrateAddons;
+    // Given once and fixed: the property can be neither written nor redefined, and the bound paths are read through a
+    // frozen lookup over a set nothing else holds.
+    const bound = new Set(map.bindings);
+    const addons: SubstrateAddons = Object.freeze({ bindings: Object.freeze({ has: (path: string) => bound.has(path) }),
+      roots: Object.freeze([...map.roots]), provide: map.provide, refuse: map.refuse });
+    Object.defineProperty(Module, '__substrateAddons', { value: addons, writable: false, configurable: false, enumerable: true });
   };
   const __substrateHooksOf = (): RunModuleHooks => (Module.__substrateHooks ??= new RunModuleHooks(process));
   Module.registerHooks = (hooks: { resolve?: unknown; load?: unknown }) => __substrateHooksOf().sync.registerHooks(hooks);
@@ -2943,7 +2948,9 @@ function createRequire(
     // path or under a refusal root after. The request is made a path only where it can name an addon.
     const underRoot = (path: string): boolean => addons.roots.some(root => path === root || path.startsWith(root + '/'));
     const named = id.startsWith('file:') || id.includes('.node') || /(^|\/)\.\.?\/*$/.test(id);
-    const requested = !named ? void 0 : id.startsWith('file:') ? decodeURIComponent(new URL(id).pathname)
+    // A file: URL is read by Node's own fileURLToPath, as the prelude's hook read it: an encoded '/' and a host other
+    // than localhost still throw.
+    const requested = !named ? void 0 : id.startsWith('file:') ? (loadNodeLibFor(process, 'url') as { fileURLToPath(url: string): string }).fileURLToPath(id)
       : id.startsWith('/') ? pathShim.resolve(id) : id.startsWith('.') ? pathShim.resolve(currentDir, id) : void 0;
     if (requested?.endsWith('.node') && underRoot(requested)) addons.refuse(requested);
     if (requested?.endsWith('.node') && addons.bindings.has(requested)) return addons.provide(requested);
