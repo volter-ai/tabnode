@@ -590,6 +590,30 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
   construct: (callee: string) => string): Array<[number, number, string]> | undefined {
   const edits: Array<[number, number, string]> = [];
   let dynamic = false;
+  // Whether the code being walked is strict: an ES module's or "use strict" body, a class. A block's function
+  // declaration reaches the enclosing function's scope only in sloppy code (Annex B); a class never leaves its block.
+  let strict = false;
+  const directive = (statements: any): boolean => {
+    for (const statement of statements ?? []) {
+      if (statement?.type !== "ExpressionStatement" || typeof statement.directive !== "string") return false;
+      if (statement.directive === "use strict") return true;
+    }
+    return false;
+  };
+  // A function's own var names: `var` at any depth short of a nested function or class, and, in sloppy code only, a
+  // function declared in one of its blocks. Its body's own top-level declarations are the lexical names.
+  const hoisted = (node: any, names: Set<string>, sloppy: boolean, top: boolean): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const item of node) hoisted(item, names, sloppy, top); return; }
+    if (typeof node.type !== "string") return;
+    if (node.type === "FunctionDeclaration") { if (!top && sloppy && node.id) names.add(node.id.name); return; }
+    if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression" || node.type === "ClassDeclaration" || node.type === "ClassExpression") return;
+    if (node.type === "VariableDeclaration") { if (node.kind === "var") for (const declarator of node.declarations) __substrateBindingNames(declarator.id, names); return; }
+    for (const key of Object.keys(node)) {
+      if (__substrateSkipKeys.has(key)) continue;
+      hoisted(node[key], names, sloppy, false);
+    }
+  };
   const read = (name: string): string => `${scope}.${name}`;
   const target = (node: any, visible: Set<string>): void => {
     if (!node || typeof node !== "object") return;
@@ -671,31 +695,51 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
       case "UpdateExpression": target(node.argument, visible); return;
       case "UnaryExpression": visit(node.argument, visible); return;
       case "FunctionDeclaration": case "FunctionExpression": case "ArrowFunctionExpression": {
-        const bound = new Set<string>();
-        if (node.id && node.type !== "FunctionDeclaration") bound.add(node.id.name);
-        for (const parameter of node.params) __substrateBindingNames(parameter, bound);
-        if (node.type !== "ArrowFunctionExpression") bound.add("arguments");
-        __substrateVarNames(node.body, bound);
-        if (node.body && node.body.type === "BlockStatement") __substrateLexicalNames(node.body.body, bound);
+        const outer = strict;
+        const block = node.body && node.body.type === "BlockStatement";
+        if (block && directive(node.body.body)) strict = true;
+        // A parameter list is a scope of its own: its defaults see the parameters and the function's own name, never
+        // the body's declarations (`function f(x = self) { var self }` reads the outer self).
+        const parameters = new Set<string>();
+        if (node.id && node.type !== "FunctionDeclaration") parameters.add(node.id.name);
+        for (const parameter of node.params) __substrateBindingNames(parameter, parameters);
+        if (node.type !== "ArrowFunctionExpression") parameters.add("arguments");
+        const parameterScope = __substrateShadow(visible, parameters);
+        for (const parameter of node.params) declared(parameter, parameterScope);
+        const bound = new Set<string>(parameters);
+        if (block) { hoisted(node.body.body, bound, !strict, true); __substrateLexicalNames(node.body.body, bound); }
         const inner = __substrateShadow(visible, bound);
-        for (const parameter of node.params) declared(parameter, inner);
-        if (node.body && node.body.type === "BlockStatement") for (const statement of node.body.body) visit(statement, inner);
+        if (block) for (const statement of node.body.body) visit(statement, inner);
         else visit(node.body, inner);
+        strict = outer;
         return;
       }
-      case "BlockStatement": case "StaticBlock": {
+      case "BlockStatement": {
         const bound = new Set<string>();
         __substrateLexicalNames(node.body, bound);
         const inner = __substrateShadow(visible, bound);
         for (const statement of node.body) visit(statement, inner);
         return;
       }
+      case "StaticBlock": {
+        // A class static block is a var scope of its own, in strict code.
+        const bound = new Set<string>();
+        hoisted(node.body, bound, false, true);
+        __substrateLexicalNames(node.body, bound);
+        const inner = __substrateShadow(visible, bound);
+        for (const statement of node.body) visit(statement, inner);
+        return;
+      }
       case "ClassDeclaration": case "ClassExpression": {
+        const outer = strict;
         const bound = new Set<string>();
         if (node.id) bound.add(node.id.name);
         const inner = __substrateShadow(visible, bound);
+        // The heritage is evaluated in strict code too, inside the class's own scope.
+        strict = true;
         visit(node.superClass, inner);
         visit(node.body, inner);
+        strict = outer;
         return;
       }
       case "CatchClause": {
@@ -740,8 +784,9 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
     }
   };
   // The body's own top level is a function's (the wrapper's): its var, function and lexical names shadow too.
+  strict = directive(ast.body);
   const top = new Set<string>();
-  __substrateVarNames(ast.body, top);
+  hoisted(ast.body, top, !strict, true);
   __substrateLexicalNames(ast.body, top);
   visit(ast.body, __substrateShadow(new Set(names), top));
   return dynamic ? undefined : edits;

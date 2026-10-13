@@ -15,7 +15,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   object at every call. A body with a `with` statement or a direct `eval`, or one
   that does not parse, keeps the `with` wrapper. Prepared bodies move to format
   `tabnode-prepared-5`. Unchanged from before: a bare read of a guest name the
-  guest lacks gives `undefined` where Node throws. Source only.
+  guest lacks gives `undefined` where Node throws. A function's text
+  (`Function.prototype.toString`) reads as written, the rewrite undone; scopes
+  follow Node's (parameters do not see body declarations, a block's class or a
+  strict block's function is not hoisted, a static block is its own var scope);
+  an escaped name parses before the fast path; a source's own guest-scoped mark
+  is blanked, never trusted. Source only.
 
 - PLACEMENT-LOADER current-head integration (substrate Articles1/2/5/6/8/9):
   merge approved private observation with34b5101's counted bodies, forwarding

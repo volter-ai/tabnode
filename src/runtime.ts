@@ -260,10 +260,19 @@ function __substrateMarkGuestScoped(code: string): string {
     ? __substrateModuleMarker + __substrateGuestScopedMarker + code.slice(__substrateModuleMarker.length)
     : __substrateGuestScopedMarker + code;
 }
-function __substrateScopeGlobalCalls(code: string): string {
-  if (__substrateGuestScoped(code)) return code;
-  // No guest name, no constructor and nothing dynamic: nothing to rewrite, and Node's wrapper form as it stands.
-  if (!__substrateGuestNamePattern.test(code)) return __substrateMarkGuestScoped(code);
+/** A mark a body arrived with (its own text, never this pass's) blanked to spaces, so no source can claim the form. */
+function __substrateUnclaimGuestScoped(code: string): string {
+  if (!__substrateGuestScoped(code)) return code;
+  const at = code.startsWith(__substrateGuestScopedMarker) ? 0 : __substrateModuleMarker.length;
+  return code.slice(0, at) + ' '.repeat(__substrateGuestScopedMarker.length) + code.slice(at + __substrateGuestScopedMarker.length);
+}
+function __substrateScopeGlobalCalls(source: string): string {
+  // Every body comes here once, as written or as lowered: a mark already in it is the source's own text, not this
+  // pass's, and is never trusted (review of 2eaa5f41).
+  const code = __substrateUnclaimGuestScoped(source);
+  // No guest name, no constructor, nothing dynamic and no escaped name: nothing to rewrite, and Node's wrapper
+  // form as it stands.
+  if (!code.includes('\\u') && !__substrateGuestNamePattern.test(code)) return __substrateMarkGuestScoped(code);
   let ast;
   try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true }); }
   catch { return code; }
@@ -808,6 +817,19 @@ function __substrateUnfollowAwaits(source: string): string {
     .replaceAll(FOLLOW_RESUME_FRAMED, '')
     .replaceAll(FOLLOW_RESUME_TAKEN, '');
 }
+/**
+ * A function's text with the guest-name rewrite undone (__substrateGuestNameEdits): its three shapes are exact, so the
+ * text reads as written. A function is also data: `page.evaluate(() => document.title)` and `String(fn)` handed to a
+ * worker run it where the scope does not exist, and `String(() => fetch)` is Node's text (review of 2eaa5f41).
+ */
+const __substrateGuestNamesText = __substrateGuestScopeNames.join('|');
+const __substrateGuestCallShape = new RegExp(`\\(0,__substrateGuestScope\\.(${__substrateGuestNamesText})\\)`, 'gu');
+const __substrateGuestShorthandShape = new RegExp(`\\b(${__substrateGuestNamesText}): __substrateGuestScope\\.\\1\\b`, 'gu');
+const __substrateGuestReadShape = new RegExp(`__substrateGuestScope\\.(${__substrateGuestNamesText})\\b`, 'gu');
+function __substrateUnscopeGuestNames(source: string): string {
+  if (!source.includes('__substrateGuestScope.')) return source;
+  return source.replace(__substrateGuestCallShape, '$1').replace(__substrateGuestShorthandShape, '$1').replace(__substrateGuestReadShape, '$1');
+}
 forGuestRealm(() => {
   const native = Function.prototype.toString;
   // A function's source never changes, so its written text is made once: Nest and TypeORM read the same classes'
@@ -816,7 +838,7 @@ forGuestRealm(() => {
   takeFromHost(Function.prototype, 'toString', function toString(this: unknown): string {
     const held = typeof this === 'function' ? written.get(this) : undefined;
     if (held !== undefined) return held;
-    const text = __substrateUnfollowAwaits(native.call(this));
+    const text = __substrateUnscopeGuestNames(__substrateUnfollowAwaits(native.call(this)));
     if (typeof this === 'function') written.set(this, text);
     return text;
   });
