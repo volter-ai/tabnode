@@ -78,6 +78,12 @@ export class NativeStreamScope {
   private readonly entries = new Map<number, Entry>();
   private readonly descriptors = new Map<number, number>();
   private readonly writes = new Map<number, (status: number) => void>();
+  /**
+   * S2 T14, a socket's send buffer: per handle, the shared word a writing realm accepts writes against without a
+   * round trip. The word holds `written + free`: the bytes of posted writes processed here (failed ones included), and
+   * the peer queue's room (`maxQueuedBytes`, the send buffer's size). Both count as wrapping 32-bit integers.
+   */
+  private readonly credits = new Map<number, { word: Int32Array; written: number; unsubscribe(): void }>();
   private readonly connects = new Map<number, number>();
   private nextId = 1;
   private pendingWriteBytes = 0;
@@ -280,7 +286,47 @@ export class NativeStreamScope {
       || this.pendingWriteBytes + bytes.byteLength > this.limits.maxPendingWriteBytes) return UV_EAGAIN;
     if (!handle.peer) return UV_EPIPE;
     if (handle.peerQueuedBytes + bytes.byteLength > this.limits.maxQueuedBytes) return UV_EAGAIN;
-    return handle.writeBuffer(new WriteWrap(), bytes);
+    const status = handle.writeBuffer(new WriteWrap(), bytes);
+    this.publishCredit(id);
+    return status;
+  }
+
+  /**
+   * S2 T14: `word` becomes this handle's send credit, published now, after every write made for it, and whenever its
+   * peer reads. One per handle; a handle without a peer is given none (its word stays at 0).
+   */
+  creditWrites(id: number, word: Int32Array): number {
+    const handle = this.entry(id)?.handle;
+    if (!handle || handle.closed) return UV_EBADF;
+    if (this.credits.has(id) || !(word.buffer instanceof SharedArrayBuffer) || word.length < 1) return UV_EINVAL;
+    const credit = { word, written: 0, unsubscribe: (): void => {} };
+    this.credits.set(id, credit);
+    credit.unsubscribe = handle.onPeerReadCapacity(() => this.publishCredit(id));
+    this.publishCredit(id);
+    return 0;
+  }
+
+  /**
+   * S2 T14: a write the realm accepted against this handle's credit, as native's write(2) into its send buffer: put in
+   * the peer's queue now, in port order, never queued, never waited for capacity, so no close cancels it. Its status
+   * is the realm's to report on the handle's next write (a failure); success has no answer.
+   */
+  postWrite(id: number, bytes: Uint8Array): number {
+    const credit = this.credits.get(id);
+    if (credit) credit.written = (credit.written + bytes.byteLength) | 0;
+    const handle = this.entry(id)?.handle;
+    const status = !handle || handle.closed ? UV_EBADF : !(bytes instanceof Uint8Array) ? UV_EINVAL
+      : !handle.peer ? UV_EPIPE : handle.writeBuffer(new WriteWrap(), bytes);
+    this.publishCredit(id);
+    return status;
+  }
+
+  private publishCredit(id: number): void {
+    const credit = this.credits.get(id);
+    if (!credit) return;
+    const handle = this.entry(id)?.handle;
+    const free = handle && !handle.closed && handle.peer ? Math.max(0, this.limits.maxQueuedBytes - handle.peerQueuedBytes) : 0;
+    Atomics.store(credit.word, 0, (credit.written + free) | 0);
   }
 
   /** The caller's short wait ended after we claimed its attempt. Only the
@@ -340,6 +386,7 @@ export class NativeStreamScope {
         if (retained && handle.peerQueuedHandles >= this.limits.maxQueuedHandles) return;
         try { finish(handle.writeBuffer(new WriteWrap(), owned, retained)); }
         catch (cause) { finish(UV_ECANCELED, cause); }
+        this.publishCredit(id);
       };
       this.writes.set(id, finish);
       unsubscribe = handle.onPeerReadCapacity(attempt);
@@ -365,6 +412,10 @@ export class NativeStreamScope {
     const entry = this.entries.get(id);
     if (!entry) return { status: UV_EBADF };
     this.writes.get(id)?.(UV_ECANCELED);
+    // Credit-accepted writes are already in the peer's queue (port order): nothing of them is cancelled. The word is
+    // closed to its processed count, so no further write is accepted against it.
+    const credit = this.credits.get(id);
+    if (credit) { this.credits.delete(id); credit.unsubscribe(); Atomics.store(credit.word, 0, credit.written); }
     const connecting = this.connects.get(id);
     this.connects.delete(id);
     if (connecting !== undefined) this.publish({ type: 'connect', id, request: connecting, status: UV_ECANCELED });
