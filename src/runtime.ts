@@ -92,7 +92,7 @@ import * as domainShim from './shims/domain';
 import { createWasiModule, type WasiHostFs, type WasiModule } from './shims/wasi';
 
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
-import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __cjsObject, __substrateHasEsmSyntax } from './code-transforms';
+import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __cjsObject, __substrateHasEsmSyntax, __substrateGuestNameEdits } from './code-transforms';
 import { applySourceEdits } from './source-edits';
 import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typescript-module';
 import * as acorn from 'acorn';
@@ -247,11 +247,31 @@ function __substrateScriptName(resolvedPath: string): string | undefined {
   }
   return /[\n\r]/u.test(name) ? undefined : name;
 }
+/** A body whose guest names are rewritten where free (`__substrateGuestNameEdits`): it runs in Node's own wrapper form, no `with`. */
+const __substrateGuestScopedMarker = '/*__substrate_guest_scoped__*/';
+const __substrateGuestNamePattern = new RegExp(`\\b(?:new|eval|with|${['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'window', 'document', 'location', 'performance'].join('|')})\\b`, 'u');
+/** Whether a prepared body carries the mark, after an ES module's own mark where it has one. */
+function __substrateGuestScoped(code: string): boolean {
+  return code.startsWith(__substrateGuestScopedMarker) || (code.startsWith(__substrateModuleMarker) && code.startsWith(__substrateGuestScopedMarker, __substrateModuleMarker.length));
+}
+/** Marks a body guest-scoped, after an ES module's own mark so that mark stays first. */
+function __substrateMarkGuestScoped(code: string): string {
+  return code.startsWith(__substrateModuleMarker)
+    ? __substrateModuleMarker + __substrateGuestScopedMarker + code.slice(__substrateModuleMarker.length)
+    : __substrateGuestScopedMarker + code;
+}
 function __substrateScopeGlobalCalls(code: string): string {
-  if (!/\b(?:new|fetch|Promise)\b/u.test(code)) return code;
+  if (__substrateGuestScoped(code)) return code;
+  // No guest name, no constructor and nothing dynamic: nothing to rewrite, and Node's wrapper form as it stands.
+  if (!__substrateGuestNamePattern.test(code)) return __substrateMarkGuestScoped(code);
   let ast;
   try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true }); }
   catch { return code; }
+  const construct = (callee: string): string => "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + ",$process):" + callee + ")";
+  const guestEdits = __substrateGuestNameEdits(ast, code, new Set(__substrateGuestScopeNames), '__substrateGuestScope', construct);
+  if (guestEdits) return __substrateMarkGuestScoped(applySourceEdits(code, guestEdits.sort((a, b) => b[0] - a[0])));
+  // A `with` statement or a direct eval in the body: its names resolve at run time, so it keeps the `with` wrapper
+  // and the old rewrite below.
   const positions: Array<[number, number, string]> = [];
   walkAst(ast, node => {
     // A function's source is also data: a program sends `String(fn)` to be
@@ -3185,7 +3205,9 @@ function createRequire(
       // returns Node handles and owns their ref/unref lifetime.
       const scriptName = __substrateScriptName(resolvedPath);
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with (__substrateGuestScope) { return (function() {${code}
+      // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
+      const guestScoped = __substrateGuestScoped(code);
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
 
@@ -3909,7 +3931,9 @@ export class Runtime {
       // returns Node handles and owns their ref/unref lifetime.
       const scriptName = __substrateScriptName(filename);
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with (__substrateGuestScope) { return (function() {${code}
+      // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
+      const guestScoped = __substrateGuestScoped(code);
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
 

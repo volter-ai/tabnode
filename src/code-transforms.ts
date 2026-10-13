@@ -572,3 +572,177 @@ function transformEsmToCjsRegex(code: string): string {
 
   return transformed;
 }
+
+/**
+ * THE GUEST'S GLOBAL NAMES, REWRITTEN WHERE THEY ARE FREE (S2 K1 evaluate; lead ruling m-71c68f37). A module body ran
+ * inside `with (__substrateGuestScope)` so that the few names whose realm value is not the guest's (the worker's
+ * `self`, `postMessage`, `close` and event names, `window`/`document`/`location` that a Node process has not,
+ * `Promise`, `fetch`, `performance`, `navigator`, `MessageChannel`/`MessagePort`/`Worker`) read the guest's. Node runs
+ * a body in its wrapper with no `with`: every free name resolves lexically, then on the global. The `with` made every
+ * free name of every function in the body a dynamic lookup through that object, at every call. Here only the free
+ * references to those names become `<scope>.<name>`, as reads, writes, `typeof` and update operands, a bare call
+ * keeping Node's undefined receiver (`(0,<scope>.<name>)(...)`) and a shorthand property its key; every other free
+ * name resolves as Node resolves it. A `new X(...)` callee is wrapped as before (`<construct>(X)`), with a guest name
+ * inside it rewritten too. Answers undefined where name resolution is dynamic in the body itself (a `with` statement,
+ * or a direct `eval`), and the body keeps the `with` wrapper.
+ */
+export function __substrateGuestNameEdits(ast: any, code: string, names: ReadonlySet<string>, scope: string,
+  construct: (callee: string) => string): Array<[number, number, string]> | undefined {
+  const edits: Array<[number, number, string]> = [];
+  let dynamic = false;
+  const read = (name: string): string => `${scope}.${name}`;
+  const target = (node: any, visible: Set<string>): void => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "Identifier") { if (visible.has(node.name)) edits.push([node.start, node.end, read(node.name)]); return; }
+    if (node.type === "ObjectPattern") {
+      for (const property of node.properties) {
+        if (property.type === "RestElement") { target(property.argument, visible); continue; }
+        if (property.computed) visit(property.key, visible);
+        const value = property.value;
+        if (property.shorthand && value?.type === "Identifier" && visible.has(value.name)) { edits.push([value.start, value.end, `${value.name}: ${read(value.name)}`]); continue; }
+        if (property.shorthand && value?.type === "AssignmentPattern" && value.left?.type === "Identifier" && visible.has(value.left.name)) {
+          edits.push([value.left.start, value.left.end, `${value.left.name}: ${read(value.left.name)}`]); visit(value.right, visible); continue;
+        }
+        target(value, visible);
+      }
+      return;
+    }
+    if (node.type === "ArrayPattern") { for (const element of node.elements) target(element, visible); return; }
+    if (node.type === "AssignmentPattern") { target(node.left, visible); visit(node.right, visible); return; }
+    if (node.type === "RestElement") { target(node.argument, visible); return; }
+    visit(node, visible);
+  };
+  // A declaration's own pattern binds its names; only its defaults and computed keys are references.
+  const declared = (node: any, visible: Set<string>): void => {
+    if (!node || typeof node !== "object" || node.type === "Identifier") return;
+    if (node.type === "ObjectPattern") { for (const property of node.properties) { if (property.type === "RestElement") declared(property.argument, visible); else { if (property.computed) visit(property.key, visible); declared(property.value, visible); } } return; }
+    if (node.type === "ArrayPattern") { for (const element of node.elements) declared(element, visible); return; }
+    if (node.type === "AssignmentPattern") { declared(node.left, visible); visit(node.right, visible); return; }
+    if (node.type === "RestElement") declared(node.argument, visible);
+  };
+  const callee = (node: any, visible: Set<string>): void => {
+    if (node?.type === "Identifier" && visible.has(node.name)) edits.push([node.start, node.end, `(0,${read(node.name)})`]);
+    else visit(node, visible);
+  };
+  const visit = (node: any, visible: Set<string>): void => {
+    if (dynamic || !node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const item of node) visit(item, visible); return; }
+    if (typeof node.type !== "string") return;
+    switch (node.type) {
+      case "WithStatement": dynamic = true; return;
+      case "ImportDeclaration": case "ImportSpecifier": case "ImportDefaultSpecifier": case "ImportNamespaceSpecifier":
+      case "ExportSpecifier": case "ExportAllDeclaration": case "MetaProperty": case "BreakStatement": case "ContinueStatement":
+      case "PrivateIdentifier": case "Literal": case "Super": case "ThisExpression":
+        return;
+      case "Identifier":
+        if (visible.has(node.name)) edits.push([node.start, node.end, read(node.name)]);
+        return;
+      case "CallExpression":
+        // A direct eval resolves names at run time in this scope: the body keeps the `with`.
+        if (node.callee?.type === "Identifier" && node.callee.name === "eval") { dynamic = true; return; }
+        callee(node.callee, visible); visit(node.arguments, visible);
+        return;
+      case "TaggedTemplateExpression": callee(node.tag, visible); visit(node.quasi, visible); return;
+      case "NewExpression":
+        if (node.callee?.type === "Identifier") {
+          const name = node.callee.name;
+          edits.push([node.callee.start, node.callee.end, construct(visible.has(name) ? read(name) : code.slice(node.callee.start, node.callee.end))]);
+        } else visit(node.callee, visible);
+        visit(node.arguments, visible);
+        return;
+      case "MemberExpression":
+        visit(node.object, visible);
+        if (node.computed) visit(node.property, visible);
+        return;
+      case "Property": {
+        if (node.computed) visit(node.key, visible);
+        const value = node.value;
+        if (node.shorthand && value?.type === "Identifier" && visible.has(value.name)) { edits.push([value.start, value.end, `${value.name}: ${read(value.name)}`]); return; }
+        visit(value, visible);
+        return;
+      }
+      case "MethodDefinition": case "PropertyDefinition":
+        if (node.computed) visit(node.key, visible);
+        visit(node.value, visible);
+        return;
+      case "LabeledStatement": visit(node.body, visible); return;
+      case "VariableDeclarator": declared(node.id, visible); visit(node.init, visible); return;
+      case "AssignmentExpression": target(node.left, visible); visit(node.right, visible); return;
+      case "UpdateExpression": target(node.argument, visible); return;
+      case "UnaryExpression": visit(node.argument, visible); return;
+      case "FunctionDeclaration": case "FunctionExpression": case "ArrowFunctionExpression": {
+        const bound = new Set<string>();
+        if (node.id && node.type !== "FunctionDeclaration") bound.add(node.id.name);
+        for (const parameter of node.params) __substrateBindingNames(parameter, bound);
+        if (node.type !== "ArrowFunctionExpression") bound.add("arguments");
+        __substrateVarNames(node.body, bound);
+        if (node.body && node.body.type === "BlockStatement") __substrateLexicalNames(node.body.body, bound);
+        const inner = __substrateShadow(visible, bound);
+        for (const parameter of node.params) declared(parameter, inner);
+        if (node.body && node.body.type === "BlockStatement") for (const statement of node.body.body) visit(statement, inner);
+        else visit(node.body, inner);
+        return;
+      }
+      case "BlockStatement": case "StaticBlock": {
+        const bound = new Set<string>();
+        __substrateLexicalNames(node.body, bound);
+        const inner = __substrateShadow(visible, bound);
+        for (const statement of node.body) visit(statement, inner);
+        return;
+      }
+      case "ClassDeclaration": case "ClassExpression": {
+        const bound = new Set<string>();
+        if (node.id) bound.add(node.id.name);
+        const inner = __substrateShadow(visible, bound);
+        visit(node.superClass, inner);
+        visit(node.body, inner);
+        return;
+      }
+      case "CatchClause": {
+        const bound = new Set<string>();
+        __substrateBindingNames(node.param, bound);
+        __substrateLexicalNames(node.body.body, bound);
+        const inner = __substrateShadow(visible, bound);
+        if (node.param) declared(node.param, inner);
+        for (const statement of node.body.body) visit(statement, inner);
+        return;
+      }
+      case "ForStatement": {
+        const bound = new Set<string>();
+        if (node.init && node.init.type === "VariableDeclaration" && node.init.kind !== "var") for (const declarator of node.init.declarations) __substrateBindingNames(declarator.id, bound);
+        const inner = __substrateShadow(visible, bound);
+        visit(node.init, inner); visit(node.test, inner); visit(node.update, inner); visit(node.body, inner);
+        return;
+      }
+      case "ForInStatement": case "ForOfStatement": {
+        const bound = new Set<string>();
+        if (node.left && node.left.type === "VariableDeclaration" && node.left.kind !== "var") for (const declarator of node.left.declarations) __substrateBindingNames(declarator.id, bound);
+        const inner = __substrateShadow(visible, bound);
+        if (node.left && node.left.type === "VariableDeclaration") visit(node.left, inner);
+        else target(node.left, inner);
+        visit(node.right, inner);
+        visit(node.body, inner);
+        return;
+      }
+      case "SwitchStatement": {
+        visit(node.discriminant, visible);
+        const bound = new Set<string>();
+        for (const switchCase of node.cases) __substrateLexicalNames(switchCase.consequent, bound);
+        const inner = __substrateShadow(visible, bound);
+        for (const switchCase of node.cases) { visit(switchCase.test, inner); for (const statement of switchCase.consequent) visit(statement, inner); }
+        return;
+      }
+      default:
+        for (const key of Object.keys(node)) {
+          if (__substrateSkipKeys.has(key)) continue;
+          visit(node[key], visible);
+        }
+    }
+  };
+  // The body's own top level is a function's (the wrapper's): its var, function and lexical names shadow too.
+  const top = new Set<string>();
+  __substrateVarNames(ast.body, top);
+  __substrateLexicalNames(ast.body, top);
+  visit(ast.body, __substrateShadow(new Set(names), top));
+  return dynamic ? undefined : edits;
+}

@@ -6,6 +6,17 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- K1/R16 evaluate (substrate Articles5/6/9; lead ruling m-71c68f37): a module
+  body runs in Node's own wrapper form, with no `with`. Preparation rewrites only
+  the free references to the 19 guest-global names (reads, writes, `typeof`,
+  updates, shorthand properties) to `__substrateGuestScope.<name>`, a bare call
+  keeping Node's undefined receiver; every other free name resolves lexically,
+  then globally, as in Node, instead of as a dynamic lookup through the `with`
+  object at every call. A body with a `with` statement or a direct `eval`, or one
+  that does not parse, keeps the `with` wrapper. Prepared bodies move to format
+  `tabnode-prepared-5`. Unchanged from before: a bare read of a guest name the
+  guest lacks gives `undefined` where Node throws. Source only.
+
 - PLACEMENT-LOADER current-head integration (substrate Articles1/2/5/6/8/9):
   merge approved private observation with34b5101's counted bodies, forwarding
   utf8Bytes unchanged, and enable only an own observer options property via a
