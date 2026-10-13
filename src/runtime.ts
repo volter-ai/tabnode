@@ -2680,8 +2680,13 @@ function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
  * Cal's server (8,456 modules, 26,560 requires; 85,084 kind probes, 371 ms of an 829 ms resolve) reaches long before the
  * byte bound: at ~400 bytes a key and path, 8 MB holds ~20,000. The bytes are the bound now; the count only stops
  * a cache of many tiny paths from growing its map without end. Evictions are counted for a requested reading.
+ *
+ * 32 MB (S2 R76-Twenty): Twenty's server (b70515a4 dry-run2, Mac mini, production build: 17,322 modules) kept 20,153
+ * paths at the 8 MB bound and evicted 20,943, oldest first, across 41,112 misses of ~41 us each (1,720 ms of
+ * resolve). An evicted key asked again is a whole resolution again; Node's own cache keeps every one. 32 MB holds
+ * ~80,000 at that size, the count bound stands, and a process that asks fewer keeps no more than before.
  */
-const KEPT_PATHS_MAX = 65_536, KEPT_PATH_BYTES_MAX = 8 * 1024 * 1024;
+const KEPT_PATHS_MAX = 131_072, KEPT_PATH_BYTES_MAX = 32 * 1024 * 1024;
 function __substrateKeepPath(cache: { paths: Map<string, string>; bytes: number; evicted?: number }, key: string, path: string): void {
   const bytes = 2 * (key.length + path.length);
   if (bytes > KEPT_PATH_BYTES_MAX) return;
