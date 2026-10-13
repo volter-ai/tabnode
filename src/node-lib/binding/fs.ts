@@ -37,6 +37,7 @@ const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
 import { allocateFd, handleForFd } from './fds';
 import { treeDescriptorsOf, type TreeDescriptors, type TreeDescriptorStats } from '../../tree-descriptors';
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
+import { traceOutput, traceReadingRequested } from '../../trace-output';
 import { errname, UV_ENOENT } from './uv';
 import { queueNativeFsTask } from '../../native-fs-tasks';
 
@@ -403,6 +404,44 @@ export type DescriptorWriter = ((chunk: string | Uint8Array) => void) & {
 };
 
 export function descriptorWriter(fd: number): DescriptorWriter | null {
+  const writer = descriptorWriterOf(fd);
+  return fd > 2 && traceReadingRequested() ? tracedDescriptorWriter(fd, writer) : writer;
+}
+
+/**
+ * An instrument: what reached a child's stdio that names a file of the parent's (`stdio: ['ignore', fd, fd]`), said
+ * when the writer is made, at its first write, at its first failure and when the child ends. A write here that fails
+ * is dropped by design (a closed description drops the child's output), so a log that stays empty said nothing of
+ * why: a World's native-postgres.log read 0 characters on both visits of the Umami f7b17202 pair (S2 L1).
+ */
+function tracedDescriptorWriter(fd: number, writer: DescriptorWriter | null): DescriptorWriter | null {
+  const owner = ownerOf(fd);
+  const file = openFiles.get(fd);
+  const where = { fd, sink: writer === null ? 'none' : owner ? 'owner' : handleForFd(fd) instanceof LibuvStreamWrap ? 'stream' : file ? 'tree' : 'standard', ...(file ? { path: file.path } : {}) };
+  traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'made', at: Date.now(), ...where });
+  if (writer === null) return null;
+  const counts = { chunks: 0, bytes: 0, failures: 0 };
+  const traced: DescriptorWriter = (chunk) => {
+    const length = typeof chunk === 'string' ? chunk.length : chunk.byteLength;
+    counts.chunks += 1;
+    counts.bytes += length;
+    if (counts.chunks === 1) traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'first-write', at: Date.now(), ...where, bytes: length });
+    try { writer(chunk); }
+    catch (cause) {
+      counts.failures += 1;
+      if (counts.failures === 1) traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'failed', at: Date.now(), ...where, error: cause instanceof Error ? cause.message.slice(0, 200) : String(cause).slice(0, 200) });
+      // an owner's failure is dropped, as it is untraced (it is thrown here only to be said); any other goes on as before
+      if (where.sink !== 'owner') throw cause;
+    }
+  };
+  traced.release = () => {
+    traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'released', at: Date.now(), ...where, ...counts });
+    writer.release?.();
+  };
+  return traced;
+}
+
+function descriptorWriterOf(fd: number): DescriptorWriter | null {
   // A descriptor takes bytes; a chunk a child wrote as bytes goes on as them.
   const bytesOf = (chunk: string | Uint8Array): Uint8Array => typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
   // A description a tree owns is written through it: one offset, the
@@ -416,7 +455,8 @@ export function descriptorWriter(fd: number): DescriptorWriter | null {
     const target = own ?? fd;
     const writer: DescriptorWriter = (chunk) => {
       const bytes = bytesOf(chunk);
-      try { owner.write(target, bytes, 0, bytes.length, null); } catch { /* a closed description drops the child's output */ }
+      try { owner.write(target, bytes, 0, bytes.length, null); }
+      catch (cause) { if (traceReadingRequested()) throw cause; /* a closed description drops the child's output */ }
     };
     if (own !== undefined) {
       let released = false;
