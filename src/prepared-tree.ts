@@ -10,12 +10,14 @@
  * where a miss is answered without a kernel round trip. The engine then reads the process's tree as before, so a body
  * the source does not hold (one kept in the tab under the process's view) is found there.
  *
- * WHAT IT DOES NOT CHECK OR CLAIM. A source's read does not pass the process's view or credentials: a process whose
- * user could not search `/opt/.tabnode` takes a body it would have failed to read. A body is the engine's own cache,
- * never a read a guest sees. Nor is a source more trusted than the process's tree: bodies kept in the tab are written
- * by processes, through the store, on either path, so a source widens nothing a process could write and claims
- * nothing for what it reads. A source that cannot read (an I/O failure of its store) answers undefined, as a miss: the
- * process's tree is then read, and its failure is that read's.
+ * WHAT A HOST MAY NAME. Because a source's read skips the process's view, a source must serve only bodies no
+ * process can write: the image's own (the substrate's KernelVirtualFS.preparedText reads the packages store's
+ * image-laid `/packages/.prepared/<key>`, inside the image's immutable bytes). A source over a path a process could
+ * write would hand a contained process a body its own view would never show it. A body kept in the tab is read
+ * through the process's view, as before. The source's read does not pass the process's credentials either: a
+ * process whose user could not search `/opt/.tabnode` takes an image body it would have failed to read, which is the
+ * engine's own cache, never a read a guest sees. A source that cannot read (an I/O failure of its store) answers
+ * undefined, as a miss: the process's tree is then read, and its failure is that read's.
  */
 import type { VirtualFS } from './virtual-fs';
 
