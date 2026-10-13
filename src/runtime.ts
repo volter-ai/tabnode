@@ -947,7 +947,7 @@ type OutsideSplit = { vmMs: Record<VmScriptPhase, number>; guestBracketMs: numbe
 type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>;
   bodies: number; bodyBytes: number; preparedBodies: number; preparedBodyBytes: number; sourceBodies: number; sourceBodyBytes: number;
   byteBodies: Array<{ text?: string; bytes?: number; prepared: boolean; preparedBytes?: number; sourceBytes?: number }>; countedBytes: number;
-  retainedInputBytes: number; byteTotalsDropped: boolean; releaseBytes: () => void; byteBase: number; byteBasePreparedBytes: number; byteBaseSourceBytes: number;
+  retainedInputBytes: number; peakRetainedInputBytes: number; byteTotalsDropped: boolean; releaseBytes: () => void; byteBase: number; byteBasePreparedBytes: number; byteBaseSourceBytes: number;
   linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
   outside: OutsideSplit; guestAt: number; began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
@@ -1079,7 +1079,7 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
     clock = { phase: 'outside', at: now, kernelAt: 0, wall: zero(), kernel: zero(), bodies: 0, bodyBytes: 0,
       preparedBodies: 0, preparedBodyBytes: 0, sourceBodies: 0, sourceBodyBytes: 0,
       byteBodies: [], countedBytes: 0,
-      retainedInputBytes: 512, byteBase: 0, byteBasePreparedBytes: 0, byteBaseSourceBytes: 0, byteTotalsDropped: false, releaseBytes: () => {
+      retainedInputBytes: 512, peakRetainedInputBytes: 512, byteBase: 0, byteBasePreparedBytes: 0, byteBaseSourceBytes: 0, byteTotalsDropped: false, releaseBytes: () => {
         clock!.byteBodies.length = 0; clock!.retainedInputBytes = 0; clock!.byteTotalsDropped = true;
       },
       linkSplit: { utf8CountMs: 0, byteCounts: 0 }, compileSplit: { sourceCaptureMs: 0, nativeEvalMs: 0, sourceCaptures: 0, evals: 0 },
@@ -1160,6 +1160,8 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     ...(http ? { http: { ...http } } : {}),
     script: entry === undefined ? null : pathShim.posix.basename(entry),
     preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
+    // R5's reading: the body-count input's declared bytes against the tab bound, now and at its highest.
+    retainedInputBytes: clock.retainedInputBytes, peakRetainedInputBytes: clock.peakRetainedInputBytes,
     linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
     compileSplit: { sourceCaptureMs: traceRound(clock.compileSplit.sourceCaptureMs), nativeEvalMs: traceRound(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals },
     vmSplit: __substrateVmSnapshot(process),
@@ -3120,6 +3122,7 @@ function createRequire(
         // A length the read said (an exact UTF-8 count, R5) is kept instead of the text: 64 bytes, not the body.
         const said = utf8Bytes !== undefined && Number.isSafeInteger(utf8Bytes) && utf8Bytes >= 0;
         loadClock.retainedInputBytes += 64 + (said ? 0 : prepared.length * 2);
+        if (loadClock.retainedInputBytes > loadClock.peakRetainedInputBytes) loadClock.peakRetainedInputBytes = loadClock.retainedInputBytes;
         if (retainTraceInput(loadClock, loadClock.retainedInputBytes, loadClock.releaseBytes)) {
           loadClock.byteBodies.push(said ? { bytes: utf8Bytes, prepared: bodySource === 'prepared' } : { text: prepared, prepared: bodySource === 'prepared' });
         } else loadClock.releaseBytes();
