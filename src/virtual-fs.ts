@@ -167,6 +167,8 @@ export function createNodeError(
 }
 
 export class VirtualFS {
+  /** A kernel-backed tree supplies this process channel's current UTS name. */
+  processHostname(): string { return "localhost"; }
   private root: FSNode;
   private encoder = new TextEncoder();
   private decoder = new TextDecoder();

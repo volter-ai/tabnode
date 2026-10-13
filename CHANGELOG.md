@@ -1,5 +1,7 @@
 # Changelog
 
+Container hostname review correction: Node lookup uses the caller's mounted /etc/hosts, Docker image Hostname is ignored, and container domain defaults to (none). Admission requires a trusted identity; missing UTS transport returns ENOSYS; standalone DNS aliases stay outside identified containers. Older-engine adapters are guarded and the0.9.0 pin stays. Changed production outputs and full engine declarations emit; independent re-read and cycle execution remain.
+
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
 ## Unreleased
@@ -18,6 +20,7 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   transient maps plus currentVfs before reuse. Existing successful-path and
   package-config cache lifetimes are unchanged (substrate Articles5/6/7/8/9;
   production emission/review and Cal runtime saving pending).
+Container hostname fork/inspect correction: the inherited kernel channel supplies the fork's container identity to root/pthread UTS and resolver policy. Docker inspect reports the prepared identity and creation hostname; Node lookup skips an unreadable hosts file. Changed production closures and full engine declarations pass; independent re-read and cycle qualification remain.
 
 - First-request attribution (substrate Articles5/6/8/9): add requested-only
   outsideSplit to the existing deferred load clock. Intersect synchronous VM

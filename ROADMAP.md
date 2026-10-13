@@ -45,6 +45,11 @@ stopped at their recorded bounds; those attempts remain explicitly incomplete.
 The own compiler closure was installed normally from registry/cache, with
 every selected version/URL/integrity matching the original repository lock.
 No repository manifest, vendor source, package pin or publication changed.
+Container hostname follow-up: full engine declarations pass; changed module JavaScript emits through the pinned esbuild transform. Whole Vite bundle stopped8.5s and remains incomplete. Substrate runtime/WALI/Node/image-manifest/container-start changed closures emit, including both filesystem forwarding wrappers. Setter admission still awaits the shared capability model. No apps/tests/qualification.
+
+Container hostname compiler limit: own exact locked production dependencies installed successfully; full Vite bundle and declaration emitters stopped at7s, neither a pass. Retain an incremental production emitter as tool-speed work; private hostname reader source is ready for independent review, runtime savings/qualification unclaimed. Substrate docs/readings/container-uts-hostname-implementation.json retains exact receipts.
+
+Container UTS hostname: Node's native OS binding must ask the calling process's kernel-owned UTS through its own filesystem channel. The host supplies a private per-process reader; it is retained by the binding and never inferred from mutable process.env, pid getters or the hosting realm. Standalone VirtualFS retains localhost. Vendored Node JavaScript stays unchanged. Substrate ADR-0129 and docs/readings/container-uts-hostname-ruling-2026-10-12.json own the namespace, creation files and setter permissions: lead ruling under owner delegation, 2026-10-12, OWNER-RULINGS.md “decisions are delegated to the lead”. This record precedes behavior. Runtime qualification remains the cycle's reading.
 
 ## S2 first request: partition the time outside module loading
 
@@ -856,3 +861,5 @@ Status: unchanged vendor restoration and owned observer coded; runtime qualifica
 
 Articles 5/6/8/9:9bd59f3/17a5dba inserted the diagnostic K5 counter/console block into the otherwise unchanged Node24.21 HTTP server. Restore that file byte-for-byte from495fed2, enforcing the repository's unmodified-vendor rule. Observe the actual scoped HTTP/HTTPS Server request emission from owned runtime source, with one shared process counter, first3 non-/__volter/ or /_twin/ requests, and the existing response writeHead capture. Preserve n/what/url/at/bodies/status and rounding; add pid to retain producer identity after document delivery. Send owned scalar fields to R5, with no producer JSON or duplicate stdout. Detach the emitter observer once its slots are used; preserve any caller's replacement. Request/return/error and writeHead delegation remain Node's. Production bundle/declarations and exact restored-source identity only; runtime delivery/cost remains independent. No authored implementation edits to Node's file.
 
+
+Container UTS resolver correction (ADR-0129): process-owned /etc/hosts readers now feed callback/promises lookup through the captured NodeLibScope, preserving file address families. Changed JS modules and complete declarations emitted. Paired merge with substrate is required; whole Vite bundle still incomplete and cycle reading pending.
