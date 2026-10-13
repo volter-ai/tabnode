@@ -35,7 +35,7 @@ import { kStdinRing, type StdinRingReader } from '../../stdin-ring';
 // named here so this binding does not import the process shim.
 const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
 import { allocateFd, handleForFd } from './fds';
-import { treeDescriptorsOf, type TreeDescriptors, type TreeDescriptorStats } from '../../tree-descriptors';
+import { treeDescriptorsOf, type TreeDescriptors, type TreeDescriptorStats, type TreeAdvisoryLocks } from '../../tree-descriptors';
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
 import { traceOutput, traceReadingRequested } from '../../trace-output';
 import { errname, UV_ENOENT } from './uv';
@@ -857,7 +857,46 @@ class FileHandle {
   getAsyncId(): number { return this.fd; }
 }
 
+/** A native port can operate only on this caller's descriptor capability. */
+function advisoryOwner(fd: number, caller: TreeDescriptors | undefined): TreeAdvisoryLocks {
+  if (!Number.isInteger(fd) || fd < 0) throw createNodeError('EBADF', 'fcntl', String(fd));
+  const owner = ownerOf(fd);
+  if (!owner) {
+    fileFor(fd); // Preserve EBADF for an unknown or closed descriptor.
+    throw Object.assign(new Error('ENOSYS: descriptor owner has no advisory locks'), { code: 'ENOSYS', errno: -38 });
+  }
+  if (owner !== caller) throw createNodeError('EBADF', 'fcntl', String(fd));
+  if (!owner.advisoryLocks) {
+    throw Object.assign(new Error('ENOSYS: descriptor owner has no advisory locks'), { code: 'ENOSYS', errno: -38 });
+  }
+  return owner.advisoryLocks;
+}
+
 const fsBinding = {
+  // Native addons have OS advisory locks; Node's public fs API does not.
+  // A port asks only the already opened descriptor's real owner. No fallback
+  // table, fabricated success, native ABI number or ambient worker authority.
+  [Symbol.for('tabnode.fs.advisory-locks')](): TreeAdvisoryLocks {
+    const token = currentOwner(), tree = vfs(), caller = treeDescriptorsOf(tree);
+    // A compiled addon's proxy turn may enter after another guest ran. Keep
+    // this admitted caller and tree, like ordinary asynchronous fs requests.
+    const invoke = <T>(work: () => T): T => {
+      const result = ownedRun(token, () => withFilesystem(tree, () => ({ value: work() })));
+      if (!result) throw Object.assign(new Error('ESRCH: native descriptor caller did not run'), { code: 'ESRCH', errno: -3 });
+      return result.value;
+    };
+    return Object.freeze({
+      fcntl(fd, command, record) {
+        return invoke(() => advisoryOwner(fd, caller).fcntl(fd, command, record));
+      },
+      flock(fd, operation) {
+        invoke(() => advisoryOwner(fd, caller).flock(fd, operation));
+      },
+      releasePosixOnClose(fd) {
+        invoke(() => advisoryOwner(fd, caller).releasePosixOnClose(fd));
+      },
+    } satisfies TreeAdvisoryLocks);
+  },
   FSReqCallback,
   kUsePromises,
   StatWatcher,

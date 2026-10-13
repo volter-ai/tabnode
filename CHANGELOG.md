@@ -6,6 +6,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Route native-addon fcntl/flock and logical POSIX close through the captured
+  process/tree's actual descriptor owner, refusing absent authority and
+  foreign descriptors; preserve Node's library files and ordinary fs APIs
+  (Articles 5/6/9). Source only, paired runtime review/admission remains.
+
 - Requested module evaluation evidence includes the digest of original _compile text, or the verified source digest selecting an image-prepared body, and whether the completed synchronous body replaced exports. Only an explicitly selected source is hashed; original loading, cached-body use, exports and errors remain unchanged. Host callbacks receive immutable scalar evidence, and source records retire when their compilation or prepared-body execution ends (substrate Articles 1/5/6/8/9).
 
 
