@@ -2880,26 +2880,28 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module.__substrateHooks = void 0;
   // ADR-0094's native-binding map, once per run, as data the resolver reads only where it can apply (SubstrateAddons).
   // A prelude that finds no such door (real Node, the host's qualification instrument) registers its hook instead.
-  Module.__substrateAddons = void 0;
-  // The map's identity: its bound paths and its refusal roots, each sorted.
-  let __substrateAddonsGiven: string | undefined;
+  // ADR-0094's native-binding maps of this run, as data the resolver reads only where they can apply (SubstrateAddons):
+  // each prelude that runs over this Module class gives its map once (one node entry can require another, the run's
+  // wrapper and a generated entry: S2 B10), and they compose as the chained resolve hooks did, the most recently given
+  // first. A prelude that finds no such door (real Node, the host's qualification instrument) registers its hook instead.
+  let __substrateAddonMaps: readonly SubstrateAddons[] = Object.freeze([]);
+  const __substrateAddonsGiven = new Set<string>();
+  Object.defineProperty(Module, '__substrateAddons', { get: () => __substrateAddonMaps.length ? __substrateAddonMaps : void 0, configurable: false, enumerable: true });
   /**
-   * Answers whether the map is in force: true for the first map, and for the same map given again (the run's prelude
-   * evaluated a second time over this Module class, which code-server and Formbricks did: S2 B10), which changes
-   * nothing, as dlopen(3) of a library already loaded returns its handle and runs no constructor again. False for a
-   * different map, which is not taken: its prelude then registers its resolve hook, which chains as two hooks always
-   * did before the map.
+   * Takes a map and answers true. The same map again (its bound paths and refusal roots, each sorted) changes nothing,
+   * as dlopen(3) of a library already loaded returns its handle; a different one is composed ahead of the earlier ones,
+   * as a later registerHooks hook ran ahead of an earlier one.
    */
   Module.__substrateSetAddons = (map: { bindings: readonly string[]; roots: readonly string[]; provide(path: string): string; refuse(path: string, cause?: unknown): never }): boolean => {
     const given = JSON.stringify([[...map.bindings].sort(), [...map.roots].sort()]);
-    if (Module.__substrateAddons) return given === __substrateAddonsGiven;
-    __substrateAddonsGiven = given;
-    // Given once and fixed: the property can be neither written nor redefined, and the bound paths are read through a
-    // frozen lookup over a set nothing else holds.
+    if (__substrateAddonsGiven.has(given)) return true;
+    __substrateAddonsGiven.add(given);
+    // Fixed once given: the bound paths are read through a frozen lookup over a set nothing else holds, and the list
+    // is replaced, never changed, so a resolution under way reads the maps it began with.
     const bound = new Set(map.bindings);
     const addons: SubstrateAddons = Object.freeze({ bindings: Object.freeze({ has: (path: string) => bound.has(path) }),
       roots: Object.freeze([...map.roots]), provide: map.provide, refuse: map.refuse });
-    Object.defineProperty(Module, '__substrateAddons', { value: addons, writable: false, configurable: false, enumerable: true });
+    __substrateAddonMaps = Object.freeze([addons, ...__substrateAddonMaps]);
     return true;
   };
   const __substrateHooksOf = (): RunModuleHooks => (Module.__substrateHooks ??= new RunModuleHooks(process));
@@ -2953,26 +2955,33 @@ function createRequire(
   const __substrateHooks = (): RunModuleHooks | undefined => __substrateModule().__substrateHooks as RunModuleHooks | undefined;
   const __substrateResolve = (id: string): string => {
     const Module = __substrateModule();
-    const addons = Module.__substrateAddons as SubstrateAddons | undefined;
-    if (!addons) return __substrateResolveFile(Module, id);
-    // The native-binding map, as the prelude's hook applied it: an addon named by the request is answered or refused
-    // before the file is looked for (a prepared image may lack the binary), and an answer that is an addon, a bound
-    // path or under a refusal root after. The request is made a path only where it can name an addon.
-    const underRoot = (path: string): boolean => addons.roots.some(root => path === root || path.startsWith(root + '/'));
+    const maps = Module.__substrateAddons as readonly SubstrateAddons[] | undefined;
+    if (!maps) return __substrateResolveFile(Module, id);
+    // The native-binding maps, as the prelude's hooks applied them, the most recently given first: an addon named by
+    // the request is answered or refused before the file is looked for (a prepared image may lack the binary), and an
+    // answer that is an addon, a bound path or under a refusal root after; the first map whose refusal root or binding
+    // the path meets answers it. An addon no map binds is refused by the most recent map. The request is made a path
+    // only where it can name an addon.
+    const latest = maps[0]!;
+    const underRoot = (addons: SubstrateAddons, path: string): boolean => addons.roots.some(root => path === root || path.startsWith(root + '/'));
     const named = id.startsWith('file:') || id.includes('.node') || /(^|\/)\.\.?\/*$/.test(id);
     // A file: URL is read by Node's own fileURLToPath, as the prelude's hook read it: an encoded '/' and a host other
     // than localhost still throw.
     const requested = !named ? void 0 : id.startsWith('file:') ? (loadNodeLibFor(process, 'url') as { fileURLToPath(url: string): string }).fileURLToPath(id)
       : id.startsWith('/') ? pathShim.resolve(id) : id.startsWith('.') ? pathShim.resolve(currentDir, id) : void 0;
-    if (requested?.endsWith('.node') && underRoot(requested)) addons.refuse(requested);
-    if (requested?.endsWith('.node') && addons.bindings.has(requested)) return addons.provide(requested);
+    if (requested?.endsWith('.node')) for (const addons of maps) {
+      if (underRoot(addons, requested)) addons.refuse(requested);
+      if (addons.bindings.has(requested)) return addons.provide(requested);
+    }
     let resolved: string;
     try { resolved = __substrateResolveFile(Module, id); }
-    catch (cause) { if (requested?.endsWith('.node')) addons.refuse(requested, cause); throw cause; }
+    catch (cause) { if (requested?.endsWith('.node')) latest.refuse(requested, cause); throw cause; }
     if (!resolved.startsWith('/')) return resolved;
-    if (underRoot(resolved)) addons.refuse(resolved);
-    if (addons.bindings.has(resolved)) return addons.provide(resolved);
-    if (resolved.endsWith('.node')) addons.refuse(resolved);
+    for (const addons of maps) {
+      if (underRoot(addons, resolved)) addons.refuse(resolved);
+      if (addons.bindings.has(resolved)) return addons.provide(resolved);
+    }
+    if (resolved.endsWith('.node')) latest.refuse(resolved);
     return resolved;
   };
   const __substrateResolveFile = (Module: any, id: string): string => Module._resolveFilename === Module.__substrateResolveFilename
