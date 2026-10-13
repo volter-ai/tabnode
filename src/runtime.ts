@@ -122,13 +122,26 @@ function walkAst(node: any, callback: (node: any) => void): void {
  */
 const __substrateGuestGlobals = new WeakMap<Process, Record<string, unknown>>();
 const __substrateAsyncFunction = (async function() {}).constructor;
-const __substrateFunctionScope = Function("__substrateFunctionGlobals", "__substrateFunctionSource", "with (__substrateFunctionGlobals) { return eval('(' + __substrateFunctionSource + ')'); }");
-function __substrateGuestConstructor(Constructor: unknown, process: Process): unknown {
+const __substrateFunctionScope = Function("__substrateFunctionGlobals", "__substrateFunctionSource", "__dynamicImport", "with (__substrateFunctionGlobals) { return eval('(' + __substrateFunctionSource + ')'); }");
+/**
+ * `import()` inside a function a program MAKES (`new Function('path', 'return import(path)')`) is the loader's of
+ * the module that made it, as Node's is. The rewrite of a module's `import()` is made from its syntax tree and so
+ * never reaches source held in a string: such a function ran the browser's own `import()`, which has no view of
+ * the engine's files (real-require, which pino's thread-stream loads every transport through, asked the browser
+ * for a `file:` URL and worked only by its fallback to `require`, which no ES-module transport has). The made
+ * function's own source is rewritten by the same tree-made rule and compiled where the making module's loader is
+ * in scope as `__dynamicImport`. A constructor wrapped with no loader makes the function as before.
+ */
+function __substrateGuestConstructor(Constructor: unknown, process: Process, dynamicImport?: unknown): unknown {
   if (Constructor === intrinsicPromise) return guestPromise(process);
   if (Constructor !== Function && Constructor !== __substrateAsyncFunction) return Constructor;
   return new Proxy(Constructor as object, { construct(target, args) {
     const compiled = Reflect.construct(target as new (...args: unknown[]) => unknown, args);
-    return __substrateFunctionScope(__substrateGuestGlobal(process), String(compiled));
+    const source = String(compiled);
+    if (typeof dynamicImport !== "function") return __substrateFunctionScope(__substrateGuestGlobal(process), source);
+    // Rewritten as an expression statement and unwrapped again, so the parser reads a function expression.
+    const rewritten = __substrateRewriteDynamicImportsInScript(`(${source})`);
+    return __substrateFunctionScope(__substrateGuestGlobal(process), rewritten.slice(1, -1), dynamicImport);
   } });
 }
 /**
@@ -212,7 +225,7 @@ function __substrateScopeGlobalCalls(code: string): string {
     // names do not exist. The rewrite is the original `new` there.
     if (node.type === "NewExpression" && node.callee.type === "Identifier") {
       const callee = code.slice(node.callee.start, node.callee.end);
-      positions.push([node.callee.start, node.callee.end, "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + ",$process):" + callee + ")"]);
+      positions.push([node.callee.start, node.callee.end, "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + ",$process,typeof $dynamicImport==='function'?$dynamicImport:void 0):" + callee + ")"]);
     }
     // The narrow with-scope below keeps global replacements dynamic.
     // Remove its object receiver for ordinary calls (including local
