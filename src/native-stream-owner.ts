@@ -44,7 +44,12 @@ export interface NativeStreamTransport {
    * it refuses completes with its status: a read grant as the handle's failed
    * read, a shutdown as its completion. Optional; without it each is a call.
    */
-  post?(operation: { operation: 'readStart'; id: number } | { operation: 'shutdown'; id: number; request: number }): void;
+  post?(operation: { operation: 'readStart'; id: number } | { operation: 'shutdown'; id: number; request: number } | { operation: 'ref' | 'unref'; id: number }): void;
+  /**
+   * Whether `post` takes `ref` and `unref` too (S2 R73): a transport that does not say so is posted neither, and they
+   * stay calls. A handle's ref only keeps the owner's loop alive for it; nothing waits for its answer.
+   */
+  readonly postsRefs?: boolean;
   write(id: number, bytes: Uint8Array, handle?: number, trace?: NativeStreamWriteTrace): Promise<number>;
   /** Whole bounded write, without a descriptor: 0 means all bytes accepted.
    * EAGAIN (or undefined when local credit prevents an attempt) accepts none.

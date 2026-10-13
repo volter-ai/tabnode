@@ -92,6 +92,7 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
       }
     },
     ...(next.post ? { post(operation: Parameters<NonNullable<NativeStreamTransport['post']>>[0]): void { tally(`post:${operation.operation}`, 0); next.post!(operation); } } : {}),
+    ...(next.postsRefs ? { postsRefs: true } : {}),
     ...(next.tryWriteWithinBudget ? { tryWriteWithinBudget(id: number, bytes: Uint8Array, trace: Parameters<NonNullable<NativeStreamTransport['tryWriteWithinBudget']>>[2]): number | Promise<number> | undefined {
       const from = performance.now();
       try {
@@ -327,8 +328,24 @@ export class NativeStreamDriver {
   }
 
   operation(operation: 'readStop' | 'ref' | 'unref'): number {
+    // A ref or unref is posted where the transport takes it (S2 R73): its answer is always 0 and nothing waits for it,
+    // yet as a call it stopped the realm for the owner's thread. Cal c670b965 dry-run2 (Mac mini, production build):
+    // the seed's pg client toggled its socket's ref 338 times over 562 queries, 77 ms blocked, longest 20 ms. One that
+    // would not change what the owner holds is not sent at all.
+    if (operation !== 'readStop' && !this.closing && !stopped) {
+      if (this.refState === operation) return 0;
+      if (this.channel.post && this.channel.postsRefs) {
+        try { this.channel.post({ operation, id: this.descriptor.id }); this.refState = operation; return 0; }
+        catch { /* The call below says what the owner says. */ }
+      }
+      const status = this.call({ operation, id: this.descriptor.id }).status;
+      if (status === 0) this.refState = operation;
+      return status;
+    }
     return this.call({ operation, id: this.descriptor.id }).status;
   }
+  /** What this realm last told the owner of the handle's ref, where it has said it; unsaid, the next one is sent. */
+  private refState: 'ref' | 'unref' | undefined;
 
   beginRead(): number {
     if (this.closing || stopped) return UV_EBADF;
