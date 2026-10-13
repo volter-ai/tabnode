@@ -4,6 +4,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- PLACEMENT-LOADER-HOST (substrate Articles1/2/5/6/8/9): allow a local
+  execution host to observe successful synchronous module evaluation at
+  exact selected filenames through private Runtime/RunOptions. Ordinary
+  execution installs no body wrapper or per-body check. No guest global,
+  public Module hook, child-host inheritance or vendor call is added;
+  original outcomes remain intact. Declaration emission passes; production
+  bundle emission and real application observation remain pending.
+
 - Reuse the private internal require context for an admitted module parent
   within its module-cache class. Keep the filename live, preserve fresh public
   createRequire/arbitrary-parent behavior and live hooks, and reset both

@@ -472,6 +472,8 @@ const __listenForUnhandledRejections = (owner: object, report: (reason: unknown,
 
 /** One start of the engine's Node, however it was asked for. */
 export interface NodeLaunch {
+  /** Requested local host evidence only; never sent to a child's process host or exposed through Node. */
+  moduleEvaluationObserver?: import('../runtime').ModuleEvaluationObserver;
   /** Credentials inherited by this run and every Node image it starts. */
   credentials?: ProcessCredentials;
   /** The whole vector, as `execve` takes it: `argv[0]` is the program's own name (`process.argv0`), and Node's options, the script and its arguments follow. */
@@ -722,6 +724,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   let runEnd: number | undefined;
   // Create a runtime with output capture for both console.log AND process.stdout.write
   const runtime = new Runtime(tree, {
+    ...(launch.moduleEvaluationObserver ? { moduleEvaluationObserver: launch.moduleEvaluationObserver } : {}),
     cwd: launch.cwd,
     env: guestEnv,
     credentials,
@@ -2331,6 +2334,7 @@ export function runCommand(command: string, options: ExecOptions, callback?: Exe
 
 /** What a host gives one argv start of the engine's Node. */
 export interface NodeRunOptions {
+  moduleEvaluationObserver?: import('../runtime').ModuleEvaluationObserver;
   /** Credentials inherited by this run and every Node image it starts. */
   credentials?: ProcessCredentials;
   /** The process's working directory; `/` when absent, as the shell's. */
@@ -2392,6 +2396,7 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
   if (options.registry) installRunRegistry(options.processToken, options.registry);
   if (options.process) claimRunPid(options.processToken, options.process.pid, options.process.ppid, { argv: [...argv], cwd: options.cwd ?? '/' });
   return launchNode(tree, {
+    ...(options.moduleEvaluationObserver ? { moduleEvaluationObserver: options.moduleEvaluationObserver } : {}),
     argv: [...argv],
     cwd: options.cwd ?? '/',
     env,

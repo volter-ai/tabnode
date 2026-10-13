@@ -1632,12 +1632,20 @@ export interface Module {
   parent?: Module | null;
 }
 
+/** Host-only execution evidence. No observer function is installed in Node globals or Module exports. */
+export interface ModuleEvaluationObserver {
+  filenames: readonly string[];
+  onEvaluated(filename: string, exports: unknown): void;
+}
+
 export interface RuntimeOptions {
   /** Host-configured numeric identity; absent preserves uid/gid 1000 and groups [1000]. */
   credentials?: ProcessCredentials;
   cwd?: string;
   env?: Record<string, string>;
   onConsole?: (method: string, args: unknown[]) => void;
+  /** Observe only original completed synchronous bodies at these exact paths, when the host explicitly requests it. */
+  moduleEvaluationObserver?: ModuleEvaluationObserver;
   /** llhttp compiled by the creating worker; structured-cloned into the guest realm. */
   httpParserModule?: WebAssembly.Module;
   onStdout?: (data: string) => void;
@@ -3033,7 +3041,7 @@ function createRequire(
    * hands the result to it; the engine's own pipeline is what makes the
    * body Node-shaped here.
    */
-  const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false): void => {
+  let runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false): void => {
     __substrateLoadPhase(process, vfs, 'link');
     const loadClock = __substrateLoadClocks.get(process);
     if (loadClock) {
@@ -3165,6 +3173,20 @@ function createRequire(
       throw error;
     }
   };
+
+  // Node's host debugger observes completed execution outside its program's globals. The analogous requested
+  // observer is private to this require context; ordinary execution installs no wrapper or per-body check.
+  if (options.moduleEvaluationObserver) {
+    const { filenames, onEvaluated } = options.moduleEvaluationObserver;
+    const selected = new Set(filenames), originalBody = runModuleBody;
+    runModuleBody = (module, prepared, resolvedPath, dirname, bodySource, scoped = false): void => {
+      originalBody(module, prepared, resolvedPath, dirname, bodySource, scoped);
+      if (selected.has(resolvedPath) && module.loaded === true) {
+        try { onEvaluated(resolvedPath, module.exports); }
+        catch { /* Evidence failure cannot change the original module's result or error. */ }
+      }
+    };
+  }
 
   const require: RequireFunction = (id: string): unknown => {
     const Module = __substrateModule();

@@ -18,7 +18,7 @@ export { restoreHostGlobals, guestRealmInstalled } from './host-globals';
 export { VirtualFS } from './virtual-fs';
 export type { FSNode, MountedTree, Stats, FSWatcher, WatchListener, WatchEventType } from './virtual-fs';
 export { Runtime, execute, prepareModuleForImage, preparedModuleKey, preparedModuleKeyOf, preparedModuleKind, isPreparedModuleKey, PREPARED_MODULES_DIR, PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT } from './runtime';
-export type { Module, RuntimeOptions, RequireFunction } from './runtime';
+export type { Module, RuntimeOptions, RequireFunction, ModuleEvaluationObserver } from './runtime';
 export { createRuntime, WorkerRuntime } from './create-runtime';
 export { prepareHttpParserModule } from './http-parser-module';
 export type { IRuntime, IExecuteResult, CreateRuntimeOptions, IRuntimeOptions, VFSSnapshot } from './runtime-interface';
@@ -89,6 +89,8 @@ export interface RunResult {
 }
 
 export interface RunOptions {
+  /** Private host evidence selection; it is not a guest Node global or inherited child option. */
+  moduleEvaluationObserver?: RuntimeOptions['moduleEvaluationObserver'];
   /** The host's numeric credentials for this process; otherwise inherit the container's configured identity. */
   credentials?: ProcessCredentials;
   cwd?: string;
@@ -345,6 +347,7 @@ export function createContainer(options?: ContainerOptions): {
       }
     }),
     runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {
+      ...(runOptions?.moduleEvaluationObserver ? { moduleEvaluationObserver: runOptions.moduleEvaluationObserver } : {}),
       credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()),
       ...(runOptions?.filesystem ? { filesystem: runOptions.filesystem } : {}),
       ...(runOptions?.process ? { process: { pid: runOptions.process.pid, ppid: runOptions.process.ppid } } : {}),
