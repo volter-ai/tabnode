@@ -1002,7 +1002,7 @@ type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: num
   bodies: number; bodyBytes: number; preparedBodies: number; preparedBodyBytes: number; sourceBodies: number; sourceBodyBytes: number;
   byteBodies: Array<{ text?: string; bytes?: number; prepared: boolean; preparedBytes?: number; sourceBytes?: number }>; countedBytes: number;
   retainedInputBytes: number; peakRetainedInputBytes: number; byteTotalsDropped: boolean; releaseBytes: () => void; byteBase: number; byteBasePreparedBytes: number; byteBaseSourceBytes: number;
-  linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
+  linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number; defined?: number };
   outside: OutsideSplit; guestAt: number; began: number; said: number };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
 type VmClock = { phase: VmScriptPhase | undefined; at: number; wall: Record<VmScriptPhase, number>;
@@ -1217,7 +1217,7 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     // R5's reading: the body-count input's declared bytes against the tab bound, now and at its highest.
     retainedInputBytes: clock.retainedInputBytes, peakRetainedInputBytes: clock.peakRetainedInputBytes,
     linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
-    compileSplit: { sourceCaptureMs: traceRound(clock.compileSplit.sourceCaptureMs), nativeEvalMs: traceRound(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals },
+    compileSplit: { sourceCaptureMs: traceRound(clock.compileSplit.sourceCaptureMs), nativeEvalMs: traceRound(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals, defined: clock.compileSplit.defined ?? 0 },
     vmSplit: __substrateVmSnapshot(process),
     outsideSplit: __substrateOutsideSnapshot(process, clock, now, saidAfter),
     readSplit: split ? traceRoundFields({ ...split }) : null,
@@ -1604,6 +1604,100 @@ const __substrateAwaitMarker = '/*__substrate_await__*/(';
  * has settled, and its own settling is what its importers await. The body's
  * imports evaluate where they stand, once, in the body's own order.
  */
+/**
+ * A MODULE BODY AS V8 COMPILES IT (ADR-0141): the one-line wrapper, the body (its free guest names rewritten unless
+ * `scoped` says they already are), and the sourceURL naming the module. The engine's eval compiles exactly this, and an
+ * image's code-cached script (preparedBodyScript) is built from it, so the two compile the same text.
+ */
+function __substrateWrappedBody(prepared: string, resolvedPath: string, scoped: boolean): {
+  code: string; wrappedCode: string; scriptName: string | undefined; bodyKind: 'sync' | 'generator' | 'async'; compiled(kind: 'sync' | 'generator' | 'async'): string;
+} {
+  const strictBody = prepared.startsWith(__substrateModuleMarker);
+  const code = scoped ? prepared : __substrateScopeGlobalCalls(prepared);
+  // The wrapper is one line and the body begins on it, as Node's
+  // `Module.wrap` is one line, so a module's line N is line N of the
+  // script V8 compiles and a stack names the module's own lines. The
+  // header's `var` statements are the module's scope, `globalThis` and
+  // `global` among them for code that reads the process off them
+  // directly; the inner function is what lets the body's own `let` and
+  // `const` shadow that scope. The generated sourceURL names the script.
+  // Bare immediates use the guest's timer face too: Etherpad's tsx called
+  // setImmediate(...).unref() through the browser's numeric timer because
+  // only timeout/interval names were bound here. The guest face already
+  // returns Node handles and owns their ref/unref lifetime.
+  const scriptName = __substrateScriptName(resolvedPath);
+  const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
+  // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
+  const guestScoped = __substrateGuestScoped(code);
+  const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
+}).call(${strictBody ? 'void 0' : '$module.exports'}); }
+})${sourceURL}`;
+  // A lowered ES module body is a generator that yields at each import
+  // still settling; a body that must wait, on a top-level `await` of its
+  // own, runs as an async function. Either way its settling is what its
+  // importers await.
+  const bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
+  return { code, wrappedCode, scriptName, bodyKind,
+    compiled: (kind) => kind === 'generator' ? __substrateGeneratorBody(wrappedCode) : kind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode };
+}
+
+/** The wrappers code-cached scripts defined, by (wrapper format, body key, path); each taken once (ADR-0141). */
+const __substrateDefinedBodies = new Map<string, Function>();
+const __substrateDefineBodySymbol = Symbol.for('tabnode.defineBody');
+let __substrateWrapperFormat: string | undefined;
+/** A fingerprint of the wrapper's own text and its variants: a script made by another engine's wrapper is never taken. */
+function __substrateWrapperFormatOf(): string {
+  if (__substrateWrapperFormat !== undefined) return __substrateWrapperFormat;
+  const probe = __substrateWrappedBody('0', '/w.js', true);
+  const text = probe.wrappedCode + __substrateGeneratorBody(probe.wrappedCode) + __substrateAsyncBody(probe.wrappedCode);
+  let hash = 0x811c9dc5;
+  for (let at = 0; at < text.length; at += 1) { hash ^= text.charCodeAt(at); hash = Math.imul(hash, 0x01000193) >>> 0; }
+  return __substrateWrapperFormat = hash.toString(16);
+}
+function __substrateDefinedKey(bodyKey: string, resolvedPath: string): string { return `${__substrateWrapperFormatOf()}\0${bodyKey}\0${resolvedPath}`; }
+/** A defined wrapper for this body at this path, taken (and its source kept, as eval's compile keeps it), or none. */
+function __substrateTakeDefinedBody(bodyKey: string, resolvedPath: string, owner: object, source: () => string, scriptName: string | undefined): Function | undefined {
+  if (__substrateDefinedBodies.size === 0) return undefined;
+  const key = __substrateDefinedKey(bodyKey, resolvedPath);
+  const fn = __substrateDefinedBodies.get(key);
+  if (!fn) return undefined;
+  __substrateDefinedBodies.delete(key);
+  rememberCompiledSource(owner, source(), scriptName);
+  const clock = __substrateLoadClocks.get(owner);
+  if (clock) clock.compileSplit.defined = (clock.compileSplit.defined ?? 0) + 1;
+  return fn;
+}
+/**
+ * The script that defines a prepared body's wrapper for a module at `resolvedPath` (ADR-0141): the exact text eval
+ * compiles for it, with the definition appended after its last line and before its sourceURL, so its lines, columns
+ * and frame names are eval's. Undefined where the text has no sourceURL to keep last.
+ */
+export function preparedBodyScript(prepared: string, resolvedPath: string, bodyKey: string): string | undefined {
+  const wrapped = __substrateWrappedBody(prepared, resolvedPath, true);
+  const compiled = wrapped.compiled(wrapped.bodyKind);
+  const sourceURL = wrapped.scriptName === undefined ? '' : `\n//# sourceURL=${wrapped.scriptName}`;
+  if (sourceURL === '' || !compiled.endsWith(sourceURL)) return undefined;
+  return `${compiled.slice(0, compiled.length - sourceURL.length)}[Symbol.for('tabnode.defineBody')](${JSON.stringify(__substrateDefinedKey(bodyKey, resolvedPath))});${sourceURL}`;
+}
+/**
+ * Defines the wrappers of code-cached scripts (ADR-0141), in batches of `importScripts` where this realm has it. The
+ * definer is on Function.prototype only while a batch runs (no guest code runs in one); a batch that fails defines
+ * what it ran before failing, and every body it did not define is compiled by eval as before.
+ */
+export function defineCodeCachedBodies(urls: readonly string[], batch = 256): number {
+  const load = (globalThis as { importScripts?: (...urls: string[]) => void }).importScripts;
+  if (typeof load !== 'function' || urls.length === 0) return 0;
+  const before = __substrateDefinedBodies.size;
+  Object.defineProperty(Function.prototype, __substrateDefineBodySymbol, { configurable: true, writable: false, enumerable: false,
+    value(this: Function, key: string) { __substrateDefinedBodies.set(key, this); } });
+  try {
+    for (let at = 0; at < urls.length; at += batch) {
+      try { load(...urls.slice(at, at + batch)); } catch { /* the rest of this batch is eval's, as before */ }
+    }
+  } finally { delete (Function.prototype as unknown as Record<symbol, unknown>)[__substrateDefineBodySymbol]; }
+  return __substrateDefinedBodies.size - before;
+}
+
 function __substrateGeneratorBody(wrappedCode: string): string {
   return wrappedCode.replace('return (function() {', 'return (function* () {').replaceAll(__substrateAwaitMarker, 'yield (');
 }
@@ -3102,13 +3196,14 @@ function createRequire(
       keptNow.carried = undefined;
       if (kind && carried !== undefined) __substrateCountPrepared(process, 'carried');
       const digest = kind ? (carried ?? __substrateTimeRead(process, 'digestAsk', () => vfs.contentDigest(resolvedPath))) : undefined;
-      const body = kind && digest ? __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest))) : undefined;
+      const bodyKey = kind && digest ? preparedModuleKeyOf(kind, digest) : undefined;
+      const body = bodyKey ? __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, bodyKey)) : undefined;
       const bodyUtf8Bytes = __substratePreparedUtf8Bytes;
       if (body !== undefined) {
         __substrateCountPrepared(process, 'digest');
         (module as Module & { filename?: string }).filename = resolvedPath;
         if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
-        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true, bodyUtf8Bytes);
+        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true, bodyUtf8Bytes, bodyKey);
         return;
       }
     }
@@ -3138,7 +3233,7 @@ function createRequire(
       const takenUtf8Bytes = __substratePreparedUtf8Bytes;
       if (taken !== undefined) {
         __substrateCountPrepared(process, 'hash');
-        runModuleBody(module, taken, resolvedPath, dirname, 'prepared', true, takenUtf8Bytes);
+        runModuleBody(module, taken, resolvedPath, dirname, 'prepared', true, takenUtf8Bytes, key);
         return;
       }
       // A file the image carries no body for (a package installed in the
@@ -3196,7 +3291,7 @@ function createRequire(
    * hands the result to it; the engine's own pipeline is what makes the
    * body Node-shaped here.
    */
-  let runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false, utf8Bytes?: number): void => {
+  let runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false, utf8Bytes?: number, bodyKey?: string): void => {
     __substrateLoadPhase(process, vfs, 'link');
     const loadClock = __substrateLoadClocks.get(process);
     if (loadClock) {
@@ -3247,35 +3342,17 @@ function createRequire(
       const importMetaUrl = resolvedPath.startsWith('data:') ? resolvedPath : 'file://' + resolvedPath;
       const strictBody = code.startsWith(__substrateModuleMarker);
       if (strictBody) __substrateEsBodyRuns(process);
-      if (!scoped) code = __substrateScopeGlobalCalls(code);
-      // The wrapper is one line and the body begins on it, as Node's
-      // `Module.wrap` is one line, so a module's line N is line N of the
-      // script V8 compiles and a stack names the module's own lines. The
-      // header's `var` statements are the module's scope, `globalThis` and
-      // `global` among them for code that reads the process off them
-      // directly; the inner function is what lets the body's own `let` and
-      // `const` shadow that scope. The generated sourceURL names the script.
-      // Bare immediates use the guest's timer face too: Etherpad's tsx called
-      // setImmediate(...).unref() through the browser's numeric timer because
-      // only timeout/interval names were bound here. The guest face already
-      // returns Node handles and owns their ref/unref lifetime.
-      const scriptName = __substrateScriptName(resolvedPath);
-      const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
-      // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
-      const guestScoped = __substrateGuestScoped(code);
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
-}).call(${strictBody ? 'void 0' : '$module.exports'}); }
-})${sourceURL}`;
-
-      // A lowered ES module body is a generator that yields at each import
-      // still settling; a body that must wait, on a top-level `await` of its
-      // own, runs as an async function. Either way its settling is what its
-      // importers await.
-      let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
+      const wrapped = __substrateWrappedBody(code, resolvedPath, scoped);
+      code = wrapped.code;
+      const { wrappedCode, scriptName } = wrapped;
+      let bodyKind = wrapped.bodyKind;
       let fn;
       __substrateLoadPhase(process, vfs, 'compile');
+      // ADR-0141: a wrapper an image's code-cached script defined for this body at this path is the one eval would
+      // make of the same text (preparedBodyScript builds it with __substrateWrappedBody), so it is taken instead.
+      const defined = bodyKey !== undefined ? __substrateTakeDefinedBody(bodyKey, resolvedPath, process, () => wrapped.compiled(bodyKind), scriptName) : undefined;
       try {
-        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, process, scriptName);
+        fn = defined ?? __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, process, scriptName);
       } catch (evalError) {
         const msg = evalError instanceof Error ? evalError.message : String(evalError);
       // A module with top-level await runs. Node runs a `.js` file of a package
@@ -3346,8 +3423,8 @@ function createRequire(
     const observes = options.moduleEvaluationObserver.observes;
     const onEvaluated = options.moduleEvaluationObserver.onEvaluated;
     const originalBody = runModuleBody;
-    runModuleBody = (module, prepared, resolvedPath, dirname, bodySource, scoped = false, utf8Bytes): void => {
-      originalBody(module, prepared, resolvedPath, dirname, bodySource, scoped, utf8Bytes);
+    runModuleBody = (module, prepared, resolvedPath, dirname, bodySource, scoped = false, utf8Bytes, bodyKey): void => {
+      originalBody(module, prepared, resolvedPath, dirname, bodySource, scoped, utf8Bytes, bodyKey);
       if (observes(resolvedPath)) {
         try {
           const loaded = observerDescriptor(module, 'loaded');

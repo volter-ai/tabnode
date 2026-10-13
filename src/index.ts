@@ -17,7 +17,7 @@ export type { ProcessCredentials } from './process-credentials';
 export { restoreHostGlobals, guestRealmInstalled } from './host-globals';
 export { VirtualFS } from './virtual-fs';
 export type { FSNode, MountedTree, Stats, FSWatcher, WatchListener, WatchEventType } from './virtual-fs';
-export { Runtime, execute, prepareModuleForImage, preparedModuleKey, preparedModuleKeyOf, preparedModuleKind, isPreparedModuleKey, PREPARED_MODULES_DIR, PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT } from './runtime';
+export { Runtime, execute, prepareModuleForImage, preparedBodyScript, defineCodeCachedBodies, preparedModuleKey, preparedModuleKeyOf, preparedModuleKind, isPreparedModuleKey, PREPARED_MODULES_DIR, PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT } from './runtime';
 export type { Module, RuntimeOptions, RequireFunction, ModuleEvaluationObserver } from './runtime';
 export { createRuntime, WorkerRuntime } from './create-runtime';
 export { prepareHttpParserModule } from './http-parser-module';
