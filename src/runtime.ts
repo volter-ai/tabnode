@@ -1220,7 +1220,7 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     vmSplit: __substrateVmSnapshot(process),
     outsideSplit: __substrateOutsideSnapshot(process, clock, now, saidAfter),
     readSplit: split ? traceRoundFields({ ...split }) : null,
-    resolveSplit: { packageConfigs: configs ? { ...configs } : null },
+    resolveSplit: { packageConfigs: configs ? { ...configs } : null, keptPaths: __substratePathCountsBy.has(process) ? { ...__substratePathCountsBy.get(process)! } : null },
     bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: traceRound(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: traceRound(saidAfter) } : {}), wallMs: round(wall), kernelMs: round(kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
     // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
@@ -2573,6 +2573,13 @@ function __substrateInStatWindow<T>(process: object, run: () => T): T {
   try { return run(); } finally { keeping.stats = undefined; }
 }
 const __substrateResolvedPaths = new WeakMap<Record<string, Module>, WeakMap<VirtualFS, { paths: Map<string, string>; bytes: number }>>();
+/** A requested reading's account of the kept resolved paths (resolveSplit.keptPaths): hits, misses, size, evictions. */
+const __substratePathCountsBy = new WeakMap<object, { hits: number; misses: number; kept: number; evicted: number }>();
+function __substratePathCounts(process: object) {
+  let counts = __substratePathCountsBy.get(process);
+  if (!counts) { counts = { hits: 0, misses: 0, kept: 0, evicted: 0 }; __substratePathCountsBy.set(process, counts); }
+  return counts;
+}
 function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
   let filesystems = __substrateResolvedPaths.get(cache);
   if (!filesystems) { filesystems = new WeakMap(); __substrateResolvedPaths.set(cache, filesystems); }
@@ -2580,15 +2587,23 @@ function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
   if (!paths) { paths = { paths: new Map(), bytes: 0 }; filesystems.set(fs, paths); }
   return paths;
 }
-function __substrateKeepPath(cache: { paths: Map<string, string>; bytes: number }, key: string, path: string): void {
+/**
+ * The resolved paths a process keeps, Node's relativeResolveCache, bounded by its bytes. The count bound was 8,192, which
+ * Cal's server (8,456 modules, 26,560 requires; 85,084 kind probes, 371 ms of an 829 ms resolve) reaches long before the
+ * byte bound: at ~400 bytes a key and path, 8 MB holds ~20,000. The bytes are the bound now; the count only stops
+ * a cache of many tiny paths from growing its map without end. Evictions are counted for a requested reading.
+ */
+const KEPT_PATHS_MAX = 65_536, KEPT_PATH_BYTES_MAX = 8 * 1024 * 1024;
+function __substrateKeepPath(cache: { paths: Map<string, string>; bytes: number; evicted?: number }, key: string, path: string): void {
   const bytes = 2 * (key.length + path.length);
-  if (bytes > 8 * 1024 * 1024) return;
+  if (bytes > KEPT_PATH_BYTES_MAX) return;
   const old = cache.paths.get(key);
   if (old !== undefined) { cache.paths.delete(key); cache.bytes -= 2 * (key.length + old.length); }
-  while (cache.paths.size >= 8192 || cache.bytes + bytes > 8 * 1024 * 1024) {
+  while (cache.paths.size >= KEPT_PATHS_MAX || cache.bytes + bytes > KEPT_PATH_BYTES_MAX) {
     const first = cache.paths.entries().next().value!;
     cache.paths.delete(first[0]);
     cache.bytes -= 2 * (first[0].length + first[1].length);
+    if (traceReadingRequested()) cache.evicted = (cache.evicted ?? 0) + 1;
   }
   cache.paths.set(key, path);
   cache.bytes += bytes;
@@ -2877,6 +2892,7 @@ function createRequire(
       return cached;
     }
     const successful = successfulPaths.paths.get(cacheKey);
+    if (traceReadingRequested()) { const counts = __substratePathCounts(process); if (successful !== undefined) counts.hits += 1; else counts.misses += 1; counts.kept = successfulPaths.paths.size; counts.evicted = (successfulPaths as { evicted?: number }).evicted ?? 0; }
     if (successful !== undefined) return successful;
 
     // One resolver for every name the engine resolves: this require, the simple
