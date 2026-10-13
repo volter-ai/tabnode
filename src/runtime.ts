@@ -1349,11 +1349,18 @@ Object.defineProperty(globalThis, '__substratePreparedExit', {
  * `readTextCounted`: its bytes decoded as valid UTF-8, less a dropped BOM), the length comes too, and the body is
  * counted at once rather than held until the deferred count. A tree that says none leaves the body to that count.
  */
-function __substrateReadPrepared(vfs: { readFileSync(path: string, encoding: 'utf8'): string }, key: string): { text: string; utf8Bytes?: number } | undefined {
+let __substratePreparedUtf8Bytes: number | undefined;
+function __substrateReadPrepared(vfs: { readFileSync(path: string, encoding: 'utf8'): string }, key: string): string | undefined {
+  // Said for the read just made, and read by its caller at once; an unrequested read allocates nothing for it.
+  __substratePreparedUtf8Bytes = undefined;
   const path = `${PREPARED_MODULES_DIR}/${key}`;
-  const counted = traceReadingRequested() ? (vfs as { readTextCounted?: (path: string) => { text: string; utf8Bytes?: number } }).readTextCounted : undefined;
-  try { return typeof counted === 'function' ? counted.call(vfs, path) : { text: vfs.readFileSync(path, 'utf8') }; }
-  catch { return undefined; }
+  try {
+    if (traceReadingRequested()) {
+      const counted = (vfs as { readTextCounted?: (path: string) => { text: string; utf8Bytes?: number } }).readTextCounted;
+      if (typeof counted === 'function') { const read = counted.call(vfs, path); __substratePreparedUtf8Bytes = read.utf8Bytes; return read.text; }
+    }
+    return vfs.readFileSync(path, 'utf8');
+  } catch { return undefined; }
 }
 
 function transformEsmToCjs(code: string, filename: string): string {
@@ -3006,11 +3013,12 @@ function createRequire(
       if (kind && carried !== undefined) __substrateCountPrepared(process, 'carried');
       const digest = kind ? (carried ?? __substrateTimeRead(process, 'digestAsk', () => vfs.contentDigest(resolvedPath))) : undefined;
       const body = kind && digest ? __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest))) : undefined;
+      const bodyUtf8Bytes = __substratePreparedUtf8Bytes;
       if (body !== undefined) {
         __substrateCountPrepared(process, 'digest');
         (module as Module & { filename?: string }).filename = resolvedPath;
         if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
-        runModuleBody(module, body.text, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true, body.utf8Bytes);
+        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true, bodyUtf8Bytes);
         return;
       }
     }
@@ -3037,9 +3045,10 @@ function createRequire(
     const key = compiling?.raw === content && format === undefined && !strips ? __substrateTimeRead(process, 'key', () => preparedModuleKey(rawCode, resolvedPath)) : undefined;
     if (key) {
       const taken = __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, key));
+      const takenUtf8Bytes = __substratePreparedUtf8Bytes;
       if (taken !== undefined) {
         __substrateCountPrepared(process, 'hash');
-        runModuleBody(module, taken.text, resolvedPath, dirname, 'prepared', true, taken.utf8Bytes);
+        runModuleBody(module, taken, resolvedPath, dirname, 'prepared', true, takenUtf8Bytes);
         return;
       }
       // A file the image carries no body for (a package installed in the
