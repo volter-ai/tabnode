@@ -22,6 +22,15 @@ export interface ResolutionFs {
   statSync(path: string, options?: { throwIfNoEntry?: boolean }): { isFile(): boolean; isDirectory(): boolean; contentDigest?: string } | undefined;
   readFileSync(path: string, encoding: "utf8"): string | Uint8Array;
   realpathSync?(path: string): string;
+  /**
+   * A path's kind where the filesystem answers it without a stat (KernelVirtualFS `kindSync`: its realm's kept
+   * answer, links followed): 0 a file, 1 a directory, -1 proved absent; undefined where it cannot, and `statSync` is
+   * asked as before. A probe answered here makes no Stats and no digest: a file's digest, wanted of the file a
+   * resolution answers alone, is then asked of `contentDigest`.
+   */
+  kindSync?(path: string): 0 | 1 | -1 | undefined;
+  /** A regular file's content digest, or undefined where the tree holds none; asked only after `kindSync` said 0. */
+  contentDigest?(path: string): string | undefined;
 }
 
 export interface ExportsResolver {
@@ -122,7 +131,7 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
   const stubsInWindow = new WeakMap<Map<string, 0 | 1>, Map<string, boolean>>();
   /** Whether `found`, a `.cjs` file, is a stub whose whole content is a `throw`: read once per digest, or once per window. */
   const throwingStub = (found: string): boolean => {
-    const digest = digests.get(found);
+    const digest = digestOf(found);
     const window = kept?.stats;
     const byPath = window ? stubsInWindow.get(window) : undefined;
     const known = byPath?.get(found) ?? (digest !== undefined ? kept?.throwingStubs?.get(digest) : undefined);
@@ -154,6 +163,22 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
   };
   /** The content digest each file stat of the resolution in hand carried, by path; emptied with `asked`. */
   const digests = new Map<string, string>();
+  /**
+   * Files of the resolution in hand that `kindSync` answered, whose digest is not asked until wanted (S2 R77): the
+   * stat asked it of every file probed, each package.json and each candidate passed over, beside a Stats made for
+   * every file and directory probed (Twenty's server: 222,711 realm kind answers for 41,112 resolutions, ~41 µs each).
+   * Emptied with `asked`.
+   */
+  const undigested = new Set<string>();
+  /** A file's digest as its stat would have carried it: the one carried, else asked once where `kindSync` answered it. */
+  const digestOf = (path: string): string | undefined => {
+    const carried = digests.get(path);
+    if (carried !== undefined || !undigested.delete(path)) return carried;
+    let digest: string | undefined;
+    try { digest = fs.contentDigest?.(path); } catch { digest = undefined; }
+    if (typeof digest === "string") digests.set(path, digest);
+    return typeof digest === "string" ? digest : undefined;
+  };
   /** 0 a file, 1 a directory, -1 absent, -2 another non-file or failed stat. */
   const kind = (path: string): 0 | 1 | -1 | -2 => {
     const again = asked.get(path);
@@ -167,7 +192,12 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     const probes = kept?.probes;
     if (held !== undefined) { if (probes) probes.held += 1; return held; }
     let found: 0 | 1 | -1 | -2;
-    try {
+    let local: 0 | 1 | -1 | undefined;
+    try { local = fs.kindSync?.(path); } catch { local = undefined; }
+    if (local !== undefined) {
+      found = local;
+      if (found === 0) undigested.add(path);
+    } else try {
       const stat = fs.statSync(path, { throwIfNoEntry: false });
       found = stat === undefined ? -1 : stat.isFile() ? 0 : stat.isDirectory() ? 1 : -2;
       if (found === 0 && typeof stat?.contentDigest === "string") digests.set(path, stat.contentDigest);
@@ -361,13 +391,14 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     manifests.clear();
     asked.clear();
     digests.clear();
+    undigested.clear();
     const outer = kept;
     kept = keeping;
     if (keeping) keeping.carried = undefined;
     try {
       const found = resolveCached(specifier, fromDir);
       // The digest is of the file the stat reached with links followed, so it is the real path's too.
-      const digest = found ? digests.get(found) : undefined;
+      const digest = found ? digestOf(found) : undefined;
       const carry = (path: string): string => { if (digest !== undefined && keeping) keeping.carried = { path, digest }; return path; };
       // Node answers the real path of what it found: a package reached through
       // a link (pnpm lays every dependency under `.pnpm` and links it in) is
