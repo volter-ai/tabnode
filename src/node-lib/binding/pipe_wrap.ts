@@ -151,7 +151,7 @@ export class Pipe extends LibuvStreamWrap {
         const accepted = new (server.constructor as typeof Pipe)(server.type === constants.IPC ? constants.IPC : constants.SOCKET);
         accepted.path = path;
         // The serving run owns what it accepted, not the connecting one.
-        __adoptHandle(accepted, ownerOf(server));
+        __adoptHandle(accepted, ownerOf(server), server);
         LibuvStreamWrap.pair(this, accepted);
         invokeOwned(server, 'onconnection', 0, accepted);
         invokeOwned(req, 'oncomplete', 0, this, req, true, true);
@@ -233,7 +233,7 @@ export class Pipe extends LibuvStreamWrap {
     const given = sent.listening === true ? sent : sent.duplicate();
     // The receiving run owns this reference; the sender retains its own until
     // Node closes it on acknowledgement, or continues using it with keepOpen.
-    __adoptHandle(given, ownerOf(this.peer ?? this));
+    __adoptHandle(given, ownerOf(this.peer ?? this), this.peer ?? this);
     const status = super.dispatchWrite(req, bytes, given);
     if (status !== 0 && given !== sent) given.close();
     return status;

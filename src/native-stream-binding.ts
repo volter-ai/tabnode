@@ -190,7 +190,7 @@ function adopt(descriptor: NativeStreamDescriptor, receiver: Stream): Stream {
     const Constructor = constructors[descriptor.kind];
     if (!Constructor) throw new Error('Native stream constructor is unavailable.');
     const handle = new Constructor(descriptor.type);
-    __adoptHandle(handle, ownerOf(receiver));
+    __adoptHandle(handle, ownerOf(receiver), receiver);
     return handle;
   } finally { incoming = previous; }
 }

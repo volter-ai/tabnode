@@ -382,6 +382,9 @@ export class Process implements OwnedHandle {
       }
     }
 
+    // Node marks the process wrap initialized after the native spawn attempt,
+    // including ENOENT; ChildProcess closes it from its existing error turn.
+    observeNodeHandle(this);
     if (!runner.resolves(request)) {
       this.closeFarEnds();
       return UV_ENOENT;
@@ -400,7 +403,6 @@ export class Process implements OwnedHandle {
     // The number the parent reads off the handle is the child's own
     // `process.pid`, made at its fork, as it is in Node.
     this.pid = this.run.pid;
-    observeNodeHandle(this);
     if (stdinFar) this.readStdinFrom(stdinFar);
     return 0;
   }

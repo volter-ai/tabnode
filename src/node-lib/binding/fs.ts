@@ -30,6 +30,7 @@
 import { createNodeError as vfsError } from '../../virtual-fs';
 import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner, ownedRun, ownerOfInstance, observeNodeHandle, forgetNodeHandle, observeNodeRequest, forgetNodeRequest } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
+import { queueBindingTask } from '../../guest-loop';
 import { kStdinRing, type StdinRingReader } from '../../stdin-ring';
 // The guest stdin stream's engine-side read (shims/process.ts `kEngineStdinRead`),
 // named here so this binding does not import the process shim.
@@ -776,7 +777,7 @@ class FSEvent {
   }
 
   close(): void {
-    releaseHandle(this);
+    releaseHandle(this, true);
     this.initialized = false;
     try { this.#watcher?.close(); } catch { /* a watcher already closed is closed */ }
     this.#watcher = null;
@@ -796,11 +797,15 @@ class FSEvent {
 const FS_STATS_FIELDS = 18;
 class StatWatcher {
   #referenced = true;
+  #closed = false;
+  #closing = false;
   /** Node's callback: the poll's status (0, or libuv's error for a file that is not there) and ONE array, the new stat's fields then the old one's. */
   onchange: ((status: number, stats: Float64Array | BigInt64Array) => void) | null = null;
   #timer: ReturnType<typeof setInterval> | null = null;
   #previous: Float64Array | BigInt64Array | null = null;
-  constructor(public bigint = false) {}
+  constructor(public bigint = false) {
+    observeNodeHandle(this, handle => { const watcher = handle as StatWatcher; return !watcher.#closed && watcher.#referenced; });
+  }
 
   start(path: unknown, interval = 5007): number {
     const name = asPath(path);
@@ -829,16 +834,20 @@ class StatWatcher {
       this.onchange?.(status, both);
     }, interval);
     (this.#timer as unknown as { unref?: () => void }).unref?.();
-    observeNodeHandle(this, handle => { const watcher = handle as StatWatcher; return watcher.#timer !== null && watcher.#referenced; });
     return 0;
   }
 
-  stop(): void { forgetNodeHandle(this); if (this.#timer !== null) { clearInterval(this.#timer); this.#timer = null; } }
-  close(): void { this.stop(); }
+  stop(): void { if (this.#timer !== null) { clearInterval(this.#timer); this.#timer = null; } }
+  close(): void {
+    if (this.#closed || this.#closing) return;
+    this.#closing = true;
+    this.stop();
+    queueBindingTask(() => queueBindingTask(() => { this.#closed = true; forgetNodeHandle(this); }));
+  }
   ref(): void { this.#referenced = true; }
   unref(): void { this.#referenced = false; }
   getAsyncId(): number { return 0; }
-  hasRef(): boolean { return this.#timer !== null && this.#referenced; }
+  hasRef(): boolean { return !this.#closed && this.#referenced; }
 }
 
 const fsEventWrapBinding = { FSEvent };

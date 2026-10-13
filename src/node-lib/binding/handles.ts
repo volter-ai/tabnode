@@ -243,10 +243,11 @@ export function handleHasRef(handle: OwnedHandle): boolean {
 /** A closed handle holds nothing. */
 export function releaseHandle(handle: OwnedHandle, closePending = false): void {
   if (closePending && handleRowByObject.has(handle)) {
-    closingReferences.set(handle, refHeld.has(handle));
+    const pending = closingReferences.has(handle);
+    if (!pending) closingReferences.set(handle, refHeld.has(handle));
     // The existing local close callback follows two binding tasks. Keep the
     // referenced wrapper until that close turn, without changing liveness.
-    queueBindingTask(() => queueBindingTask(() => forgetNodeHandle(handle)));
+    if (!pending) queueBindingTask(() => queueBindingTask(() => forgetNodeHandle(handle)));
   } else forgetNodeHandle(handle);
   drop(handle);
   const token = heldBy.get(handle);
@@ -343,7 +344,7 @@ export function __releaseOwnedHandles(token: ProcessToken): void {
  * so the move is this count's. A handle the program `unref`'d stays unref'd
  * through the move, as Node's does.
  */
-export function __adoptHandle(handle: OwnedHandle | null | undefined, token: ProcessToken | null): void {
+export function __adoptHandle(handle: OwnedHandle | null | undefined, token: ProcessToken | null, resourceSource?: object): void {
   if (!handle) return;
   drop(handle);
   const previous = heldBy.get(handle);
@@ -353,7 +354,12 @@ export function __adoptHandle(handle: OwnedHandle | null | undefined, token: Pro
     if (owned?.size === 0) allOwned.delete(previous);
   }
   heldBy.set(handle, token);
-  if (handleRowByObject.has(handle)) observeResource(handleRows, handleRowByObject, handle, token);
+  if (handleRowByObject.has(handle)) {
+    // A standalone server has no run token. Its accepted/transferred wrapper
+    // still belongs to that server's private binding scope, not a null bucket.
+    const next = token ?? (resourceSource ? handleRowByObject.get(resourceSource)?.owner ?? null : null);
+    observeResource(handleRows, handleRowByObject, handle, next);
+  }
   if (token !== null) {
     let owned = allOwned.get(token);
     if (!owned) { owned = new Set(); allOwned.set(token, owned); }

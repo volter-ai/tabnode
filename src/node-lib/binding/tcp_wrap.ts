@@ -236,7 +236,7 @@ export class TCP extends LibuvStreamWrap {
         // the one that connected: the pairing is made inside the connector's own
         // turn, so without this the server's end of every connection would hold
         // the connecting run alive until the server closed it.
-        __adoptHandle(accepted, ownerOf(server));
+        __adoptHandle(accepted, ownerOf(server), server);
         LibuvStreamWrap.pair(this, accepted);
         invokeOwned(server, 'onconnection', 0, accepted);
         complete(0);

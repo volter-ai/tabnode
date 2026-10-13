@@ -1,6 +1,6 @@
 {
   "kind": "tabnode.process-active-resources-source-reading",
-  "version": 1,
+  "version": 2,
   "articles": [
     5,
     6,
@@ -62,6 +62,12 @@
       "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/src/req_wrap-inl.h",
       "bytes": 5640,
       "sha256": "27c770d8756b626c80210f96f9db1cf31bfbf09aab1da53dc35b382314883e67"
+    },
+    {
+      "path": "node_stat_watcher.cc",
+      "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/src/node_stat_watcher.cc",
+      "bytes": 4631,
+      "sha256": "58d48a36f5773de273b65c248a77077853123fe9bdce25cd8df6470456c5a8f7"
     }
   ],
   "semantics": [
@@ -74,23 +80,23 @@
   "implementationFiles": [
     {
       "path": "src/native-stream-binding.ts",
-      "sha256": "5026a852e1f319b3d4bd883d6ac0085219ecef74538bb43bd31706f011a99e09"
+      "sha256": "c5461e18e5ecde842a95554ea683fd0708d7309dea40dca0654ee4a6f8600664"
     },
     {
       "path": "src/node-lib/binding/fs.ts",
-      "sha256": "f688d677998eb967498b57b8dbcad67ec788bbc27f68053588673628895105cf"
+      "sha256": "cb14756637025004a27868513da1d149419397952866ec35c160d25f4f34a59f"
     },
     {
       "path": "src/node-lib/binding/handles.ts",
-      "sha256": "ebbe3ff0ca1f59f209d3eb1674724a7be7a6b97f320ff6d81c40fdcbfe1319d5"
+      "sha256": "c07abe81ea62be4a7175f4554c13f6787017dc44a73368e58964b4aed2ae5820"
     },
     {
       "path": "src/node-lib/binding/pipe_wrap.ts",
-      "sha256": "f9496a2cede0d6ba0ce938abc319ed5731fe64cc7074a366d1211a21b0c59e06"
+      "sha256": "8e318a38c2adc54ca52f6906ace4765cdee0bb4adf1a9f074b47b1f4c6992d01"
     },
     {
       "path": "src/node-lib/binding/process_wrap.ts",
-      "sha256": "59a212d8dcee5e8fb42d1ce924a97c7ca0f8f4a6cdd5a030770ccaf53c980ce2"
+      "sha256": "de285082e4b3a7905099a8b45ee57aa7f0f684a0c0145136db6f61df1abbe41c"
     },
     {
       "path": "src/node-lib/binding/stream_wrap.ts",
@@ -98,7 +104,7 @@
     },
     {
       "path": "src/node-lib/binding/tcp_wrap.ts",
-      "sha256": "82b6ddf8d580f004f99510c460458b26fa65aa6878e21c3b825df30392d4b14c"
+      "sha256": "fea866ff31d18836e5f03713474a7c8d6d0720e843742f2b2213a38ab342fe90"
     },
     {
       "path": "src/node-lib/binding/tty_wrap.ts",
@@ -132,5 +138,11 @@
     "apps": false,
     "compiler": false,
     "typecheck": false
-  }
+  },
+  "reviewCorrections": [
+    "Transfer the actual receiver resource-scope identity during standalone TCP/Pipe accept, descriptor receive and native adoption; intentional null custody remains unenumerated.",
+    "Observe ProcessWrap at the attempted spawn initialization boundary, including ENOENT, and keep its closing observation through the existing close task.",
+    "Observe StatWatcher at native constructor initialization, independent of whether polling is active; stop leaves a referenced wrapper observable.",
+    "Keep filesystem watcher observations until close completion with reference state preserved; repeated close cannot clear the reference early."
+  ]
 }
