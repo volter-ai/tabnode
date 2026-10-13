@@ -4,6 +4,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.9.1 — 2026-10-13
+
 - To follow, not yet changed: four optional members added in v0.9.0 and before
   are second paths that only an embedder without them takes (the stream
   transport's `post`, a started run's `setRef`, the host request's
