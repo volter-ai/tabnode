@@ -536,6 +536,31 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   __substrateGuestGlobals.set(process, guest!);
   return guest!;
 }
+/**
+ * The names a body reads as bare identifiers from its process's guest global rather than the host realm's, live:
+ * each read is the guest's value now, each assignment is the guest's. They were an object literal of accessors in
+ * every body's wrapper, so V8 parsed 2,300 characters and 38 accessor functions again for each body it compiled,
+ * and made 38 closures again for each body it ran: Cal's server compiled 8,456 bodies to its first page (S2 K1,
+ * compile 743 ms). One object a process serves every body of it, the same answers. Its accessors are not
+ * configurable: one body's `delete window` used to remove the name from that body's own scope alone, and on a
+ * shared scope it would remove it from every later body's, so the delete is refused (false, as sloppy code sees it).
+ */
+const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'window', 'document', 'location', 'performance'] as const;
+const __substrateGuestScopes = new WeakMap<Process, object>();
+function __substrateGuestScope(process: Process): object {
+  let scope = __substrateGuestScopes.get(process);
+  if (scope) return scope;
+  const guest = __substrateGuestGlobal(process);
+  scope = Object.create(null) as object;
+  for (const name of __substrateGuestScopeNames) {
+    // The wrapper's accessors were sloppy code: a read is `globalThis[name]`, an assignment the guest's global
+    // refuses is ignored, never thrown.
+    Object.defineProperty(scope, name, { enumerable: true, configurable: false,
+      get: () => guest[name], set: (value: unknown) => { Reflect.set(guest, name, value); } });
+  }
+  __substrateGuestScopes.set(process, scope);
+  return scope;
+}
 // Node compiles a CommonJS body as sloppy script code: an assignment to a
 // getter-only property is ignored rather than thrown, an undeclared assignment
 // makes a global, and `this` at the top is `module.exports`. A direct `eval`
@@ -3090,7 +3115,7 @@ function createRequire(
       // returns Node handles and owns their ref/unref lifetime.
       const scriptName = __substrateScriptName(resolvedPath);
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get window() { return globalThis.window; }, set window(value) { globalThis.window = value; }, get document() { return globalThis.document; }, set document(value) { globalThis.document = value; }, get location() { return globalThis.location; }, set location(value) { globalThis.location = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with (__substrateGuestScope) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
 
@@ -3132,7 +3157,8 @@ function createRequire(
         importMeta,
         dynamicImport,
         __substrateGuestGlobal,
-        __substrateGuestConstructor
+        __substrateGuestConstructor,
+        __substrateGuestScope(process)
       )));
 
       // The body has returned. With no require in flight it was an entry's (started through `_load`, at depth 0), and
@@ -3783,7 +3809,7 @@ export class Runtime {
       // returns Node handles and owns their ref/unref lifetime.
       const scriptName = __substrateScriptName(filename);
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get window() { return globalThis.window; }, set window(value) { globalThis.window = value; }, get document() { return globalThis.document; }, set document(value) { globalThis.document = value; }, get location() { return globalThis.location; }, set location(value) { globalThis.location = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with (__substrateGuestScope) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
 
@@ -3816,7 +3842,8 @@ export class Runtime {
         createImportMeta(require, importMetaUrl, dirname, filename),
         dynamicImport,
         __substrateGuestGlobal,
-        __substrateGuestConstructor
+        __substrateGuestConstructor,
+        __substrateGuestScope(this.process)
       )));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
