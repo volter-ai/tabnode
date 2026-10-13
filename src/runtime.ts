@@ -2886,14 +2886,25 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   const __substrateAddonsGiven = new Set<string>();
   Object.defineProperty(Module, '__substrateAddons', { get: () => __substrateAddonMaps.length ? __substrateAddonMaps : void 0, configurable: false, enumerable: true });
   /**
-   * Takes a map and answers true. The same map again (its bound paths and refusal roots, each sorted) changes nothing,
+   * Takes a map and answers true. The same map again (its bound paths with their providers, its refusal roots with their
+   * reasons) changes nothing,
    * as dlopen(3) of a library already loaded returns its handle; a different one is composed ahead of the earlier ones,
    * as a later registerHooks hook ran ahead of an earlier one.
    */
-  Module.__substrateSetAddons = (map: { bindings: readonly string[]; roots: readonly string[]; provide(path: string): string; refuse(path: string, cause?: unknown): never }): boolean => {
-    const given = JSON.stringify([[...map.bindings].sort(), [...map.roots].sort()]);
-    if (__substrateAddonsGiven.has(given)) return true;
-    __substrateAddonsGiven.add(given);
+  Module.__substrateSetAddons = (map: { bindings: readonly string[]; roots: readonly string[]; provide(path: string): string; refuse(path: string, cause?: unknown): never;
+    /** Parallel to `bindings`: each path's provider (and initializer), so two maps binding one path differently differ. */
+    providers?: readonly string[];
+    /** Parallel to `roots`: each root's refusal reason. */
+    reasons?: readonly string[] }): boolean => {
+    // The same map only where the prelude says what each binding provides and each root refuses with, and all of it is
+    // equal: [path, provider] and [root, reason] pairs (lane A's review of d7ce61356). Without them, it is composed
+    // again, which answers exactly as the one already there.
+    if (map.providers?.length === map.bindings.length && map.reasons?.length === map.roots.length) {
+      const pairs = (keys: readonly string[], values: readonly string[]): string[][] => keys.map((key, at) => [key, values[at]!]).sort((a, b) => a[0]! < b[0]! ? -1 : a[0]! > b[0]! ? 1 : 0);
+      const given = JSON.stringify([pairs(map.bindings, map.providers), pairs(map.roots, map.reasons)]);
+      if (__substrateAddonsGiven.has(given)) return true;
+      __substrateAddonsGiven.add(given);
+    }
     // Fixed once given: the bound paths are read through a frozen lookup over a set nothing else holds, and the list
     // is replaced, never changed, so a resolution under way reads the maps it began with.
     const bound = new Set(map.bindings);
