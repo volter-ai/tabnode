@@ -6,6 +6,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A run's native-binding map (the substrate's ADR-0094) is given to the engine as data, once, and applied inside
+  its own resolution only where it can apply, so no require runs a resolve hook (S2: the hook chain was ~83 ms of
+  LibreChat's server start in the tab). The map is fixed once given (a non-writable property, a frozen lookup), and a
+  file: specifier is read by Node's own fileURLToPath, so an encoded '/' or a foreign host still throws. One answer
+  changed: requirePlain's rollup, esbuild and prettier intercepts run before the map, so a request for one of them
+  that the map would have refused (or that does not resolve) is answered with the engine's stand-in, where the hook
+  answered MODULE_NOT_FOUND or ERR_UNPREPARED_PROVISION. That is the engine's own answer with no hook, and it is
+  kept (Articles 5/9).
+
 - Route native-addon fcntl/flock and logical POSIX close through the captured
   process/tree's actual descriptor owner, refusing absent authority and
   foreign descriptors; preserve Node's library files and ordinary fs APIs
