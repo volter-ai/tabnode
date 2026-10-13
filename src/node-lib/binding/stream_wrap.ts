@@ -370,6 +370,9 @@ export class LibuvStreamWrap implements OwnedHandle {
     return handles?.size === 1 ? handles.values().next().value ?? null : null;
   }
 
+  /** Whether this end has read its EOF or error. */
+  get readEnded(): boolean { return this.eofDelivered; }
+
   /** Bytes that arrived on this end and were not yet read. */
   get queuedReadBytes(): number {
     let bytes = 0;

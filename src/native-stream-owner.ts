@@ -437,10 +437,21 @@ export class NativeStreamScope {
    */
   returnExclusive(id: number, unread: Uint8Array, ended = false): boolean {
     const entry = this.entry(id);
-    if (!entry || !this.exclusive.delete(id)) return false;
-    entry.handle.returnQueuedReads(unread, ended);
+    if (!entry) return false;
+    // Possibly released already (releaseExclusive), while the bytes were still on their way back.
+    this.exclusive.delete(id);
+    // takeExclusive refuses an end with its EOF or error pending, so one read here since was read while the other
+    // realm held the bytes: it is read again after them (review of 2d9217a, item 3).
+    entry.handle.returnQueuedReads(unread, ended || entry.handle.readEnded);
     return true;
   }
+
+  /**
+   * The other realm has asked to hand the entry back and its bytes are on their way: the entry is ordinary from
+   * here (a duplicate, pass, pairing or inheritance asked meanwhile succeeds), and returnExclusive puts the bytes in
+   * front when they arrive.
+   */
+  releaseExclusive(id: number): boolean { return this.exclusive.delete(id); }
 
   dispose(): void {
     if (this.disposed) return;
