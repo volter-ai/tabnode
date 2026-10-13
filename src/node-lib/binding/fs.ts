@@ -144,6 +144,9 @@ function flagBits(): { create: number; excl: number; truncate: number; append: n
   };
 }
 
+/** Node's utf8 read: a leading U+FEFF is the file's text, kept (a default TextDecoder drops it); bad bytes are U+FFFD. */
+const utf8KeepingBom = new TextDecoder('utf-8', { ignoreBOM: true });
+
 /** The file-type bits a `mode` carries, which is how `Stats` answers `isFile()`. */
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
@@ -957,6 +960,19 @@ const fsBinding = {
   /** Node's fast path for `readFile` with an encoding it can decode itself. */
   readFileUtf8(path: unknown, flags: number): string {
     const owned = typeof path !== 'number';
+    // A regular file's path read whole, read-only, over a tree that owns its descriptions is the tree's own whole
+    // read (S2 R23): the realm's store answers a stored file with no request, and anything else is one request of
+    // the kernel, where an open, an fstat, two reads and a close were five. Read permission and a file changed since
+    // the image are the tree's to say. Anything not a regular file (absent, a directory, a FIFO, a socket, a device)
+    // and /dev, /proc keep the descriptor path, where its open or read fails or blocks as Node's does.
+    if (owned && flags === 0) {
+      const name = asPath(path);
+      const tree = vfs();
+      if (!name.startsWith('/dev/') && !name.startsWith('/proc/') && stdioPath(name) === undefined && treeDescriptorsOf(tree)
+        && tree.statSync(name, { throwIfNoEntry: false })?.isFile()) {
+        return utf8KeepingBom.decode(tree.readFileSync(name) as Uint8Array);
+      }
+    }
     const fd = owned ? fsBinding.open(path, flags, 0o666) as number : path as number;
     try {
       const owner = ownerOf(fd);
@@ -975,12 +991,12 @@ const fsBinding = {
         const whole = new Uint8Array(total);
         let at = 0;
         for (const chunk of chunks) { whole.set(chunk, at); at += chunk.length; }
-        return new TextDecoder().decode(whole);
+        return utf8KeepingBom.decode(whole);
       }
       const file = fileFor(fd);
       const bytes = new Uint8Array(file.tree.statSync(file.path).size);
       const length = fsBinding.read(fd, bytes, 0, bytes.length, -1) as number;
-      return new TextDecoder().decode(bytes.subarray(0, length));
+      return utf8KeepingBom.decode(bytes.subarray(0, length));
     } finally { if (owned) fsBinding.close(fd); }
   },
 
@@ -1251,12 +1267,16 @@ const fsBinding = {
     return answer(req, () => {
       const name = asPath(path);
       const tree = vfs();
-      const names = tree.readdirSync(name).map((entry) => encodeFsName(entry, encoding));
+      const entries = tree.readdirSync(name);
+      const names = entries.map((entry) => encodeFsName(entry, encoding));
       if (!withFileTypes) return names;
       // Node's own `Dirent` is built from a name and a type number, and the
       // binding answers the two lists side by side. Types are matched to the
-      // tree's string names; the encoding only changes what the caller reads.
-      const types = tree.readdirSync(name).map((entry) => {
+      // tree's string names, from the one listing the names came from (a
+      // second listing was a second open, getdents and close of the kernel's,
+      // and could differ from the first); the encoding only changes what the
+      // caller reads.
+      const types = entries.map((entry) => {
         try {
           const stats = tree.lstatSync(`${name.endsWith('/') ? name.slice(0, -1) : name}/${entry}`);
           if (stats.isDirectory()) return 2;
