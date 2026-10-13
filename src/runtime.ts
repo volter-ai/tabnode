@@ -54,19 +54,6 @@ import { childProcessModule as childProcessShim } from './node-lib/child-process
 import { getServerBridge } from './server-bridge';
 import * as moduleShim from './shims/module';
 import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
-
-/**
- * A prepared root's native-binding map (the substrate's ADR-0094), given to the engine once by the realm's prelude
- * instead of a resolve hook that every require of the process would run through (S2: ~83 ms of LibreChat's server
- * start, ~20,000 requires). `bindings`: the addon paths that have a provider; `roots`: the refusal roots. `provide` and
- * `refuse` are the prelude's own, so a provided addon's diagnostics and a refusal's error are the hook's exactly.
- */
-interface SubstrateAddons {
-  readonly bindings: ReadonlySet<string>;
-  readonly roots: readonly string[];
-  provide(path: string): string;
-  refuse(path: string, cause?: unknown): never;
-}
 import { kRunFilesystem } from './node-lib/binding/fs';
 import { byteLengthUtf8 } from './node-lib/binding/buffer';
 import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor } from './node-lib/load';
@@ -112,6 +99,20 @@ import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typ
 import * as acorn from 'acorn';
 
 import { observerDescriptor, observerHasOwn, observerRecord, observerWrite, observerFreeze } from './module-observer-records';
+
+/**
+ * A prepared root's native-binding map (the substrate's ADR-0094), given to the engine once by the realm's prelude
+ * instead of a resolve hook that every require of the process would run through (S2: ~83 ms of LibreChat's server
+ * start, ~20,000 requires). `bindings`: the addon paths that have a provider; `roots`: the refusal roots. `provide` and
+ * `refuse` are the prelude's own, so a provided addon's diagnostics and a refusal's error are the hook's exactly.
+ */
+interface SubstrateAddons {
+  readonly bindings: ReadonlySet<string>;
+  readonly roots: readonly string[];
+  provide(path: string): string;
+  refuse(path: string, cause?: unknown): never;
+}
+
 const observerEncoder = new TextEncoder();
 const observerEncode = observerEncoder.encode.bind(observerEncoder);
 const ObserverWeakMap = WeakMap;
