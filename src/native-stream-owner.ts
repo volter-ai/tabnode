@@ -432,12 +432,13 @@ export class NativeStreamScope {
 
   /**
    * The other realm hands the entry's bytes back (before a duplicate, an inheritance, a pass or a pairing, or as it
-   * stops): what it took and did not read is read first, and the entry is an ordinary one again.
+   * stops): what it took and did not read is read first, then (`ended`) the EOF or error it held, and the entry is an
+   * ordinary one again.
    */
-  returnExclusive(id: number, unread: Uint8Array): boolean {
+  returnExclusive(id: number, unread: Uint8Array, ended = false): boolean {
     const entry = this.entry(id);
     if (!entry || !this.exclusive.delete(id)) return false;
-    entry.handle.returnQueuedReads(unread);
+    entry.handle.returnQueuedReads(unread, ended);
     return true;
   }
 

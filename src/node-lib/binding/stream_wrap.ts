@@ -393,10 +393,14 @@ export class LibuvStreamWrap implements OwnedHandle {
     return bytes;
   }
 
-  /** Bytes a reader in another realm took (takeQueuedReads) and did not read, back in front of what arrived since. */
-  returnQueuedReads(bytes: Uint8Array): void {
-    if (this.closed || !bytes.byteLength) return;
-    this.streamEndpoint.inbound.unshift({ bytes });
+  /**
+   * Bytes a reader in another realm took (takeQueuedReads) and did not read, back in front of what arrived since.
+   * `ended`: that reader also holds the EOF or error this end already read for it, so it is read again after them.
+   */
+  returnQueuedReads(bytes: Uint8Array, ended = false): void {
+    if (this.closed) return;
+    if (bytes.byteLength) this.streamEndpoint.inbound.unshift({ bytes });
+    if (ended && this.eofDelivered) this.eofDelivered = false;
     this.scheduleFlush();
   }
 
