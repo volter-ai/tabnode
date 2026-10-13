@@ -173,11 +173,14 @@ export function mayDeclare(source: string): boolean {
         const close = source.indexOf(quote, from);
         if (close < 0) return true;
         if (nextBackslash !== -1 && nextBackslash < from) nextBackslash = source.indexOf('\\', from);
-        // An escape before the quote: the escaped character (a quote, or a line break continuing the line) is passed.
-        if (nextBackslash !== -1 && nextBackslash < close) { from = nextBackslash + 2; continue; }
         if (nextLf !== -1 && nextLf < from) nextLf = source.indexOf('\n', from);
         if (nextCr !== -1 && nextCr < from) nextCr = source.indexOf('\r', from);
-        if ((nextLf !== -1 && nextLf < close) || (nextCr !== -1 && nextCr < close)) return true;
+        // Up to the nearer of an escape and the quote, an unescaped line break ends the string's reading: yes. An escape
+        // before the quote passes the character after it (a quote, or a line break continuing the line), and the
+        // reading goes on after it (lane A's review of d2a7d3001: a break before the escape was not looked for).
+        const stop = nextBackslash !== -1 && nextBackslash < close ? nextBackslash : close;
+        if ((nextLf !== -1 && nextLf < stop) || (nextCr !== -1 && nextCr < stop)) return true;
+        if (stop !== close) { from = nextBackslash + 2; continue; }
         i = close + 1;
         break;
       }
