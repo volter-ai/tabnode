@@ -418,7 +418,9 @@ export class LibuvStreamWrap implements OwnedHandle {
   abandonHeldReads(code: number): void {
     const endpoint = this.streamEndpoint;
     endpoint.readsHeld = false;
-    if (endpoint.error === null && !endpoint.eof) endpoint.error = code;
+    // Even after an EOF read meanwhile: bytes are missing before it, and a clean end would hide that (review of
+    // 15f403f, C2). flushInbound gives the error precedence.
+    if (endpoint.error === null) endpoint.error = code;
     this.scheduleFlush();
   }
 

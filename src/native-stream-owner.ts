@@ -399,6 +399,20 @@ export class NativeStreamScope {
     return undefined;
   }
 
+  /**
+   * A chunk another realm already completed for its writer (R14 guest-direct: what it held when it handed the entry
+   * back) is the kernel's buffered bytes: taken now, past the read-capacity wait, so a close behind it never waits on
+   * a peer that stopped reading (review of 15f403f, B2). One chunk, no descriptor; answers the native status.
+   */
+  writeReturned(id: number, bytes: Uint8Array): number {
+    const handle = this.entry(id)?.handle;
+    if (!handle || handle.closed) return UV_EBADF;
+    if (this.writes.has(id)) return UV_EBUSY;
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength > this.limits.maxReadChunkBytes) return UV_EINVAL;
+    if (!handle.peer) return UV_EPIPE;
+    return handle.writeBuffer(new WriteWrap(), bytes);
+  }
+
   /** Whether a write for this entry is waiting for its peer's read capacity. */
   writing(id: number): boolean { return this.writes.has(id); }
 
