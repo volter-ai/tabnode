@@ -12,6 +12,14 @@ export function traceReadingRequested(): boolean {
   return typeof Reflect.get(globalThis, Symbol.for('tabnode.trace-output')) === 'function'
     || typeof location === 'undefined' || location.href.startsWith('file:');
 }
+/**
+ * Whether readings also pay their per-read costs (the substrate's `browser-substrate.trace-costs`, its
+ * traceCostsRequested): the counted read of each body and the deferred UTF-8 count of its bytes. A host's timed runs set
+ * it false; events and the load clock stay with readings.
+ */
+export function traceCostsRequested(): boolean {
+  return traceReadingRequested() && Reflect.get(globalThis, Symbol.for('browser-substrate.trace-costs')) !== false;
+}
 const instrumentLine = /^\[(?:boot-trace|wali-boot|kernel-[^\]]+|reap-trace|load-clock|require-clock|stream-calls|first-answer|realm-reads|socket-connect|socket-waits|socket-write|k5)\](?:\s|$)/u;
 /** The legacy source instruments already made a line. Give the host owner
  * that immutable string once, instead of also forwarding it as guest stdout. */

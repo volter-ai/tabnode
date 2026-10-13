@@ -1,5 +1,5 @@
 import { traceRound, traceRoundFields } from './trace-values';
-import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested, retainTraceInput, releaseTraceInput } from './trace-output';
+import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested, traceCostsRequested, retainTraceInput, releaseTraceInput } from './trace-output';
 import { recordProcessHostname, recordProcessHosts } from './process-hostname';
 import { processCredentialsOf } from './process-credentials';
 import type { ProcessCredentials } from './process-credentials';
@@ -1194,7 +1194,10 @@ function __substrateLoadPhase(process: object, vfs: object | undefined, phase: L
     clock = { phase: 'outside', at: now, kernelAt: 0, wall: zero(), kernel: zero(), bodies: 0, bodyBytes: 0,
       preparedBodies: 0, preparedBodyBytes: 0, sourceBodies: 0, sourceBodyBytes: 0,
       byteBodies: [], countedBytes: 0,
-      retainedInputBytes: 512, peakRetainedInputBytes: 512, byteBase: 0, byteBasePreparedBytes: 0, byteBaseSourceBytes: 0, byteTotalsDropped: false, releaseBytes: () => {
+      retainedInputBytes: 512, peakRetainedInputBytes: 512, byteBase: 0, byteBasePreparedBytes: 0, byteBaseSourceBytes: 0,
+      // A timed run counts no bytes (trace costs off): no body is retained for the deferred UTF-8 count, and the clock
+      // says its byte totals as dropped (null), as it does past its retention bound.
+      byteTotalsDropped: !traceCostsRequested(), releaseBytes: () => {
         clock!.byteBodies.length = 0; clock!.retainedInputBytes = 0; clock!.byteTotalsDropped = true;
       },
       linkSplit: { utf8CountMs: 0, byteCounts: 0 }, compileSplit: { sourceCaptureMs: 0, nativeEvalMs: 0, sourceCaptures: 0, evals: 0 },
@@ -1491,7 +1494,7 @@ function __substrateReadPrepared(vfs: { readFileSync(path: string, encoding: 'ut
   __substratePreparedUtf8Bytes = undefined;
   const path = `${PREPARED_MODULES_DIR}/${key}`;
   try {
-    if (traceReadingRequested()) {
+    if (traceCostsRequested()) {
       const counted = (vfs as { readTextCounted?: (path: string) => { text: string; utf8Bytes?: number } }).readTextCounted;
       if (typeof counted === 'function') { const read = counted.call(vfs, path); __substratePreparedUtf8Bytes = read.utf8Bytes; return read.text; }
     }
