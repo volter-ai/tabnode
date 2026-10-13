@@ -11,8 +11,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   exact selected filenames through private Runtime/RunOptions. Ordinary
   execution installs no body wrapper or per-body check. No guest global,
   public Module hook, child-host inheritance or vendor call is added;
-  original outcomes remain intact. Declaration emission passes; production
-  bundle emission and real application observation remain pending.
+  original outcomes remain intact. All original library outputs and declarations
+  emit in bounded, separate production invocations of the unchanged Vite
+  config; [source/build receipt](evidence/placement-loader/build-record.json).
+  Actual application observation and consumer transport remain unqualified.
 
 - S2 K1 compile (substrate Articles5/6/8/9): a body's wrapper no longer carries
   the 19 guest-global accessors as an object literal. One null-prototype scope
