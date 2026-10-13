@@ -65,6 +65,7 @@ import {
 import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
 import { observeNativeStreamClocks, sayNativeStreamCounts, type NativeStreamClockSample } from './native-stream-binding';
+import { observeListenClocks } from './node-lib/binding/tcp_wrap';
 import { __runFor, __tokenForProcess, runPid } from './process-tokens';
 import { nodeLibBindingsAsked } from './node-lib/load';
 import type { ResolutionKept } from './node-resolution';
@@ -1252,6 +1253,16 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     return materialized;
   }, 'log', { retained: payload, input: clock });
 }
+// A server's first listen, said with its process's load split as a boundary line (it consumes no quiet or exit line):
+// the split up to the moment it serves, which the quiet line of a server still loading at first HTTP never reaches a
+// capture with (S2 R17, LibreChat: no line from api/server/index.js in four runs).
+const __substrateListenSaid = new WeakSet<object>();
+observeListenClocks((owner, port) => {
+  const process = owner === null ? undefined : __runFor(owner)?.process;
+  if (!process || __substrateListenSaid.has(process)) return;
+  __substrateListenSaid.add(process);
+  __substrateSayLoadClock(process, 'listen', undefined, { n: 0, what: 'listen', url: null, port });
+});
 observeNativeStreamClocks((owner, sample) => {
   // A binding's handle retains its actual run owner across native awaits;
   // the current guest globals and the last runtime created cannot name it.

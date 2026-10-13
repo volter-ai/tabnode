@@ -92,6 +92,17 @@ function isThisHost(address: string): boolean {
 type ListenWatcher = (port: number, address: string) => void;
 // eslint-disable-next-line no-var, vars-on-top
 var onListenWatcher: ListenWatcher | null = null;
+/**
+ * An instrument's seam: told, once a handle, that a server began listening, with the process that owns the handle
+ * and the port. The engine's load clock says the process's split there (runtime.ts): a server still loading its
+ * modules when the page's first request arrives says nothing else before a dry run's capture ends (S2 R17).
+ */
+let listenClockObserver: ((owner: ReturnType<typeof ownerOf>, port: number | null) => void) | undefined;
+export function observeListenClocks(observer: NonNullable<typeof listenClockObserver>): void { listenClockObserver = observer; }
+function sayListenClock(handle: TCP, port: number | null): void {
+  try { listenClockObserver?.(ownerOf(handle), port); }
+  catch { /* Evidence failure must not change a listen. */ }
+}
 // eslint-disable-next-line no-var, vars-on-top
 var onCloseWatcher: ((port: number) => void) | null = null;
 export function setPortWatchers(onListen: ListenWatcher | null, onClose: ((port: number) => void) | null): void {
@@ -155,7 +166,7 @@ export class TCP extends LibuvStreamWrap {
     const native = nativeStreamFor(this);
     if (native) {
       const status = native.call({ operation: 'listen', id: native.descriptor.id, backlog: _backlog }).status;
-      if (status === 0) this.listening = true;
+      if (status === 0) { this.listening = true; sayListenClock(this, this.local?.port ?? null); }
       return status;
     }
     if (!this.local) {
@@ -164,6 +175,7 @@ export class TCP extends LibuvStreamWrap {
     }
     this.listening = true;
     if (this.local) { try { onListenWatcher?.(this.local.port, this.local.address); } catch { /* a watcher that throws is not the listen's business */ } }
+    sayListenClock(this, this.local?.port ?? null);
     return 0;
   }
 
