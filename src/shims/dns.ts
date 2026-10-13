@@ -114,9 +114,9 @@ function lookupWithHosts(
     try { fileAddresses = readHosts ? hostsAddresses(readHosts(), hostname) : undefined; }
     catch (cause) {
       // nss_files reports an unreadable hosts source as unavailable; lookup continues with
-      // the next resolver source. Kernel-owner/protocol and programming failures still surface.
+      // the next resolver source. Kernel-owner/protocol, EIO transport and programming failures still surface.
       const code = cause && typeof cause === 'object' ? (cause as { code?: string }).code : undefined;
-      if (!["ENOENT", "ENOTDIR", "EACCES", "EPERM", "EISDIR", "EIO", "ELOOP", "EMFILE", "ENFILE"].includes(code ?? '')) {
+      if (!["ENOENT", "ENOTDIR", "EACCES", "EPERM", "EISDIR", "ELOOP", "EMFILE", "ENFILE"].includes(code ?? '')) {
         cb(cause instanceof Error ? cause : new Error(String(cause))); return;
       }
     }

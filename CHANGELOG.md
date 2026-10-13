@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Container hostname follow-up: handle missing and unreadable /etc/hosts in one DNS fallback path; surface EIO transport failures. Full declarations and changed production JS emit. No app execution or runtime qualification. Retained receipt hostname-hosts-error-followup.json SHA256 e128facd7b9414c88c819a0224c1e7878ad230eaf1b4a27f9989ed6eab5430bd.
+
 Container hostname fork/inspect correction: the inherited kernel channel supplies the fork's container identity to root/pthread UTS and resolver policy. Docker inspect reports the prepared identity and creation hostname; Node lookup skips an unreadable hosts file. Changed production closures and full engine declarations pass; independent re-read and cycle qualification remain.
 
 - First-request attribution (substrate Articles5/6/8/9): add requested-only

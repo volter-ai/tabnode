@@ -3589,13 +3589,9 @@ export class Runtime {
     recordProcessHostname(this.process, hostnameReader ?? (() => 'localhost'));
     const readHostFile = vfs.readFileSync.bind(vfs);
     recordProcessHosts(this.process, () => {
-      try {
-        const content = readHostFile('/etc/hosts', 'utf8');
-        return typeof content === 'string' ? content : new TextDecoder().decode(content);
-      } catch (cause) {
-        if ((cause as { code?: string }).code === 'ENOENT') return '';
-        throw cause;
-      }
+      // The DNS door decides which file errors mean an unavailable hosts source.
+      const content = readHostFile('/etc/hosts', 'utf8');
+      return typeof content === 'string' ? content : new TextDecoder().decode(content);
     });
     // The Node line this process answers as, and where it came from (node-line.ts).
     const namedVersion = options.env?.NODE_VERSION;
