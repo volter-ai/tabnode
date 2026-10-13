@@ -17,6 +17,22 @@
  */
 export const TREE_DESCRIPTORS = Symbol.for('tabnode.tree.descriptors');
 
+/** Native addon port only; offsets and ABI encoding belong to the host. */
+export interface TreeRecordLock {
+  type: number;
+  whence: number;
+  start: bigint;
+  length: bigint;
+  pid: number;
+}
+
+export interface TreeAdvisoryLocks {
+  /** Linux F_GETLK/F_SETLK/F_SETLKW (and OFD forms); failure throws the real errno. */
+  fcntl(fd: number, command: number, record: TreeRecordLock): TreeRecordLock;
+  /** Locks the open description, released by its last close, including duplicates. */
+  flock(fd: number, operation: number): void;
+}
+
 /** What the stat of an open description answers, in the shape a tree's `statSync` answers. */
 export interface TreeDescriptorStats {
   isFile(): boolean;
@@ -78,6 +94,8 @@ export interface TreeDescriptors {
    * number, which a close drops and a reuse misdirects.
    */
   dup?(fd: number): number;
+  /** POSIX locks share the process's kernel owner and end on any close of that file. */
+  advisoryLocks?: TreeAdvisoryLocks;
   /** A number for a handle of the engine's own (a pipe, a socket), held until `release`. */
   reserve(): number;
   release(fd: number): void;

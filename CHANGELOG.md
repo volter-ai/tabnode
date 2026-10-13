@@ -1,3 +1,7 @@
+## Native descriptor advisory locks
+
+Add an optional host descriptor capability for native addon fcntl/flock ports under a private fs-binding symbol. Calls retain the caller’s descriptor owner, and unsupported owners refuse ENOSYS. No public fs API, lock table or native ABI is invented. Source review/compilation only; real-image qualification remains with the substrate.
+
 # Changelog
 
 Container hostname review correction: Node lookup uses the caller's mounted /etc/hosts, Docker image Hostname is ignored, and container domain defaults to (none). Admission requires a trusted identity; missing UTS transport returns ENOSYS; standalone DNS aliases stay outside identified containers. Older-engine adapters are guarded and the0.9.0 pin stays. Changed production outputs and full engine declarations emit; independent re-read and cycle execution remain.
