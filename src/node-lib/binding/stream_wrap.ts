@@ -360,6 +360,46 @@ export class LibuvStreamWrap implements OwnedHandle {
     return count;
   }
 
+  /**
+   * The one wrapper on the other end of this pairing, or null when the other end is shared (duplicated, inherited)
+   * or there is none: a connection whose bytes can move to another realm has exactly one reader and writer there.
+   */
+  get soleRealmPeer(): LibuvStreamWrap | null {
+    if (nativeStreamFor(this)) return null;
+    const handles = this.streamEndpoint.peer?.handles;
+    return handles?.size === 1 ? handles.values().next().value ?? null : null;
+  }
+
+  /** Bytes that arrived on this end and were not yet read. */
+  get queuedReadBytes(): number {
+    let bytes = 0;
+    for (const chunk of this.streamEndpoint.inbound) bytes += chunk.bytes.byteLength;
+    return bytes;
+  }
+
+  /**
+   * Take every byte that arrived on this end and was not yet read, for a reader in another realm that continues this
+   * connection (R14). Undefined, taking nothing, where what is queued is not only bytes: a descriptor, an EOF, an
+   * error, or a read in progress.
+   */
+  takeQueuedReads(): Uint8Array | undefined {
+    const endpoint = this.streamEndpoint;
+    if (nativeStreamFor(this) || endpoint.handles.size !== 1 || endpoint.eof || endpoint.error !== null || this.pendingHandle !== null
+      || endpoint.inbound.some(chunk => chunk.handle !== undefined && chunk.handle !== null)) return undefined;
+    const bytes = new Uint8Array(this.queuedReadBytes);
+    let at = 0;
+    for (const chunk of endpoint.inbound.splice(0)) { bytes.set(chunk.bytes, at); at += chunk.bytes.byteLength; }
+    endpoint.capacityChanged();
+    return bytes;
+  }
+
+  /** Bytes a reader in another realm took (takeQueuedReads) and did not read, back in front of what arrived since. */
+  returnQueuedReads(bytes: Uint8Array): void {
+    if (this.closed || !bytes.byteLength) return;
+    this.streamEndpoint.inbound.unshift({ bytes });
+    this.scheduleFlush();
+  }
+
   /** Changes to the same connection end, even after its wrapper is replaced. */
   onPeerReadCapacity(listener: () => void): () => void {
     const endpoint = this.streamEndpoint.peer;

@@ -75,7 +75,7 @@ export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats } from './tree-descriptors';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 import type { ProcessRegistry } from './process-registry';
-export { NativeStreamScope } from './native-stream-owner';
+export { NativeStreamScope, nativeStreamPeerEntry } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
 export { installHostNames } from './shims/dns';
 export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport, NativeStreamHandleView, NativeStreamWriteTrace } from './native-stream-owner';

@@ -6,6 +6,17 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- R14 guest-direct hooks (substrate Articles4/5/7/8/9; design
+  `docs/readings/s2-r14-guest-direct-design.json` in browser-substrate): a host
+  can move a realm-local connection's bytes to the realm that holds its one
+  native entry. `nativeStreamPeerEntry(acceptedHandle)` names that entry;
+  `NativeStreamScope.takeDirected(id)` takes its unread bytes and leaves it
+  carrying control only; `returnDirected(id, unread)` makes it ordinary again,
+  unread bytes first; `writing(id)` and `LibuvStreamWrap.queuedReadBytes` let
+  the host see when both directions are drained. A directed entry refuses
+  duplicate, inherit, pair and pass as a backstop; the host returns it first.
+  Source only.
+
 - K1/R16 evaluate (substrate Articles5/6/9; lead ruling m-71c68f37): a module
   body runs in Node's own wrapper form, with no `with`. Preparation rewrites only
   the free references to the 19 guest-global names (reads, writes, `typeof`,
