@@ -359,7 +359,7 @@ export class NativeStreamDriver {
   complete(operation: NativeStreamOperation, callback: (status: number) => void): number {
     if (!('request' in operation)) throw new Error('Native completion requires a request ID.');
     const release = holdRequest(this.handle);
-    this.completions.set(operation.request, status => { try { withGuestCallback(() => callback(status)); } finally { release(); } });
+    this.completions.set(operation.request, status => { try { withGuestCallback(() => callback(status), 'wrap', callback); } finally { release(); } });
     // A shutdown is posted where it can be: it completes by its event either
     // way, and Node's own completion of one reads no status (net's
     // `afterShutdown`), so a refusal the owner completes is the same to it.
@@ -392,7 +392,7 @@ export class NativeStreamDriver {
     const complete = (status: number): void => {
       if (completed) return;
       completed = true;
-      try { withGuestCallback(() => callback(status)); } finally { release(); }
+      try { withGuestCallback(() => callback(status), 'wrap', callback); } finally { release(); }
     };
     this.pendingShutdown = () => {
       if (this.closing || stopped) { queueBindingTask(() => complete(UV_ECANCELED)); return; }
@@ -558,7 +558,7 @@ export class NativeStreamDriver {
     if (synchronous) { write.release(); return; }
     // A Node callback throws as a native callback, not as a rejection of this
     // bridge's private async function.
-    queueBindingTask(() => { try { withGuestCallback(() => write.request.oncomplete?.(status)); } finally { write.release(); } });
+    queueBindingTask(() => { try { withGuestCallback(() => write.request.oncomplete?.(status), 'wrap', write.request.oncomplete); } finally { write.release(); } });
   }
 
   close(callback?: () => void, reset = false): number {
@@ -600,7 +600,7 @@ export class NativeStreamDriver {
     this.closeLocal(() => {
       const failures: unknown[] = [];
       try {
-        for (const callback of callbacks) { try { withGuestCallback(callback); } catch (cause) { failures.push(cause); } }
+        for (const callback of callbacks) { try { withGuestCallback(callback, 'wrap', callback); } catch (cause) { failures.push(cause); } }
       } finally { this.releaseClose?.(); this.releaseClose = undefined; }
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, 'Native close callbacks failed.');
@@ -635,7 +635,7 @@ export class NativeStreamDriver {
         this.acceptedWrites ??= { listener: this.descriptor.id, count: 0, reads: 0 };
         drivers.get(accepted)!.acceptedWrites = this.acceptedWrites;
       }
-      withGuestCallback(() => (this.handle.onconnection as (status: number, handle?: Stream) => void)(event.status, accepted));
+      withGuestCallback(() => (this.handle.onconnection as (status: number, handle?: Stream) => void)(event.status, accepted), 'wrap', this.handle.onconnection);
     } else {
       const complete = this.completions.get(event.request);
       this.completions.delete(event.request);

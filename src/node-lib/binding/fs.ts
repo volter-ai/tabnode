@@ -557,7 +557,7 @@ class FSRequest {
     try {
       this.cancel = queueNativeFsTask(() => {
         if (this.ended) return;
-        try { ownedRun(owner, run, true); }
+        try { ownedRun(owner, run, true, 'fs', run); }
         finally { this.close(); }
       });
     } catch (cause) { this.close(); throw cause; }
@@ -619,8 +619,8 @@ function answer<T>(req: FSReq | undefined, work: () => T): T | undefined {
   const owner = ownerOfInstance(request as object);
   new FSRequest(owner, () => {
     let value: T;
-    try { value = run(); } catch (error) { ownedRun(owner, () => complete.call(request, error as Error), true); return; }
-    ownedRun(owner, () => complete.call(request, null, value as unknown), true);
+    try { value = run(); } catch (error) { ownedRun(owner, () => complete.call(request, error as Error), true, 'fs', complete); return; }
+    ownedRun(owner, () => complete.call(request, null, value as unknown), true, 'fs', complete);
   });
   return undefined;
 }
@@ -755,7 +755,7 @@ class FSEvent {
           // libuv encodes the filename at this binding, including Buffer
           // when requested. Node's FSWatcher forwards it without conversion.
           this.onchange?.(0, event === 'rename' ? 'rename' : 'change', encodeFsName(filename ?? '', encoding))));
-        ownedRun(owner, notify, true);
+        ownedRun(owner, notify, true, 'fs', this.onchange);
       }) as never) as unknown as { close(): void };
       this.initialized = true;
       registerHandle(this);

@@ -1195,7 +1195,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         if (exitCalled) break;
         if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
         if (!hasReferencedWork()) {
-          try { enterRun(runToken, () => withGuestCallback(() => proc.emit('beforeExit', proc.exitCode ?? 0))); }
+          try { enterRun(runToken, () => withGuestCallback(() => proc.emit('beforeExit', proc.exitCode ?? 0), 'process', 'beforeExit')); }
           catch (error) { onUncaughtException(error); }
           if (exitCalled) break;
           await checkpoint();

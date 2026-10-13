@@ -28,7 +28,10 @@ let callbackDepth = 0;
  * against its PostgreSQL), and nothing said whose callbacks it was. Off until a reading asks (enableGuestEntryAccount,
  * called where the load clock starts): a bracket then looks up one map entry when it ends; otherwise nothing is
  * counted and no name is read. Realm-scoped, as the brackets are. At most ENTRY_KEYS distinct entries; the rest are
- * counted under their kind.
+ * counted under their kind, so the map holds at most ENTRY_KEYS and one key per kind. Kinds: timer, wrap (a binding
+ * wrap's or native stream's callback, by the function it holds), then/setTimeout/setInterval/setImmediate/
+ * queueMicrotask, await, emit (by event), ticks, async-resource, message, fs (a file system request's or watcher's
+ * callback), process, module, entry, callback (an engine callback with no door named), other.
  */
 const ENTRY_KEYS = 256;
 let entryAccount: Map<string, { count: number; ms: number }> | undefined;
@@ -51,10 +54,18 @@ export function guestEntryKinds(): Record<string, [number, number]> | undefined 
   }
   return kinds;
 }
+/** A source's name, read safely: a function's own `name` (a getter or a Proxy may run guest code or throw, and a
+ *  throw here would replace the callback's own), only where it is a string; an event's name; 64 characters at most. */
+function sourceName(source: unknown): string | undefined {
+  if (typeof source === 'string') return source.slice(0, 64) || undefined;
+  if (typeof source !== 'function') return undefined;
+  try { const name: unknown = (source as { name?: unknown }).name; return typeof name === 'string' && name ? name.slice(0, 64) : undefined; }
+  catch { return undefined; }
+}
 function countEntry(kind: string, source: unknown, ms: number): void {
   const account = entryAccount!;
   // a function by its own name; an event by its name (an emit's first argument, where it is a string)
-  const name = typeof source === 'function' && source.name ? source.name : typeof source === 'string' ? source.slice(0, 64) : undefined;
+  const name = sourceName(source);
   let key = name ? `${kind}:${name}` : kind;
   if (!account.has(key) && account.size >= ENTRY_KEYS) key = kind;
   const held = account.get(key);
@@ -177,11 +188,19 @@ export function withGuestExecution<T>(fn: () => T, kind = 'other', source?: unkn
 export function resumeGuestTurn(): void {
   if (continuation) return;
   startGuestLoop();
-  if (depth === 0) activeSince = clock!();
+  // A continuation begun from the loop is an `await`'s; one begun inside a bracket (a compiled async function's
+  // catch or finally restoring its frame before its first await, under a timer or a stream's read) extends that
+  // bracket, whose end then counts nothing: its time is the bracket's entry's, counted here when the turn ends.
+  const fromTheLoop = depth === 0;
+  if (fromTheLoop) activeSince = clock!();
   continuation = true;
   enqueue(() => {
     continuation = false;
-    if (depth === 0) { const took = clock!() - activeSince; active += took; if (entryAccount) countEntry('await', undefined, took); }
+    if (depth === 0) {
+      const took = clock!() - activeSince;
+      active += took;
+      if (entryAccount) { if (fromTheLoop) countEntry('await', undefined, took); else countEntry(outerKind, outerSource, took); outerSource = undefined; }
+    }
   });
 }
 
