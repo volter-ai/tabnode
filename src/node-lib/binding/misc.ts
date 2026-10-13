@@ -1,3 +1,4 @@
+import { processHostnameOf } from '../../process-hostname';
 import { processCredentialsOf } from '../../process-credentials';
 /**
  * The four small bindings Node's `internal/errors.js`, `internal/validators.js`
@@ -149,7 +150,7 @@ export const osBinding = {
 /** libuv's account lookup belongs to the asking process, even when multiple guests share this realm. */
 export function createOsBinding(process: object): typeof osBinding {
   const credentials = processCredentialsOf(process);
-  return { ...osBinding, getUserInfo: () => ({ ...osShim.userInfo(credentials) }) };
+  return { ...osBinding, getHostname: () => processHostnameOf(process), getUserInfo: () => ({ ...osShim.userInfo(credentials) }) };
 }
 
 /**

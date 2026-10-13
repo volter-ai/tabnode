@@ -1,5 +1,6 @@
 import { traceRound, traceRoundFields } from './trace-values';
 import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested, retainTraceInput, releaseTraceInput } from './trace-output';
+import { recordProcessHostname, recordProcessHosts } from './process-hostname';
 import { processCredentialsOf } from './process-credentials';
 import type { ProcessCredentials } from './process-credentials';
 /**
@@ -535,6 +536,31 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   });
   __substrateGuestGlobals.set(process, guest!);
   return guest!;
+}
+/**
+ * The names a body reads as bare identifiers from its process's guest global rather than the host realm's, live:
+ * each read is the guest's value now, each assignment is the guest's. They were an object literal of accessors in
+ * every body's wrapper, so V8 parsed 2,300 characters and 38 accessor functions again for each body it compiled,
+ * and made 38 closures again for each body it ran: Cal's server compiled 8,456 bodies to its first page (S2 K1,
+ * compile 743 ms). One object a process serves every body of it, the same answers. Its accessors are not
+ * configurable: one body's `delete window` used to remove the name from that body's own scope alone, and on a
+ * shared scope it would remove it from every later body's, so the delete is refused (false, as sloppy code sees it).
+ */
+const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'window', 'document', 'location', 'performance'] as const;
+const __substrateGuestScopes = new WeakMap<Process, object>();
+function __substrateGuestScope(process: Process): object {
+  let scope = __substrateGuestScopes.get(process);
+  if (scope) return scope;
+  const guest = __substrateGuestGlobal(process);
+  scope = Object.create(null) as object;
+  for (const name of __substrateGuestScopeNames) {
+    // The wrapper's accessors were sloppy code: a read is `globalThis[name]`, an assignment the guest's global
+    // refuses is ignored, never thrown.
+    Object.defineProperty(scope, name, { enumerable: true, configurable: false,
+      get: () => guest[name], set: (value: unknown) => { Reflect.set(guest, name, value); } });
+  }
+  __substrateGuestScopes.set(process, scope);
+  return scope;
 }
 // Node compiles a CommonJS body as sloppy script code: an assignment to a
 // getter-only property is ignored rather than thrown, an undeclared assignment
@@ -2419,6 +2445,9 @@ const __substrateModuleClasses = new WeakMap<Record<string, Module>, any>();
 const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined } }>();
 // Nested load hooks replace shared compile callbacks; a failed body still belongs to its admission parent.
 const __substrateAdmissionParents = new WeakMap<Module, Module | null>();
+// Internal reuse must not lengthen the lifetime of createRequire's invocation-local maps.
+// This private reset is never exposed on a guest require function.
+const __substrateRequireResets = new WeakMap<RequireFunction, () => void>();
 /** Node's `findLongestRegisteredExtension`: the longest registered extension the file's name ends with, else `.js`. */
 function __substrateRegisteredExtension(filename: string, extensions: Record<string, unknown>): string {
   const name = filename.slice(filename.lastIndexOf('/') + 1);
@@ -2497,6 +2526,25 @@ function __substrateModuleDir(parent: any, currentDir: string): string {
 function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireFor: (parent: any) => any): any {
   let Module = __substrateModuleClasses.get(moduleCache);
   if (Module) return Module;
+  // Node's module loader reuses the parent's context instead of constructing a whole loader per _load.
+  // Keep that construction private to this module-cache class and admitted parent. Guest-made parents and
+  // filename accessors retain the original fresh path; a live filename change replaces its sole context.
+  const freshFor = requireFor;
+  const contexts = new WeakMap<Module, { filename: string; require: RequireFunction }>();
+  requireFor = (parent: any) => {
+    if (!__substrateAdmissionParents.has(parent)) return freshFor(parent);
+    const filename = Object.getOwnPropertyDescriptor(parent, 'filename');
+    if (!filename || typeof filename.value !== 'string' || filename.value === '') return freshFor(parent);
+    let context = contexts.get(parent);
+    if (!context || context.filename !== filename.value) {
+      context = { filename: filename.value, require: freshFor(parent) };
+      contexts.set(parent, context);
+    }
+    // The old factory supplied empty transient maps and rebound currentVfs on every call. Preserve both;
+    // successful process paths and live hooks still have their original owners and lifetimes.
+    __substrateRequireResets.get(context.require)!();
+    return context.require;
+  };
   Module = function Module(this: any, id = "", parent?: any) {
     this.id = id; this.filename = id; this.exports = {}; this.loaded = false; this.children = []; this.paths = []; this.parent = parent;
   };
@@ -3103,7 +3151,7 @@ function createRequire(
       // returns Node handles and owns their ref/unref lifetime.
       const scriptName = __substrateScriptName(resolvedPath);
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get window() { return globalThis.window; }, set window(value) { globalThis.window = value; }, get document() { return globalThis.document; }, set document(value) { globalThis.document = value; }, get location() { return globalThis.location; }, set location(value) { globalThis.location = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with (__substrateGuestScope) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
 
@@ -3145,7 +3193,8 @@ function createRequire(
         importMeta,
         dynamicImport,
         __substrateGuestGlobal,
-        __substrateGuestConstructor
+        __substrateGuestConstructor,
+        __substrateGuestScope(process)
       )));
 
       // The body has returned. With no require in flight it was an entry's (started through `_load`, at depth 0), and
@@ -3525,6 +3574,11 @@ function createRequire(
     };
   }
 
+  __substrateRequireResets.set(require, () => {
+    currentVfs = vfs;
+    resolutionCache.clear();
+    packageJsonCache.clear();
+  });
   return require;
 }
 
@@ -3618,6 +3672,15 @@ export class Runtime {
     // so the binding reads the tree off the process whose code is executing --
     // the same door every vendored file gets its `process` through.
     (this.process as unknown as Record<symbol, unknown>)[kRunFilesystem] = vfs;
+    // Capture the host method before guest code executes, but read its mutable kernel UTS afresh on each call.
+    const hostnameReader = vfs.processHostname?.bind(vfs);
+    recordProcessHostname(this.process, hostnameReader ?? (() => 'localhost'));
+    const readHostFile = vfs.readFileSync.bind(vfs);
+    recordProcessHosts(this.process, () => {
+      // The DNS door decides which file errors mean an unavailable hosts source.
+      const content = readHostFile('/etc/hosts', 'utf8');
+      return typeof content === 'string' ? content : new TextDecoder().decode(content);
+    });
     // The Node line this process answers as, and where it came from (node-line.ts).
     const namedVersion = options.env?.NODE_VERSION;
     if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
@@ -3791,7 +3854,7 @@ export class Runtime {
       // returns Node handles and owns their ref/unref lifetime.
       const scriptName = __substrateScriptName(filename);
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get window() { return globalThis.window; }, set window(value) { globalThis.window = value; }, get document() { return globalThis.document; }, set document(value) { globalThis.document = value; }, get location() { return globalThis.location; }, set location(value) { globalThis.location = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; with (__substrateGuestScope) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
 
@@ -3824,7 +3887,8 @@ export class Runtime {
         createImportMeta(require, importMetaUrl, dirname, filename),
         dynamicImport,
         __substrateGuestGlobal,
-        __substrateGuestConstructor
+        __substrateGuestConstructor,
+        __substrateGuestScope(this.process)
       )));
 
       const settling = __substrateDriveBody(bodyKind, body, module);

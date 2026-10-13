@@ -1,5 +1,7 @@
 # Changelog
 
+Container hostname review correction: Node lookup uses the caller's mounted /etc/hosts, Docker image Hostname is ignored, and container domain defaults to (none). Admission requires a trusted identity; missing UTS transport returns ENOSYS; standalone DNS aliases stay outside identified containers. Older-engine adapters are guarded and the0.9.0 pin stays. Changed production outputs and full engine declarations emit; independent re-read and cycle execution remain.
+
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
 ## Unreleased
@@ -10,6 +12,24 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   cohorts still materialize only after release or before terminal handoff.
   Terminal ownership releases arrays while retaining cumulative scalars.
   Old-host delivery remains compatible; no raw-file-length shortcut lands.
+
+- S2 K1 compile (substrate Articles5/6/8/9): a body's wrapper no longer carries
+  the 19 guest-global accessors as an object literal. One null-prototype scope
+  of the same live, sloppy-silent accessors is made per process and passed in,
+  so V8 no longer parses ~2,100 characters and 38 accessor functions per
+  compiled body or makes 38 closures per run (Cal: 8,456 bodies to first head,
+  compile 743 ms). Its accessors are non-configurable, so one body's `delete`
+  cannot strip a name from later bodies. Saving awaits a mini Cal lap.
+
+- Reuse the private internal require context for an admitted module parent
+  within its module-cache class. Keep the filename live, preserve fresh public
+  createRequire/arbitrary-parent behavior and live hooks, and reset both
+  transient maps plus currentVfs before reuse. Existing successful-path and
+  package-config cache lifetimes are unchanged (substrate Articles5/6/7/8/9;
+  production emission/review and Cal runtime saving pending).
+- Container hostname follow-up: handle missing and unreadable /etc/hosts in one DNS fallback path; surface EIO transport failures. Full declarations and changed production JS emit. No app execution or runtime qualification. Retained receipt hostname-hosts-error-followup.json SHA256 e128facd7b9414c88c819a0224c1e7878ad230eaf1b4a27f9989ed6eab5430bd.
+
+Container hostname fork/inspect correction: the inherited kernel channel supplies the fork's container identity to root/pthread UTS and resolver policy. Docker inspect reports the prepared identity and creation hostname; Node lookup skips an unreadable hosts file. Changed production closures and full engine declarations pass; independent re-read and cycle qualification remain.
 
 - First-request attribution (substrate Articles5/6/8/9): add requested-only
   outsideSplit to the existing deferred load clock. Intersect synchronous VM
