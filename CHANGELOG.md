@@ -6,6 +6,15 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- PLACEMENT-LOADER-INTRINSICS (substrate Articles1/2/5/6/8/9): capture
+  requested observer Reflect/Object/Set intrinsics before guest entry,
+  populate selection with indexed access, and observe only own loaded/export
+  data descriptors. Guest replacement of shared-realm methods cannot forge
+  the selection or its observer callback. Changed index/worker output and
+  all declarations emit in separate bounded stages of the unchanged config;
+  [build receipt](evidence/placement-loader/intrinsics-build-record.json).
+  Private consumer output and actual app/inspector transport await review.
+
 - PLACEMENT-LOADER-HOST (substrate Articles1/2/5/6/8/9): allow a local
   execution host to observe successful synchronous module evaluation at
   exact selected filenames through private Runtime/RunOptions. Ordinary

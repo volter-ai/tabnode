@@ -97,6 +97,13 @@ import { applySourceEdits } from './source-edits';
 import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typescript-module';
 import * as acorn from 'acorn';
 
+// Requested evidence must not use intrinsics replaced by a guest in this shared
+// realm. Capture them at module import, before the first guest can execute.
+const __moduleObserverSet = Set;
+const __moduleObserverSetAdd = Set.prototype.add, __moduleObserverSetHas = Set.prototype.has;
+const __moduleObserverApply = Reflect.apply;
+const __moduleObserverDescriptor = Object.getOwnPropertyDescriptor, __moduleObserverHasOwn = Object.hasOwn;
+
 /**
  * Walk an acorn AST recursively, calling the callback for every node.
  */
@@ -3205,12 +3212,21 @@ function createRequire(
   // observer is private to this require context; ordinary execution installs no wrapper or per-body check.
   if (options.moduleEvaluationObserver) {
     const { filenames, onEvaluated } = options.moduleEvaluationObserver;
-    const selected = new Set(filenames), originalBody = runModuleBody;
+    const selected = new __moduleObserverSet<string>(), originalBody = runModuleBody;
+    for (let index = 0; index < filenames.length; index++) {
+      __moduleObserverApply(__moduleObserverSetAdd, selected, [filenames[index]]);
+    }
     runModuleBody = (module, prepared, resolvedPath, dirname, bodySource, scoped = false): void => {
       originalBody(module, prepared, resolvedPath, dirname, bodySource, scoped);
-      if (selected.has(resolvedPath) && module.loaded === true) {
-        try { onEvaluated(resolvedPath, module.exports); }
-        catch { /* Evidence failure cannot change the original module's result or error. */ }
+      if (__moduleObserverApply(__moduleObserverSetHas, selected, [resolvedPath])) {
+        try {
+          const loaded = __moduleObserverApply(__moduleObserverDescriptor, undefined, [module, 'loaded']);
+          const exports = __moduleObserverApply(__moduleObserverDescriptor, undefined, [module, 'exports']);
+          if (loaded && exports && __moduleObserverApply(__moduleObserverHasOwn, undefined, [loaded, 'value'])
+            && loaded.value === true && __moduleObserverApply(__moduleObserverHasOwn, undefined, [exports, 'value'])) {
+            onEvaluated(resolvedPath, exports.value);
+          }
+        } catch { /* Evidence failure cannot change the original module's result or error. */ }
       }
     };
   }
