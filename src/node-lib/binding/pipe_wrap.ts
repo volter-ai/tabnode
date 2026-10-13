@@ -238,7 +238,13 @@ export class Pipe extends LibuvStreamWrap {
     if (!path.startsWith('/')) {
       const cwd = (globalThis as unknown as { process?: { cwd?: () => string } }).process?.cwd?.();
       if (typeof cwd !== 'string' || !cwd.startsWith('/')) return 0;
-      path = `${cwd.replace(/\/+$/u, '')}/${path}`;
+      // Normalized, so the node, its unlink and every trace name one path (`./x.sock` is `<cwd>/x.sock`).
+      const parts: string[] = [];
+      for (const part of `${cwd}/${path}`.split('/')) {
+        if (part === '' || part === '.') continue;
+        if (part === '..') parts.pop(); else parts.push(part);
+      }
+      path = `/${parts.join('/')}`;
     }
     try { tree.createSocketSync!(path, 0o777); }
     catch (cause) {
