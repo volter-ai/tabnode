@@ -17,6 +17,7 @@ export type { ProcessCredentials } from './process-credentials';
 export { restoreHostGlobals, guestRealmInstalled } from './host-globals';
 export { VirtualFS } from './virtual-fs';
 export type { FSNode, MountedTree, Stats, FSWatcher, WatchListener, WatchEventType } from './virtual-fs';
+export type { PreparedSource } from './prepared-tree';
 export { Runtime, execute, prepareModuleForImage, preparedModuleKey, preparedModuleKeyOf, preparedModuleKind, isPreparedModuleKey, PREPARED_MODULES_DIR, PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT } from './runtime';
 export type { Module, RuntimeOptions, RequireFunction, ModuleEvaluationObserver, ModuleEvaluationEvidence } from './runtime';
 export { createRuntime, WorkerRuntime } from './create-runtime';
@@ -54,6 +55,7 @@ export * as perf_hooks from './shims/perf_hooks';
 export * as worker_threads from './shims/worker_threads';
 
 import { VirtualFS } from './virtual-fs';
+import type { PreparedSource } from './prepared-tree';
 import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
@@ -121,6 +123,8 @@ export interface RunOptions {
    * into it on its own account. `runNode` only.
    */
   filesystem?: VirtualFS;
+  /** Where the host can read prepared bodies by key without the process's view (S2 R44b, prepared-tree.ts). */
+  preparedSource?: PreparedSource;
   /**
    * The numbers a host that numbers processes already gave this run: a
    * kernel's pid for a `node` its shell exec'd, and the pid of the process
@@ -350,6 +354,7 @@ export function createContainer(options?: ContainerOptions): {
       ...(runOptions?.moduleEvaluationObserver ? { moduleEvaluationObserver: runOptions.moduleEvaluationObserver } : {}),
       credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()),
       ...(runOptions?.filesystem ? { filesystem: runOptions.filesystem } : {}),
+      ...(runOptions?.preparedSource ? { preparedSource: runOptions.preparedSource } : {}),
       ...(runOptions?.process ? { process: { pid: runOptions.process.pid, ppid: runOptions.process.ppid } } : {}),
       ...(runOptions?.registry ? { registry: runOptions.registry } : {}),
       cwd: runOptions?.cwd,

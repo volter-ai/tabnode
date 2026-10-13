@@ -44,7 +44,7 @@ import { EventEmitter } from '../node-lib/events-module';
 import { __substrateExitCode, __substrateProcessEnding, __substrateUncaughtCapture } from './process';
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
-import { readPreparedFrom } from '../prepared-tree';
+import { readPreparedFrom, type PreparedSource } from '../prepared-tree';
 import { treeDescriptorsOf } from '../tree-descriptors';
 import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
 import { stackFormedBy } from '../stack-overrides';
@@ -2358,6 +2358,8 @@ export interface NodeRunOptions {
   vfs: VirtualFS;
   /** The tree this run's process reads and writes instead, where the host gives one. */
   filesystem?: VirtualFS;
+  /** Where the host can read prepared bodies by key without the process's view (prepared-tree.ts); asked first. */
+  preparedSource?: PreparedSource;
   /** The numbers the host already gave this process, a kernel's. */
   process?: { pid: number; ppid: number };
   /** The run's own process registry, its kernel connection's (installRunRegistry). */
@@ -2397,8 +2399,8 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
   if (options.filesystem && !shells.has(options.filesystem)) shellForRunTree(options.filesystem);
   const shell = shells.get(tree);
   if (!shell) throw new Error('child_process not initialized for this tree');
-  // A run on a tree of its own takes prepared bodies from the container's tree first (S2 R44b, prepared-tree.ts).
-  if (options.filesystem) readPreparedFrom(options.filesystem, options.vfs);
+  // A run on a tree of its own asks the prepared source its host named first (S2 R44b, prepared-tree.ts).
+  if (options.filesystem && options.preparedSource) readPreparedFrom(options.filesystem, options.preparedSource);
   currentVfs = tree;
   bashInstance = shell.bash;
   vfsAdapter = shell.adapter;
