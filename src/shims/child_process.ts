@@ -2399,8 +2399,8 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
   if (options.filesystem && !shells.has(options.filesystem)) shellForRunTree(options.filesystem);
   const shell = shells.get(tree);
   if (!shell) throw new Error('child_process not initialized for this tree');
-  // A run on a tree of its own asks the prepared source its host named first (S2 R44b, prepared-tree.ts).
-  if (options.filesystem && options.preparedSource) readPreparedFrom(options.filesystem, options.preparedSource);
+  // A run asks the prepared source its host named first (S2 R44b, prepared-tree.ts), on whichever tree it runs.
+  if (options.preparedSource) readPreparedFrom(tree, options.preparedSource);
   currentVfs = tree;
   bashInstance = shell.bash;
   vfsAdapter = shell.adapter;
