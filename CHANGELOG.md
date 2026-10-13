@@ -6,6 +6,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- PLACEMENT-LOADER current-head integration (substrate Articles1/2/5/6/8/9):
+  merge approved private observation with34b5101's counted bodies, forwarding
+  utf8Bytes unchanged, and enable only an own observer options property via a
+  captured native check without absent-case allocations. Original worker/index
+  bundle stages and all declarations emit; [receipt](evidence/placement-loader/current-head-build-record.json).
+  Actual inspector/vendor-loader transport remains independently unqualified.
+
 - PLACEMENT-LOADER-RECORDS (substrate Articles1/2/5/6/8/9): replace filename
   arrays with the host's private observes predicate over frozen records.
   Own module state uses captured reflection and frozen argument records with
