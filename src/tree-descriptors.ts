@@ -98,6 +98,13 @@ export interface TreeDescriptors {
   dup?(fd: number): number;
   /** POSIX locks share the process's kernel owner and end on any close of that file. */
   advisoryLocks?: TreeAdvisoryLocks;
+  /**
+   * The error `open(path)` would throw for a path the tree's own stat has just answered absent: the same object its
+   * open builds for ENOENT (code, errno, syscall 'open', path, message), with no request made (S2 T11). Undefined
+   * where that absence was not a known ENOENT (an ENOTDIR is absent to a stat too); then, and for a tree without
+   * it, the read is left to `open`.
+   */
+  absent?(path: string): Error | undefined;
   /** A number for a handle of the engine's own (a pipe, a socket), held until `release`. */
   reserve(): number;
   release(fd: number): void;
