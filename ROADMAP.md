@@ -45,6 +45,11 @@ stopped at their recorded bounds; those attempts remain explicitly incomplete.
 The own compiler closure was installed normally from registry/cache, with
 every selected version/URL/integrity matching the original repository lock.
 No repository manifest, vendor source, package pin or publication changed.
+Container hostname follow-up: full engine declarations pass; changed module JavaScript emits through the pinned esbuild transform. Whole Vite bundle stopped8.5s and remains incomplete. Substrate runtime/WALI/Node/image-manifest/container-start changed closures emit, including both filesystem forwarding wrappers. Setter admission still awaits the shared capability model. No apps/tests/qualification.
+
+Container hostname compiler limit: own exact locked production dependencies installed successfully; full Vite bundle and declaration emitters stopped at7s, neither a pass. Retain an incremental production emitter as tool-speed work; private hostname reader source is ready for independent review, runtime savings/qualification unclaimed. Substrate docs/readings/container-uts-hostname-implementation.json retains exact receipts.
+
+Container UTS hostname: Node's native OS binding must ask the calling process's kernel-owned UTS through its own filesystem channel. The host supplies a private per-process reader; it is retained by the binding and never inferred from mutable process.env, pid getters or the hosting realm. Standalone VirtualFS retains localhost. Vendored Node JavaScript stays unchanged. Substrate ADR-0129 and docs/readings/container-uts-hostname-ruling-2026-10-12.json own the namespace, creation files and setter permissions: lead ruling under owner delegation, 2026-10-12, OWNER-RULINGS.md “decisions are delegated to the lead”. This record precedes behavior. Runtime qualification remains the cycle's reading.
 
 ## S2 first request: partition the time outside module loading
 
@@ -873,3 +878,7 @@ source patches, vendor calls or diagnostic environment flags. The consumer
 privately captures/removes its CDP binding before guest entry and attests
 the actual process root. Production library/declaration emission only; no
 tests, probes, apps or timing runs. Runtime observation remains unqualified.
+
+Container UTS resolver correction (ADR-0129): process-owned /etc/hosts readers now feed callback/promises lookup through the captured NodeLibScope, preserving file address families. Changed JS modules and complete declarations emitted. Paired merge with substrate is required; whole Vite bundle still incomplete and cycle reading pending.
+
+Container hosts-error follow-up (m-5b8a48e2): missing hosts no longer becomes an empty string at capture, and EIO is not suppressed. Production all declarations and changed JS emit; cycle qualification pending. Receipt /Volumes/PeakSSD/heavy-runs-out/builders/s1-container-hostname-artifact/hostname-hosts-error-followup.json SHA256 e128facd7b9414c88c819a0224c1e7878ad230eaf1b4a27f9989ed6eab5430bd.
