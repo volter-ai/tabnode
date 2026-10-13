@@ -29,8 +29,8 @@ function ownedBytes(view: Uint8Array): Uint8Array {
   return copy;
 }
 import {
-  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, stopHandle,
-  type OwnedHandle, invokeOwned } from './handles';
+  registerHandle, refHandle, unrefHandle, releaseHandle, stopHandle,
+  type OwnedHandle, nodeHandleHasRef, invokeOwned, observeNodeRequest, forgetNodeRequest } from './handles';
 import { withGuestCallback, queueBindingTask } from '../../guest-loop';
 
 /** The four slots libuv's `StreamBase` reports a read or a write through. */
@@ -141,12 +141,12 @@ export class LibuvStreamWrap implements OwnedHandle {
   protected readonly asyncId = nextAsyncId++;
 
   constructor() {
-    registerHandle(this);
+    registerHandle(this, true);
   }
 
   protected attachNative(kind: 'tcp' | 'pipe', type: number): void {
     attachNativeStream(this as unknown as TCP | Pipe, kind, type,
-      callback => this.closeLocal(callback), () => this.flushInbound());
+      callback => this.closeLocal(callback, true), () => this.flushInbound());
   }
 
   getAsyncId(): number {
@@ -164,7 +164,7 @@ export class LibuvStreamWrap implements OwnedHandle {
   }
 
   hasRef(): boolean {
-    return handleHasRef(this);
+    return nodeHandleHasRef(this);
   }
 
   readStart(): number {
@@ -197,7 +197,14 @@ export class LibuvStreamWrap implements OwnedHandle {
   shutdown(req: ShutdownWrap): number {
     if (this.closed) return UV_EBADF;
     const native = nativeStreamFor(this);
-    if (native) return native.shutdown(status => invokeOwned(req, 'oncomplete', status));
+    observeNodeRequest(req, this);
+    if (native) {
+      try {
+        const status = native.shutdown(status => invokeOwned(req, 'oncomplete', status));
+        if (status !== 0) forgetNodeRequest(req);
+        return status;
+      } catch (cause) { forgetNodeRequest(req); throw cause; }
+    }
     this.sendEof();
     queueBindingTask(() => { invokeOwned(req, 'oncomplete', 0); });
     return 0;
@@ -258,12 +265,12 @@ export class LibuvStreamWrap implements OwnedHandle {
     this.closeLocal(callback);
   }
 
-  private closeLocal(callback?: () => void): void {
+  private closeLocal(callback?: () => void, nativeComplete = false): void {
     const failures: unknown[] = [];
     const release = (action: () => void): void => { try { action(); } catch (cause) { failures.push(cause); } };
     if (!this.closed) {
       this.closed = true;
-      releaseHandle(this);
+      releaseHandle(this, !nativeComplete);
       const endpoint = this.streamEndpoint;
       endpoint.handles.delete(this);
       // Writes land in the peer's inbound queue at once; flushing here

@@ -7,7 +7,7 @@ import type { ProcessToken } from './process-tokens';
 import type { TCP } from './node-lib/binding/tcp_wrap';
 import type { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, type WriteWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './node-lib/binding/stream_wrap';
-import { __adoptHandle, ownerOf, registerHandle, releaseHandle } from './node-lib/binding/handles';
+import { __adoptHandle, ownerOf, registerHandle, releaseHandle, observeNodeRequest, forgetNodeRequest } from './node-lib/binding/handles';
 import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EPIPE, UV_ENOSYS, errname } from './node-lib/binding/uv';
 
 const UV_EAGAIN = uv.UV_EAGAIN as number;
@@ -190,7 +190,7 @@ function adopt(descriptor: NativeStreamDescriptor, receiver: Stream): Stream {
     const Constructor = constructors[descriptor.kind];
     if (!Constructor) throw new Error('Native stream constructor is unavailable.');
     const handle = new Constructor(descriptor.type);
-    __adoptHandle(handle, ownerOf(receiver));
+    __adoptHandle(handle, ownerOf(receiver), receiver);
     return handle;
   } finally { incoming = previous; }
 }
@@ -492,6 +492,7 @@ export class NativeStreamDriver {
     // larger than the transport budget. The channel bounds copied chunks and
     // waits for capacity; rejecting this whole write breaks normal streaming.
     this.handle.writeQueueSize += bytes;
+    observeNodeRequest(request, this.handle);
     this.writes.push(write);
     request.async = true;
     streamBaseState[kLastWriteWasAsync] = 1;
@@ -575,7 +576,7 @@ export class NativeStreamDriver {
     if (synchronous) { write.release(); return; }
     // A Node callback throws as a native callback, not as a rejection of this
     // bridge's private async function.
-    queueBindingTask(() => { try { withGuestCallback(() => write.request.oncomplete?.(status), 'wrap', write.request.oncomplete); } finally { write.release(); } });
+    queueBindingTask(() => { try { withGuestCallback(() => write.request.oncomplete?.(status), 'wrap', write.request.oncomplete); } finally { forgetNodeRequest(write.request); write.release(); } });
   }
 
   close(callback?: () => void, reset = false): number {

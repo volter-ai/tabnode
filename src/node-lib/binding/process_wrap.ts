@@ -27,7 +27,7 @@ import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { nativeStreamFor } from '../../native-stream-binding';
 import { UV_EBADF, UV_ENOENT, UV_ESRCH, UV_EPERM, UV_EINVAL } from './uv';
 import {
-  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
+  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle, observeNodeHandle, nodeHandleHasRef, nodeHandleIsInitialized,
   ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
 } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
@@ -266,17 +266,19 @@ export class Process implements OwnedHandle {
   }
 
   ref(): void {
+    if (!nodeHandleIsInitialized(this)) return;
     refHandle(this);
     this.run?.setRef?.(true);
   }
 
   unref(): void {
+    if (!nodeHandleIsInitialized(this)) return;
     unrefHandle(this);
     this.run?.setRef?.(false);
   }
 
   hasRef(): boolean {
-    return handleHasRef(this);
+    return nodeHandleHasRef(this);
   }
 
   /**
@@ -382,6 +384,9 @@ export class Process implements OwnedHandle {
       }
     }
 
+    // Node marks the process wrap initialized after the native spawn attempt,
+    // including ENOENT; ChildProcess closes it from its existing error turn.
+    observeNodeHandle(this);
     if (!runner.resolves(request)) {
       this.closeFarEnds();
       return UV_ENOENT;
@@ -395,7 +400,7 @@ export class Process implements OwnedHandle {
       if (code === 'EINVAL') return UV_EINVAL;
       throw cause;
     }
-    // A handle unref'd before its child started is not waited for either.
+    // Reference changes after initialization also govern the owned child run.
     if (!handleHasRef(this)) this.run.setRef?.(false);
     // The number the parent reads off the handle is the child's own
     // `process.pid`, made at its fork, as it is in Node.
@@ -418,7 +423,7 @@ export class Process implements OwnedHandle {
   close(callback?: () => void): void {
     if (!this.closed) {
       this.closed = true;
-      releaseHandle(this);
+      releaseHandle(this, true, 1);
     }
     if (callback) queueBindingTask(() => withGuestCallback(callback));
   }

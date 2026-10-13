@@ -6,6 +6,16 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Preserve explicit receiver resource ownership during adoption, ignore Process reference changes before initialization, and permit watcher reference changes until pending close completes (substrate Articles 5/6/8/9).
+
+- Keep transferred stream requests with their adopted handle owner, retain directory operation scopes, and share process.binding’s native surface with the process-owned internal binding cache (substrate Articles 5/6/8/9).
+
+- Preserve failed watcher-start and exact Process close-callback observations; give explicit binding ownership priority over ambient guest tokens in nested standalone runtimes (substrate Articles 5/6/8/9).
+
+- Correct standalone accepted-handle custody, failed-spawn initialization and polling-watcher initialization/close observations in process enumeration; preserve real resource identity and existing liveness/transport behavior (substrate Articles 5/6/8/9).
+
+- Add process._getActiveHandles and process._getActiveRequests over real process-owned binding wrappers and requests, following Node’s owner links and reference filtering. Preserve resource identity, liveness accounting and transport behavior; remove observations on completion, close and exit. Activepieces’ pm2 caller previously threw because these APIs were absent (substrate Articles 5/6/8/9; [source reading](docs/readings/s1-process-active-resources.json)). Source only; application qualification remains open.
+
 - A run's native-binding map (the substrate's ADR-0094) is given to the engine as data, once, and applied inside
   its own resolution only where it can apply, so no require runs a resolve hook (S2: the hook chain was ~83 ms of
   LibreChat's server start in the tab). The map is fixed once given (a non-writable property, a frozen lookup), and a

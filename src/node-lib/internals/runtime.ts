@@ -1,6 +1,7 @@
 import { withGuestExecution, withGuestCallback, drainGuestNextTicks } from '../../guest-loop';
 import { AsyncLocalStorage } from '../../shims/async_hooks';
 import { kCancelTimer } from '../../timer-cancellation';
+import { handleOwnerSymbol } from '../binding/owner-symbol';
 import { traceSocketConnect } from '../../socket-connect-trace';
 import { registerHandle, refHandle, unrefHandle, releaseHandle, currentOwner, __adoptHandle } from '../binding/handles';
 /**
@@ -22,7 +23,7 @@ let nextAsyncId = 1;
 const symbols = {
   async_id_symbol: Symbol('async_id_symbol'),
   trigger_async_id_symbol: Symbol('trigger_async_id_symbol'),
-  owner_symbol: Symbol('owner_symbol'),
+  owner_symbol: handleOwnerSymbol,
   init_symbol: Symbol('init_symbol'),
   destroy_symbol: Symbol('destroy_symbol'),
   async_id_fields: Symbol('async_id_fields'),

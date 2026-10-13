@@ -1,3 +1,13 @@
+## S1 B7: process active handle and request objects
+
+Substrate Articles5/6/8/9. Restore Node’s private process enumeration APIs for
+actual native binding resources, with owner links, reference filtering,
+process isolation and completion/close/exit cleanup. Activepieces72102’s pm2
+IPCTransport reaches the missing method; separate application/addon errors
+remain. The source restores the API without adding timers, fabricated
+resources or a different liveness count. Independent review and the ordinary
+current-image outcome remain. [Reading](docs/readings/s1-process-active-resources.json).
+
 ## S1 rejected host child lifecycle
 
 Substrate Articles5/6/8/9. Restore the kernel child's exit-before-reap contract

@@ -36,7 +36,7 @@ import { setLibRequire } from './require-hook';
 import { NODE_LTS_VERSION, nodeVersions } from './node-versions';
 import { transcodeFor } from './binding/transcode';
 import { createUtilBinding } from './binding/util';
-import { ownedRun, ownerOfInstance, setInstanceOwner } from './binding/handles';
+import { ownedRun, ownerOfInstance, setInstanceOwner, withNodeResourceScope } from './binding/handles';
 import { __tokenForProcess, type ProcessToken } from '../process-tokens';
 import type { Process } from '../shims/process';
 import { createFsBindings } from './binding/fs';
@@ -316,7 +316,8 @@ export function moduleSurface(value: any, seen = new Map<object, any>()): any {
  * in its owner's run, so what the binding attributes (a handle, a stdio write, a spawn's parent) is that process's,
  * whatever frame the call came from (a native await in Node's own library included). `owner` is the scope's run.
  */
-function bindingSurface(value: unknown, owner: () => ProcessToken | null): unknown {
+function bindingSurface(value: unknown, owner: () => ProcessToken | null, process: object): unknown {
+  const inScope = <T>(call: () => T): T => withNodeResourceScope(process, call);
   const surface = moduleSurface(value);
   for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(surface))) {
     const implementation = descriptor.value;
@@ -325,8 +326,8 @@ function bindingSurface(value: unknown, owner: () => ProcessToken | null): unkno
     // constructed.
     if (Object.getOwnPropertyDescriptor(implementation, 'prototype')?.writable !== false) {
       Object.defineProperty(surface, key, { ...descriptor, value: new Proxy(implementation, {
-        apply: (target, self, args) => ownedRun(owner(), () => Reflect.apply(target, self, args)),
-        construct: (target, args, newTarget) => ownedRun(owner(), () => Reflect.construct(target, args, newTarget)) as object,
+        apply: (target, self, args) => inScope(() => ownedRun(owner(), () => Reflect.apply(target, self, args))),
+        construct: (target, args, newTarget) => inScope(() => ownedRun(owner(), () => Reflect.construct(target, args, newTarget))) as object,
       }) });
       continue;
     }
@@ -337,7 +338,7 @@ function bindingSurface(value: unknown, owner: () => ProcessToken | null): unkno
         if (name === 'constructor' || typeof method.value !== 'function' || Object.prototype.hasOwnProperty.call(ScopedBinding.prototype, name)) continue;
         const call = method.value as (...values: unknown[]) => unknown;
         Object.defineProperty(ScopedBinding.prototype, name, { ...method, value: function (this: object, ...args: unknown[]) {
-          return ownedRun(ownerOfInstance(this), () => call.apply(this, args));
+          return inScope(() => ownedRun(ownerOfInstance(this), () => call.apply(this, args)));
         } });
       }
     }
@@ -352,7 +353,7 @@ function bindingSurface(value: unknown, owner: () => ProcessToken | null): unkno
     const Owned = new Proxy(ScopedBinding, {
       construct: (target, args, newTarget) => {
         const token = owner();
-        const instance = ownedRun(token, () => Reflect.construct(target, args, newTarget)) as object;
+        const instance = inScope(() => ownedRun(token, () => Reflect.construct(target, args, newTarget))) as object;
         setInstanceOwner(instance, token);
         return instance;
       },
@@ -397,27 +398,27 @@ class NodeLibScope {
     return this.surfaces.get(name);
   }
 
-  private readonly binding = (name: string): unknown => {
+  readonly binding = (name: string): unknown => {
     if (!this.bindings.has(name)) {
       if (['fs', 'fs_dir', 'fs_event_wrap'].includes(name)) {
         // Exported handles and encoded names belong to this graph; the fd
         // allocator, open-file descriptions and filesystem remain shared OS state.
         const fs = createFsBindings(() => this.require('buffer').Buffer);
-        this.bindings.set('fs', bindingSurface(fs.fsBinding, this.owner));
-        this.bindings.set('fs_dir', bindingSurface(fs.fsDirBinding, this.owner));
-        this.bindings.set('fs_event_wrap', bindingSurface(fs.fsEventWrapBinding, this.owner));
+        this.bindings.set('fs', bindingSurface(fs.fsBinding, this.owner, this.process));
+        this.bindings.set('fs_dir', bindingSurface(fs.fsDirBinding, this.owner, this.process));
+        this.bindings.set('fs_event_wrap', bindingSurface(fs.fsEventWrapBinding, this.owner, this.process));
       } else if (name === 'os') {
         this.bindings.set(name, createOsBinding(this.process));
       } else if (name === 'process_wrap') {
-        this.bindings.set(name, bindingSurface(createProcessBinding(this.process), this.owner));
+        this.bindings.set(name, bindingSurface(createProcessBinding(this.process), this.owner, this.process));
       } else if (name === 'spawn_sync') {
-        this.bindings.set(name, bindingSurface(createSpawnSyncBinding(this.process), this.owner));
+        this.bindings.set(name, bindingSurface(createSpawnSyncBinding(this.process), this.owner, this.process));
       } else if (name === 'errors') {
         this.bindings.set(name, { ...errorsBinding, getErrorSourcePositions: (error: object) => errorSourcePositions(this.process, error) });
       } else if (name === 'diagnostics_channel') {
         this.bindings.set(name, createDiagnosticsChannelBinding());
       } else {
-        this.bindings.set(name, name === 'util' ? createUtilBinding(this.require) : bindingSurface(internalBinding(name), this.owner));
+        this.bindings.set(name, name === 'util' ? createUtilBinding(this.require) : bindingSurface(internalBinding(name), this.owner, this.process));
       }
     }
     return this.bindings.get(name);
@@ -446,6 +447,9 @@ function scopeFor(owner: object): NodeLibScope {
   if (!scope) { scope = new NodeLibScope(owner); byOwner.set(owner, scope); }
   return scope;
 }
+/** process.binding and vendored internalBinding share the same process-owned native surface. */
+export function nodeLibBindingFor(owner: object, name: string): unknown { return scopeFor(owner).binding(name); }
+
 export function loadNodeLibFor(owner: object, name: string): any {
   return scopeFor(owner).require(name);
 }
