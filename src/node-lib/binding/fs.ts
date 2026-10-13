@@ -1267,12 +1267,16 @@ const fsBinding = {
     return answer(req, () => {
       const name = asPath(path);
       const tree = vfs();
-      const names = tree.readdirSync(name).map((entry) => encodeFsName(entry, encoding));
+      const entries = tree.readdirSync(name);
+      const names = entries.map((entry) => encodeFsName(entry, encoding));
       if (!withFileTypes) return names;
       // Node's own `Dirent` is built from a name and a type number, and the
       // binding answers the two lists side by side. Types are matched to the
-      // tree's string names; the encoding only changes what the caller reads.
-      const types = tree.readdirSync(name).map((entry) => {
+      // tree's string names, from the one listing the names came from (a
+      // second listing was a second open, getdents and close of the kernel's,
+      // and could differ from the first); the encoding only changes what the
+      // caller reads.
+      const types = entries.map((entry) => {
         try {
           const stats = tree.lstatSync(`${name.endsWith('/') ? name.slice(0, -1) : name}/${entry}`);
           if (stats.isDirectory()) return 2;
