@@ -2881,14 +2881,26 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   // ADR-0094's native-binding map, once per run, as data the resolver reads only where it can apply (SubstrateAddons).
   // A prelude that finds no such door (real Node, the host's qualification instrument) registers its hook instead.
   Module.__substrateAddons = void 0;
-  Module.__substrateSetAddons = (map: { bindings: readonly string[]; roots: readonly string[]; provide(path: string): string; refuse(path: string, cause?: unknown): never }) => {
-    if (Module.__substrateAddons) throw new Error('This run was already given its native-binding map.');
+  // The map's identity: its bound paths and its refusal roots, each sorted.
+  let __substrateAddonsGiven: string | undefined;
+  /**
+   * Answers whether the map is in force: true for the first map, and for the same map given again (the run's prelude
+   * evaluated a second time over this Module class, which code-server and Formbricks did: S2 B10), which changes
+   * nothing, as dlopen(3) of a library already loaded returns its handle and runs no constructor again. False for a
+   * different map, which is not taken: its prelude then registers its resolve hook, which chains as two hooks always
+   * did before the map.
+   */
+  Module.__substrateSetAddons = (map: { bindings: readonly string[]; roots: readonly string[]; provide(path: string): string; refuse(path: string, cause?: unknown): never }): boolean => {
+    const given = JSON.stringify([[...map.bindings].sort(), [...map.roots].sort()]);
+    if (Module.__substrateAddons) return given === __substrateAddonsGiven;
+    __substrateAddonsGiven = given;
     // Given once and fixed: the property can be neither written nor redefined, and the bound paths are read through a
     // frozen lookup over a set nothing else holds.
     const bound = new Set(map.bindings);
     const addons: SubstrateAddons = Object.freeze({ bindings: Object.freeze({ has: (path: string) => bound.has(path) }),
       roots: Object.freeze([...map.roots]), provide: map.provide, refuse: map.refuse });
     Object.defineProperty(Module, '__substrateAddons', { value: addons, writable: false, configurable: false, enumerable: true });
+    return true;
   };
   const __substrateHooksOf = (): RunModuleHooks => (Module.__substrateHooks ??= new RunModuleHooks(process));
   Module.registerHooks = (hooks: { resolve?: unknown; load?: unknown }) => __substrateHooksOf().sync.registerHooks(hooks);
