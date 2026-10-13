@@ -3204,6 +3204,8 @@ function createRequire(
     const captured = transpileKey ? __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, transpileKey)) : undefined;
     if (captured !== undefined) {
       __substrateCountPrepared(process, 'transpiled');
+      // Taken, not to be kept again: the compile below sees the handed text without the transpile's name.
+      __substrateLoading.set(module, { ...(resolvedAs ? { resolvedAs } : {}), compiling: { raw: rawCode, format } });
       (Mod.__substrateOwnCompile as (this: Module, content: string, filename: string) => unknown).call(module, captured, resolvedPath);
       return;
     }
