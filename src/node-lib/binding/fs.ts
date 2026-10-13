@@ -1009,9 +1009,17 @@ const fsBinding = {
     if (owned && flags === 0) {
       const name = asPath(path);
       const tree = vfs();
-      if (!name.startsWith('/dev/') && !name.startsWith('/proc/') && stdioPath(name) === undefined && treeDescriptorsOf(tree)
-        && tree.statSync(name, { throwIfNoEntry: false })?.isFile()) {
-        return utf8KeepingBom.decode(tree.readFileSync(name) as Uint8Array);
+      const descriptors = treeDescriptorsOf(tree);
+      if (!name.startsWith('/dev/') && !name.startsWith('/proc/') && stdioPath(name) === undefined && descriptors) {
+        const stats = tree.statSync(name, { throwIfNoEntry: false });
+        if (stats?.isFile()) return utf8KeepingBom.decode(tree.readFileSync(name) as Uint8Array);
+        // ABSENT, BY THE TREE'S OWN STAT (S2 T11): the ENOENT the open below would fetch from the kernel, thrown here
+        // as the tree's open builds it. Only a stat that answered undefined, which is ENOENT alone: EACCES, ENOTDIR
+        // and ELOOP throw from the stat and keep the open. Dub's Next server read its optional manifests this way at
+        // its start (c6a11f38, the scored warm-up, worker 49, pid 10002: 292 ms of openAt -> syscall under
+        // readFileUtf8). A file made between the stat and where the open would have run is answered absent; native
+        // has the same window between two syscalls.
+        if (stats === undefined && descriptors.absent) throw descriptors.absent(name);
       }
     }
     const fd = owned ? fsBinding.open(path, flags, 0o666) as number : path as number;
