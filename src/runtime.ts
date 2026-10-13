@@ -2056,8 +2056,10 @@ Object.defineProperty(builtinModules, 'assert/strict', {
 // A listed name with neither resolved to its bare id and was then opened as a FILE of that name: `require('repl')`
 // answered "ENOENT: open 'repl'" (ts-node, which loads `repl` on every start). The engine does not load with one.
 {
-  const __perGuest = new Set(['fs', 'process', 'wasi']);
-  const __unanswered = moduleShim.builtinModules.filter((name: string) => !__perGuest.has(name) && !Object.prototype.hasOwnProperty.call(builtinModules, name));
+  // Per guest too: `fs/promises` (the guest's `fs`), `stream/consumers` (made per process, requirePlain); and a name the
+  // vendored node-lib answers is answered by `requirePlain` ahead of this table (`dns/promises`, `timers/promises`).
+  const __perGuest = new Set(['fs', 'fs/promises', 'process', 'wasi', 'stream/consumers']);
+  const __unanswered = moduleShim.builtinModules.filter((name: string) => !__perGuest.has(name) && !Object.prototype.hasOwnProperty.call(builtinModules, name) && !hasNodeLibModule(name));
   if (__unanswered.length > 0) throw new Error(`tabnode: builtin name${__unanswered.length === 1 ? '' : 's'} listed with no module: ${__unanswered.join(', ')}. Give each a module in runtime.ts's table or take it off shims/module.ts's list.`);
 }
 // Node's builtin module objects are ordinary mutable objects: a program can
