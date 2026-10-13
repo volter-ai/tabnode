@@ -856,3 +856,20 @@ Status: unchanged vendor restoration and owned observer coded; runtime qualifica
 
 Articles 5/6/8/9:9bd59f3/17a5dba inserted the diagnostic K5 counter/console block into the otherwise unchanged Node24.21 HTTP server. Restore that file byte-for-byte from495fed2, enforcing the repository's unmodified-vendor rule. Observe the actual scoped HTTP/HTTPS Server request emission from owned runtime source, with one shared process counter, first3 non-/__volter/ or /_twin/ requests, and the existing response writeHead capture. Preserve n/what/url/at/bodies/status and rounding; add pid to retain producer identity after document delivery. Send owned scalar fields to R5, with no producer JSON or duplicate stdout. Detach the emitter observer once its slots are used; preserve any caller's replacement. Request/return/error and writeHead delegation remain Node's. Production bundle/declarations and exact restored-source identity only; runtime delivery/cost remains independent. No authored implementation edits to Node's file.
 
+
+## Requested host-only module evaluation witness
+
+Substrate Articles1/2/5/6/8/9; lead m-d9a81ee0/m-ff114e61. A consumer's
+Module.load prelude left its evidence emitter in guest globals, allowing
+guest Node to forge provider-loader evidence in the shared V8 context.
+Node's host debugger observes execution outside its program's globals.
+Provide the analogous host-only, requested module-evaluation callback in
+Runtime/RunOptions: select exact filenames once, observe only after the
+engine's original synchronous module body completes, and keep callbacks
+inside host options/closures, never Node globals or Module exports.
+Unrequested execution installs no body wrapper or per-load check. Preserve
+original loading, exports, errors and source; no package/framework names,
+source patches, vendor calls or diagnostic environment flags. The consumer
+privately captures/removes its CDP binding before guest entry and attests
+the actual process root. Production library/declaration emission only; no
+tests, probes, apps or timing runs. Runtime observation remains unqualified.
