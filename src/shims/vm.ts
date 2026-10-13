@@ -18,6 +18,7 @@ import { prepareVmScript, vmScriptPhase, vmScriptRun } from '../vm-script-state'
 const evaluateSandbox = Object.freeze(new Function('__substrateScope', '__substrateCode', '__substrateDeclared', 'with (__substrateScope) { const __substrateResult = eval(__substrateCode); for (const name of __substrateDeclared) { try { __substrateScope[name] = eval(name); } catch {} } return __substrateResult; }'));
 Object.freeze(evaluateSandbox.prototype);
 const copyDeclarations = Function.prototype.call.bind(Array.prototype.slice) as (names: readonly string[]) => string[];
+const hasOwn = Function.prototype.call.bind(Object.prototype.hasOwnProperty) as (target: object, name: PropertyKey) => boolean;
 
 export class Script {
   private code: string;
@@ -36,12 +37,23 @@ export class Script {
     // A script's top-level `var` and function declarations are properties of
     // its context's global, as they are of Node's; they are read off the
     // script and copied onto the sandbox once it has run.
-    const { declared, own } = vmScriptPhase(this, 'parse', () => prepareVmScript(this, source));
+    const prepared = vmScriptPhase(this, 'parse', () => prepareVmScript(this, source));
+    const { declared } = prepared;
     const { scope, declaredForRun } = vmScriptPhase(this, 'setup', () => {
-      // The evaluator's original parameter is script-visible by its helper
-      // name. Give it a fresh array, never the cached declaration metadata.
-      const declaredForRun = copyDeclarations(declared);
       const sandbox: Record<string | symbol, unknown> = contextObject && typeof contextObject === 'object' ? contextObject as Record<string | symbol, unknown> : {};
+      // A `var` over a property the context's global already has declares
+      // nothing in Node: the script reads and writes that property. Such a
+      // name stays the sandbox's for this run (resolved through it, not
+      // copied back over it); a function declaration still replaces it. The
+      // cached preparation is per source, so the exclusion is this run's
+      // alone. The evaluator's original parameter is script-visible by its
+      // helper name: it gets a fresh array, never the cached metadata.
+      const kept = (name: string): boolean => hasOwn(sandbox, name) && !prepared.functions.has(name);
+      let own = prepared.own, declaredForRun: string[];
+      if (declared.some(kept)) {
+        declaredForRun = declared.filter(name => !kept(name));
+        own = new Set([...prepared.own].filter(name => !declared.includes(name) || !kept(name)));
+      } else declaredForRun = copyDeclarations(declared);
       // The context's global as the script sees it through `globalThis`: the
       // sandbox's own properties answer `in`, a read of a name it lacks
       // falls back to the host's, a write lands on the sandbox.

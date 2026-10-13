@@ -9,6 +9,8 @@ export interface VmScriptObserver {
 }
 interface PreparedScript {
   readonly declared: readonly string[];
+  /** Of `declared`, the names a function declaration binds: it replaces a context property, as a `var` does not. */
+  readonly functions: ReadonlySet<string>;
   readonly own: ReadonlySet<string>;
 }
 type SourceBucket = Map<string, WeakRef<PreparedScript>>;
@@ -29,7 +31,7 @@ export class VmScriptPreparationCache {
     const bucket = cacheable ? this.sources : undefined;
     const kept = bucket?.get(source)?.deref();
     if (kept) return { prepared: kept, hit: true, failed: false, parsed: false };
-    const declared: string[] = [];
+    const declared: string[] = [], functions: string[] = [];
     let failed = false;
     // No declaration can exist without its keyword as a word outside
     // strings and comments (mayDeclare). This only rules out discovery work;
@@ -38,10 +40,10 @@ export class VmScriptPreparationCache {
     const parsed = !cacheable || mayDeclare(source);
     if (parsed) try {
       const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
-      collectDeclared(ast as unknown as Walked, declared);
+      collectDeclared(ast as unknown as Walked, declared, functions);
     } catch { failed = true; /* The actual evaluator still decides syntax/errors. */ }
     const unique = [...new Set(declared)];
-    const prepared: PreparedScript = { declared: unique,
+    const prepared: PreparedScript = { declared: unique, functions: new Set(functions),
       own: new Set(['__substrateScope', '__substrateCode', '__substrateDeclared', ...unique]) };
     if (bucket) {
       const reference = new WeakRef(prepared);
@@ -60,7 +62,7 @@ interface Walked { type: string; body?: Walked | Walked[]; id?: Walked | null; n
   declarations?: Walked[]; consequent?: Walked | Walked[]; alternate?: Walked | null; cases?: Walked[];
   init?: Walked | null; left?: Walked; block?: Walked; handler?: Walked | null; finalizer?: Walked | null;
   properties?: Walked[]; elements?: (Walked | null)[]; value?: Walked; argument?: Walked;
-  async?: boolean; generator?: boolean; expression?: Walked; directive?: string }
+  async?: boolean; generator?: boolean; expression?: Walked; directive?: string; param?: Walked | null }
 /**
  * The names a script declares in its context's global, as Node's
  * vm.runInContext leaves them on the context: every `var` bound anywhere
@@ -68,47 +70,78 @@ interface Walked { type: string; body?: Walked | Walked[]; id?: Walked | null; n
  * destructured names), every top-level function declaration, and in sloppy
  * code each plain function declared in a block (Annex B.3.3). The walk
  * descends statements only; a function or class body is its own scope.
- * Annex B's exception for a name a lexical declaration shadows is left to
- * the evaluator: such a name has no binding there, its read throws and is
- * skipped as before.
+ * A block function whose `var` would collide with a lexical declaration on
+ * its way to the top (a `let`, `const` or `class` of an enclosing block,
+ * loop head, switch, destructured catch parameter or the script itself) is
+ * not hoisted (B.3.3's early-error test), so it is not collected: its read
+ * would find the host's global of that name.
  */
-function collectDeclared(program: Walked, declared: string[]): void {
+function collectDeclared(program: Walked, declared: string[], functions: string[]): void {
   const statements = (program.body ?? []) as Walked[];
   let strict = false;
   for (const statement of statements) {
     if (statement.type !== 'ExpressionStatement' || typeof statement.directive !== 'string') break;
     if (statement.directive === 'use strict') strict = true;
   }
-  const bound = (pattern: Walked | null | undefined): void => {
+  const names = (pattern: Walked | null | undefined, into: (name: string) => void): void => {
     if (!pattern) return;
     switch (pattern.type) {
-      case 'Identifier': declared.push(pattern.name!); return;
-      case 'ObjectPattern': for (const property of pattern.properties ?? []) bound(property.type === 'RestElement' ? property.argument : property.value); return;
-      case 'ArrayPattern': for (const element of pattern.elements ?? []) bound(element); return;
-      case 'RestElement': bound(pattern.argument); return;
-      case 'AssignmentPattern': bound(pattern.left); return;
+      case 'Identifier': into(pattern.name!); return;
+      case 'ObjectPattern': for (const property of pattern.properties ?? []) names(property.type === 'RestElement' ? property.argument : property.value, into); return;
+      case 'ArrayPattern': for (const element of pattern.elements ?? []) names(element, into); return;
+      case 'RestElement': names(pattern.argument, into); return;
+      case 'AssignmentPattern': names(pattern.left, into); return;
     }
   };
+  const declare = (name: string): void => { declared.push(name); };
   const declaration = (node: Walked | null | undefined): void => {
-    if (node?.type === 'VariableDeclaration' && node.kind === 'var') for (const one of node.declarations ?? []) bound(one.id);
+    if (node?.type === 'VariableDeclaration' && node.kind === 'var') for (const one of node.declarations ?? []) names(one.id, declare);
   };
-  const walk = (node: Walked | null | undefined, top: boolean): void => {
+  // The lexical names in scope below `outer` once these statements' own let/const/class are added.
+  const lexical = (outer: ReadonlySet<string>, nodes: readonly (Walked | null | undefined)[]): ReadonlySet<string> => {
+    let inner: Set<string> | undefined;
+    const add = (name: string): void => { (inner ??= new Set(outer)).add(name); };
+    for (const node of nodes) {
+      if (node?.type === 'VariableDeclaration' && node.kind !== 'var') for (const one of node.declarations ?? []) names(one.id, add);
+      else if (node?.type === 'ClassDeclaration' && node.id) add(node.id.name!);
+    }
+    return inner ?? outer;
+  };
+  const walk = (node: Walked | null | undefined, top: boolean, shadowed: ReadonlySet<string>): void => {
     if (!node) return;
     switch (node.type) {
       case 'FunctionDeclaration':
-        if (node.id && (top || (!strict && !node.async && !node.generator))) declared.push(node.id.name!);
+        if (node.id && (top || (!strict && !node.async && !node.generator && !shadowed.has(node.id.name!)))) { declared.push(node.id.name!); functions.push(node.id.name!); }
         return;
       case 'VariableDeclaration': declaration(node); return;
-      case 'BlockStatement': for (const child of node.body as Walked[]) walk(child, false); return;
-      case 'IfStatement': walk(node.consequent as Walked, false); walk(node.alternate, false); return;
-      case 'ForStatement': declaration(node.init); walk(node.body as Walked, false); return;
-      case 'ForInStatement': case 'ForOfStatement': declaration(node.left); walk(node.body as Walked, false); return;
-      case 'WhileStatement': case 'DoWhileStatement': case 'LabeledStatement': case 'WithStatement': walk(node.body as Walked, false); return;
-      case 'TryStatement': walk(node.block, false); walk(node.handler?.body as Walked | undefined, false); walk(node.finalizer, false); return;
-      case 'SwitchStatement': for (const one of node.cases ?? []) for (const child of one.consequent as Walked[]) walk(child, false); return;
+      case 'BlockStatement': {
+        const body = node.body as Walked[], inner = lexical(shadowed, body);
+        for (const child of body) walk(child, false, inner);
+        return;
+      }
+      case 'IfStatement': walk(node.consequent as Walked, false, shadowed); walk(node.alternate, false, shadowed); return;
+      case 'ForStatement': declaration(node.init); walk(node.body as Walked, false, lexical(shadowed, [node.init])); return;
+      case 'ForInStatement': case 'ForOfStatement': declaration(node.left); walk(node.body as Walked, false, lexical(shadowed, [node.left])); return;
+      case 'WhileStatement': case 'DoWhileStatement': case 'LabeledStatement': case 'WithStatement': walk(node.body as Walked, false, shadowed); return;
+      case 'TryStatement': {
+        walk(node.block, false, shadowed);
+        // A simple catch parameter may share a var's name (B.3.5); a destructured one may not.
+        const parameter = node.handler?.param;
+        let caught = shadowed;
+        if (parameter && parameter.type !== 'Identifier') { const inner = new Set(shadowed); names(parameter, name => { inner.add(name); }); caught = inner; }
+        walk(node.handler?.body as Walked | undefined, false, caught);
+        walk(node.finalizer, false, shadowed);
+        return;
+      }
+      case 'SwitchStatement': {
+        const children = (node.cases ?? []).flatMap(one => one.consequent as Walked[]), inner = lexical(shadowed, children);
+        for (const child of children) walk(child, false, inner);
+        return;
+      }
     }
   };
-  for (const statement of statements) walk(statement, true);
+  const top = lexical(new Set(), statements);
+  for (const statement of statements) walk(statement, true, top);
 }
 
 /**
