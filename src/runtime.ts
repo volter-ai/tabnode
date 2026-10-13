@@ -942,6 +942,41 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
 export const PREPARED_MODULES_DIR = '/opt/.tabnode/prepared';
 /** The prefix a handed TypeScript text is hashed under for its kept body's name (compileRaw): never a file's own digest. */
 const HANDED_TYPESCRIPT_SALT = 'tabnode handed typescript text\0';
+/** The prefix a ts-node transpile's identity is hashed under for its captured text's name (__substrateTranspileKey). */
+const TRANSPILE_CAPTURE_SALT = 'tabnode ts-node transpile\0';
+/**
+ * The name a ts-node transpile of this file is captured under, or undefined where none is taken: only for ts-node's own
+ * wrapper of a .ts/.mts/.cts module's `_compile` (its service registered on the process, the wrapper calling the
+ * service's compile), with transpile-only set, no custom transformers and no preferTsExts, the service enabled and the
+ * file not ignored. The name hashes everything the transpile reads besides the file: the wrapper's own text, the
+ * TypeScript version, ts-node's options and the compiler options its tsconfig chain resolved to, every TS_NODE_
+ * variable, execArgv, the path (the source map names it), and the file's text.
+ *
+ * A KNOWN DIFFERENCE: a file taken from a capture never passes through ts-node's compile, so ts-node's own source-map
+ * cache does not hold it, and a stack thrown from it names the transpiled lines, not the TypeScript ones.
+ */
+function __substrateTranspileKey(process: unknown, module: object, ownCompile: unknown, rawCode: string, resolvedPath: string): string | undefined {
+  if (!/\.(?:ts|mts|cts)$/u.test(resolvedPath) || resolvedPath.endsWith('.d.ts')) return undefined;
+  const wrapper = (module as { _compile?: unknown })._compile;
+  if (typeof wrapper !== 'function' || wrapper === ownCompile) return undefined;
+  let wrapperText: string;
+  try { wrapperText = Function.prototype.toString.call(wrapper); } catch { return undefined; }
+  if (!wrapperText.includes('.compile(')) return undefined;
+  const host = process as { env?: Record<string, string | undefined>; execArgv?: string[] } & Record<symbol, unknown>;
+  const service = host[Symbol.for('ts-node.register.instance')] as { options?: Record<string, unknown>; config?: { options?: unknown }; ts?: { version?: unknown };
+    enabled?: () => boolean; ignored?: (fileName: string) => boolean } | undefined;
+  if (!service || typeof service !== 'object') return undefined;
+  const options = service.options ?? {};
+  if (options.transpileOnly !== true || options.transformers !== undefined || options.preferTsExts === true) return undefined;
+  try {
+    if (typeof service.enabled === 'function' && !service.enabled()) return undefined;
+    if (typeof service.ignored === 'function' && service.ignored(resolvedPath)) return undefined;
+    const env = Object.entries(host.env ?? {}).filter(([name]) => name.startsWith('TS_NODE_')).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    const identity = JSON.stringify({ wrapper: wrapperText, typescript: service.ts?.version ?? null, options, compilerOptions: service.config?.options ?? null,
+      env, execArgv: host.execArgv ?? [], path: resolvedPath });
+    return preparedModuleKeyOf('js', bytesToHex(sha256(new TextEncoder().encode(`${TRANSPILE_CAPTURE_SALT}${identity}\0${rawCode}`))));
+  } catch { return undefined; }
+}
 export { PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey };
 /** The name a prepared body goes under, for a caller that has the file's text: its bytes are hashed here. Undefined for a file no body is prepared for. */
 export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
@@ -984,7 +1019,7 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
  * the source read. `kept`: prepared here and kept. The rest prepared here, by why no body could be taken.
  * `stats`: the resolver's stat probes for the same process (node-resolution.ts `ResolutionKept.probes`).
  */
-type PreparedCounts = { digest: number; carried: number; hash: number; kept: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
+type PreparedCounts = { digest: number; carried: number; hash: number; kept: number; transpiled: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
 const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
 /** The processes whose prepared-body directory refused a body (EACCES, EPERM, EROFS): they keep none after (S2 R24). */
 const __substrateKeepingRefused = new WeakSet<object>();
@@ -1396,7 +1431,7 @@ function __substrateObserveHttp(process: object, module: unknown): void {
 function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
   if (counts.timer !== undefined) { clearTimeout(counts.timer); counts.timer = undefined; }
   __substrateSayLoadClock(process, at);
-  const totals = { digest: counts.digest, hash: counts.hash, kept: counts.kept, noDirectory: counts.noDirectory, notOwnText: counts.notOwnText, format: counts.format, types: counts.types, notJavaScript: counts.notJavaScript };
+  const totals = { digest: counts.digest, hash: counts.hash, kept: counts.kept, transpiled: counts.transpiled, noDirectory: counts.noDirectory, notOwnText: counts.notOwnText, format: counts.format, types: counts.types, notJavaScript: counts.notJavaScript };
   const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
   if (total === counts.said) return;
   counts.said = total;
@@ -1406,7 +1441,7 @@ function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCo
   if (!traceReadingRequested()) return;
   let counts = __substratePreparedCounts.get(process);
   if (!counts) {
-    counts = { digest: 0, carried: 0, hash: 0, kept: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
+    counts = { digest: 0, carried: 0, hash: 0, kept: 0, transpiled: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
     __substratePreparedCounts.set(process, counts);
   }
   counts[how] += 1;
@@ -2570,7 +2605,7 @@ function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string): boolean {
  */
 const __substrateModuleClasses = new WeakMap<Record<string, Module>, any>();
 /** What a module being loaded carries past its extension's handler, whose signature has no room for it. */
-const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined } }>();
+const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined; transpileKey?: string } }>();
 // Nested load hooks replace shared compile callbacks; a failed body still belongs to its admission parent.
 const __substrateAdmissionParents = new WeakMap<Module, Module | null>();
 // Internal reuse must not lengthen the lifetime of createRequire's invocation-local maps.
@@ -3161,7 +3196,17 @@ function createRequire(
     if (resolvedPath.startsWith('data:')) { runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, currentDir, 'source'); return; }
     // What `_compile` is handed, kept beside the module so the engine's own compile knows the format a hook named
     // and whether the text is still the file's own (a body the image prepared is taken only for that).
-    __substrateLoading.set(module, { ...(resolvedAs ? { resolvedAs } : {}), compiling: { raw: rawCode, format } });
+    // A TRANSPILE CAPTURED BEFORE (S2, Cal's seed): ts-node's transpile of this file under this service's settings,
+    // kept by an earlier run (compileRaw) and carried by the image, is handed to the engine's own compile in place of
+    // ts-node's wrapper, which would transpile it again (~233 ms of the seed's 809 ms load in Cal c670b965 dry-run2).
+    const transpileKey = format === undefined && !(__hooks && __hooks.hasSyncLoad) ? __substrateTranspileKey(process, module, Mod.__substrateOwnCompile, rawCode, resolvedPath) : undefined;
+    __substrateLoading.set(module, { ...(resolvedAs ? { resolvedAs } : {}), compiling: { raw: rawCode, format, ...(transpileKey ? { transpileKey } : {}) } });
+    const captured = transpileKey ? __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, transpileKey)) : undefined;
+    if (captured !== undefined) {
+      __substrateCountPrepared(process, 'transpiled');
+      (Mod.__substrateOwnCompile as (this: Module, content: string, filename: string) => unknown).call(module, captured, resolvedPath);
+      return;
+    }
     (module as Module & { _compile(content: string, filename: string): unknown })._compile(rawCode, resolvedPath);
   };
 
@@ -3181,6 +3226,14 @@ function createRequire(
     // file's own digest ever reaches it; the body is the one this path prepares (types stripped as for any .ts).
     const handedTypeScript = compiling !== undefined && compiling.raw !== content && format === undefined && !strips
       && /\.(?:ts|mts|cts)$/u.test(resolvedPath) && !resolvedPath.endsWith('.d.ts');
+    // The text ts-node handed, kept under the transpile's key (builtinLoad) for a later run to hand on itself.
+    if (handedTypeScript && compiling.transpileKey && !__substrateKeepingRefused.has(process as object) && vfs.existsSync(PREPARED_MODULES_DIR)) {
+      try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${compiling.transpileKey}`, content); vfs.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${compiling.transpileKey}\n`); }
+      catch (cause) {
+        const code = (cause as { code?: unknown } | null)?.code;
+        if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') __substrateKeepingRefused.add(process as object);
+      }
+    }
     const key = compiling?.raw === content && format === undefined && !strips ? __substrateTimeRead(process, 'key', () => preparedModuleKey(rawCode, resolvedPath))
       : handedTypeScript ? __substrateTimeRead(process, 'key', () => preparedModuleKeyOf(resolvedPath.endsWith('.cts') ? 'cjs' : 'js',
         bytesToHex(sha256(new TextEncoder().encode(`${HANDED_TYPESCRIPT_SALT}${content}`))))) : undefined;
