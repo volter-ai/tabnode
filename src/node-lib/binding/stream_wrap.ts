@@ -82,6 +82,8 @@ class StreamEndpoint {
   error: number | null = null;
   writeEnded = false;
   flushScheduled = false;
+  /** Bytes that belong in front of what is queued are on their way back from another realm: nothing is read. */
+  readsHeld = false;
   readonly finalizers: Array<() => void> = [];
   readonly capacityListeners = new Set<() => void>();
 
@@ -370,6 +372,9 @@ export class LibuvStreamWrap implements OwnedHandle {
     return handles?.size === 1 ? handles.values().next().value ?? null : null;
   }
 
+  /** Hold every read of this end, every wrapper's, until returnQueuedReads. */
+  holdReads(): void { this.streamEndpoint.readsHeld = true; }
+
   /** Whether this end has read its EOF or error. */
   get readEnded(): boolean { return this.eofDelivered; }
 
@@ -401,6 +406,7 @@ export class LibuvStreamWrap implements OwnedHandle {
    * `ended`: that reader also holds the EOF or error this end already read for it, so it is read again after them.
    */
   returnQueuedReads(bytes: Uint8Array, ended = false): void {
+    this.streamEndpoint.readsHeld = false;
     if (this.closed) return;
     if (bytes.byteLength) this.streamEndpoint.inbound.unshift({ bytes });
     if (ended && this.eofDelivered) this.eofDelivered = false;
@@ -532,6 +538,8 @@ export class LibuvStreamWrap implements OwnedHandle {
    * from inside `onread`, so the loop re-reads `reading` every time.
    */
   protected flushInbound(): void {
+    // Every wrapper of the end waits, a duplicate's included: what it would read first is not back yet.
+    if (this.streamEndpoint.readsHeld) return;
     try {
       while (this.reading && !this.closed && this.inbound.length > 0) {
         const next = this.inbound.shift() as Inbound;

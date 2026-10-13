@@ -435,14 +435,15 @@ export class NativeStreamScope {
    * stops): what it took and did not read is read first, then (`ended`) the EOF or error it held, and the entry is an
    * ordinary one again.
    */
-  returnExclusive(id: number, unread: Uint8Array, ended = false): boolean {
+  returnExclusive(id: number, unread: Uint8Array, ended = false, endGiven = false): boolean {
     const entry = this.entry(id);
     if (!entry) return false;
     // Possibly released already (releaseExclusive), while the bytes were still on their way back.
     this.exclusive.delete(id);
     // takeExclusive refuses an end with its EOF or error pending, so one read here since was read while the other
-    // realm held the bytes: it is read again after them (review of 2d9217a, item 3).
-    entry.handle.returnQueuedReads(unread, ended || entry.handle.readEnded);
+    // realm held the bytes: it is read again after them (review of 2d9217a, item 3), unless that realm already gave
+    // it to its reader (`endGiven`; review of c38dd87, item D).
+    entry.handle.returnQueuedReads(unread, ended || (entry.handle.readEnded && !endGiven));
     return true;
   }
 
@@ -451,7 +452,13 @@ export class NativeStreamScope {
    * here (a duplicate, pass, pairing or inheritance asked meanwhile succeeds), and returnExclusive puts the bytes in
    * front when they arrive.
    */
-  releaseExclusive(id: number): boolean { return this.exclusive.delete(id); }
+  releaseExclusive(id: number): boolean {
+    const entry = this.entry(id);
+    if (!entry || !this.exclusive.delete(id)) return false;
+    // A duplicate made from here reads nothing, not even an EOF, before the returned bytes (review of c38dd87, item C).
+    entry.handle.holdReads();
+    return true;
+  }
 
   dispose(): void {
     if (this.disposed) return;
