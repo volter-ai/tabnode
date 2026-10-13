@@ -19,6 +19,59 @@ digests alone do not encode a length. The withdrawn raw-reader prototype has
 no source delta in this unit. No boot-time UTF8 scan, guest scheduling/cache
 change, tests or new measurements; consumer qualification is independent.
 
+## S2 K1: reuse internal require contexts
+
+Status: approved source pushed at 912010ec; full production bundle/declarations emitted; matched Cal reading pending
+
+Substrate Articles 5/6/7/8/9. The paired substrate reading
+docs/readings/s2-k1-cal-stage-account-2026-10-12.json at 6bda016e
+retains Cal fe60311f+a279af1's median first request to head of 3645 ms,
+including 1383 ms resolution and 8104 new bodies. Its live require hook
+reaches the engine's prototype require 26560 times. The original Module._load
+calls requireFor(parent) on every turn, constructing the entire createRequire
+closure graph even when the parent and module cache already exist. These
+counts establish a repeated construction path, not its exclusive time.
+
+Reuse only the engine's private internal context for an admitted parent with
+an own string filename, inside the owning module-cache class. Re-read that
+filename and replace the context when it changes. Arbitrary parents, filename
+accessors and public Module.createRequire retain fresh construction. Preserve
+live Module hooks and parent/children/export identity. Clear the context's
+invocation-local resolution and package maps before every internal use and
+restore createRequire's currentVfs binding; no miss gains a longer lifetime.
+Existing process-owned successful paths and Node package-config absences
+remain unchanged. Weak parent ownership retains at most one context per
+parent, with no global path or permission cache.
+
+Independent review approved the frozen source, including reentrancy, transient
+miss lifetime, ownership and guest visibility. Two retained tradeoffs: each
+createRequire also allocates its private reset closure and WeakMap entry; an
+internal cached call no longer repeats the factory's repair of a deleted
+process.getBuiltinModule. Public/fallback factory calls still run that code.
+The private context is distinct from the module body's public require, so its
+reset cannot clear that public function's local caches. No guest-visible
+require function or evaluated exports are newly shared.
+
+Production library/worker bundle and declarations only; no tests, probes,
+application or timing runs here. Independent review precedes integration;
+the mini's matched capture determines any saving. The native 6.028 s comparator
+in this old cohort ran through World and remains subject to N9's restatement.
+
+[The production receipt](docs/readings/s2-k1-cal-require-contexts.json) binds
+the unchanged full Vite library/public and runtime-worker build (exit 0) and
+all package declarations (exit 0): 159 products, including 151 declarations,
+10,243,584 bytes. Original source/config/lock bytes and all completed products
+are retained in measured archives. Two full installs and the first bundle
+stopped at their recorded bounds; those attempts remain explicitly incomplete.
+The own compiler closure was installed normally from registry/cache, with
+every selected version/URL/integrity matching the original repository lock.
+No repository manifest, vendor source, package pin or publication changed.
+Container hostname follow-up: full engine declarations pass; changed module JavaScript emits through the pinned esbuild transform. Whole Vite bundle stopped8.5s and remains incomplete. Substrate runtime/WALI/Node/image-manifest/container-start changed closures emit, including both filesystem forwarding wrappers. Setter admission still awaits the shared capability model. No apps/tests/qualification.
+
+Container hostname compiler limit: own exact locked production dependencies installed successfully; full Vite bundle and declaration emitters stopped at7s, neither a pass. Retain an incremental production emitter as tool-speed work; private hostname reader source is ready for independent review, runtime savings/qualification unclaimed. Substrate docs/readings/container-uts-hostname-implementation.json retains exact receipts.
+
+Container UTS hostname: Node's native OS binding must ask the calling process's kernel-owned UTS through its own filesystem channel. The host supplies a private per-process reader; it is retained by the binding and never inferred from mutable process.env, pid getters or the hosting realm. Standalone VirtualFS retains localhost. Vendored Node JavaScript stays unchanged. Substrate ADR-0129 and docs/readings/container-uts-hostname-ruling-2026-10-12.json own the namespace, creation files and setter permissions: lead ruling under owner delegation, 2026-10-12, OWNER-RULINGS.md “decisions are delegated to the lead”. This record precedes behavior. Runtime qualification remains the cycle's reading.
+
 ## S2 first request: partition the time outside module loading
 
 Status: source instrument coded; production emission and independent reading pending
@@ -833,3 +886,7 @@ Articles 5/6/8/9:9bd59f3/17a5dba inserted the diagnostic K5 counter/console bloc
 R5 review correction: every refused source input explicitly drops its byte
 account; terminal materialization retires only its captured prefix and keeps
 any later bodies. The host partitions one tab budget across its realms.
+
+Container UTS resolver correction (ADR-0129): process-owned /etc/hosts readers now feed callback/promises lookup through the captured NodeLibScope, preserving file address families. Changed JS modules and complete declarations emitted. Paired merge with substrate is required; whole Vite bundle still incomplete and cycle reading pending.
+
+Container hosts-error follow-up (m-5b8a48e2): missing hosts no longer becomes an empty string at capture, and EIO is not suppressed. Production all declarations and changed JS emit; cycle qualification pending. Receipt /Volumes/PeakSSD/heavy-runs-out/builders/s1-container-hostname-artifact/hostname-hosts-error-followup.json SHA256 e128facd7b9414c88c819a0224c1e7878ad230eaf1b4a27f9989ed6eab5430bd.
