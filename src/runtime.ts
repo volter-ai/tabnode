@@ -54,6 +54,19 @@ import { childProcessModule as childProcessShim } from './node-lib/child-process
 import { getServerBridge } from './server-bridge';
 import * as moduleShim from './shims/module';
 import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
+
+/**
+ * A prepared root's native-binding map (the substrate's ADR-0094), given to the engine once by the realm's prelude
+ * instead of a resolve hook that every require of the process would run through (S2: ~83 ms of LibreChat's server
+ * start, ~20,000 requires). `bindings`: the addon paths that have a provider; `roots`: the refusal roots. `provide` and
+ * `refuse` are the prelude's own, so a provided addon's diagnostics and a refusal's error are the hook's exactly.
+ */
+interface SubstrateAddons {
+  readonly bindings: ReadonlySet<string>;
+  readonly roots: readonly string[];
+  provide(path: string): string;
+  refuse(path: string, cause?: unknown): never;
+}
 import { kRunFilesystem } from './node-lib/binding/fs';
 import { byteLengthUtf8 } from './node-lib/binding/buffer';
 import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor } from './node-lib/load';
@@ -2864,6 +2877,13 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   // the fast path Node keeps too. They hang off the Module class because that
   // class is this run's -- one per module cache -- and Node's are per process.
   Module.__substrateHooks = void 0;
+  // ADR-0094's native-binding map, once per run, as data the resolver reads only where it can apply (SubstrateAddons).
+  // A prelude that finds no such door (real Node, the host's qualification instrument) registers its hook instead.
+  Module.__substrateAddons = void 0;
+  Module.__substrateSetAddons = (map: { bindings: readonly string[]; roots: readonly string[]; provide(path: string): string; refuse(path: string, cause?: unknown): never }) => {
+    if (Module.__substrateAddons) throw new Error('This run was already given its native-binding map.');
+    Module.__substrateAddons = Object.freeze({ bindings: new Set(map.bindings), roots: Object.freeze([...map.roots]), provide: map.provide, refuse: map.refuse }) satisfies SubstrateAddons;
+  };
   const __substrateHooksOf = (): RunModuleHooks => (Module.__substrateHooks ??= new RunModuleHooks(process));
   Module.registerHooks = (hooks: { resolve?: unknown; load?: unknown }) => __substrateHooksOf().sync.registerHooks(hooks);
   Module.register = (specifier: unknown, parentURL?: unknown, options?: { parentURL?: unknown; data?: unknown; transferList?: unknown }) =>
@@ -2915,10 +2935,29 @@ function createRequire(
   const __substrateHooks = (): RunModuleHooks | undefined => __substrateModule().__substrateHooks as RunModuleHooks | undefined;
   const __substrateResolve = (id: string): string => {
     const Module = __substrateModule();
-    return Module._resolveFilename === Module.__substrateResolveFilename
-      ? resolveModule(id, currentDir)
-      : Module._resolveFilename(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false, undefined);
+    const addons = Module.__substrateAddons as SubstrateAddons | undefined;
+    if (!addons) return __substrateResolveFile(Module, id);
+    // The native-binding map, as the prelude's hook applied it: an addon named by the request is answered or refused
+    // before the file is looked for (a prepared image may lack the binary), and an answer that is an addon, a bound
+    // path or under a refusal root after. The request is made a path only where it can name an addon.
+    const underRoot = (path: string): boolean => addons.roots.some(root => path === root || path.startsWith(root + '/'));
+    const named = id.startsWith('file:') || id.includes('.node') || /(^|\/)\.\.?\/*$/.test(id);
+    const requested = !named ? void 0 : id.startsWith('file:') ? decodeURIComponent(new URL(id).pathname)
+      : id.startsWith('/') ? pathShim.resolve(id) : id.startsWith('.') ? pathShim.resolve(currentDir, id) : void 0;
+    if (requested?.endsWith('.node') && underRoot(requested)) addons.refuse(requested);
+    if (requested?.endsWith('.node') && addons.bindings.has(requested)) return addons.provide(requested);
+    let resolved: string;
+    try { resolved = __substrateResolveFile(Module, id); }
+    catch (cause) { if (requested?.endsWith('.node')) addons.refuse(requested, cause); throw cause; }
+    if (!resolved.startsWith('/')) return resolved;
+    if (underRoot(resolved)) addons.refuse(resolved);
+    if (addons.bindings.has(resolved)) return addons.provide(resolved);
+    if (resolved.endsWith('.node')) addons.refuse(resolved);
+    return resolved;
   };
+  const __substrateResolveFile = (Module: any, id: string): string => Module._resolveFilename === Module.__substrateResolveFilename
+    ? resolveModule(id, currentDir)
+    : Module._resolveFilename(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false, undefined);
   // Module resolution cache for faster repeated imports
   const resolutionCache: Map<string, string | null> = new Map();
   const successfulPaths = __substratePathsFor(moduleCache, vfs);
