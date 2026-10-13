@@ -234,6 +234,12 @@ export class Pipe extends LibuvStreamWrap {
     if (path.length === 0 || path.charCodeAt(0) === 0) return 0; // an abstract name has no node
     const tree = socketTree();
     if (!tree) return 0;
+    // A relative name is the bind's working directory's, as unix_bind_bsd resolves it then; the node keeps that path.
+    if (!path.startsWith('/')) {
+      const cwd = (globalThis as unknown as { process?: { cwd?: () => string } }).process?.cwd?.();
+      if (typeof cwd !== 'string' || !cwd.startsWith('/')) return 0;
+      path = `${cwd.replace(/\/+$/u, '')}/${path}`;
+    }
     try { tree.createSocketSync!(path, 0o777); }
     catch (cause) {
       const code = (cause as { code?: unknown } | null)?.code;
