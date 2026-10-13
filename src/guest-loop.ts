@@ -37,6 +37,8 @@ const ENTRY_KEYS = 256;
 let entryAccount: Map<string, { count: number; ms: number }> | undefined;
 let outerKind = 'other';
 let outerSource: unknown;
+/** Turned on where a reading's first load clock starts, which may be inside an open bracket (a module's body): that
+ *  bracket began with the account off, so it is counted once, at its end, as `other`. */
 export function enableGuestEntryAccount(): void { entryAccount ??= new Map(); }
 /** The account, the longest first, at most `limit` entries: [kind or kind:name, count, ms]. */
 export function guestEntryAccount(limit = 16): Array<[string, number, number]> | undefined {

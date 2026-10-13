@@ -552,12 +552,14 @@ class FSRequest {
   private cancel?: () => void;
   private ended = false;
 
-  constructor(owner: ProcessToken | null, run: () => void) {
+  /** `source`: the guest function the request answers (its `oncomplete`), which names it in the realm's entry account
+   *  (guest-loop.ts, S2 R27); the outer bracket is the one counted, so it carries the name. */
+  constructor(owner: ProcessToken | null, run: () => void, source?: unknown) {
     ownedRun(owner, () => registerHandle(this));
     try {
       this.cancel = queueNativeFsTask(() => {
         if (this.ended) return;
-        try { ownedRun(owner, run, true, 'fs', run); }
+        try { ownedRun(owner, run, true, 'fs', source ?? run); }
         finally { this.close(); }
       });
     } catch (cause) { this.close(); throw cause; }
@@ -621,7 +623,7 @@ function answer<T>(req: FSReq | undefined, work: () => T): T | undefined {
     let value: T;
     try { value = run(); } catch (error) { ownedRun(owner, () => complete.call(request, error as Error), true, 'fs', complete); return; }
     ownedRun(owner, () => complete.call(request, null, value as unknown), true, 'fs', complete);
-  });
+  }, complete);
   return undefined;
 }
 
