@@ -957,6 +957,17 @@ const fsBinding = {
   /** Node's fast path for `readFile` with an encoding it can decode itself. */
   readFileUtf8(path: unknown, flags: number): string {
     const owned = typeof path !== 'number';
+    // A path read whole, read-only, over a tree that owns its descriptions is the tree's own whole read (S2 R23):
+    // the realm's store answers a stored file with no request, and anything else is one request of the kernel,
+    // where an open, an fstat, two reads and a close were five. Read permission, ENOENT, EISDIR and a file changed
+    // since the image are the tree's to say, as at its open. Devices and /proc keep the descriptor path.
+    if (owned && flags === 0) {
+      const name = asPath(path);
+      const tree = vfs();
+      if (!name.startsWith('/dev/') && !name.startsWith('/proc/') && stdioPath(name) === undefined && treeDescriptorsOf(tree)) {
+        return tree.readFileSync(name, 'utf8') as string;
+      }
+    }
     const fd = owned ? fsBinding.open(path, flags, 0o666) as number : path as number;
     try {
       const owner = ownerOf(fd);
