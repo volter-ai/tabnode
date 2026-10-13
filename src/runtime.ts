@@ -948,7 +948,7 @@ const TRANSPILE_CAPTURE_SALT = 'tabnode ts-node transpile\0';
  * The name a ts-node transpile of this file is captured under, or undefined where none is taken: only for ts-node's own
  * wrapper of a .ts/.mts/.cts module's `_compile` (its service registered on the process, the wrapper calling the
  * service's compile), with transpile-only set, no custom transformers and no preferTsExts, the service enabled and the
- * file not ignored. The name hashes everything the transpile reads besides the file: the wrapper's own text, the
+ * file not ignored, and TypeScript's own transpiler (no `swc`, no `transpiler` module). The name hashes everything the transpile reads besides the file: the wrapper's own text, the
  * TypeScript version, ts-node's options and the compiler options its tsconfig chain resolved to, every TS_NODE_
  * variable, execArgv, the path (the source map names it), and the file's text.
  *
@@ -967,7 +967,10 @@ function __substrateTranspileKey(process: unknown, module: object, ownCompile: u
     enabled?: () => boolean; ignored?: (fileName: string) => boolean } | undefined;
   if (!service || typeof service !== 'object') return undefined;
   const options = service.options ?? {};
-  if (options.transpileOnly !== true || options.transformers !== undefined || options.preferTsExts === true) return undefined;
+  // A transpiler other than TypeScript's own (`swc`, or a `transpiler` module) writes the output, and neither's version
+  // is in the name: such a service is not captured (review of 96af773).
+  if (options.transpileOnly !== true || options.transformers !== undefined || options.preferTsExts === true
+    || (options.swc !== undefined && options.swc !== false) || options.transpiler !== undefined) return undefined;
   try {
     if (typeof service.enabled === 'function' && !service.enabled()) return undefined;
     if (typeof service.ignored === 'function' && service.ignored(resolvedPath)) return undefined;
