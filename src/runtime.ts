@@ -539,9 +539,9 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
 /**
  * The names a body reads as bare identifiers from its process's guest global rather than the host realm's, live:
  * each read is the guest's value now, each assignment is the guest's. They were an object literal of accessors in
- * every body's wrapper, so V8 parsed 2,300 characters and 38 accessor functions again for each body it compiled,
- * and made 38 closures again for each body it ran: Cal's server compiled 8,456 bodies to its first page (S2 K1,
- * compile 743 ms). One object a process serves every body of it, the same answers. Its accessors are not
+ * every body's wrapper, so V8 parsed about 2,100 characters and 38 accessor functions again for each body it compiled,
+ * and made 38 closures again for each body it ran: Cal's server compiled 8,456 bodies to its first head (S2 K1,
+ * fe60311f dry-run2: native eval 781 ms). One object a process serves every body of it, the same answers. Its accessors are not
  * configurable: one body's `delete window` used to remove the name from that body's own scope alone, and on a
  * shared scope it would remove it from every later body's, so the delete is refused (false, as sloppy code sees it).
  */

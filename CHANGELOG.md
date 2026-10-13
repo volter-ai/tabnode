@@ -9,7 +9,7 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   of the same live, sloppy-silent accessors is made per process and passed in,
   so V8 no longer parses ~2,100 characters and 38 accessor functions per
   compiled body or makes 38 closures per run (Cal: 8,456 bodies to first head,
-  compile 743 ms). Its accessors are non-configurable, so one body's `delete`
+  native eval 781 ms in fe60311f dry-run2). Its accessors are non-configurable, so one body's `delete`
   cannot strip a name from later bodies. Saving awaits a mini Cal lap.
 
 - Reuse the private internal require context for an admitted module parent
