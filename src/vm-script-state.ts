@@ -31,10 +31,11 @@ export class VmScriptPreparationCache {
     if (kept) return { prepared: kept, hit: true, failed: false, parsed: false };
     const declared: string[] = [];
     let failed = false;
-    // No declaration can exist without its keyword text or an escape. This
-    // only rules out discovery work; real eval still parses every script and
-    // decides syntax/completion. Possible declarations keep the same parser.
-    const parsed = !cacheable || source.includes('var') || source.includes('function') || source.includes('\\');
+    // No top-level declaration can exist without its keyword as a word at
+    // bracket depth 0 (mayDeclareAtTop). This only rules out discovery work;
+    // real eval still parses every script and decides syntax/completion.
+    // Possible declarations keep the same parser.
+    const parsed = !cacheable || mayDeclareAtTop(source);
     if (parsed) try {
       const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
       for (const node of ast.body) {
@@ -53,6 +54,76 @@ export class VmScriptPreparationCache {
     }
     return { prepared, hit: false, failed, parsed };
   }
+}
+
+function isWordChar(c: number): boolean {
+  return (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a) || (c >= 0x30 && c <= 0x39) || c === 0x5f || c === 0x24;
+}
+/**
+ * Whether a top-level statement of the script can begin with `var` or
+ * `function`: the only statements the parser's walk above collects. Next's
+ * server evaluates one client-reference manifest per app route at start
+ * (Dub: 715 routes before its first page), each an object literal whose
+ * module paths contain the text (packages/ui/src/rich-text-area/variables.tsx,
+ * packages/utils/src/functions/), so the substring test sent every manifest
+ * through acorn. This reads the text once,
+ * outside strings and comments, counting bracket depth; a `var` or `function`
+ * word at depth 0 answers yes. Whatever it cannot read without a parser (a
+ * template, a regular expression or a division, an escape outside a string,
+ * an unterminated string or comment, unbalanced brackets) also answers yes,
+ * and acorn decides as before. A word is ASCII only: a non-ASCII character
+ * ends one, so `var` after any Unicode space is still seen; a non-ASCII
+ * identifier character can only add a false yes.
+ */
+export function mayDeclareAtTop(source: string): boolean {
+  if (!source.includes('var') && !source.includes('function') && !source.includes('\\')) return false;
+  let depth = 0;
+  for (let i = 0, n = source.length; i < n;) {
+    const c = source.charCodeAt(i);
+    if (c === 0x22 /* " */ || c === 0x27 /* ' */) {
+      for (i++; ; i++) {
+        if (i >= n) return true;
+        const d = source.charCodeAt(i);
+        if (d === c) break;
+        if (d === 0x5c /* \\ */) i++;
+        else if (d === 0x0a || d === 0x0d) return true;
+      }
+      i++;
+      continue;
+    }
+    if (c === 0x2f /* / */) {
+      const d = source.charCodeAt(i + 1);
+      if (d === 0x2f /* / */) {
+        for (i += 2; i < n; i++) { const e = source.charCodeAt(i); if (e === 0x0a || e === 0x0d || e === 0x2028 || e === 0x2029) break; }
+        continue;
+      }
+      if (d === 0x2a /* * */) {
+        const end = source.indexOf('*/', i + 2);
+        if (end < 0) return true;
+        i = end + 2;
+        continue;
+      }
+      return true;
+    }
+    if (c === 0x60 /* ` */ || c === 0x5c /* \\ */) return true;
+    if (c === 0x7b || c === 0x28 || c === 0x5b) { depth++; i++; continue; }
+    if (c === 0x7d || c === 0x29 || c === 0x5d) {
+      if (--depth < 0) return true;
+      i++;
+      continue;
+    }
+    if (isWordChar(c)) {
+      const start = i;
+      for (i++; i < n && isWordChar(source.charCodeAt(i)); i++);
+      if (depth === 0) {
+        const length = i - start;
+        if (length === 3 ? source.startsWith('var', start) : length === 8 && source.startsWith('function', start)) return true;
+      }
+      continue;
+    }
+    i++;
+  }
+  return false;
 }
 
 const realmCache = new VmScriptPreparationCache();
