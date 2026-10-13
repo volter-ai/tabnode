@@ -6,6 +6,9 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Requested module evaluation evidence includes the digest of the original _compile text and whether the completed synchronous body replaced exports. Only an explicitly selected source is hashed; original loading, cached-body use, exports and errors remain unchanged. Host callbacks receive immutable scalar evidence, and source records retire when compilation ends (substrate Articles 1/5/6/8/9).
+
+
 - Failed child host handoff (substrate Articles5/6/8/9): a synchronous throw or
   rejected host run returns exit ownership only when the holder confirms no image
   started and no end was posted. Publish a launch failure as127 (126 for permission

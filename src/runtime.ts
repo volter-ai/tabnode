@@ -98,7 +98,13 @@ import { applySourceEdits } from './source-edits';
 import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typescript-module';
 import * as acorn from 'acorn';
 
-import { observerDescriptor, observerHasOwn } from './module-observer-records';
+import { observerDescriptor, observerHasOwn, observerRecord, observerWrite, observerFreeze } from './module-observer-records';
+const observerEncoder = new TextEncoder();
+const observerEncode = observerEncoder.encode.bind(observerEncoder);
+const ObserverWeakMap = WeakMap;
+const observerMapGet = Function.prototype.call.bind(WeakMap.prototype.get);
+const observerMapSet = Function.prototype.call.bind(WeakMap.prototype.set);
+const observerMapDelete = Function.prototype.call.bind(WeakMap.prototype.delete);
 // Receiver-independent native own check adds no diagnostic allocation for ordinary contexts.
 const __moduleObserverOwn = Object.hasOwn;
 
@@ -1796,8 +1802,13 @@ export interface Module {
 /** Host-only execution evidence. No observer function is installed in Node globals or Module exports. */
 export interface ModuleEvaluationObserver {
   observes(filename: string): boolean;
-  onEvaluated(filename: string, exports: unknown): void;
+  /** Request original-source evidence only for these exact filenames. */
+  observesSource?(filename: string): boolean;
+  onEvaluated(filename: string, exports: unknown, evidence?: ModuleEvaluationEvidence): void;
 }
+
+/** Host-owned scalar evidence; no source, exports or module is retained here. */
+export interface ModuleEvaluationEvidence { sourceSha256: string; exportsReplaced: boolean }
 
 export interface RuntimeOptions {
   /** Host-configured numeric identity; absent preserves uid/gid 1000 and groups [1000]. */
@@ -3150,7 +3161,7 @@ function createRequire(
   };
 
   /** `Module.prototype._compile`'s own work: the engine's pipeline over `content`, as the module at `filename`. */
-  const compileRaw = (module: Module, content: string, filename: string, dirname: string): void => {
+  let compileRaw = (module: Module, content: string, filename: string, dirname: string): void => {
     const compiling = __substrateLoading.get(module)?.compiling;
     const format = compiling?.format;
     const rawCode = content;
@@ -3378,8 +3389,34 @@ function createRequire(
   if (__moduleObserverOwn(options, 'moduleEvaluationObserver') && options.moduleEvaluationObserver) {
     const observes = options.moduleEvaluationObserver.observes;
     const onEvaluated = options.moduleEvaluationObserver.onEvaluated;
+    const observesSource = __moduleObserverOwn(options.moduleEvaluationObserver, 'observesSource')
+      ? options.moduleEvaluationObserver.observesSource : undefined;
+    const sources = typeof observesSource === 'function'
+      ? new ObserverWeakMap<Module, { sourceSha256: string; initialExports: unknown }>() : undefined;
+    if (sources && observesSource) {
+      const originalCompile = compileRaw;
+      compileRaw = (module, content, filename, dirname): void => {
+        observerMapDelete(sources, module);
+        try {
+          if (observesSource(filename)) {
+            const exports = observerDescriptor(module, 'exports');
+            if (exports && observerHasOwn(exports, 'value')) {
+              const source = observerRecord<{ sourceSha256: string; initialExports: unknown }>();
+              // The text actually given to _compile, before the existing engine
+              // pipeline or prepared-body lookup. Never reread a mutable file.
+              observerWrite(source, 'sourceSha256', bytesToHex(sha256(observerEncode(content))));
+              observerWrite(source, 'initialExports', exports.value);
+              observerMapSet(sources, module, observerFreeze(source));
+            }
+          }
+        } catch { /* Missing evidence does not change compilation. */ }
+        try { originalCompile(module, content, filename, dirname); }
+        finally { observerMapDelete(sources, module); }
+      };
+    }
     const originalBody = runModuleBody;
     runModuleBody = (module, prepared, resolvedPath, dirname, bodySource, scoped = false, utf8Bytes): void => {
+      const source = sources ? observerMapGet(sources, module) as { sourceSha256: string; initialExports: unknown } | undefined : undefined;
       originalBody(module, prepared, resolvedPath, dirname, bodySource, scoped, utf8Bytes);
       if (observes(resolvedPath)) {
         try {
@@ -3387,7 +3424,12 @@ function createRequire(
           const exports = observerDescriptor(module, 'exports');
           if (loaded && exports && observerHasOwn(loaded, 'value')
             && loaded.value === true && observerHasOwn(exports, 'value')) {
-            onEvaluated(resolvedPath, exports.value);
+            if (source) {
+              const evidence = observerRecord<ModuleEvaluationEvidence>();
+              observerWrite(evidence, 'sourceSha256', source.sourceSha256);
+              observerWrite(evidence, 'exportsReplaced', exports.value !== source.initialExports);
+              onEvaluated(resolvedPath, exports.value, observerFreeze(evidence));
+            } else onEvaluated(resolvedPath, exports.value);
           }
         } catch { /* Evidence failure cannot change the original module's result or error. */ }
       }
