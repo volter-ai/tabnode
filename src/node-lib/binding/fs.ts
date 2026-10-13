@@ -144,6 +144,9 @@ function flagBits(): { create: number; excl: number; truncate: number; append: n
   };
 }
 
+/** Node's utf8 read: a leading U+FEFF is the file's text, kept (a default TextDecoder drops it); bad bytes are U+FFFD. */
+const utf8KeepingBom = new TextDecoder('utf-8', { ignoreBOM: true });
+
 /** The file-type bits a `mode` carries, which is how `Stats` answers `isFile()`. */
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
@@ -957,15 +960,17 @@ const fsBinding = {
   /** Node's fast path for `readFile` with an encoding it can decode itself. */
   readFileUtf8(path: unknown, flags: number): string {
     const owned = typeof path !== 'number';
-    // A path read whole, read-only, over a tree that owns its descriptions is the tree's own whole read (S2 R23):
-    // the realm's store answers a stored file with no request, and anything else is one request of the kernel,
-    // where an open, an fstat, two reads and a close were five. Read permission, ENOENT, EISDIR and a file changed
-    // since the image are the tree's to say, as at its open. Devices and /proc keep the descriptor path.
+    // A regular file's path read whole, read-only, over a tree that owns its descriptions is the tree's own whole
+    // read (S2 R23): the realm's store answers a stored file with no request, and anything else is one request of
+    // the kernel, where an open, an fstat, two reads and a close were five. Read permission and a file changed since
+    // the image are the tree's to say. Anything not a regular file (absent, a directory, a FIFO, a socket, a device)
+    // and /dev, /proc keep the descriptor path, where its open or read fails or blocks as Node's does.
     if (owned && flags === 0) {
       const name = asPath(path);
       const tree = vfs();
-      if (!name.startsWith('/dev/') && !name.startsWith('/proc/') && stdioPath(name) === undefined && treeDescriptorsOf(tree)) {
-        return tree.readFileSync(name, 'utf8') as string;
+      if (!name.startsWith('/dev/') && !name.startsWith('/proc/') && stdioPath(name) === undefined && treeDescriptorsOf(tree)
+        && tree.statSync(name, { throwIfNoEntry: false })?.isFile()) {
+        return utf8KeepingBom.decode(tree.readFileSync(name) as Uint8Array);
       }
     }
     const fd = owned ? fsBinding.open(path, flags, 0o666) as number : path as number;
@@ -986,12 +991,12 @@ const fsBinding = {
         const whole = new Uint8Array(total);
         let at = 0;
         for (const chunk of chunks) { whole.set(chunk, at); at += chunk.length; }
-        return new TextDecoder().decode(whole);
+        return utf8KeepingBom.decode(whole);
       }
       const file = fileFor(fd);
       const bytes = new Uint8Array(file.tree.statSync(file.path).size);
       const length = fsBinding.read(fd, bytes, 0, bytes.length, -1) as number;
-      return new TextDecoder().decode(bytes.subarray(0, length));
+      return utf8KeepingBom.decode(bytes.subarray(0, length));
     } finally { if (owned) fsBinding.close(fd); }
   },
 
