@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.15.1 — 2026-10-14
+
 - **An awaiting turn queues one microtask, not two** (browser-substrate S2 AC-LC9). A compiled async function's
   resumption made a closure and queued it to end its turn's account, and queued a second task to put its context
   frame back to the root where its frame changed; the turn's end is now one function, queued once, and it puts the
