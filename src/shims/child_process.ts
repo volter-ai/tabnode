@@ -2020,6 +2020,9 @@ interface CommandRun {
  * handle, a `runCommand` and a synchronous child all reach the world through.
  */
 async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
+  // A run handed its own tree (a kernel process's, browser-substrate ADR-0129 5f) gets that tree's shell, as runNode
+  // makes one: without it the line ran on whichever tree's shell came last.
+  if (run.vfs && !shells.has(run.vfs)) shellForRunTree(run.vfs);
   const tree = run.vfs ?? treeForRun();
   const shell = shellOf(tree);
   if (tree && shell) {

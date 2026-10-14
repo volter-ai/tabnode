@@ -74,6 +74,8 @@ export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter, type St
 export const RUN_STDIN_READER = 1;
 /** Present from the release that tells a run's registry its signal listeners (ProcessRegistry.disposition). */
 export const RUN_SIGNAL_DISPOSITIONS = 1;
+/** Present from the release whose `run` (a shell line) reads `RunOptions.filesystem`, as `runNode` does. */
+export const RUN_LINE_FILESYSTEM = 1;
 import { stdinRingProblem, stdinRingWaitsAsync, type StdinReader } from './stdin-ring';
 export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
@@ -127,7 +129,10 @@ export interface RunOptions {
    * exec'd), chosen per run, while the run keeps the container's one port
    * space, process table and servers, as a process on Linux keeps its
    * network namespace whatever filesystem it sees. The engine writes nothing
-   * into it on its own account. `runNode` only.
+   * into it on its own account. `runNode`, and `run`, whose shell line, its
+   * builtins and the children it runs in this realm read and write it
+   * (browser-substrate ADR-0129 5f.1: a line that is a kernel process's is on
+   * that process's tree, as its `node` is).
    */
   filesystem?: VirtualFS;
   /**
@@ -346,7 +351,7 @@ export function createContainer(options?: ContainerOptions): {
         // it before the shell. Both forward it, so a builtin reads what was
         // piped, as it does in a Node shell.
         return await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-          runCommand(command, { credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()), cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs }, (error, stdout, stderr) => {
+          runCommand(command, { credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()), cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs: runOptions?.filesystem ?? vfs }, (error, stdout, stderr) => {
             resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
           });
         });
