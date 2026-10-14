@@ -2697,19 +2697,62 @@ function __substrateInStatWindow<T>(process: object, run: () => T): T {
   try { return run(); } finally { keeping.stats = undefined; }
 }
 const __substrateResolvedPaths = new WeakMap<Record<string, Module>, WeakMap<VirtualFS, { paths: Map<string, string>; bytes: number }>>();
-/** A requested reading's account of the kept resolved paths (resolveSplit.keptPaths): hits, misses, size, evictions. */
-const __substratePathCountsBy = new WeakMap<object, { hits: number; misses: number; kept: number; evicted: number }>();
+/** A requested reading's account of the kept resolved paths (resolveSplit.keptPaths): hits, misses, size, evictions, and those the process started with. */
+const __substratePathCountsBy = new WeakMap<object, { hits: number; misses: number; kept: number; evicted: number; carried?: number }>();
 function __substratePathCounts(process: object) {
   let counts = __substratePathCountsBy.get(process);
   if (!counts) { counts = { hits: 0, misses: 0, kept: 0, evicted: 0 }; __substratePathCountsBy.set(process, counts); }
   return counts;
 }
+/**
+ * The kept paths a process starts with (ADR-0152 in browser-substrate): its project's last run's, handed by a host that
+ * has checked they were resolved on the same files (`seedKeptResolutions`). Each table this realm makes takes them
+ * when it is made; this realm's tables are named here so their paths can be said when the process ends
+ * (`keptResolutions`).
+ */
+let __substrateKeptSeed: { entries: ReadonlyArray<readonly [string, string]>; filesystem?: WeakRef<object> } | undefined;
+const __substrateKeptTables = new Set<WeakRef<{ paths: Map<string, string>; bytes: number }>>();
 function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
   let filesystems = __substrateResolvedPaths.get(cache);
   if (!filesystems) { filesystems = new WeakMap(); __substrateResolvedPaths.set(cache, filesystems); }
   let paths = filesystems.get(fs);
-  if (!paths) { paths = { paths: new Map(), bytes: 0 }; filesystems.set(fs, paths); }
+  if (!paths) {
+    paths = { paths: new Map(), bytes: 0 };
+    // A seed given for one filesystem is that filesystem's tables' alone: another tree's paths are another view's.
+    const seed = __substrateKeptSeed && (!__substrateKeptSeed.filesystem || __substrateKeptSeed.filesystem.deref() === fs) ? __substrateKeptSeed.entries : undefined;
+    if (seed) {
+      for (const [key, path] of seed) __substrateKeepPath(paths, key, path);
+      (paths as { carried?: number }).carried = paths.paths.size;
+      // What seeding itself pushed out is not a process's eviction.
+      (paths as { evicted?: number }).evicted = 0;
+    }
+    filesystems.set(fs, paths);
+    __substrateKeptTables.add(new WeakRef(paths));
+  }
   return paths;
+}
+/**
+ * Seeds the kept paths every table this realm makes from now on (ADR-0152): `(directory asked from + "\0" + name,
+ * resolved path)` pairs, within the same bounds a process keeps. The host hands only a table made on the same files;
+ * the engine cannot check that, and a table it was not given is never assumed. Call before the process's first require.
+ */
+export function seedKeptResolutions(entries: Iterable<readonly [string, string]>, filesystem?: object): void {
+  const seed: Array<readonly [string, string]> = [];
+  for (const entry of entries) {
+    if (!Array.isArray(entry) || typeof entry[0] !== 'string' || typeof entry[1] !== 'string' || !entry[0].includes('\0') || !entry[1].startsWith('/')) continue;
+    seed.push([entry[0], entry[1]]);
+  }
+  __substrateKeptSeed = { entries: seed, ...(filesystem ? { filesystem: new WeakRef(filesystem) } : {}) };
+}
+/** The paths this realm's tables keep now, oldest first, deduplicated by key: what its next run may start with (ADR-0152). */
+export function keptResolutions(): Array<[string, string]> {
+  const kept = new Map<string, string>();
+  for (const reference of __substrateKeptTables) {
+    const table = reference.deref();
+    if (!table) { __substrateKeptTables.delete(reference); continue; }
+    for (const [key, path] of table.paths) kept.set(key, path);
+  }
+  return [...kept];
 }
 /**
  * The resolved paths a process keeps, Node's relativeResolveCache, bounded by its bytes. The count bound was 8,192, which
@@ -3084,7 +3127,7 @@ function createRequire(
       return cached;
     }
     const successful = successfulPaths.paths.get(cacheKey);
-    if (traceReadingRequested()) { const counts = __substratePathCounts(process); if (successful !== undefined) counts.hits += 1; else counts.misses += 1; counts.kept = successfulPaths.paths.size; counts.evicted = (successfulPaths as { evicted?: number }).evicted ?? 0; }
+    if (traceReadingRequested()) { const counts = __substratePathCounts(process); if (successful !== undefined) counts.hits += 1; else counts.misses += 1; counts.kept = successfulPaths.paths.size; counts.evicted = (successfulPaths as { evicted?: number }).evicted ?? 0; counts.carried = (successfulPaths as { carried?: number }).carried ?? 0; }
     if (successful !== undefined) return successful;
 
     // One resolver for every name the engine resolves: this require, the simple
