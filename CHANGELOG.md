@@ -6,6 +6,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **An awaiting turn queues one microtask, not two** (browser-substrate S2 AC-LC9). A compiled async function's
+  resumption made a closure and queued it to end its turn's account, and queued a second task to put its context
+  frame back to the root; the turn's end is now one function, queued once, and it puts the frame back too.
+
 ## v0.15.0 — 2026-10-14
 
 Kept paths carried across runs (browser-substrate ADR-0152, S2 AC-LC10). Additive: two new exports, which a host
