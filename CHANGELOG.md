@@ -6,6 +6,31 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **A realm compiles Node's own library once, and may do it ahead** (browser-substrate S2 AC-LC12). A builtin's file is
+  compiled to a function once a realm and called into a module scope of its own at each load, as before. The new
+  export `precompileNodeLib(name)` compiles one ahead of its first require, running none of it, so a realm waiting for
+  its process can spend the wait there (LibreChat run 4: 332 ms of `compileNodeLib` self time over its 20 Node realms,
+  each on its own process's start). The realm keeps each compiled file for its life. Additive: a host detects the
+  export by its presence.
+- **A process's load clock says its heaviest bodies** (browser-substrate S2 AC-LC5). Where a reading is requested, the
+  `load-clock` record carries `heaviestBodies`: the 24 bodies that took longest from their link to their evaluation's
+  return, with the requires their evaluation made, by path. An importer's time holds its imports'; a body's own
+  resolve and read are its importer's, and an async or generator body is timed to its first suspension. A run with no
+  reading requested keeps no clock, and none of this.
+- **A module's body is shorter to compile and quicker to link** (browser-substrate S2 AC-LC15). The wrapper's scope is
+  its parameters, given their values at the call, instead of a header of 25 `var` statements copying them from other
+  parameters and from the guest's global: 1,025 characters a body, compiled again for each with their bytecode, are now
+  510 (501 for an ES module, 29 fewer where a body needs no `with`) with no statement but the `process` assignment.
+  Which way a body runs is read from its marks where they can be: the top-level-await mark at its end only, the import
+  await mark in an ES module's body only, instead of two scans of every body's whole text. A body whose own source
+  merely holds a mark's text is no longer taken for an async or generator body. A stack column on a body's first line
+  moves with the shorter header, as it moved with the longer one. The wrapper's `$filename`, `$dirname`, `$console` and `$importMeta` names, which no lowered
+  text uses, are no longer in a body's scope: a body sees Node's names and the `$` names lowered text uses.
+- **A module's body starts with less of the engine's own work** (browser-substrate S2 AC-LC14). Every module of a
+  runtime (its REPL too) shares one `console` wrapper, made at its first body and kept by its options, as Node's
+  modules share one console, instead of a new object of ten closures made for each body and each `require`; and a body's header assigns `process` to its global once, not twice through the same
+  object (`global` is `globalThis`), so one guest-global trap fewer runs for each body.
+
 ## v0.15.1 — 2026-10-14
 
 - **An awaiting turn queues one microtask, not two** (browser-substrate S2 AC-LC9). A compiled async function's

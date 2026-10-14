@@ -1,6 +1,10 @@
 import { traceValueReplacer } from './trace-values';
 const requestedKey = Symbol.for('tabnode.trace-requested');
 const readingKey = Symbol.for('browser-substrate.trace-readings');
+// Found once, not at each ask: a traced realm asks at every read and stat, and each ask resolved its names in the
+// global symbol registry again (LibreChat run 4: 12 ms of the co-located host's own time, S2 AC-LC1).
+const outputKey = Symbol.for('tabnode.trace-output');
+const costsKey = Symbol.for('browser-substrate.trace-costs');
 /** Host-selected diagnostics; retain standalone/file-host behavior unless a host supplied its selection. */
 export function traceReadingRequested(): boolean {
   const selected = Reflect.get(globalThis, requestedKey);
@@ -9,7 +13,7 @@ export function traceReadingRequested(): boolean {
   if (typeof asked === 'boolean') return asked;
   // An older substrate installs this sink without either selection symbol.
   // Independently updated engine/substrate heads retain that host's reading.
-  return typeof Reflect.get(globalThis, Symbol.for('tabnode.trace-output')) === 'function'
+  return typeof Reflect.get(globalThis, outputKey) === 'function'
     || typeof location === 'undefined' || location.href.startsWith('file:');
 }
 /**
@@ -18,7 +22,7 @@ export function traceReadingRequested(): boolean {
  * it false; events and the load clock stay with readings.
  */
 export function traceCostsRequested(): boolean {
-  return traceReadingRequested() && Reflect.get(globalThis, Symbol.for('browser-substrate.trace-costs')) !== false;
+  return traceReadingRequested() && Reflect.get(globalThis, costsKey) !== false;
 }
 const instrumentLine = /^\[(?:boot-trace|wali-boot|kernel-[^\]]+|reap-trace|load-clock|require-clock|stream-calls|first-answer|realm-reads|socket-connect|socket-waits|socket-write|k5)\](?:\s|$)/u;
 /** The legacy source instruments already made a line. Give the host owner
@@ -26,7 +30,7 @@ const instrumentLine = /^\[(?:boot-trace|wali-boot|kernel-[^\]]+|reap-trace|load
 export function captureTraceConsoleLine(args: unknown[], level: 'log' | 'info' | 'warn' | 'error'): boolean {
   if (!traceReadingRequested()) return false;
   if (args.length !== 1 || typeof args[0] !== 'string' || !instrumentLine.test(args[0])) return false;
-  const sink = Reflect.get(globalThis, Symbol.for('tabnode.trace-output')) as ((prefix: string, payload: unknown, level: string) => void) | undefined;
+  const sink = Reflect.get(globalThis, outputKey) as ((prefix: string, payload: unknown, level: string) => void) | undefined;
   if (!sink) return false;
   sink('', args[0], level);
   return true;
@@ -34,7 +38,7 @@ export function captureTraceConsoleLine(args: unknown[], level: 'log' | 'info' |
 /** Host evidence seam only: guest console and Node semantics are unchanged. */
 export function traceOutput(prefix: string, payload: unknown, level: 'log' | 'info' | 'warn' = 'log'): void {
   if (!traceReadingRequested() && level !== 'warn') return;
-  const sink = Reflect.get(globalThis, Symbol.for('tabnode.trace-output')) as ((prefix: string, payload: unknown, level: string) => void) | undefined;
+  const sink = Reflect.get(globalThis, outputKey) as ((prefix: string, payload: unknown, level: string) => void) | undefined;
   if (sink) sink(prefix, payload, level);
   else console[level](`${prefix} ${JSON.stringify(payload, traceValueReplacer)}`);
 }

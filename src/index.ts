@@ -20,6 +20,7 @@ export type { FSNode, MountedTree, Stats, FSWatcher, WatchListener, WatchEventTy
 export { Runtime, execute, seedKeptResolutions, keptResolutions, prepareModuleForImage, preparedModuleKey, preparedModuleKeyOf, preparedModuleKind, isPreparedModuleKey, PREPARED_MODULES_DIR, PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT } from './runtime';
 export type { Module, RuntimeOptions, RequireFunction, ModuleEvaluationObserver, ModuleEvaluationEvidence } from './runtime';
 export { createRuntime, WorkerRuntime } from './create-runtime';
+export { precompileNodeLib } from './node-lib/load';
 export { prepareHttpParserModule } from './http-parser-module';
 export type { IRuntime, IExecuteResult, CreateRuntimeOptions, IRuntimeOptions, VFSSnapshot } from './runtime-interface';
 export { createFsShim } from './shims/fs';

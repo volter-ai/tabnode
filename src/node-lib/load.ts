@@ -83,6 +83,8 @@ interface NodeLibModule {
 /* eslint-disable no-var, vars-on-top */
 var cache: Map<string, NodeLibModule> | undefined;
 var builtInternals: Map<string, unknown> | undefined;
+/** A builtin's file compiled once a realm (compiledNodeLibFor), kept for the realm's life. */
+var compiledNodeLib: Map<string, Function> | undefined;
 var builtBindings: Map<string, unknown> | undefined;
 /* eslint-enable no-var, vars-on-top */
 
@@ -466,14 +468,39 @@ function newNodeLibRecord(name: string): NodeLibModule {
   return { exports: {}, id: name, filename: `node:${name}`, loaded: false };
 }
 
+/**
+ * A builtin's file as a function, compiled once a realm (S2 AC-LC12): every Node process's realm compiled its builtins
+ * at their first require, on its own start (LibreChat run 4: 332 ms of `compileNodeLib` self time over its 20 Node
+ * realms). Compiling runs nothing: each load still calls it into a module scope of its own.
+ */
+function compiledNodeLibFor(name: string): Function {
+  compiledNodeLib ??= new Map<string, Function>();
+  let compiled = compiledNodeLib.get(name);
+  if (!compiled) {
+    // eslint-disable-next-line no-new-func
+    compiled = new Function(
+      'exports', 'require', 'module', 'process', 'internalBinding', 'primordials',
+      `${NODE_LIB_SOURCES[name]}\n//# sourceURL=node:${name}`,
+    );
+    compiledNodeLib.set(name, compiled);
+  }
+  return compiled;
+}
+/**
+ * Compiles a builtin's file ahead of its first require, running none of it: a realm that waits idle for its process
+ * (a spare) spends that wait here instead of in the process's start. False for a name that has no file, or one
+ * already compiled.
+ */
+export function precompileNodeLib(name: string): boolean {
+  if (NODE_LIB_SOURCES[name] === undefined || compiledNodeLib?.has(name)) return false;
+  compiledNodeLibFor(name);
+  return true;
+}
+
 /** The scope Node's `BuiltinModule.compileForInternalLoader` gives a builtin. */
 function compileNodeLib(name: string, record: NodeLibModule, require: NodeLibRequire = nodeLibRequire,
   process: object = nodeLibProcessOf(), binding: (name: string) => unknown = internalBinding): void {
-  // eslint-disable-next-line no-new-func
-  const compiled = new Function(
-    'exports', 'require', 'module', 'process', 'internalBinding', 'primordials',
-    `${NODE_LIB_SOURCES[name]}\n//# sourceURL=node:${name}`,
-  );
+  const compiled = compiledNodeLibFor(name);
   compiled(record.exports, require, record, process, binding, primordialsOf());
   // lib/buffer.js defines `transcode` only where Node is built with ICU, which this engine is not; the one
   // function is bound here (binding/transcode.ts) rather than left undefined.
