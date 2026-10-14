@@ -1721,6 +1721,35 @@ function __substrateAsyncBody(wrappedCode: string): string {
     + '\n;$module.__substrateBodyDone = true;' + wrappedCode.slice(at);
 }
 /**
+ * How a prepared body runs, from the marks its preparation wrote: the top-level-await mark is only ever the body's
+ * last text (__substrateFollowAwaits), and an import's await mark only ever in an ES module's lowering, which is
+ * marked as one (S2 AC-LC15: two scans of every body's whole text, 66.7 MB a server's start, were the link phase's).
+ */
+function __substrateBodyKind(code: string, strictBody: boolean): 'sync' | 'generator' | 'async' {
+  if (code.endsWith(__substrateTopLevelAwaitMarker)) return 'async';
+  return strictBody && code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
+}
+/**
+ * A module's wrapper, one line as Node's `Module.wrap` is. Its scope is its parameters, given their values by
+ * `__substrateRunWrapped` at the call: a header of `var` statements that took them from other parameters and from the
+ * guest's global was parsed and compiled again for each body (S2 AC-LC15: 1,025 characters and 25 statements a body,
+ * some 6 MB over a server's 6,171 bodies). The `$` names are the ones a lowered body's own text uses.
+ */
+function __substrateWrapBody(code: string, guestScoped: boolean, strictBody: boolean, sourceURL: string): string {
+  return `(function($exports, exports, $require, require, $module, module, __filename, __dirname, $process, process, console, import_meta, $dynamicImport, __dynamicImport, globalThis, global, Buffer, queueMicrotask, atob, btoa, structuredClone, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
+}).call(${strictBody ? 'void 0' : '$module.exports'}); }
+})${sourceURL}`;
+}
+/** Runs a wrapped body with its scope's values, read from the guest's global in the order its header read them. */
+function __substrateRunWrapped(fn: Function, exports: unknown, require: unknown, module: unknown, filename: string, dirname: string,
+  process: Process, console: unknown, importMeta: unknown, dynamicImport: unknown): unknown {
+  const guest = __substrateGuestGlobal(process) as Record<string, unknown>;
+  return fn(exports, exports, require, require, module, module, filename, dirname, process, process, console, importMeta,
+    dynamicImport, dynamicImport, guest, guest, guest.Buffer, guest.queueMicrotask, guest.atob, guest.btoa, guest.structuredClone,
+    guest.setTimeout, guest.clearTimeout, guest.setInterval, guest.clearInterval, guest.setImmediate, guest.clearImmediate,
+    __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope(process));
+}
+/**
  * Drives a body: a generator runs until an import is still settling or the
  * body is done; an async body's promise is its own. Returns what is still
  * settling, or undefined when the body ran through.
@@ -3520,7 +3549,7 @@ function createRequire(
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
-      // header's `var` statements are the module's scope, `globalThis` and
+      // wrapper's parameters are the module's scope, `globalThis` and
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. The generated sourceURL names the script.
@@ -3532,15 +3561,13 @@ function createRequire(
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
       // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
       const guestScoped = __substrateGuestScoped(code);
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
-}).call(${strictBody ? 'void 0' : '$module.exports'}); }
-})${sourceURL}`;
+      const wrappedCode = __substrateWrapBody(code, guestScoped, strictBody, sourceURL);
 
       // A lowered ES module body is a generator that yields at each import
       // still settling; a body that must wait, on a top-level `await` of its
       // own, runs as an async function. Either way its settling is what its
       // importers await.
-      let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
+      let bodyKind = __substrateBodyKind(code, strictBody);
       let fn;
       __substrateLoadPhase(process, vfs, 'compile');
       try {
@@ -3563,20 +3590,8 @@ function createRequire(
       const importMeta = createImportMeta(moduleRequire, importMetaUrl, dirname, resolvedPath);
 
       __substrateLoadPhase(process, vfs, 'evaluate');
-      const body = __substrateInStatWindow(process, () => withGuestExecution(() => fn(
-        module.exports,
-        moduleRequire,
-        module,
-        resolvedPath,
-        dirname,
-        process,
-        consoleWrapper,
-        importMeta,
-        dynamicImport,
-        __substrateGuestGlobal,
-        __substrateGuestConstructor,
-        __substrateGuestScope(process)
-      ), 'module'));
+      const body = __substrateInStatWindow(process, () => withGuestExecution(() => __substrateRunWrapped(fn,
+        module.exports, moduleRequire, module, resolvedPath, dirname, process, consoleWrapper, importMeta, dynamicImport), 'module'));
 
       // The body has returned. With no require in flight it was an entry's (started through `_load`, at depth 0), and
       // what follows is the program's life, not a load: left as 'evaluate', every process's line counted its wait
@@ -4309,7 +4324,7 @@ export class Runtime {
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
-      // header's `var` statements are the module's scope, `globalThis` and
+      // wrapper's parameters are the module's scope, `globalThis` and
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. The generated sourceURL names the script.
@@ -4321,9 +4336,7 @@ export class Runtime {
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
       // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
       const guestScoped = __substrateGuestScoped(code);
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
-}).call(${strictBody ? 'void 0' : '$module.exports'}); }
-})${sourceURL}`;
+      const wrappedCode = __substrateWrapBody(code, guestScoped, strictBody, sourceURL);
 
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(require, this.process, filename.startsWith('data:') ? filename : `file://${filename}`);
@@ -4333,7 +4346,7 @@ export class Runtime {
       // a module lowered to a function body made V8 refuse vue3-ssr's server at
       // its first top-level `await`. A body V8 refuses for that reason runs as
       // an async function body instead.
-      let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
+      let bodyKind = __substrateBodyKind(code, strictBody);
       let fn;
       try {
         fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, this.process, scriptName);
@@ -4343,20 +4356,9 @@ export class Runtime {
         try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), this.process, scriptName); }
         catch { throw syntaxError; }
       }
-      const body = __substrateInStatWindow(this.process, () => withGuestExecution(() => fn(
-        module.exports,
-        require,
-        module,
-        filename,
-        dirname,
-        this.process,
-        consoleWrapper,
-        createImportMeta(require, importMetaUrl, dirname, filename),
-        dynamicImport,
-        __substrateGuestGlobal,
-        __substrateGuestConstructor,
-        __substrateGuestScope(this.process)
-      ), 'module'));
+      const body = __substrateInStatWindow(this.process, () => withGuestExecution(() => __substrateRunWrapped(fn,
+        module.exports, require, module, filename, dirname, this.process, consoleWrapper,
+        createImportMeta(require, importMetaUrl, dirname, filename), dynamicImport), 'module'));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
       if (settling) __substrateKeepPending(module, settling, () => { if (this.moduleCache[filename] === module) delete this.moduleCache[filename]; });
