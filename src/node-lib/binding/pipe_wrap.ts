@@ -228,9 +228,10 @@ export class Pipe extends LibuvStreamWrap {
     // close on `NODE_HANDLE_ACK` -- which Node's `child_process.js` does the
     // moment the receiver confirms -- ends nothing. A connection is duplicated
     // whether or not its other end is still there; a listening server has no
-    // connection to duplicate and crosses as it is.
+    // connection to duplicate; a realm's own TCP listener is duplicated as its socket (tcp_wrap.ts), any other
+    // crosses as it is.
     const sent = handle as LibuvStreamWrap & { listening?: boolean };
-    const given = sent.listening === true ? sent : sent.duplicate();
+    const given = sent.listening === true && !sent.listenerDuplicates ? sent : sent.duplicate();
     // The receiving run owns this reference; the sender retains its own until
     // Node closes it on acknowledgement, or continues using it with keepOpen.
     __adoptHandle(given, ownerOf(this.peer ?? this), this.peer ?? this);

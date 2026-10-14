@@ -114,11 +114,13 @@ export function setPortWatchers(onListen: ListenWatcher | null, onClose: ((port:
 export function listenerOnPort(port: number, family?: string): TCP | undefined {
   const order = family === 'IPv6' ? [v6Ports, v4Ports] : [v4Ports, v6Ports];
   for (const space of order) {
-    const bound = space.get(port);
-    if (bound && bound.listening) return bound;
+    const member = space.get(port)?.acceptingMember();
+    if (member) return member;
   }
   return undefined;
 }
+/** Each shared listening socket's turn: its next connection goes to the member after the last one served. */
+const acceptTurns = new WeakMap<object, number>();
 
 export class TCP extends LibuvStreamWrap {
   /** `constants.SOCKET` or `constants.SERVER`. */
@@ -169,6 +171,8 @@ export class TCP extends LibuvStreamWrap {
       if (status === 0) { this.listening = true; sayListenClock(this, this.local?.port ?? null); }
       return status;
     }
+    // listen(2) on a listening socket (a passed server's receiver listens on it again) only sets its backlog.
+    if (this.listening) return 0;
     if (!this.local) {
       const err = this.bindTo('0.0.0.0', 0, 'IPv4');
       if (err) return err;
@@ -256,12 +260,42 @@ export class TCP extends LibuvStreamWrap {
     this.remote = { ...remote };
   }
 
-  /** libuv's `dup()`: the same connection, under both its names. */
+  /**
+   * A listening socket passed over IPC is one socket under two descriptors, as `SCM_RIGHTS` gives it: either may
+   * accept, and it listens until both are closed (net.js's receiver calls `listen` again on it; a cluster primary
+   * closes its own when its workers are gone). A native listener is refused by its owner (native-stream-owner.ts).
+   */
+  override get listenerDuplicates(): boolean { return nativeStreamFor(this) === undefined; }
+
+  /** The member of this handle's socket a connection is accepted on: a listening one, those net.js serves first, in turn. */
+  acceptingMember(): TCP | undefined {
+    const members = [this, ...this.sharingHandles].filter((handle, index, all): handle is TCP =>
+      handle instanceof TCP && handle.listening && !handle.closed && all.indexOf(handle) === index);
+    const serving = members.filter(handle => handle.onconnection !== null);
+    const pool = serving.length ? serving : members;
+    if (pool.length < 2) return pool[0];
+    const turn = acceptTurns.get(this.connectionEnd) ?? 0;
+    acceptTurns.set(this.connectionEnd, turn + 1);
+    return pool[turn % pool.length];
+  }
+
+  /**
+   * libuv's `dup()`: the same socket under both its names, listening where it listens. A socket bound and not yet
+   * listening (cluster's shared handle, which the worker listens on) keeps its bound name, where the copy had none and
+   * its `listen` bound a fresh port.
+   */
   override duplicate(): TCP {
     const native = nativeStreamFor(this);
-    const copy = native ? native.duplicate() as TCP : new (this.constructor as typeof TCP)(constants.SOCKET);
-    if (this.local && this.remote) copy.adoptNames(this.local, this.remote);
-    if (!native) copy.shareConnectionFrom(this);
+    if (native) {
+      const copy = native.duplicate() as TCP;
+      if (this.local && this.remote) copy.adoptNames(this.local, this.remote);
+      return copy;
+    }
+    const copy = new (this.constructor as typeof TCP)(this.type);
+    copy.local = this.local ? { ...this.local } : null;
+    copy.remote = this.remote ? { ...this.remote } : null;
+    copy.shareConnectionFrom(this);
+    copy.listening = this.listening;
     return copy;
   }
 
@@ -336,7 +370,9 @@ export class TCP extends LibuvStreamWrap {
     const wasListening = this.listening;
     this.listening = false;
     this.onconnection = null;
-    if (wasListening && this.local) { try { onCloseWatcher?.(this.local.port); } catch { /* as above */ } }
+    // A listening socket another descriptor still holds (a passed server) goes on listening.
+    const shared = [...this.sharingHandles].some(handle => handle !== this && handle instanceof TCP && handle.listening);
+    if (wasListening && !shared && this.local) { try { onCloseWatcher?.(this.local.port); } catch { /* as above */ } }
   }
 }
 
