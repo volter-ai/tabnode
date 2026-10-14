@@ -1,3 +1,22 @@
+## S1: Synchronous children keep their declared process owner
+
+Substrate Articles 1/5/6/8/9. A trusted embedding may declare that its existing
+synchronous child door owns every child of the current run. Select that door
+before engine program classification; retain its fork, credentials, descriptors,
+wait, cancellation and reap path. Restricted realms keep raw Worker unavailable.
+The host retires an unconsumed admitted descriptor copy with its actual kernel
+end before publishing completion; explicit image-handoff/end evidence prevents
+a second local exit. Rejections keep their refusal while the real image owns
+its own close/end sequence.
+The paired page keeps the original descriptor release lease independently of
+image handoff and awaits its receipt after the image closes or the actual
+unconsumed result is recorded; image-owned death is never replaced.
+The retained Hoppscotch root refused before starting import-meta-env because the
+engine selected its Worker fallback despite that installed door. Original child
+arguments and a successful successor remain unobserved. Independent paired
+source review, a genuine carrying engine release and ordinary qualification
+remain required. [Source reading](docs/readings/s1-owned-sync-child-door.json).
+
 ## S1 B7: process active handle and request objects
 
 Substrate Articles5/6/8/9. Restore Node’s private process enumeration APIs for
@@ -855,9 +874,11 @@ Completion:
 ## synchronous-children: Signals, timeouts and buffer limits for synchronous children
 
 Status: planned
-A synchronous child runs on a thread while the caller blocks on shared memory; `timeout` and `killSignal`
-are ignored, and `maxBuffer` is reported after exit (ENOBUFS) rather than enforced, because there is no
-process to kill; the browser path is written but unproven.
+The standalone Worker fallback runs a synchronous child while the caller blocks
+on shared memory; it ignores `timeout` and `killSignal`, and reports `maxBuffer`
+after exit (ENOBUFS). An explicitly owning host uses its existing synchronous
+child door instead, including that door's timeout, signal and output-limit
+handling. Browser behavior remains independently qualified.
 Completion:
 - `spawnSync` and `execSync` honour `timeout`, `killSignal` and `maxBuffer` as Node does, proven on Node's fixtures in the tab.
 
