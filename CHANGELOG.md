@@ -6,6 +6,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **Breaking: tabnode's scope form leaves the public API** (browser-substrate ADR-0129 step 3). A container owner no
+  longer hands a run from its realm's registry to another realm's: `createProcessRegistryScope`,
+  `ownerProcessRegistryScope`, `ownerProcessTable` and `ProcessRegistryScope.adoptRun` are removed. A host gives each
+  realm a kernel's registry through `installProcessRegistry`, which stays, as does the engine's own local registry
+  for a realm no host gives one. Released as 0.14.0: in 0.x a minor version carries a breaking change, so a `^0.13`
+  consumer is not moved onto it.
+
 ## v0.13.0 — 2026-10-14
 
 The browser-substrate ADR-0129 integration (the kernel owns every process), with the synchronous-child ownership
