@@ -35,6 +35,12 @@ interface WriteFileOptions {
   encoding?: BufferEncoding;
 }
 
+/** What sees a file the shell is about to read as text, and may answer with other text for it. */
+export type ShellReadWatch = (path: string, tree: VirtualFS) => string | undefined;
+let shellReadWatch: ShellReadWatch | null = null;
+/** Sets the watch for the shell's text reads; null takes it away. One watch, set by the one door into the shell. */
+export function setShellReadWatch(watch: ShellReadWatch | null): void { shellReadWatch = watch; }
+
 export class VirtualFSAdapter implements IFileSystem {
   constructor(private vfs: VirtualFS) {}
 
@@ -50,6 +56,12 @@ export class VirtualFSAdapter implements IFileSystem {
     // VirtualFS only natively supports utf8/utf-8
     // For other encodings, we need to handle the conversion ourselves
     if (!encoding || encoding === 'utf8' || encoding === 'utf-8') {
+      // The shell asks for a file's text with no encoding to run it as a script, to source it, or to redirect it
+      // in: a watch set for the line being run sees the file first (child_process.ts, shellReadsProgram).
+      if (options === undefined && shellReadWatch) {
+        const instead = shellReadWatch(path, this.vfs);
+        if (instead !== undefined) return instead;
+      }
       return this.vfs.readFileSync(path, 'utf8');
     }
 

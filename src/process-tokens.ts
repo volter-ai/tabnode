@@ -1,3 +1,4 @@
+import type { ProcessCredentials } from './process-credentials';
 /**
  * A run the embedding host has named, and the registry the container answers
  * about it from.
@@ -273,9 +274,9 @@ export function ownProcessIdentity(): { pid: number; ppid: number } {
 }
 
 /** fork: a new process numbered by `parent`'s registry (the run that forks it; null for the realm process). */
-export function mintPid(parentPid?: number, newSession = false, parent: ProcessToken | null = null): number {
+export function mintPid(parentPid?: number, newSession = false, parent: ProcessToken | null = null, runAs?: Readonly<ProcessCredentials>): number {
   registryUsed = true;
-  return registryFor(parent).allocate(parentPid !== undefined && parentPid > 0 ? parentPid : undefined, newSession);
+  return registryFor(parent).allocate(parentPid !== undefined && parentPid > 0 ? parentPid : undefined, newSession, runAs);
 }
 
 /**
@@ -323,8 +324,9 @@ export function tokenOfPid(pid: number): ProcessToken | null {
 }
 
 /** Whether a live process carries this number, as `caller`'s namespace numbers it: what `kill(pid, 0)` asks. */
-export function pidIsLive(pid: number, caller: ProcessToken | null): boolean {
-  return registryFor(caller).lookup(pid) !== undefined;
+export function pidIsLive(pid: number, caller: ProcessToken | null, callerPid?: number): boolean {
+  // Metadata lookup may fail for reasons other than absence. Only the authority's kill(2) answer proves ESRCH.
+  return registryFor(caller).signal(pid, '0', callerPid ?? runPid(caller)?.pid ?? initialIdentity?.pid);
 }
 
 /** `kill(pid, signal)` by `caller` to another live process; whether one took it. */

@@ -1,11 +1,16 @@
+import { traceEntries, traceRound, traceRows } from './trace-values';
+import { traceReadingRequested, traceOutput } from './trace-output';
 /** Worker-side libuv delegation. The capability channel never becomes a handle property. */
 import { withGuestCallback, queueBindingTask } from './guest-loop';
 import type { NativeStreamDescriptor, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport } from './native-stream-owner';
+import type { ProcessToken } from './process-tokens';
 import type { TCP } from './node-lib/binding/tcp_wrap';
 import type { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, type WriteWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './node-lib/binding/stream_wrap';
-import { __adoptHandle, ownerOf, registerHandle, releaseHandle } from './node-lib/binding/handles';
-import { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EPIPE, errname } from './node-lib/binding/uv';
+import { __adoptHandle, ownerOf, registerHandle, releaseHandle, observeNodeRequest, forgetNodeRequest } from './node-lib/binding/handles';
+import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EPIPE, UV_ENOSYS, errname } from './node-lib/binding/uv';
+
+const UV_EAGAIN = uv.UV_EAGAIN as number;
 
 type Stream = TCP | Pipe;
 const drivers = new WeakMap<LibuvStreamWrap, NativeStreamDriver>();
@@ -14,8 +19,33 @@ const constructors: Partial<Record<'tcp' | 'pipe', new (type: number) => Stream>
 let transport: NativeStreamTransport | undefined;
 let allocated = false;
 let stopped = false;
+let ownerStopQueued = false;
 let incoming: NativeStreamDescriptor | undefined;
 let nextRequest = 1;
+
+/** Scalar evidence only: the observer cannot grant a stream or affect its completion. */
+export interface NativeStreamClockSample {
+  when: 'native-server-read' | 'native-vector-submitted' | 'native-vector-completed';
+  at: number;
+  listener: number;
+  id: number;
+  bytes: number;
+  read?: number;
+  vector?: number;
+  chunks?: number;
+  status?: number;
+  elapsedMs?: number;
+  synchronous?: boolean;
+}
+let streamClockObserver: ((owner: ProcessToken | null, sample: NativeStreamClockSample) => void) | undefined;
+/** Engine-internal module-clock seam; no guest callback or new loop work. */
+export function observeNativeStreamClocks(observer: NonNullable<typeof streamClockObserver>): void {
+  streamClockObserver = observer;
+}
+function sayStreamClock(handle: Stream, sample: NativeStreamClockSample): void {
+  try { streamClockObserver?.(ownerOf(handle), sample); }
+  catch { /* Evidence failure must not change a native read or write. */ }
+}
 
 // Register after each concrete binding class is defined. Importing TCP/Pipe
 // here at runtime would cycle through StreamWrap before their base class exists.
@@ -49,6 +79,7 @@ function tally(operation: string, ms: number, bytes?: number): void {
   if (bytes !== undefined) count.bytes = (count.bytes ?? 0) + bytes;
 }
 function counting(next: NativeStreamTransport): NativeStreamTransport {
+  if (!traceReadingRequested()) return next;
   return {
     limits: next.limits,
     call(operation) {
@@ -57,14 +88,27 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
       finally {
         const ms = performance.now() - from;
         tally(operation.operation, ms);
-        if (ms >= SLOW_CALL_MS) console.log('[stream-calls]', JSON.stringify({ event: 'slow', at: Date.now(), operation: operation.operation, id: 'id' in operation ? operation.id : null, blockedMs: Math.round(ms) }));
+        if (ms >= SLOW_CALL_MS) traceOutput("[stream-calls]", { event: 'slow', at: Date.now(), operation: operation.operation, id: 'id' in operation ? operation.id : null, blockedMs: traceRound(ms) });
       }
     },
     ...(next.post ? { post(operation: Parameters<NonNullable<NativeStreamTransport['post']>>[0]): void { tally(`post:${operation.operation}`, 0); next.post!(operation); } } : {}),
-    write(id, bytes, handle) {
+    ...(next.postsRefs ? { postsRefs: true } : {}),
+    ...(next.tryWriteWithinBudget ? { tryWriteWithinBudget(id: number, bytes: Uint8Array, trace: Parameters<NonNullable<NativeStreamTransport['tryWriteWithinBudget']>>[2]): number | Promise<number> | undefined {
+      const from = performance.now();
+      try {
+        const result = next.tryWriteWithinBudget!(id, bytes, trace);
+        if (result !== undefined && typeof result !== 'number') {
+          const done = (): void => tally('write', performance.now() - from, bytes.byteLength);
+          result.then(done, done);
+        }
+        return result;
+      }
+      finally { tally('tryWrite', performance.now() - from, bytes.byteLength); }
+    } } : {}),
+    write(id, bytes, handle, trace) {
       const from = performance.now();
       const size = bytes.byteLength;
-      const written = next.write(id, bytes, handle);
+      const written = next.write(id, bytes, handle, trace);
       const done = (): void => tally('write', performance.now() - from, size);
       written.then(done, done);
       return written;
@@ -81,13 +125,16 @@ function counting(next: NativeStreamTransport): NativeStreamTransport {
 }
 /** Says the counts so far, once per change: a process says them at its exit. */
 export function sayNativeStreamCounts(pid: number | null, when: string): void {
+  if (!traceReadingRequested()) return;
   let total = 0;
   for (const count of streamCounts.values()) total += count.calls;
   if (total === streamCountsSaid) return;
   streamCountsSaid = total;
-  const operations = [...streamCounts].sort((a, b) => b[1].ms - a[1].ms)
-    .map(([operation, count]) => [operation, count.calls, Math.round(count.ms), Math.round(count.max), count.over, ...(count.bytes === undefined ? [] : [count.bytes])]);
-  console.log('[stream-calls]', JSON.stringify({ event: when, at: Date.now(), pid, columns: ['operation', 'calls', 'blockedMs', 'maxMs', `over ${OVER_MS.join('/')} ms`, 'bytes'], operations, events: Object.fromEntries(streamEvents) }));
+  const rows: Array<Record<string, unknown>> = [];
+  for (const [operation, count] of streamCounts) rows.push({ operation, calls: count.calls, ms: count.ms, max: count.max,
+    over: [...count.over], ...(count.bytes === undefined ? {} : { bytes: count.bytes }) });
+  const operations = traceRows(rows, { orderBy: 'ms', columns: ['operation', 'calls', 'ms', 'max', 'over', 'bytes'], round: ['ms', 'max'], trimUndefined: true });
+  if (traceReadingRequested()) traceOutput('[stream-calls]', { event: when, at: Date.now(), pid, columns: ['operation', 'calls', 'blockedMs', 'maxMs', `over ${OVER_MS.join('/')} ms`, 'bytes'], operations, events: traceEntries([...streamEvents]) });
 }
 
 /** Host bootstrap only, before any TCP/Pipe exists in this process realm. */
@@ -97,12 +144,22 @@ export function installNativeStreamTransport(next: NativeStreamTransport): void 
   transport = next;
   next.onEvent(event => {
     if (event.type === 'closed') {
-      stopped = true;
-      const failures: unknown[] = [];
-      for (const handle of [...handles.values()]) {
-        try { drivers.get(handle)?.ownerStopped(); } catch (cause) { failures.push(cause); }
-      }
-      if (failures.length) throw new AggregateError(failures, 'Native stream owner stopped during callbacks.');
+      if (stopped || ownerStopQueued) return;
+      ownerStopQueued = true;
+      // The client revokes its channel immediately, including inside a write.
+      // Native read/close callbacks belong to the loop after that call returns.
+      // Leave Node's write-error/nextTick delivery ahead of close callbacks,
+      // as the local libuv close binding does. Do not set stopped in this stack:
+      // the write that discovers transport failure must still return EPIPE.
+      queueBindingTask(() => queueBindingTask(() => {
+        stopped = true;
+        ownerStopQueued = false;
+        const failures: unknown[] = [];
+        for (const handle of [...handles.values()]) {
+          try { drivers.get(handle)?.ownerStopped(); } catch (cause) { failures.push(cause); }
+        }
+        if (failures.length) throw new AggregateError(failures, 'Native stream owner stopped during callbacks.');
+      }));
       return;
     }
     const handle = handles.get(event.id);
@@ -133,7 +190,7 @@ function adopt(descriptor: NativeStreamDescriptor, receiver: Stream): Stream {
     const Constructor = constructors[descriptor.kind];
     if (!Constructor) throw new Error('Native stream constructor is unavailable.');
     const handle = new Constructor(descriptor.type);
-    __adoptHandle(handle, ownerOf(receiver));
+    __adoptHandle(handle, ownerOf(receiver), receiver);
     return handle;
   } finally { incoming = previous; }
 }
@@ -182,12 +239,42 @@ interface PendingWrite {
   parts: Uint8Array[];
   bytes: number;
   sent?: number;
+  /** The bounded attempt already submitted these bytes; await it, never resend. */
+  submitted?: Promise<number>;
   ended: boolean;
+  trace?: { listener: number; vector: number; at: number; chunks: number };
   release(): void;
 }
 interface LocalEndpoint { handles: Set<Stream>; peer?: LocalEndpoint }
 
+/** A writev submits consecutive buffers together, within the owner's byte credit. */
+function* writeChunks(parts: Uint8Array[], limit: number): Generator<Uint8Array> {
+  let part = 0, offset = 0;
+  while (part < parts.length) {
+    if (offset === parts[part]!.byteLength) { part++; offset = 0; continue; }
+    const first = parts[part]!.subarray(offset, offset + limit);
+    offset += first.byteLength;
+    // A single buffer needs no gather allocation. Skip empty trailing iovecs.
+    let next = part + 1;
+    while (next < parts.length && parts[next]!.byteLength === 0) next++;
+    if (first.byteLength === limit || next === parts.length) { yield first; continue; }
+    const gathered = new Uint8Array(limit);
+    gathered.set(first);
+    let used = first.byteLength;
+    while (used < limit && part < parts.length) {
+      if (offset === parts[part]!.byteLength) { part++; offset = 0; continue; }
+      const bytes = parts[part]!.subarray(offset, offset + limit - used);
+      gathered.set(bytes, used);
+      used += bytes.byteLength;
+      offset += bytes.byteLength;
+    }
+    yield gathered.subarray(0, used);
+  }
+}
+
 export class NativeStreamDriver {
+  private acceptedWrites?: { listener: number; count: number; reads: number };
+  private readClockSaid = false;
   private readingCredit = false;
   private buffered = false;
   private readEnded = false;
@@ -241,8 +328,24 @@ export class NativeStreamDriver {
   }
 
   operation(operation: 'readStop' | 'ref' | 'unref'): number {
+    // A ref or unref is posted where the transport takes it (S2 R73): its answer is always 0 and nothing waits for it,
+    // yet as a call it stopped the realm for the owner's thread. Cal c670b965 dry-run2 (Mac mini, production build):
+    // the seed's pg client toggled its socket's ref 338 times over 562 queries, 77 ms blocked, longest 20 ms. One that
+    // would not change what the owner holds is not sent at all.
+    if (operation !== 'readStop' && !this.closing && !stopped) {
+      if (this.refState === operation) return 0;
+      if (this.channel.post && this.channel.postsRefs) {
+        try { this.channel.post({ operation, id: this.descriptor.id }); this.refState = operation; return 0; }
+        catch { /* The call below says what the owner says. */ }
+      }
+      const status = this.call({ operation, id: this.descriptor.id }).status;
+      if (status === 0) this.refState = operation;
+      return status;
+    }
     return this.call({ operation, id: this.descriptor.id }).status;
   }
+  /** What this realm last told the owner of the handle's ref, where it has said it; unsaid, the next one is sent. */
+  private refState: 'ref' | 'unref' | undefined;
 
   beginRead(): number {
     if (this.closing || stopped) return UV_EBADF;
@@ -273,7 +376,7 @@ export class NativeStreamDriver {
   complete(operation: NativeStreamOperation, callback: (status: number) => void): number {
     if (!('request' in operation)) throw new Error('Native completion requires a request ID.');
     const release = holdRequest(this.handle);
-    this.completions.set(operation.request, status => { try { withGuestCallback(() => callback(status)); } finally { release(); } });
+    this.completions.set(operation.request, status => { try { withGuestCallback(() => callback(status), 'wrap', callback); } finally { release(); } });
     // A shutdown is posted where it can be: it completes by its event either
     // way, and Node's own completion of one reads no status (net's
     // `afterShutdown`), so a refusal the owner completes is the same to it.
@@ -288,8 +391,9 @@ export class NativeStreamDriver {
     } catch (cause) { this.completions.delete(operation.request); release(); throw cause; }
   }
 
-  connect(address: string, port: number | undefined, ipv6: boolean, callback: (status: number) => void): number {
-    return this.complete({ operation: 'connect', id: this.descriptor.id, request: requestId(), address, port, ipv6 }, callback);
+  connect(address: string, port: number | undefined, ipv6: boolean, callback: (status: number, request: number) => void): number {
+    const request = requestId();
+    return this.complete({ operation: 'connect', id: this.descriptor.id, request, address, port, ipv6 }, status => callback(status, request));
   }
 
   shutdown(callback: (status: number) => void): number {
@@ -305,7 +409,7 @@ export class NativeStreamDriver {
     const complete = (status: number): void => {
       if (completed) return;
       completed = true;
-      try { withGuestCallback(() => callback(status)); } finally { release(); }
+      try { withGuestCallback(() => callback(status), 'wrap', callback); } finally { release(); }
     };
     this.pendingShutdown = () => {
       if (this.closing || stopped) { queueBindingTask(() => complete(UV_ECANCELED)); return; }
@@ -330,6 +434,7 @@ export class NativeStreamDriver {
 
   write(request: WriteWrap, parts: Uint8Array[], sent?: unknown): number {
     streamBaseState[kLastWriteWasAsync] = 0;
+    request.async = false;
     const bytes = parts.reduce((total, part) => total + part.byteLength, 0);
     streamBaseState[kBytesWritten] = bytes;
     if (this.closing || stopped) return UV_EBADF;
@@ -345,10 +450,49 @@ export class NativeStreamDriver {
       retained = result.handle.id;
     }
     const write: PendingWrite = { request, parts, bytes, sent: retained, ended: false, release: holdRequest(this.handle) };
+    const sample = this.acceptedWrites;
+    if (sample && sample.count < 3) {
+      write.trace = { listener: sample.listener, vector: ++sample.count, at: performance.timeOrigin + performance.now(), chunks: 0 };
+      sayStreamClock(this.handle, { when: 'native-vector-submitted', at: write.trace.at,
+        listener: sample.listener, id: this.descriptor.id, vector: write.trace.vector, bytes });
+      if (traceReadingRequested()) traceOutput('[socket-write]', { event: 'vector-submitted', at: write.trace.at, realmEpoch: performance.timeOrigin,
+        listener: sample.listener, id: this.descriptor.id, vector: write.trace.vector, bytes, parts: parts.length,
+        partBytes: parts.slice(0, 8).map(part => part.byteLength), omittedParts: Math.max(0, parts.length - 8), chunkLimit: this.channel.limits.maxReadChunkBytes });
+    }
+    // Node's StreamBase::Write tries the native write first, and lets its own
+    // afterWriteDispatched call the callback when all bytes were accepted.
+    // A bounded whole write needs no subsequent MessagePort completion. Never
+    // overtake a queued vector or send a descriptor through this operation.
+    if (retained === undefined && !this.writes.length && !this.pumping
+      && bytes <= this.channel.limits.maxReadChunkBytes && this.channel.tryWriteWithinBudget) {
+      let result: number | Promise<number> | undefined;
+      try {
+        const chunk = writeChunks(parts, this.channel.limits.maxReadChunkBytes).next().value!;
+        result = this.channel.tryWriteWithinBudget(this.descriptor.id, chunk, write.trace
+          ? { listener: write.trace.listener, vector: write.trace.vector, chunk: 1 } : undefined);
+      } catch {
+        // A transport failure may follow acceptance. Never replay the bytes,
+        // and return a native write error to Node's own JS, as the async path
+        // does, rather than throwing from socket.write/res.end.
+        const status = stopped ? UV_ECANCELED : UV_EPIPE;
+        this.finishWrite(write, status, true);
+        return status;
+      }
+      if (result !== undefined && typeof result !== 'number') write.submitted = result;
+      else if (result !== undefined && result !== UV_EAGAIN && result !== UV_ENOSYS) {
+        if (result === 0) {
+          this.handle.bytesWritten += bytes;
+          if (write.trace) write.trace.chunks = 1;
+        }
+        this.finishWrite(write, result, true);
+        return result;
+      }
+    }
     // Node retains the caller's buffers until completion, even for a write
     // larger than the transport budget. The channel bounds copied chunks and
     // waits for capacity; rejecting this whole write breaks normal streaming.
     this.handle.writeQueueSize += bytes;
+    observeNodeRequest(request, this.handle);
     this.writes.push(write);
     request.async = true;
     streamBaseState[kLastWriteWasAsync] = 1;
@@ -374,35 +518,65 @@ export class NativeStreamDriver {
     if (!write || write.ended) return;
     let status = 0;
     try {
-      outer: for (const part of write.parts) {
-        for (let offset = 0; offset < part.byteLength; offset += this.channel.limits.maxReadChunkBytes) {
-          if (this.closing || stopped) { status = UV_ECANCELED; break outer; }
-          const chunk = part.subarray(offset, offset + this.channel.limits.maxReadChunkBytes);
-          status = await this.channel.write(this.descriptor.id, chunk, write.sent);
-          if (write.sent !== undefined) { closeDescriptor(write.sent); write.sent = undefined; }
-          if (status !== 0) break outer;
-          this.handle.bytesWritten += chunk.byteLength;
-        }
+      if (write.submitted) {
+        // The owner may have claimed the attempt as its short wait expired.
+        // Its async completion refers to the SAME whole bounded write. Sending
+        // another chunk here could duplicate already accepted bytes.
+        if (write.trace) write.trace.chunks = 1;
+        status = await write.submitted;
+        write.submitted = undefined;
+        if (write.ended) return;
+        if (status === 0) this.handle.bytesWritten += write.bytes;
+        this.finishWrite(write, status);
+        return;
+      }
+      // libuv takes an iovec write as consecutive bytes. Submit the buffers
+      // together within the transport's byte credit, one bounded gather at a time;
+      // larger writes still retain their buffers and wait for owner credit.
+      for (const chunk of writeChunks(write.parts, this.channel.limits.maxReadChunkBytes)) {
+        if (this.closing || stopped) { status = UV_ECANCELED; break; }
+        const trace = write.trace;
+        const ordinal = trace ? ++trace.chunks : 0;
+        status = await this.channel.write(this.descriptor.id, chunk, write.sent,
+          trace && ordinal <= 3 ? { listener: trace.listener, vector: trace.vector, chunk: ordinal } : undefined);
+        if (write.ended) return;
+        if (write.sent !== undefined) { closeDescriptor(write.sent); write.sent = undefined; }
+        if (status !== 0) break;
+        this.handle.bytesWritten += chunk.byteLength;
       }
     } catch { status = stopped ? UV_ECANCELED : UV_EPIPE; }
     this.finishWrite(write, status);
   }
 
-  private finishWrite(write: PendingWrite, status: number): void {
+  private finishWrite(write: PendingWrite, status: number, synchronous = false): void {
     if (write.ended) return;
     write.ended = true;
+    if (write.trace) {
+      const at = performance.timeOrigin + performance.now();
+      const sample = { when: 'native-vector-completed' as const, at, listener: write.trace.listener,
+        id: this.descriptor.id, vector: write.trace.vector, bytes: write.bytes, chunks: write.trace.chunks,
+        status, elapsedMs: at - write.trace.at, synchronous };
+      sayStreamClock(this.handle, sample);
+      if (traceReadingRequested()) traceOutput('[socket-write]', { ...sample, event: 'vector-completed', realmEpoch: performance.timeOrigin,
+        sampledChunks: Math.min(3, write.trace.chunks) });
+    }
     const index = this.writes.indexOf(write);
-    if (index >= 0) this.writes.splice(index, 1);
-    this.handle.writeQueueSize -= write.bytes;
+    if (index >= 0) {
+      this.writes.splice(index, 1);
+      this.handle.writeQueueSize -= write.bytes;
+    }
     write.parts = [];
     try { if (write.sent !== undefined) closeDescriptor(write.sent); }
     catch (cause) {
       status = UV_ECANCELED;
       write.request.error = cause instanceof Error ? cause.message : String(cause);
     } finally { write.sent = undefined; }
+    // A fully accepted synchronous native write has no uv request completion;
+    // Node's unmodified JS owns that callback. Errors return to it the same way.
+    if (synchronous) { write.release(); return; }
     // A Node callback throws as a native callback, not as a rejection of this
     // bridge's private async function.
-    queueBindingTask(() => { try { withGuestCallback(() => write.request.oncomplete?.(status)); } finally { write.release(); } });
+    queueBindingTask(() => { try { withGuestCallback(() => write.request.oncomplete?.(status), 'wrap', write.request.oncomplete); } finally { forgetNodeRequest(write.request); write.release(); } });
   }
 
   close(callback?: () => void, reset = false): number {
@@ -444,7 +618,7 @@ export class NativeStreamDriver {
     this.closeLocal(() => {
       const failures: unknown[] = [];
       try {
-        for (const callback of callbacks) { try { withGuestCallback(callback); } catch (cause) { failures.push(cause); } }
+        for (const callback of callbacks) { try { withGuestCallback(callback, 'wrap', callback); } catch (cause) { failures.push(cause); } }
       } finally { this.releaseClose?.(); this.releaseClose = undefined; }
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, 'Native close callbacks failed.');
@@ -456,16 +630,30 @@ export class NativeStreamDriver {
       // An instrument: bytes the owner read for a handle its realm had stopped reading. The grant is taken back when
       // a handle stops (endRead), so this stays 0 except for a chunk already on its way; a socket being handed to
       // another process loses to this realm whatever is counted here.
-      if (event.bytes && !this.handle.reading && !this.closing) streamEvents.set('read-while-stopped', (streamEvents.get('read-while-stopped') ?? 0) + 1);
+      if (traceReadingRequested() && event.bytes && !this.handle.reading && !this.closing) streamEvents.set('read-while-stopped', (streamEvents.get('read-while-stopped') ?? 0) + 1);
       this.readingCredit = false;
       if (this.closing) { if (event.handle) closeDescriptor(event.handle.id); return; }
       this.buffered = true;
-      if (event.status > 0 && event.bytes) this.handle.receive(event.bytes, event.handle ? adopt(event.handle, this.handle) : undefined);
+      if (event.status > 0 && event.bytes) {
+        const sample = this.acceptedWrites;
+        // Before delivering bytes to Node's parser. This is the socket's
+        // first positive read, not an HTTP request event or a message boundary.
+        if (!this.readClockSaid && sample && sample.reads < 3) {
+          this.readClockSaid = true;
+          sayStreamClock(this.handle, { when: 'native-server-read', at: performance.timeOrigin + performance.now(),
+            listener: sample.listener, id: this.descriptor.id, read: ++sample.reads, bytes: event.bytes.byteLength });
+        }
+        this.handle.receive(event.bytes, event.handle ? adopt(event.handle, this.handle) : undefined);
+      }
       else { this.readEnded = true; this.handle.receiveError(event.status); }
     } else if (event.type === 'connection') {
       if (this.closing || !this.handle.onconnection) { if (event.handle) closeDescriptor(event.handle.id); return; }
       const accepted = event.handle ? adopt(event.handle, this.handle) : undefined;
-      withGuestCallback(() => (this.handle.onconnection as (status: number, handle?: Stream) => void)(event.status, accepted));
+      if (traceReadingRequested() && accepted && event.handle?.kind === 'tcp') {
+        this.acceptedWrites ??= { listener: this.descriptor.id, count: 0, reads: 0 };
+        drivers.get(accepted)!.acceptedWrites = this.acceptedWrites;
+      }
+      withGuestCallback(() => (this.handle.onconnection as (status: number, handle?: Stream) => void)(event.status, accepted), 'wrap', this.handle.onconnection);
     } else {
       const complete = this.completions.get(event.request);
       this.completions.delete(event.request);

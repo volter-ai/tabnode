@@ -1,3 +1,6 @@
+import { copyProcessCredentials, processCredentialsOf, type ProcessCredentials } from './process-credentials';
+export { processCredentialsOf } from './process-credentials';
+export type { ProcessCredentials } from './process-credentials';
 /**
  * tabnode's public surface.
  *
@@ -15,8 +18,9 @@ export { restoreHostGlobals, guestRealmInstalled } from './host-globals';
 export { VirtualFS } from './virtual-fs';
 export type { FSNode, MountedTree, Stats, FSWatcher, WatchListener, WatchEventType } from './virtual-fs';
 export { Runtime, execute, prepareModuleForImage, preparedModuleKey, preparedModuleKeyOf, preparedModuleKind, isPreparedModuleKey, PREPARED_MODULES_DIR, PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT } from './runtime';
-export type { Module, RuntimeOptions, RequireFunction } from './runtime';
+export type { Module, RuntimeOptions, RequireFunction, ModuleEvaluationObserver, ModuleEvaluationEvidence } from './runtime';
 export { createRuntime, WorkerRuntime } from './create-runtime';
+export { prepareHttpParserModule } from './http-parser-module';
 export type { IRuntime, IExecuteResult, CreateRuntimeOptions, IRuntimeOptions, VFSSnapshot } from './runtime-interface';
 export { createFsShim } from './shims/fs';
 export type { FsShim } from './shims/fs';
@@ -68,13 +72,13 @@ export type { StdioKind } from './shims/child_process';
 export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter } from './stdin-ring';
 import { stdinRingProblem, stdinRingWaitsAsync } from './stdin-ring';
 export { TREE_DESCRIPTORS } from './tree-descriptors';
-export type { TreeDescriptors, TreeDescriptorStats } from './tree-descriptors';
+export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 import type { ProcessRegistry } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
 export { installHostNames } from './shims/dns';
-export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport, NativeStreamHandleView } from './native-stream-owner';
+export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport, NativeStreamHandleView, NativeStreamWriteTrace } from './native-stream-owner';
 
 export interface RunResult {
   stdout: string;
@@ -85,6 +89,10 @@ export interface RunResult {
 }
 
 export interface RunOptions {
+  /** Private host evidence selection; it is not a guest Node global or inherited child option. */
+  moduleEvaluationObserver?: RuntimeOptions['moduleEvaluationObserver'];
+  /** The host's numeric credentials for this process; otherwise inherit the container's configured identity. */
+  credentials?: ProcessCredentials;
   cwd?: string;
   /** The environment the command runs in, as `child_process.exec` takes it. */
   env?: Record<string, string>;
@@ -275,7 +283,9 @@ export function createContainer(options?: ContainerOptions): {
     const processToken = typeof runOptions?.processToken === 'string' && runOptions.processToken.length > 0
       ? runOptions.processToken
       : `run-${__nextRunName++}`;
+    const credentials = copyProcessCredentials(runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()));
     registerRunStreams(processToken, {
+      credentials,
       onStdout: runOptions?.onStdout,
       onStderr: runOptions?.onStderr,
       signal: runOptions?.signal,
@@ -326,7 +336,7 @@ export function createContainer(options?: ContainerOptions): {
         // it before the shell. Both forward it, so a builtin reads what was
         // piped, as it does in a Node shell.
         return await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-          runCommand(command, { cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs }, (error, stdout, stderr) => {
+          runCommand(command, { credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()), cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs }, (error, stdout, stderr) => {
             resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
           });
         });
@@ -337,6 +347,8 @@ export function createContainer(options?: ContainerOptions): {
       }
     }),
     runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {
+      ...(runOptions?.moduleEvaluationObserver ? { moduleEvaluationObserver: runOptions.moduleEvaluationObserver } : {}),
+      credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()),
       ...(runOptions?.filesystem ? { filesystem: runOptions.filesystem } : {}),
       ...(runOptions?.process ? { process: { pid: runOptions.process.pid, ppid: runOptions.process.ppid } } : {}),
       ...(runOptions?.registry ? { registry: runOptions.registry } : {}),
@@ -392,8 +404,10 @@ export function createContainer(options?: ContainerOptions): {
     // run is otherwise charged to the run launched last, which then read the
     // page's port as its own server and ended when the page stopped listening.
     // Sockets it accepts take its owner, so they hold no guest open either.
+    // Half-open, as the program behind it may be: the guest's FIN ends what it sends, and a reply after it still reaches
+    // the guest (browser-substrate's FIN through the relay, S1). Each socket ends once both halves are done.
     listenNet: (port: number, onConnection: (socket: NetSocket) => void) => {
-      const server = new NetServer(onConnection);
+      const server = new NetServer({ allowHalfOpen: true }, onConnection);
       server.listen(port);
       __adoptHandle((server as unknown as { _handle?: OwnedHandle | null })._handle, null);
       return () => { server.close(); };

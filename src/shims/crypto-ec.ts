@@ -53,6 +53,8 @@ export function curveNamed(name: unknown): EcCurveName | undefined {
 }
 /** OpenSSL's name for the curve: what `asymmetricKeyDetails.namedCurve` says. */
 export function nodeCurveName(curve: EcCurveName): string { return CURVES[curve].node; }
+/** A fresh list of the OpenSSL names of the curves this binding actually carries. */
+export function curveNames(): string[] { return Object.values(CURVES).map(({ node }) => node).sort(); }
 
 // ---------------------------------------------------------------- bytes
 

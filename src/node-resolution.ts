@@ -13,9 +13,24 @@
 
 export interface ResolutionFs {
   existsSync(path: string): boolean;
-  statSync(path: string, options?: { throwIfNoEntry?: boolean }): { isFile(): boolean; isDirectory(): boolean } | undefined;
+  /**
+   * `contentDigest`: where the filesystem's stat carries it (a kernel tree's stat of a regular file, links followed,
+   * KernelVirtualFS `statWithDigest`), the file's content digest from the same walk as the stat.
+   * With throwIfNoEntry:false, only ENOENT/ENOTDIR return undefined. Permission/I/O failures still throw,
+   * so the package-config cache never mistakes them for a persistent absence.
+   */
+  statSync(path: string, options?: { throwIfNoEntry?: boolean }): { isFile(): boolean; isDirectory(): boolean; contentDigest?: string } | undefined;
   readFileSync(path: string, encoding: "utf8"): string | Uint8Array;
   realpathSync?(path: string): string;
+  /**
+   * A path's kind where the filesystem answers it without a stat (KernelVirtualFS `kindSync`: its realm's kept
+   * answer, links followed): 0 a file, 1 a directory, -1 proved absent; undefined where it cannot, and `statSync` is
+   * asked as before. A probe answered here makes no Stats and no digest: a file's digest, wanted of the file a
+   * resolution answers alone, is then asked of `contentDigest`.
+   */
+  kindSync?(path: string): 0 | 1 | -1 | undefined;
+  /** A regular file's content digest, or undefined where the tree holds none; asked only after `kindSync` said 0. */
+  contentDigest?(path: string): string | undefined;
 }
 
 export interface ExportsResolver {
@@ -43,6 +58,14 @@ export interface NodeResolverOptions {
   sourceExtensions?: readonly string[];
   /** A `.cjs` entry whose whole content is a `throw` is a stub for consumers that should import; skip it for the next condition set. */
   skipThrowingCjs?: boolean;
+  /**
+   * A package found whose `exports` map names the subpath under no condition set throws ERR_PACKAGE_PATH_NOT_EXPORTED and
+   * ends the walk, as Node's `packageExportsResolve` does, where a null would let the caller say MODULE_NOT_FOUND. The
+   * code is the answer a program reads: MeshCentral's InstallModules (meshcentral.js:4188, 029b7338) asks
+   * `require("otplib/package.json")`, falls back to reading the file for this code alone, and took any other for a
+   * missing module, which it went to install with npm.
+   */
+  throwNotExported?: boolean;
 }
 
 /**
@@ -52,9 +75,14 @@ export interface NodeResolverOptions {
 export interface ResolutionKept {
   /**
    * `package.json` files read and parsed, by path, for the process's life: Node's package reader keeps each one it
-   * has read. One that is absent or does not parse is not kept, so a package linked in later is found.
+   * has read. Missing configs are retained separately by this resolver for the same process and filesystem,
+   * as Node's GetPackageJSON does; malformed or unreadable configs are not kept as missing.
    */
   manifests: Map<string, Record<string, unknown>>;
+  /** Node's missing package configs persist with the process, shared by its resolvers for the same filesystem. */
+  missingManifests?: WeakMap<ResolutionFs, Set<string>>;
+  /** Scalar evidence for package-config reuse; published through the existing deferred module clock. */
+  packageConfigs?: { lookups: number; positiveHits: number; negativeHits: number; checks: number; reads: number; missingKept: number };
   /** Real paths answered, for the process's life: Node's `realpathCache` (helpers.js `toRealPath`). */
   realPaths: Map<string, string>;
   /**
@@ -70,6 +98,20 @@ export interface ResolutionKept {
    * window open. `windows`: stat windows opened.
    */
   probes?: { file: number; directory: number; absent: number; held: number; outside: number; windows: number };
+  /**
+   * The file the last resolution answered, with the content digest its own stat carried, for the load that follows
+   * it: the load asked the tree for the digest again, one request a module (`contentDigest`, LibreChat 14's server:
+   * 6,172 asks beside 7,893 stats that had carried one). Set by every resolution, a digest only where the stat that
+   * found the file was asked of the tree in that resolution (not one `stats` held); the caller takes it once.
+   */
+  carried?: { path: string; digest: string };
+  /**
+   * Whether a `.cjs` entry is a throwing stub (`skipThrowingCjs`), learned once for the bytes it was learned from,
+   * by their content digest, for the process's life: the answer is a fact of those bytes. The check read the file
+   * whole at every resolution that passed it: LibreChat run 40's server read @librechat/api's 6.19 MB entry 52 times
+   * and data-schemas' 1.76 MB entry 48 times, 406 of the 409 MB its realm read again.
+   */
+  throwingStubs?: Map<string, boolean>;
 }
 
 export interface NodeResolver {
@@ -89,6 +131,29 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     return `/${parts.join("/")}`;
   };
   const manifests = new Map<string, Record<string, unknown> | null>();
+  // Node24.21 src/node_modules.cc:95-110 looks up package_configs_, including nullopt;115-135 keeps
+  // ENOENT/ENOTDIR/EISDIR there for the realm lifetime, without invalidation. A later-created config
+  // remains unseen in that process. ResolutionKept owns the absence set for each filesystem, so another
+  // resolver of the same tree shares it, while another process/tree does not. General misses stay uncached.
+  /** The same fact by path, while one stat window stands (`ResolutionKept.stats`): a stat it holds asks nothing, so no digest. */
+  const stubsInWindow = new WeakMap<Map<string, 0 | 1>, Map<string, boolean>>();
+  /** Whether `found`, a `.cjs` file, is a stub whose whole content is a `throw`: read once per digest, or once per window. */
+  const throwingStub = (found: string): boolean => {
+    const digest = digestOf(found);
+    const window = kept?.stats;
+    const byPath = window ? stubsInWindow.get(window) : undefined;
+    const known = byPath?.get(found) ?? (digest !== undefined ? kept?.throwingStubs?.get(digest) : undefined);
+    if (known !== undefined) return known;
+    let throwing = false;
+    try { const text = fs.readFileSync(found, "utf8"); throwing = String(text).trimStart().startsWith("throw "); } catch { /* unreadable: taken as is */ }
+    if (digest !== undefined && kept) (kept.throwingStubs ??= new Map()).set(digest, throwing);
+    if (window) {
+      let held = byPath;
+      if (!held) { held = new Map(); stubsInWindow.set(window, held); }
+      held.set(found, throwing);
+    }
+    return throwing;
+  };
   // stat already distinguishes absence and type; probing exists first walks
   // the same filesystem path twice for every successful module candidate.
   /** What the resolution in hand keeps for its process; none for a caller that keeps nothing. */
@@ -97,38 +162,92 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
    * What the resolution in hand has been answered, absences too: one resolution is one synchronous walk and nothing
    * changes the tree under it, so it asks each path once. Emptied when a resolution begins; nothing outlives it.
    */
-  const asked = new Map<string, 0 | 1 | -1>();
-  /** 0 a file, 1 a directory, -1 neither or absent. */
-  const kind = (path: string): 0 | 1 | -1 => {
+  // -1 is proved absence, -2 an unclassified non-file or failed stat. Both mean no candidate, but only
+  // proved absence may become a persistent package-config miss. Keep this in the existing probe map.
+  const asked = new Map<string, 0 | 1 | -1 | -2>();
+  const missingConfigError = (cause: unknown): boolean => {
+    const code = (cause as { code?: unknown } | null | undefined)?.code;
+    return code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR";
+  };
+  /** The content digest each file stat of the resolution in hand carried, by path; emptied with `asked`. */
+  const digests = new Map<string, string>();
+  /**
+   * Files of the resolution in hand that `kindSync` answered, whose digest is not asked until wanted (S2 R77): the
+   * stat asked it of every file probed, each package.json and each candidate passed over, beside a Stats made for
+   * every file and directory probed (Twenty's server: 222,711 realm kind answers for 41,112 resolutions, ~41 µs each).
+   * Emptied with `asked`.
+   */
+  const undigested = new Set<string>();
+  /** A file's digest as its stat would have carried it: the one carried, else asked once where `kindSync` answered it. */
+  const digestOf = (path: string): string | undefined => {
+    const carried = digests.get(path);
+    if (carried !== undefined || !undigested.delete(path)) return carried;
+    let digest: string | undefined;
+    try { digest = fs.contentDigest?.(path); } catch { digest = undefined; }
+    if (typeof digest === "string") digests.set(path, digest);
+    return typeof digest === "string" ? digest : undefined;
+  };
+  /** 0 a file, 1 a directory, -1 absent, -2 another non-file or failed stat. */
+  const kind = (path: string): 0 | 1 | -1 | -2 => {
     const again = asked.get(path);
     if (again !== undefined) return again;
     const answer = ask(path);
     asked.set(path, answer);
     return answer;
   };
-  const ask = (path: string): 0 | 1 | -1 => {
+  const ask = (path: string): 0 | 1 | -1 | -2 => {
     const held = kept?.stats?.get(path);
     const probes = kept?.probes;
     if (held !== undefined) { if (probes) probes.held += 1; return held; }
-    let found: 0 | 1 | -1 = -1;
-    try { const stat = fs.statSync(path, { throwIfNoEntry: false }); found = stat?.isFile() ? 0 : stat?.isDirectory() ? 1 : -1; } catch { found = -1; }
+    let found: 0 | 1 | -1 | -2;
+    let local: 0 | 1 | -1 | undefined;
+    try { local = fs.kindSync?.(path); } catch { local = undefined; }
+    if (local !== undefined) {
+      found = local;
+      if (found === 0) undigested.add(path);
+    } else try {
+      const stat = fs.statSync(path, { throwIfNoEntry: false });
+      found = stat === undefined ? -1 : stat.isFile() ? 0 : stat.isDirectory() ? 1 : -2;
+      if (found === 0 && typeof stat?.contentDigest === "string") digests.set(path, stat.contentDigest);
+    } catch (cause) { found = missingConfigError(cause) ? -1 : -2; }
     if (probes) {
       if (found === 0) probes.file += 1; else if (found === 1) probes.directory += 1; else probes.absent += 1;
       if (kept?.stats === undefined) probes.outside += 1;
     }
-    if (found !== -1) kept?.stats?.set(path, found);
+    if (found === 0 || found === 1) kept?.stats?.set(path, found);
     return found;
   };
   const isFile = (path: string): boolean => kind(path) === 0;
   const isDirectory = (path: string): boolean => kind(path) === 1;
   const manifest = (directory: string): Record<string, unknown> | null => {
     const path = `${directory === "/" ? "" : directory}/package.json`;
+    const counts = kept?.packageConfigs;
+    if (counts) counts.lookups += 1;
+    if (kept?.missingManifests?.get(fs)?.has(path)) {
+      if (counts) counts.negativeHits += 1;
+      return null;
+    }
     const held = kept?.manifests.get(path);
-    if (held) return held;
+    if (held) { if (counts) counts.positiveHits += 1; return held; }
     if (manifests.has(path)) return manifests.get(path)!;
+    if (counts) counts.checks += 1;
     let parsed: Record<string, unknown> | null = null;
+    let missing = false;
     if (isFile(path)) {
-      try { const text = fs.readFileSync(path, "utf8"); parsed = JSON.parse(typeof text === "string" ? text : new TextDecoder().decode(text)) as Record<string, unknown>; } catch { parsed = null; }
+      try {
+        if (counts) counts.reads += 1;
+        const text = fs.readFileSync(path, "utf8");
+        parsed = JSON.parse(typeof text === "string" ? text : new TextDecoder().decode(text)) as Record<string, unknown>;
+      } catch (cause) { missing = missingConfigError(cause); parsed = null; }
+    } else {
+      // A directory config is EISDIR. An unclassified non-file or failed stat is not a missing fact.
+      missing = asked.get(path) === 1 || asked.get(path) === -1;
+    }
+    if (missing && kept) {
+      let paths = kept.missingManifests?.get(fs);
+      if (!paths) { paths = new Set(); (kept.missingManifests ??= new WeakMap()).set(fs, paths); }
+      paths.add(path);
+      if (counts) counts.missingKept += 1;
     }
     manifests.set(path, parsed);
     if (parsed && typeof parsed === "object") kept?.manifests.set(path, parsed);
@@ -198,20 +317,26 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
   };
   const targetsOf = (value: string[] | string | void): string[] => Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
   // LOAD_PACKAGE_EXPORTS: the map's answer for each condition set, the first that is a file.
-  const loadPackageExports = (packageRoot: string, pkg: Record<string, unknown>, specifier: string, packageName: string): string | null => {
+  const loadPackageExports = (packageRoot: string, pkg: Record<string, unknown>, specifier: string, packageName: string, refuse = false): string | null => {
     const subpath = specifier === packageName ? "." : `.${specifier.slice(packageName.length)}`;
+    // Whether the map names the subpath under any condition set: one that names a missing file is not a refusal.
+    let named = false;
     for (const conditions of options.conditionSetsFor?.(packageName) ?? options.conditionSets) {
       let targets: string[];
       try { targets = targetsOf(options.exports.resolve(pkg, subpath, { conditions, unsafe: true })); } catch { continue; }
+      if (targets.length) named = true;
       for (const target of targets) {
         const path = join(packageRoot, target);
         const found = loadAsFile(path) ?? workspaceSource(packageRoot, target);
         if (!found) continue;
-        if (options.skipThrowingCjs && found.endsWith(".cjs")) {
-          try { const text = fs.readFileSync(found, "utf8"); if (String(text).trimStart().startsWith("throw ")) continue; } catch { /* unreadable: taken as is */ }
-        }
+        if (options.skipThrowingCjs && found.endsWith(".cjs") && throwingStub(found)) continue;
         return found;
       }
+    }
+    if (refuse && !named) {
+      // Node's own words (lib/internal/errors.js ERR_PACKAGE_PATH_NOT_EXPORTED).
+      const where = `${packageRoot}/package.json`;
+      throw Object.assign(new Error(subpath === "." ? `No "exports" main defined in ${where}` : `Package subpath '${subpath}' is not defined by "exports" in ${where}`), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
     }
     return null;
   };
@@ -233,29 +358,33 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     // Nothing is under a directory that is not there: a subpath of an absent package ends here, unprobed.
     if (!rooted && specifier !== packageName) return null;
     const pkg = rooted ? manifest(packageRoot) : null;
-    if (pkg && pkg.exports !== undefined && pkg.exports !== null) return loadPackageExports(packageRoot, pkg, specifier, packageName);
+    if (pkg && pkg.exports !== undefined && pkg.exports !== null) return loadPackageExports(packageRoot, pkg, specifier, packageName, options.throwNotExported === true);
     const path = `${nodeModules}/${specifier}`;
     return loadAsFile(path) ?? loadAsDirectory(path);
   };
   // LOAD_PACKAGE_SELF: a package importing itself by name through its exports. The package is the nearest manifest
   // above the importer and no other (Node's `trySelf` reads `getNearestParentPackageJSON` and answers false unless
   // that one has `exports` and the name asked for), so the walk ends at the first manifest it meets.
+  // Node24.21 src/node_modules.cc:311-350 stops before / and a directory named node_modules.
   const loadPackageSelf = (specifier: string, fromDir: string): string | null => {
     const packageName = packageNameOf(specifier);
     let directory = fromDir;
-    for (;;) {
+    while (directory !== "/" && !directory.endsWith("/node_modules")) {
       const pkg = manifest(directory);
-      if (pkg) return pkg.name === packageName && pkg.exports !== undefined && pkg.exports !== null ? loadPackageExports(directory, pkg, specifier, packageName) : null;
-      if (directory === "/") return null;
+      // A package importing itself by a subpath its map refuses is refused as Node's packageSelfResolve refuses it.
+      if (pkg) return pkg.name === packageName && pkg.exports !== undefined && pkg.exports !== null ? loadPackageExports(directory, pkg, specifier, packageName, options.throwNotExported === true) : null;
       directory = parent(directory);
     }
+    return null;
   };
   // `#name`: the nearest manifest's imports map.
   const loadPackageImports = (specifier: string, fromDir: string): string | null => {
     let directory = fromDir;
-    for (;;) {
+    while (directory !== "/" && !directory.endsWith("/node_modules")) {
       const pkg = manifest(directory);
-      if (pkg && pkg.imports) {
+      if (pkg) {
+        // The nearest config owns this scope; no imports map there does not authorize a parent map.
+        if (!pkg.imports) return null;
         for (const conditions of options.conditionSets) {
           let targets: string[];
           try { targets = targetsOf(options.exports.imports(pkg, specifier, { conditions, unsafe: true })); } catch { continue; }
@@ -267,31 +396,37 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
         }
         return null;
       }
-      if (directory === "/") return null;
       directory = parent(directory);
     }
+    return null;
   };
 
   const resolve = (specifier: string, fromDir: string, keeping?: ResolutionKept): string | null => {
     // Without a process's own store, manifests are read once per resolution and never kept across: this resolver
     // outlives processes, the tree changes under it, an install links a package in. A process's store keeps the
-    // ones it read, as Node's does; an absent manifest is asked again in the next resolution either way.
+    // ones it read, and proved absences, as Node's does. Callers without a process owner retain no configs.
     manifests.clear();
     asked.clear();
+    digests.clear();
+    undigested.clear();
     const outer = kept;
     kept = keeping;
+    if (keeping) keeping.carried = undefined;
     try {
       const found = resolveCached(specifier, fromDir);
+      // The digest is of the file the stat reached with links followed, so it is the real path's too.
+      const digest = found ? digestOf(found) : undefined;
+      const carry = (path: string): string => { if (digest !== undefined && keeping) keeping.carried = { path, digest }; return path; };
       // Node answers the real path of what it found: a package reached through
       // a link (pnpm lays every dependency under `.pnpm` and links it in) is
       // then walked up from where it really is, so its own dependencies beside
       // it are found. A filesystem without links answers the path itself.
       if (found && fs.realpathSync) {
         const held = kept?.realPaths.get(found);
-        if (held !== undefined) return held;
-        try { const real = fs.realpathSync(found); kept?.realPaths.set(found, real); return real; } catch { return found; }
+        if (held !== undefined) return carry(held);
+        try { const real = fs.realpathSync(found); kept?.realPaths.set(found, real); return carry(real); } catch { return carry(found); }
       }
-      return found;
+      return found ? carry(found) : found;
     } finally { kept = outer; }
   };
   const resolveCached = (specifier: string, fromDir: string): string | null => {

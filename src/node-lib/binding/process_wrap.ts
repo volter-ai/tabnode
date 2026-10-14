@@ -1,3 +1,5 @@
+import { traceOutput } from '../../trace-output';
+import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials, type ProcessCredentials } from '../../process-credentials';
 /**
  * `internalBinding('process_wrap')`: one run of the engine, seen as libuv sees
  * a child process.
@@ -23,9 +25,9 @@ import {
 } from './stream_wrap';
 import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { nativeStreamFor } from '../../native-stream-binding';
-import { UV_EBADF, UV_ENOENT, UV_ESRCH } from './uv';
+import { UV_EBADF, UV_ENOENT, UV_ESRCH, UV_EPERM, UV_EINVAL } from './uv';
 import {
-  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
+  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle, observeNodeHandle, nodeHandleHasRef, nodeHandleIsInitialized,
   ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
 } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
@@ -76,6 +78,10 @@ export interface RunChannel {
 
 /** What the binding asks the engine's process model to run. */
 export interface RunRequest {
+  /** A snapshot of the actual spawning process, not its mutable guest getter methods. */
+  credentials: Readonly<ProcessCredentials>;
+  /** Present only for an explicit spawn uid/gid declaration; passed to new-child admission. */
+  runAs?: Readonly<ProcessCredentials>;
   /** The run whose `Process` handle spawns it: its parent (the handle's NodeLibScope's process), or null for none. */
   owner: ProcessToken | null;
   /** The program, as the caller named it: a path, a name, or the shell. */
@@ -227,6 +233,8 @@ export function inheritedWriter(fd: number, token: ProcessToken | null): Descrip
  * so a parent waiting on a child is not idle: Node's loop holds a process
  * handle exactly that way, and `unref()` is how a program gives it up.
  */
+const credentialsByHandle = new WeakMap<object, Readonly<ProcessCredentials>>();
+
 export class Process implements OwnedHandle {
   /** Set by `internal/child_process.js`; the only way an end is reported. */
   onexit: ((exitCode: number, signalCode: string | null) => void) | null = null;
@@ -258,17 +266,19 @@ export class Process implements OwnedHandle {
   }
 
   ref(): void {
+    if (!nodeHandleIsInitialized(this)) return;
     refHandle(this);
     this.run?.setRef?.(true);
   }
 
   unref(): void {
+    if (!nodeHandleIsInitialized(this)) return;
     unrefHandle(this);
     this.run?.setRef?.(false);
   }
 
   hasRef(): boolean {
-    return handleHasRef(this);
+    return nodeHandleHasRef(this);
   }
 
   /**
@@ -285,11 +295,17 @@ export class Process implements OwnedHandle {
       windowsHide: (flags & constants.kProcessFlagWindowsHide) !== 0,
     };
     if (!runner) return UV_ENOENT;
+    const parentCredentials = credentialsByHandle.get(this) ?? copyProcessCredentials();
+    let credentials: Readonly<ProcessCredentials>;
+    try { credentials = spawnedProcessCredentials(parentCredentials, uid, gid); }
+    catch (cause) { return (cause as { code?: string })?.code === 'EPERM' ? UV_EPERM : UV_EINVAL; }
     const env = environmentOf(options.envPairs);
     this.stdio = options.stdio ?? [];
     this.spawned = options.file;
 
     const request: RunRequest = {
+      credentials,
+      ...(uid != null || gid != null ? { runAs: credentials } : {}),
       owner: ownerOfInstance(this),
       file: options.file,
       args: options.args ?? [options.file],
@@ -368,13 +384,23 @@ export class Process implements OwnedHandle {
       }
     }
 
+    // Node marks the process wrap initialized after the native spawn attempt,
+    // including ENOENT; ChildProcess closes it from its existing error turn.
+    observeNodeHandle(this);
     if (!runner.resolves(request)) {
       this.closeFarEnds();
       return UV_ENOENT;
     }
 
-    this.run = runner.start(request);
-    // A handle unref'd before its child started is not waited for either.
+    try { this.run = runner.start(request); }
+    catch (cause) {
+      this.closeFarEnds();
+      const code = (cause as { code?: string })?.code;
+      if (code === 'EPERM') return UV_EPERM;
+      if (code === 'EINVAL') return UV_EINVAL;
+      throw cause;
+    }
+    // Reference changes after initialization also govern the owned child run.
     if (!handleHasRef(this)) this.run.setRef?.(false);
     // The number the parent reads off the handle is the child's own
     // `process.pid`, made at its fork, as it is in Node.
@@ -397,7 +423,7 @@ export class Process implements OwnedHandle {
   close(callback?: () => void): void {
     if (!this.closed) {
       this.closed = true;
-      releaseHandle(this);
+      releaseHandle(this, true, 1);
     }
     if (callback) queueBindingTask(() => withGuestCallback(callback));
   }
@@ -494,10 +520,19 @@ export class Process implements OwnedHandle {
         late.push({ fd: index, native: nativeStreamFor(entry.handle as never) !== undefined, reading: handle.reading === true, endOfFileQueued: handle.streamEndpoint?.eof === true,
           unread: handle.streamEndpoint?.inbound?.length ?? null, otherEndHeldBy: handle.streamEndpoint?.peer ? handle.streamEndpoint.peer.handles?.size ?? null : 0 });
       });
-      if (late.length > 0) console.log('[boot-trace]', JSON.stringify({ event: 'child-close-late', at: Date.now(), file, stdio: entries.map((entry) => entry.type), late }));
+      if (late.length > 0) traceOutput("[boot-trace]", { event: 'child-close-late', at: Date.now(), file, stdio: entries.map((entry) => entry.type), late });
     }, 100);
     (timer as { unref?: () => void }).unref?.();
   }
+}
+
+/** NodeLibScope supplies the parent even for a Runtime without a named run token. */
+export function createProcessBinding(parent: object): { Process: typeof Process; constants: typeof constants } {
+  class ScopedProcess extends Process {
+    constructor() { super(); credentialsByHandle.set(this, processCredentialsOf(parent)); }
+  }
+  Object.defineProperty(ScopedProcess, 'name', { value: Process.name, configurable: true });
+  return { Process: ScopedProcess, constants };
 }
 
 export default { Process, constants };

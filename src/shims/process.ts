@@ -1,3 +1,4 @@
+import { traceReadingRequested, traceOutput } from '../trace-output';
 /**
  * Node.js process shim
  * Provides minimal process object for browser environment
@@ -8,13 +9,21 @@ import { queueGuestNextTick } from '../guest-loop';
 import { EventEmitter } from '../node-lib/events-module';
 import type { EventListener } from '../node-lib/events-module';
 import { Readable } from '../node-lib/stream-module';
-import { loadNodeLibFor } from '../node-lib/load';
+import { loadNodeLibFor, nodeLibBindingFor } from '../node-lib/load';
+import { kRunFilesystem, withFilesystem } from '../node-lib/binding/fs';
+import { createNodeError, type VirtualFS } from '../virtual-fs';
 import { constantsBinding } from './constants';
-import ttyWrapBinding from '../node-lib/binding/tty_wrap';
+import { nodeLibBinding } from '../node-lib/binding/index';
+import { nodeActiveHandles, nodeActiveRequests } from '../node-lib/binding/handles';
+
+/** The names Node 24's `process.binding` answers with `internalBinding(name)` (lib/internal/bootstrap/realm.js). */
+const PROCESS_BINDING_ALLOWED = new Set(['buffer', 'cares_wrap', 'config', 'constants', 'contextify', 'fs', 'fs_event_wrap', 'icu', 'inspector',
+  'js_stream', 'os', 'pipe_wrap', 'process_wrap', 'spawn_sync', 'stream_wrap', 'tcp_wrap', 'tls_wrap', 'tty_wrap', 'udp_wrap', 'uv', 'zlib']);
 import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, type ProcessToken } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
 import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
-import { freemem as osFreemem, userInfo as osUserInfo } from './os';
+import { freemem as osFreemem } from './os';
+import { copyProcessCredentials, recordProcessCredentials, type ProcessCredentials } from '../process-credentials';
 import { version as acornVersion } from 'acorn';
 import { ERR_INVALID_ARG_TYPE } from '../node-internals';
 import { setSourceMapsSupportOf, sourceMapsSupportOf } from '../node-lib/internals/events-util';
@@ -172,7 +181,10 @@ function processStdinClass(ReadableClass: typeof Readable): new () => ProcessStd
 type ProcessReadableStream = ProcessStdin;
 
 export interface Process {
+  _getActiveHandles(): object[];
+  _getActiveRequests(): object[];
   env: ProcessEnv;
+  loadEnvFile: (path?: string | Uint8Array | URL) => void;
   title: string;
   cwd: () => string;
   chdir: (directory: string) => void;
@@ -552,6 +564,7 @@ function measuredMemory(): { rss: number; heapTotal: number; heapUsed: number; e
 }
 
 export function createProcess(options?: {
+  credentials?: ProcessCredentials;
   cwd?: string;
   env?: ProcessEnv;
   /** This process's own number and its parent's, as Node gives every process. */
@@ -587,6 +600,7 @@ export function createProcess(options?: {
    */
   tty?: boolean | readonly [boolean, boolean, boolean];
 }): Process {
+  const credentials = copyProcessCredentials(options?.credentials);
   let currentDir = options?.cwd || '/';
   // Node sets no NODE_ENV and neither does the `node` image, so an app that
   // reads it to choose its shape took its development path under a Dockerfile
@@ -630,7 +644,51 @@ export function createProcess(options?: {
   // A process object no run names is the realm's own process, never a second one forked for it.
   const own = options?.pid === undefined ? ownProcessIdentity() : undefined;
   const proc: Process = {
+    _getActiveHandles: () => nodeActiveHandles(proc, __tokenForProcess(proc)),
+    _getActiveRequests: () => nodeActiveRequests(proc, __tokenForProcess(proc)),
     env,
+    // Node's native process method reads synchronously and uses the same
+    // parser as util.parseEnv. Capture the tree/cwd even when this
+    // method is called without a receiver or while another run is current.
+    // Loading NODE_OPTIONS adds an environment value; it does not reparse
+    // interpreter options after the process has already started.
+    loadEnvFile(path: unknown = undefined): void {
+      const { getValidatedPath } = loadNodeLibFor(proc, 'internal/fs/utils') as {
+        getValidatedPath(path: unknown): string | Uint8Array;
+      };
+      const filename = getValidatedPath(path ?? '.env');
+      const written = typeof filename === 'string' ? filename : new TextDecoder().decode(new Uint8Array(filename));
+      if (written === '') throw createNodeError('ENOENT', 'open', written);
+      const absolute = written.startsWith('/') ? written : `${proc.cwd()}/${written}`;
+      const tree = (proc as unknown as Record<symbol, unknown>)[kRunFilesystem] as VirtualFS | undefined;
+      if (tree === undefined) {
+        throw Object.assign(new Error('fs: this process has no filesystem; the engine gives a run one when it starts'), { code: 'ENOSYS' });
+      }
+      // Use native bindings: replacing fs.readFileSync or util.parseEnv in
+      // a public module does not replace Node's native process method.
+      const fs = nodeLibBinding('fs')!() as {
+        open(path: string, flags: number, mode: number): number;
+        readFileUtf8(fd: number, flags: number): string;
+        close(fd: number): void;
+      };
+      const util = nodeLibBinding('util')!() as { parseEnv(content: string): Record<string, string> };
+      let fd: number;
+      try { fd = withFilesystem(tree, () => fs.open(absolute, 0, 0o666)); }
+      catch {
+        // Node's LoadEnvFile maps a failed open to ENOENT and reports the
+        // path as requested, including `.env` when no argument was given.
+        throw createNodeError('ENOENT', 'open', written);
+      }
+      let content: string;
+      try { content = fs.readFileUtf8(fd, 0); }
+      catch {
+        throw Object.assign(new TypeError(`Contents of '${written}' should be a valid string.`), { code: 'ERR_INVALID_ARG_TYPE' });
+      } finally { fs.close(fd); }
+      const parsed = util.parseEnv(content);
+      for (const [key, value] of Object.entries(parsed)) {
+        if (!Object.prototype.hasOwnProperty.call(proc.env, key)) proc.env[key] = value;
+      }
+    },
     // Node exposes a writable title even before application code sets it.
     // Packages use its presence when distinguishing Node from a browser.
     title: 'node',
@@ -662,13 +720,13 @@ export function createProcess(options?: {
     // What a program reads to learn it is Node at all: lib0, y-protocols, the `ai` SDK, sharp and OpenTelemetry
     // test `process.release.name`, and with no `release` each took its not-Node branch without a word.
     release: nodeRelease(__browserRuntimeNodeVersion(env)),
-    // The account every process of the tab runs as: the kernel's (uid and gid 1000, one supplementary group, its
-    // own), which is what `os.userInfo()` answers here too. One function is asked, so the two cannot disagree.
-    getuid: (): number => osUserInfo().uid,
-    geteuid: (): number => osUserInfo().uid,
-    getgid: (): number => osUserInfo().gid,
-    getegid: (): number => osUserInfo().gid,
-    getgroups: (): number[] => [osUserInfo().gid],
+    // Configured process credentials, inherited at fork and kept at exec by the host (ADR-0129).
+    // No setuid means real/effective ids are equal. Node always includes the effective gid in getgroups().
+    getuid: (): number => credentials.uid,
+    geteuid: (): number => credentials.uid,
+    getgid: (): number => credentials.gid,
+    getegid: (): number => credentials.gid,
+    getgroups: (): number[] => [...new Set([...credentials.groups, credentials.gid])],
     // Node's switch for source maps (lib/internal/process/per_thread and the source-map cache): one state, read
     // here and through `module.getSourceMapsSupport()`. Turning it on with this call covers every kind of code,
     // as Node's does. It remaps nothing here (see the cache's note).
@@ -765,12 +823,27 @@ export function createProcess(options?: {
       if (signal !== 0 && (typeof name !== "string" || __substrateSignals[name] === void 0)) {
         throw Object.assign(new TypeError("Unknown signal: " + signal), { code: "ERR_UNKNOWN_SIGNAL" });
       }
+      // Node's kill(pid, 0) asks the caller's process authority before self/child handles. A saved handle is
+      // not evidence of an existing kernel PID; signed targets must reach that authority without abs(pid).
+      if (signal === 0) {
+        if (pidIsLive(pid, __tokenForProcess(proc), proc.pid)) return true;
+        throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
+      }
       // POSIX negative targets name a group, not abs(pid). World teardown
       // probes that group then signals every member from another realm; the
       // former abs(pid) probe succeeded while both termination signals failed.
       // Keep the legacy path only for hosts without the optional operations.
       if (pid < 0) {
-        const result = signal === 0 ? groupIsLive(-pid, __tokenForProcess(proc)) : signalGroup(-pid, name, __tokenForProcess(proc));
+        const result = signalGroup(-pid, name, __tokenForProcess(proc));
+        // An instrument (langfuse, 3.0.2176: a World's `down` signalled its Redis twin's group, asked for a minute
+        // whether the group was still there, and gave up, "retirement unconfirmed"): for a signal that is not the
+        // question, whether any member took it and whether the group is there before and after. Three ends look the
+        // same from outside: no member takes the signal, the member takes it and does not end, or it ends and the
+        // table still lists it.
+        if (signal !== 0) {
+          const token = __tokenForProcess(proc);
+          if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'group-signal', at: Date.now(), from: proc.pid, pgid: -pid, signal: name, delivered: result ?? 'this host has no group operations', listedAfter: groupIsLive(-pid, token) ?? null, leaderListed: pidIsLive(-pid, token) });
+        }
         if (result === true) return true;
         if (result === false) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
       }
@@ -781,22 +854,15 @@ export function createProcess(options?: {
       if (pid !== proc.pid) {
         const child = __substrateChildrenOf(__tokenForProcess(proc)).get(Math.abs(pid));
         if (child === void 0 || child.exitCode !== null || child.signalCode !== null) {
-          // Signal 0 is the question "is that process there?", and a program
-          // asks it about processes that are not its own children: a pid out
-          // of a lock file, a parent's. A live run answers yes and carries no
-          // signal; anything else is `ESRCH`, as it is on a machine.
-          if (signal === 0 && pidIsLive(Math.abs(pid), __tokenForProcess(proc))) return true;
           // Any other live process of the container takes the signal too,
           // including one whose parent has exited; otherwise nothing could
           // ever end it.
           if (signal !== 0 && child === void 0 && pid > 0 && signalPid(pid, name, __tokenForProcess(proc))) return true;
           throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
         }
-        if (signal === 0) return true;
         child.kill(name);
         return true;
       }
-      if (signal === 0) return true;
       if (name !== "SIGKILL" && name !== "SIGSTOP" && emitter.listenerCount(name) > 0) {
         emitter.emit(name, name);
         return true;
@@ -813,11 +879,12 @@ export function createProcess(options?: {
      * before it reads anything public: the Prisma CLI asks for `constants`,
      * `buffer` and `tty_wrap` on its way in. The engine had no such function,
      * so the call was `undefined is not a function` -- a TypeError where Node
-     * answers. `constants` is the one binding a tab can serve honestly, and it
-     * is the engine's own table, the same numbers `require("constants")` hands
-     * out; every other name gets the error Node raises for a module it does
-     * not have, because a binding a tab cannot back is a surface that answers
-     * and then cannot act. Node prints the DEP0111 warning only under
+     * answers. A name on Node's allow list is answered with the engine's own
+     * internal binding of that name, the one Node's vendored lib runs on, so
+     * it acts as Node's lib does (`constants` is the engine's table, the same
+     * numbers `require("constants")` hands out). A listed name the engine has
+     * no binding for, and every unlisted one, gets the error Node raises for a
+     * module it does not have. Node prints the DEP0111 warning only under
      * `--pending-deprecation`, and only once, so this does the same.
      */
     binding(name: string): unknown {
@@ -826,7 +893,14 @@ export function createProcess(options?: {
         proc.emitWarning("process.binding() is deprecated. Please use public APIs instead.", "DeprecationWarning", "DEP0111");
       }
       if (name === "constants") return constantsBinding();
-      if (name === "tty_wrap") return ttyWrapBinding;
+      if (name === "tty_wrap") return nodeLibBindingFor(proc, name);
+      // Node answers `internalBinding(name)` for a name on its allow list (lib/internal/bootstrap/realm.js,
+      // processBindingAllowList, Node 24), and the engine's internal bindings are the ones Node's own vendored lib
+      // runs on: `fs` among them, whose `stat` and `FSReqCallback` a fast stat reaches for (audiobookshelf's
+      // ripstat: `const { stat, FSReqCallback } = process.binding('fs')`, which threw here at load). A listed name
+      // the engine holds no binding for raises Node's own error, as an unlisted one does.
+      const binding = PROCESS_BINDING_ALLOWED.has(name) ? nodeLibBinding(name) : undefined;
+      if (binding) return nodeLibBindingFor(proc, name);
       throw new Error("No such module: " + name);
     },
 
@@ -1034,6 +1108,7 @@ export function createProcess(options?: {
   };
 
   processEndings.set(proc, () => { exiting = true; });
+  recordProcessCredentials(proc, credentials);
   return proc;
 }
 

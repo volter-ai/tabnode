@@ -1,0 +1,27 @@
+{
+  "row": "K5c",
+  "date": "2026-10-13",
+  "scope": "Cal's first request to head: the module compile and evaluate phases against native Node, per body byte, under C4 (indirect eval in the sloppy guest wrapper; no cachedData, importScripts or cross-realm compiled code)",
+  "source": {
+    "tab": "browser-substrate docs/readings/s2-k1-cal-stage-account-2026-10-12.json (fe60311f + a279af1, three timed runs, server pid 17, request-to-head moduleDelta and first-write-head compileSplit)",
+    "native": "same file, nativeInstrumentedPhaseArm.listeningToHeadModuleDelta (Node, instrumented: 418 CommonJS boundaries missing, 809 ESM loads with compile/evaluate uncovered, 250 ms unseparated)"
+  },
+  "tab": {
+    "bodies": 8104, "bodyBytes": 87205967,
+    "compileMs": [758, 743, 737], "evaluateMs": [581, 574, 571],
+    "nativeEvalMsAtHead": [781, 771, 762], "sourceCaptureMsAtHead": [3, 3, 3],
+    "medianCompileMsPerMB": 8.52, "medianEvaluateMsPerMB": 6.58
+  },
+  "native": {
+    "bodies": 8328, "bodyBytes": 83928345, "compileMs": 1076, "evaluateMs": 544, "unseparatedMs": 250,
+    "compileMsPerMB": 12.82, "evaluateMsPerMB": 6.48
+  },
+  "reading": [
+    "Compile: the tab's is below native per byte (8.5 against 12.8 ms/MB) and almost all of it is V8's own eval (sourceCaptureMs 3). Native's figure is an upper bound (instrumented, with uncovered ESM and an unseparated remainder), so the comparison says only that the tab is not above native.",
+    "Evaluate: at native per byte (6.6 against 6.5 ms/MB).",
+    "Under C4 no compiled-code cache can lower either: what remains is V8 parsing and running the bodies, which native pays too. K1 unit 1 (3043099, guest scope shared per process) removed the wrapper's own parse and closures from both phases; its saving is read from heavy-lead job 4 (814aee76 + b924de1) against job 3 (814aee76 + 912010e)."
+  ],
+  "ceiling": "compile and evaluate are at or under native per byte before K1 unit 1; the request-to-head gap against native lies in resolve (1,383 ms against 302), read (610 against 243) and outside (294 against 355 + 250 unseparated), not in V8's work",
+  "pending": "job 4's compile/evaluate and compileSplit, to restate these figures after K1 unit 1",
+  "measured": "no new run; figures are the retained stage account's"
+}

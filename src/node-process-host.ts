@@ -1,3 +1,4 @@
+import type { ProcessCredentials } from './process-credentials';
 import type { ProcessIdentity } from './process-registry';
 import type { NativeStreamDescriptor } from './native-stream-owner';
 import type { RunStreams } from './shims/child_process';
@@ -15,6 +16,8 @@ export interface NodeProcessLaunch {
   /** This entry's filesystem view, including any host-prepared entry wrapper. */
   filesystem: VirtualFS;
   env: Record<string, string>;
+  /** Retained process credentials for the host to pass to Runtime/contained realm admission. */
+  credentials?: ProcessCredentials;
   /** Bytes already on fd 0 when the process begins; a parent's pipe carries bytes. */
   stdin?: string | Uint8Array;
   stdinStream?: AsyncIterable<Uint8Array>;

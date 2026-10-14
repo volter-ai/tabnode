@@ -1,3 +1,7 @@
+import { traceReadingRequested, traceOutput } from '../trace-output';
+import { copyProcessCredentials, type ProcessCredentials } from '../process-credentials';
+import { queueNativeFsTask } from '../native-fs-tasks';
+import { withGuestCallback } from '../guest-loop';
 /**
  * The engine's process model: what a run of a program IS here.
  *
@@ -41,9 +45,10 @@ import { __substrateExitCode, __substrateProcessEnding, __substrateUncaughtCaptu
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
 import { treeDescriptorsOf } from '../tree-descriptors';
-import { VirtualFSAdapter } from './vfs-adapter';
+import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
+import { stackFormedBy } from '../stack-overrides';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
-import { __ownedHandleCount, __releaseOwnedHandles } from '../node-lib/net-module';
+import { __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
 import { StdinRingReader, kStdinRing } from '../stdin-ring';
@@ -69,22 +74,26 @@ const __hostProcess: { on(event: string, listener: (reason: unknown) => void): u
   typeof process !== 'undefined' && process !== null && typeof (process as { on?: unknown }).on === 'function' && typeof (process as { off?: unknown }).off === 'function'
     ? (process as { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown })
     : null;
-import { Runtime, pendingGuestTimers, stopGuestTimers, __substratePendingOf } from '../runtime';
+import { Runtime, pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers, __substratePendingOf } from '../runtime';
 import { __nodeResolverFor } from '../node-resolver';
 import { resolve as __resolvePath } from './path';
 import { setSyncChildVfs, warmSyncChild } from './sync-child';
 import { installShellJobs } from './shell-jobs';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
+import { installedNpmVersion } from '../npm/version';
 
 // Capture host capabilities before the guest's authority is restricted. These
 // endpoints are private, carry no guest bytes, and close at each checkpoint.
 const HostBroadcastChannel = globalThis.BroadcastChannel;
 const hostChannelName = globalThis.crypto?.randomUUID.bind(globalThis.crypto);
 const isWorkerRealm = typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined';
+const hostNow = globalThis.performance.now.bind(globalThis.performance);
 
-async function settlePrintedEntry(): Promise<void> {
-  await new Promise<void>(resolve => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, resolve, 0));
+async function settleEntry(): Promise<void> {
+  // A native loop checkpoint shares the existing host task channel. It is
+  // host work, not a guest timer, and does not depend on timer scheduling.
+  await new Promise<void>(resolve => { queueNativeFsTask(resolve); });
   if (!isWorkerRealm || nodeProcessRealmToken() === null) return;
   if (!HostBroadcastChannel || !hostChannelName) throw new Error('Native process rejection checkpoint is unavailable.');
   // HTML queues rejection reporting after the microtask checkpoint on the
@@ -136,11 +145,6 @@ function shellOf(tree: VirtualFS | null | undefined): { bash: Bash; adapter: Vir
   return bashInstance && vfsAdapter ? { bash: bashInstance, adapter: vfsAdapter } : null;
 }
 
-// Track active forked child processes so the node command can detect when children exit.
-// When the last child exits, the node command uses a shorter idle timeout.
-let _activeForkedChildren = 0;
-let _onForkedChildExit: (() => void) | null = null;
-
 // Patch Object.defineProperty globally to force configurable: true on globalThis properties.
 // In real Node.js, each process has its own globalThis. In our browser environment,
 // all forks share globalThis, so libraries like vitest that define non-configurable
@@ -187,6 +191,8 @@ const NODE_VALUE_OPTIONS = new Set([
 export type StdioKind = 'tty' | 'pipe' | 'file' | 'char';
 
 export interface RunStreams {
+  /** Credentials inherited by this run and every Node image it starts. */
+  credentials?: ProcessCredentials;
   stdinStream?: AsyncIterable<Uint8Array>;
   /** fd 0 as a shared ring a host writes from another thread (`stdin-ring.ts`); where given, fd 0's only source. */
   stdinShared?: SharedArrayBuffer;
@@ -466,6 +472,10 @@ const __listenForUnhandledRejections = (owner: object, report: (reason: unknown,
 
 /** One start of the engine's Node, however it was asked for. */
 export interface NodeLaunch {
+  /** Requested local host evidence only; never sent to a child's process host or exposed through Node. */
+  moduleEvaluationObserver?: import('../runtime').ModuleEvaluationObserver;
+  /** Credentials inherited by this run and every Node image it starts. */
+  credentials?: ProcessCredentials;
   /** The whole vector, as `execve` takes it: `argv[0]` is the program's own name (`process.argv0`), and Node's options, the script and its arguments follow. */
   argv: readonly string[];
   cwd: string;
@@ -503,6 +513,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const nested = parentToken !== null && (shellRuns.has(parentToken) || hostedNodes.has(parentToken));
   const runToken = nested ? nestedNodeToken(parentToken!, args, launch.cwd) : parentToken;
   const streams = runToken === null ? undefined : runStreamsFor(runToken);
+  const credentials = copyProcessCredentials(launch.credentials ?? streams?.credentials);
   const processHost = nodeProcessHostFor(runToken);
   if (processHost && runToken !== null) {
     if (!nested) hostedNodes.add(runToken);
@@ -511,7 +522,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     let ran = false;
     try {
       const result = await runHostedNode(processHost, {
-        token: runToken, argv0: launch.argv[0] ?? 'node', argv: [...args], cwd: launch.cwd, filesystem: tree, env: { ...launch.env },
+        token: runToken, argv0: launch.argv[0] ?? 'node', argv: [...args], cwd: launch.cwd, filesystem: tree, env: { ...launch.env }, credentials,
         ...(launch.stdin !== undefined ? { stdin: launch.stdin } : {}), ...(streams ? { streams } : {}),
       });
       ran = true;
@@ -549,6 +560,23 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // openvscode-server forks its pty host with, `<server>/out/bootstrap-fork`
   // for the file `bootstrap-fork.js`, was ENOENT and the pty host died at
   // its first fork.
+  const preloads: string[] = [], imports: string[] = [];
+  const takePreloads = (words: readonly string[]): void => {
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index]!;
+      if (word === '-r' || word === '--require' || word === '--import') {
+        const name = words[++index];
+        if (name !== undefined) (word === '--import' ? imports : preloads).push(name);
+      } else {
+        const inline = /^--(require|import)=([\s\S]+)$/.exec(word);
+        if (inline) (inline[1] === 'import' ? imports : preloads).push(inline[2]!);
+        else if (word === '-e' || word === '--eval' || word === '-p' || word === '--print' || word === '-pe') break;
+        else if (NODE_VALUE_OPTIONS.has(word)) index += 1;
+      }
+    }
+  };
+  const inheritedOptions = launch.env.NODE_OPTIONS?.match(/(?:[^\s"]+|"[^"]*")+/gu)?.map(word => word.replace(/^"|"$/gu, '')) ?? [];
+  takePreloads(inheritedOptions);
   const execArgv: string[] = [];
   let first = 0;
   // `-e`/`--eval` and `-p`/`--print` carry the program itself as their
@@ -572,6 +600,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       first += 2;
       break;
     }
+    if ((option === '-r' || option === '--require' || option === '--import') && first + 1 >= args.length) return { stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 };
     // An option that takes its value as the next word consumes it here, as Node's option parser does.
     if (NODE_VALUE_OPTIONS.has(option) && first + 1 < args.length) {
       execArgv.push(option, args[first + 1]!);
@@ -581,6 +610,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     execArgv.push(option);
     first += 1;
   }
+  takePreloads(execArgv);
   if (args[first] === '--') first += 1;
   const resolver = __nodeResolverFor(tree, 'runtime');
   const fileNamed = (word: string): string | null => {
@@ -629,6 +659,15 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // what the program has written on either fd, which is how the loop below
   // tells a program that printed from one still quiet.
   let printed = 0;
+  // An instrument: when the program last wrote, on which fd and what, for the line that says what held it at its end
+  // (`run-drained`): the wait before a quiet program is ended counts from this write, and nothing said when it was,
+  // so the time between a program's last module and its last line could not be placed. The engine's own console
+  // lines are not writes of the program and are not counted here or in `printed`.
+  const lastWrite = { at: 0, fd: 0, bytes: 0, head: '', writes: 0 };
+  const noteWrite = (fd: 1 | 2, data: string | Uint8Array): void => {
+    lastWrite.at = Date.now(); lastWrite.fd = fd; lastWrite.bytes = data.length; lastWrite.writes += 1;
+    lastWrite.head = typeof data === 'string' ? data.slice(0, 80) : '';
+  };
   const stdinRing = streams?.stdinShared ? new StdinRingReader(streams.stdinShared) : undefined;
   const stdoutBytes = streams?.onStdoutBytes;
   const stderrBytes = streams?.onStderrBytes;
@@ -640,6 +679,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const appendStdout = (data: string | Uint8Array) => {
     if (exitCalled) return;
     printed += data.length;
+    noteWrite(1, data);
     if (stdoutBytes) { stdoutBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
     const text = typeof data === 'string' ? data : stdoutDecoder.decode(data, { stream: true });
     stdout += text;
@@ -648,6 +688,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const appendStderr = (data: string | Uint8Array) => {
     if (exitCalled) return;
     printed += data.length;
+    noteWrite(2, data);
     if (stderrBytes) { stderrBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
     const text = typeof data === 'string' ? data : stderrDecoder.decode(data, { stream: true });
     stderr += text;
@@ -683,8 +724,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   let runEnd: number | undefined;
   // Create a runtime with output capture for both console.log AND process.stdout.write
   const runtime = new Runtime(tree, {
+    ...(launch.moduleEvaluationObserver ? { moduleEvaluationObserver: launch.moduleEvaluationObserver } : {}),
     cwd: launch.cwd,
     env: guestEnv,
+    credentials,
     onConsole: (method, consoleArgs) => {
       const msg = consoleArgs.map(a => String(a)).join(' ') + '\n';
       if (method === 'error') {
@@ -895,7 +938,21 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     const capture = __substrateUncaughtCapture();
     if (capture) { capture(error); return; }
     if (proc.listenerCount('uncaughtException') > 0) { proc.emit('uncaughtException', error, 'uncaughtException'); return; }
-    appendStderr(`${error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error)}\n`);
+    // An instrument (langfuse, runtime 3.0.2178: its worker died of a ZodError and its stderr was "ZodError" and the
+    // frames, with none of the issues Node prints above them; Node 24 asked with an error of that shape answers
+    // "ZodError: [" and the issues, since V8 forms the first line when `.stack` is first read). For each uncaught
+    // error printed: whether the text printed begins with the error's present text, what formed the stack's text
+    // and what the error's text was then, and what `Error.prepareStackTrace` is now.
+    if (error instanceof Error) {
+      if (!stackHeaderAsked) { stackHeaderAsked = true; traceOutput("[boot-trace]", { event: 'stack-header-rule', at: Date.now(), ...stackHeaderRule() }); }
+      let now = '';
+      try { now = Error.prototype.toString.call(error); } catch { now = '(its text could not be read)'; }
+      const printed = String(error.stack ?? '');
+      const formed = stackFormedBy.get(error);
+      const hook = (Error as { prepareStackTrace?: unknown }).prepareStackTrace;
+      if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'uncaught-stack-text', at: Date.now(), pid: proc.pid, name: error.name, messageBytes: String(error.message ?? '').length, messageIsOwn: Object.prototype.hasOwnProperty.call(error, 'message'), messageIsAccessor: typeof Object.getOwnPropertyDescriptor(error, 'message')?.get === 'function', message: String(error.message ?? '').slice(0, 300), ownKeys: Reflect.ownKeys(error).map(String).slice(0, 12), printedFirstLine: printed.split('\n', 1)[0]!.slice(0, 160), printedCarriesMessage: printed.startsWith(now) || (String(error.message ?? '') === '' ? null : printed.includes(String(error.message).slice(0, 80))), formedBy: formed ? formed.by : "V8's own text, or before this realm's hook was asked", errorTextWhenFormed: formed?.errorTextThen ?? null, prepareStackTraceNow: typeof hook === 'function' ? (hook.name || 'a function') : String(hook) });
+    }
+    appendStderr(`${error instanceof Error ? uncaughtText(error) : String(error)}\n`);
     writeHostReceipt('uncaught', error);
     if (exitCalled) return;
     const wasSync = syncExecution;
@@ -967,6 +1024,14 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
 
   let entrySettling: Promise<unknown> | undefined;
   try {
+    if (preloads.length > 0 || imports.length > 0) {
+      const prepare = () => runtime.preloadModules(preloads, imports);
+      const settling = runToken === null ? prepare() : enterRun(runToken, prepare);
+      syncExecution = false;
+      await Promise.race([settling, exitPromise]);
+      if (exitCalled) { settling.catch(() => {}); return { stdout, stderr, exitCode }; }
+      syncExecution = true;
+    }
     // Run the script (synchronous part)
     // The entry runs AS this run: the token a `spawn` inside it reads is
     // this program's, not whichever run started last. The engine's storage
@@ -1045,10 +1110,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // timer — as idle, with exit 0, three times over.
   const __ownsHandles = () => runToken !== null && (__ownedServerPorts(runToken).length > 0 || __ownedHandleCount(runToken) > 0);
   const __printedThenWorking = () => (streams?.stdinOpen === true && inputConsumed()) || pendingGuestTimers(proc) > 0 || heldWork().count > 0 || __ownsHandles();
-  if (printed > 0 && !__printedThenWorking()) {
+  if ((streams?.held || runToken === null) && printed > 0 && !__printedThenWorking()) {
     // Settling the command is host work. Killing guest timers must not
     // cancel this continuation and leave the command's promise unresolved.
-    await settlePrintedEntry();
+    await settleEntry();
     // Work that began during that tick is the program's still: a build
     // reached through a dynamic import's chain, a timer the entry set.
     // vue-pure-admin's mock loader, `import('bundle-import').then(...)`
@@ -1071,22 +1136,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // No output yet — script likely has async work (e.g. vitest test runner).
   // Wait for process.exit() or until output stabilizes.
 
-  // Listen for forked child exits to shorten the idle timeout.
-  // Many CLI tools (vitest, jest, etc.) fork workers and exit shortly after
-  // all children complete. We use a shorter timeout once children are done.
-  let childrenExited = false;
-  const prevChildExitHandler = _onForkedChildExit;
-  _onForkedChildExit = () => {
-    if (_activeForkedChildren <= 0) childrenExited = true;
-    prevChildExitHandler?.();
-  };
-
   try {
     // Poll until process.exit is called, output stabilizes, or we time out
     const MAX_TOTAL_MS = 60000;
-    const IDLE_TIMEOUT_MS = 500;
     const SILENT_IDLE_TIMEOUT_MS = 2000;
-    const POST_CHILD_EXIT_IDLE_MS = 100; // short timeout after children finish
     const CHECK_MS = 50;
     const startTime = Date.now();
     let lastOutputLen = printed;
@@ -1098,55 +1151,128 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // When an abort signal is present (e.g. watch mode), don't apply idle timeout —
     // only exit when aborted or process.exit is called.
     const isLongRunning = !!streams?.held;
+    // A named run's loop ends once its registered work is empty, after a
+    // native task/rejection checkpoint. Silence does not hold such a loop.
+    // An unregistered run cannot prove handle/request ownership and retains
+    // its previous idle rule. A caller-held run belongs to its caller.
+    // Each look's time is put to every thing true at that look, and one line says them when the wait ends.
+    const heldBy: Record<string, number> = {};
+    // The same, counted only since the program last wrote: begun again at each write, so at the end it is what held
+    // the program after its last line (a World's "returning: the World is up"), which the whole run's tally mixes
+    // with what was pending while it worked.
+    let sinceLastOutput: Record<string, number> = {};
+    let endedBy = 'the program called exit';
+    const note = (name: string): void => { heldBy[name] = (heldBy[name] ?? 0) + CHECK_MS; sinceLastOutput[name] = (sinceLastOutput[name] ?? 0) + CHECK_MS; };
+    // Whether the idle rule's wait ever saw work the engine does not count: a look that found nothing pending and no new
+    // output begins an empty span; a later look that finds output or pending work ends it, and the program is said to
+    // have woken that long after its loop looked empty (Node would have ended it at the first empty look). A program
+    // that never wakes from an empty span was waited on by the idle rule for nothing it did.
+    let emptyLooks = 0, emptyAt: number | undefined;
+    const wokeAfterEmpty: Array<{ afterEmptyMs: number; by: string[] }> = [];
+    const checkWait = { count: 0, totalMs: 0, maxMs: 0 };
+    const checkWork = { totalMs: 0, maxMs: 0 };
+    const checkpoints = { count: 0, totalMs: 0, maxMs: 0 };
+    const checkpoint = async (): Promise<void> => {
+      const began = hostNow();
+      try { await settleEntry(); }
+      finally {
+        const ms = hostNow() - began;
+        checkpoints.count += 1; checkpoints.totalMs += ms; checkpoints.maxMs = Math.max(checkpoints.maxMs, ms);
+      }
+    };
+    const hasReferencedWork = (): boolean => stillWorking() || heldWork().count > 0;
 
     while (!exitCalled) {
       // Check abort signal for long-running commands (watch mode)
-      if (streams?.signal?.aborted) break;
+      if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
+
+      // A promise alone is not a loop reference. Let queued ticks, promise
+      // continuations and rejection reporting finish before proving that
+      // the named process's handles/requests are empty. No idle look is
+      // scheduled for an empty loop, whether the entry printed or not.
+      if (!isLongRunning && runToken !== null && !hasReferencedWork()) {
+        await checkpoint();
+        if (exitCalled) break;
+        if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
+        if (!hasReferencedWork()) {
+          try { enterRun(runToken, () => withGuestCallback(() => proc.emit('beforeExit', proc.exitCode ?? 0), 'process', 'beforeExit')); }
+          catch (error) { onUncaughtException(error); }
+          if (exitCalled) break;
+          await checkpoint();
+          if (exitCalled) break;
+          if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
+          if (!hasReferencedWork()) { endedBy = 'the referenced loop is empty'; break; }
+        }
+      }
 
       // Check if exitPromise resolved (non-blocking)
+      const waitBegan = hostNow();
       const raceResult = await Promise.race([
         exitPromise.then(() => 'exit' as const),
         new Promise<'tick'>(r => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, () => r('tick'), CHECK_MS)),
       ]);
+      const waited = hostNow() - waitBegan;
+      checkWait.count += 1; checkWait.totalMs += waited; checkWait.maxMs = Math.max(checkWait.maxMs, waited);
 
       if (raceResult === 'exit' || exitCalled) break;
-      if (streams?.signal?.aborted) break;
+      if (streams?.signal?.aborted) { endedBy = 'its caller stopped it'; break; }
+      const workBegan = hostNow();
+      try {
+        let emptyLook = false;
+        {
+          const timers = pendingGuestTimers(proc), ports = runToken !== null ? __ownedServerPorts(runToken).length : 0, handles = runToken !== null ? __ownedHandleCount(runToken) : 0, held = heldWork().count;
+          const input = streams?.stdinOpen === true && inputConsumed();
+          if (input) note('its input is open and read');
+          // Named by kind as well as counted: run 5 of Rallly said "an open handle" 600 ms and "a timer" 350 ms for the
+          // World's `up` after it said it was up, and not which.
+          if (timers > 0) { note('a timer is pending'); for (const kind of new Set(pendingGuestTimerKinds(proc))) note(`a timer is pending: ${kind}`); }
+          if (ports > 0) note('it owns a listening port');
+          if (handles > 0) { note('it owns an open handle'); for (const kind of new Set(__ownedHandleKinds(runToken!))) note(`it owns an open handle: ${kind}`); }
+          if (held > 0) note('held work (a child or a build)');
+          if (!input && timers === 0 && ports === 0 && handles === 0 && held === 0) note('nothing: the idle rule alone');
+          const by = [...(printed > lastOutputLen ? ['output'] : []), ...(input ? ['input'] : []), ...(timers > 0 ? ['timer'] : []),
+            ...(ports > 0 ? ['port'] : []), ...(handles > 0 ? ['handle'] : []), ...(held > 0 ? ['held work'] : [])];
+          emptyLook = by.length === 0;
+          if (emptyLook) { emptyLooks += 1; emptyAt ??= Date.now(); }
+          else if (emptyAt !== undefined) {
+            if (wokeAfterEmpty.length < 8) wokeAfterEmpty.push({ afterEmptyMs: Date.now() - emptyAt, by });
+            emptyAt = undefined;
+          }
+        }
 
-      const currentLen = printed;
-      if (currentLen > lastOutputLen) {
-        // New output — reset idle timer
-        lastOutputLen = currentLen;
-        idleMs = 0;
-      } else {
-        idleMs += CHECK_MS;
+        const currentLen = printed;
+        if (currentLen > lastOutputLen) {
+          // New output — reset idle timer
+          lastOutputLen = currentLen;
+          idleMs = 0;
+          sinceLastOutput = {};
+        } else {
+          idleMs += CHECK_MS;
+        }
+
+        // A caller-held run belongs to its caller. The observed empty look includes held children/builds.
+        if (!isLongRunning) {
+          if (heldWork().count > 0) idleMs = 0;
+          // Only an unregistered run needs these heuristic rules. Named
+          // processes recheck their actual references before another look.
+          const silentIdle = SILENT_IDLE_TIMEOUT_MS;
+          if (runToken === null && lastOutputLen > 0 && emptyLook) { endedBy = 'the first empty look after output'; break; }
+          if (runToken === null && lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) { endedBy = `nothing of its own was pending and it wrote nothing at all, for ${silentIdle} ms`; break; }
+        }
+
+        // The hard timeout is for a program whose work the engine cannot see:
+        // a start that is quiet while it fetches, a loop with nothing in the
+        // engine's own registries. A run that still holds a handle or a timer
+        // is not that -- Node's loop runs while one is open, for as long as it
+        // is open -- and cutting it at a minute ended a forked child that was
+        // a server, which is every extension host and every pty host. Work the
+        // host holds for it (a build, a pre-bundle) is seen work too: a dev
+        // server whose start passed a minute mid pre-bundle was cut with exit 0.
+        if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) { endedBy = `the ${MAX_TOTAL_MS} ms bound`; break; }
+      } finally {
+        const worked = hostNow() - workBegan;
+        checkWork.totalMs += worked; checkWork.maxMs = Math.max(checkWork.maxMs, worked);
       }
-
-      // Use shorter idle timeout once all forked children have exited
-      // Skip idle timeout for long-running commands (watch mode)
-      if (!isLongRunning) {
-        const effectiveIdle = childrenExited ? POST_CHILD_EXIT_IDLE_MS : IDLE_TIMEOUT_MS;
-        if (heldWork().count > 0) idleMs = 0;
-        // A program ends when its loop has nothing left, in Node whether or
-        // not it printed. The break waited for output, so a program that
-        // wrote nothing, a passing test of Node's own suite, waited the
-        // whole minute. A silent program that has been idle for a while,
-        // with no build held and no timer of its own pending, is done; the
-        // longer wait is for a start that is quiet while it fetches, which
-        // the engine cannot yet see as work.
-        const silentIdle = SILENT_IDLE_TIMEOUT_MS;
-        if (lastOutputLen > 0 && !stillWorking() && idleMs >= effectiveIdle) break;
-        if (lastOutputLen === 0 && !stillWorking() && idleMs >= silentIdle) break;
-      }
-
-      // The hard timeout is for a program whose work the engine cannot see:
-      // a start that is quiet while it fetches, a loop with nothing in the
-      // engine's own registries. A run that still holds a handle or a timer
-      // is not that -- Node's loop runs while one is open, for as long as it
-      // is open -- and cutting it at a minute ended a forked child that was
-      // a server, which is every extension host and every pty host. Work the
-      // host holds for it (a build, a pre-bundle) is seen work too: a dev
-      // server whose start passed a minute mid pre-bundle was cut with exit 0.
-      if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) break;
     }
 
     // A process whose loop has drained emits `exit`, as Node's does (`process.emit('exit', process.exitCode || 0)`,
@@ -1162,12 +1288,20 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       try { proc.emit('exit', exitCode); } catch (error) { __reportUncaughtException(proc, error); } finally { emittingExit = false; }
       if (typeof proc.exitCode === 'number') exitCode = proc.exitCode;
     }
+    // Keep D1 evidence when the new first-empty decision is shorter than the old trace threshold.
+    if (endedBy === 'the referenced loop is empty' || emptyLooks > 0 || Date.now() - startTime >= 200) {
+      if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: { ...heldBy }, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
+        entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null,
+        emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt,
+        lookTimer: { realm: isWorkerRealm || nodeProcessRealmToken() !== null ? 'worker' : typeof window === 'undefined' ? 'host' : 'window',
+          source: globalThis.__browserRuntimeNativeSetTimeout ? 'host-captured setTimeout' : 'realm.setTimeout', requestedMs: CHECK_MS, ...checkWait },
+        lookWorkMs: { ...checkWork }, entryCheckpointMs: { ...checkpoints } });
+    }
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
     if (typeof proc !== 'undefined') (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
     return { stdout, stderr, exitCode: runEnd = exitCalled ? exitCode : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
   } finally {
     if (streams) streams.stdin = null;
-    _onForkedChildExit = prevChildExitHandler;
   }
   } finally {
     detachRejections();
@@ -1285,6 +1419,10 @@ export function initChildProcess(vfs: VirtualFS): void {
 
     const subcommand = args[0];
 
+    if (args.length === 1 && (subcommand === '-v' || subcommand === '--version')) {
+      return npmVersionResult(tree, ctx.cwd, guestEnvironmentOf(ctx));
+    }
+
     if (!subcommand || subcommand === 'help' || subcommand === '--help') {
       return {
         stdout: 'Usage: npm <command>\n\nCommands:\n  run <script>   Run a script from package.json\n  start          Run the start script\n  test           Run the test script\n  install [pkg]  Install packages\n  ls             List installed packages\n',
@@ -1371,6 +1509,11 @@ export function initChildProcess(vfs: VirtualFS): void {
     },
     start: startChildRun,
   });
+}
+
+function npmVersionResult(tree: VirtualFS, cwd: string, env: Record<string, string>, executable = 'npm'): JustBashExecResult {
+  try { return { stdout: `${installedNpmVersion(tree, cwd, env, executable)}\n`, stderr: '', exitCode: 0 }; }
+  catch (error) { return { stdout: '', stderr: `npm ERR! ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 }; }
 }
 
 /**
@@ -1506,6 +1649,17 @@ async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBa
     ...environmentOf(ctx),
     npm_lifecycle_event: scriptName,
   };
+  // A SCRIPT'S FIRST WORD IS LOOKED FOR IN THE PACKAGE'S OWN BINARIES FIRST. npm runs a script with
+  // `node_modules/.bin` of the package's directory, and of each directory above it, ahead of the caller's PATH; that
+  // is how `cross-env …` or `next start` in a script finds a dependency's binary. The script was run with the
+  // caller's PATH alone, which names `/node_modules/.bin` at the tree's root and no package's: RSSHub's start,
+  // `cross-env NODE_ENV=production … node dist/index.mjs` in /app, ended "bash: cross-env: command not found".
+  const binaries: string[] = [];
+  for (let directory = ctx.cwd.replace(/\/+$/u, '') || '/'; ; directory = directory.slice(0, directory.lastIndexOf('/')) || '/') {
+    binaries.push(`${directory === '/' ? '' : directory}/node_modules/.bin`);
+    if (directory === '/') break;
+  }
+  npmEnv.PATH = [...binaries, ...(npmEnv.PATH ?? '/usr/local/bin:/usr/bin:/bin').split(':').filter((entry) => entry !== '' && !binaries.includes(entry))].join(':');
   if (pkgJson.name) npmEnv.npm_package_name = pkgJson.name;
   if (pkgJson.version) npmEnv.npm_package_version = pkgJson.version;
 
@@ -1699,6 +1853,8 @@ async function handleNpmList(ctx: CommandContext): Promise<JustBashExecResult> {
 
 /** What a host asks of `runCommand`, the engine's own door onto its shell. */
 export interface ExecOptions {
+  /** Credentials inherited by this run and every Node image it starts. */
+  credentials?: ProcessCredentials;
   cwd?: string;
   env?: Record<string, string>;
   /** What the shell reads on stdin, so a builtin reads what was piped to it. */
@@ -1753,6 +1909,7 @@ interface ChildProcessHostDescriptor {
 
 /** How a command is handed to that host. */
 interface ChildProcessHostRequest {
+  credentials?: ProcessCredentials;
   /**
    * The command as the list a guest's `spawn` gave, where it gave one: the
    * program, then its words. A host that starts programs from a list starts
@@ -1813,6 +1970,8 @@ interface CommandOutcome {
 
 /** What a caller gives one run of a command line. */
 interface CommandRun {
+  /** Credentials inherited by this run and every Node image it starts. */
+  credentials?: ProcessCredentials;
   command: string;
   /** The same run as its words, where the caller had a list (`ChildProcessHostRequest.argv`). */
   argv?: readonly string[];
@@ -1845,6 +2004,8 @@ interface CommandRun {
   descriptors?: { fd: number; pipe: Pipe }[];
   /** Told when the host's process host takes the run: its end is then the host's, not the engine's. */
   onHostRun?: () => void;
+  /** A rejected handoff returns exit ownership only with an explicit failed-start receipt. */
+  onHostRunRejected?: (cause: unknown) => void;
   /** The parent's wait for this run, as its handle's ref state has it (`ChildProcessHostRequest.hold`). */
   hold?: { value: boolean; changed?: () => void };
 }
@@ -1903,22 +2064,29 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     // run's end is its end of them, whatever it did not close itself.
     const opened = (run.descriptors ?? []).map(({ fd, pipe }) => ({ fd, ...descriptorOver(pipe) }));
     try {
-      const result = await bridge.run(run.command, {
-        ...(run.argv ? { argv: [...run.argv] } : {}),
-        cwd: run.cwd,
-        env: hostEnv,
-        ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
-        stdinStream: run.stdinStream ?? emptyStdinStream(),
-        ...(run.terminal ? { terminal: run.terminal } : {}),
-        signal: controller.signal,
-        hold: run.hold ?? { value: true },
-        onStdout,
-        onStderr,
-        ...byteSinks,
-        ...(opened.length > 0
-          ? { descriptors: Object.fromEntries(opened.map(({ fd, descriptor }) => [fd, descriptor])) }
-          : {}),
-      });
+      let result: ChildProcessHostResult;
+      try {
+        result = await bridge.run(run.command, {
+          ...(run.argv ? { argv: [...run.argv] } : {}),
+          cwd: run.cwd,
+          env: hostEnv,
+          ...(run.credentials ? { credentials: run.credentials } : {}),
+          ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
+          stdinStream: run.stdinStream ?? emptyStdinStream(),
+          ...(run.terminal ? { terminal: run.terminal } : {}),
+          signal: controller.signal,
+          hold: run.hold ?? { value: true },
+          onStdout,
+          onStderr,
+          ...byteSinks,
+          ...(opened.length > 0
+            ? { descriptors: Object.fromEntries(opened.map(({ fd, descriptor }) => [fd, descriptor])) }
+            : {}),
+        });
+      } catch (cause) {
+        run.onHostRunRejected?.(cause);
+        throw cause;
+      }
       const stdout = bytesOut ? '' : result.stdout || streamedOut;
       const stderr = bytesErr ? '' : result.stderr || streamedErr;
       if (!bytesOut && !streamedOut && result.stdout) run.onStdout?.(result.stdout);
@@ -1932,12 +2100,138 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
   }
 
   if (!bash) throw new Error('child_process not initialized');
-  const result = await bash.exec(run.command, {
-    cwd: run.cwd,
-    env: run.env,
-    ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
-  });
-  return { stdout: result.stdout || '', stderr: result.stderr || '', exitCode: result.exitCode };
+  // Direct argv retains an explicitly selected npm pathname. Shell text
+  // queries use the custom command's own PATH and the same metadata reader.
+  if (tree && run.argv?.length === 2 && run.argv[0]?.split('/').pop() === 'npm'
+    && (run.argv[1] === '-v' || run.argv[1] === '--version')) {
+    return npmVersionResult(tree, run.cwd ?? '/', run.env ?? {}, run.argv[0]);
+  }
+  shellLinesRunning.push(run.command);
+  setShellReadWatch(shellReadsProgram);
+  try {
+    const result = await bash.exec(run.command, {
+      cwd: run.cwd,
+      env: run.env,
+      ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
+    });
+    return { stdout: result.stdout || '', stderr: result.stderr || '', exitCode: result.exitCode };
+  } finally {
+    shellLinesRunning.splice(shellLinesRunning.lastIndexOf(run.command), 1);
+    if (shellLinesRunning.length === 0) setShellReadWatch(null);
+  }
+}
+
+let stackHeaderAsked = false;
+/**
+ * THIS REALM'S OWN ANSWER to when a stack's first line is fixed: the same statements asked of Node 24 on the build
+ * machine (V8 13.6), which answers that the line is formed when `.stack` is first read, whatever was set before. A
+ * tab's V8 is another version, and langfuse's ZodError printed "ZodError" with a 717-byte message the line did not
+ * carry, formed by none of the realm's paths. Each case makes an error as zod 4 does one step at a time and says
+ * the first line of its stack; said once, the first time an uncaught error is printed.
+ */
+/**
+ * WHAT IS PRINTED FOR AN UNCAUGHT ERROR: its stack, whose first line says what the error is.
+ *
+ * Node prints `error.stack`, and on Node 22 to 24 that text's first line is formed when the stack is first read, so
+ * it carries the name and message the error has by then. In the tab the first line was fixed earlier: this realm's
+ * own reading (`stack-header-rule`, langfuse on HeadlessChrome 154) answered the bare name for a message set after
+ * the error was made, after a capture, BEFORE a capture, and through an own accessor. langfuse's worker therefore
+ * died saying "ZodError" and its frames, with none of the issues, and the variable it refused could not be read
+ * off the run. WHY this V8 fixes the line then is UNEXPLAINED; the print does not depend on it.
+ *
+ * So where the stack has frames and the text above them is the error's bare name while the error has a message,
+ * the print forms the first line from the error as it stands (Error.prototype.toString: "name: message"), which is
+ * what Node's first read would have formed. Nothing else is rewritten: a stack whose first line already carries a
+ * message, a stack a program set to text of its own, and one with no frames are printed as they are. One place
+ * this differs from Node: a program that read `.stack` before giving the error its message prints the bare name
+ * there and the message here.
+ */
+function uncaughtText(error: Error): string {
+  const stack = typeof error.stack === 'string' ? error.stack : undefined;
+  let now = '';
+  try { now = Error.prototype.toString.call(error); } catch { return stack ?? String(error); }
+  if (stack === undefined || stack === '') return now;
+  const frames = stack.search(/^\s+at /mu);
+  if (frames <= 0) return stack;
+  const head = stack.slice(0, frames).trimEnd();
+  let message = '';
+  try { message = String(error.message ?? ''); } catch { message = ''; }
+  const bare = head === String(error.name) || head === 'Error' || head === error.constructor?.name;
+  return bare && message !== '' && now !== head ? `${now}\n${stack.slice(frames)}` : stack;
+}
+
+function stackHeaderRule(): Record<string, string> {
+  const first = (error: Error): string => String(error.stack ?? '').split('\n', 1)[0]!.slice(0, 60);
+  const capture = (Error as unknown as { captureStackTrace?: (target: object, limit?: unknown) => void }).captureStackTrace;
+  const out: Record<string, string> = { engine: typeof navigator === 'object' && navigator ? String(navigator.userAgent).slice(-60) : 'no navigator', captureStackTrace: typeof capture === 'function' ? (/\[native code\]/u.test(Function.prototype.toString.call(capture)) ? 'native' : 'not native') : 'absent' };
+  try {
+    // The plain case, nothing set afterwards: whether a first line carries a message given at construction at all.
+    out.messageGivenWhenMade = first(new Error('given when it was made'));
+    const plain = new Error(); plain.name = 'N'; plain.message = 'set after it was made';
+    out.messageSetAfterMade = first(plain);
+    const captured = new Error(); captured.name = 'N';
+    capture?.(captured); captured.message = 'set after the capture';
+    out.messageSetAfterCapture = first(captured);
+    const before = new Error(); before.name = 'N'; before.message = 'set before the capture';
+    capture?.(before);
+    out.messageSetBeforeCapture = first(before);
+    const accessor = new Error(); accessor.name = 'N';
+    Object.defineProperty(accessor, 'message', { get: () => 'an own accessor, before the capture', configurable: true, enumerable: true });
+    capture?.(accessor);
+    out.accessorBeforeCapture = first(accessor);
+    const E = Error as unknown as { stackTraceLimit?: number };
+    const saved = E.stackTraceLimit;
+    let bare: Error;
+    try { E.stackTraceLimit = 0; bare = new Error(); } finally { E.stackTraceLimit = saved; }
+    bare.name = 'N';
+    Object.defineProperty(bare, 'message', { get: () => 'made with no frames, an own accessor, then captured', configurable: true, enumerable: true });
+    capture?.(bare);
+    out.zodOrder = first(bare);
+  } catch (cause) { out.failed = cause instanceof Error ? cause.message.slice(0, 120) : String(cause); }
+  return out;
+}
+
+/** The command lines this engine's shell is running now, oldest first: what a file it reads was reached from. */
+const shellLinesRunning: string[] = [];
+const HOST_EXECUTABLE = /^\0Volter-host-executable-v1\nsha256:[a-f0-9]{64}\n/u;
+const PROGRAM_STUB = /^#!\/bin\/sh\n# [\w.+-]+: runtime-registered program\n/u;
+
+/**
+ * AN INSTRUMENT, AND ONE ANSWER. This engine's shell runs a file it finds for a command word as a script: it reads
+ * the file's text and parses it. A host program's handle (the substrate's ADR-0122 format: a NUL, the format line,
+ * the handle's `sha256:` identity) read that way is two lines, each "command not found" (RSSHub under a World's
+ * attach, 3.0.2177: `bash:  Volter-host-executable-v1: command not found`, `bash: sha256:a38cec…: command not found`,
+ * exit before the application's own node). A spawn BY PATH is kept from this (isRegisteredProgramStub); a file the
+ * shell finds itself, for a word of a line or of a script it is running, was not, and nothing said which file.
+ *
+ * Said for each such read: the path, and the lines the shell was running (the first is the one a caller gave it;
+ * the word that led to the file is in one of them, or in a script one of them ran). For a handle the text given
+ * back says the same on stderr and ends 126, as a shell answers a file it cannot execute. It is NOT handed to the
+ * host that holds the handle: which route reaches here decides where that belongs, and this line is what says it.
+ * A binary image and a registered program's `#!/bin/sh` stub are said and read as before.
+ */
+function shellReadsProgram(path: string, tree: VirtualFS): string | undefined {
+  let head: Uint8Array;
+  try {
+    if (!tree.statSync(path).isFile()) return undefined;
+    head = (tree.readFileSync(path) as Uint8Array).subarray(0, FILE_HEAD_BYTES);
+  } catch { return undefined; }
+  const text = new TextDecoder().decode(head);
+  const kind = HOST_EXECUTABLE.test(text) ? "a host program's handle" : PROGRAM_STUB.test(text) ? "a registered program's stub" : isBinaryImage(head) ? 'a binary image' : undefined;
+  if (kind === undefined) return undefined;
+  const handle = kind === "a host program's handle";
+  if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'shell-read-program-as-text', at: Date.now(), path, kind, ...(handle ? { identity: text.split('\n')[1] } : {}), lines: shellLinesRunning.map((line) => line.slice(0, 400)), answered: !handle ? 'read as before' : shellCommandNames().has(path.slice(path.lastIndexOf('/') + 1)) ? "the shell's own command of that name" : 'exit 126 with a sentence' });
+  if (!handle) return undefined;
+  // A HANDLE NAMED AS ONE OF THIS SHELL'S OWN COMMANDS IS THAT COMMAND. An image carries `/usr/local/bin/npm`; the tab
+  // lays its handle there; the shell's walk of PATH meets that file before the directories where it keeps its own
+  // `npm`, and ran the file (RSSHub, `npm run start` under a World's attach: the route this line named). The handle
+  // is not another program to hand over: the host's `npm` and `node` are this engine's, registered there so a path
+  // resolves and forwarded back here, so handing it over would come round to this shell again. A command named by a
+  // path is the shell's own command of that name where it has one, so the text given back names the path.
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  if (shellCommandNames().has(name)) return `'${path.replace(/'/gu, `'\\''`)}' "$@"\n`;
+  const sentence = `bash: ${path}: cannot execute: it is a host program's handle, not a script (this engine's shell found it for a command of: ${shellLinesRunning[0] ?? ''})`;
+  return `printf '%s\\n' '${sentence.replace(/'/gu, `'\\''`)}' >&2\n(exit 126)\n`;
 }
 
 /**
@@ -2009,10 +2303,20 @@ function emptyStdinStream(): AsyncIterable<Uint8Array> {
  * binding, and it knows nothing of a run's name.
  */
 export function runCommand(command: string, options: ExecOptions, callback?: ExecCallback): void {
+  const ownCredentialsToken = options.credentials && !options.processToken ? `credentials-${__nextChildRun++}` : undefined;
+  if (ownCredentialsToken) {
+    options = { ...options, processToken: ownCredentialsToken };
+    registerRunStreams(ownCredentialsToken, { credentials: copyProcessCredentials(options.credentials), held: false });
+  }
+  if (options.processToken && options.credentials) {
+    const streams = _runStreams.get(options.processToken);
+    if (streams) streams.credentials = copyProcessCredentials(options.credentials);
+  }
   void (async () => {
     try {
       const outcome = await routeCommand({
         command,
+        credentials: options.credentials,
         cwd: options.cwd,
         env: typeof options.processToken === 'string'
           ? { ...(options.env ?? {}), [PROCESS_TOKEN_ENV]: options.processToken }
@@ -2030,12 +2334,17 @@ export function runCommand(command: string, options: ExecOptions, callback?: Exe
       }
     } catch (error) {
       callback?.(error as Error & { code?: number }, '', '');
+    } finally {
+      if (ownCredentialsToken) releaseRunStreams(ownCredentialsToken);
     }
   })();
 }
 
 /** What a host gives one argv start of the engine's Node. */
 export interface NodeRunOptions {
+  moduleEvaluationObserver?: import('../runtime').ModuleEvaluationObserver;
+  /** Credentials inherited by this run and every Node image it starts. */
+  credentials?: ProcessCredentials;
   /** The process's working directory; `/` when absent, as the shell's. */
   cwd?: string;
   /** The process's whole environment, as `execve` takes it; empty when absent. */
@@ -2095,9 +2404,11 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
   if (options.registry) installRunRegistry(options.processToken, options.registry);
   if (options.process) claimRunPid(options.processToken, options.process.pid, options.process.ppid, { argv: [...argv], cwd: options.cwd ?? '/' });
   return launchNode(tree, {
+    ...(options.moduleEvaluationObserver ? { moduleEvaluationObserver: options.moduleEvaluationObserver } : {}),
     argv: [...argv],
     cwd: options.cwd ?? '/',
     env,
+    ...(options.credentials ? { credentials: copyProcessCredentials(options.credentials) } : {}),
     ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
     token: options.processToken,
   });
@@ -2276,7 +2587,7 @@ function startChildRun(request: RunRequest): StartedRun {
   // The parent is the run whose `Process` handle spawned it (its NodeLibScope's process, the request's owner), never a
   // frame or a global; a spawn no run owns is the realm process's own.
   const parentPid = runPid(nodeProcessRealmToken() ?? request.owner)?.pid ?? 0;
-  const pid = mintPid(parentPid, request.detached === true, request.owner);
+  const pid = mintPid(parentPid, request.detached === true, request.owner, request.runAs);
   setRunPid(token, pid, parentPid,
     { detached: request.detached, argv: request.args.length ? request.args : [request.file], ...(request.cwd ? { cwd: request.cwd } : {}) }, request.owner);
   const controller = new AbortController();
@@ -2324,6 +2635,7 @@ function startChildRun(request: RunRequest): StartedRun {
   let hosted = false;
   /** The host's process host runs this child (a program pack, a WALI image): it says when the child ends. */
   let hostRun = false;
+  let hostRunRejectionExitCode: 126 | 127 | undefined;
   // The parent's wait for a child a host runs, read by that host: its handle's ref state (`Process.ref`, `unref`).
   const hold: { value: boolean; changed?: () => void } = { value: true };
   /** What the parent wrote to the child's fd 0 before the command began. */
@@ -2353,6 +2665,7 @@ function startChildRun(request: RunRequest): StartedRun {
   // with no text kept of them; a program that writes text (a shell builtin,
   // a host program) still arrives through the text sinks.
   const streams: RunStreams = {
+    credentials: request.credentials,
     onStdout: (data: string) => { streamedOut.push(data); request.stdout?.(data); },
     onStderr: (data: string) => { streamedErr.push(data); request.stderr?.(data); },
     onStdoutBytes: (bytes: Uint8Array) => { request.stdout?.(bytes); },
@@ -2388,7 +2701,6 @@ function startChildRun(request: RunRequest): StartedRun {
     finished = true;
     wakeInput?.();
     wakeInput = undefined;
-    _activeForkedChildren -= 1;
     releaseRunStreams(token);
     releaseRunFds(token);
     // The child's end is the kernel's: a child this realm ran itself (or that never started) exits here; one the host
@@ -2398,7 +2710,6 @@ function startChildRun(request: RunRequest): StartedRun {
     // A run that has ended is no longer a process: its number answers ESRCH.
     forgetRunPid(token);
     __substrateChildrenOf(request.owner).delete(pid);
-    _onForkedChildExit?.();
     request.exit(ended.code, ended.signal);
   };
 
@@ -2448,17 +2759,19 @@ function startChildRun(request: RunRequest): StartedRun {
         delete env[PROCESS_TOKEN_ENV];
         outcome = processHost ? await runHostedNode(processHost, {
           token, argv0: request.args[0] ?? request.file, argv: request.args.slice(1), cwd: request.cwd ?? '/',
-          filesystem: currentVfs!, env, streams, ...(stdinBytes !== undefined ? { stdin: stdinBytes } : {}),
+          filesystem: currentVfs!, env, streams, credentials: request.credentials, ...(stdinBytes !== undefined ? { stdin: stdinBytes } : {}),
         }) : directNode ? await enterRun(token, () => launchNode(treeForRun() ?? currentVfs!, {
           argv: request.args.length > 0 ? request.args : [request.file],
           cwd: request.cwd ?? '/',
           env,
+          credentials: request.credentials,
           ...(stdinBytes !== undefined ? { stdin: stdinBytes } : {}),
           token,
         })) : await enterRun(token, () => routeCommand({
           command: __substrateLineFor(request.file, request.args, request.cwd),
           ...(((argv) => argv ? { argv } : {})(__substrateArgvFor(request.file, request.args, request.cwd))),
           engineFirst,
+          credentials: request.credentials,
           cwd: request.cwd,
           env: { ...request.env, [PROCESS_TOKEN_ENV]: token },
           stdin,
@@ -2470,10 +2783,40 @@ function startChildRun(request: RunRequest): StartedRun {
           onStderrBytes: streams.onStderrBytes,
           descriptors: request.descriptors,
           onHostRun: () => { hostRun = true; },
+          onHostRunRejected: cause => {
+            // A transport rejection does not mean a live child has died. Only
+            // the holder's explicit never-started/no-end answer returns exit
+            // ownership; unknown state and real image ends remain the host's.
+            let started: boolean | undefined;
+            let endPosted: boolean | undefined;
+            let code = 'EHOSTCHILD';
+            try {
+              const failure = cause as { code?: unknown; hostChildState?: {
+                started?: boolean; endPosted?: boolean; exitCode?: number;
+              } } | null;
+              const state = failure?.hostChildState;
+              started = state?.started;
+              endPosted = state?.endPosted;
+              const launchCode = state?.exitCode === 126 ? 126 : 127;
+              const reportedCode = failure?.code;
+              if (typeof reportedCode === 'string' && /^[A-Z0-9_]{1,32}$/.test(reportedCode)) code = reportedCode;
+              if (started === false && endPosted === false) {
+                hostRun = false;
+                hostRunRejectionExitCode = launchCode;
+              }
+            } catch { /* Unreadable lifecycle state stays with the host. */ }
+            try {
+              console.warn(`[child bridge rejected] pid=${pid} path=${JSON.stringify(request.file.slice(0, 4096))} code=${code} started=${started ?? 'unknown'} endPosted=${endPosted ?? 'unknown'}`);
+            } catch { /* The diagnostic cannot replace the failed handoff's end. */ }
+          },
           hold,
         }));
       } catch (error) {
-        outcome = { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
+        outcome = {
+          stdout: '',
+          stderr: `${error instanceof Error ? error.message : String(error)}\n`,
+          exitCode: hostRunRejectionExitCode ?? 1,
+        };
       }
       // A command the engine's shell ran to the end and did not stream --
       // every builtin -- delivers its output here; the `node` command streamed
@@ -2487,7 +2830,6 @@ function startChildRun(request: RunRequest): StartedRun {
     })();
   };
 
-  _activeForkedChildren += 1;
   if (request.stdinIsPipe && !admittedNode) (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, begin, 0);
   else begin();
 

@@ -167,6 +167,8 @@ export function createNodeError(
 }
 
 export class VirtualFS {
+  /** A kernel-backed tree supplies this process channel's current UTS name. */
+  processHostname(): string { return "localhost"; }
   private root: FSNode;
   private encoder = new TextEncoder();
   private decoder = new TextDecoder();
@@ -558,9 +560,11 @@ export class VirtualFS {
   }
 
   /**
-   * The plain SHA-256 of a file's current bytes, as 64 lowercase hex characters, where the tree holds it without
-   * reading the file; undefined where it does not (a file written since its image, a tree that keeps no digests).
-   * This tree keeps none.
+   * The plain SHA-256 of a file's current bytes, as 64 lowercase hex characters; undefined where the tree holds
+   * no digest (a file written since its image, a tree that keeps no digests). An image record is an answer only
+   * after its bytes have been verified against it, before first use. An adapter may read once for that
+   * verification and retain the result for the immutable pack generation and extent; a path alone is no identity.
+   * This tree keeps none. The loader uses an answer as a content digest, never as a path-based prepared key.
    */
   contentDigest(_path: string): string | undefined {
     return undefined;

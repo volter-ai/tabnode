@@ -511,7 +511,9 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
     for (const target of targets) {
       if (target.startsWith('%')) { stderr += `bash: kill: ${target}: no such job\n`; status = 1; continue; }
       if (!/^-?\d+$/u.test(target)) { stderr += `bash: kill: ${target}: arguments must be process or job IDs\n`; status = 1; continue; }
-      const pid = Math.abs(Number(target));
+      // Signal zero is the caller's kill(2) query, including signed group
+      // targets. It must reach that authority with the number the shell read.
+      const pid = signal === '0' ? Number(target) : Math.abs(Number(target));
       if (!deliver(host.runTokenOf(ctx), pid, signal)) { stderr += `bash: kill: (${target}) - No such process\n`; status = 1; }
     }
     return { stdout: '', stderr, exitCode: status };
@@ -534,10 +536,12 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
  * process, or through the realm that holds it.
  */
 function deliver(caller: ProcessToken | null, pid: number, signal: string): boolean {
+  // A saved child handle may outlive its kernel PID. Like process.kill(pid,0),
+  // shell liveness is only the caller authority's no-delivery answer.
+  if (signal === '0') return pidIsLive(pid, caller);
   // The calling shell's own children are found among its own; any other pid goes to the kernel's kill.
   const child = __substrateChildrenOf(caller).get(pid);
   const childLive = child !== undefined && child.exitCode === null && child.signalCode === null;
-  if (signal === '0') return childLive || pidIsLive(pid, caller);
   if (childLive) return child.kill(signal);
   const token = tokenOfPid(pid);
   if (token !== null && __signalOwnedProcess(token, signal)) return true;

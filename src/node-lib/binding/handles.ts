@@ -15,8 +15,10 @@
  * with the run that made it when it is constructed, `ref`/`unref` toggle it,
  * and closing it gives it up.
  */
-import { __currentProcessToken, __runFor, enterRun, type ProcessToken } from '../../process-tokens';
-import { withGuestCallback } from '../../guest-loop';
+import { __currentProcessToken, __runFor, __tokenForProcess, enterRun, type ProcessToken } from '../../process-tokens';
+import { withGuestCallback, queueBindingTask } from '../../guest-loop';
+import { handleOwnerSymbol } from './owner-symbol';
+import type { Process } from '../../shims/process';
 
 /** What the count needs of a handle: a way to close it when its run ends. */
 export interface OwnedHandle {
@@ -40,6 +42,117 @@ const refHeld = new WeakSet<OwnedHandle>();
  */
 const activeHandles = new WeakSet<OwnedHandle>();
 
+type ResourceOwner = ProcessToken | symbol | null;
+let resourceScope: object | undefined;
+const scopeIds = new WeakMap<object, symbol>();
+function scopeId(process: object): symbol {
+  let id = scopeIds.get(process);
+  if (!id) { id = Symbol('node resource scope'); scopeIds.set(process, id); }
+  return id;
+}
+/** A standalone Runtime has no run token; its binding scope still owns its resources. */
+export function withNodeResourceScope<T>(process: object, call: () => T): T {
+  const previous = resourceScope;
+  resourceScope = process;
+  try { return call(); } finally { resourceScope = previous; }
+}
+/** Deferred native fs work/returned directory methods retain their actual binding scope. */
+export function captureNodeResourceScope(): <T>(call: () => T) => T {
+  const process = resourceScope;
+  return <T>(call: () => T): T => process ? withNodeResourceScope(process, call) : call();
+}
+function resourceOwnerKey(object: object): ResourceOwner {
+  // Observations are made synchronously in a scoped constructor/dispatch.
+  // That explicit process owns them even when another run is ambient.
+  if (resourceScope) return __tokenForProcess(resourceScope as Process) ?? scopeId(resourceScope);
+  return ownerOfInstance(object) ?? currentOwner();
+}
+type ResourceRow = { owner: ResourceOwner; ref: WeakRef<object> };
+const handleRows = new Map<ResourceOwner, Set<ResourceRow>>();
+const requestRows = new Map<ResourceOwner, Set<ResourceRow>>();
+const handleRowByObject = new WeakMap<object, ResourceRow>();
+const requestRowByObject = new WeakMap<object, ResourceRow>();
+const handleReferenced = new WeakMap<object, (handle: object) => boolean>();
+const closingReferences = new WeakMap<object, boolean>();
+function removeRow(rows: Map<ResourceOwner, Set<ResourceRow>>, row: ResourceRow): void {
+  const held = rows.get(row.owner);
+  held?.delete(row);
+  if (held?.size === 0) rows.delete(row.owner);
+}
+const collectedResources = new FinalizationRegistry<{ rows: Map<ResourceOwner, Set<ResourceRow>>; row: ResourceRow }>(
+  ({ rows, row }) => removeRow(rows, row));
+function observeResource(rows: Map<ResourceOwner, Set<ResourceRow>>, byObject: WeakMap<object, ResourceRow>,
+  object: object, owner: ResourceOwner): void {
+  const previous = byObject.get(object);
+  if (previous) { removeRow(rows, previous); collectedResources.unregister(object); }
+  const row = { owner, ref: new WeakRef(object) };
+  let held = rows.get(owner);
+  if (!held) { held = new Set(); rows.set(owner, held); }
+  held.add(row);
+  byObject.set(object, row);
+  collectedResources.register(object, { rows, row }, object);
+}
+function forgetResource(rows: Map<ResourceOwner, Set<ResourceRow>>, byObject: WeakMap<object, ResourceRow>, object: object): void {
+  const row = byObject.get(object);
+  if (row) removeRow(rows, row);
+  byObject.delete(object);
+  collectedResources.unregister(object);
+}
+
+/** Only real HandleWraps enter this list; timers/fetch/fs work keep their existing liveness accounting. */
+export function observeNodeHandle(handle: object, referenced: (handle: object) => boolean = nodeHandleReferenced): void {
+  handleReferenced.set(handle, referenced);
+  observeResource(handleRows, handleRowByObject, handle, resourceOwnerKey(handle));
+}
+function nodeHandleReferenced(handle: object): boolean { return closingReferences.get(handle) ?? refHeld.has(handle as OwnedHandle); }
+/** HandleWrap's initialized/ref state includes closing, until native completion. */
+export function nodeHandleHasRef(handle: object): boolean {
+  return handleRowByObject.has(handle) && (handleReferenced.get(handle)?.(handle) ?? false);
+}
+export function nodeHandleIsInitialized(handle: object): boolean { return handleRowByObject.has(handle); }
+export function nodeHandleIsClosing(handle: object): boolean { return closingReferences.has(handle); }
+export function forgetNodeHandle(handle: object): void {
+  forgetResource(handleRows, handleRowByObject, handle);
+  handleReferenced.delete(handle);
+  closingReferences.delete(handle);
+}
+/** Observe the actual dispatched request; its operation already owns its lifetime. */
+export function observeNodeRequest(request: object, operationHandle?: object): void {
+  // An IPC facade can retain the sender's JS prototype/scope. The adopted
+  // native handle, rather than that facade, owns its dispatched operation.
+  const target = operationHandle && handleRowByObject.get(operationHandle);
+  observeResource(requestRows, requestRowByObject, request, target ? target.owner : resourceScope ? resourceOwnerKey(request)
+    : requestRowByObject.get(request)?.owner ?? resourceOwnerKey(request));
+}
+export function forgetNodeRequest(request: object): void { forgetResource(requestRows, requestRowByObject, request); }
+
+/** Node AsyncWrap::GetOwner follows only object-valued owner links, suppressing getter failures. */
+function resourceOwner(resource: object): object {
+  for (;;) {
+    let owner: unknown;
+    try { owner = (resource as Record<symbol, unknown>)[handleOwnerSymbol]; } catch { return resource; }
+    if (owner === null || (typeof owner !== 'object' && typeof owner !== 'function')) return resource;
+    resource = owner;
+  }
+}
+function resourceSnapshot(rows: Map<ResourceOwner, Set<ResourceRow>>, owner: ResourceOwner, handles: boolean): object[] {
+  const result: object[] = [];
+  for (const row of rows.get(owner) ?? []) {
+    const object = row.ref.deref();
+    if (!object) { removeRow(rows, row); continue; }
+    if (!handles || handleReferenced.get(object)?.(object)) result.push(resourceOwner(object));
+  }
+  return result;
+}
+/** Node tests reference status, not uv_is_active: an idle referenced socket is still returned. */
+function processSnapshot(rows: Map<ResourceOwner, Set<ResourceRow>>, process: object, token: ProcessToken | null, handles: boolean): object[] {
+  // Include resources made before the runtime acquired its registered token.
+  const own = resourceSnapshot(rows, scopeId(process), handles);
+  return token === null ? own : [...own, ...resourceSnapshot(rows, token, handles)];
+}
+export function nodeActiveHandles(process: object, token: ProcessToken | null): object[] { return processSnapshot(handleRows, process, token, true); }
+export function nodeActiveRequests(process: object, token: ProcessToken | null): object[] { return processSnapshot(requestRows, process, token, false); }
+
 /** The run a binding call is made in: its scope's process (a scoped binding runs inside its owner's run). */
 export function currentOwner(): ProcessToken | null {
   return __currentProcessToken();
@@ -56,11 +169,11 @@ export function ownerOfInstance(instance: object): ProcessToken | null {
  * `fn` inside `owner`'s run (enterRun), unless that run is current already. A guest callback's throw is its owner's
  * uncaught exception, as Node's MakeCallback reports one to the process the wrap belongs to.
  */
-export function ownedRun<T>(owner: ProcessToken | null, fn: () => T, callback = false): T | undefined {
+export function ownedRun<T>(owner: ProcessToken | null, fn: () => T, callback = false, kind = 'callback', source?: unknown): T | undefined {
   const call = (): T | undefined => {
     if (!callback) return fn();
     // Drain ticks before leaving the owning run, as MakeCallback does.
-    try { return withGuestCallback(fn); }
+    try { return withGuestCallback(fn, kind, source); }
     catch (error) { if (owner !== null && __runFor(owner)?.reportUncaught(error)) return undefined; throw error; }
   };
   return owner === null || __currentProcessToken() === owner ? call() : enterRun(owner, call);
@@ -68,9 +181,14 @@ export function ownedRun<T>(owner: ProcessToken | null, fn: () => T, callback = 
 
 /** A wrap's callback (`onread`, `oncomplete`, `onconnection`, `onexit`, …) run as MakeCallback runs it: in its owner's run. */
 export function invokeOwned(target: object, name: string, ...args: unknown[]): unknown {
+  try { return invokeOwnedCallback(target, name, ...args); }
+  finally { if (name === 'oncomplete') forgetNodeRequest(target); }
+}
+function invokeOwnedCallback(target: object, name: string, ...args: unknown[]): unknown {
   const fn = (target as Record<string, unknown>)[name];
   if (typeof fn !== 'function') return undefined;
-  return ownedRun(ownerOfInstance(target), () => (fn as (...values: unknown[]) => unknown).apply(target, args), true);
+  // `wrap`: a binding wrap's callback (`onread`'s onStreamRead, a write's oncomplete), named by the function the wrap holds.
+  return ownedRun(ownerOfInstance(target), () => (fn as (...values: unknown[]) => unknown).apply(target, args), true, 'wrap', fn);
 }
 
 function hold(handle: OwnedHandle): void {
@@ -97,7 +215,7 @@ export function ownerOf(handle: OwnedHandle): ProcessToken | null {
 }
 
 /** A new handle is the current run's, ref'd and active, as libuv's start. */
-export function registerHandle(handle: OwnedHandle): void {
+export function registerHandle(handle: OwnedHandle, nodeWrap = false): void {
   heldBy.set(handle, currentOwner());
   const token = heldBy.get(handle);
   if (token != null) {
@@ -108,6 +226,7 @@ export function registerHandle(handle: OwnedHandle): void {
   refHeld.add(handle);
   activeHandles.add(handle);
   hold(handle);
+  if (nodeWrap) observeNodeHandle(handle);
 }
 
 /**
@@ -122,12 +241,14 @@ export function stopHandle(handle: OwnedHandle): void {
 
 /** libuv's `uv_ref`. */
 export function refHandle(handle: OwnedHandle): void {
+  if (closingReferences.has(handle)) closingReferences.set(handle, true);
   refHeld.add(handle);
   hold(handle);
 }
 
 /** libuv's `uv_unref`: the handle stays open and stops holding the loop. */
 export function unrefHandle(handle: OwnedHandle): void {
+  if (closingReferences.has(handle)) closingReferences.set(handle, false);
   refHeld.delete(handle);
   drop(handle);
 }
@@ -138,7 +259,20 @@ export function handleHasRef(handle: OwnedHandle): boolean {
 }
 
 /** A closed handle holds nothing. */
-export function releaseHandle(handle: OwnedHandle): void {
+export function releaseHandle(handle: OwnedHandle, closePending = false, closeTurns: 1 | 2 = 2): void {
+  if (closePending && handleRowByObject.has(handle)) {
+    const pending = closingReferences.has(handle);
+    if (!pending) {
+      closingReferences.set(handle, handleReferenced.get(handle)?.(handle) ?? false);
+      handleReferenced.set(handle, nodeHandleReferenced);
+    }
+    // Follow this binding’s existing close callback boundary. Preserve the
+    // referenced wrapper until that turn, without changing liveness.
+    if (!pending) queueBindingTask(() => {
+      if (closeTurns === 1) forgetNodeHandle(handle);
+      else queueBindingTask(() => forgetNodeHandle(handle));
+    });
+  } else forgetNodeHandle(handle);
   drop(handle);
   const token = heldBy.get(handle);
   if (token != null) {
@@ -158,6 +292,12 @@ export function releaseHandle(handle: OwnedHandle): void {
  */
 export function __ownedHandleCount(token: ProcessToken): number {
   return owners.get(token)?.size ?? 0;
+}
+
+/** Each ref'd handle the named run holds, by its wrap's name (TCP, Pipe, Process, …), for the line that says what held it. */
+export function __ownedHandleKinds(token: ProcessToken): string[] {
+  const held = owners.get(token);
+  return held ? [...held].map((handle) => (handle as object).constructor?.name || 'handle') : [];
 }
 
 /**
@@ -204,6 +344,11 @@ export function __releaseOwnedServers(token: ProcessToken, stopTimers = true, st
  * Called where the run's servers and timers are released.
  */
 export function __releaseOwnedHandles(token: ProcessToken): void {
+  const process = __runFor(token)?.process;
+  const scope = process && scopeIds.get(process);
+  if (scope) { handleRows.delete(scope); requestRows.delete(scope); }
+  handleRows.delete(token);
+  requestRows.delete(token);
   const held = allOwned.get(token);
   if (!held) return;
   allOwned.delete(token);
@@ -223,7 +368,7 @@ export function __releaseOwnedHandles(token: ProcessToken): void {
  * so the move is this count's. A handle the program `unref`'d stays unref'd
  * through the move, as Node's does.
  */
-export function __adoptHandle(handle: OwnedHandle | null | undefined, token: ProcessToken | null): void {
+export function __adoptHandle(handle: OwnedHandle | null | undefined, token: ProcessToken | null, resourceSource?: object): void {
   if (!handle) return;
   drop(handle);
   const previous = heldBy.get(handle);
@@ -233,6 +378,13 @@ export function __adoptHandle(handle: OwnedHandle | null | undefined, token: Pro
     if (owned?.size === 0) allOwned.delete(previous);
   }
   heldBy.set(handle, token);
+  if (handleRowByObject.has(handle)) {
+    // A standalone server has no run token. Its accepted/transferred wrapper
+    // still belongs to that server's private binding scope, not a null bucket.
+    const sourceRow = resourceSource && handleRowByObject.get(resourceSource);
+    const next = sourceRow ? sourceRow.owner : token;
+    observeResource(handleRows, handleRowByObject, handle, next);
+  }
   if (token !== null) {
     let owned = allOwned.get(token);
     if (!owned) { owned = new Set(); allOwned.set(token, owned); }

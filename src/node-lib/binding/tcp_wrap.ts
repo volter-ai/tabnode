@@ -14,7 +14,10 @@
  */
 import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap } from './stream_wrap';
-import { __adoptHandle, ownerOf, invokeOwned } from './handles';
+import { __adoptHandle, ownerOf, ownerOfInstance, invokeOwned, observeNodeRequest, forgetNodeRequest } from './handles';
+import { __runFor } from '../../process-tokens';
+import { internalAsyncHooks, internalTimers } from '../internals/runtime';
+import { rememberSocketConnect, traceSocketConnect } from '../../socket-connect-trace';
 import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
 import { UV_EADDRINUSE, UV_ECONNREFUSED, UV_EINVAL, UV_ENOTSUP, UV_EBADF } from './uv';
 
@@ -89,6 +92,17 @@ function isThisHost(address: string): boolean {
 type ListenWatcher = (port: number, address: string) => void;
 // eslint-disable-next-line no-var, vars-on-top
 var onListenWatcher: ListenWatcher | null = null;
+/**
+ * An instrument's seam: told, once a handle, that a server began listening, with the process that owns the handle
+ * and the port. The engine's load clock says the process's split there (runtime.ts): a server still loading its
+ * modules when the page's first request arrives says nothing else before a dry run's capture ends (S2 R17).
+ */
+let listenClockObserver: ((owner: ReturnType<typeof ownerOf>, port: number | null) => void) | undefined;
+export function observeListenClocks(observer: NonNullable<typeof listenClockObserver>): void { listenClockObserver = observer; }
+function sayListenClock(handle: TCP, port: number | null): void {
+  try { listenClockObserver?.(ownerOf(handle), port); }
+  catch { /* Evidence failure must not change a listen. */ }
+}
 // eslint-disable-next-line no-var, vars-on-top
 var onCloseWatcher: ((port: number) => void) | null = null;
 export function setPortWatchers(onListen: ListenWatcher | null, onClose: ((port: number) => void) | null): void {
@@ -152,7 +166,7 @@ export class TCP extends LibuvStreamWrap {
     const native = nativeStreamFor(this);
     if (native) {
       const status = native.call({ operation: 'listen', id: native.descriptor.id, backlog: _backlog }).status;
-      if (status === 0) this.listening = true;
+      if (status === 0) { this.listening = true; sayListenClock(this, this.local?.port ?? null); }
       return status;
     }
     if (!this.local) {
@@ -161,6 +175,7 @@ export class TCP extends LibuvStreamWrap {
     }
     this.listening = true;
     if (this.local) { try { onListenWatcher?.(this.local.port, this.local.address); } catch { /* a watcher that throws is not the listen's business */ } }
+    sayListenClock(this, this.local?.port ?? null);
     return 0;
   }
 
@@ -174,7 +189,26 @@ export class TCP extends LibuvStreamWrap {
 
   private connectTo(req: TCPConnectWrap, address: string, port: number, family: string): number {
     const native = nativeStreamFor(this);
-    if (native) return native.connect(address, port, family === 'IPv6', status => invokeOwned(req, 'oncomplete', status, this, req, true, true));
+    const socket = (this as unknown as Record<symbol, unknown>)[internalAsyncHooks.symbols.owner_symbol];
+    const owner = ownerOfInstance(req);
+    if (socket && typeof socket === 'object') rememberSocketConnect(socket, {
+      pid: owner === null ? null : __runFor(owner)?.process.pid ?? null, id: native?.descriptor.id ?? null,
+      socketId: (socket as Record<symbol, number>)[internalAsyncHooks.symbols.async_id_symbol] ?? null, request: null,
+    });
+    const complete = (status: number, request?: number): unknown => {
+      const timer = (): unknown => (socket as Record<symbol, unknown> | undefined)?.[internalTimers.kTimeout];
+      traceSocketConnect('binding-entered', socket, timer(), status, request);
+      try { return invokeOwned(req, 'oncomplete', status, this, req, true, true); }
+      finally { traceSocketConnect('binding-returned', socket, timer(), status, request); }
+    };
+    observeNodeRequest(req, this);
+    if (native) {
+      try {
+        const status = native.connect(address, port, family === 'IPv6', complete);
+        if (status !== 0) forgetNodeRequest(req);
+        return status;
+      } catch (cause) { forgetNodeRequest(req); throw cause; }
+    }
     const target = Number(port);
     const reachable = isThisHost(address);
     if (!this.local) {
@@ -188,23 +222,25 @@ export class TCP extends LibuvStreamWrap {
     // refused connection is `oncomplete(UV_ECONNREFUSED)`, which is what
     // `afterConnect` turns into the socket's `ECONNREFUSED` error.
     queueBindingTask(() => {
-      if (this.closed) return;
-      const server = reachable ? listenerOnPort(target, family) : undefined;
-      if (!server) {
-        invokeOwned(req, 'oncomplete', UV_ECONNREFUSED, this, req, true, true);
-        return;
-      }
-      const accepted = new (server.constructor as typeof TCP)(constants.SOCKET);
-      accepted.local = { ...(server.local as SockName), port: target };
-      accepted.remote = { ...(this.local as SockName) };
-      // An accepted connection is a handle of the loop that is serving, not of
-      // the one that connected: the pairing is made inside the connector's own
-      // turn, so without this the server's end of every connection would hold
-      // the connecting run alive until the server closed it.
-      __adoptHandle(accepted, ownerOf(server));
-      LibuvStreamWrap.pair(this, accepted);
-      invokeOwned(server, 'onconnection', 0, accepted);
-      invokeOwned(req, 'oncomplete', 0, this, req, true, true);
+      try {
+        if (this.closed) { forgetNodeRequest(req); return; }
+        const server = reachable ? listenerOnPort(target, family) : undefined;
+        if (!server) {
+          complete(UV_ECONNREFUSED);
+          return;
+        }
+        const accepted = new (server.constructor as typeof TCP)(constants.SOCKET);
+        accepted.local = { ...(server.local as SockName), port: target };
+        accepted.remote = { ...(this.local as SockName) };
+        // An accepted connection is a handle of the loop that is serving, not of
+        // the one that connected: the pairing is made inside the connector's own
+        // turn, so without this the server's end of every connection would hold
+        // the connecting run alive until the server closed it.
+        __adoptHandle(accepted, ownerOf(server), server);
+        LibuvStreamWrap.pair(this, accepted);
+        invokeOwned(server, 'onconnection', 0, accepted);
+        complete(0);
+      } finally { forgetNodeRequest(req); }
     });
     return 0;
   }

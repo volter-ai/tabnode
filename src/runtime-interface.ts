@@ -1,3 +1,4 @@
+import type { ProcessCredentials } from './process-credentials';
 /**
  * Runtime Interface - Common interface for main-thread and worker runtimes
  */
@@ -5,9 +6,13 @@
 import type { VirtualFS } from './virtual-fs';
 
 export interface IRuntimeOptions {
+  /** Host-configured numeric identity; absent preserves uid/gid 1000 and groups [1000]. */
+  credentials?: ProcessCredentials;
   cwd?: string;
   env?: Record<string, string>;
   onConsole?: (method: string, args: unknown[]) => void;
+  /** llhttp compiled by the creating worker; structured-cloned into the guest realm. */
+  httpParserModule?: WebAssembly.Module;
 }
 
 export interface IModule {

@@ -17,6 +17,24 @@
  */
 export const TREE_DESCRIPTORS = Symbol.for('tabnode.tree.descriptors');
 
+/** Native addon port only; offsets and ABI encoding belong to the host. */
+export interface TreeRecordLock {
+  type: number;
+  whence: number;
+  start: bigint;
+  length: bigint;
+  pid: number;
+}
+
+export interface TreeAdvisoryLocks {
+  /** Linux F_GETLK/F_SETLK/F_SETLKW (and OFD forms); failure throws the real errno. */
+  fcntl(fd: number, command: number, record: TreeRecordLock): TreeRecordLock;
+  /** Locks the open description, released by its last close, including duplicates. */
+  flock(fd: number, operation: number): void;
+  /** NODERAWFS's logical dup close; the owner skips files with no POSIX lock. */
+  releasePosixOnClose(fd: number): void;
+}
+
 /** What the stat of an open description answers, in the shape a tree's `statSync` answers. */
 export interface TreeDescriptorStats {
   isFile(): boolean;
@@ -64,6 +82,9 @@ export interface TreeDescriptors {
   ftruncate(fd: number, length: number): void;
   fsync(fd: number): void;
   fchmod(fd: number, mode: number): void;
+  /** Ownership is supplied only by a filesystem that enforces the calling process's authority. */
+  chown?(path: string, uid: number, gid: number, follow: boolean): void;
+  fchown?(fd: number, uid: number, gid: number): void;
   /** futimens(2), in seconds. */
   futimes(fd: number, atime: number, mtime: number): void;
   /**
@@ -75,6 +96,15 @@ export interface TreeDescriptors {
    * number, which a close drops and a reuse misdirects.
    */
   dup?(fd: number): number;
+  /** POSIX locks share the process's kernel owner and end on any close of that file. */
+  advisoryLocks?: TreeAdvisoryLocks;
+  /**
+   * The error `open(path)` would throw for a path the tree's own stat has just answered absent: the same object its
+   * open builds for ENOENT (code, errno, syscall 'open', path, message), with no request made (S2 T11). Undefined
+   * where that absence was not a known ENOENT (an ENOTDIR is absent to a stat too); then, and for a tree without
+   * it, the read is left to `open`.
+   */
+  absent?(path: string): Error | undefined;
   /** A number for a handle of the engine's own (a pipe, a socket), held until `release`. */
   reserve(): number;
   release(fd: number): void;

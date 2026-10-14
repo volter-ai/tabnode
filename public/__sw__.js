@@ -167,7 +167,7 @@ self.addEventListener('message', (event) => {
     mainPort.onmessage = (message) => {
       if (hosts.get(host.id) === host && host.port === initializedPort) handleMainMessage(host, message);
     };
-    mainPort.postMessage({ type: 'sw-capabilities', data: { binaryChunks: 1 } });
+    mainPort.postMessage({ type: 'sw-capabilities', data: { binaryChunks: 1, portMapping: 1 } });
     if (data && Array.isArray(data.ownDocuments)) host.ownDocuments = new Set(data.ownDocuments.map((path) => ownPath(String(path))));
     // Markup a frame's document served from this host's servers starts with
     // (after its doctype): the page's first script, before the document's own.
@@ -198,9 +198,25 @@ function handleMainMessage(host, event) {
   const { type, id, data, error } = event.data;
   updateFlowControl(host, type, data);
 
+  // FIFO on this host's initialized channel proves the preceding registration
+  // and primary selection have been applied. Keep metadata ids outside HTTP.
+  if (type === 'port-mapping-check') {
+    host.port.postMessage({ type: 'port-mapping-ready', id, data: {
+      port: data?.port, registered: host.registeredPorts.has(data?.port), primary: host.primaryPort === data?.port,
+    } });
+    return;
+  }
+
   const controlled = pendingRequests.get(id);
   // A request is answered only by the host it was sent to.
   if (controlled && controlled.host !== host) return;
+  if (controlled && !error && (type === 'response' || type === 'stream-start')
+      && ['document', 'iframe', 'frame'].includes(controlled.destination)) {
+    host.port.postMessage({ type: 'document-response', data: {
+      port: controlled.port, method: controlled.method, url: controlled.url,
+      statusCode: data?.statusCode, headers: data?.headers ?? {},
+    } });
+  }
   if (controlled?.flowControl === 1) {
     controlled.message(type, data, error);
     return;
@@ -309,7 +325,7 @@ async function sendRequest(host, port, method, url, headers, body, destination =
   const id = ++requestId;
 
   return new Promise((resolve, reject) => {
-    pendingRequests.set(id, { host, resolve, reject });
+    pendingRequests.set(id, { host, resolve, reject, port, method, url, destination });
 
     // Set timeout for request
     setTimeout(() => {
@@ -350,7 +366,7 @@ async function sendStreamingRequest(host, port, method, url, headers, body, dest
 
       // Store in pending requests so handleMainMessage can find it
       pendingRequests.set(id, {
-        host,
+        host, port, method, url, destination,
         resolve: () => {},
         reject: (err) => controller.error(err),
         streamController: controller,
@@ -430,7 +446,7 @@ async function sendControlledRequest(host, port, method, url, headers, body, sig
     host,
     flowControl: 1,
     fail,
-    port,
+    port, method, url, destination,
     message(type, data, error) {
       try {
         if (type === 'stream-start' && !headed) {

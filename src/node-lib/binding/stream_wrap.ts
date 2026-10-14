@@ -29,8 +29,8 @@ function ownedBytes(view: Uint8Array): Uint8Array {
   return copy;
 }
 import {
-  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, stopHandle,
-  type OwnedHandle, invokeOwned } from './handles';
+  registerHandle, refHandle, unrefHandle, releaseHandle, stopHandle,
+  type OwnedHandle, nodeHandleHasRef, invokeOwned, observeNodeRequest, forgetNodeRequest } from './handles';
 import { withGuestCallback, queueBindingTask } from '../../guest-loop';
 
 /** The four slots libuv's `StreamBase` reports a read or a write through. */
@@ -78,6 +78,8 @@ class StreamEndpoint {
   readonly handles = new Set<LibuvStreamWrap>();
   peer: StreamEndpoint | null = null;
   inbound: Inbound[] = [];
+  /** The bytes `inbound` holds, kept with every change to it: a writer's credit reads it per chunk (S2 T14). */
+  inboundBytes = 0;
   eof = false;
   error: number | null = null;
   writeEnded = false;
@@ -114,6 +116,8 @@ export class LibuvStreamWrap implements OwnedHandle {
   fd = -1;
 
   private streamEndpoint = new StreamEndpoint(this);
+  /** The connection end this descriptor shares with its duplicates: one socket, one send buffer (S2 T14's shared credit). */
+  get connectionEnd(): object { return this.streamEndpoint; }
   /** A live wrapper on the other end, including after the original was closed. */
   get peer(): LibuvStreamWrap | null {
     const native = nativeStreamFor(this);
@@ -137,12 +141,12 @@ export class LibuvStreamWrap implements OwnedHandle {
   protected readonly asyncId = nextAsyncId++;
 
   constructor() {
-    registerHandle(this);
+    registerHandle(this, true);
   }
 
   protected attachNative(kind: 'tcp' | 'pipe', type: number): void {
     attachNativeStream(this as unknown as TCP | Pipe, kind, type,
-      callback => this.closeLocal(callback), () => this.flushInbound());
+      callback => this.closeLocal(callback, true), () => this.flushInbound());
   }
 
   getAsyncId(): number {
@@ -160,7 +164,7 @@ export class LibuvStreamWrap implements OwnedHandle {
   }
 
   hasRef(): boolean {
-    return handleHasRef(this);
+    return nodeHandleHasRef(this);
   }
 
   readStart(): number {
@@ -193,7 +197,14 @@ export class LibuvStreamWrap implements OwnedHandle {
   shutdown(req: ShutdownWrap): number {
     if (this.closed) return UV_EBADF;
     const native = nativeStreamFor(this);
-    if (native) return native.shutdown(status => invokeOwned(req, 'oncomplete', status));
+    observeNodeRequest(req, this);
+    if (native) {
+      try {
+        const status = native.shutdown(status => invokeOwned(req, 'oncomplete', status));
+        if (status !== 0) forgetNodeRequest(req);
+        return status;
+      } catch (cause) { forgetNodeRequest(req); throw cause; }
+    }
     this.sendEof();
     queueBindingTask(() => { invokeOwned(req, 'oncomplete', 0); });
     return 0;
@@ -254,12 +265,12 @@ export class LibuvStreamWrap implements OwnedHandle {
     this.closeLocal(callback);
   }
 
-  private closeLocal(callback?: () => void): void {
+  private closeLocal(callback?: () => void, nativeComplete = false): void {
     const failures: unknown[] = [];
     const release = (action: () => void): void => { try { action(); } catch (cause) { failures.push(cause); } };
     if (!this.closed) {
       this.closed = true;
-      releaseHandle(this);
+      releaseHandle(this, !nativeComplete);
       const endpoint = this.streamEndpoint;
       endpoint.handles.delete(this);
       // Writes land in the peer's inbound queue at once; flushing here
@@ -284,6 +295,7 @@ export class LibuvStreamWrap implements OwnedHandle {
           if (pending.handle instanceof LibuvStreamWrap) release(() => (pending.handle as LibuvStreamWrap).close());
         }
         endpoint.inbound.length = 0;
+        endpoint.inboundBytes = 0;
         release(() => endpoint.capacityChanged());
         endpoint.capacityListeners.clear();
       }
@@ -347,9 +359,7 @@ export class LibuvStreamWrap implements OwnedHandle {
 
   /** Host transports bound copies waiting in the native receiving queue. */
   get peerQueuedBytes(): number {
-    let bytes = 0;
-    for (const chunk of this.streamEndpoint.peer?.inbound ?? []) bytes += chunk.bytes.byteLength;
-    return bytes;
+    return this.streamEndpoint.peer?.inboundBytes ?? 0;
   }
 
   get peerQueuedHandles(): number {
@@ -452,6 +462,7 @@ export class LibuvStreamWrap implements OwnedHandle {
   receive(bytes: Uint8Array, handle?: unknown): void {
     if (this.closed) return;
     this.inbound.push(handle === undefined || handle === null ? { bytes } : { bytes, handle });
+    this.streamEndpoint.inboundBytes += bytes.byteLength;
     this.scheduleFlush();
   }
 
@@ -489,6 +500,7 @@ export class LibuvStreamWrap implements OwnedHandle {
       while (this.reading && !this.closed && this.inbound.length > 0) {
         const next = this.inbound.shift() as Inbound;
         const bytes = next.bytes;
+        this.streamEndpoint.inboundBytes -= bytes.byteLength;
         // The handle is on the channel before the bytes it belongs to reach the
         // reader, which is where `setupChannel` takes it off.
         if (next.handle !== undefined) this.pendingHandle = next.handle;
@@ -499,7 +511,7 @@ export class LibuvStreamWrap implements OwnedHandle {
           const taken = Math.min(target.byteLength, bytes.byteLength);
           this.bytesRead += taken;
           target.set(bytes.subarray(0, taken));
-          if (taken < bytes.byteLength) this.inbound.unshift({ bytes: bytes.subarray(taken) });
+          if (taken < bytes.byteLength) { this.inbound.unshift({ bytes: bytes.subarray(taken) }); this.streamEndpoint.inboundBytes += bytes.byteLength - taken; }
           streamBaseState[kReadBytesOrError] = taken;
           streamBaseState[kArrayBufferOffset] = 0;
           try { invokeOwned(this, 'onread', null); } finally { this.streamEndpoint.capacityChanged(); }

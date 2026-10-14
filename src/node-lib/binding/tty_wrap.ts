@@ -13,7 +13,7 @@ import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
 import { guessHandleTypeOfFd, handleForFd, registerFd, releaseFd } from './fds';
 import { UV_EBADF, UV_EIO, UV_ENOTSUP } from './uv';
-import { currentOwner } from './handles';
+import { currentOwner, forgetNodeHandle } from './handles';
 import { __runFor } from '../../process-tokens';
 
 export interface TerminalState {
@@ -78,6 +78,7 @@ export class TTY extends LibuvStreamWrap {
     this.endpoint?.readers.add(this);
     if (ctx && typeof ctx === 'object' && !isTTY(fd)) {
       ctx.code = 'ENOTTY';
+      forgetNodeHandle(this);
     }
   }
 

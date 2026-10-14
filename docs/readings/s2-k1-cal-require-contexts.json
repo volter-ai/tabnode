@@ -1,0 +1,100 @@
+{
+  "unit": "S2 K1 Cal internal require context reuse",
+  "articles": [
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "sourceCommit": "912010ec1b0db91f3dd3157ff0dc64d061258020",
+  "base": "ff652eb517fbc2541930938c1dd6491643a57aa4",
+  "pairedStageAccountCommit": "6bda016ef980175f69ad764c8502d464c7a49f6d",
+  "pairedStageAccount": "docs/readings/s2-k1-cal-stage-account-2026-10-12.json",
+  "approval": {
+    "message": "m-35dbce6a",
+    "scope": "Frozen source+changelog diff, reentrancy/miss lifetime/ownership/guest visibility",
+    "frozenDiff": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k1-cal-stage-artifact/engine-review.diff",
+      "bytes": 4039,
+      "sha256": "e5e49cae26af9d1b157ae7f736da416a253b42bb6deed798f8a566b674f8e58c"
+    },
+    "committedDiffEqualsFreeze": true
+  },
+  "upstreamSourceReading": {
+    "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k1-cal-stage-artifact/node-source-reading.json",
+    "bytes": 571,
+    "sha256": "c95fad4430a28f25e292871905f3d31feada1de7b177abd5986d6f05709d23fd"
+  },
+  "ownership": {
+    "class": "WeakMap by original module cache",
+    "parent": "Only engine-admitted parent objects with own nonempty string data filename",
+    "contexts": "One private context per parent; replaced when live filename changes",
+    "unshared": [
+      "Public Module.createRequire functions",
+      "Module body require functions",
+      "Arbitrary parent objects and filename accessors",
+      "Evaluated exports"
+    ]
+  },
+  "resetBeforeEveryInternalUse": [
+    "currentVfs binding",
+    "Invocation-local resolutionCache",
+    "Invocation-local packageJsonCache"
+  ],
+  "unchanged": [
+    "Live parent filename and hooks",
+    "Parent/children/module export identity",
+    "Process-owned successful path retention",
+    "R11 Node package-config absence retention",
+    "Load-clock outsideSplit from ff652eb5",
+    "Original repository manifests and 0.9.0 pin",
+    "All vendor source bytes"
+  ],
+  "notes": [
+    "Every createRequire adds a private reset closure and weak lookup entry.",
+    "Cached internal calls repeat the deleted process.getBuiltinModule repair less often; public/fallback factory calls retain it.",
+    "Private contexts are distinct from public module body requires."
+  ],
+  "production": {
+    "receipt": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k1-cal-stage-artifact/engine-production-receipt.json",
+      "bytes": 85064,
+      "sha256": "352dd24c3eb07962837cf4196f5c6be973f6dd6cfdd1efd401bd758b14ad01de"
+    },
+    "scope": "Full normal library/public and runtime-worker bundle plus all package declarations",
+    "bundleExitCode": 0,
+    "declarationsExitCode": 0,
+    "productFiles": 159,
+    "declarations": 151,
+    "productBytes": 10243584,
+    "sourceArchive": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k1-cal-stage-artifact/engine-source.tar",
+      "bytes": 6553600,
+      "sha256": "f3529ce36fcde65449312686e0135053dcaf151bf0ea803e6ae59f9700bd6c96"
+    },
+    "productArchive": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k1-cal-stage-artifact/engine-products.tar",
+      "bytes": 10536960,
+      "sha256": "d41ae243acba7440a4d5e113b7bcf5c2edd2851f377cec385d4896162c03119f"
+    },
+    "incompleteAttempts": "Two full installs and the first bundle stopped at the recorded bounds; none is claimed complete"
+  },
+  "performance": "No saving claimed; old cohorts attribute the class, a matched mini lap determines its cost change",
+  "sourceRetention": {
+    "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k1-cal-stage-artifact/engine-source-inputs.json",
+    "bytes": 120066,
+    "sha256": "209a96bea701c5125482c051a326cc76e6609ff798019d4901d86655a91aa73e"
+  },
+  "sourceArchive": {
+    "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k1-cal-stage-artifact/engine-source-archive.json",
+    "bytes": 341,
+    "sha256": "ef459ff2e3946b5378fbe16c31cbe59a6b7bcbcd814a8abb0ea46339eb093559"
+  },
+  "cleanup": {
+    "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k1-cal-stage-artifact/engine-cleanup.json",
+    "bytes": 1370,
+    "sha256": "623ddd1b5b13a93a3989ef253f61a333fd24ea2899e7bd104981bdce74529b7b",
+    "scope": "Own dependency/cache/temporary/dist trees removed; authenticated source/products/recipes/locks and receipts retained"
+  }
+}

@@ -1,3 +1,4 @@
+import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials, type ProcessCredentials } from '../../process-credentials';
 /**
  * `internalBinding('spawn_sync')`: a child run to its end before the call
  * returns.
@@ -11,7 +12,7 @@
  * `UV_ENOSYS`, which is what Node reports for a child it could not start.
  */
 import { libRequire } from '../require-hook';
-import { UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ETIMEDOUT, UV_EBADF } from './uv';
+import { UV_EPERM, UV_EINVAL, UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ETIMEDOUT, UV_EBADF } from './uv';
 import { runSyncChild, syncChildRefusal } from '../../shims/sync-child';
 import { __substrateArgvFor, __substrateHostRuns, __substrateLineFor, __substrateRunsNode, __substrateShellLine } from '../../shims/command-line';
 import { inheritedWriter } from './process_wrap';
@@ -27,6 +28,8 @@ interface SyncStdioEntry {
 /** What `child_process.js`'s `spawnSync` hands the binding. */
 interface SyncSpawnOptions {
   file: string;
+  uid?: number;
+  gid?: number;
   args?: string[];
   cwd?: string;
   envPairs?: string[];
@@ -47,6 +50,7 @@ interface SyncChildHost {
     argv?: readonly string[];
     cwd?: string;
     env?: Record<string, string>;
+    credentials?: ProcessCredentials;
     input?: Uint8Array;
     /** Which of fd 1 and fd 2 count toward `maxBuffer`: the ones the caller captures. */
     captured: [boolean, boolean];
@@ -100,12 +104,17 @@ function bufferClass(): { from(value: unknown, encoding?: string): Uint8Array & 
   return (libRequire('buffer') as { Buffer: { from(value: unknown, encoding?: string): Uint8Array & { toString(encoding?: string): string } } }).Buffer;
 }
 
-function spawn(options: SyncSpawnOptions): SyncSpawnResult {
+function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentials> = copyProcessCredentials()): SyncSpawnResult {
   const Buffer = bufferClass();
   const pid = nextPid++;
   const argv = options.args ?? [options.file];
   const stdio = options.stdio ?? [];
   const nothing = (error: number, of: number = pid): SyncSpawnResult => ({ pid: of, output: null, status: null, signal: null, error });
+
+  const parentCredentials = credentials;
+  const declaredIdentity = options.uid != null || options.gid != null;
+  try { credentials = spawnedProcessCredentials(credentials, options.uid, options.gid); }
+  catch (cause) { return nothing((cause as { code?: string })?.code === 'EPERM' ? UV_EPERM : UV_EINVAL, 0); }
 
   // A realm that cannot run a synchronous child at all says which of its reasons it is. libuv's record has room for
   // an errno only, and Node's own `spawnSync` (internal/child_process.js) makes the Error from it and stores it back
@@ -153,11 +162,18 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
   // the rule its asynchronous child goes by. It is a process as that one is: forked here, under this run, before
   // the wait; run by the host as that process; reaped here when the wait ends, by the wait every child's end takes.
   const host = (globalThis as unknown as Record<symbol, SyncChildHost | undefined>)[hostExecutorSymbol];
-  if (host && typeof host.runSync === 'function' && __substrateHostRuns(options.file, cwd, env ?? {})) {
+  if (host && typeof host.runSync === 'function' && (__substrateHostRuns(options.file, cwd, env ?? {}) || (declaredIdentity && __substrateRunsNode(options.file, cwd)))) {
     const owner = __currentProcessToken();
     const parentPid = runPid(owner)?.pid ?? 0;
     const token = `sync-child-${nextSyncChild++}`;
-    const childPid = mintPid(parentPid, false, owner);
+    let childPid: number;
+    try { childPid = mintPid(parentPid, false, owner, declaredIdentity ? credentials : undefined); }
+    catch (cause) {
+      releaseSinks();
+      const code = (cause as { code?: string })?.code;
+      if (code === 'EPERM' || code === 'EINVAL') return nothing(code === 'EPERM' ? UV_EPERM : UV_EINVAL, 0);
+      throw cause;
+    }
     setRunPid(token, childPid, parentPid, { argv, ...(cwd ? { cwd } : {}) }, owner);
     const kept: [Uint8Array[], Uint8Array[]] = [[], []];
     const take = (index: 0 | 1) => (bytes: Uint8Array): void => {
@@ -172,6 +188,7 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
         ...(((list) => list ? { argv: list } : {})(__substrateArgvFor(options.file, argv, options.cwd))),
         ...(cwd ? { cwd } : {}),
         ...(env ? { env } : {}),
+        credentials,
         ...(input === undefined ? {} : { input: new Uint8Array(input) }),
         captured: [captured(1), captured(2)],
         ...(typeof options.maxBuffer === 'number' && options.maxBuffer >= 0 && Number.isFinite(options.maxBuffer) ? { maxBuffer: options.maxBuffer } : {}),
@@ -215,6 +232,14 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
     };
   }
 
+
+  // The fallback worker proxies filesystem calls through the parent tree. It cannot act as a different
+  // kernel identity: declared Node children use the host door above; an embedding without it is refused.
+  if (credentials.uid !== parentCredentials.uid || credentials.gid !== parentCredentials.gid
+    || credentials.groups.length !== parentCredentials.groups.length
+    || credentials.groups.some((group, index) => group !== parentCredentials.groups[index])) {
+    releaseSinks(); return refusedBecause('a synchronous child with different credentials requires a kernel host child door');
+  }
   // A realm that cannot run a synchronous child of the engine's own says which of its reasons it is.
   const refusal = syncChildRefusal();
   if (refusal !== null) { releaseSinks(); return refusedBecause(refusal); }
@@ -229,6 +254,7 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
       ...(__substrateRunsNode(options.file, options.cwd) ? { argv } : {}),
       cwd,
       env,
+      credentials,
       ...(input === undefined ? {} : { input: new Uint8Array(input) }),
       onStdout: sink(1),
       onStderr: sink(2),
@@ -278,3 +304,8 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
 }
 
 export default { spawn };
+
+/** The binding captures its caller's own process independently of ambient globals. */
+export function createSpawnSyncBinding(parent: object): { spawn: (options: SyncSpawnOptions) => SyncSpawnResult } {
+  return { spawn: options => spawn(options, processCredentialsOf(parent)) };
+}

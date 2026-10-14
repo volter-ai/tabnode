@@ -1,3 +1,8 @@
+import { traceRound, traceRoundFields } from './trace-values';
+import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested, traceCostsRequested, retainTraceInput, releaseTraceInput } from './trace-output';
+import { recordProcessHostname, recordProcessHosts } from './process-hostname';
+import { processCredentialsOf } from './process-credentials';
+import type { ProcessCredentials } from './process-credentials';
 /**
  * Runtime - Execute user code with shimmed Node.js globals
  *
@@ -7,11 +12,14 @@
 
 import { VirtualFS } from './virtual-fs';
 import { rememberCompiledSource } from './error-source';
-import { startGuestLoop, withGuestExecution } from './guest-loop';
+import { attachVmScriptEnvironment, VmScriptPreparationCache } from './vm-script-state';
+import type { VmScriptObserver, VmScriptPhase } from './vm-script-state';
+import { startGuestLoop, withGuestExecution, guestExecutionActiveMs, enableGuestEntryAccount, guestEntryAccount, guestEntryKinds } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { guestFetch, rememberRequestBodySource } from './fetch-transport';
 import { installNodeResponse } from './node-response';
 import { withNodeRequestBody } from './node-body';
+import { installHttpParserModule } from './http-parser-module';
 import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork } from './host-globals';
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
@@ -31,8 +39,8 @@ import { netModule as netShim } from './node-lib/net-module';
 import { errname as __uvErrname } from './node-lib/binding/uv';
 import { createTimersModule } from './node-lib/timers';
 import { guestTimerFunctions } from './guest-timers';
-import { stackOverrides } from './stack-overrides';
-export { pendingGuestTimers, stopGuestTimers } from './guest-timers';
+import { noteStackFormed, stackOverrides } from './stack-overrides';
+export { pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers } from './guest-timers';
 import eventsShim from './node-lib/events-module';
 import { streamModule as streamShim, streamPromisesModule as streamPromises } from './node-lib/stream-module';
 import * as urlShim from './shims/url';
@@ -47,6 +55,7 @@ import { getServerBridge } from './server-bridge';
 import * as moduleShim from './shims/module';
 import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
 import { kRunFilesystem } from './node-lib/binding/fs';
+import { byteLengthUtf8 } from './node-lib/binding/buffer';
 import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor } from './node-lib/load';
 import { fsModule, fsModuleFor } from './node-lib/fs-module';
 import {
@@ -55,7 +64,9 @@ import {
 } from './node-lib/small-modules';
 import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
-import { sayNativeStreamCounts } from './native-stream-binding';
+import { observeNativeStreamClocks, sayNativeStreamCounts, type NativeStreamClockSample } from './native-stream-binding';
+import { observeListenClocks } from './node-lib/binding/tcp_wrap';
+import { __runFor, __tokenForProcess, runPid } from './process-tokens';
 import { nodeLibBindingsAsked } from './node-lib/load';
 import type { ResolutionKept } from './node-resolution';
 import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
@@ -82,10 +93,34 @@ import * as domainShim from './shims/domain';
 import { createWasiModule, type WasiHostFs, type WasiModule } from './shims/wasi';
 
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
-import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __cjsObject, __substrateHasEsmSyntax } from './code-transforms';
+import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __cjsObject, __substrateHasEsmSyntax, __substrateGuestNameEdits } from './code-transforms';
 import { applySourceEdits } from './source-edits';
 import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typescript-module';
 import * as acorn from 'acorn';
+
+import { observerDescriptor, observerHasOwn, observerRecord, observerWrite, observerFreeze } from './module-observer-records';
+
+/**
+ * A prepared root's native-binding map (the substrate's ADR-0094), given to the engine once by the realm's prelude
+ * instead of a resolve hook that every require of the process would run through (S2: ~83 ms of LibreChat's server
+ * start, ~20,000 requires). `bindings`: the addon paths that have a provider; `roots`: the refusal roots. `provide` and
+ * `refuse` are the prelude's own, so a provided addon's diagnostics and a refusal's error are the hook's exactly.
+ */
+interface SubstrateAddons {
+  readonly bindings: { has(path: string): boolean };
+  readonly roots: readonly string[];
+  provide(path: string): string;
+  refuse(path: string, cause?: unknown): never;
+}
+
+const observerEncoder = new TextEncoder();
+const observerEncode = observerEncoder.encode.bind(observerEncoder);
+const ObserverWeakMap = WeakMap;
+const observerMapGet = Function.prototype.call.bind(WeakMap.prototype.get);
+const observerMapSet = Function.prototype.call.bind(WeakMap.prototype.set);
+const observerMapDelete = Function.prototype.call.bind(WeakMap.prototype.delete);
+// Receiver-independent native own check adds no diagnostic allocation for ordinary contexts.
+const __moduleObserverOwn = Object.hasOwn;
 
 /**
  * Walk an acorn AST recursively, calling the callback for every node.
@@ -158,11 +193,44 @@ const __substrateGuestVms = new WeakMap<Process, unknown>();
 function __substrateGuestVm(process: Process): unknown {
   let vm = __substrateGuestVms.get(process);
   if (vm) return vm;
-  const run = (code: string): unknown => __substrateScriptScope(__substrateGuestGlobal(process), String(code));
+  const cache = new VmScriptPreparationCache();
+  const observer: VmScriptObserver = {
+    phase: (phase, operation) => __substrateVmPhase(process, phase, operation),
+    run: (kind, codeUnits) => {
+      if (!traceReadingRequested()) return;
+      const clock = __substrateVmClock(process);
+      clock.runs[kind] += 1; clock.codeUnits += codeUnits;
+    },
+    preparation: (hit, failed, parsed) => {
+      if (!traceReadingRequested()) return;
+      const clock = __substrateVmClock(process);
+      if (hit) clock.cacheHits += 1; else clock.cacheMisses += 1;
+      if (failed) clock.parseFailures += 1;
+      if (parsed) clock.acornParses += 1;
+      else if (!hit) clock.declarationScanSkips += 1;
+    },
+  };
+  const run = (code: string): unknown => {
+    // Preserve the original argument order: acquire the actual guest-global
+    // scope, then perform the single existing code coercion.
+    const { globals, source } = observer.phase('setup', () => {
+      const globals = __substrateGuestGlobal(process);
+      return { globals, source: String(code) };
+    });
+    observer.run('thisContext', source.length);
+    return observer.phase('eval', () => __substrateScriptScope(globals, source));
+  };
   class Script extends vmShim.Script {
+    constructor(code: string, options?: object) {
+      super(code, options);
+      attachVmScriptEnvironment(this, { cache, observer });
+    }
     override runInThisContext(_options?: object): unknown { return run((this as unknown as { code: string }).code); }
   }
-  vm = { ...vmShim, Script, runInThisContext: (code: string, _options?: object) => run(code), default: undefined };
+  vm = { ...vmShim, Script, runInThisContext: (code: string, _options?: object) => run(code),
+    runInNewContext: (code: string, context?: object, options?: object) => new Script(code, options).runInNewContext(context, options),
+    runInContext: (code: string, context: object, options?: object) => new Script(code, options).runInContext(context, options),
+    default: undefined };
   (vm as { default: unknown }).default = vm;
   __substrateGuestVms.set(process, vm);
   return vm;
@@ -206,18 +274,50 @@ function __substrateModuleTypes(code: string, resolvedPath: string, format: stri
  * hold — a `data:` module whose URL carries a line break — names nothing,
  * since a broken directive would be read as code.
  */
-function __substrateSourceURL(resolvedPath: string): string {
+function __substrateScriptName(resolvedPath: string): string | undefined {
   let name = resolvedPath;
   if (name.startsWith('file://')) {
     try { name = decodeURIComponent(new URL(name).pathname); } catch { /* a URL that will not parse names itself */ }
   }
-  return /[\n\r]/u.test(name) ? '' : `\n//# sourceURL=${name}`;
+  return /[\n\r]/u.test(name) ? undefined : name;
 }
-function __substrateScopeGlobalCalls(code: string): string {
-  if (!/\b(?:new|fetch|Promise)\b/u.test(code)) return code;
+/** A body whose guest names are rewritten where free (`__substrateGuestNameEdits`): it runs in Node's own wrapper form, no `with`. */
+const __substrateGuestScopedMarker = '/*__substrate_guest_scoped__*/';
+const __substrateGuestNamePattern = new RegExp(`\\b(?:new|eval|with|${['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'window', 'document', 'location', 'performance'].join('|')})\\b`, 'u');
+/** Whether a prepared body carries the mark, after an ES module's own mark where it has one. */
+function __substrateGuestScoped(code: string): boolean {
+  return code.startsWith(__substrateGuestScopedMarker) || (code.startsWith(__substrateModuleMarker) && code.startsWith(__substrateGuestScopedMarker, __substrateModuleMarker.length));
+}
+/** Marks a body guest-scoped, after an ES module's own mark so that mark stays first. */
+function __substrateMarkGuestScoped(code: string): string {
+  return code.startsWith(__substrateModuleMarker)
+    ? __substrateModuleMarker + __substrateGuestScopedMarker + code.slice(__substrateModuleMarker.length)
+    : __substrateGuestScopedMarker + code;
+}
+/** A mark a body arrived with (its own text, never this pass's) blanked to spaces, so no source can claim the form. */
+function __substrateUnclaimGuestScoped(code: string): string {
+  if (!__substrateGuestScoped(code)) return code;
+  const at = code.startsWith(__substrateGuestScopedMarker) ? 0 : __substrateModuleMarker.length;
+  return code.slice(0, at) + ' '.repeat(__substrateGuestScopedMarker.length) + code.slice(at + __substrateGuestScopedMarker.length);
+}
+function __substrateScopeGlobalCalls(source: string): string {
+  // Every body comes here once, as written or as lowered: a mark already in it is the source's own text, not this
+  // pass's, and is never trusted (review of 2eaa5f41).
+  const code = __substrateUnclaimGuestScoped(source);
+  // A body that names the scope or the constructor wrap itself keeps the `with` wrapper: a function's text is given
+  // back by reading those names as this pass's own (__substrateUnscopeGuestNames).
+  const reserved = code.includes('__substrateGuestScope') || code.includes('__substrateGuestConstructor');
+  // No guest name, no constructor, nothing dynamic and no escaped name: nothing to rewrite, and Node's wrapper
+  // form as it stands.
+  if (!reserved && !code.includes('\\u') && !__substrateGuestNamePattern.test(code)) return __substrateMarkGuestScoped(code);
   let ast;
   try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true }); }
   catch { return code; }
+  const construct = (callee: string): string => "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + ",$process):" + callee + ")";
+  const guestEdits = reserved ? undefined : __substrateGuestNameEdits(ast, code, new Set(__substrateGuestScopeNames), '__substrateGuestScope', construct);
+  if (guestEdits) return __substrateMarkGuestScoped(applySourceEdits(code, guestEdits.sort((a, b) => b[0] - a[0])));
+  // A `with` statement or a direct eval in the body, whose names resolve at run time, an escaped guest name, or the
+  // reserved names above: the body keeps the `with` wrapper and the old rewrite below.
   const positions: Array<[number, number, string]> = [];
   walkAst(ast, node => {
     // A function's source is also data: a program sends `String(fn)` to be
@@ -233,6 +333,8 @@ function __substrateScopeGlobalCalls(code: string): string {
     const called = node.type === "CallExpression" ? node.callee : node.type === "TaggedTemplateExpression" ? node.tag : undefined;
     if (called?.type === "Identifier" && (called.name === "fetch" || called.name === "Promise")) positions.push([called.start, called.end, "(0," + code.slice(called.start, called.end) + ")"]);
   });
+  // Preparation needs only source-coordinate edits after the walk, not the full tree during assembly.
+  ast = undefined;
   return applySourceEdits(code, positions.sort((a,b) => b[0] - a[0]));
 }
 /**
@@ -359,11 +461,11 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
         });
         return boundGlobals.get(key)!.bound;
       }
-      if (["setTimeout", "clearTimeout", "setInterval", "clearInterval"].includes(key as string) && typeof value === "function") {
+      if (["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"].includes(key as string) && typeof value === "function") {
         // The guest's timers, counted for it; rebuilt if the host's own change.
         if (boundGlobals.get(key)?.original !== value) {
           const timers = guestTimerFunctions(process, host);
-          for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] as const) boundGlobals.set(name, { original: Reflect.get(host, name, host), bound: timers[name] });
+          for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"] as const) boundGlobals.set(name, { original: Reflect.get(host, name, host), bound: timers[name] });
         }
         return boundGlobals.get(key)!.bound;
       }
@@ -505,6 +607,31 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   __substrateGuestGlobals.set(process, guest!);
   return guest!;
 }
+/**
+ * The names a body reads as bare identifiers from its process's guest global rather than the host realm's, live:
+ * each read is the guest's value now, each assignment is the guest's. They were an object literal of accessors in
+ * every body's wrapper, so V8 parsed 2,300 characters and 38 accessor functions again for each body it compiled,
+ * and made 38 closures again for each body it ran: Cal's server compiled 8,456 bodies to its first page (S2 K1,
+ * compile 743 ms). One object a process serves every body of it, the same answers. Its accessors are not
+ * configurable: one body's `delete window` used to remove the name from that body's own scope alone, and on a
+ * shared scope it would remove it from every later body's, so the delete is refused (false, as sloppy code sees it).
+ */
+const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'window', 'document', 'location', 'performance'] as const;
+const __substrateGuestScopes = new WeakMap<Process, object>();
+function __substrateGuestScope(process: Process): object {
+  let scope = __substrateGuestScopes.get(process);
+  if (scope) return scope;
+  const guest = __substrateGuestGlobal(process);
+  scope = Object.create(null) as object;
+  for (const name of __substrateGuestScopeNames) {
+    // The wrapper's accessors were sloppy code: a read is `globalThis[name]`, an assignment the guest's global
+    // refuses is ignored, never thrown.
+    Object.defineProperty(scope, name, { enumerable: true, configurable: false,
+      get: () => guest[name], set: (value: unknown) => { Reflect.set(guest, name, value); } });
+  }
+  __substrateGuestScopes.set(process, scope);
+  return scope;
+}
 // Node compiles a CommonJS body as sloppy script code: an assignment to a
 // getter-only property is ignored rather than thrown, an undeclared assignment
 // makes a global, and `this` at the top is `module.exports`. A direct `eval`
@@ -515,9 +642,22 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
 // compiled through this alias, which is an indirect eval: global scope, sloppy.
 // The guest helpers are then out of scope by name, so they are arguments.
 const __substrateSloppyEval = eval;
-function __substrateCompileBody(source: string, owner: object): any {
-  rememberCompiledSource(owner, source);
-  return __substrateSloppyEval(source);
+function __substrateCompileBody(source: string, owner: object, scriptName: string | undefined): any {
+  const clock = __substrateLoadClocks.get(owner);
+  // C6: split this phase's source retention from V8's own eval. The entry's separate run path is outside the
+  // module compile phase, so it does not enter these counters either. Preserve the actual source and sloppy eval.
+  if (!clock || clock.phase !== 'compile') {
+    rememberCompiledSource(owner, source, scriptName);
+    return __substrateSloppyEval(source);
+  }
+  const captureAt = performance.now();
+  clock.compileSplit.sourceCaptures += 1;
+  try { rememberCompiledSource(owner, source, scriptName); }
+  finally { clock.compileSplit.sourceCaptureMs += performance.now() - captureAt; }
+  const evalAt = performance.now();
+  clock.compileSplit.evals += 1;
+  try { return __substrateSloppyEval(source); }
+  finally { clock.compileSplit.nativeEvalMs += performance.now() - evalAt; }
 }
 // An ES module stays strict, as Node keeps one: the lowering marks its output.
 const __substrateModuleMarker = '/*__substrate_module__*/';
@@ -565,6 +705,7 @@ function __substrateRewriteDynamicImportsInScript(code: string): string {
     collectDirectEval(node, replacements);
   });
   if (replacements.length === 0) return code;
+  ast = undefined;
   return applyReplacements(code, replacements);
 }
 
@@ -662,9 +803,11 @@ function __substrateFollowAwaits(code: string): string {
     for (const [at, text] of leading) insert(at, text);
   };
   visit(ast, false, undefined);
+  const topLevelAwait = __substrateTopLevelAwait(ast);
+  ast = undefined;
   // applyReplacements' sort is stable and lands edits at one offset in reverse of their order: closings after openings
   const followed = edits.length || closings.length ? applyReplacements(code, [...edits, ...closings]) : code;
-  return __substrateTopLevelAwait(ast) ? `${followed}\n${__substrateTopLevelAwaitMarker}` : followed;
+  return topLevelAwait ? `${followed}\n${__substrateTopLevelAwaitMarker}` : followed;
 }
 
 /**
@@ -711,6 +854,23 @@ function __substrateUnfollowAwaits(source: string): string {
     .replaceAll(FOLLOW_RESUME_FRAMED, '')
     .replaceAll(FOLLOW_RESUME_TAKEN, '');
 }
+/**
+ * A function's text with this pass's edits undone, exactly: a function is also data (`page.evaluate(() =>
+ * document.title)`, `String(fn)` handed to a worker run it where none of these names exist), and `String(() => fetch)`
+ * is Node's text (reviews of 2eaa5f41 and 6cbfbfc). Every edit's text names `__substrateGuestScope` or
+ * `__substrateGuestConstructor`, which a rewritten body never names itself (__substrateScopeGlobalCalls), and each of
+ * its shapes is told apart by its own text (__substrateGuestNameEdits): the constructor wrap around a callee, a bare
+ * call `(0,__substrateGuestScope["X"])`, a shorthand `X: __substrateGuestScope['X']`, a read `__substrateGuestScope.X`.
+ * Guest text around them is never read as one.
+ */
+const __substrateGuestNamesText = __substrateGuestScopeNames.join('|');
+const __substrateGuestConstructShape = /\(typeof __substrateGuestConstructor==='function'\?__substrateGuestConstructor\(([^,()]+),\$process\):\1\)/gu;
+const __substrateGuestEditShape = new RegExp(`\\(0,__substrateGuestScope\\["(${__substrateGuestNamesText})"\\]\\)|(${__substrateGuestNamesText}): __substrateGuestScope\\['\\2'\\]|__substrateGuestScope\\.(${__substrateGuestNamesText})(?![\\p{ID_Continue}$\\u200c\\u200d])`, 'gu');
+function __substrateUnscopeGuestNames(source: string): string {
+  if (!source.includes('__substrateGuest')) return source;
+  return source.replace(__substrateGuestConstructShape, '$1')
+    .replace(__substrateGuestEditShape, (shape: string, call: string | undefined, shorthand: string | undefined, read: string | undefined) => call ?? shorthand ?? read ?? shape);
+}
 forGuestRealm(() => {
   const native = Function.prototype.toString;
   // A function's source never changes, so its written text is made once: Nest and TypeORM read the same classes'
@@ -719,7 +879,7 @@ forGuestRealm(() => {
   takeFromHost(Function.prototype, 'toString', function toString(this: unknown): string {
     const held = typeof this === 'function' ? written.get(this) : undefined;
     if (held !== undefined) return held;
-    const text = __substrateUnfollowAwaits(native.call(this));
+    const text = __substrateUnscopeGuestNames(__substrateUnfollowAwaits(native.call(this)));
     if (typeof this === 'function') written.set(this, text);
     return text;
   });
@@ -807,6 +967,46 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
  * every process's memory.
  */
 export const PREPARED_MODULES_DIR = '/opt/.tabnode/prepared';
+/** The prefix a handed TypeScript text is hashed under for its kept body's name (compileRaw): never a file's own digest. */
+const HANDED_TYPESCRIPT_SALT = 'tabnode handed typescript text\0';
+/** The prefix a ts-node transpile's identity is hashed under for its captured text's name (__substrateTranspileKey). */
+const TRANSPILE_CAPTURE_SALT = 'tabnode ts-node transpile\0';
+/**
+ * The name a ts-node transpile of this file is captured under, or undefined where none is taken: only for ts-node's own
+ * wrapper of a .ts/.mts/.cts module's `_compile` (its service registered on the process, the wrapper calling the
+ * service's compile), with transpile-only set, no custom transformers and no preferTsExts, the service enabled and the
+ * file not ignored, and TypeScript's own transpiler (no `swc`, no `transpiler` module). The name hashes everything the transpile reads besides the file: the wrapper's own text, the
+ * TypeScript version, ts-node's options and the compiler options its tsconfig chain resolved to, every TS_NODE_
+ * variable, execArgv, the path (the source map names it), and the file's text.
+ *
+ * A KNOWN DIFFERENCE: a file taken from a capture never passes through ts-node's compile, so ts-node's own source-map
+ * cache does not hold it, and a stack thrown from it names the transpiled lines, not the TypeScript ones.
+ */
+function __substrateTranspileKey(process: unknown, module: object, ownCompile: unknown, rawCode: string, resolvedPath: string): string | undefined {
+  if (!/\.(?:ts|mts|cts)$/u.test(resolvedPath) || resolvedPath.endsWith('.d.ts')) return undefined;
+  const wrapper = (module as { _compile?: unknown })._compile;
+  if (typeof wrapper !== 'function' || wrapper === ownCompile) return undefined;
+  let wrapperText: string;
+  try { wrapperText = Function.prototype.toString.call(wrapper); } catch { return undefined; }
+  if (!wrapperText.includes('.compile(')) return undefined;
+  const host = process as { env?: Record<string, string | undefined>; execArgv?: string[] } & Record<symbol, unknown>;
+  const service = host[Symbol.for('ts-node.register.instance')] as { options?: Record<string, unknown>; config?: { options?: unknown }; ts?: { version?: unknown };
+    enabled?: () => boolean; ignored?: (fileName: string) => boolean } | undefined;
+  if (!service || typeof service !== 'object') return undefined;
+  const options = service.options ?? {};
+  // A transpiler other than TypeScript's own (`swc`, or a `transpiler` module) writes the output, and neither's version
+  // is in the name: such a service is not captured (review of 96af773).
+  if (options.transpileOnly !== true || options.transformers !== undefined || options.preferTsExts === true
+    || (options.swc !== undefined && options.swc !== false) || options.transpiler !== undefined) return undefined;
+  try {
+    if (typeof service.enabled === 'function' && !service.enabled()) return undefined;
+    if (typeof service.ignored === 'function' && service.ignored(resolvedPath)) return undefined;
+    const env = Object.entries(host.env ?? {}).filter(([name]) => name.startsWith('TS_NODE_')).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    const identity = JSON.stringify({ wrapper: wrapperText, typescript: service.ts?.version ?? null, options, compilerOptions: service.config?.options ?? null,
+      env, execArgv: host.execArgv ?? [], path: resolvedPath });
+    return preparedModuleKeyOf('js', bytesToHex(sha256(new TextEncoder().encode(`${TRANSPILE_CAPTURE_SALT}${identity}\0${rawCode}`))));
+  } catch { return undefined; }
+}
 export { PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey };
 /** The name a prepared body goes under, for a caller that has the file's text: its bytes are hashed here. Undefined for a file no body is prepared for. */
 export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
@@ -834,40 +1034,453 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
   if (own) said.own = true;
   const exists = (path: string): boolean | string => { try { return vfs.existsSync(path); } catch (cause) { return cause instanceof Error ? cause.message : String(cause); } };
   const key = preparedModuleKey(content, resolvedPath);
-  console.log('[boot-trace]', JSON.stringify({
+  if (traceReadingRequested()) traceOutput("[boot-trace]", {
     event: 'prepared-bodies', where: 'compile', which, at: Date.now(), file: resolvedPath, bytes: content.length,
     rawIsOwn: compiling?.raw === content, handedRaw: compiling !== undefined, format: compiling?.format ?? null,
     transformsTypes: transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }),
     directory: exists(PREPARED_MODULES_DIR), key: key ?? null, body: key ? exists(`${PREPARED_MODULES_DIR}/${key}`) : false,
-  }));
+  });
 }
 
 /**
  * An instrument: how each of a process's compiles came by its body, said when its loading has been quiet for two
- * seconds and when it exits. `digest`: named by the tree's digest, the source never read. `hash`: named by hashing
+ * seconds and when it exits. `digest`: named by the tree's digest, the source never read. `carried`: of the digests
+ * asked for a load, those the resolving stat had carried, so not asked again. `hash`: named by hashing
  * the source read. `kept`: prepared here and kept. The rest prepared here, by why no body could be taken.
  * `stats`: the resolver's stat probes for the same process (node-resolution.ts `ResolutionKept.probes`).
  */
-type PreparedCounts = { digest: number; hash: number; kept: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
+type PreparedCounts = { digest: number; carried: number; hash: number; kept: number; transpiled: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
 const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
+/** The processes whose prepared-body directory refused a body (EACCES, EPERM, EROFS): they keep none after (S2 R24). */
+const __substrateKeepingRefused = new WeakSet<object>();
+/**
+ * An instrument: WHERE A PROCESS'S MODULE LOADING SPENDS ITS TIME, by this realm's own clock, said beside the counts
+ * above (when its loading has been quiet for two seconds, and at its exit). A load is about a millisecond a module in
+ * a tab and a third of that in Node (17,000 modules of one application: 17 s against 5 to 7.5), and the kernel's own
+ * account holds a third of the tab's; nothing said what the rest was.
+ *
+ * Every instant since the process's first `require` is in exactly one phase, and a phase's time is its own, never a
+ * nested load's: a `require` made while a body runs leaves `evaluate` and returns to it.
+ *   resolve   from a `require`'s start to its module's load: the resolver's candidates, its stats, the cache's answer;
+ *   read      the load step before a body is run: the file's digest, its prepared body's bytes, or its source;
+ *   link      the engine's own work to run one body: its `require`, console, import function and wrapper;
+ *   compile   the script made of the wrapped body (the engine's eval);
+ *   evaluate  the module's own body;
+ *   outside   everything else since the first `require`: the program running, and waiting.
+ * `kernelMs` is, of each phase, the time this realm was blocked on its file system's answers, where its file
+ * system says it (`vfs.kernelBlockedMs`, the holder's); a phase's own work is its time less that. Without one the
+ * field is zero and the phase is not split. The process's entry script is run elsewhere and is in `outside`.
+ */
+type LoadPhase = 'outside' | 'resolve' | 'read' | 'link' | 'compile' | 'evaluate';
+type OutsideSplit = { vmMs: Record<VmScriptPhase, number>; guestBracketMs: number; unbracketedMs: number; clippedBracketMs: number };
+type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: number; wall: Record<LoadPhase, number>; kernel: Record<LoadPhase, number>;
+  bodies: number; bodyBytes: number; preparedBodies: number; preparedBodyBytes: number; sourceBodies: number; sourceBodyBytes: number;
+  byteBodies: Array<{ text?: string; bytes?: number; prepared: boolean; preparedBytes?: number; sourceBytes?: number }>; countedBytes: number;
+  retainedInputBytes: number; peakRetainedInputBytes: number; byteTotalsDropped: boolean; releaseBytes: () => void; byteBase: number; byteBasePreparedBytes: number; byteBaseSourceBytes: number;
+  linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
+  outside: OutsideSplit; guestAt: number; began: number; said: number;
+  /** When its 'quiet' line was said, and whether its 'exit' line has been (S2 R71): an exit after quiet is said once. */
+  quietSaidAt?: number; exitSaid?: boolean };
+const __substrateLoadClocks = new WeakMap<object, LoadClock>();
+type VmClock = { phase: VmScriptPhase | undefined; at: number; wall: Record<VmScriptPhase, number>;
+  calls: Record<VmScriptPhase, number>; runs: { context: number; thisContext: number };
+  codeUnits: number; cacheHits: number; cacheMisses: number; parseFailures: number; acornParses: number; declarationScanSkips: number };
+const __substrateVmClocks = new WeakMap<object, VmClock>();
+function __substrateVmClock(process: object): VmClock {
+  let clock = __substrateVmClocks.get(process);
+  if (!clock) {
+    clock = { phase: undefined, at: __substrateLoadNow(), wall: { parse: 0, setup: 0, eval: 0 },
+      calls: { parse: 0, setup: 0, eval: 0 }, runs: { context: 0, thisContext: 0 },
+      codeUnits: 0, cacheHits: 0, cacheMisses: 0, parseFailures: 0, acornParses: 0, declarationScanSkips: 0 };
+    __substrateVmClocks.set(process, clock);
+  }
+  return clock;
+}
+/** Exclusive among VM phases, including nested VM calls. These spans overlay
+ * the existing module phases; never add them to that clock's wall totals.
+ * Eval includes browser parsing, guest execution and synchronous nested loads.
+ */
+function __substrateVmPhase<T>(process: object, phase: VmScriptPhase, operation: () => T): T {
+  if (!traceReadingRequested()) return operation();
+  const clock = __substrateVmClock(process), previous = clock.phase;
+  const account = (): void => {
+    // Intersect VM spans with module phases, rather than subtracting the VM's
+    // inclusive time (which can contain nested requires) from outside later.
+    const load = __substrateLoadClocks.get(process);
+    if (load) __substrateLoadPhase(process, undefined, load.phase);
+    const now = __substrateLoadNow();
+    if (clock.phase) clock.wall[clock.phase] += now - clock.at;
+    clock.at = now;
+  };
+  account(); clock.phase = phase; clock.calls[phase] += 1;
+  try { return operation(); }
+  finally { account(); clock.phase = previous; }
+}
+function __substrateVmSnapshot(process: object): unknown {
+  const clock = __substrateVmClocks.get(process);
+  if (!clock) return null;
+  const wall = { ...clock.wall };
+  if (clock.phase) wall[clock.phase] += __substrateLoadNow() - clock.at;
+  return { phaseMs: traceRoundFields(wall), calls: { ...clock.calls }, runs: { ...clock.runs },
+    codeUnits: clock.codeUnits, cacheHits: clock.cacheHits, cacheMisses: clock.cacheMisses, parseFailures: clock.parseFailures,
+    acornParses: clock.acornParses, declarationScanSkips: clock.declarationScanSkips };
+}
+// All process clocks in this realm share observer intervals. Counting A's
+// diagnostics must not appear as work in B's concurrently open module phase.
+let __substrateDeferredByteMs = 0;
+let __substrateDeferredGuestMs = 0;
+function __substrateLoadNow(): number { return performance.now() - __substrateDeferredByteMs; }
+function __substrateGuestAt(now: number): number {
+  return guestExecutionActiveMs(now + __substrateDeferredByteMs) - __substrateDeferredGuestMs;
+}
+/** Fixed scalar account, exclusive within outside. Dispatch brackets are
+ * realm-scoped, not CPU samples or a proof that the remainder was waiting.
+ * VM phases have priority; filesystem blocking remains the kernelMs overlay.
+ */
+function __substrateOutsideInterval(split: OutsideSplit, elapsed: number, bracketed: number, vm: VmScriptPhase | undefined): void {
+  if (vm) { split.vmMs[vm] += elapsed; return; }
+  const taken = Math.min(elapsed, Math.max(0, bracketed));
+  split.guestBracketMs += taken;
+  split.unbracketedMs += elapsed - taken;
+  // Preserve evidence of clock clipping, including the existing quiet-tail
+  // omission, rather than presenting a bounded value as an exact active delta.
+  split.clippedBracketMs += Math.abs(bracketed - taken);
+}
+function __substrateOutsideSnapshot(process: object, clock: LoadClock, now: number, omitted: number): unknown {
+  const split = { ...clock.outside, vmMs: { ...clock.outside.vmMs } };
+  if (clock.phase === 'outside') __substrateOutsideInterval(split, now - clock.at - omitted,
+    __substrateGuestAt(now) - clock.guestAt, __substrateVmClocks.get(process)?.phase);
+  return { scope: 'realm-dispatch-brackets', vmMs: traceRoundFields(split.vmMs),
+    guestBracketMs: traceRound(split.guestBracketMs), unbracketedMs: traceRound(split.unbracketedMs),
+    clippedBracketMs: traceRound(split.clippedBracketMs), ...__substrateEntrySplit() };
+}
+/**
+ * The realm's guest time by what entered it (S2 R27; guest-loop.ts's entry account): `byKind` { kind: [count, ms] }
+ * and `byEntry`, the 16 longest [kind:name, count, ms]. The realm's, since the account began (its first load clock);
+ * the brackets inside module loading are among them, as kind `module`. Absent where no reading started the account.
+ */
+function __substrateEntrySplit(): { byKind?: Record<string, [number, unknown]>; byEntry?: Array<[string, number, unknown]> } {
+  const kinds = guestEntryKinds(), entries = guestEntryAccount(16);
+  if (!kinds || !entries) return {};
+  return { byKind: Object.fromEntries(Object.entries(kinds).map(([kind, [count, ms]]): [string, [number, unknown]] => [kind, [count, traceRound(ms)]])),
+    byEntry: entries.map(([key, count, ms]): [string, number, unknown] => [key, count, traceRound(ms)]) };
+}
+/** Byte totals are evidence only. A snapshot keeps its prefix length, not a
+ * source copy; count that prefix after HTTP, then release the text references.
+ * Kept prefix totals also answer an older snapshot without recounting bodies. */
+function __substrateBodyByteTotals(clock: LoadClock, limit: number): { preparedBodyBytes: number | null; sourceBodyBytes: number | null; utf8DeferredMs: number } {
+  if (clock.byteTotalsDropped) return { preparedBodyBytes: null, sourceBodyBytes: null, utf8DeferredMs: 0 };
+  if (limit < clock.byteBase) return { preparedBodyBytes: null, sourceBodyBytes: null, utf8DeferredMs: 0 };
+  const started = performance.now();
+  const guestStarted = guestExecutionActiveMs(started);
+  while (clock.countedBytes < limit) {
+    const body = clock.byteBodies[clock.countedBytes - clock.byteBase]!;
+    // A body whose length the read said holds no text: its count is that length (runModuleBody).
+    const bytes = body.text !== undefined ? byteLengthUtf8(body.text) : body.bytes!;
+    if (body.prepared) clock.preparedBodyBytes += bytes; else clock.sourceBodyBytes += bytes;
+    body.preparedBytes = clock.preparedBodyBytes; body.sourceBytes = clock.sourceBodyBytes;
+    if (body.text !== undefined) clock.retainedInputBytes -= body.text.length * 2;
+    delete body.text; clock.countedBytes += 1;
+  }
+  const last = clock.byteBodies[limit - clock.byteBase - 1], ended = performance.now(), elapsed = ended - started;
+  // Evidence work is not guest execution or a module phase in later samples.
+  __substrateDeferredByteMs += elapsed;
+  __substrateDeferredGuestMs += guestExecutionActiveMs(ended) - guestStarted;
+  retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes);
+  return { preparedBodyBytes: last?.preparedBytes ?? clock.byteBasePreparedBytes,
+    sourceBodyBytes: last?.sourceBytes ?? clock.byteBaseSourceBytes, utf8DeferredMs: elapsed };
+}
+type LoadClockFs = { kernelBlockedMs?: () => number };
+/**
+ * An instrument (K5a on the speed checklist): the 'read' phase's parts, per process, in ms and counts. On Dub the
+ * server's read was 1.5-2.2 s for 1,525 bodies where its native file I/O was ~0.2 s; this says which part: the tree's
+ * digest asked, the source read (and decoded), the prepared body's name computed from the text (encode + SHA-256), the
+ * prepared body read (and decoded), and a body prepared here. Said with the load clock. Readings only.
+ */
+type ReadSplit = { digestAsk: number; source: number; key: number; prepared: number; transform: number; sources: number; keys: number; preparedReads: number; transforms: number };
+const __substrateReadSplits = new WeakMap<object, ReadSplit>();
+function __substrateTimeRead<T>(process: object, part: 'digestAsk' | 'source' | 'key' | 'prepared' | 'transform', fn: () => T): T {
+  if (!traceReadingRequested()) return fn();
+  const began = performance.now();
+  try { return fn(); } finally {
+    let split = __substrateReadSplits.get(process);
+    if (!split) { split = { digestAsk: 0, source: 0, key: 0, prepared: 0, transform: 0, sources: 0, keys: 0, preparedReads: 0, transforms: 0 }; __substrateReadSplits.set(process, split); }
+    split[part] += performance.now() - began;
+    if (part === 'source') split.sources++; else if (part === 'key') split.keys++; else if (part === 'prepared') split.preparedReads++; else if (part === 'transform') split.transforms++;
+  }
+}
+/** How long after a process's last body its 'quiet' line is said. */
+const QUIET_SAID_AFTER_MS = 2000;
+/** Ends the process's current phase now and begins `phase`; answers the phase that ended, for its caller to return to. */
+function __substrateLoadPhase(process: object, vfs: object | undefined, phase: LoadPhase): LoadPhase {
+  if (!traceReadingRequested()) return 'outside';
+  const now = __substrateLoadNow();
+  let clock = __substrateLoadClocks.get(process);
+  if (!clock) {
+    const zero = (): Record<LoadPhase, number> => ({ outside: 0, resolve: 0, read: 0, link: 0, compile: 0, evaluate: 0 });
+    clock = { phase: 'outside', at: now, kernelAt: 0, wall: zero(), kernel: zero(), bodies: 0, bodyBytes: 0,
+      preparedBodies: 0, preparedBodyBytes: 0, sourceBodies: 0, sourceBodyBytes: 0,
+      byteBodies: [], countedBytes: 0,
+      retainedInputBytes: 512, peakRetainedInputBytes: 512, byteBase: 0, byteBasePreparedBytes: 0, byteBaseSourceBytes: 0,
+      // A timed run counts no bytes (trace costs off): no body is retained for the deferred UTF-8 count, and the clock
+      // says its byte totals as dropped (null), as it does past its retention bound.
+      byteTotalsDropped: !traceCostsRequested(), releaseBytes: () => {
+        clock!.byteBodies.length = 0; clock!.retainedInputBytes = 0; clock!.byteTotalsDropped = true;
+      },
+      linkSplit: { utf8CountMs: 0, byteCounts: 0 }, compileSplit: { sourceCaptureMs: 0, nativeEvalMs: 0, sourceCaptures: 0, evals: 0 },
+      outside: { vmMs: { parse: 0, setup: 0, eval: 0 }, guestBracketMs: 0, unbracketedMs: 0, clippedBracketMs: 0 },
+      guestAt: __substrateGuestAt(now), began: now, said: -1 };
+    __substrateLoadClocks.set(process, clock);
+    // the realm's entry account (S2 R27), from a reading's first load clock on
+    enableGuestEntryAccount();
+    if (!retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes)) clock.releaseBytes();
+  }
+  // The file system is the process's, known from the first caller that holds it (a `require` made through
+  // `Module.prototype.require` holds none): its total is taken from then, so nothing before is counted to a phase.
+  // The first caller's is not always the process's: every line of a run said `"fileSystem":"_VirtualFS","total":"no
+  // kernelBlockedMs on it"`, the engine's own tree, taken from a caller that ran before the process's kernel tree
+  // was the one in hand, and kept. A file system that carries the kernel's total replaces one that does not, and
+  // the total is taken from that moment.
+  const offered = vfs as LoadClockFs | undefined;
+  if (offered && (!clock.fs || (typeof clock.fs.kernelBlockedMs !== 'function' && typeof offered.kernelBlockedMs === 'function'))) { clock.fs = offered; clock.kernelAt = clock.fs.kernelBlockedMs?.() ?? 0; }
+  const kernelNow = clock.fs?.kernelBlockedMs?.() ?? 0;
+  const was = clock.phase;
+  const guestNow = __substrateGuestAt(now);
+  if (was === 'outside') __substrateOutsideInterval(clock.outside, now - clock.at, guestNow - clock.guestAt,
+    __substrateVmClocks.get(process)?.phase);
+  clock.wall[was] += now - clock.at; clock.kernel[was] += kernelNow - clock.kernelAt;
+  clock.phase = phase; clock.at = now; clock.kernelAt = kernelNow; clock.guestAt = guestNow;
+  return was;
+}
+/**
+ * An instrument: WHICH PATH EACH OF A PROCESS'S REQUIRES TOOK, said with its load clock. A `require` is the engine's
+ * own (`requireRaw`), or goes through `Module.prototype.require` or `Module._load` where a program replaced either
+ * (module-alias, a tracing hook), and the engine's `_load` is reached from the engine's `Module.prototype.require`,
+ * from a replaced `_load` that hands on, or by a program calling it. The clock marked `resolve` on the first of
+ * these alone, so an application whose requires all go through a replaced `_load` read 4 ms of resolving for 6,173
+ * modules beside 25,018 stats: its resolver's time was in whichever phase was open, and after each child the parent's
+ * body was counted in the child's last phase. `replaced` says, once each, what stands in the engine's place: the
+ * function's first characters and the stack at the first load that came through it (its own frame names its file).
+ */
+type RequirePaths = { requireRaw: number; replacedPrototypeRequire: number; replacedLoad: number;
+  engineLoad: { fromEnginePrototypeRequire: number; fromReplacedLoad: number; direct: number };
+  replaced: { prototypeRequire?: { source: string; stack: string[] }; load?: { source: string; stack: string[] } } };
+const __substrateRequirePaths = new WeakMap<object, RequirePaths>();
+function __substrateRequirePathsFor(process: object): RequirePaths {
+  let paths = __substrateRequirePaths.get(process);
+  if (!paths) { paths = { requireRaw: 0, replacedPrototypeRequire: 0, replacedLoad: 0, engineLoad: { fromEnginePrototypeRequire: 0, fromReplacedLoad: 0, direct: 0 }, replaced: {} }; __substrateRequirePaths.set(process, paths); }
+  return paths;
+}
+/** How the engine's `_load` is being reached, set by the caller that reaches it and taken by the load it reaches. */
+let __substrateLoadVia: 'engine-prototype-require' | 'replaced-load' | undefined;
+function __substrateSaidReplacement(replacement: unknown): { source: string; stack: string[] } {
+  let source = '';
+  try { source = String(replacement).replace(/\s+/gu, ' ').slice(0, 160); } catch { /* a function that cannot be printed */ }
+  return { source, stack: (new Error().stack ?? '').split('\n').slice(2, 10).map(line => line.trim().slice(0, 200)) };
+}
+type HttpLoadClockSample = { n: number; what: string; url: string | null } & Record<string, unknown>;
+function __substrateSayLoadClock(process: object, at: string, nativeStream?: NativeStreamClockSample, http?: HttpLoadClockSample): void {
+  if (!traceReadingRequested()) return;
+  const clock = __substrateLoadClocks.get(process);
+  const boundary = nativeStream !== undefined || http !== undefined;
+  // A process that went quiet and then ran on (a seed script's queries after its last require: Cal's seed-app-store,
+  // 1.9 s of its 2.7 s) says its exit too, once, though it loaded nothing more: without it that run had no line.
+  const exitAfterQuiet = at === 'exit' && clock?.quietSaidAt !== undefined && !clock.exitSaid;
+  if (!clock || (!boundary && !exitAfterQuiet && clock.bodies === clock.said)) return;
+  // Boundary captures can have the same body prefix with different outside
+  // time. They neither consume nor suppress the existing quiet/exit line.
+  if (!boundary) clock.said = clock.bodies;
+  const round = (values: Record<LoadPhase, number>): unknown => traceRoundFields({ ...values });
+  // The phase open now is counted to this instant, in a copy: the clock itself goes on.
+  const wall = { ...clock.wall }, kernel = { ...clock.kernel }, now = __substrateLoadNow();
+  // A 'quiet' line is said by a timer that waits QUIET_SAID_AFTER_MS after the process's last body: that wait is the
+  // line's own and none of the load's. Counted in, every process's line held two seconds of it in whatever phase
+  // was open (2,029 of a twins' host's 2,579 ms and 2,002 of an attach's 2,185 were this wait). Taken off the open
+  // phase and off the total, and said beside them.
+  const saidAfter = at === 'quiet' ? Math.min(QUIET_SAID_AFTER_MS, Math.max(0, now - clock.at)) : 0;
+  const sinceQuiet = at === 'exit' && clock.quietSaidAt !== undefined ? now - clock.quietSaidAt : undefined;
+  if (at === 'quiet') clock.quietSaidAt = now;
+  if (at === 'exit') clock.exitSaid = true;
+  wall[clock.phase] += now - clock.at - saidAfter;
+  kernel[clock.phase] += (clock.fs?.kernelBlockedMs?.() ?? clock.kernelAt) - clock.kernelAt;
+  const entry = (process as { argv?: string[] }).argv?.[1];
+  const split = __substrateReadSplits.get(process), paths = __substrateRequirePaths.get(process);
+  const configs = __substrateResolutionKept.get(process)?.packageConfigs;
+  const requires = paths ? { ...paths, engineLoad: { ...paths.engineLoad }, replaced: { ...paths.replaced } } : null;
+  const limit = clock.bodies;
+  const payload = { event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
+    ...(nativeStream ? { epoch: nativeStream.at, nativeStream: { ...nativeStream } } : {}),
+    ...(http ? { http: { ...http } } : {}),
+    script: entry === undefined ? null : pathShim.posix.basename(entry),
+    preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
+    // R5's reading: the body-count input's declared bytes against the tab bound, now and at its highest.
+    retainedInputBytes: clock.retainedInputBytes, peakRetainedInputBytes: clock.peakRetainedInputBytes,
+    linkSplit: { utf8CountMs: traceRound(clock.linkSplit.utf8CountMs), byteCounts: clock.linkSplit.byteCounts },
+    compileSplit: { sourceCaptureMs: traceRound(clock.compileSplit.sourceCaptureMs), nativeEvalMs: traceRound(clock.compileSplit.nativeEvalMs), sourceCaptures: clock.compileSplit.sourceCaptures, evals: clock.compileSplit.evals },
+    vmSplit: __substrateVmSnapshot(process),
+    outsideSplit: __substrateOutsideSnapshot(process, clock, now, saidAfter),
+    readSplit: split ? traceRoundFields({ ...split }) : null,
+    resolveSplit: { packageConfigs: configs ? { ...configs } : null, keptPaths: __substratePathCountsBy.has(process) ? { ...__substratePathCountsBy.get(process)! } : null },
+    bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: traceRound(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: traceRound(saidAfter) } : {}),
+    ...(sinceQuiet !== undefined ? { sinceQuietMs: traceRound(sinceQuiet) } : {}), wallMs: round(wall), kernelMs: round(kernel),
+    // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
+    // own request account, and nothing said whether the file system here gave no total or gave one that stood still.
+    requires,
+    kernelFrom: { fileSystem: clock.fs ? (clock.fs as object).constructor?.name ?? 'unnamed' : null, total: typeof clock.fs?.kernelBlockedMs === 'function' ? traceRound(clock.fs.kernelBlockedMs()) : 'no kernelBlockedMs on it' } };
+  if (clock.byteTotalsDropped) {
+    traceOutput("[boot-trace]", { ...payload, preparedBodyBytes: null, sourceBodyBytes: null, byteTotalsOmitted: 'trace-retention-bound' });
+    return;
+  }
+  if (clock.byteBase > 0 && limit === clock.byteBase) {
+    traceOutput("[boot-trace]", { ...payload, preparedBodyBytes: clock.preparedBodyBytes,
+      sourceBodyBytes: clock.sourceBodyBytes, linkSplit: { ...payload.linkSplit, utf8DeferredMs: 0 } });
+    return;
+  }
+  deferredTraceOutput("[boot-trace]", () => {
+    const { preparedBodyBytes, sourceBodyBytes, utf8DeferredMs } = __substrateBodyByteTotals(clock, limit);
+    const materialized = { ...payload, preparedBodyBytes, sourceBodyBytes,
+      ...(preparedBodyBytes === null ? { byteTotalsOmitted: 'cohort-prefix-retired' } : {}),
+      linkSplit: { ...payload.linkSplit, utf8DeferredMs: traceRound(utf8DeferredMs) } };
+    if (at === 'exit' && !clock.byteTotalsDropped && limit >= clock.byteBase) {
+      const retired = limit - clock.byteBase;
+      clock.byteBodies = clock.byteBodies.slice(retired); clock.byteBase = limit;
+      clock.retainedInputBytes -= retired * 64;
+      clock.byteBasePreparedBytes = preparedBodyBytes ?? 0; clock.byteBaseSourceBytes = sourceBodyBytes ?? 0;
+      if (clock.byteBodies.length) {
+        if (!retainTraceInput(clock, clock.retainedInputBytes, clock.releaseBytes)) clock.releaseBytes();
+      } else releaseTraceInput(clock);
+    }
+    return materialized;
+  }, 'log', { retained: payload, input: clock });
+}
+// A server's first listen, said with its process's load split as a boundary line (it consumes no quiet or exit line):
+// the split up to the moment it serves, which the quiet line of a server still loading at first HTTP never reaches a
+// capture with (S2 R17, LibreChat: no line from api/server/index.js in four runs).
+const __substrateListenSaid = new WeakSet<object>();
+observeListenClocks((owner, port) => {
+  const process = owner === null ? undefined : __runFor(owner)?.process;
+  if (!process || __substrateListenSaid.has(process)) return;
+  __substrateListenSaid.add(process);
+  __substrateSayLoadClock(process, 'listen', undefined, { n: 0, what: 'listen', url: null, port });
+});
+observeNativeStreamClocks((owner, sample) => {
+  // A binding's handle retains its actual run owner across native awaits;
+  // the current guest globals and the last runtime created cannot name it.
+  const process = owner === null ? undefined : __runFor(owner)?.process;
+  if (process) __substrateSayLoadClock(process, sample.when, sample);
+});
+
+type K5ServerPrototype = { emit: (event: string | symbol, ...args: unknown[]) => unknown };
+type K5Response = { writeHead: (status: unknown, ...args: unknown[]) => unknown };
+type K5Requests = { said: number; detach: Set<() => void> };
+const __substrateK5Requests = new WeakMap<object, K5Requests>();
+const __substrateK5Servers = new WeakSet<object>();
+/** Observe Node's real request emission on the owned side, never in its
+ * vendored parser. HTTP and HTTPS share the actual process's three slots. */
+function __substrateObserveHttp(process: object, module: unknown): void {
+  if (!traceReadingRequested()) return;
+  const Server = (module as { Server?: unknown } | null)?.Server;
+  if (typeof Server !== 'function') return;
+  const prototype = Server.prototype as K5ServerPrototype | undefined;
+  if (!prototype || __substrateK5Servers.has(prototype) || typeof prototype.emit !== 'function') return;
+  let state = __substrateK5Requests.get(process);
+  if (!state) { state = { said: 0, detach: new Set() }; __substrateK5Requests.set(process, state); }
+  if (state.said >= 3) return;
+  const requests = state, descriptor = Object.getOwnPropertyDescriptor(prototype, 'emit'), emit = prototype.emit;
+  const observed = function emitRequest(this: unknown, event: string | symbol, ...args: unknown[]): unknown {
+    if (event === 'request' && requests.said < 3) {
+      try {
+        const req = args[0] as { url?: string } | undefined, res = args[1] as K5Response | undefined;
+        if (req && res && typeof res.writeHead === 'function' && !/^\/(__volter|_twin)\//u.test(req.url ?? '')) {
+          const n = ++requests.said;
+          const say = (what: string, extra: Record<string, unknown> = {}): string | null | undefined => {
+            try {
+              const url = req.url, owner = __tokenForProcess(process as Process);
+              const pid = runPid(owner)?.pid ?? (process as { pid?: unknown }).pid;
+              const capturedUrl = typeof url === 'string' ? url : null;
+              if (traceReadingRequested()) traceOutput('[k5] server', { n, what, url: capturedUrl,
+                at: Math.round((performance.timeOrigin + performance.now()) * 10) / 10,
+                bodies: __substrateLoadClocks.get(process)?.bodies ?? 0,
+                pid: typeof pid === 'number' ? pid : null, ...extra });
+              return capturedUrl;
+            } catch { return undefined; /* Evidence cannot change the request or response. */ }
+          };
+          const requestUrl = say('request-event');
+          // R11: a persistent server may never produce a quiet/exit clock
+          // before its first page. Reuse this existing process-owned slot;
+          // capture phases now and defer source-byte work through R5.
+          if (n === 1 && requestUrl !== undefined) {
+            try { __substrateSayLoadClock(process, 'first-request', undefined, { n, what: 'request-event', url: requestUrl }); }
+            catch { /* Evidence cannot change Node's request delivery. */ }
+          }
+          const writeHead = res.writeHead;
+          let headSaid = false;
+          const observedHead = function writeHeadObserved(this: unknown, status: unknown, ...rest: unknown[]): unknown {
+            let headClock: HttpLoadClockSample | undefined;
+            if (!headSaid) {
+              headSaid = true;
+              // Caller objects can carry functions or ports. Capture scalar
+              // evidence only; Node alone coerces the actual status argument.
+              const scalar = status == null || ['number', 'string', 'boolean'].includes(typeof status);
+              const extra = scalar ? { status } : { status: null, statusType: typeof status };
+              const url = say('write-head', extra);
+              if (n === 1 && url !== undefined) headClock = { n, what: 'write-head', url,
+                statusArgument: extra.status, ...(!scalar ? { statusType: typeof status } : {}) };
+            }
+            // A response can be frozen or wrapped again by its caller. The
+            // observer must still delegate and preserve that replacement.
+            try { if (res.writeHead === observedHead) res.writeHead = writeHead; } catch { /* Read-only after capture. */ }
+            const result = Reflect.apply(writeHead, this, [status, ...rest]);
+            // Only a successful Node call has this boundary. Reuse its
+            // captured scalar URL/status; do not read caller properties or
+            // perform their coercion a second time.
+            if (headClock) {
+              try { __substrateSayLoadClock(process, 'first-write-head', undefined, headClock); }
+              catch { /* Evidence cannot change the response. */ }
+            }
+            return result;
+          };
+          if (requests.said === 3) {
+            for (const detach of requests.detach) { try { detach(); } catch { /* A caller can freeze its prototype. */ } }
+            requests.detach.clear();
+          }
+          res.writeHead = observedHead;
+        }
+      } catch { /* A custom request/response must retain its ordinary emission. */ }
+    }
+    return Reflect.apply(emit, this, [event, ...args]);
+  };
+  Object.defineProperty(prototype, 'emit', { value: observed, configurable: true, writable: true,
+    enumerable: descriptor?.enumerable ?? true });
+  __substrateK5Servers.add(prototype);
+  requests.detach.add(() => {
+    // Leave a caller's own replacement intact. Otherwise restore the exact
+    // inherited/own property shape, with no observer on later requests.
+    if (prototype.emit !== observed) return;
+    if (descriptor) Object.defineProperty(prototype, 'emit', descriptor);
+    else Reflect.deleteProperty(prototype, 'emit');
+  });
+}
 function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
   if (counts.timer !== undefined) { clearTimeout(counts.timer); counts.timer = undefined; }
-  const totals = { digest: counts.digest, hash: counts.hash, kept: counts.kept, noDirectory: counts.noDirectory, notOwnText: counts.notOwnText, format: counts.format, types: counts.types, notJavaScript: counts.notJavaScript };
+  __substrateSayLoadClock(process, at);
+  const totals = { digest: counts.digest, hash: counts.hash, kept: counts.kept, transpiled: counts.transpiled, noDirectory: counts.noDirectory, notOwnText: counts.notOwnText, format: counts.format, types: counts.types, notJavaScript: counts.notJavaScript };
   const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
   if (total === counts.said) return;
   counts.said = total;
-  console.log('[boot-trace]', JSON.stringify({ event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: __substrateResolutionKept.get(process)?.probes ?? null }));
+  if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: __substrateResolutionKept.get(process)?.probes ? { ...__substrateResolutionKept.get(process)!.probes } : null });
 }
 function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCounts, 'said' | 'timer'>): void {
+  if (!traceReadingRequested()) return;
   let counts = __substratePreparedCounts.get(process);
   if (!counts) {
-    counts = { digest: 0, hash: 0, kept: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
+    counts = { digest: 0, carried: 0, hash: 0, kept: 0, transpiled: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
     __substratePreparedCounts.set(process, counts);
   }
   counts[how] += 1;
   if (counts.timer !== undefined) clearTimeout(counts.timer);
   const mine = counts;
-  counts.timer = setTimeout(() => { mine.timer = undefined; __substrateSayPrepared(process, mine, 'quiet'); }, 2000);
+  counts.timer = setTimeout(() => { mine.timer = undefined; __substrateSayPrepared(process, mine, 'quiet'); }, QUIET_SAID_AFTER_MS);
   (counts.timer as { unref?: () => void }).unref?.();
 }
 /**
@@ -885,7 +1498,7 @@ function __substrateSayRowsUsed(process: object): void {
   for (const entry of view.moduleLoadList ?? []) if (entry.startsWith('NativeModule ')) rows[`engine.${entry.slice(13)}`] = 1;
   for (const name of nodeLibBindingsAsked()) rows[`engine.binding.${name}`] = 1;
   const program = String(view.argv0 ?? 'node').split('/').pop() || 'node';
-  console.log('[rows-used]', JSON.stringify({ pid: view.pid ?? null, program, rows }));
+  if (traceReadingRequested()) traceOutput("[rows-used]", { pid: view.pid ?? null, program, rows });
 }
 Object.defineProperty(globalThis, '__substratePreparedExit', {
   configurable: true,
@@ -896,10 +1509,24 @@ Object.defineProperty(globalThis, '__substratePreparedExit', {
     __substrateSayRowsUsed(process);
   },
 });
-/** A prepared body's text, or undefined where the tree holds none by that name: the read's own miss is the answer. */
+/**
+ * A prepared body's text, or undefined where the tree holds none by that name: the read's own miss is the answer.
+ * Where a reading is requested and the tree says a text's exact UTF-8 length beside it (R5, the substrate's
+ * `readTextCounted`: its bytes decoded as valid UTF-8, less a dropped BOM), the length comes too, and the body is
+ * counted at once rather than held until the deferred count. A tree that says none leaves the body to that count.
+ */
+let __substratePreparedUtf8Bytes: number | undefined;
 function __substrateReadPrepared(vfs: { readFileSync(path: string, encoding: 'utf8'): string }, key: string): string | undefined {
-  try { return vfs.readFileSync(`${PREPARED_MODULES_DIR}/${key}`, 'utf8'); }
-  catch { return undefined; }
+  // Said for the read just made, and read by its caller at once; an unrequested read allocates nothing for it.
+  __substratePreparedUtf8Bytes = undefined;
+  const path = `${PREPARED_MODULES_DIR}/${key}`;
+  try {
+    if (traceCostsRequested()) {
+      const counted = (vfs as { readTextCounted?: (path: string) => { text: string; utf8Bytes?: number } }).readTextCounted;
+      if (typeof counted === 'function') { const read = counted.call(vfs, path); __substratePreparedUtf8Bytes = read.utf8Bytes; return read.text; }
+    }
+    return vfs.readFileSync(path, 'utf8');
+  } catch { return undefined; }
 }
 
 function transformEsmToCjs(code: string, filename: string): string {
@@ -928,7 +1555,7 @@ function transformEsmToCjs(code: string, filename: string): string {
  * Step 3 re-parses the modified code via transformEsmToCjsSimple.
  */
 function transformEsmToCjsAst(code: string, filename: string): string {
-  const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' }) as any;
+  let ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' }) as any;
 
   // Collect deep replacements: import.meta → import_meta, import() → __dynamicImport()
   const deepReplacements: Array<[number, number, string]> = [];
@@ -949,6 +1576,8 @@ function transformEsmToCjsAst(code: string, filename: string): string {
   // Check for actual import/export declarations
   const hasImportDecl = ast.body.some((n: any) => n.type === 'ImportDeclaration');
   const hasExportDecl = ast.body.some((n: any) => n.type?.startsWith('Export'));
+  // The nested lowerer parses modified source. Retaining this tree through that call doubles its live ASTs.
+  ast = undefined;
 
   // Apply deep replacements from end to start (preserves earlier positions)
   let transformed = applyReplacements(code, deepReplacements);
@@ -1027,6 +1656,8 @@ function __substrateDataModuleSource(url: string): string | undefined {
 }
 
 const __substratePending = Symbol.for('substrate.pending');
+// Loading state belongs to the module, not to properties of a guest's arbitrary exports object.
+const __substratePendingModules = new WeakMap<Module, object>();
 export function __substratePendingOf(value: unknown): Promise<void> | undefined {
   if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return undefined;
   const pending = (value as Record<symbol, unknown>)[__substratePending];
@@ -1042,9 +1673,24 @@ export function __substratePendingOf(value: unknown): Promise<void> | undefined 
 function __substrateKeepPending(module: Module, body: Promise<unknown>, forget: () => void): void {
   const exports = module.exports as Record<symbol, unknown>;
   const holds = exports !== null && (typeof exports === 'object' || typeof exports === 'function');
+  const token = {};
+  __substratePendingModules.set(module, token);
   const settled: Promise<void> = body.then(
-    () => { module.loaded = true; if (holds) delete exports[__substratePending]; },
-    (error: unknown) => { forget(); if (holds) delete exports[__substratePending]; throw error; },
+    () => {
+      if (__substratePendingModules.get(module) === token) {
+        __substratePendingModules.delete(module);
+        module.loaded = true;
+        if (holds) delete exports[__substratePending];
+      }
+    },
+    (error: unknown) => {
+      if (__substratePendingModules.get(module) === token) {
+        __substratePendingModules.delete(module);
+        forget();
+        if (holds) delete exports[__substratePending];
+      }
+      throw error;
+    },
   );
   if (holds) Object.defineProperty(exports, __substratePending, { value: settled, configurable: true, enumerable: false, writable: true });
 }
@@ -1077,15 +1723,15 @@ function __substrateDriveBody(kind: 'sync' | 'generator' | 'async', body: unknow
   if (kind === 'sync') return undefined;
   if (kind === 'async') return (module as { __substrateBodyDone?: boolean }).__substrateBodyDone ? undefined : body as Promise<unknown>;
   const iterator = body as Iterator<unknown>;
-  let step: IteratorResult<unknown> = withGuestExecution(() => iterator.next());
-  while (!step.done && !step.value) step = withGuestExecution(() => iterator.next());
+  let step: IteratorResult<unknown> = withGuestExecution(() => iterator.next(), 'entry');
+  while (!step.done && !step.value) step = withGuestExecution(() => iterator.next(), 'entry');
   if (step.done) return undefined;
   return (async () => {
     let current: IteratorResult<unknown> = step;
     while (!current.done) {
       await current.value;
-      current = withGuestExecution(() => iterator.next());
-      while (!current.done && !current.value) current = withGuestExecution(() => iterator.next());
+      current = withGuestExecution(() => iterator.next(), 'entry');
+      while (!current.done && !current.value) current = withGuestExecution(() => iterator.next(), 'entry');
     }
   })();
 }
@@ -1223,10 +1869,27 @@ export interface Module {
   parent?: Module | null;
 }
 
+/** Host-only execution evidence. No observer function is installed in Node globals or Module exports. */
+export interface ModuleEvaluationObserver {
+  observes(filename: string): boolean;
+  /** Request original-source evidence only for these exact filenames. */
+  observesSource?(filename: string): boolean;
+  onEvaluated(filename: string, exports: unknown, evidence?: ModuleEvaluationEvidence): void;
+}
+
+/** Host-owned scalar evidence; no source, exports or module is retained here. */
+export interface ModuleEvaluationEvidence { sourceSha256: string; exportsReplaced: boolean }
+
 export interface RuntimeOptions {
+  /** Host-configured numeric identity; absent preserves uid/gid 1000 and groups [1000]. */
+  credentials?: ProcessCredentials;
   cwd?: string;
   env?: Record<string, string>;
   onConsole?: (method: string, args: unknown[]) => void;
+  /** Observe only original completed synchronous bodies at these exact paths, when the host explicitly requests it. */
+  moduleEvaluationObserver?: ModuleEvaluationObserver;
+  /** llhttp compiled by the creating worker; structured-cloned into the guest realm. */
+  httpParserModule?: WebAssembly.Module;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
   /** fd 1 and fd 2 as the bytes the program wrote; where given, the text sink of that fd is not called. */
@@ -1483,8 +2146,10 @@ Object.defineProperty(builtinModules, 'assert/strict', {
 // A listed name with neither resolved to its bare id and was then opened as a FILE of that name: `require('repl')`
 // answered "ENOENT: open 'repl'" (ts-node, which loads `repl` on every start). The engine does not load with one.
 {
-  const __perGuest = new Set(['fs', 'process', 'wasi']);
-  const __unanswered = moduleShim.builtinModules.filter((name: string) => !__perGuest.has(name) && !Object.prototype.hasOwnProperty.call(builtinModules, name));
+  // Per guest too: `fs/promises` (the guest's `fs`), `stream/consumers` (made per process, requirePlain); and a name the
+  // vendored node-lib answers is answered by `requirePlain` ahead of this table (`dns/promises`, `timers/promises`).
+  const __perGuest = new Set(['fs', 'fs/promises', 'process', 'wasi', 'stream/consumers']);
+  const __unanswered = moduleShim.builtinModules.filter((name: string) => !__perGuest.has(name) && !Object.prototype.hasOwnProperty.call(builtinModules, name) && !hasNodeLibModule(name));
   if (__unanswered.length > 0) throw new Error(`tabnode: builtin name${__unanswered.length === 1 ? '' : 's'} listed with no module: ${__unanswered.join(', ')}. Give each a module in runtime.ts's table or take it off shims/module.ts's list.`);
 }
 // Node's builtin module objects are ordinary mutable objects: a program can
@@ -1692,7 +2357,9 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
   if (typeof globalThis.File !== "undefined") bufferModule.File = globalThis.File;
   bufferModule.kStringMaxLength = (bufferModule.constants && bufferModule.constants.MAX_STRING_LENGTH) || 536870888;
   bufferModule.isUtf8 = (input: any) => {
-    const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+    const view = input instanceof Uint8Array ? input : new Uint8Array(input);
+    // shared bytes are decoded from an unshared copy, whichever decoder this name is here (node-lib/binding/buffer.ts)
+    const bytes = Object.prototype.toString.call(view.buffer) === "[object SharedArrayBuffer]" ? new Uint8Array(view) : view;
     try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); return true; } catch (error) { return false; }
   };
   bufferModule.isAscii = (input: any) => {
@@ -1971,7 +2638,12 @@ function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string): boolean {
  */
 const __substrateModuleClasses = new WeakMap<Record<string, Module>, any>();
 /** What a module being loaded carries past its extension's handler, whose signature has no room for it. */
-const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined } }>();
+const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined; transpileKey?: string } }>();
+// Nested load hooks replace shared compile callbacks; a failed body still belongs to its admission parent.
+const __substrateAdmissionParents = new WeakMap<Module, Module | null>();
+// Internal reuse must not lengthen the lifetime of createRequire's invocation-local maps.
+// This private reset is never exposed on a guest require function.
+const __substrateRequireResets = new WeakMap<RequireFunction, () => void>();
 /** Node's `findLongestRegisteredExtension`: the longest registered extension the file's name ends with, else `.js`. */
 function __substrateRegisteredExtension(filename: string, extensions: Record<string, unknown>): string {
   const name = filename.slice(filename.lastIndexOf('/') + 1);
@@ -1994,7 +2666,11 @@ function __substrateRegisteredExtension(filename: string, extensions: Record<str
 const __substrateResolutionKept = new WeakMap<object, ResolutionKept & { depth: number }>();
 function __substrateKeptFor(process: object): ResolutionKept & { depth: number } {
   let kept = __substrateResolutionKept.get(process);
-  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0, probes: { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 } }; __substrateResolutionKept.set(process, kept); }
+  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0 }; __substrateResolutionKept.set(process, kept); }
+  if (traceReadingRequested()) {
+    kept.packageConfigs ??= { lookups: 0, positiveHits: 0, negativeHits: 0, checks: 0, reads: 0, missingKept: 0 };
+    kept.probes ??= { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 };
+  }
   return kept;
 }
 /**
@@ -2005,9 +2681,9 @@ const __substrateWindowSaid = new WeakSet<object>();
 function __substrateInStatWindow<T>(process: object, run: () => T): T {
   const keeping = __substrateKeptFor(process);
   // An instrument: at a process's first module body, whether its stat window opens and the require depth it saw.
-  if (!__substrateWindowSaid.has(process)) {
+  if (traceReadingRequested() && !__substrateWindowSaid.has(process)) {
     __substrateWindowSaid.add(process);
-    console.log('[boot-trace]', JSON.stringify({ event: 'stat-window', at: Date.now(), pid: (process as { pid?: number }).pid ?? null, opened: keeping.depth === 0 && keeping.stats === undefined, depth: keeping.depth }));
+    if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'stat-window', at: Date.now(), pid: (process as { pid?: number }).pid ?? null, opened: keeping.depth === 0 && keeping.stats === undefined, depth: keeping.depth });
   }
   if (keeping.depth !== 0 || keeping.stats !== undefined) return run();
   keeping.stats = new Map();
@@ -2015,6 +2691,13 @@ function __substrateInStatWindow<T>(process: object, run: () => T): T {
   try { return run(); } finally { keeping.stats = undefined; }
 }
 const __substrateResolvedPaths = new WeakMap<Record<string, Module>, WeakMap<VirtualFS, { paths: Map<string, string>; bytes: number }>>();
+/** A requested reading's account of the kept resolved paths (resolveSplit.keptPaths): hits, misses, size, evictions. */
+const __substratePathCountsBy = new WeakMap<object, { hits: number; misses: number; kept: number; evicted: number }>();
+function __substratePathCounts(process: object) {
+  let counts = __substratePathCountsBy.get(process);
+  if (!counts) { counts = { hits: 0, misses: 0, kept: 0, evicted: 0 }; __substratePathCountsBy.set(process, counts); }
+  return counts;
+}
 function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
   let filesystems = __substrateResolvedPaths.get(cache);
   if (!filesystems) { filesystems = new WeakMap(); __substrateResolvedPaths.set(cache, filesystems); }
@@ -2022,15 +2705,28 @@ function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
   if (!paths) { paths = { paths: new Map(), bytes: 0 }; filesystems.set(fs, paths); }
   return paths;
 }
-function __substrateKeepPath(cache: { paths: Map<string, string>; bytes: number }, key: string, path: string): void {
+/**
+ * The resolved paths a process keeps, Node's relativeResolveCache, bounded by its bytes. The count bound was 8,192, which
+ * Cal's server (8,456 modules, 26,560 requires; 85,084 kind probes, 371 ms of an 829 ms resolve) reaches long before the
+ * byte bound: at ~400 bytes a key and path, 8 MB holds ~20,000. The bytes are the bound now; the count only stops
+ * a cache of many tiny paths from growing its map without end. Evictions are counted for a requested reading.
+ *
+ * 32 MB (S2 R76-Twenty): Twenty's server (b70515a4 dry-run2, Mac mini, production build: 17,322 modules) kept 20,153
+ * paths at the 8 MB bound and evicted 20,943, oldest first, across 41,112 misses of ~41 us each (1,720 ms of
+ * resolve). An evicted key asked again is a whole resolution again; Node's own cache keeps every one. 32 MB holds
+ * ~80,000 at that size, the count bound stands, and a process that asks fewer keeps no more than before.
+ */
+const KEPT_PATHS_MAX = 131_072, KEPT_PATH_BYTES_MAX = 32 * 1024 * 1024;
+function __substrateKeepPath(cache: { paths: Map<string, string>; bytes: number; evicted?: number }, key: string, path: string): void {
   const bytes = 2 * (key.length + path.length);
-  if (bytes > 8 * 1024 * 1024) return;
+  if (bytes > KEPT_PATH_BYTES_MAX) return;
   const old = cache.paths.get(key);
   if (old !== undefined) { cache.paths.delete(key); cache.bytes -= 2 * (key.length + old.length); }
-  while (cache.paths.size >= 8192 || cache.bytes + bytes > 8 * 1024 * 1024) {
+  while (cache.paths.size >= KEPT_PATHS_MAX || cache.bytes + bytes > KEPT_PATH_BYTES_MAX) {
     const first = cache.paths.entries().next().value!;
     cache.paths.delete(first[0]);
     cache.bytes -= 2 * (first[0].length + first[1].length);
+    if (traceReadingRequested()) cache.evicted = (cache.evicted ?? 0) + 1;
   }
   cache.paths.set(key, path);
   cache.bytes += bytes;
@@ -2046,6 +2742,25 @@ function __substrateModuleDir(parent: any, currentDir: string): string {
 function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireFor: (parent: any) => any): any {
   let Module = __substrateModuleClasses.get(moduleCache);
   if (Module) return Module;
+  // Node's module loader reuses the parent's context instead of constructing a whole loader per _load.
+  // Keep that construction private to this module-cache class and admitted parent. Guest-made parents and
+  // filename accessors retain the original fresh path; a live filename change replaces its sole context.
+  const freshFor = requireFor;
+  const contexts = new WeakMap<Module, { filename: string; require: RequireFunction }>();
+  requireFor = (parent: any) => {
+    if (!__substrateAdmissionParents.has(parent)) return freshFor(parent);
+    const filename = Object.getOwnPropertyDescriptor(parent, 'filename');
+    if (!filename || typeof filename.value !== 'string' || filename.value === '') return freshFor(parent);
+    let context = contexts.get(parent);
+    if (!context || context.filename !== filename.value) {
+      context = { filename: filename.value, require: freshFor(parent) };
+      contexts.set(parent, context);
+    }
+    // The old factory supplied empty transient maps and rebound currentVfs on every call. Preserve both;
+    // successful process paths and live hooks still have their original owners and lifetimes.
+    __substrateRequireResets.get(context.require)!();
+    return context.require;
+  };
   Module = function Module(this: any, id = "", parent?: any) {
     this.id = id; this.filename = id; this.exports = {}; this.loaded = false; this.children = []; this.paths = []; this.parent = parent;
   };
@@ -2062,7 +2777,9 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module.prototype.require = function (this: any, id: string) {
     const keeping = __substrateKeptFor(process);
     keeping.depth += 1;
-    try { return Module._load(id, this, false); } finally { keeping.depth -= 1; }
+    const phase = __substrateLoadPhase(process, undefined, 'resolve');
+    __substrateLoadVia = 'engine-prototype-require';
+    try { return Module._load(id, this, false); } finally { __substrateLoadVia = undefined; keeping.depth -= 1; __substrateLoadPhase(process, undefined, phase); }
   };
   Module.__substrateRequire = Module.prototype.require;
   // `Module.prototype._compile(content, filename)` is the seam every loader
@@ -2143,18 +2860,18 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module.prototype.load = function (this: any, filename: string) {
     this.filename = filename;
     this.paths = Module._nodeModulePaths(pathShim.dirname(filename));
-    const extension = pathShim.extname(filename);
-    (Module._extensions[extension] ?? Module._extensions[".js"])(this, filename);
-    this.loaded = true;
+    Module._extensions[__substrateRegisteredExtension(filename, Module._extensions)](this, filename);
+    // A lowered body that is still awaiting an import keeps the engine's existing pending state.
+    if (!__substratePendingModules.has(this)) this.loaded = true;
   };
   Module.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
   Module.wrap = (code: string) => Module.wrapper[0] + code + Module.wrapper[1];
-  Module.createRequire = (filenameOrUrl: string) => {
-    let fromPath = String(filenameOrUrl);
-    if (fromPath.startsWith("file://")) {
-      fromPath = fromPath.slice(7);
-      if (fromPath.startsWith("/") && fromPath[2] === ":") fromPath = fromPath.slice(1);
-    }
+  Module.createRequire = (filenameOrUrl: string | URL) => {
+    // A file URL is read as Node reads it, by fileURLToPath: its path, percent-decoded. This took the text after
+    // `file://` as it stood, so a URL whose path had an escape (`%40` for `@`, `%20` for a space) named a directory
+    // that is not there, and every relative `require` made from it was "Cannot find module".
+    let fromPath = filenameOrUrl instanceof URL ? filenameOrUrl.href : String(filenameOrUrl);
+    if (fromPath.startsWith("file:")) fromPath = urlShim.fileURLToPath(fromPath);
     const made = requireFor({ id: fromPath, filename: fromPath, paths: [] });
     made.cache = moduleCache;
     return made;
@@ -2174,6 +2891,41 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   // the fast path Node keeps too. They hang off the Module class because that
   // class is this run's -- one per module cache -- and Node's are per process.
   Module.__substrateHooks = void 0;
+  // ADR-0094's native-binding maps of this run, as data the resolver reads only where they can apply (SubstrateAddons):
+  // each prelude that runs over this Module class gives its map once (one node entry can require another, the run's
+  // wrapper and a generated entry: S2 B10), and they compose as the chained resolve hooks did, the most recently given
+  // first. A prelude that finds no such door (real Node, the host's qualification instrument) registers its hook instead.
+  let __substrateAddonMaps: readonly SubstrateAddons[] = Object.freeze([]);
+  const __substrateAddonsGiven = new Set<string>();
+  Object.defineProperty(Module, '__substrateAddons', { get: () => __substrateAddonMaps.length ? __substrateAddonMaps : void 0, configurable: false, enumerable: true });
+  /**
+   * Takes a map and answers true. The same map again (its bound paths with their providers, its refusal roots with their
+   * reasons) changes nothing,
+   * as dlopen(3) of a library already loaded returns its handle; a different one is composed ahead of the earlier ones,
+   * as a later registerHooks hook ran ahead of an earlier one.
+   */
+  Module.__substrateSetAddons = (map: { bindings: readonly string[]; roots: readonly string[]; provide(path: string): string; refuse(path: string, cause?: unknown): never;
+    /** Parallel to `bindings`: each path's provider (and initializer), so two maps binding one path differently differ. */
+    providers?: readonly string[];
+    /** Parallel to `roots`: each root's refusal reason. */
+    reasons?: readonly string[] }): boolean => {
+    // The same map only where the prelude says what each binding provides and each root refuses with, and all of it is
+    // equal: [path, provider] and [root, reason] pairs (lane A's review of d7ce61356). Without them, it is composed
+    // again, which answers exactly as the one already there.
+    if (map.providers?.length === map.bindings.length && map.reasons?.length === map.roots.length) {
+      const pairs = (keys: readonly string[], values: readonly string[]): string[][] => keys.map((key, at) => [key, values[at]!]).sort((a, b) => a[0]! < b[0]! ? -1 : a[0]! > b[0]! ? 1 : 0);
+      const given = JSON.stringify([pairs(map.bindings, map.providers), pairs(map.roots, map.reasons)]);
+      if (__substrateAddonsGiven.has(given)) return true;
+      __substrateAddonsGiven.add(given);
+    }
+    // Fixed once given: the bound paths are read through a frozen lookup over a set nothing else holds, and the list
+    // is replaced, never changed, so a resolution under way reads the maps it began with.
+    const bound = new Set(map.bindings);
+    const addons: SubstrateAddons = Object.freeze({ bindings: Object.freeze({ has: (path: string) => bound.has(path) }),
+      roots: Object.freeze([...map.roots]), provide: map.provide, refuse: map.refuse });
+    __substrateAddonMaps = Object.freeze([addons, ...__substrateAddonMaps]);
+    return true;
+  };
   const __substrateHooksOf = (): RunModuleHooks => (Module.__substrateHooks ??= new RunModuleHooks(process));
   Module.registerHooks = (hooks: { resolve?: unknown; load?: unknown }) => __substrateHooksOf().sync.registerHooks(hooks);
   Module.register = (specifier: unknown, parentURL?: unknown, options?: { parentURL?: unknown; data?: unknown; transferList?: unknown }) =>
@@ -2225,10 +2977,38 @@ function createRequire(
   const __substrateHooks = (): RunModuleHooks | undefined => __substrateModule().__substrateHooks as RunModuleHooks | undefined;
   const __substrateResolve = (id: string): string => {
     const Module = __substrateModule();
-    return Module._resolveFilename === Module.__substrateResolveFilename
-      ? resolveModule(id, currentDir)
-      : Module._resolveFilename(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false, undefined);
+    const maps = Module.__substrateAddons as readonly SubstrateAddons[] | undefined;
+    if (!maps) return __substrateResolveFile(Module, id);
+    // The native-binding maps, as the prelude's hooks applied them, the most recently given first: an addon named by
+    // the request is answered or refused before the file is looked for (a prepared image may lack the binary), and an
+    // answer that is an addon, a bound path or under a refusal root after; the first map whose refusal root or binding
+    // the path meets answers it. An addon no map binds is refused by the most recent map. The request is made a path
+    // only where it can name an addon.
+    const latest = maps[0]!;
+    const underRoot = (addons: SubstrateAddons, path: string): boolean => addons.roots.some(root => path === root || path.startsWith(root + '/'));
+    const named = id.startsWith('file:') || id.includes('.node') || /(^|\/)\.\.?\/*$/.test(id);
+    // A file: URL is read by Node's own fileURLToPath, as the prelude's hook read it: an encoded '/' and a host other
+    // than localhost still throw.
+    const requested = !named ? void 0 : id.startsWith('file:') ? (loadNodeLibFor(process, 'url') as { fileURLToPath(url: string): string }).fileURLToPath(id)
+      : id.startsWith('/') ? pathShim.resolve(id) : id.startsWith('.') ? pathShim.resolve(currentDir, id) : void 0;
+    if (requested?.endsWith('.node')) for (const addons of maps) {
+      if (underRoot(addons, requested)) addons.refuse(requested);
+      if (addons.bindings.has(requested)) return addons.provide(requested);
+    }
+    let resolved: string;
+    try { resolved = __substrateResolveFile(Module, id); }
+    catch (cause) { if (requested?.endsWith('.node')) latest.refuse(requested, cause); throw cause; }
+    if (!resolved.startsWith('/')) return resolved;
+    for (const addons of maps) {
+      if (underRoot(addons, resolved)) addons.refuse(resolved);
+      if (addons.bindings.has(resolved)) return addons.provide(resolved);
+    }
+    if (resolved.endsWith('.node')) latest.refuse(resolved);
+    return resolved;
   };
+  const __substrateResolveFile = (Module: any, id: string): string => Module._resolveFilename === Module.__substrateResolveFilename
+    ? resolveModule(id, currentDir)
+    : Module._resolveFilename(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false, undefined);
   // Module resolution cache for faster repeated imports
   const resolutionCache: Map<string, string | null> = new Map();
   const successfulPaths = __substratePathsFor(moduleCache, vfs);
@@ -2252,6 +3032,9 @@ function createRequire(
   };
 
   const resolveModule = (id: string, fromDir: string): string => {
+    // A digest the last resolution carried is for the load that follows that resolution alone: one answered from a
+    // cache below asks no stat, so the load after it must ask the tree (a file rewritten since is loaded as it is).
+    __substrateKeptFor(process).carried = undefined;
     // Handle node: protocol prefix (Node.js 16+)
     if (id.startsWith('node:')) {
       id = id.slice(5);
@@ -2295,6 +3078,7 @@ function createRequire(
       return cached;
     }
     const successful = successfulPaths.paths.get(cacheKey);
+    if (traceReadingRequested()) { const counts = __substratePathCounts(process); if (successful !== undefined) counts.hits += 1; else counts.misses += 1; counts.kept = successfulPaths.paths.size; counts.evicted = (successfulPaths as { evicted?: number }).evicted ?? 0; }
     if (successful !== undefined) return successful;
 
     // One resolver for every name the engine resolves: this require, the simple
@@ -2302,12 +3086,18 @@ function createRequire(
     // Node's algorithm; they disagreed with each other and with Node, and every
     // app found a new gap. This site keeps only its edges — the cache, the
     // builtins, the stand-ins — and calls the shared resolver.
-    {
+    // A subpath a package's exports map refuses is Node's ERR_PACKAGE_PATH_NOT_EXPORTED, thrown by the resolver; it is
+    // said only once the stand-ins below have not answered the name either, and never cached as an absence.
+    let __refused: unknown;
+    try {
       const __resolved = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir, __substrateKeptFor(process));
       if (__resolved) {
         __substrateKeepPath(successfulPaths, cacheKey, __resolved);
         return __resolved;
       }
+    } catch (cause) {
+      if ((cause as { code?: unknown } | null)?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw cause;
+      __refused = cause;
     }
 
     // A name the tree does not answer is put to the module stand-ins before it
@@ -2320,6 +3110,7 @@ function createRequire(
       resolutionCache.set(cacheKey, __answered);
       return __answered;
     }
+    if (__refused !== undefined && !__standIn) throw __refused;
     resolutionCache.set(cacheKey, null);
     if (__standIn) return id;
     throw Object.assign(new Error(`Cannot find module '${id}'`), { code: 'MODULE_NOT_FOUND' });
@@ -2388,6 +3179,7 @@ function createRequire(
     Object.setPrototypeOf(module, __substrateModule().prototype);
     (module as Module & { path: string }).path = pathShim.dirname(resolvedPath);
     module.paths = __substrateModule()._nodeModulePaths(pathShim.dirname(resolvedPath));
+    __substrateAdmissionParents.set(module, parentModule || null);
     if (parentModule && Array.isArray(parentModule.children)) parentModule.children.push(module);
 
     // Cache before loading to handle circular dependencies
@@ -2408,16 +3200,25 @@ function createRequire(
     // second time: two live copies of a module that holds state, such as Next's
     // request store, and the second copy empty.
 
-    // Node's `Module.prototype.load`: the handler registered for the file's extension loads it, and that is the one
-    // path. The built-in handlers are the engine's own load step (`builtinLoad`, below) and compile through
-    // `module._compile`; a handler a program registered (ts-node, @babel/register, pirates) is called here because
-    // it is the one in the table, and the `_compile` it replaced on the module is called because the handler it
-    // chains to calls it.
+    // Node's Module._load calls module.load after caching the module (v24.21 loader.js:1348).
+    // A program can wrap that method to publish exports after evaluation; calling the extension here bypassed
+    // that completed-load work and returned uninitialized live exports. The method owns extension selection
+    // and _compile delegation; cached circular requires still return the same partial exports without loading.
     if (resolvedAs) __substrateLoading.set(module, { resolvedAs });
     const Mod = __substrateModule();
     Mod.__substrateBuiltinLoad = builtinLoad;
     Mod.__substrateCompileRaw = compileRaw;
-    try { Mod._extensions[__substrateRegisteredExtension(resolvedPath, Mod._extensions)](module, resolvedPath); }
+    try { (module as Module & { load(filename: string): void }).load(resolvedPath); }
+    catch (error) {
+      // A load wrapper can throw after its extension finished. Node forgets every failed load, including that case.
+      delete moduleCache[resolvedPath];
+      const children = parentModule?.children;
+      if (Array.isArray(children)) {
+        const index = children.indexOf(module);
+        if (index >= 0) children.splice(index, 1);
+      }
+      throw error;
+    }
     finally { __substrateLoading.delete(module); }
     return module;
   };
@@ -2427,7 +3228,9 @@ function createRequire(
    * the file's source and format, through the run's load hooks where it has any; JSON parsed; anything else
    * compiled through `module._compile`, which a program may have replaced on this module.
    */
+  let preparedSourceEvidence: ((module: Module, filename: string, digest: string) => (() => void) | undefined) | undefined;
   const builtinLoad = (module: Module, resolvedPath: string): void => {
+    __substrateLoadPhase(process, vfs, 'read');
     const Mod = __substrateModule();
     const resolvedAs = __substrateLoading.get(module)?.resolvedAs;
     // A module's source, and the format it is compiled in, are the load step.
@@ -2437,7 +3240,7 @@ function createRequire(
     const __hooks = __substrateHooks();
     const defaultSource = (): string => resolvedPath.startsWith('data:')
       ? __substrateDataModuleSource(resolvedPath)!
-      : vfs.readFileSync(resolvedPath, 'utf8');
+      : __substrateTimeRead(process, 'source', () => vfs.readFileSync(resolvedPath, 'utf8'));
     let format = resolvedAs?.format;
     let source = resolvedAs?.source;
     if (__hooks && __hooks.hasSyncLoad && source === undefined) {
@@ -2461,19 +3264,36 @@ function createRequire(
     // A body named by the tree's own digest of the file, where the source would reach the engine's compile as the
     // file's own text and nothing else: no load hook is registered (a hook may answer other text or a format), no
     // resolve step named a source or format, the module's `_compile` is the engine's (a program's own is handed the
-    // text, so it must be read), and types are not stripped. Then the text is never read and never hashed. A tree
-    // with no digest for the file's current content, or no body by that name, leaves the load to the read below.
+    // text, so it must be read), and types are not stripped. The loader neither reads nor hashes the source for
+    // this key. The tree answers only a verified content digest; a packed adapter may verify the raw bytes on
+    // first use, retaining that verification for the immutable extent. A tree with no digest for the file's
+    // current content, or no body by that name, leaves the load to the read below.
     if (source === undefined && format === undefined && !(__hooks && __hooks.hasSyncLoad) && !resolvedPath.startsWith('data:')
       && (module as Module & { _compile?: unknown })._compile === Mod.__substrateOwnCompile
       && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> })) {
       const kind = preparedModuleKind(resolvedPath);
-      const digest = kind ? vfs.contentDigest(resolvedPath) : undefined;
-      const body = kind && digest ? __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)) : undefined;
+      // The digest the resolving stat carried, where the resolution that answered this path is the last one this
+      // process made, and made by the tree's own stat in it (`resolveModule` drops it at every start, so a resolution
+      // answered from a cache leaves none): the stat and this load are one `require`, with no load hook (above), so
+      // the bytes it names are the file's as that stat saw them, as a digest asked here names them as this request
+      // sees them. Any other load (a cached resolution, a stat `stats` held, a load no resolution led to) asks.
+      // A KNOWN DIFFERENCE, left open: a program that resolves a path itself (`require.resolve`), then rewrites that
+      // file, then loads it by calling `Module._extensions` or `module.load` on it with no resolution between, loads
+      // the file as the resolving stat saw it, where asking here would have loaded the rewrite.
+      const keptNow = __substrateKeptFor(process);
+      const carried = keptNow.carried?.path === resolvedPath ? keptNow.carried.digest : undefined;
+      keptNow.carried = undefined;
+      if (kind && carried !== undefined) __substrateCountPrepared(process, 'carried');
+      const digest = kind ? (carried ?? __substrateTimeRead(process, 'digestAsk', () => vfs.contentDigest(resolvedPath))) : undefined;
+      const body = kind && digest ? __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest))) : undefined;
+      const bodyUtf8Bytes = __substratePreparedUtf8Bytes;
       if (body !== undefined) {
         __substrateCountPrepared(process, 'digest');
         (module as Module & { filename?: string }).filename = resolvedPath;
         if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
-        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), true);
+        const retireEvidence = preparedSourceEvidence?.(module, resolvedPath, digest!);
+        try { runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true, bodyUtf8Bytes); }
+        finally { retireEvidence?.(); }
         return;
       }
     }
@@ -2481,15 +3301,27 @@ function createRequire(
     // Read and execute JS file; a data: URL carries its own source.
     const rawCode = source === undefined || source === null ? defaultSource() : String(source);
     // A data: URL is no file: it has no extension's handler to answer to and no directory of its own.
-    if (resolvedPath.startsWith('data:')) { runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, currentDir); return; }
+    if (resolvedPath.startsWith('data:')) { runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, currentDir, 'source'); return; }
     // What `_compile` is handed, kept beside the module so the engine's own compile knows the format a hook named
     // and whether the text is still the file's own (a body the image prepared is taken only for that).
-    __substrateLoading.set(module, { ...(resolvedAs ? { resolvedAs } : {}), compiling: { raw: rawCode, format } });
+    // A TRANSPILE CAPTURED BEFORE (S2, Cal's seed): ts-node's transpile of this file under this service's settings,
+    // kept by an earlier run (compileRaw) and carried by the image, is handed to the engine's own compile in place of
+    // ts-node's wrapper, which would transpile it again (~233 ms of the seed's 809 ms load in Cal c670b965 dry-run2).
+    const transpileKey = format === undefined && !(__hooks && __hooks.hasSyncLoad) ? __substrateTranspileKey(process, module, Mod.__substrateOwnCompile, rawCode, resolvedPath) : undefined;
+    __substrateLoading.set(module, { ...(resolvedAs ? { resolvedAs } : {}), compiling: { raw: rawCode, format, ...(transpileKey ? { transpileKey } : {}) } });
+    const captured = transpileKey ? __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, transpileKey)) : undefined;
+    if (captured !== undefined) {
+      __substrateCountPrepared(process, 'transpiled');
+      // Taken, not to be kept again: the compile below sees the handed text without the transpile's name.
+      __substrateLoading.set(module, { ...(resolvedAs ? { resolvedAs } : {}), compiling: { raw: rawCode, format } });
+      (Mod.__substrateOwnCompile as (this: Module, content: string, filename: string) => unknown).call(module, captured, resolvedPath);
+      return;
+    }
     (module as Module & { _compile(content: string, filename: string): unknown })._compile(rawCode, resolvedPath);
   };
 
   /** `Module.prototype._compile`'s own work: the engine's pipeline over `content`, as the module at `filename`. */
-  const compileRaw = (module: Module, content: string, filename: string, dirname: string): void => {
+  let compileRaw = (module: Module, content: string, filename: string, dirname: string): void => {
     const compiling = __substrateLoading.get(module)?.compiling;
     const format = compiling?.format;
     const rawCode = content;
@@ -2497,12 +3329,30 @@ function createRequire(
     __substrateTracePreparedGate(vfs, process, compiling, content, resolvedPath);
     // A body prepared for the file's own text; a program's `_compile` that handed on other text compiles that text.
     const strips = transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> });
-    const key = compiling?.raw === content && format === undefined && !strips ? preparedModuleKey(rawCode, resolvedPath) : undefined;
+    // TEXT A TYPESCRIPT LOADER HANDED ON (S2, Cal's seed): ts-node wraps the module's `_compile` and hands it the file
+    // transpiled, so the text is not the file's own and no image body names it. It was prepared again by every run
+    // (Cal c670b965 dry-run2: 102 such bodies, 1.75 MB, in the seed's 809 ms load). Kept like a file's own body, under
+    // the digest of the handed text salted with this rule, so it names that text at this kind of path alone and no
+    // file's own digest ever reaches it; the body is the one this path prepares (types stripped as for any .ts).
+    const handedTypeScript = compiling !== undefined && compiling.raw !== content && format === undefined && !strips
+      && /\.(?:ts|mts|cts)$/u.test(resolvedPath) && !resolvedPath.endsWith('.d.ts');
+    // The text ts-node handed, kept under the transpile's key (builtinLoad) for a later run to hand on itself.
+    if (handedTypeScript && compiling.transpileKey && !__substrateKeepingRefused.has(process as object) && vfs.existsSync(PREPARED_MODULES_DIR)) {
+      try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${compiling.transpileKey}`, content); vfs.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${compiling.transpileKey}\n`); }
+      catch (cause) {
+        const code = (cause as { code?: unknown } | null)?.code;
+        if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') __substrateKeepingRefused.add(process as object);
+      }
+    }
+    const key = compiling?.raw === content && format === undefined && !strips ? __substrateTimeRead(process, 'key', () => preparedModuleKey(rawCode, resolvedPath))
+      : handedTypeScript ? __substrateTimeRead(process, 'key', () => preparedModuleKeyOf(resolvedPath.endsWith('.cts') ? 'cjs' : 'js',
+        bytesToHex(sha256(new TextEncoder().encode(`${HANDED_TYPESCRIPT_SALT}${content}`))))) : undefined;
     if (key) {
-      const taken = __substrateReadPrepared(vfs, key);
+      const taken = __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, key));
+      const takenUtf8Bytes = __substratePreparedUtf8Bytes;
       if (taken !== undefined) {
         __substrateCountPrepared(process, 'hash');
-        runModuleBody(module, taken, resolvedPath, dirname, true);
+        runModuleBody(module, taken, resolvedPath, dirname, 'prepared', true, takenUtf8Bytes);
         return;
       }
       // A file the image carries no body for (a package installed in the
@@ -2512,22 +3362,29 @@ function createRequire(
       // tree has the directory bodies are kept in; asked once the body's own
       // read has missed, so a taken body costs no question about it.
       if (vfs.existsSync(PREPARED_MODULES_DIR)) {
-        const body = __substrateScopeGlobalCalls(prepareModuleCode(rawCode, resolvedPath));
+        const body = __substrateTimeRead(process, 'transform', () => __substrateScopeGlobalCalls(prepareModuleCode(rawCode, resolvedPath)));
         // One write is one step of the tab's filesystem, so no reader sees
         // half a body; a rename after it failed in a forked process's realm
         // and left the half-named file behind.
         // What was kept is also said, one key a line, in a list beside the bodies: a reader that wants the bodies
         // made in the tab (a dry run's capture) reads the list, where telling them from an image's own tens of
         // thousands meant listing the directory.
-        try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${key}`, body); vfs.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${key}\n`); }
-        catch { /* a process that may not write there prepares its own */ }
+        // A process the directory refuses (an image's user under a root-owned directory: Rallly's, ten EACCES a boot)
+        // prepares its own and asks no more: the refusal is its credentials' (one that changes them later only keeps less).
+        if (!__substrateKeepingRefused.has(process as object)) {
+          try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${key}`, body); vfs.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${key}\n`); }
+          catch (cause) {
+            const code = (cause as { code?: unknown } | null)?.code;
+            if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') __substrateKeepingRefused.add(process as object);
+          }
+        }
         __substrateCountPrepared(process, 'kept');
-        runModuleBody(module, body, resolvedPath, dirname, true);
+        runModuleBody(module, body, resolvedPath, dirname, 'source', true);
         return;
       }
     }
     __substrateCountPrepared(process, key ? 'noDirectory' : compiling?.raw !== content ? 'notOwnText' : format !== undefined ? 'format' : strips ? 'types' : 'notJavaScript');
-    runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, dirname);
+    runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, dirname, 'source');
   };
 
   /**
@@ -2560,7 +3417,31 @@ function createRequire(
    * hands the result to it; the engine's own pipeline is what makes the
    * body Node-shaped here.
    */
-  const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, scoped = false): void => {
+  let runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false, utf8Bytes?: number): void => {
+    __substrateLoadPhase(process, vfs, 'link');
+    const loadClock = __substrateLoadClocks.get(process);
+    if (loadClock) {
+      loadClock.bodies += 1; loadClock.bodyBytes += prepared.length;
+      // C6: count the body actually handed off, not a prepared read attempt or a module-cache hit. Newly kept
+      // bodies still came from source in this process. Startup streams feed the tree and use these same paths.
+      // Preserve bodyBytes' existing string-length accounting. UTF8 totals
+      // have no guest/budget consumer; retain an immutable reference for the
+      // deferred evidence owner, without counting or copying it here.
+      if (!loadClock.byteTotalsDropped) {
+        // A length the read said (an exact UTF-8 count, R5) is kept instead of the text: 64 bytes, not the body.
+        const said = utf8Bytes !== undefined && Number.isSafeInteger(utf8Bytes) && utf8Bytes >= 0;
+        loadClock.retainedInputBytes += 64 + (said ? 0 : prepared.length * 2);
+        if (loadClock.retainedInputBytes > loadClock.peakRetainedInputBytes) loadClock.peakRetainedInputBytes = loadClock.retainedInputBytes;
+        if (retainTraceInput(loadClock, loadClock.retainedInputBytes, loadClock.releaseBytes)) {
+          loadClock.byteBodies.push(said ? { bytes: utf8Bytes, prepared: bodySource === 'prepared' } : { text: prepared, prepared: bodySource === 'prepared' });
+        } else loadClock.releaseBytes();
+      }
+      loadClock.linkSplit.byteCounts += 1;
+      if (bodySource === 'prepared') loadClock.preparedBodies += 1;
+      else loadClock.sourceBodies += 1;
+      // K5's turn-order reading: the count so far, where the process's own http server can say it beside a request.
+      (process as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.k5.bodies')] = loadClock.bodies;
+    }
     let code = prepared;
     // Create require for this module
     const moduleRequire = createRequire(
@@ -2594,10 +3475,18 @@ function createRequire(
       // header's `var` statements are the module's scope, `globalThis` and
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
-      // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get window() { return globalThis.window; }, set window(value) { globalThis.window = value; }, get document() { return globalThis.document; }, set document(value) { globalThis.document = value; }, get location() { return globalThis.location; }, set location(value) { globalThis.location = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
+      // `const` shadow that scope. The generated sourceURL names the script.
+      // Bare immediates use the guest's timer face too: Etherpad's tsx called
+      // setImmediate(...).unref() through the browser's numeric timer because
+      // only timeout/interval names were bound here. The guest face already
+      // returns Node handles and owns their ref/unref lifetime.
+      const scriptName = __substrateScriptName(resolvedPath);
+      const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
+      // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
+      const guestScoped = __substrateGuestScoped(code);
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
-})${__substrateSourceURL(resolvedPath)}`;
+})${sourceURL}`;
 
       // A lowered ES module body is a generator that yields at each import
       // still settling; a body that must wait, on a top-level `await` of its
@@ -2605,8 +3494,9 @@ function createRequire(
       // importers await.
       let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
       let fn;
+      __substrateLoadPhase(process, vfs, 'compile');
       try {
-        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, process);
+        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, process, scriptName);
       } catch (evalError) {
         const msg = evalError instanceof Error ? evalError.message : String(evalError);
       // A module with top-level await runs. Node runs a `.js` file of a package
@@ -2616,12 +3506,15 @@ function createRequire(
       // an async function body instead.
         if (!(evalError instanceof SyntaxError)) throw evalError;
         bodyKind = 'async';
-        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), process); }
+        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), process, scriptName); }
         catch { throw new SyntaxError(`${msg} (in ${resolvedPath})`); }
       }
+      __substrateLoadPhase(process, vfs, 'link');
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(moduleRequire, process, importMetaUrl);
+      const importMeta = createImportMeta(moduleRequire, importMetaUrl, dirname, resolvedPath);
 
+      __substrateLoadPhase(process, vfs, 'evaluate');
       const body = __substrateInStatWindow(process, () => withGuestExecution(() => fn(
         module.exports,
         moduleRequire,
@@ -2630,14 +3523,27 @@ function createRequire(
         dirname,
         process,
         consoleWrapper,
-        createImportMeta(moduleRequire, importMetaUrl, dirname, resolvedPath),
+        importMeta,
         dynamicImport,
         __substrateGuestGlobal,
-        __substrateGuestConstructor
-      )));
+        __substrateGuestConstructor,
+        __substrateGuestScope(process)
+      ), 'module'));
 
+      // The body has returned. With no require in flight it was an entry's (started through `_load`, at depth 0), and
+      // what follows is the program's life, not a load: left as 'evaluate', every process's line counted its wait
+      // for the quiet line (two seconds) and all it did afterwards as evaluation. A body that goes on after an await
+      // is counted outside from here too.
+      __substrateLoadPhase(process, vfs, __substrateKeptFor(process).depth === 0 ? 'outside' : 'link');
       const settling = __substrateDriveBody(bodyKind, body, module);
-      if (settling) __substrateKeepPending(module, settling, () => { delete moduleCache[resolvedPath]; });
+      if (settling) __substrateKeepPending(module, settling, () => {
+        if (moduleCache[resolvedPath] === module) delete moduleCache[resolvedPath];
+        const children = __substrateAdmissionParents.get(module)?.children;
+        if (Array.isArray(children)) {
+          const index = children.indexOf(module);
+          if (index >= 0) children.splice(index, 1);
+        }
+      });
       else module.loaded = true;
     } catch (error) {
       // Remove from cache on error
@@ -2655,9 +3561,77 @@ function createRequire(
     }
   };
 
+  // Node's host debugger observes completed execution outside its program's globals. The analogous requested
+  // observer is private to this require context; ordinary execution installs no wrapper or per-body check.
+  if (__moduleObserverOwn(options, 'moduleEvaluationObserver') && options.moduleEvaluationObserver) {
+    const observes = options.moduleEvaluationObserver.observes;
+    const onEvaluated = options.moduleEvaluationObserver.onEvaluated;
+    const observesSource = __moduleObserverOwn(options.moduleEvaluationObserver, 'observesSource')
+      ? options.moduleEvaluationObserver.observesSource : undefined;
+    const sources = typeof observesSource === 'function'
+      ? new ObserverWeakMap<Module, { sourceSha256: string; initialExports: unknown }>() : undefined;
+    if (sources && observesSource) {
+      preparedSourceEvidence = (module, filename, digest) => {
+        try {
+          if (!observesSource(filename)) return undefined;
+          const exports = observerDescriptor(module, 'exports');
+          if (!exports || !observerHasOwn(exports, 'value')) return undefined;
+          const source = observerRecord<{ sourceSha256: string; initialExports: unknown }>();
+          // This path deliberately does not call _compile. Use the tree's
+          // verified original-content digest that selected this prepared body.
+          // No source reread, encoding or hashing is added to a cache hit.
+          observerWrite(source, 'sourceSha256', digest);
+          observerWrite(source, 'initialExports', exports.value);
+          observerMapSet(sources, module, observerFreeze(source));
+          return () => { observerMapDelete(sources, module); };
+        } catch { return undefined; }
+      };
+      const originalCompile = compileRaw;
+      compileRaw = (module, content, filename, dirname): void => {
+        observerMapDelete(sources, module);
+        try {
+          if (observesSource(filename)) {
+            const exports = observerDescriptor(module, 'exports');
+            if (exports && observerHasOwn(exports, 'value')) {
+              const source = observerRecord<{ sourceSha256: string; initialExports: unknown }>();
+              // The text actually given to _compile, before the existing engine
+              // pipeline or prepared-body lookup. Never reread a mutable file.
+              observerWrite(source, 'sourceSha256', bytesToHex(sha256(observerEncode(content))));
+              observerWrite(source, 'initialExports', exports.value);
+              observerMapSet(sources, module, observerFreeze(source));
+            }
+          }
+        } catch { /* Missing evidence does not change compilation. */ }
+        try { originalCompile(module, content, filename, dirname); }
+        finally { observerMapDelete(sources, module); }
+      };
+    }
+    const originalBody = runModuleBody;
+    runModuleBody = (module, prepared, resolvedPath, dirname, bodySource, scoped = false, utf8Bytes): void => {
+      const source = sources ? observerMapGet(sources, module) as { sourceSha256: string; initialExports: unknown } | undefined : undefined;
+      originalBody(module, prepared, resolvedPath, dirname, bodySource, scoped, utf8Bytes);
+      if (observes(resolvedPath)) {
+        try {
+          const loaded = observerDescriptor(module, 'loaded');
+          const exports = observerDescriptor(module, 'exports');
+          if (loaded && exports && observerHasOwn(loaded, 'value')
+            && loaded.value === true && observerHasOwn(exports, 'value')) {
+            if (source) {
+              const evidence = observerRecord<ModuleEvaluationEvidence>();
+              observerWrite(evidence, 'sourceSha256', source.sourceSha256);
+              observerWrite(evidence, 'exportsReplaced', exports.value !== source.initialExports);
+              onEvaluated(resolvedPath, exports.value, observerFreeze(evidence));
+            } else onEvaluated(resolvedPath, exports.value);
+          }
+        } catch { /* Evidence failure cannot change the original module's result or error. */ }
+      }
+    };
+  }
+
   const require: RequireFunction = (id: string): unknown => {
     const Module = __substrateModule();
     if (Module.prototype.require !== Module.__substrateRequire) {
+      if (traceReadingRequested()) __substrateRequirePathsFor(process).replacedPrototypeRequire += 1;
       return Module.prototype.require.call(parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, id);
     }
     // A program that replaced `Module._load` sees every require from here on,
@@ -2666,7 +3640,13 @@ function createRequire(
     if (Module._load !== Module.__substrateLoad) {
       const keeping = __substrateKeptFor(process);
       keeping.depth += 1;
-      try { return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false); } finally { keeping.depth -= 1; }
+      if (traceReadingRequested()) __substrateRequirePathsFor(process).replacedLoad += 1;
+      // The clock, as `requireRaw` keeps it: the require is resolving from here (the program's own `_load` is part
+      // of that), and when it returns the caller is where it was. Without the two marks nothing on this path was
+      // counted to `resolve`, and a parent's body went on in its child's last phase (`link`).
+      const phase = __substrateLoadPhase(process, vfs, 'resolve');
+      __substrateLoadVia = 'replaced-load';
+      try { return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false); } finally { __substrateLoadVia = undefined; keeping.depth -= 1; __substrateLoadPhase(process, vfs, phase); }
     }
     return requireRaw(id);
   };
@@ -2685,7 +3665,9 @@ function createRequire(
   const requireRaw = (id: string): unknown => {
     const keeping = __substrateKeptFor(process);
     keeping.depth += 1;
-    try { return requireCounted(id); } finally { keeping.depth -= 1; }
+    if (traceReadingRequested()) __substrateRequirePathsFor(process).requireRaw += 1;
+    const phase = __substrateLoadPhase(process, vfs, 'resolve');
+    try { return requireCounted(id); } finally { keeping.depth -= 1; __substrateLoadPhase(process, vfs, phase); }
   };
   const requireCounted = (id: string): unknown => {
     // A data: URL is a module of its own, loaded at that URL.
@@ -2797,10 +3779,11 @@ function createRequire(
     }
     // Worker threads run where a thread host is installed, a worker the
     // page owns per thread; the shim alone refuses to run one. The host
-    // registers itself under this symbol and answers the module for a guest.
+    // registers itself under this symbol and answers the module for a guest. Its fourth argument is the
+    // process-owned credential snapshot to pass through thread admission into RuntimeOptions.credentials.
     if (id === 'worker_threads') {
-      const bridge = (globalThis as Record<symbol, unknown>)[Symbol.for("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown) => unknown } | undefined;
-      const module = bridge && typeof bridge.module === "function" ? bridge.module(vfs, process, builtinModules.worker_threads) : undefined;
+      const bridge = (globalThis as Record<symbol, unknown>)[Symbol.for("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown, credentials?: Readonly<ProcessCredentials>) => unknown } | undefined;
+      const module = bridge && typeof bridge.module === "function" ? bridge.module(vfs, process, builtinModules.worker_threads, processCredentialsOf(process)) : undefined;
       return guestMessageModule(process, (module ?? workerThreadsShim) as Record<string, unknown>, !module);
     }
     if (id === 'module') {
@@ -2819,7 +3802,13 @@ function createRequire(
       __browserRuntimeFillStreams(table, loadNodeLibFor(process, 'buffer').Buffer);
       return table[id];
     });
-    if (hasNodeLibModule(id)) return loadNodeLibFor(process, id);
+    if (hasNodeLibModule(id)) {
+      const loaded = loadNodeLibFor(process, id);
+      if (id === 'http' || id === 'https' || id === '_http_server') {
+        try { __substrateObserveHttp(process, loaded); } catch { /* Instrumentation cannot refuse a builtin. */ }
+      }
+      return loaded;
+    }
     if (builtinModules[id] && !__substrateInstalledWins(id) && !(id === 'fsevents' || id === 'chokidar' || id === 'readdirp')) {
       return id === 'esbuild' ? __substrateGuestEsbuild(process) : id === 'rollup' ? __substrateGuestRollup(process) : nativeModuleFor(process, id, () => builtinModules[id]);
     }
@@ -2905,7 +3894,13 @@ function createRequire(
       // A relative entry is the process's working directory's, as Node's Module._resolveFilename makes it.
       const requireStack = parentModule && typeof parentModule.filename === 'string' ? [parentModule.filename] : [];
       for (const from of options.paths as string[]) {
-        try { return resolveModule(id, pathShim.resolve(process.cwd(), from)); } catch { /* the next directory */ }
+        try { return resolveModule(id, pathShim.resolve(process.cwd(), from)); }
+        catch (cause) {
+          // A package found whose exports map refuses the subpath ends the lookup, as Node's _findPath over the
+          // paths' node_modules does (packageExportsResolve throws): it is the answer, never a reason to look on.
+          if ((cause as { code?: unknown } | null)?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw cause;
+          /* the next directory */
+        }
       }
       throw Object.assign(new Error(`Cannot find module '${id}'${requireStack.length ? `\nRequire stack:\n- ${requireStack.join('\n- ')}` : ''}`), { code: 'MODULE_NOT_FOUND', requireStack });
     }
@@ -2928,7 +3923,20 @@ function createRequire(
   require.cache = moduleCache;
   (require as any).__requireRaw = requireRaw;
   // What `Module._load` is: a load that is not a `require` call and so is not counted as one.
-  (require as any).__loadRaw = requireCounted;
+  // Counted by how it was reached, and on the load clock: it resolves from here, and its caller is where it was when
+  // it returns (a `_load` is not a `require` call, so the depth is its caller's).
+  (require as any).__loadRaw = (id: string): unknown => {
+    const via = __substrateLoadVia;
+    __substrateLoadVia = undefined;
+    if (traceReadingRequested()) {
+      const paths = __substrateRequirePathsFor(process);
+      paths.engineLoad[via === 'engine-prototype-require' ? 'fromEnginePrototypeRequire' : via === 'replaced-load' ? 'fromReplacedLoad' : 'direct'] += 1;
+      if (paths.replacedPrototypeRequire > 0 && !paths.replaced.prototypeRequire) paths.replaced.prototypeRequire = __substrateSaidReplacement(__substrateModule().prototype.require);
+      if (via === 'replaced-load' && !paths.replaced.load) paths.replaced.load = __substrateSaidReplacement(__substrateModule()._load);
+    }
+    const phase = __substrateLoadPhase(process, vfs, 'resolve');
+    try { return requireCounted(id); } finally { __substrateLoadPhase(process, vfs, phase); }
+  };
   (require as any).__compileRaw = compileRaw;
   (require as any).__builtinLoad = builtinLoad;
   (require as any).__resolveRaw = (id: string) => resolveModule(id, currentDir);
@@ -2972,6 +3980,11 @@ function createRequire(
     };
   }
 
+  __substrateRequireResets.set(require, () => {
+    currentVfs = vfs;
+    resolutionCache.clear();
+    packageJsonCache.clear();
+  });
   return require;
 }
 
@@ -2981,30 +3994,32 @@ function createRequire(
 function createConsoleWrapper(
   onConsole?: (method: string, args: unknown[]) => void
 ): Console {
+  const emit = (method: 'log' | 'error' | 'warn' | 'info' | 'debug' | 'trace', args: unknown[]): void => {
+    // Owned instrumentation is evidence, so the host's R5 owner delivers it
+    // once after HTTP. Ordinary console calls keep both existing output paths.
+    if ((method === 'log' || method === 'info' || method === 'warn' || method === 'error' || method === 'debug')
+      && captureTraceConsoleLine(args, method === 'debug' ? 'log' : method)) return;
+    console[method](...args);
+    onConsole?.(method, args);
+  };
   const wrapper = {
     log: (...args: unknown[]) => {
-      console.log(...args);
-      onConsole?.('log', args);
+      emit('log', args);
     },
     error: (...args: unknown[]) => {
-      console.error(...args);
-      onConsole?.('error', args);
+      emit('error', args);
     },
     warn: (...args: unknown[]) => {
-      console.warn(...args);
-      onConsole?.('warn', args);
+      emit('warn', args);
     },
     info: (...args: unknown[]) => {
-      console.info(...args);
-      onConsole?.('info', args);
+      emit('info', args);
     },
     debug: (...args: unknown[]) => {
-      console.debug(...args);
-      onConsole?.('debug', args);
+      emit('debug', args);
     },
     trace: (...args: unknown[]) => {
-      console.trace(...args);
-      onConsole?.('trace', args);
+      emit('trace', args);
     },
     dir: (obj: unknown) => {
       console.dir(obj);
@@ -3041,11 +4056,13 @@ export class Runtime {
   private processedCodeCache: Map<string, string> = new Map();
 
   constructor(vfs: VirtualFS, options: RuntimeOptions = {}) {
+    if (options.httpParserModule !== undefined) installHttpParserModule(options.httpParserModule);
     this.vfs = vfs;
     // Create process first so we can get cwd for fs shim
     this.process = createProcess({
       cwd: options.cwd || '/',
       env: options.env,
+      credentials: options.credentials,
       onStdout: options.onStdout,
       onStderr: options.onStderr,
       ...(options.onStdoutBytes ? { onStdoutBytes: options.onStdoutBytes } : {}),
@@ -3061,12 +4078,21 @@ export class Runtime {
     // so the binding reads the tree off the process whose code is executing --
     // the same door every vendored file gets its `process` through.
     (this.process as unknown as Record<symbol, unknown>)[kRunFilesystem] = vfs;
+    // Capture the host method before guest code executes, but read its mutable kernel UTS afresh on each call.
+    const hostnameReader = vfs.processHostname?.bind(vfs);
+    recordProcessHostname(this.process, hostnameReader ?? (() => 'localhost'));
+    const readHostFile = vfs.readFileSync.bind(vfs);
+    recordProcessHosts(this.process, () => {
+      // The DNS door decides which file errors mean an unavailable hosts source.
+      const content = readHostFile('/etc/hosts', 'utf8');
+      return typeof content === 'string' ? content : new TextDecoder().decode(content);
+    });
     // The Node line this process answers as, and where it came from (node-line.ts).
     const namedVersion = options.env?.NODE_VERSION;
-    console.log('[boot-trace]', JSON.stringify({ event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
+    if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
       line: nodeLineOf(this.process.version), from: this.process.version === `v${String(namedVersion ?? '').replace(/^v/, '')}` ? 'NODE_VERSION of the image' : 'default',
       // The variable as this process was given it, so a reader need not infer it: null when it has none.
-      env: typeof namedVersion === 'string' ? namedVersion : null }));
+      env: typeof namedVersion === 'string' ? namedVersion : null });
     // Create fs shim with cwd getter for relative path resolution
     this.fsShim = createFsShim(vfs, () => this.process.cwd());
     this.options = options;
@@ -3227,10 +4253,18 @@ export class Runtime {
       // header's `var` statements are the module's scope, `globalThis` and
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
-      // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get window() { return globalThis.window; }, set window(value) { globalThis.window = value; }, get document() { return globalThis.document; }, set document(value) { globalThis.document = value; }, get location() { return globalThis.location; }, set location(value) { globalThis.location = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
+      // `const` shadow that scope. The generated sourceURL names the script.
+      // Bare immediates use the guest's timer face too: Etherpad's tsx called
+      // setImmediate(...).unref() through the browser's numeric timer because
+      // only timeout/interval names were bound here. The guest face already
+      // returns Node handles and owns their ref/unref lifetime.
+      const scriptName = __substrateScriptName(filename);
+      const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
+      // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
+      const guestScoped = __substrateGuestScoped(code);
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
-})${__substrateSourceURL(filename)}`;
+})${sourceURL}`;
 
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(require, this.process, filename.startsWith('data:') ? filename : `file://${filename}`);
@@ -3243,11 +4277,11 @@ export class Runtime {
       let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
       let fn;
       try {
-        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, this.process);
+        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, this.process, scriptName);
       } catch (syntaxError) {
         if (!(syntaxError instanceof SyntaxError)) throw syntaxError;
         bodyKind = 'async';
-        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), this.process); }
+        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), this.process, scriptName); }
         catch { throw syntaxError; }
       }
       const body = __substrateInStatWindow(this.process, () => withGuestExecution(() => fn(
@@ -3261,11 +4295,12 @@ export class Runtime {
         createImportMeta(require, importMetaUrl, dirname, filename),
         dynamicImport,
         __substrateGuestGlobal,
-        __substrateGuestConstructor
-      )));
+        __substrateGuestConstructor,
+        __substrateGuestScope(this.process)
+      ), 'module'));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
-      if (settling) __substrateKeepPending(module, settling, () => { delete this.moduleCache[filename]; });
+      if (settling) __substrateKeepPending(module, settling, () => { if (this.moduleCache[filename] === module) delete this.moduleCache[filename]; });
       else module.loaded = true;
     } catch (error) {
       delete this.moduleCache[filename];
@@ -3292,6 +4327,16 @@ export class Runtime {
     const pending = __substratePendingOf(result.exports);
     if (pending) await pending;
     return result;
+  }
+
+  /** Node's pre-entry modules share this process's cache, cwd and import settlement. */
+  async preloadModules(requires: readonly string[], imports: readonly string[]): Promise<void> {
+    const cwd = this.process.cwd();
+    const require = createRequire(this.vfs, this.fsShim, this.process,
+      cwd, this.moduleCache, this.options, this.processedCodeCache);
+    for (const request of requires) require(request);
+    const load = createDynamicImport(require, this.process, `file://${pathShim.resolve(cwd, '[preload]')}`);
+    for (const request of imports) await load(request);
   }
 
   /**
@@ -3622,6 +4667,14 @@ function __substrateTextDecoderPolyfill(): void {
     }
 
     decode(input?: BufferSource, options?: TextDecodeOptions): string {
+      // Node's TextDecoder takes a SharedArrayBuffer and a view of one; the platform's here does not (Chromium's
+      // declaration carries no AllowShared, where the Encoding Standard's does), so shared bytes are decoded from
+      // an unshared copy of them (node-lib/binding/buffer.ts says the same of a Buffer).
+      if (input) {
+        const held = ArrayBuffer.isView(input) ? input.buffer : input;
+        // by its tag: `instanceof` is false for a buffer of another realm
+        if (Object.prototype.toString.call(held) === '[object SharedArrayBuffer]') input = new Uint8Array(ArrayBuffer.isView(input) ? new Uint8Array(held, input.byteOffset, input.byteLength) : new Uint8Array(held));
+      }
       if (this.decoder) {
         return this.decoder.decode(input, options);
       }
@@ -3858,7 +4911,7 @@ function __substrateCallSiteFileNames(): void {
   const namerFor = (prepare: Prepare): Prepare => {
     let namer = namers.get(prepare);
     if (!namer) {
-      namer = (error, sites) => prepare(error, sites.map(named));
+      namer = (error, sites) => { noteStackFormed(error, "the guest's prepareStackTrace"); return prepare(error, sites.map(named)); };
       namers.set(prepare, namer);
       guests.set(namer, prepare);
     }
@@ -3874,8 +4927,9 @@ function __substrateCallSiteFileNames(): void {
     if (known) return known;
     const overriding: Prepare = (error, sites) => {
       const override = error !== null && typeof error === 'object' ? stackOverrides.get(error) : undefined;
-      if (override) { stackOverrides.delete(error as object); return override(error, sites.map(named)); }
+      if (override) { noteStackFormed(error, "an override of one of Node's own files"); stackOverrides.delete(error as object); return override(error, sites.map(named)); }
       if (typeof guest === 'function') return namerFor(guest as Prepare)(error, sites);
+      noteStackFormed(error, 'the fallback beside a pending override');
       return `${Error.prototype.toString.call(error)}${sites.map(site => `\n    at ${String(site)}`).join('')}`;
     };
     // A guest that saves the hook and restores it later restores the function

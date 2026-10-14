@@ -14,6 +14,7 @@ import { scrypt as nobleScrypt } from '@noble/hashes/scrypt.js';
 import { Buffer as HostBuffer } from 'buffer/index.js';
 import type { Buffer, BufferConstructor, BufferModule } from '../node-lib/buffer-module';
 import type { EventsModule } from '../node-lib/events-module';
+import type { StreamModule } from '../node-lib/stream-module';
 import { lazyModule, lazyExport } from '../node-lib/lazy';
 import {
   ERR_INVALID_ARG_TYPE,
@@ -25,6 +26,7 @@ import { cryptoConstants as constants } from './crypto-constants';
 import { cipherNames, createCipherClasses } from './crypto-cipher';
 import type { NodeCryptoExport, NodeCryptoUnavailable } from './crypto-exports';
 import * as asymmetric from './crypto-ec';
+import * as rsa from './crypto-rsa';
 import type { AsymmetricKey, DsaEncoding, KeyEncodingType } from './crypto-ec';
 export { constants };
 
@@ -46,6 +48,8 @@ export function createCryptoModule(require?: (name: string) => any) {
   const bufferModule: BufferModule = require ? require('buffer') : lazyModule<BufferModule>('buffer');
   const Buffer: BufferConstructor = require ? bufferModule.Buffer : lazyExport<BufferConstructor>('buffer', 'Buffer');
   const EventEmitter: EventsModule['EventEmitter'] = require ? require('events').EventEmitter : lazyExport<EventsModule['EventEmitter']>('events', 'EventEmitter');
+  // The stream a Sign and a Verify are, reached the same late way and for the same reason.
+  const Writable: StreamModule['Writable'] = require ? require('stream').Writable : lazyExport<StreamModule['Writable']>('stream', 'Writable');
 // ============================================================================
 // Random functions
 // ============================================================================
@@ -817,7 +821,7 @@ function sign(
 
   // Synchronous operation - we need to use a workaround
   // Store the promise result for later retrieval
-  const result = signSync(alg, data, keyInfo);
+  const result = signSync(alg, data, keyInfo, key);
   return result;
 }
 
@@ -856,7 +860,7 @@ function verify(
     return;
   }
 
-  return verifySync(alg, data, keyInfo, signature);
+  return verifySync(alg, data, keyInfo, signature, key);
 }
 
 // ============================================================================
@@ -871,7 +875,7 @@ function createVerify(algorithm: string): Verify {
   return new Verify(algorithm);
 }
 
-class Sign extends EventEmitter {
+class Sign extends Writable {
   #algorithm: string;
   #data: Uint8Array[] = [];
 
@@ -881,9 +885,21 @@ class Sign extends EventEmitter {
   }
 
   update(data: string | Buffer | Uint8Array, encoding?: string): this {
-    const buffer = typeof data === 'string' ? Buffer.from(data) : data;
+    // A string's bytes by the encoding named, as Node reads it (`update(hex, 'hex')`); it was read as UTF-8 whatever was named.
+    const buffer = typeof data === 'string' ? Buffer.from(cryptoBytes(data, encoding ?? 'utf8')) : data;
     this.#data.push(buffer);
     return this;
+  }
+
+  // NODE'S SIGN AND VERIFY ARE WRITABLE STREAMS (`class Sign extends stream.Writable`): a caller may write its data
+  // and end the stream before it asks for the result, and code written against Node does (`signer.update(input);
+  // signer.end(); signer.sign(key)`, a JWT's RS256 in a World's twin). As an EventEmitter with `update` alone the
+  // call threw "signer.end is not a function" and the twin issued no key. Built on the engine's own Writable, which
+  // is Node's source, so every member a caller can reach is Node's (write, end, pipe, cork, destroy, the
+  // writable* states, 'finish'); what is written is what `update` takes.
+  _write(chunk: string | Buffer | Uint8Array, encoding: string, callback: (error?: Error | null) => void): void {
+    this.update(chunk, typeof chunk === 'string' ? encoding : undefined);
+    callback();
   }
 
   sign(privateKey: KeyLike, outputEncoding?: string): Buffer | string {
@@ -891,13 +907,13 @@ class Sign extends EventEmitter {
     const keyInfo = extractKeyInfo(privateKey);
     const signature = keyInfo.asymmetric
       ? signAsymmetric(this.#algorithm, combined, keyInfo.asymmetric, dsaEncodingOf(privateKey))
-      : signSync(this.#algorithm, combined, keyInfo);
+      : signSync(this.#algorithm, combined, keyInfo, privateKey);
 
     return outputEncoding ? digestResult(signature, outputEncoding) : signature;
   }
 }
 
-class Verify extends EventEmitter {
+class Verify extends Writable {
   #algorithm: string;
   #data: Uint8Array[] = [];
 
@@ -907,9 +923,21 @@ class Verify extends EventEmitter {
   }
 
   update(data: string | Buffer | Uint8Array, encoding?: string): this {
-    const buffer = typeof data === 'string' ? Buffer.from(data) : data;
+    // A string's bytes by the encoding named, as Node reads it (`update(hex, 'hex')`); it was read as UTF-8 whatever was named.
+    const buffer = typeof data === 'string' ? Buffer.from(cryptoBytes(data, encoding ?? 'utf8')) : data;
     this.#data.push(buffer);
     return this;
+  }
+
+  // NODE'S SIGN AND VERIFY ARE WRITABLE STREAMS (`class Sign extends stream.Writable`): a caller may write its data
+  // and end the stream before it asks for the result, and code written against Node does (`signer.update(input);
+  // signer.end(); signer.sign(key)`, a JWT's RS256 in a World's twin). As an EventEmitter with `update` alone the
+  // call threw "signer.end is not a function" and the twin issued no key. Built on the engine's own Writable, which
+  // is Node's source, so every member a caller can reach is Node's (write, end, pipe, cork, destroy, the
+  // writable* states, 'finish'); what is written is what `update` takes.
+  _write(chunk: string | Buffer | Uint8Array, encoding: string, callback: (error?: Error | null) => void): void {
+    this.update(chunk, typeof chunk === 'string' ? encoding : undefined);
+    callback();
   }
 
   verify(publicKey: KeyLike, signature: Buffer | string, signatureEncoding?: string): boolean {
@@ -921,7 +949,7 @@ class Verify extends EventEmitter {
     const sig = typeof signature === 'string' ? Buffer.from(cryptoBytes(signature, signatureEncoding ?? 'utf8')) : signature;
 
     if (keyInfo.asymmetric) return verifyAsymmetric(this.#algorithm, combined, keyInfo.asymmetric, sig, dsaEncodingOf(publicKey));
-    return verifySync(this.#algorithm, combined, keyInfo, sig);
+    return verifySync(this.#algorithm, combined, keyInfo, sig, publicKey);
   }
 }
 
@@ -997,6 +1025,8 @@ class KeyObject {
     if (options === undefined || options === null || typeof options !== 'object') throw new ERR_INVALID_ARG_TYPE('options', 'object', options);
     if (this.#_type === 'private') refuseKeyEncryption(options);
     if (!(this.#_keyData instanceof Uint8Array)) throw new Error('Cannot export CryptoKey synchronously');
+    // An RSA key's numbers are read from its DER (crypto-rsa.ts), so it is written in any of its encodings.
+    if (this.#_algorithm === 'RSA-SHA256') return exportRsa(this.#_keyData, this.#_type === 'private' ? 'private' : 'public', options);
     if (options.format !== 'der') unsupported(`Exporting this ${this.asymmetricKeyType ?? 'asymmetric'} key as ${String(options.format)}`);
     return Buffer.from(this.#_keyData);
   }
@@ -1013,6 +1043,16 @@ function createPublicKey(key: KeyLike): KeyObject {
   // A private key gives its public key, as Node's does.
   if (keyInfo.asymmetric) return keyObjectOf(asymmetric.publicOf(keyInfo.asymmetric), 'public');
   notAKey(key, keyInfo);
+  // An RSA private key gives its public key too: its two public numbers as SPKI. It used to be handed back whole
+  // under the name "public", so exporting that "public key" gave out the private key's own bytes.
+  if (keyInfo.type === 'private' && keyInfo.algorithm === 'RSA-SHA256' && keyInfo.keyData instanceof Uint8Array) {
+    try { return new KeyObject('public', rsa.rsaSpkiOf(rsa.rsaPrivateKeyFromDer(keyInfo.keyData)), keyInfo.algorithm); }
+    catch (cause) {
+      if (cause instanceof rsa.RsaKeyRefused) throw Object.assign(new Error(`error:1E08010C:DECODER routines::unsupported (${cause.message})`), { code: 'ERR_OSSL_UNSUPPORTED' });
+      throw cause;
+    }
+  }
+  if (keyInfo.type === 'private') return unsupported('Making a public key from a private key that is not RSA, EC or Ed25519');
   return new KeyObject('public', keyInfo.keyData as Uint8Array, keyInfo.algorithm);
 }
 
@@ -1034,6 +1074,33 @@ function createPrivateKey(key: KeyLike): KeyObject {
 function notAKey(key: KeyLike, keyInfo: KeyInfo): void {
   if (key instanceof KeyObject || keyInfo.format !== 'raw') return;
   throw Object.assign(new Error('error:1E08010C:DECODER routines::unsupported'), { code: 'ERR_OSSL_UNSUPPORTED' });
+}
+
+/**
+ * An RSA key written as asked: a private key as PKCS#8 or PKCS#1, a public key as SPKI or PKCS#1, each as DER or PEM,
+ * or either as a JWK. `der` is the key as it is held (any of those four DER encodings).
+ */
+function exportRsa(der: Uint8Array, kind: 'public' | 'private', options: KeyEncoding | undefined): Buffer | string | Record<string, string> {
+  if (options === null || typeof options !== 'object') throw new ERR_INVALID_ARG_TYPE('options', 'object', options);
+  if (kind === 'private') refuseKeyEncryption(options);
+  try {
+    const key = kind === 'private' ? rsa.rsaPrivateKeyFromDer(der) : rsa.rsaPublicKeyFromDer(der);
+    if (options.format === 'jwk') return rsa.rsaJwkOf(key, kind === 'private');
+    const type = options.type as string | undefined;
+    if (type === 'sec1') throw Object.assign(new Error('The selected key encoding sec1 can only be used for EC keys.'), { code: 'ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS' });
+    const allowed = kind === 'private' ? ['pkcs1', 'pkcs8'] : ['pkcs1', 'spki'];
+    if (type === undefined || !allowed.includes(type)) throw Object.assign(new TypeError(`The property 'options.type' is invalid. Received ${type === undefined ? 'undefined' : `'${type}'`}`), { code: 'ERR_INVALID_ARG_VALUE' });
+    const bytes = kind === 'private'
+      ? (type === 'pkcs1' ? rsa.rsaPkcs1Of(key as rsa.RsaPrivateKey) : rsa.rsaPkcs8Of(key as rsa.RsaPrivateKey))
+      : (type === 'pkcs1' ? rsa.rsaPublicPkcs1Of(key) : rsa.rsaSpkiOf(key));
+    if (options.format === 'der') return Buffer.from(bytes);
+    if (options.format !== 'pem') throw Object.assign(new TypeError(`The property 'options.format' is invalid. Received ${options.format === undefined ? 'undefined' : `'${String(options.format)}'`}`), { code: 'ERR_INVALID_ARG_VALUE' });
+    const label = type === 'pkcs1' ? (kind === 'private' ? 'RSA PRIVATE KEY' : 'RSA PUBLIC KEY') : kind === 'private' ? 'PRIVATE KEY' : 'PUBLIC KEY';
+    return `-----BEGIN ${label}-----\n${Buffer.from(bytes).toString('base64').replace(/(.{64})/g, '$1\n').replace(/\n$/, '')}\n-----END ${label}-----\n`;
+  } catch (cause) {
+    if (cause instanceof rsa.RsaKeyRefused) throw Object.assign(new Error(`error:1E08010C:DECODER routines::unsupported (${cause.message})`), { code: 'ERR_OSSL_UNSUPPORTED' });
+    throw cause;
+  }
 }
 
 /** The JOSE name of the signature an EC or Ed25519 key makes: what this module's WebCrypto paths key their algorithm on. */
@@ -1167,6 +1234,25 @@ async function generateKeyPairAsync(type: string, options: KeyPairOptions): Prom
  * P-384 and P-521, and 'ed25519'. Undefined for a type it does not carry, which stays WebCrypto's and asynchronous.
  */
 function keyPairNow(type: string, options: KeyPairOptions): { publicKey: KeyObject | string | Buffer | Record<string, string>; privateKey: KeyObject | string | Buffer | Record<string, string> } | undefined {
+  // RSA, made here in BigInt (crypto-rsa.ts): a caller that makes its key in a synchronous function cannot wait for
+  // WebCrypto's promise, and "Synchronous generation of a rsa key pair" was refused whole (a World that mints its
+  // signing key at start did not start). About a third of a second for 2048 bits where it was measured.
+  if (type === 'rsa') {
+    if (typeof options.modulusLength !== 'number') throw new ERR_INVALID_ARG_TYPE('options.modulusLength', 'number', options.modulusLength);
+    const exponent = options.publicExponent ?? 0x10001;
+    if (typeof exponent !== 'number' || !Number.isSafeInteger(exponent)) throw new ERR_INVALID_ARG_TYPE('options.publicExponent', 'number', exponent);
+    let key: rsa.RsaPrivateKey;
+    try { key = rsa.rsaGenerate(options.modulusLength, BigInt(exponent), (bytes) => new Uint8Array(randomBytes(bytes))); }
+    catch (cause) {
+      if (cause instanceof rsa.RsaKeyRefused) return unsupported(`Making this RSA key: ${cause.message}`);
+      throw cause;
+    }
+    const secret = rsa.rsaPkcs8Of(key), open = rsa.rsaSpkiOf(key);
+    return {
+      publicKey: options.publicKeyEncoding ? exportRsa(open, 'public', options.publicKeyEncoding) : new KeyObject('public', open, 'RSA-SHA256'),
+      privateKey: options.privateKeyEncoding ? exportRsa(secret, 'private', options.privateKeyEncoding) : new KeyObject('private', secret, 'RSA-SHA256'),
+    };
+  }
   let made: AsymmetricKey;
   if (type === 'ec') {
     if (typeof options.namedCurve !== 'string') throw new ERR_INVALID_ARG_TYPE('options.namedCurve', 'string', options.namedCurve);
@@ -1201,7 +1287,8 @@ function generateKeyPair(type: string, options: KeyPairOptions | ((error: Error 
   if (typeof callback !== 'function') throw Object.assign(new TypeError('The "callback" argument must be of type function.'), { code: 'ERR_INVALID_ARG_TYPE' });
   const done = callback;
   // Argument errors throw synchronously, as Node's do. A type made here gives KeyObjects that export synchronously.
-  const now = keyPairNow(type, options ?? {});
+  // RSA asked for with a callback stays WebCrypto's: it is made off this thread, where making it here would hold it.
+  const now = type === 'rsa' ? undefined : keyPairNow(type, options ?? {});
   if (now) { setTimeout(() => done(null, now.publicKey, now.privateKey), 0); return; }
   keyPairAlgorithm(type, options ?? {});
   generateKeyPairAsync(type, options ?? {}).then(
@@ -1210,7 +1297,7 @@ function generateKeyPair(type: string, options: KeyPairOptions | ((error: Error 
   );
 }
 Object.defineProperty(generateKeyPair, Symbol.for('nodejs.util.promisify.custom'), {
-  value: async (type: string, options?: KeyPairOptions) => keyPairNow(type, options ?? {}) ?? generateKeyPairAsync(type, options ?? {}),
+  value: async (type: string, options?: KeyPairOptions) => (type === 'rsa' ? undefined : keyPairNow(type, options ?? {})) ?? generateKeyPairAsync(type, options ?? {}),
 });
 
 // ============================================================================
@@ -1231,6 +1318,12 @@ function timingSafeEqual(a: Buffer | Uint8Array, b: Buffer | Uint8Array): boolea
 function getCiphers(): string[] {
   // What createCipheriv accepts, no more, as getHashes is createHash's.
   return cipherNames();
+}
+
+function getCurves(): string[] {
+  // Node reports the curves its crypto binding supports. Derive the names from
+  // the same registry that generates and reads EC keys, as getCiphers does.
+  return asymmetric.curveNames();
 }
 
 function getHashes(): string[] {
@@ -1321,6 +1414,18 @@ function readKeyInfo(key: KeyLike): KeyInfo {
       if (!inner || typeof inner !== 'object' || ArrayBuffer.isView(inner)) throw new ERR_INVALID_ARG_TYPE('key.key', 'object', inner);
       const fromJwk = asymmetric.keyFromJwk(inner as Record<string, unknown>);
       if (fromJwk) return keyInfoOfAsymmetric(fromJwk);
+      // An RSA key written as a JWK (`{ kty: 'RSA', n, e }`, what a JWKS serves and a JWT's verifier builds its key
+      // from): read into the DER this engine holds an RSA key as, and from there as any other. It was refused as
+      // "Invalid JWK data", so no RS256 token could be verified against a key published as a JWK.
+      if ((inner as { kty?: unknown }).kty === 'RSA') {
+        const made = rsa.rsaKeyFromJwk(inner as Record<string, unknown>);
+        if (made) {
+          const secret = 'd' in made, der = secret ? rsa.rsaPkcs8Of(made) : rsa.rsaSpkiOf(made), label = secret ? 'PRIVATE KEY' : 'PUBLIC KEY';
+          let binary = '';
+          for (const byte of der) binary += String.fromCharCode(byte);
+          return readKeyInfo(`-----BEGIN ${label}-----\n${btoa(binary).replace(/(.{64})/g, '$1\n')}\n-----END ${label}-----\n`);
+        }
+      }
       throw Object.assign(new TypeError('Invalid JWK data'), { code: 'ERR_CRYPTO_INVALID_JWK' });
     }
     if (key.format === 'der') {
@@ -1355,13 +1460,28 @@ function readKeyInfo(key: KeyLike): KeyInfo {
       .replace(/-----END [^-]+-----/, '')
       .replace(/\s/g, '');
 
-    const keyData = Buffer.from(atob(base64));
+    // The key's own bytes: `atob` into `Buffer.from(string)` wrote every byte above 0x7f as two, so no key read here was its DER.
+    const keyData = Buffer.from(base64, 'base64');
 
-    // Try to detect algorithm from key header
+    // WHAT KIND OF KEY THIS IS, read from the key, never from its letters. The kind used to be guessed from the
+    // PEM's text: "RSA" anywhere in it, else "EC" anywhere. A PKCS#8 or SPKI key's label names no algorithm
+    // ("BEGIN PRIVATE KEY"), so the guess read the base64 body, where "EC" turns up by chance in about a third of
+    // RSA keys of 2048 bits and "RSA" in almost none: `createPrivateKey(pem).asymmetricKeyType` answered "ec" for
+    // an RSA key, and a signer that checks its key's kind before RS256 refused it (the OpenAI twin issued no
+    // OPENAI_API_KEY, and LibreChat had no endpoint to draw its composer for). An EC or Ed25519 key never reaches
+    // here (keyFromPem above), so what is left is RSA, by PKCS#1's own label or by the algorithm PKCS#8 and SPKI
+    // carry (rsaEncryption 1.2.840.113549.1.1.1, or RSASSA-PSS ...1.10), or a key of a kind this engine does not
+    // name, which stays unnamed.
     let algorithm: string | undefined;
-    if (keyStr.includes('RSA')) algorithm = 'RSA-SHA256';
-    else if (keyStr.includes('EC')) algorithm = 'ES256';
-    else if (keyStr.includes('ED25519')) algorithm = 'Ed25519';
+    const label = /-----BEGIN ([^-]+)-----/.exec(keyStr)?.[1] ?? '';
+    if (label === 'RSA PRIVATE KEY' || label === 'RSA PUBLIC KEY') algorithm = 'RSA-SHA256';
+    else {
+      const der = Buffer.from(base64, 'base64'), head = der.subarray(0, Math.min(der.byteLength, 48));
+      const rsaFamily = Buffer.from([0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01]);
+      const at = head.indexOf(rsaFamily);
+      const member = at >= 0 ? head[at + rsaFamily.byteLength] : undefined;
+      if (member === 0x01 || member === 0x0a) algorithm = 'RSA-SHA256';
+    }
 
     return {
       keyData,
@@ -1479,17 +1599,52 @@ async function verifyAsync(
 // subtle.sign is async and there is no other. Node throws
 // ERR_CRYPTO_UNSUPPORTED_OPERATION for an operation it cannot do, and so does
 // this; what stood here returned syncHash(key || data) as a "signature".
-function signSync(_algorithm: string, _data: Uint8Array, _keyInfo: KeyInfo): Buffer {
-  return unsupported('Synchronous signing');
+/**
+ * A signature made now, on the caller's thread, with a key that is not EC or Ed25519: an RSA key's, as
+ * RSASSA-PKCS1-v1_5 (crypto-rsa.ts). It used to be refused whole ("Synchronous signing"), so `createSign('RSA-SHA256')`
+ * and a JWT's RS256 could not be made here at all. `given` is the key as the caller passed it: a padding it names
+ * other than PKCS#1's is refused by name, never signed as PKCS#1.
+ */
+function rsaPaddingOf(given: unknown): void {
+  const padding = given && typeof given === 'object' && !ArrayBuffer.isView(given) ? (given as { padding?: unknown }).padding : undefined;
+  if (padding !== undefined && padding !== 1) unsupported(`An RSA signature with padding ${String(padding)} (only RSA_PKCS1_PADDING is made on the caller's thread)`);
+}
+function rsaKeyBytes(keyInfo: KeyInfo, what: string): Uint8Array {
+  if (keyInfo.algorithm !== 'RSA-SHA256' || !(keyInfo.keyData instanceof Uint8Array)) return unsupported(`${what} with a key that is not RSA, EC or Ed25519`);
+  return keyInfo.keyData;
+}
+function signSync(algorithm: string, data: Uint8Array, keyInfo: KeyInfo, given?: unknown): Buffer {
+  const der = rsaKeyBytes(keyInfo, 'Synchronous signing');
+  rsaPaddingOf(given);
+  const digest = signatureDigest(algorithm) ?? 'sha256';
+  if (!rsa.rsaSignsWith(digest)) return unsupported(`An RSA signature with the digest ${digest}`);
+  try {
+    if (keyInfo.type !== 'private') throw Object.assign(new TypeError('The key is a public key; a private key is required.'), { code: 'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE' });
+    return Buffer.from(rsa.rsaSign(digest, createHash(digest).update(data).digest() as Buffer, rsa.rsaPrivateKeyFromDer(der)));
+  } catch (cause) {
+    if (cause instanceof rsa.RsaKeyRefused) throw Object.assign(new Error(`error:1E08010C:DECODER routines::unsupported (${cause.message})`), { code: 'ERR_OSSL_UNSUPPORTED' });
+    throw cause;
+  }
 }
 
 function verifySync(
-  _algorithm: string,
-  _data: Uint8Array,
-  _keyInfo: KeyInfo,
-  _signature: Uint8Array
+  algorithm: string,
+  data: Uint8Array,
+  keyInfo: KeyInfo,
+  signature: Uint8Array,
+  given?: unknown
 ): boolean {
-  return unsupported('Synchronous verification');
+  const der = rsaKeyBytes(keyInfo, 'Synchronous verification');
+  rsaPaddingOf(given);
+  const digest = signatureDigest(algorithm) ?? 'sha256';
+  if (!rsa.rsaSignsWith(digest)) return unsupported(`An RSA signature with the digest ${digest}`);
+  try {
+    const key = keyInfo.type === 'private' ? rsa.rsaPrivateKeyFromDer(der) : rsa.rsaPublicKeyFromDer(der);
+    return rsa.rsaVerify(digest, createHash(digest).update(data).digest() as Buffer, key, signature);
+  } catch (cause) {
+    if (cause instanceof rsa.RsaKeyRefused) throw Object.assign(new Error(`error:1E08010C:DECODER routines::unsupported (${cause.message})`), { code: 'ERR_OSSL_UNSUPPORTED' });
+    throw cause;
+  }
 }
 
 async function importKey(
@@ -1586,7 +1741,7 @@ const nodeExports = {
   generatePrime: unavailable('generatePrime'),
   generatePrimeSync: unavailable('generatePrimeSync'),
   getCipherInfo: unavailable('getCipherInfo'),
-  getCurves: unavailable('getCurves'),
+  getCurves,
   getDiffieHellman: unavailable('getDiffieHellman'),
   privateDecrypt: unavailable('privateDecrypt'),
   privateEncrypt: unavailable('privateEncrypt'),

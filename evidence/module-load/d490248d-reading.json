@@ -1,0 +1,88 @@
+{
+  "kind": "s1.wekan-pre-fix-observation-reading",
+  "version": 1,
+  "job": "/Users/yueranyuan/volter/heavy-runs/sweep/image-cycle/jobs/0009-2026-10-12T203105.659362+0000-wekan~wekan",
+  "head": "d490248d64c2419077cd4745fdcf4b5463faabbd",
+  "engine": "d82b143170cbc5a88aa27a1b102ae9fa3f099564",
+  "image": "ghcr.io/wekan/wekan@sha256:60f4ee5347c8031f2999c072907b2110d67199fa25b2fd695a4b2473523a0150",
+  "owner": "73002",
+  "inputs": {
+    "dry-run.log": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/d490248d-inputs/dry-run.log",
+      "bytes": 382580,
+      "sha256": "ce6309a0e225b5c518129aee9afa9d0eb4ace953ac8ac0e263b2ce19ae513d04"
+    },
+    "record.json": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/d490248d-inputs/record.json",
+      "bytes": 17989,
+      "sha256": "1dd53d97a2c5518832ddfa0765364cc0a7994fcac42c51ea41f4143dd4a61022"
+    },
+    "job.runtime.json": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/d490248d-inputs/job.runtime.json",
+      "bytes": 2114,
+      "sha256": "6ce3d53b919e241adae1dcdd49cd075a9ffb83ee9e1e2bd0a74ddd61a3f5b94a"
+    },
+    "input.json": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/d490248d-inputs/input.json",
+      "bytes": 400,
+      "sha256": "03a203713faf638596fffe19124a99cdefcea6b0dc4ac49bda20742735f256fb"
+    },
+    "job.image-input.json": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/d490248d-inputs/job.image-input.json",
+      "bytes": 509,
+      "sha256": "e15a05be1da808191e7eda65db471dbd5b3423cc6e56a25d5624b18f7a8be94d"
+    },
+    "job.pair.json": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/d490248d-inputs/job.pair.json",
+      "bytes": 666,
+      "sha256": "8dff9df2fc1596c575614f11b3b4e6db5bd7417940a644aa2341cb7d596e32bb"
+    },
+    "container-stderr.raw.txt": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/d490248d-inputs/container-stderr.raw.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "load-clock.raw.txt": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/d490248d-inputs/load-clock.raw.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "finding.json": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/d490248d-inputs/finding.json",
+      "bytes": 6335,
+      "sha256": "673bb79883337f2eb807d2703d6420070ee919bc9c31bd6a406f6ff04d219fe0"
+    },
+    "runtime.ts": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/d490248d-inputs/runtime.ts",
+      "bytes": 165564,
+      "sha256": "589f7c4ff758ffcd81b4e07925d7a5632c8f456fcc083eb24b03ccadebd794ec"
+    },
+    "network.ts": {
+      "path": "/Volumes/PeakSSD/heavy-runs-out/builders/s1-wekan-module-exports-artifact/d490248d-inputs/network.ts",
+      "bytes": 68669,
+      "sha256": "44f0cdcf32715680fc182f57260d6eba315cf33b765046b9e380dbeaa6d11b2c"
+    }
+  },
+  "observedLines": {
+    "40": "  dry run: page console.warn: [WALI execve] failure after image retirement: Error: Committed exec could not release its old reactor descriptors: errno 110.",
+    "74": "  dry run: backstop: not ready 180 s after the CMD dispatched, though still making progress; at Service app: running; port 8080 not open after 155 s, waiting on nothing the page named",
+    "602": "  dry run: page console.log: [wali-profile] {\"argv\":[\"bash\",\"/build/wekan-entrypoint.sh\"],\"wallMs\":30154,\"setupMs\":14,\"guestMs\":30139,\"syscallMs\":30132,\"top\":[\"execve 1x 30129ms\",\"open 1x 1ms\",\"dup2 1x 0ms\",\"fork 1x 0ms\",\"close 1x 0ms\",\"rt_sigaction 6x 0ms\",\"rt_sigprocmask 3x 0ms\",\"gettid 1x 0ms\"],\"locks\":\"0x 0ms\",\"teardown\":{\"workersMs\":4,\"filesystemMs\":0,\"closeMs\":2}}",
+    "603": "  dry run: page console.log: [reap-trace] {\"event\":\"exit-posted\",\"at\":1791837817658,\"table\":\"acf8013d-8840-420f-be46-0531e747f4b4\",\"pid\":10001,\"image\":4,\"status\":9}",
+    "1147": "  dry run: page console.log: [reap-trace] {\"event\":\"exit-arrived\",\"at\":1791837817658,\"table\":\"acf8013d-8840-420f-be46-0531e747f4b4\",\"pid\":10001,\"image\":4,\"status\":9}",
+    "1249": "  dry run: ended timeout: backstop: not ready 180 s after the CMD dispatched, though still making progress; at Service app: running; port 8080 not open after 155 s, waiting on nothing the page named"
+  },
+  "pathIsAbsoluteOccurrences": 0,
+  "rawStderrLines": 0,
+  "rawLoadClockLines": 0,
+  "sourceBinding": [
+    "Exact d490 network.ts401-403 calls ReleaseExecDescriptors and throws the observed reactor-descriptor errno message",
+    "Exact d490 runtime.ts commit path calls networkHost.commitExecDescriptors before signalHost.handoffForExec/spawn; its post-commit catch emits the observed warning and kills the old image with signal9"
+  ],
+  "conclusion": "This take has an earlier observed committed-exec release timeout. No positive Meteor/boot.js call boundary was recorded; absent TypeError and empty application records do not establish passage past it or intermittent Reify behavior. The module.load source correction receives no runtime credit from this take.",
+  "limits": [
+    "Actual resolved executable path for this failing exec was not retained",
+    "The source cause of the reactor request timeout is owned separately by the kernel/SCM lane",
+    "Final Runtime.evaluate diagnostic read failed, so unread application accounts remain unknown"
+  ],
+  "scope": "Read-only retained observation plus exact matching source; no executions or kernel edits"
+}

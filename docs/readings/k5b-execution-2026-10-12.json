@@ -1,0 +1,300 @@
+{
+  "kind": "tabnode.k5b.execution-scope",
+  "version": 1,
+  "date": "2026-10-12",
+  "engineBase": "d82b143170cbc5a88aa27a1b102ae9fa3f099564",
+  "branch": "w3/s2-k5b-execution",
+  "sourceInputs": {
+    "src/runtime.ts": {
+      "bytes": 244637,
+      "sha256": "cad9f9383ab985ac4b8e51b4ec2bcaf8f0af23955ed8b67055c30f759797a069"
+    },
+    "src/shims/vm.ts": {
+      "bytes": 5582,
+      "sha256": "3fbcaf115b657a062c265ae687facb4bd328752c02af2e6aa8abbc12a379ccd7"
+    },
+    "src/error-source.ts": {
+      "bytes": 2713,
+      "sha256": "ce473ca5574862e0f2aa4d65352474a72031fedec5c62da9cc6a8b910fa6e5d9"
+    }
+  },
+  "checklist": {
+    "path": "/Users/yueranyuan/volter/heavy-runs/review/five-on-the-ledger/SPEED-CHECKLIST.md",
+    "bytes": 69009,
+    "sha256": "c2eaf99fb2c3691ba4bd6cf7cb2cc0728bc7781b213ad79f1c3d18e0e6f768ef",
+    "rows": "K5/K5a/K5b/K5c and C4"
+  },
+  "historicalTab": {
+    "evaluateMs": [
+      870,
+      930
+    ],
+    "outsideMs": [
+      3200,
+      3700
+    ],
+    "totalEvaluateOutsideMs": [
+      4100,
+      4600
+    ],
+    "nativeComparatorMs": [
+      3100,
+      3300
+    ],
+    "source": "SPEED-CHECKLIST.md433-454",
+    "originalLogs": "not retained; mini owner m-ace9c9b1 confirms all three K5 trees gone",
+    "primaryMatchedComparisonAvailable": false
+  },
+  "nativeProfile": {
+    "remotePath": "/Users/aaronclaw/heavy-lead/native/dub/t/prof/CPU.20261010.234752.4991.0.001.cpuprofile",
+    "bytes": 806014,
+    "sha256": "f05ed9c58f608bb01a854a7f12976f9b865b3b0cb4e462bbb85d2f1fd2c69f82",
+    "durationMs": 4470.167,
+    "sampleTimeMs": 4467.583,
+    "nodes": 3388,
+    "samples": 835,
+    "topSelf": [
+      {
+        "ms": 609.125,
+        "function": "Script",
+        "url": "node:vm",
+        "line": 84
+      },
+      {
+        "ms": 305.749,
+        "function": "wrapSafe",
+        "url": "node:internal/modules/cjs/loader",
+        "line": 1818
+      },
+      {
+        "ms": 240.83,
+        "function": "",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/node_modules/.pnpm/next@15.5.8_@opentelemetry+api@1.9.0_@playwright+test@1.58.2_react-dom@19.1.3_react@19.1.3__react@19.1.3/node_modules/next/dist/server/next-server.js",
+        "line": 598
+      },
+      {
+        "ms": 155.083,
+        "function": "wrapSafe",
+        "url": "node:internal/modules/cjs/loader",
+        "line": 1818
+      },
+      {
+        "ms": 148.96,
+        "function": "(garbage collector)",
+        "url": "",
+        "line": -1
+      },
+      {
+        "ms": 144.917,
+        "function": "wrapSafe",
+        "url": "node:internal/modules/cjs/loader",
+        "line": 1818
+      },
+      {
+        "ms": 139.541,
+        "function": "createContext",
+        "url": "node:vm",
+        "line": 224
+      },
+      {
+        "ms": 72.585,
+        "function": "deepFreeze",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/node_modules/.pnpm/next@15.5.8_@opentelemetry+api@1.9.0_@playwright+test@1.58.2_react-dom@19.1.3_react@19.1.3__react@19.1.3/node_modules/next/dist/shared/lib/deep-freeze.js",
+        "line": 10
+      },
+      {
+        "ms": 49.417,
+        "function": "c",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/apps/web/.next/server/webpack-runtime.js",
+        "line": 0
+      },
+      {
+        "ms": 42.791,
+        "function": "deepFreeze",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/node_modules/.pnpm/next@15.5.8_@opentelemetry+api@1.9.0_@playwright+test@1.58.2_react-dom@19.1.3_react@19.1.3__react@19.1.3/node_modules/next/dist/shared/lib/deep-freeze.js",
+        "line": 10
+      },
+      {
+        "ms": 35.251,
+        "function": "setReferenceManifestsSingleton",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/node_modules/.pnpm/next@15.5.8_@opentelemetry+api@1.9.0_@playwright+test@1.58.2_react-dom@19.1.3_react@19.1.3__react@19.1.3/node_modules/next/dist/server/app-render/encryption-utils.js",
+        "line": 90
+      },
+      {
+        "ms": 34.584,
+        "function": "(program)",
+        "url": "",
+        "line": -1
+      },
+      {
+        "ms": 32.041,
+        "function": "c",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/apps/web/.next/server/webpack-runtime.js",
+        "line": 0
+      },
+      {
+        "ms": 29.334,
+        "function": "deepFreeze",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/node_modules/.pnpm/next@15.5.8_@opentelemetry+api@1.9.0_@playwright+test@1.58.2_react-dom@19.1.3_react@19.1.3__react@19.1.3/node_modules/next/dist/shared/lib/deep-freeze.js",
+        "line": 10
+      },
+      {
+        "ms": 26.917,
+        "function": "readFileUtf8",
+        "url": "",
+        "line": -1
+      },
+      {
+        "ms": 26.75,
+        "function": "wrapSafe",
+        "url": "node:internal/modules/cjs/loader",
+        "line": 1818
+      },
+      {
+        "ms": 23.042,
+        "function": "startServer",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/node_modules/.pnpm/next@15.5.8_@opentelemetry+api@1.9.0_@playwright+test@1.58.2_react-dom@19.1.3_react@19.1.3__react@19.1.3/node_modules/next/dist/server/lib/start-server.js",
+        "line": 178
+      },
+      {
+        "ms": 22.333,
+        "function": "(idle)",
+        "url": "",
+        "line": -1
+      },
+      {
+        "ms": 22.333,
+        "function": "wrapSafe",
+        "url": "node:internal/modules/cjs/loader",
+        "line": 1818
+      },
+      {
+        "ms": 21.625,
+        "function": "internalModuleStat",
+        "url": "",
+        "line": -1
+      },
+      {
+        "ms": 19.875,
+        "function": "readFileUtf8",
+        "url": "",
+        "line": -1
+      },
+      {
+        "ms": 19.25,
+        "function": "c",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/apps/web/.next/server/webpack-runtime.js",
+        "line": 0
+      },
+      {
+        "ms": 18.375,
+        "function": "c",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/apps/web/.next/server/webpack-runtime.js",
+        "line": 0
+      },
+      {
+        "ms": 18.0,
+        "function": "readFileSync",
+        "url": "node:fs",
+        "line": 473
+      },
+      {
+        "ms": 17.333,
+        "function": "wrapSafe",
+        "url": "node:internal/modules/cjs/loader",
+        "line": 1818
+      },
+      {
+        "ms": 15.668,
+        "function": "wrapModuleLoad",
+        "url": "node:internal/modules/cjs/loader",
+        "line": 243
+      },
+      {
+        "ms": 14.208,
+        "function": "a",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/apps/web/.next/server/chunks/76722.js",
+        "line": 321
+      },
+      {
+        "ms": 13.083,
+        "function": "readFileSync",
+        "url": "node:fs",
+        "line": 473
+      },
+      {
+        "ms": 12.207,
+        "function": "733872",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/apps/web/.next/server/chunks/76722.js",
+        "line": 1002
+      },
+      {
+        "ms": 11.958,
+        "function": "h",
+        "url": "file:///Users/aaronclaw/heavy-lead/native/dub/src.noindex/apps/web/.next/server/chunks/95990.js",
+        "line": 36
+      }
+    ],
+    "vmSelf": [
+      {
+        "ms": 609.125,
+        "function": "Script",
+        "url": "node:vm",
+        "line": 84
+      },
+      {
+        "ms": 139.541,
+        "function": "createContext",
+        "url": "node:vm",
+        "line": 224
+      },
+      {
+        "ms": 8.5,
+        "function": "compileSourceTextModule",
+        "url": "node:internal/modules/esm/utils",
+        "line": 316
+      },
+      {
+        "ms": 6.458,
+        "function": "compileSourceTextModule",
+        "url": "node:internal/modules/esm/utils",
+        "line": 316
+      },
+      {
+        "ms": 1.25,
+        "function": "compileForInternalLoader",
+        "url": "node:internal/bootstrap/realm",
+        "line": 382
+      }
+    ],
+    "matchingTabLogs": "not retained per mini owner m-ace9c9b1",
+    "noRunPerformed": true,
+    "mutuallyExclusiveSampledMs": {
+      "other": 2666.3789999999995,
+      "cjs wrapSafe ancestry": 818.0390000000001,
+      "vm ancestry": 983.1650000000003
+    },
+    "categoryRules": [
+      "VM: any ancestor with url node:vm, including script/context creation and guest script work below it",
+      "CJS compile: any wrapSafe/node:internal/modules/cjs/loader ancestor, excluding VM category",
+      "Other: every remaining sample, including idle/GC/unattributed frames"
+    ]
+  },
+  "sourceMechanism": {
+    "vmNewContext": "Acorn parses the whole source for declaration names on every Script.runInNewContext call; identical evaluator Function is reconstructed on every call",
+    "moduleClock": "runInNewContext and runInThisContext have no process-owned parse/setup/eval subdivision; their work can occur in whichever load phase is open",
+    "reuseIntent": "realm-local, process-owned immutable declaration preparation cache by exact source and option identity; one evaluator function per realm, fresh sandbox scopes/activations per execution; no compiled Script/context crosses a realm or process",
+    "instrumentIntent": "exclusive synchronous parse/setup/eval spans and counts beside existing deferred load clock; eval includes browser parsing plus guest execution and is not a native compile-only estimate",
+    "behavior": "preserve fresh context objects, writes, declaration copyout, return values, exceptions and current option handling; never cache caller sandbox/proxy/evaluated exports"
+  },
+  "limits": [
+    "historical tab logs are absent: no exact matched body/version/wait attribution is claimed",
+    "native VM ancestry includes compilation, context creation and guest work below VM; it is not our Acorn time",
+    "C4 code-cache/confinement ceiling remains: no importScripts, cachedData substitution or cross-realm compiled code",
+    "actual reuse hits, VM phase costs, gains and all five boots/walks require the independent next lap"
+  ],
+  "testsRun": false,
+  "appsRun": false,
+  "targetExecuted": false,
+  "newTimingRun": false
+}

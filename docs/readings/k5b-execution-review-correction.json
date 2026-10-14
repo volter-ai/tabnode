@@ -1,0 +1,89 @@
+{
+  "kind": "tabnode.k5b.review-correction",
+  "review": "m-efe5a626 independent-review blocker and four should-fixes",
+  "changes": {
+    "traceGate": "phase/run/preparation callbacks return before the VM clock or timestamps when traceReadingRequested is false; R5 selected/old-host semantics retained",
+    "preparation": "exact source-only keys, constant parser settings, no retained option buckets; per-process weak shared preparation and guarded finalizer; each Script retains its own preparation",
+    "sourceCapture": "evaluate the same captured source used for preparation",
+    "evaluator": "frozen realm-local helper and frozen prototype; no captured guest scope/source/arrays; fresh activation, scope proxies and declaration array per execution",
+    "scope": "runtime source graph uses original Vite config/plugins/flags; entire package declarations emitted; full public/worker consumer bundle remains pending"
+  },
+  "mergedR5Head": "e89b8d458f4c44cc6967c27370186bd412f4fb7b",
+  "compiledSourceInputs": {
+    "src/runtime.ts": {
+      "bytes": 250632,
+      "sha256": "7df884f875517a044ba6357c2eb96cf632d54c32797edae5b687a66ba7884b26"
+    },
+    "src/shims/vm.ts": {
+      "bytes": 5938,
+      "sha256": "c75e1ff9e4ef2f28f02465a09cc356a239ee3201c4bd438eb97aa86d582fc3a9"
+    },
+    "src/vm-script-state.ts": {
+      "bytes": 4633,
+      "sha256": "0c3daf87d47986bf95e6fde837d1eb1c00564c07554d569a71c5cfd42cf5c5e6"
+    },
+    "src/trace-output.ts": {
+      "bytes": 2919,
+      "sha256": "0aa2a3afffa0080d64d26306caf8a98df99df88b6af4d934200d9a25d5135290"
+    },
+    "vite.lib.config.js": {
+      "bytes": 3402,
+      "sha256": "47ab8d3f188ca0e5ba5f5b444995dc96936e0fc4efc5148298ac11ed2f28da06"
+    },
+    "tsconfig.build.json": {
+      "bytes": 285,
+      "sha256": "d725459626c691638a857a767c2e9426474a55fbb3f594df76b016649fa7b7d3"
+    },
+    "tsconfig.json": {
+      "bytes": 347,
+      "sha256": "f4531609974caad489f38aecb71c390c97a517647451b747b4b77b5606b19289"
+    },
+    "package.json": {
+      "bytes": 2440,
+      "sha256": "a2e3889ae9d4984902aacd08cfc01086324fa19b27fdb68d1da64746345ed67a"
+    },
+    "package-lock.json": {
+      "bytes": 125131,
+      "sha256": "dfc28e7c30a52ccc3550a53163e10b509d37cb2c2a2673489fce2d13a097b874"
+    }
+  },
+  "artifactRoot": "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k5b-execution-artifact/review-correction",
+  "productionReceipt": {
+    "bytes": 29791,
+    "sha256": "94db7531bb2919fc198cfacac66bfff98c46b5461a312e2ddf1ef73038ceddaf"
+  },
+  "emissions": {
+    "runtime": {
+      "exitCode": 0,
+      "elapsedSeconds": 2.619967499980703,
+      "command": [
+        "node",
+        "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k5b-execution-artifact/review-correction/emit-runtime-library.mjs"
+      ]
+    },
+    "declarations": {
+      "exitCode": 0,
+      "elapsedSeconds": 3.3753510419628583,
+      "command": [
+        "node",
+        "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k5b-execution-engine/node_modules/typescript/bin/tsc",
+        "-p",
+        "tsconfig.build.json",
+        "--outDir",
+        "/Volumes/PeakSSD/heavy-runs-out/builders/s2-k5b-execution-artifact/review-correction/declarations"
+      ]
+    }
+  },
+  "productCount": 155,
+  "declarationCount": 151,
+  "qualificationPending": [
+    "independent review of this correction",
+    "full public/worker consumer engine pack",
+    "next mini five lap VM phase costs/cache hits and unchanged boots/walks",
+    "K5c compile/evaluate ceiling under C4"
+  ],
+  "testsRun": false,
+  "appsRun": false,
+  "newTimingRun": false,
+  "published": false
+}

@@ -27,7 +27,7 @@ export function __nodeResolverFor(fs: ResolutionFs, profile: 'runtime' | 'bundle
     ? createNodeResolver({ fs, exports: exportsResolver, conditionSets: [['browser', 'module', 'import', 'default'], ['require', 'default']], extensions: (extensions || ['.js', '.json']).filter((extension) => extension !== ''), mainFields: ['module', 'main'], globalRoots: ['/node_modules', '/project/node_modules'], workspaceMembers: members })
     : createNodeResolver({ fs, exports: exportsResolver, conditionSets: [['require', 'node', 'default'], ['import', 'node', 'default']],
         // Node's require probes `.ts`, `.mts` and `.cts` too once it strips types (22.18), and the loader here does.
-        extensions: ['.js', '.json', '.node', '.cjs', '.mjs', '.ts', '.mts', '.cts'], mainFields: ['main', 'module'], globalRoots: ['/node_modules'], workspaceMembers: members, sourceExtensions: ['.js', '.mjs', '.cjs'], skipThrowingCjs: true });
+        extensions: ['.js', '.json', '.node', '.cjs', '.mjs', '.ts', '.mts', '.cts'], mainFields: ['main', 'module'], globalRoots: ['/node_modules'], workspaceMembers: members, sourceExtensions: ['.js', '.mjs', '.cjs'], skipThrowingCjs: true, throwNotExported: true });
   byProfile.set(key, resolver);
   return resolver;
 }
