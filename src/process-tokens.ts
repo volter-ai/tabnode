@@ -339,7 +339,6 @@ export function pidIsLive(pid: number, caller: ProcessToken | null, callerPid?: 
   return registryFor(caller).signal(pid, '0', callerPid ?? runPid(caller)?.pid ?? initialIdentity?.pid);
 }
 
-/** `kill(pid, signal)` by `caller` to another live process; whether one took it. */
 /** A process's listener for `signal` came or went: its registry hears it where it keeps dispositions. */
 export function publishSignalDisposition(processObject: object, signal: number, handled: boolean): void {
   const token = __tokenForProcess(processObject as never);
@@ -352,6 +351,7 @@ export function signalsThroughKernel(caller: ProcessToken | null): boolean {
   return registryFor(caller).kernel === true;
 }
 
+/** `kill(pid, signal)` by `caller` to another live process; whether one took it. */
 export function signalPid(pid: number, signal: string, caller: ProcessToken | null): boolean {
   return registryFor(caller).signal(pid, signal);
 }
