@@ -15,12 +15,21 @@ minor release, for the new public run options and exports.
 - A run's fd 0 can be a reader over the host kernel's own pipe (`RunOptions.stdinReader`; marker `RUN_STDIN_READER`).
 - A process's signal listeners are its dispositions, told to its registry (`ProcessRegistry.disposition`; marker
   `RUN_SIGNAL_DISPOSITIONS`); a listener's name reaches the disposition words only as a signal's own name.
+- **Behaviour change for a host whose registry sets `ProcessRegistry.kernel`:** a host-run child's `kill()` now goes
+  through the kernel registry (the kernel delivers it), where 0.12.0 ended the run itself. A kernel refusal (EPERM)
+  is thrown out of `ChildProcess.kill()`, and SIGSTOP and SIGCONT are delivered as SIGTERM (no stop is modelled
+  yet). A host that does not set `kernel` is unchanged.
 - A run handed its own tree gets that tree's shell at routing, and `run()` reads `RunOptions.filesystem` as `runNode`
   does (marker `RUN_LINE_FILESYSTEM`); `tokenOfPid` takes the caller's pid namespace.
 - A run's initial environment is published with its identity, for the process table's `/proc/<pid>/environ`.
-- IPC handles: a queued connection is the socket's until a member accepts it; a Pipe binder's close takes the socket's
-  name with its node, as libuv and Linux do; a closing last listener resets what is queued (ECONNRESET); an abstract
-  name passes as one.
+- **A TCP server or Unix-socket listener passed over IPC is a duplicate of its socket**, as SCM_RIGHTS duplicates a
+  descriptor: before, it crossed as the sender's own instance, so the sender's close ended the receiver's listener.
+  Either member accepts, in turn, and the socket listens until its last member closes; a bound, not-yet-listening
+  socket (cluster's shared handle) keeps its bound name in the copy. A connection reaching a socket no member serves
+  yet waits in the socket's accept queue, owned by no run until a member accepts it; the last listener's close
+  resets what is queued (ECONNRESET), as Linux does. For a Pipe, the binder's close takes the socket's path with its
+  node, as libuv and Linux do, and a passed copy accepts only by descriptor; a socket in the abstract namespace has
+  no node, so its name passes at a close to a member still open.
 - Let a trusted synchronous child host explicitly own all children of the current
   run, including image scripts and Node programs the engine can resolve. Use the
   existing admitted host process/wait path before Worker fallback; preserve
