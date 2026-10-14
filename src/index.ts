@@ -404,8 +404,10 @@ export function createContainer(options?: ContainerOptions): {
     // run is otherwise charged to the run launched last, which then read the
     // page's port as its own server and ended when the page stopped listening.
     // Sockets it accepts take its owner, so they hold no guest open either.
+    // Half-open, as the program behind it may be: the guest's FIN ends what it sends, and a reply after it still reaches
+    // the guest (browser-substrate's FIN through the relay, S1). Each socket ends once both halves are done.
     listenNet: (port: number, onConnection: (socket: NetSocket) => void) => {
-      const server = new NetServer(onConnection);
+      const server = new NetServer({ allowHalfOpen: true }, onConnection);
       server.listen(port);
       __adoptHandle((server as unknown as { _handle?: OwnedHandle | null })._handle, null);
       return () => { server.close(); };
