@@ -77,8 +77,19 @@ it is manually dispatched and never triggered by a development push. The
 headline is the unnamed failure count. It retains four completion counts and
 the four ledger states; it does not gate publishing.
 
-The runner uses four concurrent isolated guests and an 8,000 ms per-file
-limit, recorded with each measurement. A timeout remains a failure. The host
+Local runs use four concurrent isolated guests and an 8,000 ms per-file
+limit. The manual remote workflow builds once, uses that bundle for sixteen
+partitions of the full pinned file list, and runs the native/public surface
+capture beside them. Each partition still validates the complete upstream tree
+and commit; it marks its own receipt incomplete. The merger requires all sixteen
+unique partitions, the same engine source/bundle digest and execution settings,
+and every pinned file exactly once before setting the complete-denominator flag.
+Missing shards and partial artifacts cannot produce a full report. Original
+per-file outcomes and timeouts are retained. The combined duration is the actual
+earliest-start to latest-finish interval, including runner scheduling; summed
+shard durations are recorded separately. These changes are source-only until an
+explicitly authorized measurement supplies a new run; they do not establish a
+new measured duration. Execution settings are recorded with each measurement. A timeout remains a failure. The host
 filesystem mounts fixtures into `/workspace/app`; each guest has a private
 virtual write layer. The host binary and the engine are separate public
 snapshot processes, so engine global changes cannot contaminate the reference.
