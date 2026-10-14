@@ -93,8 +93,6 @@ export interface ProcessRegistryScope extends ProcessRegistry {
    * which this registry need not hold.
    */
   claim(pid: number): void;
-  /** Trusted owner handoff before the destination worker starts; not a guest operation. */
-  adoptRun(source: ProcessRegistryScope, sourceToken: string, token: string, parentPid?: number): ProcessIdentity;
   /** Ends this realm's registrations, including after abrupt worker death. */
   dispose(): void;
 }
@@ -106,7 +104,6 @@ export interface ProcessRegistryScope extends ProcessRegistry {
  */
 export function createProcessRegistryOwner(): {
   createScope(): ProcessRegistryScope;
-  table(): ProcessIdentity[];
   /**
    * The numbers come from here from now on: a kernel's own pid counter, so
    * the container's processes and the kernel's are one pid space, and a
@@ -122,12 +119,6 @@ export function createProcessRegistryOwner(): {
   const live = new Map<number, ProcessIdentity>();
   // Which realm's scope answers for each live pid, including after handoff.
   const receivers = new Map<number, { handler?: (pid: number, signal: string) => boolean }>();
-  const scopes = new WeakMap<ProcessRegistryScope, {
-    allocated: Set<number>;
-    claimed: Set<number>;
-    runs: Map<string, ProcessIdentity>;
-    active(): void;
-  }>();
   return {
     createScope() {
       const allocated = new Set<number>();
@@ -140,33 +131,6 @@ export function createProcessRegistryOwner(): {
         if (disposed) throw new Error('Process registry scope is closed.');
       };
       const scope: ProcessRegistryScope = {
-        adoptRun(source, sourceToken, token, parentPid) {
-          active();
-          const parent = scopes.get(source);
-          if (!parent) throw new Error('Process scopes belong to different container owners.');
-          parent.active();
-          if (allocated.size || runs.size) throw new Error('Process handoff requires an unused destination scope.');
-          if (typeof sourceToken !== 'string' || typeof token !== 'string' || !token.length) throw new Error('Invalid process handoff token.');
-          const identity = parent.runs.get(sourceToken);
-          if (!identity || live.get(identity.pid) !== identity) throw new Error('Source scope does not own that live process.');
-          if (parentPid !== undefined) {
-            // The trusted holder retains its admitted parent PID. The parent
-            // may already have exited; publication established this ancestry
-            // while it still belonged to the source scope.
-            if (!Number.isSafeInteger(parentPid) || parentPid < 1 || identity.pid === parentPid || identity.ppid !== parentPid) {
-              throw new Error('Process admission does not name a child of the source realm.');
-            }
-          }
-          // The PID stays live throughout the synchronous owner operation.
-          // Old-scope disposal/forget cannot remove the child's new ownership.
-          parent.runs.delete(sourceToken);
-          parent.allocated.delete(identity.pid);
-          if (parent.claimed.delete(identity.pid)) claimed.add(identity.pid);
-          allocated.add(identity.pid);
-          runs.set(token, identity);
-          receivers.set(identity.pid, receiver);
-          return identity;
-        },
         allocate() {
           active();
           for (;;) {
@@ -281,12 +245,7 @@ export function createProcessRegistryOwner(): {
           claimed.clear();
         },
       };
-      scopes.set(scope, { allocated, claimed, runs, active });
       return scope;
-    },
-    /** Every live process of the container, in pid order: what `/proc` lists. */
-    table() {
-      return [...live.values()].sort((a, b) => a.pid - b.pid);
     },
     installAllocator(allocate) {
       if (typeof allocate !== 'function') throw new TypeError('A process identifier allocator is a function.');

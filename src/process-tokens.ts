@@ -186,24 +186,6 @@ let registryUsed = false;
 let initialIdentity: { pid: number; ppid: number } | undefined;
 const pidsOfRuns = new Map<ProcessToken, { pid: number; ppid: number; pgid?: number }>();
 
-/** Each child realm gets its own registration authority in this container. */
-export function createProcessRegistryScope(): ProcessRegistryScope {
-  if (registryInstalled) throw new Error('Only the container owner can create process registry scopes.');
-  return processRegistryOwner.createScope();
-}
-
-/** Trusted container owner only: every live process of the container, from every realm. */
-export function ownerProcessTable(): ProcessIdentity[] {
-  if (registryInstalled) throw new Error('This realm is a process registry client, not the container owner.');
-  return processRegistryOwner.table();
-}
-
-/** Trusted container owner only; worker clients cannot expose their authority. */
-export function ownerProcessRegistryScope(): ProcessRegistryScope {
-  if (registryInstalled) throw new Error('This realm is a process registry client, not the container owner.');
-  return processRegistry as ProcessRegistryScope;
-}
-
 /** Startup-only host seam; never swap identity authorities under live runs. */
 export function installProcessRegistry(registry: ProcessRegistry, initial?: InitialProcessRegistration): void {
   if (registryInstalled || registryUsed) throw new Error('Process registry must be installed once before creating processes.');
