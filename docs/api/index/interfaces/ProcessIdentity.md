@@ -26,6 +26,14 @@ The directory it was started in: `/proc/<pid>/cwd`.
 
 ***
 
+### env?
+
+> `readonly` `optional` **env?**: readonly `string`[]
+
+The environment it was started with, as execve's envp (`NAME=value`): `/proc/<pid>/environ`.
+
+***
+
 ### pgid?
 
 > `readonly` `optional` **pgid?**: `number`

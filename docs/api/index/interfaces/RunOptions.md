@@ -39,7 +39,10 @@ own: a host's tree for one process (a kernel's, for a `node` its shell
 exec'd), chosen per run, while the run keeps the container's one port
 space, process table and servers, as a process on Linux keeps its
 network namespace whatever filesystem it sees. The engine writes nothing
-into it on its own account. `runNode` only.
+into it on its own account. `runNode`, and `run`, whose shell line, its
+builtins and the children it runs in this realm read and write it
+(browser-substrate ADR-0129 5f.1: a line that is a kernel process's is on
+that process's tree, as its `node` is).
 
 ***
 
@@ -189,6 +192,15 @@ AbortSignal to cancel long-running commands
 What is on fd 0 when the run begins, so a builtin reads what was piped to
 it. `runNode` gives bytes to Node as they are; `run`'s shell reads its
 input as text, and bytes given to it are read as UTF-8.
+
+***
+
+### stdinReader?
+
+> `optional` **stdinReader?**: [`StdinReader`](StdinReader.md)
+
+fd 0 as a reader the host made in this realm over its kernel's own pipe (`StdinReader`): read as `stdinShared`
+is, its only source, with no ring between the pipe and the run. Where both are given, this one is read.
 
 ***
 

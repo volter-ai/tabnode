@@ -12,6 +12,16 @@ Installed by the trusted embedding host before this realm starts runs.
 
 - [`ProcessRegistryScope`](ProcessRegistryScope.md)
 
+## Properties
+
+### kernel?
+
+> `readonly` `optional` **kernel?**: `boolean`
+
+A registry over a kernel (browser-substrate ADR-0129): its `signal` is the kernel's kill(2), and the kernel
+delivers it to whichever image runs the pid, an engine run of this realm or a program the host runs. Absent for
+tabnode's own, whose `signal` reaches only this realm's runs.
+
 ## Methods
 
 ### allocate()
@@ -39,6 +49,33 @@ as fork (and setsid) do (browser-substrate ADR-0129); tabnode's own ignores both
 #### Returns
 
 `number`
+
+***
+
+### disposition()?
+
+> `optional` **disposition**(`pid`, `signal`, `handled`): `void`
+
+`signal` of process `pid` is now handled (a listener for it) or not: a kernel's registry records it as the
+process's disposition, from which the kernel protects a namespace's init (browser-substrate ADR-0129 4.4).
+
+#### Parameters
+
+##### pid
+
+`number`
+
+##### signal
+
+`number`
+
+##### handled
+
+`boolean`
+
+#### Returns
+
+`void`
 
 ***
 

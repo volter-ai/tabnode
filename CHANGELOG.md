@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.13.0 — 2026-10-14
+
 The browser-substrate ADR-0129 integration (the kernel owns every process), with the synchronous-child ownership
 below. Each feature is additive and announced by a marker a host checks before it relies on it, so an engine without
 it is never asked; none changes the lowered text, so the prepared format stays `tabnode-prepared-7`. Cut as 0.13.0, a
