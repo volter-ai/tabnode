@@ -7,7 +7,7 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 ## Unreleased
 
 - **A process can start with the paths its project's last run kept** (browser-substrate ADR-0152, S2 AC-LC10).
-  `seedKeptResolutions(entries)` seeds every kept-paths table the realm makes with `(directory + "\0" + name, path)`
+  `seedKeptResolutions(entries, filesystem?)` seeds every kept-paths table the realm makes (only that filesystem's, where one is named) with `(directory + "\0" + name, path)`
   pairs, within R76's bounds; `keptResolutions()` returns what the realm's tables keep now. The host hands a seed only
   for a table resolved on the same files; nothing changes for a host that hands none. `resolveSplit.keptPaths.carried`
   says how many a table started with.

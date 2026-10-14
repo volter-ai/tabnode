@@ -2710,7 +2710,7 @@ function __substratePathCounts(process: object) {
  * when it is made; this realm's tables are named here so their paths can be said when the process ends
  * (`keptResolutions`).
  */
-let __substrateKeptSeed: ReadonlyArray<readonly [string, string]> | undefined;
+let __substrateKeptSeed: { entries: ReadonlyArray<readonly [string, string]>; filesystem?: WeakRef<object> } | undefined;
 const __substrateKeptTables = new Set<WeakRef<{ paths: Map<string, string>; bytes: number }>>();
 function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
   let filesystems = __substrateResolvedPaths.get(cache);
@@ -2718,8 +2718,14 @@ function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
   let paths = filesystems.get(fs);
   if (!paths) {
     paths = { paths: new Map(), bytes: 0 };
-    for (const [key, path] of __substrateKeptSeed ?? []) __substrateKeepPath(paths, key, path);
-    if (__substrateKeptSeed) (paths as { carried?: number }).carried = paths.paths.size;
+    // A seed given for one filesystem is that filesystem's tables' alone: another tree's paths are another view's.
+    const seed = __substrateKeptSeed && (!__substrateKeptSeed.filesystem || __substrateKeptSeed.filesystem.deref() === fs) ? __substrateKeptSeed.entries : undefined;
+    if (seed) {
+      for (const [key, path] of seed) __substrateKeepPath(paths, key, path);
+      (paths as { carried?: number }).carried = paths.paths.size;
+      // What seeding itself pushed out is not a process's eviction.
+      (paths as { evicted?: number }).evicted = 0;
+    }
     filesystems.set(fs, paths);
     __substrateKeptTables.add(new WeakRef(paths));
   }
@@ -2730,13 +2736,13 @@ function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
  * resolved path)` pairs, within the same bounds a process keeps. The host hands only a table made on the same files;
  * the engine cannot check that, and a table it was not given is never assumed. Call before the process's first require.
  */
-export function seedKeptResolutions(entries: Iterable<readonly [string, string]>): void {
+export function seedKeptResolutions(entries: Iterable<readonly [string, string]>, filesystem?: object): void {
   const seed: Array<readonly [string, string]> = [];
   for (const entry of entries) {
     if (!Array.isArray(entry) || typeof entry[0] !== 'string' || typeof entry[1] !== 'string' || !entry[0].includes('\0') || !entry[1].startsWith('/')) continue;
     seed.push([entry[0], entry[1]]);
   }
-  __substrateKeptSeed = seed;
+  __substrateKeptSeed = { entries: seed, ...(filesystem ? { filesystem: new WeakRef(filesystem) } : {}) };
 }
 /** The paths this realm's tables keep now, oldest first, deduplicated by key: what its next run may start with (ADR-0152). */
 export function keptResolutions(): Array<[string, string]> {
