@@ -186,6 +186,22 @@ export function withGuestExecution<T>(fn: () => T, kind = 'other', source?: unkn
   try { return fn(); } finally { end(); }
 }
 
+let continuationFromTheLoop = false;
+let turnEnded: (() => void) | undefined;
+/** What else ends with a continuation's turn (async_hooks.ts: its frame goes back to the root), run by the same
+ *  task, so an awaiting turn queues one microtask, not one for the account and another for the frame (S2 AC-LC9). */
+export function setGuestTurnEnd(callback: () => void): void { turnEnded = callback; }
+/** The end of a continuation's turn: one function, not a closure made for each resumption (S2 AC-LC9). */
+function endContinuation(): void {
+  continuation = false;
+  if (depth === 0) {
+    const took = clock!() - activeSince;
+    active += took;
+    if (entryAccount) { if (continuationFromTheLoop) countEntry('await', undefined, took); else countEntry(outerKind, outerSource, took); outerSource = undefined; }
+  }
+  turnEnded?.();
+}
+
 /** A compiled native-await continuation runs until it yields to the loop. */
 export function resumeGuestTurn(): void {
   if (continuation) return;
@@ -193,17 +209,10 @@ export function resumeGuestTurn(): void {
   // A continuation begun from the loop is an `await`'s; one begun inside a bracket (a compiled async function's
   // catch or finally restoring its frame before its first await, under a timer or a stream's read) extends that
   // bracket, whose end then counts nothing: its time is the bracket's entry's, counted here when the turn ends.
-  const fromTheLoop = depth === 0;
-  if (fromTheLoop) activeSince = clock!();
+  continuationFromTheLoop = depth === 0;
+  if (continuationFromTheLoop) activeSince = clock!();
   continuation = true;
-  enqueue(() => {
-    continuation = false;
-    if (depth === 0) {
-      const took = clock!() - activeSince;
-      active += took;
-      if (entryAccount) { if (fromTheLoop) countEntry('await', undefined, took); else countEntry(outerKind, outerSource, took); outerSource = undefined; }
-    }
-  });
+  enqueue(endContinuation);
 }
 
 export interface EventLoopUtilization {

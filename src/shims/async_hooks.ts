@@ -4,7 +4,7 @@
  */
 
 import { forGuestRealm, takeFromHost } from '../host-globals';
-import { withGuestExecution, withGuestCallback, resumeGuestTurn, isBindingTask } from '../guest-loop';
+import { withGuestExecution, withGuestCallback, resumeGuestTurn, setGuestTurnEnd, isBindingTask } from '../guest-loop';
 
 /**
  * The context a continuation runs in: every storage's store, as one frame.
@@ -25,15 +25,17 @@ import { withGuestExecution, withGuestCallback, resumeGuestTurn, isBindingTask }
 type ContextFrame = ReadonlyMap<AsyncLocalStorage<unknown>, unknown>;
 const ROOT_FRAME: ContextFrame = new Map();
 let currentFrame: ContextFrame = ROOT_FRAME;
-const nativeQueueMicrotask = globalThis.queueMicrotask.bind(globalThis);
 let resetQueued = false;
-const resetFrame = (): void => { resetQueued = false; currentFrame = ROOT_FRAME; };
+const resetFrame = (): void => { if (!resetQueued) return; resetQueued = false; currentFrame = ROOT_FRAME; };
+// The frame goes back to the root where the continuation's turn ends, by the task that ends it (guest-loop.ts):
+// one microtask an awaiting turn, where there were two (S2 AC-LC9).
+setGuestTurnEnd(resetFrame);
 /** A resumed continuation's frame, current until the turn it runs in ends. */
 const resumeFrame = (frame: ContextFrame): void => {
   resumeGuestTurn();
   if (frame === currentFrame) return;
   currentFrame = frame;
-  if (!resetQueued) { resetQueued = true; nativeQueueMicrotask(resetFrame); }
+  resetQueued = true;
 };
 const withFrame = <R>(frame: ContextFrame, callback: () => R): R => {
   const previous = currentFrame;
