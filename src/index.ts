@@ -70,6 +70,8 @@ export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
 export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter } from './stdin-ring';
+/** Present from the release that tells a run's registry its signal listeners (ProcessRegistry.disposition). */
+export const RUN_SIGNAL_DISPOSITIONS = 1;
 import { stdinRingProblem, stdinRingWaitsAsync } from './stdin-ring';
 export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
