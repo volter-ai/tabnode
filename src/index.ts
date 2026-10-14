@@ -70,6 +70,8 @@ export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
 export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter } from './stdin-ring';
+/** Present from the release whose `run` (a shell line) reads `RunOptions.filesystem`, as `runNode` does. */
+export const RUN_LINE_FILESYSTEM = 1;
 import { stdinRingProblem, stdinRingWaitsAsync } from './stdin-ring';
 export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
