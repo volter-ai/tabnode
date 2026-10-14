@@ -6,6 +6,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- A rewritten `new` passes the making module's dynamic import in both of the engine's lowerings (Codex 91): the
+  guest-name rewrite passed only `$process`, so a guest-scoped body's `new Function(...)` lost its module's loader,
+  while the `with`-scope rewrite passed it. The lowered text changes, so the prepared format moves to
+  `tabnode-prepared-7`: bodies prepared by 0.11.x (format 6, the old constructor wrap) are not found and are prepared
+  again, at both scoped `runModuleBody` read paths. A minor release, 0.12.0 (CONTRIBUTING's rule; the merge that sets
+  the version is published as it, RELEASING.md). `String(fn)` restores both wraps, which only gives back source text
+  and never upgrades a stale body's execution.
+
 ## v0.11.2 — 2026-10-14
 
 - The publish workflow sees a version set in a merge commit: `.github/autorelease.mjs` reads the version line's last
