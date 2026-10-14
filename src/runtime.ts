@@ -300,6 +300,8 @@ function __substrateUnclaimGuestScoped(code: string): string {
   const at = code.startsWith(__substrateGuestScopedMarker) ? 0 : __substrateModuleMarker.length;
   return code.slice(0, at) + ' '.repeat(__substrateGuestScopedMarker.length) + code.slice(at + __substrateGuestScopedMarker.length);
 }
+/** What a rewritten `new` passes after its callee: the process, and the making module's dynamic import where it has one. */
+const __substrateGuestConstructArgs = ",$process,typeof $dynamicImport==='function'?$dynamicImport:void 0";
 function __substrateScopeGlobalCalls(source: string): string {
   // Every body comes here once, as written or as lowered: a mark already in it is the source's own text, not this
   // pass's, and is never trusted (review of 2eaa5f41).
@@ -313,7 +315,9 @@ function __substrateScopeGlobalCalls(source: string): string {
   let ast;
   try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true }); }
   catch { return code; }
-  const construct = (callee: string): string => "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + ",$process):" + callee + ")";
+  // The making module's dynamic import goes with its process (Codex 91): a constructor that loads a module at
+  // construction (a Worker's module, a lazy class) imports from the module that wrote `new`, in either rewrite.
+  const construct = (callee: string): string => "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + __substrateGuestConstructArgs + "):" + callee + ")";
   const guestEdits = reserved ? undefined : __substrateGuestNameEdits(ast, code, new Set(__substrateGuestScopeNames), '__substrateGuestScope', construct);
   if (guestEdits) return __substrateMarkGuestScoped(applySourceEdits(code, guestEdits.sort((a, b) => b[0] - a[0])));
   // A `with` statement or a direct eval in the body, whose names resolve at run time, an escaped guest name, or the
@@ -325,7 +329,7 @@ function __substrateScopeGlobalCalls(source: string): string {
     // names do not exist. The rewrite is the original `new` there.
     if (node.type === "NewExpression" && node.callee.type === "Identifier") {
       const callee = code.slice(node.callee.start, node.callee.end);
-      positions.push([node.callee.start, node.callee.end, "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + ",$process,typeof $dynamicImport==='function'?$dynamicImport:void 0):" + callee + ")"]);
+      positions.push([node.callee.start, node.callee.end, construct(callee)]);
     }
     // The narrow with-scope below keeps global replacements dynamic.
     // Remove its object receiver for ordinary calls (including local
@@ -864,7 +868,9 @@ function __substrateUnfollowAwaits(source: string): string {
  * Guest text around them is never read as one.
  */
 const __substrateGuestNamesText = __substrateGuestScopeNames.join('|');
-const __substrateGuestConstructShape = /\(typeof __substrateGuestConstructor==='function'\?__substrateGuestConstructor\(([^,()]+),\$process\):\1\)/gu;
+// Its shape names the arguments both rewrites pass (__substrateGuestConstructArgs), and the process-only form a body
+// prepared before them carries, so `String(fn)` gives back `new X` from either.
+const __substrateGuestConstructShape = /\(typeof __substrateGuestConstructor==='function'\?__substrateGuestConstructor\(([^,()]+),\$process(?:,typeof \$dynamicImport==='function'\?\$dynamicImport:void 0)?\):\1\)/gu;
 const __substrateGuestEditShape = new RegExp(`\\(0,__substrateGuestScope\\["(${__substrateGuestNamesText})"\\]\\)|(${__substrateGuestNamesText}): __substrateGuestScope\\['\\2'\\]|__substrateGuestScope\\.(${__substrateGuestNamesText})(?![\\p{ID_Continue}$\\u200c\\u200d])`, 'gu');
 function __substrateUnscopeGuestNames(source: string): string {
   if (!source.includes('__substrateGuest')) return source;
