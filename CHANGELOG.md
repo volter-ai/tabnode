@@ -10,7 +10,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   compiled to a function once a realm and called into a module scope of its own at each load, as before. The new
   export `precompileNodeLib(name)` compiles one ahead of its first require, running none of it, so a realm waiting for
   its process can spend the wait there (LibreChat run 4: 332 ms of `compileNodeLib` self time over its 20 Node realms,
-  each on its own process's start). Additive: a host detects the export by its presence.
+  each on its own process's start). The realm keeps each compiled file for its life. Additive: a host detects the
+  export by its presence.
 - **A process's load clock says its heaviest bodies** (browser-substrate S2 AC-LC5). Where a reading is requested, the
   `load-clock` record carries `heaviestBodies`: the 24 bodies that took longest from their link to their evaluation's
   return, with the requires their evaluation made, by path. An importer's time holds its imports'; a body's own

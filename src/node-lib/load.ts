@@ -83,6 +83,8 @@ interface NodeLibModule {
 /* eslint-disable no-var, vars-on-top */
 var cache: Map<string, NodeLibModule> | undefined;
 var builtInternals: Map<string, unknown> | undefined;
+/** A builtin's file compiled once a realm (compiledNodeLibFor), kept for the realm's life. */
+var compiledNodeLib: Map<string, Function> | undefined;
 var builtBindings: Map<string, unknown> | undefined;
 /* eslint-enable no-var, vars-on-top */
 
@@ -471,8 +473,8 @@ function newNodeLibRecord(name: string): NodeLibModule {
  * at their first require, on its own start (LibreChat run 4: 332 ms of `compileNodeLib` self time over its 20 Node
  * realms). Compiling runs nothing: each load still calls it into a module scope of its own.
  */
-const compiledNodeLib = new Map<string, Function>();
 function compiledNodeLibFor(name: string): Function {
+  compiledNodeLib ??= new Map<string, Function>();
   let compiled = compiledNodeLib.get(name);
   if (!compiled) {
     // eslint-disable-next-line no-new-func
@@ -490,7 +492,7 @@ function compiledNodeLibFor(name: string): Function {
  * already compiled.
  */
 export function precompileNodeLib(name: string): boolean {
-  if (NODE_LIB_SOURCES[name] === undefined || compiledNodeLib.has(name)) return false;
+  if (NODE_LIB_SOURCES[name] === undefined || compiledNodeLib?.has(name)) return false;
   compiledNodeLibFor(name);
   return true;
 }
