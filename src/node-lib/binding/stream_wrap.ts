@@ -118,6 +118,10 @@ export class LibuvStreamWrap implements OwnedHandle {
   private streamEndpoint = new StreamEndpoint(this);
   /** The connection end this descriptor shares with its duplicates: one socket, one send buffer (S2 T14's shared credit). */
   get connectionEnd(): object { return this.streamEndpoint; }
+  /** The live wrappers sharing this descriptor's socket (its duplicates), not counting a closed one. */
+  protected get sharingHandles(): ReadonlySet<LibuvStreamWrap> { return this.streamEndpoint.handles; }
+  /** Whether a listening handle of this kind is passed (SCM_RIGHTS) as a duplicate of its socket, not as itself. */
+  get listenerDuplicates(): boolean { return false; }
   /** A live wrapper on the other end, including after the original was closed. */
   get peer(): LibuvStreamWrap | null {
     const native = nativeStreamFor(this);
