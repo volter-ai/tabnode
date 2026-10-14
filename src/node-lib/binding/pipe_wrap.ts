@@ -337,12 +337,17 @@ export class Pipe extends LibuvStreamWrap {
     const wasListening = this.listening;
     this.listening = false;
     this.onconnection = null;
-    // The binder's close takes the name with its node (libuv unlinks it), as on Linux: a passed copy keeps accepting
-    // on its descriptor, and a connect by the path finds nothing.
-    if (this.path !== null && boundPaths.get(this.path) === this) boundPaths.delete(this.path);
+    // The binder's close takes a path's name with its node (libuv unlinks it): a passed copy keeps accepting on its
+    // descriptor, and nothing reaches it by the path. An abstract name (a leading NUL) has no node and lives as long
+    // as the socket (Linux), so it passes to a member still open.
+    if (this.path !== null && boundPaths.get(this.path) === this) {
+      const abstract = this.path.charCodeAt(0) === 0;
+      const heir = abstract ? [...this.sharingHandles].find((handle): handle is Pipe => handle !== this && handle instanceof Pipe && !handle.closed) : undefined;
+      if (heir) boundPaths.set(this.path, heir); else boundPaths.delete(this.path);
+    }
     const shared = [...this.sharingHandles].some(handle => handle !== this && handle instanceof Pipe && handle.listening);
     // The socket's last listener closed: what waited in its accept queue is reset, as an unaccepted connection is.
-    if (wasListening && !shared) for (const { accepted } of pipeAcceptQueues.get(this.connectionEnd)?.splice(0) ?? []) if (!accepted.closed) accepted.close();
+    if (wasListening && !shared) for (const { accepted } of pipeAcceptQueues.get(this.connectionEnd)?.splice(0) ?? []) if (!accepted.closed) { accepted.sendReset(); accepted.close(); }
     if (this.ownFd !== null) { releaseFd(this.ownFd); this.ownFd = null; }
   }
 }
