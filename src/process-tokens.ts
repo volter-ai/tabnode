@@ -330,6 +330,11 @@ export function pidIsLive(pid: number, caller: ProcessToken | null, callerPid?: 
 }
 
 /** `kill(pid, signal)` by `caller` to another live process; whether one took it. */
+/** Whether `caller`'s registry is a kernel's, whose kill reaches every image of a pid, not only this realm's runs. */
+export function signalsThroughKernel(caller: ProcessToken | null): boolean {
+  return registryFor(caller).kernel === true;
+}
+
 export function signalPid(pid: number, signal: string, caller: ProcessToken | null): boolean {
   return registryFor(caller).signal(pid, signal);
 }

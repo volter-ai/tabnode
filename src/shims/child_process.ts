@@ -67,7 +67,7 @@ import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __subs
 
 import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
 
-import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, installRunRegistry, type ProcessToken } from '../process-tokens';
+import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, type ProcessToken } from '../process-tokens';
 import type { ProcessRegistry } from '../process-registry';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
 const __hostProcess: { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown } | null =
@@ -2846,6 +2846,10 @@ function startChildRun(request: RunRequest): StartedRun {
       // A child the host runs takes the signal there (the abort carries it) and ends when the program does,
       // as a Linux child stays live and waitable until it exits: a postmaster's SIGINT is its fast shutdown,
       // which still writes a checkpoint, and a handler may survive the signal. Its end is the host's result.
+      // A child the host runs is a kernel process where this run's registry is a kernel's (browser-substrate ADR-0129
+      // step 4): the signal is the kernel's kill, as a shell's is, and the kernel delivers it to the image that runs
+      // the child, which takes it by its own dispositions. Only without a kernel does the abort carry it to the host.
+      if (hostRun && signalsThroughKernel(request.owner) && signalPid(pid, signal, request.owner)) return 0;
       if (hostRun) {
         controller.abort(signal);
         return 0;
