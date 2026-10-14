@@ -6,6 +6,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **A process's load clock says its heaviest bodies** (browser-substrate S2 AC-LC5). Where a reading is requested, the
+  `load-clock` record carries `heaviestBodies`: the 24 bodies that took longest from their link to their evaluation's
+  return, with the requires their evaluation made, by path. An importer's time holds its imports'; a body's own
+  resolve and read are its importer's, and an async or generator body is timed to its first suspension. A run with no
+  reading requested keeps no clock, and none of this.
 - **A module's body is shorter to compile and quicker to link** (browser-substrate S2 AC-LC15). The wrapper's scope is
   its parameters, given their values at the call, instead of a header of 25 `var` statements copying them from other
   parameters and from the guest's global: 1,025 characters a body, compiled again for each with their bytecode, are now
