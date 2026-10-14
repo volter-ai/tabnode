@@ -1095,7 +1095,9 @@ const HEAVIEST_BODIES = 24;
 /**
  * A body's inclusive time, kept where it is among the clock's heaviest (S2 AC-LC5: a CLI's 130 ms of "runtime modules
  * loaded" said nothing of which of its 464 bodies held it). Inclusive of the requires its evaluation made, so an
- * importer's time holds its imports'; its own resolve and read, before its link, are its importer's.
+ * importer's time holds its imports'; its own resolve and read, before its link, are its importer's. It is the load
+ * clock's own time (`__substrateLoadNow`), which leaves out the deferred byte counting of the loads within, so it is not
+ * wall time where those ran.
  */
 function __substrateKeepHeaviest(clock: LoadClock, path: string, ms: number): void {
   const kept = clock.heaviest ??= [];
