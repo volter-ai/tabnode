@@ -121,6 +121,8 @@ export function listenerOnPort(port: number, family?: string): TCP | undefined {
 }
 /** Each shared listening socket's turn: its next connection goes to the member after the last one served. */
 const acceptTurns = new WeakMap<object, number>();
+/** Each shared listening socket's accept queue (TCP.queueAccepted). */
+const acceptQueues = new WeakMap<object, TCP[]>();
 
 export class TCP extends LibuvStreamWrap {
   /** `constants.SOCKET` or `constants.SERVER`. */
@@ -171,8 +173,9 @@ export class TCP extends LibuvStreamWrap {
       if (status === 0) { this.listening = true; sayListenClock(this, this.local?.port ?? null); }
       return status;
     }
-    // listen(2) on a listening socket (a passed server's receiver listens on it again) only sets its backlog.
-    if (this.listening) return 0;
+    // listen(2) on a listening socket (a passed server's receiver listens on it again) only sets its backlog; what
+    // was queued while nobody served it is accepted now.
+    if (this.listening) { sayListenClock(this, this.local?.port ?? null); this.drainAccepted(); return 0; }
     if (!this.local) {
       const err = this.bindTo('0.0.0.0', 0, 'IPv4');
       if (err) return err;
@@ -236,13 +239,11 @@ export class TCP extends LibuvStreamWrap {
         const accepted = new (server.constructor as typeof TCP)(constants.SOCKET);
         accepted.local = { ...(server.local as SockName), port: target };
         accepted.remote = { ...(this.local as SockName) };
-        // An accepted connection is a handle of the loop that is serving, not of
-        // the one that connected: the pairing is made inside the connector's own
-        // turn, so without this the server's end of every connection would hold
-        // the connecting run alive until the server closed it.
-        __adoptHandle(accepted, ownerOf(server), server);
         LibuvStreamWrap.pair(this, accepted);
-        invokeOwned(server, 'onconnection', 0, accepted);
+        // A passed socket whose receiver has not yet served it (its net.Server sets onconnection, then listens):
+        // the connection waits in the socket's accept queue, as a connect completes on Linux before any accept.
+        if (server.onconnection === null) server.queueAccepted(accepted);
+        else server.deliverAccepted(accepted);
         complete(0);
       } finally { forgetNodeRequest(req); }
     });
@@ -277,6 +278,36 @@ export class TCP extends LibuvStreamWrap {
     const turn = acceptTurns.get(this.connectionEnd) ?? 0;
     acceptTurns.set(this.connectionEnd, turn + 1);
     return pool[turn % pool.length];
+  }
+
+  /**
+   * An accepted connection is a handle of the loop that is serving, not of the one that connected: the pairing is
+   * made inside the connector's own turn, so without this the server's end of every connection would hold the
+   * connecting run alive until the server closed it.
+   */
+  deliverAccepted(accepted: TCP): void {
+    __adoptHandle(accepted, ownerOf(this), this);
+    invokeOwned(this, 'onconnection', 0, accepted);
+  }
+
+  /** The socket's accept queue: connections made while none of its members was served. */
+  queueAccepted(accepted: TCP): void {
+    const queue = acceptQueues.get(this.connectionEnd) ?? [];
+    queue.push(accepted);
+    acceptQueues.set(this.connectionEnd, queue);
+  }
+
+  /** A member is served now (net.js set its onconnection, then listened): the queue drains to the serving members. */
+  private drainAccepted(): void {
+    const queue = acceptQueues.get(this.connectionEnd);
+    if (!queue?.length) return;
+    queueBindingTask(() => {
+      while (queue.length) {
+        const member = this.acceptingMember();
+        if (!member || member.onconnection === null) return;
+        member.deliverAccepted(queue.shift()!);
+      }
+    });
   }
 
   /**
@@ -373,6 +404,8 @@ export class TCP extends LibuvStreamWrap {
     // A listening socket another descriptor still holds (a passed server) goes on listening.
     const shared = [...this.sharingHandles].some(handle => handle !== this && handle instanceof TCP && handle.listening);
     if (wasListening && !shared && this.local) { try { onCloseWatcher?.(this.local.port); } catch { /* as above */ } }
+    // The socket's last listener closed: what waited in its accept queue is closed with it (its peers read EOF).
+    if (wasListening && !shared) { for (const accepted of acceptQueues.get(this.connectionEnd)?.splice(0) ?? []) accepted.close(); }
   }
 }
 
