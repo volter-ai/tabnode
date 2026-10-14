@@ -58,6 +58,14 @@ export interface NodeResolverOptions {
   sourceExtensions?: readonly string[];
   /** A `.cjs` entry whose whole content is a `throw` is a stub for consumers that should import; skip it for the next condition set. */
   skipThrowingCjs?: boolean;
+  /**
+   * A package found whose `exports` map names the subpath under no condition set throws ERR_PACKAGE_PATH_NOT_EXPORTED and
+   * ends the walk, as Node's `packageExportsResolve` does, where a null would let the caller say MODULE_NOT_FOUND. The
+   * code is the answer a program reads: MeshCentral's InstallModules (meshcentral.js:4188, 029b7338) asks
+   * `require("otplib/package.json")`, falls back to reading the file for this code alone, and took any other for a
+   * missing module, which it went to install with npm.
+   */
+  throwNotExported?: boolean;
 }
 
 /**
@@ -309,11 +317,14 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
   };
   const targetsOf = (value: string[] | string | void): string[] => Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
   // LOAD_PACKAGE_EXPORTS: the map's answer for each condition set, the first that is a file.
-  const loadPackageExports = (packageRoot: string, pkg: Record<string, unknown>, specifier: string, packageName: string): string | null => {
+  const loadPackageExports = (packageRoot: string, pkg: Record<string, unknown>, specifier: string, packageName: string, refuse = false): string | null => {
     const subpath = specifier === packageName ? "." : `.${specifier.slice(packageName.length)}`;
+    // Whether the map names the subpath under any condition set: one that names a missing file is not a refusal.
+    let named = false;
     for (const conditions of options.conditionSetsFor?.(packageName) ?? options.conditionSets) {
       let targets: string[];
       try { targets = targetsOf(options.exports.resolve(pkg, subpath, { conditions, unsafe: true })); } catch { continue; }
+      if (targets.length) named = true;
       for (const target of targets) {
         const path = join(packageRoot, target);
         const found = loadAsFile(path) ?? workspaceSource(packageRoot, target);
@@ -321,6 +332,11 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
         if (options.skipThrowingCjs && found.endsWith(".cjs") && throwingStub(found)) continue;
         return found;
       }
+    }
+    if (refuse && !named) {
+      // Node's own words (lib/internal/errors.js ERR_PACKAGE_PATH_NOT_EXPORTED).
+      const where = `${packageRoot}/package.json`;
+      throw Object.assign(new Error(subpath === "." ? `No "exports" main defined in ${where}` : `Package subpath '${subpath}' is not defined by "exports" in ${where}`), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
     }
     return null;
   };
@@ -342,7 +358,7 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     // Nothing is under a directory that is not there: a subpath of an absent package ends here, unprobed.
     if (!rooted && specifier !== packageName) return null;
     const pkg = rooted ? manifest(packageRoot) : null;
-    if (pkg && pkg.exports !== undefined && pkg.exports !== null) return loadPackageExports(packageRoot, pkg, specifier, packageName);
+    if (pkg && pkg.exports !== undefined && pkg.exports !== null) return loadPackageExports(packageRoot, pkg, specifier, packageName, options.throwNotExported === true);
     const path = `${nodeModules}/${specifier}`;
     return loadAsFile(path) ?? loadAsDirectory(path);
   };

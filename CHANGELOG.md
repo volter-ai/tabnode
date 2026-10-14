@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Throw Node's ERR_PACKAGE_PATH_NOT_EXPORTED from `require` when the first package found has an `exports` map that names the subpath under no condition set, and stop the walk there; before, the resolver returned null, the walk went on to parent and global roots, and `require` said MODULE_NOT_FOUND. A program that branches on the code read the wrong answer: MeshCentral 1.2.6 took `require("otplib/package.json")` for a missing module and went to install it with npm. Stand-ins still answer first. A map that names the subpath but points at a missing file is unchanged, and so is the bundler's resolver (substrate Articles 5/8/9).
+
 - Preserve explicit receiver resource ownership during adoption, ignore Process reference changes before initialization, and permit watcher reference changes until pending close completes (substrate Articles 5/6/8/9).
 
 - Keep transferred stream requests with their adopted handle owner, retain directory operation scopes, and share process.binding’s native surface with the process-owned internal binding cache (substrate Articles 5/6/8/9).
