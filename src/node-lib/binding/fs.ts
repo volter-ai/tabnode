@@ -31,7 +31,7 @@ import { createNodeError as vfsError } from '../../virtual-fs';
 import { registerHandle, releaseHandle, refHandle, unrefHandle, currentOwner, ownedRun, ownerOfInstance, observeNodeHandle, forgetNodeHandle, observeNodeRequest, forgetNodeRequest, captureNodeResourceScope, nodeHandleHasRef, nodeHandleIsClosing } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
 import { queueBindingTask } from '../../guest-loop';
-import { kStdinRing, type StdinRingReader } from '../../stdin-ring';
+import { kStdinRing, type StdinReader } from '../../stdin-ring';
 // The guest stdin stream's engine-side read (shims/process.ts `kEngineStdinRead`),
 // named here so this binding does not import the process shim.
 const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
@@ -261,7 +261,7 @@ function stdioProcess(token: ProcessToken | null = currentOwner()): StdioStreams
  * process.stdin in Node), then the ring's next ones, waiting for them, or 0
  * at its end. An O_NONBLOCK descriptor gets EAGAIN instead of a wait.
  */
-function readStdinRing(fd: number, stdin: NonNullable<StdioStreams['stdin']>, ring: StdinRingReader, buffer: Uint8Array, offset: number, length: number): number {
+function readStdinRing(fd: number, stdin: NonNullable<StdioStreams['stdin']>, ring: StdinReader, buffer: Uint8Array, offset: number, length: number): number {
   const buffered = stdin.readableLength ?? 0;
   if (buffered > 0) {
     const chunk = engineRead(stdin, Math.min(length, buffered));
@@ -335,7 +335,7 @@ function readStdin(fd: number, buffer: Uint8Array, offset: number, length: numbe
   const stdin = stdioProcess()?.stdin;
   if (!stdin || typeof stdin.read !== 'function') throw createNodeError('EBADF', 'read', '0');
   if (length <= 0) return 0;
-  const ring = (stdioProcess() as Record<symbol, unknown> | undefined)?.[kStdinRing] as StdinRingReader | undefined;
+  const ring = (stdioProcess() as Record<symbol, unknown> | undefined)?.[kStdinRing] as StdinReader | undefined;
   if (ring) return readStdinRing(fd, stdin, ring, buffer, offset, length);
   const chunk = engineRead(stdin);
   if (chunk === null || chunk === undefined) {

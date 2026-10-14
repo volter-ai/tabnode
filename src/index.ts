@@ -69,8 +69,10 @@ export { createProcessRegistryScope, installProcessRegistry, installProcessIdAll
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
-export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter } from './stdin-ring';
-import { stdinRingProblem, stdinRingWaitsAsync } from './stdin-ring';
+export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter, type StdinReader } from './stdin-ring';
+/** Present from the release whose runs read `RunOptions.stdinReader`: a host gives one only to an engine that has it. */
+export const RUN_STDIN_READER = 1;
+import { stdinRingProblem, stdinRingWaitsAsync, type StdinReader } from './stdin-ring';
 export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
@@ -112,6 +114,11 @@ export interface RunOptions {
    * must have.
    */
   stdinShared?: SharedArrayBuffer;
+  /**
+   * fd 0 as a reader the host made in this realm over its kernel's own pipe (`StdinReader`): read as `stdinShared`
+   * is, its only source, with no ring between the pipe and the run. Where both are given, this one is read.
+   */
+  stdinReader?: StdinReader;
   /**
    * The tree this run's Node reads and writes, in place of the container's
    * own: a host's tree for one process (a kernel's, for a `node` its shell
@@ -265,7 +272,7 @@ export function createContainer(options?: ContainerOptions): {
     if (tty !== undefined && (!Array.isArray(tty) || tty.length !== 3 || tty.some((value) => typeof value !== 'boolean'))) {
       throw new TypeError('stdioIsTTY must be [stdin, stdout, stderr] booleans');
     }
-    if (runOptions?.stdinShared !== undefined) {
+    if (runOptions?.stdinShared !== undefined && runOptions.stdinReader === undefined) {
       const problem = stdinRingProblem(runOptions.stdinShared);
       if (problem !== null) throw new TypeError(problem);
       if (!stdinRingWaitsAsync()) {
@@ -291,8 +298,9 @@ export function createContainer(options?: ContainerOptions): {
       signal: runOptions?.signal,
       held: runOptions?.held === true,
       stdinStream: runOptions?.stdinStream,
-      stdinOpen: runOptions?.stdinStream !== undefined || runOptions?.stdinShared !== undefined,
-      ...(runOptions?.stdinShared ? { stdinShared: runOptions.stdinShared } : {}),
+      stdinOpen: runOptions?.stdinStream !== undefined || runOptions?.stdinShared !== undefined || runOptions?.stdinReader !== undefined,
+      ...(runOptions?.stdinReader ? { stdinReader: runOptions.stdinReader }
+        : runOptions?.stdinShared ? { stdinShared: runOptions.stdinShared } : {}),
       terminal: runOptions?.terminal,
       ...(runOptions?.stdioIsTTY ? { stdioIsTTY: runOptions.stdioIsTTY } : {}),
       ...(runOptions?.stdioKind ? { stdioKind: runOptions.stdioKind } : {}),

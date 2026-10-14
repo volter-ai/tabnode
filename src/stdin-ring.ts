@@ -82,7 +82,22 @@ export function stdinRingProblem(buffer: unknown): string | null {
 }
 
 /** The consumer's end of a ring. */
-export class StdinRingReader {
+/**
+ * What a run reads its fd 0 through: this module's ring, or a reader a host makes in the run's own realm over a pipe
+ * of its kernel's, whatever that pipe's layout (browser-substrate ADR-0129 step 3.4: fd 0 is the kernel description it
+ * is, read where the run is, with no thread copying it into a ring first). The four calls are the ring's own, with the
+ * same answers: `take` never waits (a count, 0 at EOF, null when nothing is there yet), `takeBlocking` waits with
+ * `Atomics.wait`, `takeAll` takes what is there, and `whenWritten` resolves, with no timer, once something has been
+ * written or the last writer has gone.
+ */
+export interface StdinReader {
+  take(into: Uint8Array, offset: number, length: number): number | null;
+  takeAll(): Uint8Array | null;
+  takeBlocking(into: Uint8Array, offset: number, length: number): number;
+  whenWritten(): Promise<void>;
+}
+
+export class StdinRingReader implements StdinReader {
   private readonly header: Int32Array;
   private readonly data: Uint8Array;
   private readonly capacity: number;
