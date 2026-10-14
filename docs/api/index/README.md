@@ -129,6 +129,7 @@
 - [installProcessIdAllocator](functions/installProcessIdAllocator.md)
 - [installProcessRegistry](functions/installProcessRegistry.md)
 - [isPreparedModuleKey](functions/isPreparedModuleKey.md)
+- [keptResolutions](functions/keptResolutions.md)
 - [nativeStreamDescriptor](functions/nativeStreamDescriptor.md)
 - [nodeProcessHostInstalled](functions/nodeProcessHostInstalled.md)
 - [preparedModuleKey](functions/preparedModuleKey.md)
@@ -142,6 +143,7 @@
 - [resetServerBridge](functions/resetServerBridge.md)
 - [restoreHostGlobals](functions/restoreHostGlobals.md)
 - [runPid](functions/runPid.md)
+- [seedKeptResolutions](functions/seedKeptResolutions.md)
 - [stdinRingProblem](functions/stdinRingProblem.md)
 
 ## References

@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.15.0 — 2026-10-14
+
 Kept paths carried across runs (browser-substrate ADR-0152, S2 AC-LC10). Additive: two new exports, which a host
 detects by their presence before it hands a seed, so an engine without them is never asked; nothing a realm resolves
 changes for a host that hands none, and no lowered text changes, so the prepared format stays `tabnode-prepared-7`.
