@@ -67,13 +67,18 @@ function compare(module, expected, actual) {
   }
   visit('$', expected.snapshot.root, actual.snapshot?.root);
 }
+// Captures use separate processes and files. Overlap four module pairs while
+// comparing in the original module order so the recorded graph stays stable.
+const captures = new Array(modules.length);
+let next = 0;
+await Promise.all(Array.from({ length: Math.min(4, modules.length) }, async () => {
+  while (next < modules.length) {
+    const index = next++, module = modules[index];
+    captures[index] = await Promise.all([capture('node', module, index), capture('engine', module, index)]);
+  }
+}));
 for (const [index, module] of modules.entries()) {
-  // Host and engine live in separate processes; the engine's global takeover
-  // cannot contaminate its real Node reference.
-  const expected = await capture('node', module, index);
-  const actual = await capture('engine', module, index);
-  // An engine that did not load reads as every member of every module missing, printed as confidently as a real
-  // count (53,734 "differences" from a pack unpacked without its dependencies). That is no measurement: say so and stop.
+  const [expected, actual] = captures[index];
   if (actual.engineFailed) {
     console.error(`Public surface: the engine at ${engine} did not load, so nothing was measured: ${actual.error?.message ?? 'no reason given'}`);
     process.exit(1);
