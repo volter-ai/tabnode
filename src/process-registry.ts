@@ -9,16 +9,19 @@ export interface ProcessIdentity {
   readonly argv?: readonly string[];
   /** The directory it was started in: `/proc/<pid>/cwd`. */
   readonly cwd?: string;
+  /** The environment it was started with, as execve's envp (`NAME=value`): `/proc/<pid>/environ`. */
+  readonly env?: readonly string[];
   /** When it started, in milliseconds since the epoch. */
   readonly startedAt?: number;
 }
 
 /** The parts of an identity a starter may add, checked before they are kept. */
 function describedIdentity(identity: ProcessIdentity): ProcessIdentity {
-  const { pid, ppid, pgid, argv, cwd, startedAt } = identity;
+  const { pid, ppid, pgid, argv, cwd, env, startedAt } = identity;
   const described: ProcessIdentity = { pid, ppid, ...(pgid !== undefined ? { pgid } : {}),
     ...(Array.isArray(argv) && argv.length <= 4096 && argv.every(arg => typeof arg === 'string') ? { argv: Object.freeze([...argv]) } : {}),
     ...(typeof cwd === 'string' && cwd.startsWith('/') ? { cwd } : {}),
+    ...(Array.isArray(env) && env.length <= 65536 && env.every(entry => typeof entry === 'string' && entry.includes('=')) ? { env: Object.freeze([...env]) } : {}),
     ...(typeof startedAt === 'number' && Number.isFinite(startedAt) ? { startedAt } : {}) };
   return Object.freeze(described);
 }
@@ -31,6 +34,17 @@ export interface InitialProcessRegistration {
 
 /** Installed by the trusted embedding host before this realm starts runs. */
 export interface ProcessRegistry {
+  /**
+   * A registry over a kernel (browser-substrate ADR-0129): its `signal` is the kernel's kill(2), and the kernel
+   * delivers it to whichever image runs the pid, an engine run of this realm or a program the host runs. Absent for
+   * tabnode's own, whose `signal` reaches only this realm's runs.
+   */
+  readonly kernel?: boolean;
+  /**
+   * `signal` of process `pid` is now handled (a listener for it) or not: a kernel's registry records it as the
+   * process's disposition, from which the kernel protects a namespace's init (browser-substrate ADR-0129 4.4).
+   */
+  disposition?(pid: number, signal: number, handled: boolean): void;
   /**
    * A new process's number. `parentPid` is the process that starts it, where the caller knows it, and `newSession`
    * says it leads a session of its own (a detached spawn): a registry over a kernel makes the process there and then,

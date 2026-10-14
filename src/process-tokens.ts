@@ -283,15 +283,17 @@ export function mintPid(parentPid?: number, newSession = false, parent: ProcessT
  * Record the numbers a named run was started with, for the run to read back, in the registry of `parent`, the run
  * that forked it (whose registry the run's own calls then go through).
  */
-export function setRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string; detached?: boolean }, parent: ProcessToken | null = null): void {
+export function setRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string; env?: Readonly<Record<string, string>>; detached?: boolean }, parent: ProcessToken | null = null): void {
   registryUsed = true;
   const registry = registryFor(parent);
   if (registry !== processRegistry && !runRegistries.has(token)) runRegistries.set(token, registry);
   // Node's detached spawn starts a private group. Every other child inherits
   // its parent's, and a second publication preserves an adopted group.
   const pgid = pidsOfRuns.get(token)?.pgid ?? (started?.detached ? pid : registry.lookup(ppid)?.pgid ?? pid);
-  const { detached: _detached, ...description } = started ?? {};
-  registryFor(token).publish(token, { pid, ppid, pgid, ...description, startedAt: Date.now() });
+  const { detached: _detached, env, ...description } = started ?? {};
+  // Its initial environment goes to the process table as execve's envp (browser-substrate ADR-0129).
+  registryFor(token).publish(token, { pid, ppid, pgid, ...description,
+    ...(env ? { env: Object.entries(env).map(([name, value]) => `${name}=${value}`) } : {}), startedAt: Date.now() });
   pidsOfRuns.set(token, { pid, ppid, pgid });
 }
 
@@ -317,9 +319,17 @@ export function forgetRunPid(token: ProcessToken): void {
   pidsOfRuns.delete(token);
 }
 
-/** The named run a pid belongs to in this realm, for a signal sent by number (the shell's `kill`). */
-export function tokenOfPid(pid: number): ProcessToken | null {
-  for (const [token, numbers] of pidsOfRuns) if (numbers.pid === pid) return token;
+/**
+ * The named run a pid belongs to in this realm, for a signal sent by number (the shell's `kill`). A number is a
+ * namespace's (browser-substrate ADR-0129 step 5): with a `caller`, only the runs numbered by the caller's own registry,
+ * which is its namespace's view, are asked, so a realm holding runs of two namespaces never finds the other's `pid`.
+ */
+export function tokenOfPid(pid: number, caller?: ProcessToken | null): ProcessToken | null {
+  const view = caller === undefined ? undefined : registryFor(caller);
+  for (const [token, numbers] of pidsOfRuns) {
+    if (numbers.pid !== pid) continue;
+    if (view === undefined || registryFor(token) === view) return token;
+  }
   return null;
 }
 
@@ -327,6 +337,18 @@ export function tokenOfPid(pid: number): ProcessToken | null {
 export function pidIsLive(pid: number, caller: ProcessToken | null, callerPid?: number): boolean {
   // Metadata lookup may fail for reasons other than absence. Only the authority's kill(2) answer proves ESRCH.
   return registryFor(caller).signal(pid, '0', callerPid ?? runPid(caller)?.pid ?? initialIdentity?.pid);
+}
+
+/** A process's listener for `signal` came or went: its registry hears it where it keeps dispositions. */
+export function publishSignalDisposition(processObject: object, signal: number, handled: boolean): void {
+  const token = __tokenForProcess(processObject as never);
+  const pid = (processObject as { pid?: number }).pid;
+  if (typeof pid === 'number') registryFor(token).disposition?.(pid, signal, handled);
+}
+
+/** Whether `caller`'s registry is a kernel's, whose kill reaches every image of a pid, not only this realm's runs. */
+export function signalsThroughKernel(caller: ProcessToken | null): boolean {
+  return registryFor(caller).kernel === true;
 }
 
 /** `kill(pid, signal)` by `caller` to another live process; whether one took it. */

@@ -114,11 +114,15 @@ export function setPortWatchers(onListen: ListenWatcher | null, onClose: ((port:
 export function listenerOnPort(port: number, family?: string): TCP | undefined {
   const order = family === 'IPv6' ? [v6Ports, v4Ports] : [v4Ports, v6Ports];
   for (const space of order) {
-    const bound = space.get(port);
-    if (bound && bound.listening) return bound;
+    const member = space.get(port)?.acceptingMember();
+    if (member) return member;
   }
   return undefined;
 }
+/** Each shared listening socket's turn: its next connection goes to the member after the last one served. */
+const acceptTurns = new WeakMap<object, number>();
+/** Each shared listening socket's accept queue (TCP.queueAccepted). */
+const acceptQueues = new WeakMap<object, Array<{ accepted: TCP; adoptedBy: TCP | undefined }>>();
 
 export class TCP extends LibuvStreamWrap {
   /** `constants.SOCKET` or `constants.SERVER`. */
@@ -169,6 +173,9 @@ export class TCP extends LibuvStreamWrap {
       if (status === 0) { this.listening = true; sayListenClock(this, this.local?.port ?? null); }
       return status;
     }
+    // listen(2) on a listening socket (a passed server's receiver listens on it again) only sets its backlog; what
+    // was queued while nobody served it is accepted now.
+    if (this.listening) { sayListenClock(this, this.local?.port ?? null); this.drainAccepted(); return 0; }
     if (!this.local) {
       const err = this.bindTo('0.0.0.0', 0, 'IPv4');
       if (err) return err;
@@ -232,13 +239,16 @@ export class TCP extends LibuvStreamWrap {
         const accepted = new (server.constructor as typeof TCP)(constants.SOCKET);
         accepted.local = { ...(server.local as SockName), port: target };
         accepted.remote = { ...(this.local as SockName) };
-        // An accepted connection is a handle of the loop that is serving, not of
-        // the one that connected: the pairing is made inside the connector's own
-        // turn, so without this the server's end of every connection would hold
-        // the connecting run alive until the server closed it.
-        __adoptHandle(accepted, ownerOf(server), server);
+        // An accepted connection is a handle of the loop that is serving, not of the one that connected: the pairing
+        // is made inside the connector's own turn, so without this the server's end would be the connecting run's
+        // (its exit would close it, and it would hold that run alive). One that waits in the socket's accept queue is
+        // the socket's, no run's (the kernel's, as on Linux): whichever member accepts it makes it its run's.
+        __adoptHandle(accepted, server.onconnection === null ? null : ownerOf(server), server);
         LibuvStreamWrap.pair(this, accepted);
-        invokeOwned(server, 'onconnection', 0, accepted);
+        // A passed socket whose receiver has not yet served it (its net.Server sets onconnection, then listens):
+        // the connection waits in the socket's accept queue, as a connect completes on Linux before any accept.
+        if (server.onconnection === null) server.queueAccepted(accepted);
+        else server.deliverAccepted(accepted, server);
         complete(0);
       } finally { forgetNodeRequest(req); }
     });
@@ -256,12 +266,70 @@ export class TCP extends LibuvStreamWrap {
     this.remote = { ...remote };
   }
 
-  /** libuv's `dup()`: the same connection, under both its names. */
+  /**
+   * A listening socket passed over IPC is one socket under two descriptors, as `SCM_RIGHTS` gives it: either may
+   * accept, and it listens until both are closed (net.js's receiver calls `listen` again on it; a cluster primary
+   * closes its own when its workers are gone). A native listener is refused by its owner (native-stream-owner.ts).
+   */
+  override get listenerDuplicates(): boolean { return nativeStreamFor(this) === undefined; }
+
+  /** The member of this handle's socket a connection is accepted on: a listening one, those net.js serves first, in turn. */
+  acceptingMember(): TCP | undefined {
+    const members = [this, ...this.sharingHandles].filter((handle, index, all): handle is TCP =>
+      handle instanceof TCP && handle.listening && !handle.closed && all.indexOf(handle) === index);
+    const serving = members.filter(handle => handle.onconnection !== null);
+    const pool = serving.length ? serving : members;
+    if (pool.length < 2) return pool[0];
+    const turn = acceptTurns.get(this.connectionEnd) ?? 0;
+    acceptTurns.set(this.connectionEnd, turn + 1);
+    return pool[turn % pool.length];
+  }
+
+  /** A connection accepted on this member: its onconnection, in the serving run. */
+  /** Accepted on this member: it becomes this member's run's (`adoptedBy` this member: it already is). */
+  deliverAccepted(accepted: TCP, adoptedBy?: TCP): void {
+    if (adoptedBy !== this) __adoptHandle(accepted, ownerOf(this), this);
+    invokeOwned(this, 'onconnection', 0, accepted);
+  }
+
+  /** The socket's accept queue: connections made while none of its members was served. */
+  queueAccepted(accepted: TCP): void {
+    const queue = acceptQueues.get(this.connectionEnd) ?? [];
+    queue.push({ accepted, adoptedBy: undefined });
+    acceptQueues.set(this.connectionEnd, queue);
+  }
+
+  /** A member is served now (net.js set its onconnection, then listened): the queue drains to the serving members. */
+  private drainAccepted(): void {
+    const queue = acceptQueues.get(this.connectionEnd);
+    if (!queue?.length) return;
+    queueBindingTask(() => {
+      while (queue.length) {
+        const member = this.acceptingMember();
+        if (!member || member.onconnection === null) return;
+        const { accepted, adoptedBy } = queue.shift()!;
+        if (!accepted.closed) member.deliverAccepted(accepted, adoptedBy);
+      }
+    });
+  }
+
+  /**
+   * libuv's `dup()`: the same socket under both its names, listening where it listens. A socket bound and not yet
+   * listening (cluster's shared handle, which the worker listens on) keeps its bound name, where the copy had none and
+   * its `listen` bound a fresh port.
+   */
   override duplicate(): TCP {
     const native = nativeStreamFor(this);
-    const copy = native ? native.duplicate() as TCP : new (this.constructor as typeof TCP)(constants.SOCKET);
-    if (this.local && this.remote) copy.adoptNames(this.local, this.remote);
-    if (!native) copy.shareConnectionFrom(this);
+    if (native) {
+      const copy = native.duplicate() as TCP;
+      if (this.local && this.remote) copy.adoptNames(this.local, this.remote);
+      return copy;
+    }
+    const copy = new (this.constructor as typeof TCP)(this.type);
+    copy.local = this.local ? { ...this.local } : null;
+    copy.remote = this.remote ? { ...this.remote } : null;
+    copy.shareConnectionFrom(this);
+    copy.listening = this.listening;
     return copy;
   }
 
@@ -336,7 +404,12 @@ export class TCP extends LibuvStreamWrap {
     const wasListening = this.listening;
     this.listening = false;
     this.onconnection = null;
-    if (wasListening && this.local) { try { onCloseWatcher?.(this.local.port); } catch { /* as above */ } }
+    // A listening socket another descriptor still holds (a passed server) goes on listening.
+    const shared = [...this.sharingHandles].some(handle => handle !== this && handle instanceof TCP && handle.listening);
+    if (wasListening && !shared && this.local) { try { onCloseWatcher?.(this.local.port); } catch { /* as above */ } }
+    // The socket's last listener closed: what waited in its accept queue is reset (inet_csk_listen_stop: its peers
+    // read ECONNRESET), as Linux disconnects an unaccepted child.
+    if (wasListening && !shared) { for (const { accepted } of acceptQueues.get(this.connectionEnd)?.splice(0) ?? []) if (!accepted.closed) accepted.reset(); }
   }
 }
 

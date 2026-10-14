@@ -6,6 +6,30 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+The browser-substrate ADR-0129 integration (the kernel owns every process), with the synchronous-child ownership
+below. Each feature is additive and announced by a marker a host checks before it relies on it, so an engine without
+it is never asked; none changes the lowered text, so the prepared format stays `tabnode-prepared-7`. Cut as 0.13.0, a
+minor release, for the new public run options and exports.
+
+- The engine as a client of the kernel's store, its citations naming ADR-0006 on this line.
+- A run's fd 0 can be a reader over the host kernel's own pipe (`RunOptions.stdinReader`; marker `RUN_STDIN_READER`).
+- A process's signal listeners are its dispositions, told to its registry (`ProcessRegistry.disposition`; marker
+  `RUN_SIGNAL_DISPOSITIONS`); a listener's name reaches the disposition words only as a signal's own name.
+- **Behaviour change for a host whose registry sets `ProcessRegistry.kernel`:** a host-run child's `kill()` now goes
+  through the kernel registry (the kernel delivers it), where 0.12.0 ended the run itself. A kernel refusal (EPERM)
+  is thrown out of `ChildProcess.kill()`, and SIGSTOP and SIGCONT are delivered as SIGTERM (no stop is modelled
+  yet). A host that does not set `kernel` is unchanged.
+- A run handed its own tree gets that tree's shell at routing, and `run()` reads `RunOptions.filesystem` as `runNode`
+  does (marker `RUN_LINE_FILESYSTEM`); `tokenOfPid` takes the caller's pid namespace.
+- A run's initial environment is published with its identity, for the process table's `/proc/<pid>/environ`.
+- **A TCP server or Unix-socket listener passed over IPC is a duplicate of its socket**, as SCM_RIGHTS duplicates a
+  descriptor: before, it crossed as the sender's own instance, so the sender's close ended the receiver's listener.
+  Either member accepts, in turn, and the socket listens until its last member closes; a bound, not-yet-listening
+  socket (cluster's shared handle) keeps its bound name in the copy. A connection reaching a socket no member serves
+  yet waits in the socket's accept queue, owned by no run until a member accepts it; the last listener's close
+  resets what is queued (ECONNRESET), as Linux does. For a Pipe, the binder's close takes the socket's path with its
+  node, as libuv and Linux do, and a passed copy accepts only by descriptor; a socket in the abstract namespace has
+  no node, so its name passes at a close to a member still open.
 - Let a trusted synchronous child host explicitly own all children of the current
   run, including image scripts and Node programs the engine can resolve. Use the
   existing admitted host process/wait path before Worker fallback; preserve
@@ -586,13 +610,13 @@ release: the exported surface gained `installProcessIdAllocator` and
 ## v0.6.1
 
 A host's tree may own a run's open file descriptions and stand in for the
-container's tree in one run (ADR-0005 steps 1 and 2); with `VirtualFS`
+container's tree in one run (ADR-0006 steps 1 and 2); with `VirtualFS`
 nothing changes. Released as v0.6.1; the workflow dates this section when it
 publishes.
 
 - `RunOptions.filesystem` (for `runNode`): the tree one run's Node reads and
   writes, in place of the container's, while it keeps the container's port
-  space and process table (ADR-0005 step 2). A synchronous child reads its
+  space and process table (ADR-0006 step 2). A synchronous child reads its
   parent run's tree.
 - A stat keeps an entry's full file type: the type bits a tree's mode
   carries, else every kind its stat answers (a character or block device, a
@@ -605,7 +629,7 @@ publishes.
   descriptor operation on a file it opened, with its own fd numbers, offsets
   and `O_APPEND`, and gives the numbers of the engine's own pipes and sockets.
   A tree without it, every `VirtualFS`, keeps the engine's descriptor table
-  as before (ADR-0005 step 1). `TreeDescriptorStats` may answer
+  as before (ADR-0006 step 1). `TreeDescriptorStats` may answer
   `isCharacterDevice`, `isBlockDevice`, `isFIFO` and `isSocket`.
 
 ## v0.6.0 — 2026-10-06

@@ -15,7 +15,7 @@ path, flags and an offset in `node-lib/binding/fs.ts`. A tree a host
 supplies may instead be a client of a kernel that keeps those descriptions
 itself, shared with every other process of the kernel: one offset for a
 dup'd or inherited descriptor, `O_APPEND` decided where the file is,
-locks, and fork and exec inheritance (ADR-0005). Such a tree offers this
+locks, and fork and exec inheritance (ADR-0006). Such a tree offers this
 capability under `TREE_DESCRIPTORS`, and the engine then asks it for every
 descriptor operation on a file it opened, and for the numbers of the
 engine's own handles, so the process has one numbering.

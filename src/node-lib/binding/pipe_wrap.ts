@@ -68,9 +68,11 @@ function noListener(path: string): number {
 
 /** The listening pipe a connect to this path reaches, if any. */
 export function listenerOnPath(path: string): Pipe | undefined {
-  const bound = boundPaths.get(path);
-  return bound && bound.listening ? bound : undefined;
+  return boundPaths.get(path)?.acceptingMember();
 }
+/** Each shared listening socket's turn and accept queue, by its connection end (as tcp_wrap.ts keeps a TCP socket's). */
+const pipeAcceptTurns = new WeakMap<object, number>();
+const pipeAcceptQueues = new WeakMap<object, Array<{ accepted: Pipe; adoptedBy: Pipe | undefined }>>();
 
 export class Pipe extends LibuvStreamWrap {
   readonly type: number;
@@ -124,8 +126,48 @@ export class Pipe extends LibuvStreamWrap {
       return status;
     }
     if (this.path === null) return UV_EBADF;
+    // listen(2) on a listening socket (a passed server's receiver listens again) only sets its backlog; what was
+    // queued while nobody served it is accepted now.
+    const already = this.listening;
     this.listening = true;
+    if (already) this.drainAccepted();
     return 0;
+  }
+
+  /**
+   * A listening Unix socket passed over IPC is one socket under two descriptors, as SCM_RIGHTS gives it (tcp_wrap.ts
+   * says the same of a TCP one): a realm's own is duplicated; a native owner's crosses as before.
+   */
+  override get listenerDuplicates(): boolean { return nativeStreamFor(this) === undefined; }
+
+  /** The member of this handle's socket a connection is accepted on: a listening one, those net.js serves first, in turn. */
+  acceptingMember(): Pipe | undefined {
+    const members = [this, ...this.sharingHandles].filter((handle, index, all): handle is Pipe =>
+      handle instanceof Pipe && handle.listening && !handle.closed && all.indexOf(handle) === index);
+    const serving = members.filter(handle => handle.onconnection !== null);
+    const pool = serving.length ? serving : members;
+    if (pool.length < 2) return pool[0];
+    const turn = pipeAcceptTurns.get(this.connectionEnd) ?? 0;
+    pipeAcceptTurns.set(this.connectionEnd, turn + 1);
+    return pool[turn % pool.length];
+  }
+
+  private deliverAccepted(accepted: Pipe, adoptedBy?: Pipe): void {
+    if (adoptedBy !== this) __adoptHandle(accepted, ownerOf(this), this);
+    invokeOwned(this, 'onconnection', 0, accepted);
+  }
+
+  private drainAccepted(): void {
+    const queue = pipeAcceptQueues.get(this.connectionEnd);
+    if (!queue?.length) return;
+    queueBindingTask(() => {
+      while (queue.length) {
+        const member = this.acceptingMember();
+        if (!member || member.onconnection === null) return;
+        const { accepted, adoptedBy } = queue.shift()!;
+        if (!accepted.closed) member.deliverAccepted(accepted, adoptedBy);
+      }
+    });
   }
 
   connect(req: PipeConnectWrap, path: string): number {
@@ -150,10 +192,16 @@ export class Pipe extends LibuvStreamWrap {
         }
         const accepted = new (server.constructor as typeof Pipe)(server.type === constants.IPC ? constants.IPC : constants.SOCKET);
         accepted.path = path;
-        // The serving run owns what it accepted, not the connecting one.
-        __adoptHandle(accepted, ownerOf(server), server);
+        // The serving run owns what it accepted, not the connecting one; one queued is the socket's, no run's, until a
+        // member accepts it.
+        __adoptHandle(accepted, server.onconnection === null ? null : ownerOf(server), server);
         LibuvStreamWrap.pair(this, accepted);
-        invokeOwned(server, 'onconnection', 0, accepted);
+        // A passed socket whose receiver has not yet served it: the connection waits in its accept queue.
+        if (server.onconnection === null) {
+          const queue = pipeAcceptQueues.get(server.connectionEnd) ?? [];
+          queue.push({ accepted, adoptedBy: undefined });
+          pipeAcceptQueues.set(server.connectionEnd, queue);
+        } else server.deliverAccepted(accepted, server);
         invokeOwned(req, 'oncomplete', 0, this, req, true, true);
       } finally { forgetNodeRequest(req); }
     });
@@ -188,11 +236,18 @@ export class Pipe extends LibuvStreamWrap {
     return this.ownFd;
   }
 
-  /** libuv's `dup()`: the same pairing, under the same flavour. */
+  /**
+   * libuv's `dup()`: the same pairing, under the same flavour; a bound or listening socket keeps its name and listens
+   * where it listens. The node in the tree stays the binder's: its close unlinks it, as libuv's does.
+   */
   override duplicate(): Pipe {
     const native = nativeStreamFor(this);
     const copy = native ? native.duplicate() as Pipe : new (this.constructor as typeof Pipe)(this.type);
-    if (!native) copy.shareConnectionFrom(this);
+    if (!native) {
+      copy.shareConnectionFrom(this);
+      copy.path = this.path;
+      copy.listening = this.listening;
+    }
     return copy;
   }
 
@@ -228,9 +283,10 @@ export class Pipe extends LibuvStreamWrap {
     // close on `NODE_HANDLE_ACK` -- which Node's `child_process.js` does the
     // moment the receiver confirms -- ends nothing. A connection is duplicated
     // whether or not its other end is still there; a listening server has no
-    // connection to duplicate and crosses as it is.
+    // connection to duplicate; a realm's own TCP listener is duplicated as its socket (tcp_wrap.ts), any other
+    // crosses as it is.
     const sent = handle as LibuvStreamWrap & { listening?: boolean };
-    const given = sent.listening === true ? sent : sent.duplicate();
+    const given = sent.listening === true && !sent.listenerDuplicates ? sent : sent.duplicate();
     // The receiving run owns this reference; the sender retains its own until
     // Node closes it on acknowledgement, or continues using it with keepOpen.
     __adoptHandle(given, ownerOf(this.peer ?? this), this.peer ?? this);
@@ -278,9 +334,20 @@ export class Pipe extends LibuvStreamWrap {
 
   protected override onCloseHandle(): void {
     this.dropNode();
+    const wasListening = this.listening;
     this.listening = false;
     this.onconnection = null;
-    if (this.path !== null && boundPaths.get(this.path) === this) boundPaths.delete(this.path);
+    // The binder's close takes a path's name with its node (libuv unlinks it): a passed copy keeps accepting on its
+    // descriptor, and nothing reaches it by the path. An abstract name (a leading NUL) has no node and lives as long
+    // as the socket (Linux), so it passes to a member still open.
+    if (this.path !== null && boundPaths.get(this.path) === this) {
+      const abstract = this.path.charCodeAt(0) === 0;
+      const heir = abstract ? [...this.sharingHandles].find((handle): handle is Pipe => handle !== this && handle instanceof Pipe && !handle.closed) : undefined;
+      if (heir) boundPaths.set(this.path, heir); else boundPaths.delete(this.path);
+    }
+    const shared = [...this.sharingHandles].some(handle => handle !== this && handle instanceof Pipe && handle.listening);
+    // The socket's last listener closed: what waited in its accept queue is reset, as an unaccepted connection is.
+    if (wasListening && !shared) for (const { accepted } of pipeAcceptQueues.get(this.connectionEnd)?.splice(0) ?? []) if (!accepted.closed) { accepted.sendReset(); accepted.close(); }
     if (this.ownFd !== null) { releaseFd(this.ownFd); this.ownFd = null; }
   }
 }

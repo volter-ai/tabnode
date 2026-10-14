@@ -543,7 +543,7 @@ function deliver(caller: ProcessToken | null, pid: number, signal: string): bool
   const child = __substrateChildrenOf(caller).get(pid);
   const childLive = child !== undefined && child.exitCode === null && child.signalCode === null;
   if (childLive) return child.kill(signal);
-  const token = tokenOfPid(pid);
+  const token = tokenOfPid(pid, caller);
   if (token !== null && __signalOwnedProcess(token, signal)) return true;
   return signalPid(pid, signal, caller);
 }

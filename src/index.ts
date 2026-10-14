@@ -69,8 +69,14 @@ export { createProcessRegistryScope, installProcessRegistry, installProcessIdAll
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
-export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter } from './stdin-ring';
-import { stdinRingProblem, stdinRingWaitsAsync } from './stdin-ring';
+export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter, type StdinReader } from './stdin-ring';
+/** Present from the release whose runs read `RunOptions.stdinReader`: a host gives one only to an engine that has it. */
+export const RUN_STDIN_READER = 1;
+/** Present from the release that tells a run's registry its signal listeners (ProcessRegistry.disposition). */
+export const RUN_SIGNAL_DISPOSITIONS = 1;
+/** Present from the release whose `run` (a shell line) reads `RunOptions.filesystem`, as `runNode` does. */
+export const RUN_LINE_FILESYSTEM = 1;
+import { stdinRingProblem, stdinRingWaitsAsync, type StdinReader } from './stdin-ring';
 export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
@@ -113,12 +119,20 @@ export interface RunOptions {
    */
   stdinShared?: SharedArrayBuffer;
   /**
+   * fd 0 as a reader the host made in this realm over its kernel's own pipe (`StdinReader`): read as `stdinShared`
+   * is, its only source, with no ring between the pipe and the run. Where both are given, this one is read.
+   */
+  stdinReader?: StdinReader;
+  /**
    * The tree this run's Node reads and writes, in place of the container's
    * own: a host's tree for one process (a kernel's, for a `node` its shell
    * exec'd), chosen per run, while the run keeps the container's one port
    * space, process table and servers, as a process on Linux keeps its
    * network namespace whatever filesystem it sees. The engine writes nothing
-   * into it on its own account. `runNode` only.
+   * into it on its own account. `runNode`, and `run`, whose shell line, its
+   * builtins and the children it runs in this realm read and write it
+   * (browser-substrate ADR-0129 5f.1: a line that is a kernel process's is on
+   * that process's tree, as its `node` is).
    */
   filesystem?: VirtualFS;
   /**
@@ -265,7 +279,7 @@ export function createContainer(options?: ContainerOptions): {
     if (tty !== undefined && (!Array.isArray(tty) || tty.length !== 3 || tty.some((value) => typeof value !== 'boolean'))) {
       throw new TypeError('stdioIsTTY must be [stdin, stdout, stderr] booleans');
     }
-    if (runOptions?.stdinShared !== undefined) {
+    if (runOptions?.stdinShared !== undefined && runOptions.stdinReader === undefined) {
       const problem = stdinRingProblem(runOptions.stdinShared);
       if (problem !== null) throw new TypeError(problem);
       if (!stdinRingWaitsAsync()) {
@@ -291,8 +305,9 @@ export function createContainer(options?: ContainerOptions): {
       signal: runOptions?.signal,
       held: runOptions?.held === true,
       stdinStream: runOptions?.stdinStream,
-      stdinOpen: runOptions?.stdinStream !== undefined || runOptions?.stdinShared !== undefined,
-      ...(runOptions?.stdinShared ? { stdinShared: runOptions.stdinShared } : {}),
+      stdinOpen: runOptions?.stdinStream !== undefined || runOptions?.stdinShared !== undefined || runOptions?.stdinReader !== undefined,
+      ...(runOptions?.stdinReader ? { stdinReader: runOptions.stdinReader }
+        : runOptions?.stdinShared ? { stdinShared: runOptions.stdinShared } : {}),
       terminal: runOptions?.terminal,
       ...(runOptions?.stdioIsTTY ? { stdioIsTTY: runOptions.stdioIsTTY } : {}),
       ...(runOptions?.stdioKind ? { stdioKind: runOptions.stdioKind } : {}),
@@ -336,7 +351,7 @@ export function createContainer(options?: ContainerOptions): {
         // it before the shell. Both forward it, so a builtin reads what was
         // piped, as it does in a Node shell.
         return await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-          runCommand(command, { credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()), cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs }, (error, stdout, stderr) => {
+          runCommand(command, { credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()), cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs: runOptions?.filesystem ?? vfs }, (error, stdout, stderr) => {
             resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
           });
         });
