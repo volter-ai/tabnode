@@ -6,6 +6,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **A module's body starts with less of the engine's own work** (browser-substrate S2 AC-LC14). Every module of a
+  runtime shares one `console` wrapper, as Node's modules share one console, instead of a new object of ten
+  closures made for each body; and a body's header assigns `process` to its global once, not twice through the same
+  object (`global` is `globalThis`), so one guest-global trap fewer runs for each body.
+
 ## v0.15.0 — 2026-10-14
 
 Kept paths carried across runs (browser-substrate ADR-0152, S2 AC-LC10). Additive: two new exports, which a host
