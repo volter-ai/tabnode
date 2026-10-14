@@ -167,9 +167,11 @@ Get stats for path
 
 > **contentDigest**(`_path`): `string` \| `undefined`
 
-The plain SHA-256 of a file's current bytes, as 64 lowercase hex characters, where the tree holds it without
-reading the file; undefined where it does not (a file written since its image, a tree that keeps no digests).
-This tree keeps none.
+The plain SHA-256 of a file's current bytes, as 64 lowercase hex characters; undefined where the tree holds
+no digest (a file written since its image, a tree that keeps no digests). An image record is an answer only
+after its bytes have been verified against it, before first use. An adapter may read once for that
+verification and retain the result for the immutable pack generation and extent; a path alone is no identity.
+This tree keeps none. The loader uses an answer as a content digest, never as a path-based prepared key.
 
 #### Parameters
 
@@ -549,6 +551,18 @@ Add event listener (for change notifications to workers)
 
 ***
 
+### processHostname()
+
+> **processHostname**(): `string`
+
+A kernel-backed tree supplies this process channel's current UTS name.
+
+#### Returns
+
+`string`
+
+***
+
 ### readdir()
 
 > **readdir**(`path`, `optionsOrCallback?`, `callback?`): `void`
@@ -651,7 +665,7 @@ Read file contents as Uint8Array
 
 ###### encoding
 
-`"utf-8"` \| `"utf8"`
+`"utf8"` \| `"utf-8"`
 
 ##### Returns
 

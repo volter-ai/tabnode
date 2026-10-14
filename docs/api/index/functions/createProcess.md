@@ -12,6 +12,10 @@
 
 ### options?
 
+#### credentials?
+
+[`ProcessCredentials`](../interfaces/ProcessCredentials.md)
+
 #### cwd?
 
 `string`

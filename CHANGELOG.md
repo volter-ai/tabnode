@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.11.1 — 2026-10-14
+
 - Merging `w3/load-clock` into `main`: both lines had moved the prepared format to `tabnode-prepared-5` for
   different lowerings (main's for #12's made-function loader, load-clock's for K1/R16's guest-scope rewrite), so a
   body prepared by v0.10.x would be taken under the same name by an engine that lowers its source differently. The

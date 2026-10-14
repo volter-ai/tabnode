@@ -8,6 +8,14 @@
 
 ## Properties
 
+### credentials?
+
+> `optional` **credentials?**: [`ProcessCredentials`](ProcessCredentials.md)
+
+The host's numeric credentials for this process; otherwise inherit the container's configured identity.
+
+***
+
 ### cwd?
 
 > `optional` **cwd?**: `string`
@@ -42,6 +50,14 @@ into it on its own account. `runNode` only.
 The host keeps this run open (a watch or an interactive shell); a run that
 is not held ends when its loop has nothing left, as Node's does. A
 `signal` alone is an abort handle, not a hold.
+
+***
+
+### moduleEvaluationObserver?
+
+> `optional` **moduleEvaluationObserver?**: [`ModuleEvaluationObserver`](ModuleEvaluationObserver.md)
+
+Private host evidence selection; it is not a guest Node global or inherited child option.
 
 ***
 

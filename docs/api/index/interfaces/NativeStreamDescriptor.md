@@ -16,7 +16,7 @@
 
 ### kind
 
-> **kind**: `"tcp"` \| `"pipe"`
+> **kind**: `"pipe"` \| `"tcp"`
 
 ***
 

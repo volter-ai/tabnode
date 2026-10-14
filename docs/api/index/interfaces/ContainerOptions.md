@@ -18,6 +18,18 @@
 
 ***
 
+### credentials?
+
+> `optional` **credentials?**: [`ProcessCredentials`](ProcessCredentials.md)
+
+Host-configured numeric identity; absent preserves uid/gid 1000 and groups [1000].
+
+#### Inherited from
+
+[`RuntimeOptions`](RuntimeOptions.md).[`credentials`](RuntimeOptions.md#credentials)
+
+***
+
 ### cwd?
 
 > `optional` **cwd?**: `string`
@@ -35,6 +47,30 @@
 #### Inherited from
 
 [`RuntimeOptions`](RuntimeOptions.md).[`env`](RuntimeOptions.md#env)
+
+***
+
+### httpParserModule?
+
+> `optional` **httpParserModule?**: `Module`
+
+llhttp compiled by the creating worker; structured-cloned into the guest realm.
+
+#### Inherited from
+
+[`RuntimeOptions`](RuntimeOptions.md).[`httpParserModule`](RuntimeOptions.md#httpparsermodule)
+
+***
+
+### moduleEvaluationObserver?
+
+> `optional` **moduleEvaluationObserver?**: [`ModuleEvaluationObserver`](ModuleEvaluationObserver.md)
+
+Observe only original completed synchronous bodies at these exact paths, when the host explicitly requests it.
+
+#### Inherited from
+
+[`RuntimeOptions`](RuntimeOptions.md).[`moduleEvaluationObserver`](RuntimeOptions.md#moduleevaluationobserver)
 
 ***
 

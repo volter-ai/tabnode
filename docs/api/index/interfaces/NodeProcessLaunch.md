@@ -26,6 +26,14 @@ The process's own name, `argv[0]` as `execve` was given it: what `process.argv0`
 
 ***
 
+### credentials?
+
+> `optional` **credentials?**: [`ProcessCredentials`](ProcessCredentials.md)
+
+Retained process credentials for the host to pass to Runtime/contained realm admission.
+
+***
+
 ### cwd
 
 > **cwd**: `string`

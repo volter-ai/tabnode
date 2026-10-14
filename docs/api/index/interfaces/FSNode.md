@@ -64,4 +64,4 @@ Where a symlink points, exactly as it was written.
 
 ### type
 
-> **type**: `"file"` \| `"directory"` \| `"symlink"`
+> **type**: `"directory"` \| `"file"` \| `"symlink"`

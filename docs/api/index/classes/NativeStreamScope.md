@@ -66,6 +66,39 @@ Synchronous operations return libuv status; completions use the event door.
 
 ***
 
+### creditWrites()
+
+> **creditWrites**(`id`, `word`): `object`
+
+S2 T14: this handle's connection end's send credit (SendCredit). The first credited descriptor of an end gives its
+`word`; a duplicate is answered with the end's word, which the realm then reserves from. Published now, after every
+write made through any holder, and whenever the peer reads. A handle without a peer holds a word that publishes no
+room and never reopens (it has no peer to read). Refused where the window and a chunk could pass 2^31.
+
+#### Parameters
+
+##### id
+
+`number`
+
+##### word
+
+`Int32Array`
+
+#### Returns
+
+`object`
+
+##### status
+
+> **status**: `number`
+
+##### word?
+
+> `optional` **word?**: `Int32Array`\<`ArrayBufferLike`\>
+
+***
+
 ### dispose()
 
 > **dispose**(): `void`
@@ -73,6 +106,34 @@ Synchronous operations return libuv status; completions use the event door.
 #### Returns
 
 `void`
+
+***
+
+### finishTryWrite()
+
+> **finishTryWrite**(`id`, `bytes`, `status`): `Promise`\<`number`\>
+
+The caller's short wait ended after we claimed its attempt. Only the
+native statuses that accepted NO bytes may enter the ordinary write queue.
+Otherwise that same submission completes with its actual native status.
+
+#### Parameters
+
+##### id
+
+`number`
+
+##### bytes
+
+`Uint8Array`
+
+##### status
+
+`number`
+
+#### Returns
+
+`Promise`\<`number`\>
 
 ***
 
@@ -111,6 +172,54 @@ Trusted parent-to-child inheritance; this is deliberately absent from call().
 #### Returns
 
 [`NativeStreamReply`](../interfaces/NativeStreamReply.md)
+
+***
+
+### postWrite()
+
+> **postWrite**(`id`, `bytes`): `number`
+
+S2 T14: a write the realm accepted against this handle's credit, as native's write(2) into its send buffer: put in
+the peer's queue now, in port order, never queued, never waited for capacity, so no close cancels it. Its status
+is the realm's to report on the handle's next write (a failure); success has no answer.
+
+#### Parameters
+
+##### id
+
+`number`
+
+##### bytes
+
+`Uint8Array`
+
+#### Returns
+
+`number`
+
+***
+
+### tryWrite()
+
+> **tryWrite**(`id`, `bytes`): `number`
+
+Node's DoTryWrite: never wait, queue, partially accept, or carry a handle.
+The local binding copies bytes into the peer's native queue before returning
+0, and schedules the reader separately. EAGAIN leaves that queue untouched.
+
+#### Parameters
+
+##### id
+
+`number`
+
+##### bytes
+
+`Uint8Array`
+
+#### Returns
+
+`number`
 
 ***
 

@@ -6,7 +6,7 @@
 
 # Function: useHost()
 
-> **useHost**(`host`): `void`
+> **useHost**(`host`): `Promise`\<`void`\>
 
 ## Parameters
 
@@ -16,4 +16,4 @@
 
 ## Returns
 
-`void`
+`Promise`\<`void`\>

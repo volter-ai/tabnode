@@ -10,7 +10,66 @@ The descriptor operations of a tree that owns its descriptions. Each is the
 Linux call of its name; a failure throws an error carrying the call's
 `code` (and `errno`), as Node's fs errors do.
 
+## Properties
+
+### advisoryLocks?
+
+> `optional` **advisoryLocks?**: [`TreeAdvisoryLocks`](TreeAdvisoryLocks.md)
+
+POSIX locks share the process's kernel owner and end on any close of that file.
+
 ## Methods
+
+### absent()?
+
+> `optional` **absent**(`path`): `Error` \| `undefined`
+
+The error `open(path)` would throw for a path the tree's own stat has just answered absent: the same object its
+open builds for ENOENT (code, errno, syscall 'open', path, message), with no request made (S2 T11). Undefined
+where that absence was not a known ENOENT (an ENOTDIR is absent to a stat too); then, and for a tree without
+it, the read is left to `open`.
+
+#### Parameters
+
+##### path
+
+`string`
+
+#### Returns
+
+`Error` \| `undefined`
+
+***
+
+### chown()?
+
+> `optional` **chown**(`path`, `uid`, `gid`, `follow`): `void`
+
+Ownership is supplied only by a filesystem that enforces the calling process's authority.
+
+#### Parameters
+
+##### path
+
+`string`
+
+##### uid
+
+`number`
+
+##### gid
+
+`number`
+
+##### follow
+
+`boolean`
+
+#### Returns
+
+`void`
+
+***
 
 ### close()
 
@@ -62,6 +121,30 @@ number, which a close drops and a reuse misdirects.
 `number`
 
 ##### mode
+
+`number`
+
+#### Returns
+
+`void`
+
+***
+
+### fchown()?
+
+> `optional` **fchown**(`fd`, `uid`, `gid`): `void`
+
+#### Parameters
+
+##### fd
+
+`number`
+
+##### uid
+
+`number`
+
+##### gid
 
 `number`
 

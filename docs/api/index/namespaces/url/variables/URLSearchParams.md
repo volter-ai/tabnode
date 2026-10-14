@@ -14,7 +14,7 @@
 
 ### init?
 
-`string` \| `Record`\<`string`, `string`\> \| `string`[][] \| `URLSearchParams`
+`string` \| `Record`\<`string`, `string`\> \| `URLSearchParams` \| `string`[][]
 
 ## Returns
 

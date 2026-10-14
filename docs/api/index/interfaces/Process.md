@@ -427,6 +427,22 @@ Node's `process.kill`, raising a signal on the guest's own process.
 
 ***
 
+### loadEnvFile
+
+> **loadEnvFile**: (`path?`) => `void`
+
+#### Parameters
+
+##### path?
+
+`string` \| `Uint8Array`\<`ArrayBufferLike`\> \| `URL`
+
+#### Returns
+
+`void`
+
+***
+
 ### memoryUsage
 
 > **memoryUsage**: () => `object`
@@ -845,3 +861,23 @@ Node's `process.umask()`: the file-mode mask this process creates with.
 #### webcontainer?
 
 > `optional` **webcontainer?**: `string`
+
+## Methods
+
+### \_getActiveHandles()
+
+> **\_getActiveHandles**(): `object`[]
+
+#### Returns
+
+`object`[]
+
+***
+
+### \_getActiveRequests()
+
+> **\_getActiveRequests**(): `object`[]
+
+#### Returns
+
+`object`[]

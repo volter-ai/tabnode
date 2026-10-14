@@ -46,7 +46,7 @@ Trusted owner handoff before the destination worker starts; not a guest operatio
 
 ### allocate()
 
-> **allocate**(`parentPid?`, `newSession?`): `number`
+> **allocate**(`parentPid?`, `newSession?`, `runAs?`): `number`
 
 A new process's number. `parentPid` is the process that starts it, where the caller knows it, and `newSession`
 says it leads a session of its own (a detached spawn): a registry over a kernel makes the process there and then,
@@ -61,6 +61,10 @@ as fork (and setsid) do (browser-substrate ADR-0129); tabnode's own ignores both
 ##### newSession?
 
 `boolean`
+
+##### runAs?
+
+`Readonly`\<[`ProcessCredentials`](ProcessCredentials.md)\>
 
 #### Returns
 
@@ -317,11 +321,12 @@ Trusted owner only: how this realm answers a signal sent to one of its processes
 
 ### signal()
 
-> **signal**(`pid`, `signal`): `boolean`
+> **signal**(`pid`, `signal`, `callerPid?`): `boolean`
 
-`kill(pid, signal)` for a live process of another realm in this container:
-whether a process there took the signal. A machine lets a process signal
-any process of its user, including one its parent left behind.
+kill(2) in this registry's caller namespace. "0" checks existence without delivery, including a zombie until
+reaped: its false means ESRCH only; other errno and transport failures throw. Signed targets keep kill's process
+and group meanings. `callerPid` identifies the calling run for a standalone owner shared by several runs;
+a kernel-bound registry already knows its caller from its channel.
 
 #### Parameters
 
@@ -332,6 +337,10 @@ any process of its user, including one its parent left behind.
 ##### signal
 
 `string`
+
+##### callerPid?
+
+`number`
 
 #### Returns
 
