@@ -6,7 +6,7 @@
 
 # Interface: ProcessRegistryScope
 
-Installed by the trusted embedding host before this realm starts runs.
+The engine's own local registry (createProcessRegistryOwner's scope); a host's registry is a ProcessRegistry.
 
 ## Extends
 
@@ -27,36 +27,6 @@ tabnode's own, whose `signal` reaches only this realm's runs.
 [`ProcessRegistry`](ProcessRegistry.md).[`kernel`](ProcessRegistry.md#kernel)
 
 ## Methods
-
-### adoptRun()
-
-> **adoptRun**(`source`, `sourceToken`, `token`, `parentPid?`): [`ProcessIdentity`](ProcessIdentity.md)
-
-Trusted owner handoff before the destination worker starts; not a guest operation.
-
-#### Parameters
-
-##### source
-
-`ProcessRegistryScope`
-
-##### sourceToken
-
-`string`
-
-##### token
-
-`string`
-
-##### parentPid?
-
-`number`
-
-#### Returns
-
-[`ProcessIdentity`](ProcessIdentity.md)
-
-***
 
 ### allocate()
 

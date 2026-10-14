@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.14.0 — 2026-10-14
+
 - **Breaking: tabnode's scope form leaves the public API** (browser-substrate ADR-0129 step 3). A container owner no
   longer hands a run from its realm's registry to another realm's: `createProcessRegistryScope`,
   `ownerProcessRegistryScope`, `ownerProcessTable` and `ProcessRegistryScope.adoptRun` are removed. A host gives each
