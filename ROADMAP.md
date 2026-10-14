@@ -1,3 +1,16 @@
+## CI duration: preserve complete measurement with parallel partitions
+
+Substrate Articles 8 and 9. The authorized goal is shorter CI, with no suite or
+workflow executed while coding. Historical manual run37854345231 spent29m02s
+in its complete Node-file step:4569files share one four-process runner. Split
+that same pinned denominator over16independent runners, build the bundle once,
+retain source/bundle identities and reject partial or mixed report unions.
+Surface snapshots use distinct host/engine processes and filenames, so four
+module pairs can overlap while comparison order stays deterministic. Publishing
+uses the same pinned Node24.21.0 throughout instead of changing Node twice and
+installing npm twice. No measured speedup is claimed without a future authorized
+run. All original file outcomes, timeout semantics and surface requirements stay.
+
 ## S1: Synchronous children keep their declared process owner
 
 Substrate Articles 1/5/6/8/9. A trusted embedding may declare that its existing

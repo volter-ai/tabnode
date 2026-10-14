@@ -37,9 +37,12 @@ const counts = {
 };
 const pendingReview = exceptions.filter((entry) => entry.review?.verdict !== 'confirmed').map((entry) => entry.id);
 const openDefects = Object.values(counts).reduce((sum, n) => sum + n, 0);
+const executionCommand = (results.shardCount ?? 1) > 1
+  ? `node scripts/node-tests.mjs --tests ../node-tests --all --shard-count ${results.shardCount} --shard-index <0..${results.shardCount - 1}> --report-json measurement/shards/shard-<index>.json; node scripts/merge-node-test-shards.mjs --shard-count ${results.shardCount}`
+  : 'node scripts/node-tests.mjs --tests ../node-tests --all --report-json measurement/results.json';
 const metadata = { nodeVersion: manifest.nodeVersion, nodeCommit: manifest.nodeCommit, engineCommit: process.env.GITHUB_SHA ?? arg('commit', 'unknown'),
   mode: 'production bundle in host Node; window installed after engine import', timeoutMs: results.timeoutMs,
-  jobs: results.jobs, durationSeconds: results.durationSeconds, counts, openDefects, pendingReview,
+  jobs: results.jobs, shardCount: results.shardCount ?? 1, durationSeconds: results.durationSeconds, counts, openDefects, pendingReview,
   complete: openDefects === 0 && pendingReview.length === 0,
   denominator: manifest.files.length, passing: passing.length, failingNamed: named.length, failingUnnamed: unnamed.length,
   modules: [...modules.values()].sort((a, b) => a.module.localeCompare(b.module)) };
@@ -54,8 +57,8 @@ for (const entry of exceptions.filter((entry) => entry.review?.verdict !== 'over
 if (!exceptions.length) coverage += '- No exceptions have been accepted yet.\n';
 coverage += `- and ${openDefects} open defects not yet classified\n\n`;
 coverage += `Generated from measure on \`${metadata.engineCommit}\`, Node ${manifest.nodeVersion}, production bundle, host-run mode, `
-  + `\`node scripts/node-tests.mjs --tests ../node-tests --all --report-json measurement/results.json\`, `
-  + `${results.jobs} isolated guest processes at a time, ${results.timeoutMs} ms per file. `
+  + `\`${executionCommand}\`, `
+  + `${results.shardCount ?? 1} shard(s), each with ${results.jobs} isolated guest processes at a time, ${results.timeoutMs} ms per file. `
   + `The open count sums unresolved measurement entries across four surfaces; several entries can share one root cause. `
   + `This is not browser-tab qualification. ${pendingReview.length} limitation entries await independent confirmation.\n`;
 fs.writeFileSync(`${out}/coverage.md`, coverage);

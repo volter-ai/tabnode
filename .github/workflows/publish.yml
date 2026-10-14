@@ -30,11 +30,9 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24.21.0
           registry-url: https://registry.npmjs.org
           cache: npm
-      - name: An npm that publishes with provenance
-        run: npm install -g npm@latest
       - run: git config core.fileMode false
       - name: Version what changed since its last release
         id: release
@@ -46,7 +44,7 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           if [ -n "$(npm view "@volter/tabnode@$v" version 2>/dev/null)" ]; then echo "$v is published"; else echo "$v is new"; echo new=1 >> "$GITHUB_OUTPUT"; fi
       - if: steps.check.outputs.new
-        run: npm ci
+        run: npm ci --no-audit --no-fund
       - if: steps.check.outputs.new
         name: The lockfile, the changelog's section and docs/api follow the version
         env:
@@ -59,21 +57,9 @@ jobs:
           npm run docs:api
       - if: steps.check.outputs.new
         run: npm run build:lib
-      # dist/surface.json: what this version answers, measured against the Node it vendors, shipped in the package.
-      - if: steps.check.outputs.new
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24.21.0
+      # One pinned Node hosts both the build and its same-source surface.
       - if: steps.check.outputs.new
         run: npm run build:surface
-      - if: steps.check.outputs.new
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
-      - if: steps.check.outputs.new
-        name: An npm that publishes with provenance
-        run: npm install -g npm@latest
       - if: steps.check.outputs.new
         name: Publish
         env:

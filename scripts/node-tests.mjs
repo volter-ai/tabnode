@@ -10,6 +10,8 @@
 // (`npm run build:lib` writes it). --match selects test files by name
 // prefix, `test-stream-` by default.
 import * as nodeFs from "node:fs";
+import { createHash } from "node:crypto";
+import { shardFiles } from "./node-test-shards.mjs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -23,7 +25,9 @@ function argument(name, fallback) {
   return index >= 0 && process.argv[index + 1] !== undefined ? process.argv[index + 1] : fallback;
 }
 const TESTS = nodeFs.realpathSync(argument("tests", ""));
-const ENGINE = resolve(argument("engine", resolve(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.mjs")));
+const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const DEFAULT_ENGINE = resolve(SOURCE_ROOT, "dist", "index.mjs");
+const ENGINE = resolve(argument("engine", DEFAULT_ENGINE));
 const MATCH = argument("match", "test-stream-");
 const TIMEOUT = Number(argument("timeout", "8000"));
 const LIST = process.argv.includes("--list-failures");
@@ -38,6 +42,8 @@ const PRELUDE = argument("prelude", "");
 const DIR = argument("dir", "test/parallel");
 const ALL = process.argv.includes("--all");
 const REPORT = argument("report-json", "");
+const SHARD_COUNT = Number(argument("shard-count", "1"));
+const SHARD_INDEX = Number(argument("shard-index", "0"));
 const MANIFEST = JSON.parse(nodeFs.readFileSync(new URL("./node24-test-files.json", import.meta.url), "utf8"));
 const MOUNT = "/workspace/app";
 if (!TESTS) { console.error("usage: --tests <node checkout> [--engine <dist/index.mjs>] [--match <prefix>]"); process.exit(2); }
@@ -155,7 +161,28 @@ if (ALL) {
   const commit = execFileSync("git", ["-C", TESTS, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   if (commit !== MANIFEST.nodeCommit) throw new Error(`test checkout is ${commit}, expected ${MANIFEST.nodeCommit}`);
 }
-const files = ALL ? MANIFEST.files : discovered(DIR).filter((path) => path.split("/").at(-1).startsWith(MATCH));
+if (!ALL && (process.argv.includes('--shard-count') || process.argv.includes('--shard-index'))) {
+  throw new Error('sharding requires --all and the complete pinned selection');
+}
+const files = ALL ? shardFiles(MANIFEST.files, SHARD_INDEX, SHARD_COUNT)
+  : discovered(DIR).filter((path) => path.split("/").at(-1).startsWith(MATCH));
+if (!Number.isSafeInteger(JOBS) || JOBS < 1) throw new Error('--jobs must be a positive integer');
+const engineIntegrity = createHash('sha256').update(nodeFs.readFileSync(ENGINE)).digest('hex');
+const { execFileSync } = await import('node:child_process');
+// Caller CWD cannot identify a bundle. The repository's own default build
+// names this source checkout; an external bundle keeps unknown source custody
+// and remains usable for diagnostics without requiring any caller Git state.
+let engineCommit = 'unknown';
+if (ENGINE === DEFAULT_ENGINE) {
+  try {
+    const [checkout, commit] = execFileSync('git', ['rev-parse', '--show-toplevel', 'HEAD'], { cwd: SOURCE_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim().split('\n');
+    // A source archive placed inside another repository is still an archive.
+    if (nodeFs.realpathSync(checkout) === nodeFs.realpathSync(SOURCE_ROOT)) engineCommit = commit;
+  } catch { /* diagnostics also work from a source archive without Git metadata */ }
+}
+if (SHARD_COUNT > 1 && !/^[0-9a-f]{40}$/.test(engineCommit)) {
+  throw new Error('strict sharding needs the source checkout of the default built engine');
+}
 const results = [];
 const started = Date.now();
 // What is kept of a run's output: its end, bounded. The judgement below reads none of it.
@@ -231,7 +258,7 @@ const durationSeconds = (Date.now() - started) / 1000;
 hostOut(`${passed} of ${results.length} ${ALL ? "Node " + MANIFEST.nodeVersion : MATCH + "*"} tests pass under ${ENGINE} in ${durationSeconds.toFixed(1)} s\n`);
 if (REPORT) {
   nodeFs.mkdirSync(dirname(resolve(REPORT)), { recursive: true });
-  nodeFs.writeFileSync(REPORT, JSON.stringify({ nodeVersion: MANIFEST.nodeVersion, nodeCommit: MANIFEST.nodeCommit, engine: ENGINE, fullDenominator: ALL, timeoutMs: TIMEOUT, jobs: JOBS, durationSeconds, results }, null, 2) + "\n");
+  nodeFs.writeFileSync(REPORT, JSON.stringify({ nodeVersion: MANIFEST.nodeVersion, nodeCommit: MANIFEST.nodeCommit, engine: ENGINE, fullDenominator: ALL && SHARD_COUNT === 1, fullSelection: ALL, shardIndex: SHARD_INDEX, shardCount: SHARD_COUNT, engineCommit, engineIntegrity, startedAtMs: started, completedAtMs: Date.now(), timeoutMs: TIMEOUT, jobs: JOBS, durationSeconds, results }, null, 2) + "\n");
 }
 // How the suite's programs ended, by the engine's own words, over every program of every file and over the files
 // that pass (a file's last program is its own; the ones before it are children it started).
