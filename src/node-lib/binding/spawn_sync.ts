@@ -14,7 +14,7 @@ import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials
 import { libRequire } from '../require-hook';
 import { UV_EPERM, UV_EINVAL, UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ETIMEDOUT, UV_EBADF } from './uv';
 import { runSyncChild, syncChildRefusal } from '../../shims/sync-child';
-import { __substrateArgvFor, __substrateHostRuns, __substrateLineFor, __substrateRunsNode, __substrateShellLine } from '../../shims/command-line';
+import { __substrateArgvFor, __substrateHostRuns, __substrateLineFor, __substrateRunsNode, __substrateShellLine, __substrateShellWord } from '../../shims/command-line';
 import { inheritedWriter } from './process_wrap';
 import { __currentProcessToken, enterRun, exitRunProcess, forgetRunPid, mintPid, reapRunProcess, runPid, setRunPid } from '../../process-tokens';
 
@@ -46,8 +46,14 @@ interface SyncSpawnOptions {
  * `refusal` that says why and starts nothing.
  */
 interface SyncChildHost {
+  /** The embedding owns every child of the current run, including Node and
+   * image scripts the engine can also resolve. This is a trusted host choice,
+   * not a request to recover a raw Worker constructor in a restricted realm. */
+  readonly ownsAllSyncChildren?: boolean;
   runSync?(command: string, request: {
     argv?: readonly string[];
+    /** The actual exec selector, independent of a caller's custom argv[0]. */
+    executablePath?: string;
     cwd?: string;
     env?: Record<string, string>;
     credentials?: ProcessCredentials;
@@ -158,11 +164,15 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
   const cwd = options.cwd ?? (typeof realm?.cwd === 'function' ? realm.cwd() : undefined);
   const env = environmentOf(options.envPairs) ?? (realm?.env ? { ...realm.env } : undefined);
 
-  // A program the host runs (one its kernel holds: git, a shell script, psql) is the host's synchronous child, by
-  // the rule its asynchronous child goes by. It is a process as that one is: forked here, under this run, before
-  // the wait; run by the host as that process; reaped here when the wait ends, by the wait every child's end takes.
+  // A host may own every child of this run: even an engine-resolvable image
+  // script must then use that process owner. A restricted realm deliberately
+  // has no raw Worker; selecting the fallback because its shell knows a program
+  // refused spawnSync before reaching the already installed synchronous door.
+  // Other embeddings retain the same program classification as async children.
+  // The child is forked under this run before the wait and reaped at its end.
   const host = (globalThis as unknown as Record<symbol, SyncChildHost | undefined>)[hostExecutorSymbol];
-  if (host && typeof host.runSync === 'function' && (__substrateHostRuns(options.file, cwd, env ?? {}) || (declaredIdentity && __substrateRunsNode(options.file, cwd)))) {
+  const ownsAllSyncChildren = host?.ownsAllSyncChildren === true;
+  if (host && typeof host.runSync === 'function' && (ownsAllSyncChildren || __substrateHostRuns(options.file, cwd, env ?? {}) || (declaredIdentity && __substrateRunsNode(options.file, cwd)))) {
     const owner = __currentProcessToken();
     const parentPid = runPid(owner)?.pid ?? 0;
     const token = `sync-child-${nextSyncChild++}`;
@@ -184,8 +194,16 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
     const captured = (index: 1 | 2): boolean => stdio[index]?.type !== 'ignore' && !passedOn(stdio[index]);
     let answer: ReturnType<NonNullable<SyncChildHost['runSync']>>;
     try {
-      answer = enterRun(token, () => host.runSync!(__substrateLineFor(options.file, argv, options.cwd), {
-        ...(((list) => list ? { argv: list } : {})(__substrateArgvFor(options.file, argv, options.cwd))),
+      // An owning kernel resolves the original file itself; engine aliases
+      // must not turn an absolute Node path into a different PATH lookup, or
+      // replace custom argv[0]. Shell argv also stays whole on this route.
+      const list = ownsAllSyncChildren ? [...argv] : __substrateArgvFor(options.file, argv, options.cwd);
+      const line = ownsAllSyncChildren
+        ? [options.file, ...argv.slice(1)].map((word) => __substrateShellWord(String(word))).join(' ')
+        : __substrateLineFor(options.file, argv, options.cwd);
+      answer = enterRun(token, () => host.runSync!(line, {
+        ...(list ? { argv: list } : {}),
+        ...(ownsAllSyncChildren ? { executablePath: options.file } : {}),
         ...(cwd ? { cwd } : {}),
         ...(env ? { env } : {}),
         credentials,

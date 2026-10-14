@@ -1,0 +1,89 @@
+{
+  "articles": [
+    1,
+    5,
+    6,
+    8,
+    9
+  ],
+  "sourceOnly": true,
+  "retainedAttribution": {
+    "repository": "volter-ai/browser-substrate",
+    "commit": "682f32968b84902701514e0fdbe04b7a3c04f3a5",
+    "path": "docs/readings/s1-hoppscotch-sync-child-source.json",
+    "bytes": 19624,
+    "sha256": "7b8e30a36bf1f2674f06f83009a21b0b95eb08cf2fc56bc2ef1c2fda7ec17bb0"
+  },
+  "actualStop": {
+    "job": "/Users/yueranyuan/volter/heavy-runs/sweep/image-cycle/jobs/0137-2026-10-14T080901.194696+0000-hoppscotch~hoppscotch",
+    "terminalRootLine": 1148,
+    "reason": "spawnSync import-meta-env ENOSYS: this realm cannot start a thread to run a child on (Worker is absent)",
+    "startedChildObserved": false,
+    "originalChildArgvAndOptions": "unretained",
+    "historicalOutcomeUnchanged": true
+  },
+  "coordination": {
+    "owner": "sc:aarons-mac-mini:claude-code:c0875cf3-4204-46c2-821f-fa5f3dcc1b7a",
+    "request": "m-0101dc51",
+    "response": "m-f3c151d4",
+    "noOverlap": [
+      "Worker factory/launcher",
+      "raw Worker removal",
+      "syncChildRefusal/getBuiltinModule"
+    ],
+    "preserveNearby": [
+      "spawn_sync setRunPid env publication",
+      "child process run-tree routing",
+      "stdin reader",
+      "kernel kill",
+      "pipe/socket handle transfer"
+    ]
+  },
+  "validation": {
+    "method": "Bounded read-only original bytes, Git source, JSON and digest inspection; fresh independent paired source review is required.",
+    "notRun": [
+      "automated tests",
+      "build/typecheck/compiler",
+      "source helper/module execution",
+      "application/guest/probe/replay",
+      "recipe/producer",
+      "registration",
+      "retired-root read"
+    ],
+    "limits": [
+      "No complete original vendor startup or CLI body/argv is inferred.",
+      "No child start, successful application successor, release/intake or runtime qualification is established.",
+      "No timeout/poll/limit or source cache format changes."
+    ]
+  },
+  "kind": "tabnode.owned-sync-child-door-source",
+  "version": 1,
+  "base": "c1810fdd38dd8c1171b848393f8aa00abde4713c",
+  "nativeBehavior": "Node spawnSync runs the child under its process host and blocks until its real end, returning status/signal/output or a launch error.",
+  "sourceCause": "The installed synchronous host door was offered only to host-classified programs (or explicit-identity Node). An engine-resolvable image program could instead reach the Worker fallback after the embedding removed raw Worker authority. The original live classification value was not recorded.",
+  "contract": {
+    "field": "SyncChildHost.ownsAllSyncChildren",
+    "selection": "Only the literal true selects the existing runSync door before program classification. The embedding owns this per-run declaration.",
+    "hostPath": "Reuse the complete existing fork/credentials/inherited descriptors/runSync/output/error/signal/reap path. Never retry a refused host child through the Worker fallback.",
+    "otherEmbeddings": "Absent/false declarations keep the existing hostRuns and explicit-identity Node rules and precise fallback refusal.",
+    "authority": "No native Worker constructor/factory is captured, restored or exposed. No engine-owned duplicate process is created on the selected host path.",
+    "executableAndArgv": "On the explicit owning route, preserve the original file as executablePath and copy the complete original argv, including custom argv[0] and shell arguments. The existing typed synchronous protocol already carries executablePath separately."
+  },
+  "sourceFiles": [
+    {
+      "path": "src/node-lib/binding/spawn_sync.ts",
+      "bytes": 17603,
+      "sha256": "1c020ee1c505c731a1a4cfe4346df1178840f621b48d60def9ca035b18b559bd"
+    }
+  ],
+  "pairedHost": {
+    "repository": "volter-ai/browser-substrate",
+    "base": "b94aa84947d36cfbd30f5fd1ff92fed264ad1bc8",
+    "source": {
+      "path": "packages/node/src/cross-origin-container-worker.ts",
+      "bytes": 216030,
+      "sha256": "3b72c76029a6c5b60100c5a8bc2402b45c20c6ca59b8bf300d9ca2da56eeacb0"
+    },
+    "declaration": "Current run must have both a kernel tree and its process registry."
+  }
+}

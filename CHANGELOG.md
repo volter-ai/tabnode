@@ -6,6 +6,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- Let a trusted synchronous child host explicitly own all children of the current
+  run, including image scripts and Node programs the engine can resolve. Use the
+  existing admitted host process/wait path before Worker fallback; preserve
+  other embeddings' classification, precise refusals and raw Worker restriction.
+  Source only; paired host integration, release and application qualification
+  remain separate (substrate Articles 1/5/6/8/9).
+
 ## v0.12.0 — 2026-10-14
 
 - A rewritten `new` passes the making module's dynamic import in both of the engine's lowerings (Codex 91): the
