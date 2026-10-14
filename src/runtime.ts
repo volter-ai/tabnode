@@ -4037,9 +4037,6 @@ function createRequire(
 }
 
 /**
- * Create a console wrapper that can capture output
- */
-/**
  * A runtime's one `console`, as a Node process's modules share one: made at a runtime's first body and given to every
  * body after it, by its options object (S2 AC-LC14: ten closures and an object made for every body, thousands at a
  * server's start).
@@ -4051,6 +4048,9 @@ function runtimeConsole(options: { onConsole?: (method: string, args: unknown[])
   return made;
 }
 
+/**
+ * Create a console wrapper that can capture output
+ */
 function createConsoleWrapper(
   onConsole?: (method: string, args: unknown[]) => void
 ): Console {
