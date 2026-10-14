@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.11.2 — 2026-10-14
+
 - The publish workflow sees a version set in a merge commit: `.github/autorelease.mjs` reads the version line's last
   change with `--first-parent`, so a merge to `main` that sets a minor version is published as that version. Before,
   `git log -G` skipped merges and took the bot's last release commit as the setter, so the merge of `w3/load-clock`
