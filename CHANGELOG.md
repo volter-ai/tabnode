@@ -6,6 +6,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+## v0.12.0 — 2026-10-14
+
 - A rewritten `new` passes the making module's dynamic import in both of the engine's lowerings (Codex 91): the
   guest-name rewrite passed only `$process`, so a guest-scoped body's `new Function(...)` lost its module's loader,
   while the `with`-scope rewrite passed it. The lowered text changes, so the prepared format moves to
