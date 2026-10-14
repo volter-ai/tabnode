@@ -122,7 +122,7 @@ export function listenerOnPort(port: number, family?: string): TCP | undefined {
 /** Each shared listening socket's turn: its next connection goes to the member after the last one served. */
 const acceptTurns = new WeakMap<object, number>();
 /** Each shared listening socket's accept queue (TCP.queueAccepted). */
-const acceptQueues = new WeakMap<object, TCP[]>();
+const acceptQueues = new WeakMap<object, Array<{ accepted: TCP; adoptedBy: TCP }>>();
 
 export class TCP extends LibuvStreamWrap {
   /** `constants.SOCKET` or `constants.SERVER`. */
@@ -239,6 +239,10 @@ export class TCP extends LibuvStreamWrap {
         const accepted = new (server.constructor as typeof TCP)(constants.SOCKET);
         accepted.local = { ...(server.local as SockName), port: target };
         accepted.remote = { ...(this.local as SockName) };
+        // An accepted connection is a handle of the loop that is serving, not of the one that connected: the pairing
+        // is made inside the connector's own turn, so without this the server's end would be the connecting run's
+        // (its exit would close it, and it would hold that run alive), queued or not.
+        __adoptHandle(accepted, ownerOf(server), server);
         LibuvStreamWrap.pair(this, accepted);
         // A passed socket whose receiver has not yet served it (its net.Server sets onconnection, then listens):
         // the connection waits in the socket's accept queue, as a connect completes on Linux before any accept.
@@ -280,20 +284,17 @@ export class TCP extends LibuvStreamWrap {
     return pool[turn % pool.length];
   }
 
-  /**
-   * An accepted connection is a handle of the loop that is serving, not of the one that connected: the pairing is
-   * made inside the connector's own turn, so without this the server's end of every connection would hold the
-   * connecting run alive until the server closed it.
-   */
-  deliverAccepted(accepted: TCP): void {
-    __adoptHandle(accepted, ownerOf(this), this);
+  /** A connection accepted on this member: its onconnection, in the serving run. */
+  deliverAccepted(accepted: TCP, adoptedBy: TCP = this): void {
+    // Queued on one member and accepted on another (a passed socket's receiver): it becomes the accepting run's.
+    if (adoptedBy !== this) __adoptHandle(accepted, ownerOf(this), this);
     invokeOwned(this, 'onconnection', 0, accepted);
   }
 
   /** The socket's accept queue: connections made while none of its members was served. */
   queueAccepted(accepted: TCP): void {
     const queue = acceptQueues.get(this.connectionEnd) ?? [];
-    queue.push(accepted);
+    queue.push({ accepted, adoptedBy: this });
     acceptQueues.set(this.connectionEnd, queue);
   }
 
@@ -305,7 +306,8 @@ export class TCP extends LibuvStreamWrap {
       while (queue.length) {
         const member = this.acceptingMember();
         if (!member || member.onconnection === null) return;
-        member.deliverAccepted(queue.shift()!);
+        const { accepted, adoptedBy } = queue.shift()!;
+        if (!accepted.closed) member.deliverAccepted(accepted, adoptedBy);
       }
     });
   }
@@ -404,8 +406,9 @@ export class TCP extends LibuvStreamWrap {
     // A listening socket another descriptor still holds (a passed server) goes on listening.
     const shared = [...this.sharingHandles].some(handle => handle !== this && handle instanceof TCP && handle.listening);
     if (wasListening && !shared && this.local) { try { onCloseWatcher?.(this.local.port); } catch { /* as above */ } }
-    // The socket's last listener closed: what waited in its accept queue is closed with it (its peers read EOF).
-    if (wasListening && !shared) { for (const accepted of acceptQueues.get(this.connectionEnd)?.splice(0) ?? []) accepted.close(); }
+    // The socket's last listener closed: what waited in its accept queue is reset (inet_csk_listen_stop: its peers
+    // read ECONNRESET), as Linux disconnects an unaccepted child.
+    if (wasListening && !shared) { for (const { accepted } of acceptQueues.get(this.connectionEnd)?.splice(0) ?? []) if (!accepted.closed) accepted.reset(); }
   }
 }
 
