@@ -70,6 +70,8 @@ export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
 export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter, type StdinReader } from './stdin-ring';
+/** Present from the release whose runs read `RunOptions.stdinReader`: a host gives one only to an engine that has it. */
+export const RUN_STDIN_READER = 1;
 import { stdinRingProblem, stdinRingWaitsAsync, type StdinReader } from './stdin-ring';
 export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
