@@ -1740,7 +1740,8 @@ function __substrateWrapBody(code: string, guestScoped: boolean, strictBody: boo
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
 }
-/** Runs a wrapped body with its scope's values, read from the guest's global in the order its header read them. */
+/** Runs a wrapped body with its scope's values, read from the guest's global in the order its header read them; the guest
+ *  scope object, which is made once per process and reads nothing when made, is taken after them. */
 function __substrateRunWrapped(fn: Function, exports: unknown, require: unknown, module: unknown, filename: string, dirname: string,
   process: Process, console: unknown, importMeta: unknown, dynamicImport: unknown): unknown {
   const guest = __substrateGuestGlobal(process) as Record<string, unknown>;

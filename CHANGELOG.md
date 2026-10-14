@@ -9,9 +9,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 - **A module's body is shorter to compile and quicker to link** (browser-substrate S2 AC-LC15). The wrapper's scope is
   its parameters, given their values at the call, instead of a header of 25 `var` statements copying them from other
   parameters and from the guest's global: 1,025 characters a body, compiled again for each with their bytecode, are now
-  504 with no statement but the `process` assignment. Which way a body runs is read from its marks where they can be:
-  the top-level-await mark at its end only, the import await mark in an ES module's body only, instead of two scans of
-  every body's whole text. The wrapper's `$filename`, `$dirname`, `$console` and `$importMeta` names, which no lowered
+  510 (501 for an ES module, 29 fewer where a body needs no `with`) with no statement but the `process` assignment.
+  Which way a body runs is read from its marks where they can be: the top-level-await mark at its end only, the import
+  await mark in an ES module's body only, instead of two scans of every body's whole text. A body whose own source
+  merely holds a mark's text is no longer taken for an async or generator body. A stack column on a body's first line
+  moves with the shorter header, as it moved with the longer one. The wrapper's `$filename`, `$dirname`, `$console` and `$importMeta` names, which no lowered
   text uses, are no longer in a body's scope: a body sees Node's names and the `$` names lowered text uses.
 - **A module's body starts with less of the engine's own work** (browser-substrate S2 AC-LC14). Every module of a
   runtime (its REPL too) shares one `console` wrapper, made at its first body and kept by its options, as Node's
