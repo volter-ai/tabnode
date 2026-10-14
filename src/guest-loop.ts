@@ -194,12 +194,13 @@ export function setGuestTurnEnd(callback: () => void): void { turnEnded = callba
 /** The end of a continuation's turn: one function, not a closure made for each resumption (S2 AC-LC9). */
 function endContinuation(): void {
   continuation = false;
-  if (depth === 0) {
-    const took = clock!() - activeSince;
-    active += took;
-    if (entryAccount) { if (continuationFromTheLoop) countEntry('await', undefined, took); else countEntry(outerKind, outerSource, took); outerSource = undefined; }
-  }
-  turnEnded?.();
+  try {
+    if (depth === 0) {
+      const took = clock!() - activeSince;
+      active += took;
+      if (entryAccount) { if (continuationFromTheLoop) countEntry('await', undefined, took); else countEntry(outerKind, outerSource, took); outerSource = undefined; }
+    }
+  } finally { turnEnded?.(); }
 }
 
 /** A compiled native-await continuation runs until it yields to the loop. */
