@@ -575,13 +575,13 @@ release: the exported surface gained `installProcessIdAllocator` and
 ## v0.6.1
 
 A host's tree may own a run's open file descriptions and stand in for the
-container's tree in one run (ADR-0005 steps 1 and 2); with `VirtualFS`
+container's tree in one run (ADR-0006 steps 1 and 2); with `VirtualFS`
 nothing changes. Released as v0.6.1; the workflow dates this section when it
 publishes.
 
 - `RunOptions.filesystem` (for `runNode`): the tree one run's Node reads and
   writes, in place of the container's, while it keeps the container's port
-  space and process table (ADR-0005 step 2). A synchronous child reads its
+  space and process table (ADR-0006 step 2). A synchronous child reads its
   parent run's tree.
 - A stat keeps an entry's full file type: the type bits a tree's mode
   carries, else every kind its stat answers (a character or block device, a
@@ -594,7 +594,7 @@ publishes.
   descriptor operation on a file it opened, with its own fd numbers, offsets
   and `O_APPEND`, and gives the numbers of the engine's own pipes and sockets.
   A tree without it, every `VirtualFS`, keeps the engine's descriptor table
-  as before (ADR-0005 step 1). `TreeDescriptorStats` may answer
+  as before (ADR-0006 step 1). `TreeDescriptorStats` may answer
   `isCharacterDevice`, `isBlockDevice`, `isFIFO` and `isSocket`.
 
 ## v0.6.0 — 2026-10-06
