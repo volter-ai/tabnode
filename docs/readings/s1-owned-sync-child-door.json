@@ -1,0 +1,138 @@
+{
+  "articles": [
+    1,
+    5,
+    6,
+    8,
+    9
+  ],
+  "sourceOnly": true,
+  "retainedAttribution": {
+    "repository": "volter-ai/browser-substrate",
+    "commit": "682f32968b84902701514e0fdbe04b7a3c04f3a5",
+    "path": "docs/readings/s1-hoppscotch-sync-child-source.json",
+    "bytes": 19624,
+    "sha256": "7b8e30a36bf1f2674f06f83009a21b0b95eb08cf2fc56bc2ef1c2fda7ec17bb0"
+  },
+  "actualStop": {
+    "job": "/Users/yueranyuan/volter/heavy-runs/sweep/image-cycle/jobs/0137-2026-10-14T080901.194696+0000-hoppscotch~hoppscotch",
+    "terminalRootLine": 1148,
+    "reason": "spawnSync import-meta-env ENOSYS: this realm cannot start a thread to run a child on (Worker is absent)",
+    "startedChildObserved": false,
+    "originalChildArgvAndOptions": "unretained",
+    "historicalOutcomeUnchanged": true
+  },
+  "coordination": {
+    "owner": "sc:aarons-mac-mini:claude-code:c0875cf3-4204-46c2-821f-fa5f3dcc1b7a",
+    "request": "m-0101dc51",
+    "response": "m-f3c151d4",
+    "noOverlap": [
+      "Worker factory/launcher",
+      "raw Worker removal",
+      "syncChildRefusal/getBuiltinModule"
+    ],
+    "preserveNearby": [
+      "spawn_sync setRunPid env publication",
+      "child process run-tree routing",
+      "stdin reader",
+      "kernel kill",
+      "pipe/socket handle transfer"
+    ]
+  },
+  "validation": {
+    "method": "Bounded read-only original bytes, Git source, JSON and digest inspection; fresh independent paired source review is required.",
+    "notRun": [
+      "automated tests",
+      "build/typecheck/compiler",
+      "source helper/module execution",
+      "application/guest/probe/replay",
+      "recipe/producer",
+      "registration",
+      "retired-root read"
+    ],
+    "limits": [
+      "No complete original vendor startup or CLI body/argv is inferred.",
+      "No child start, successful application successor, release/intake or runtime qualification is established.",
+      "No timeout/poll/limit or source cache format changes."
+    ]
+  },
+  "kind": "tabnode.owned-sync-child-door-source",
+  "version": 3,
+  "base": "c1810fdd38dd8c1171b848393f8aa00abde4713c",
+  "nativeBehavior": "Node spawnSync runs the child under its process host and blocks until its real end, returning status/signal/output or a launch error.",
+  "sourceCause": "The installed synchronous host door was offered only to host-classified programs (or explicit-identity Node). An engine-resolvable image program could instead reach the Worker fallback after the embedding removed raw Worker authority. The original live classification value was not recorded.",
+  "contract": {
+    "field": "SyncChildHost.ownsAllSyncChildren",
+    "selection": "Only the literal true selects the existing runSync door before program classification. The embedding owns this per-run declaration.",
+    "hostPath": "Reuse the complete existing fork/credentials/inherited descriptors/runSync/output/error/signal/reap path. Never retry a refused host child through the Worker fallback.",
+    "otherEmbeddings": "Absent/false declarations keep the existing hostRuns and explicit-identity Node rules and precise fallback refusal.",
+    "authority": "No native Worker constructor/factory is captured, restored or exposed. No engine-owned duplicate process is created on the selected host path.",
+    "executableAndArgv": "On the explicit owning route, preserve the original file as executablePath and copy the complete original argv, including custom argv[0] and shell arguments. The existing typed synchronous protocol already carries executablePath separately."
+  },
+  "sourceFiles": [
+    {
+      "path": "src/node-lib/binding/spawn_sync.ts",
+      "bytes": 17721,
+      "sha256": "dc089647be3d84e28a6d6103f3408fdcf2b092eb7e77dde2a24ca5436f40d9c9"
+    }
+  ],
+  "pairedHost": {
+    "repository": "volter-ai/browser-substrate",
+    "base": "b94aa84947d36cfbd30f5fd1ff92fed264ad1bc8",
+    "source": {
+      "path": "packages/node/src/cross-origin-container-worker.ts",
+      "bytes": 216045,
+      "sha256": "e3dfeec0866554b751db7dc67417cdcc024316f730c6cc06ff470427d81afc7c"
+    },
+    "declaration": "Current run must have both a kernel tree and its process registry.",
+    "synchronousBridge": {
+      "path": "packages/node/src/sync-child-processes.ts",
+      "bytes": 17945,
+      "sha256": "27791dcada54a5e326f35b2869e04a0db17af373442fcc36ca6ed9c345351a3b"
+    },
+    "descriptorOwner": {
+      "path": "packages/node/src/cross-origin-container.ts",
+      "bytes": 164724,
+      "sha256": "cde538afe4ecff6578c793fa4e7b3288823586660f11cee45a6ad49374800f61"
+    }
+  },
+  "reviewCorrection": {
+    "verdict": "REQUEST CHANGES",
+    "engine": "3ee4d4aa877b8b29f107dc48b0481dad015124a1",
+    "product": "7e36958c24620c64edfdbee431cf9e4d73703fed",
+    "fullReceipt": "/Users/yueranyuan/volter/heavy-runs/review/five-on-the-ledger/c61-review-receipts/owned-sync-child-3ee4-7e36-r1.md",
+    "bytes": 4918,
+    "sha256": "9eb55f3c0ab9336ba9e3ac3796370ce158e924555db97e9878a5d3150ea81d96",
+    "blocker": "An admission-refusal result75 could publish shared completion while its admitted kernel child and unused descriptor copy remained live.",
+    "status": "Source correction prepared; fresh independent full paired review required."
+  },
+  "lifecycle": {
+    "returnedUnconsumedProgram": "Before completion, post the actual outcome wait status as host-program-end/host-image-end on the still-owned descriptor copy. The existing kernel receiver releases the copy and records that child end; the existing reap can then complete.",
+    "neverStartedRejection": "Post126/127 or the caller-selected abort signal on the unused copy before refusal completion. Failed end publication attempts the existing channel-release door and leaves endPosted false, retaining diagnostics.",
+    "handedImage": "browserProcessStarted records image handoff only, not ownership of the original release lease. The image keeps its own close/end ordering; the page retains and retires its original channel release lease separately, including rejection cleanup.",
+    "evidence": "Two spare words in the existing eight-word shared record carry hostStarted/endPosted. These are additive evidence fields; rejected answers retain started:false and their existing refusal.",
+    "engine": "Only neither-hostStarted-nor-endPosted permits the old local never-started fallback. Reap reads the kernel actual end. A host refusal remains a refusal after reap.",
+    "cancelBeforeImage": "The existing caller timeout/output-limit response preserves its selected signal. A posted end or real handoff avoids a second local endBeforeStart and keeps the existing ETIMEDOUT/ENOBUFS result.",
+    "unchanged": [
+      "shared allocation sizes",
+      "all timeouts/polls/limits",
+      "raw Worker restriction",
+      "standalone program classification",
+      "vendored Node library",
+      "prepared format",
+      "native/package/provider selection"
+    ],
+    "descriptorLease": "Keep the original release port on the page and pass a channel copy without that port to the runner. Install the release-receipt listener before handoff. After an image returns, request and await that original lease release before shared completion. An unconsumed actual end already retires its lease, so await that receipt without sending a competing release request on another port.",
+    "authority": "Use the existing descriptor host release port/shared request word and acknowledgement, with no new timer, polling loop or fabricated kernel end. A rejection records an unused launch failure only before actual image handoff."
+  },
+  "descriptorLeaseReviewCorrection": {
+    "verdict": "REQUEST CHANGES",
+    "engine": "d7bd9d4ae33687cc822f747eea25c68db202902a",
+    "product": "2f8d70ceb325e365c088633393ca9f6b9b4c2f2c",
+    "fullReceipt": "/Users/yueranyuan/volter/heavy-runs/review/five-on-the-ledger/c61-review-receipts/owned-sync-child-d7bd-2f8d-r2.md",
+    "bytes": 7289,
+    "sha256": "e1138bff007ef49253853342eb97c70074e4257b0e3e307a27b752f18f92f90a",
+    "blocker": "A successful Node handoff receives a second descriptor channel, so the page-held original release lease remained in returningChannels after the image closed.",
+    "status": "Source correction prepared; fresh full independent paired review required."
+  }
+}
