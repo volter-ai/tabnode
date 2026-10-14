@@ -317,9 +317,17 @@ export function forgetRunPid(token: ProcessToken): void {
   pidsOfRuns.delete(token);
 }
 
-/** The named run a pid belongs to in this realm, for a signal sent by number (the shell's `kill`). */
-export function tokenOfPid(pid: number): ProcessToken | null {
-  for (const [token, numbers] of pidsOfRuns) if (numbers.pid === pid) return token;
+/**
+ * The named run a pid belongs to in this realm, for a signal sent by number (the shell's `kill`). A number is a
+ * namespace's (browser-substrate ADR-0129 step 5): with a `caller`, only the runs numbered by the caller's own registry,
+ * which is its namespace's view, are asked, so a realm holding runs of two namespaces never finds the other's `pid`.
+ */
+export function tokenOfPid(pid: number, caller?: ProcessToken | null): ProcessToken | null {
+  const view = caller === undefined ? undefined : registryFor(caller);
+  for (const [token, numbers] of pidsOfRuns) {
+    if (numbers.pid !== pid) continue;
+    if (view === undefined || registryFor(token) === view) return token;
+  }
   return null;
 }
 
