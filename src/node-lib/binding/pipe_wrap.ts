@@ -72,7 +72,7 @@ export function listenerOnPath(path: string): Pipe | undefined {
 }
 /** Each shared listening socket's turn and accept queue, by its connection end (as tcp_wrap.ts keeps a TCP socket's). */
 const pipeAcceptTurns = new WeakMap<object, number>();
-const pipeAcceptQueues = new WeakMap<object, Array<{ accepted: Pipe; adoptedBy: Pipe }>>();
+const pipeAcceptQueues = new WeakMap<object, Array<{ accepted: Pipe; adoptedBy: Pipe | undefined }>>();
 
 export class Pipe extends LibuvStreamWrap {
   readonly type: number;
@@ -152,7 +152,7 @@ export class Pipe extends LibuvStreamWrap {
     return pool[turn % pool.length];
   }
 
-  private deliverAccepted(accepted: Pipe, adoptedBy: Pipe = this): void {
+  private deliverAccepted(accepted: Pipe, adoptedBy?: Pipe): void {
     if (adoptedBy !== this) __adoptHandle(accepted, ownerOf(this), this);
     invokeOwned(this, 'onconnection', 0, accepted);
   }
@@ -192,15 +192,16 @@ export class Pipe extends LibuvStreamWrap {
         }
         const accepted = new (server.constructor as typeof Pipe)(server.type === constants.IPC ? constants.IPC : constants.SOCKET);
         accepted.path = path;
-        // The serving run owns what it accepted, not the connecting one.
-        __adoptHandle(accepted, ownerOf(server), server);
+        // The serving run owns what it accepted, not the connecting one; one queued is the socket's, no run's, until a
+        // member accepts it.
+        __adoptHandle(accepted, server.onconnection === null ? null : ownerOf(server), server);
         LibuvStreamWrap.pair(this, accepted);
         // A passed socket whose receiver has not yet served it: the connection waits in its accept queue.
         if (server.onconnection === null) {
           const queue = pipeAcceptQueues.get(server.connectionEnd) ?? [];
-          queue.push({ accepted, adoptedBy: server });
+          queue.push({ accepted, adoptedBy: undefined });
           pipeAcceptQueues.set(server.connectionEnd, queue);
-        } else server.deliverAccepted(accepted);
+        } else server.deliverAccepted(accepted, server);
         invokeOwned(req, 'oncomplete', 0, this, req, true, true);
       } finally { forgetNodeRequest(req); }
     });

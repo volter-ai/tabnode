@@ -122,7 +122,7 @@ export function listenerOnPort(port: number, family?: string): TCP | undefined {
 /** Each shared listening socket's turn: its next connection goes to the member after the last one served. */
 const acceptTurns = new WeakMap<object, number>();
 /** Each shared listening socket's accept queue (TCP.queueAccepted). */
-const acceptQueues = new WeakMap<object, Array<{ accepted: TCP; adoptedBy: TCP }>>();
+const acceptQueues = new WeakMap<object, Array<{ accepted: TCP; adoptedBy: TCP | undefined }>>();
 
 export class TCP extends LibuvStreamWrap {
   /** `constants.SOCKET` or `constants.SERVER`. */
@@ -241,13 +241,14 @@ export class TCP extends LibuvStreamWrap {
         accepted.remote = { ...(this.local as SockName) };
         // An accepted connection is a handle of the loop that is serving, not of the one that connected: the pairing
         // is made inside the connector's own turn, so without this the server's end would be the connecting run's
-        // (its exit would close it, and it would hold that run alive), queued or not.
-        __adoptHandle(accepted, ownerOf(server), server);
+        // (its exit would close it, and it would hold that run alive). One that waits in the socket's accept queue is
+        // the socket's, no run's (the kernel's, as on Linux): whichever member accepts it makes it its run's.
+        __adoptHandle(accepted, server.onconnection === null ? null : ownerOf(server), server);
         LibuvStreamWrap.pair(this, accepted);
         // A passed socket whose receiver has not yet served it (its net.Server sets onconnection, then listens):
         // the connection waits in the socket's accept queue, as a connect completes on Linux before any accept.
         if (server.onconnection === null) server.queueAccepted(accepted);
-        else server.deliverAccepted(accepted);
+        else server.deliverAccepted(accepted, server);
         complete(0);
       } finally { forgetNodeRequest(req); }
     });
@@ -285,8 +286,8 @@ export class TCP extends LibuvStreamWrap {
   }
 
   /** A connection accepted on this member: its onconnection, in the serving run. */
-  deliverAccepted(accepted: TCP, adoptedBy: TCP = this): void {
-    // Queued on one member and accepted on another (a passed socket's receiver): it becomes the accepting run's.
+  /** Accepted on this member: it becomes this member's run's (`adoptedBy` this member: it already is). */
+  deliverAccepted(accepted: TCP, adoptedBy?: TCP): void {
     if (adoptedBy !== this) __adoptHandle(accepted, ownerOf(this), this);
     invokeOwned(this, 'onconnection', 0, accepted);
   }
@@ -294,7 +295,7 @@ export class TCP extends LibuvStreamWrap {
   /** The socket's accept queue: connections made while none of its members was served. */
   queueAccepted(accepted: TCP): void {
     const queue = acceptQueues.get(this.connectionEnd) ?? [];
-    queue.push({ accepted, adoptedBy: this });
+    queue.push({ accepted, adoptedBy: undefined });
     acceptQueues.set(this.connectionEnd, queue);
   }
 
