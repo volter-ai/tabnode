@@ -9,16 +9,19 @@ export interface ProcessIdentity {
   readonly argv?: readonly string[];
   /** The directory it was started in: `/proc/<pid>/cwd`. */
   readonly cwd?: string;
+  /** The environment it was started with, as execve's envp (`NAME=value`): `/proc/<pid>/environ`. */
+  readonly env?: readonly string[];
   /** When it started, in milliseconds since the epoch. */
   readonly startedAt?: number;
 }
 
 /** The parts of an identity a starter may add, checked before they are kept. */
 function describedIdentity(identity: ProcessIdentity): ProcessIdentity {
-  const { pid, ppid, pgid, argv, cwd, startedAt } = identity;
+  const { pid, ppid, pgid, argv, cwd, env, startedAt } = identity;
   const described: ProcessIdentity = { pid, ppid, ...(pgid !== undefined ? { pgid } : {}),
     ...(Array.isArray(argv) && argv.length <= 4096 && argv.every(arg => typeof arg === 'string') ? { argv: Object.freeze([...argv]) } : {}),
     ...(typeof cwd === 'string' && cwd.startsWith('/') ? { cwd } : {}),
+    ...(Array.isArray(env) && env.length <= 65536 && env.every(entry => typeof entry === 'string' && entry.includes('=')) ? { env: Object.freeze([...env]) } : {}),
     ...(typeof startedAt === 'number' && Number.isFinite(startedAt) ? { startedAt } : {}) };
   return Object.freeze(described);
 }

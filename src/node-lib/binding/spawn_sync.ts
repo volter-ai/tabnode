@@ -174,7 +174,7 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
       if (code === 'EPERM' || code === 'EINVAL') return nothing(code === 'EPERM' ? UV_EPERM : UV_EINVAL, 0);
       throw cause;
     }
-    setRunPid(token, childPid, parentPid, { argv, ...(cwd ? { cwd } : {}) }, owner);
+    setRunPid(token, childPid, parentPid, { argv, ...(cwd ? { cwd } : {}), ...(env ? { env } : {}) }, owner);
     const kept: [Uint8Array[], Uint8Array[]] = [[], []];
     const take = (index: 0 | 1) => (bytes: Uint8Array): void => {
       const entry = stdio[index + 1];

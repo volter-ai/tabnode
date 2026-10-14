@@ -238,7 +238,7 @@ async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaun
   const { token, streams } = launch;
   // A run not yet numbered is forked here, and its end is reaped here: the run's end is its parent's wait.
   const forked = !runPid(token);
-  if (forked) setRunPid(token, mintPid(), 0, { argv: [launch.argv0, ...launch.argv], cwd: launch.cwd });
+  if (forked) setRunPid(token, mintPid(), 0, { argv: [launch.argv0, ...launch.argv], cwd: launch.cwd, ...(launch.env ? { env: launch.env } : {}) });
   const own = runPid(token)!;
   let input: ReturnType<typeof nodeProcessInput> | undefined;
   let ran = false;
@@ -344,10 +344,10 @@ export function holdShellRun(token: ProcessToken): void {
 }
 
 /** A child identity for a `node` a run's shell runs: its own token and pid under the run's, on the run's streams. */
-function nestedNodeToken(parentToken: ProcessToken, args: readonly string[], cwd: string | undefined): ProcessToken {
+function nestedNodeToken(parentToken: ProcessToken, args: readonly string[], cwd: string | undefined, env?: Readonly<Record<string, string>>): ProcessToken {
   const token: ProcessToken = `child-${__nextChildRun++}`;
   const parentPid = runPid(parentToken)?.pid ?? 0;
-  setRunPid(token, mintPid(parentPid, false, parentToken), parentPid, { argv: ['node', ...args], ...(cwd ? { cwd } : {}) }, parentToken);
+  setRunPid(token, mintPid(parentPid, false, parentToken), parentPid, { argv: ['node', ...args], ...(cwd ? { cwd } : {}), ...(env ? { env } : {}) }, parentToken);
   const parentStreams = runStreamsFor(parentToken);
   if (parentStreams) registerRunStreams(token, parentStreams);
   return token;
@@ -513,7 +513,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // ended at its first `node` line with nothing after it (measured
   // 2026-09-28: `sh start.sh` printed its first step and stopped).
   const nested = parentToken !== null && (shellRuns.has(parentToken) || hostedNodes.has(parentToken));
-  const runToken = nested ? nestedNodeToken(parentToken!, args, launch.cwd) : parentToken;
+  const runToken = nested ? nestedNodeToken(parentToken!, args, launch.cwd, launch.env) : parentToken;
   const streams = runToken === null ? undefined : runStreamsFor(runToken);
   const credentials = copyProcessCredentials(launch.credentials ?? streams?.credentials);
   const processHost = nodeProcessHostFor(runToken);
@@ -719,7 +719,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // A named run not yet numbered is a process its realm forks now (as runHostedNode's is), runs here and reaps at its
   // end; only a run nobody names is the realm's own process.
   const forkedHere = runToken !== null && !runPid(runToken);
-  if (forkedHere) setRunPid(runToken, mintPid(), 0, { argv: [...launch.argv], cwd: launch.cwd });
+  if (forkedHere) setRunPid(runToken, mintPid(), 0, { argv: [...launch.argv], cwd: launch.cwd, env: launch.env });
   // Whose wait its end is: a nested node's parent run, a run forked here the realm's; any other run's parent is
   // elsewhere (the kernel's exec'd node: its own channel reports its exit) or is the host's.
   const reaper: ProcessToken | null | undefined = nested ? parentToken : forkedHere ? null : undefined;
@@ -768,7 +768,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // This run's numbers, recorded under its name: a child it spawns reads
   // them for its own `ppid`, and `process.kill(pid, 0)` asks this registry
   // whether a pid is a live process.
-  if (runToken !== null) setRunPid(runToken, proc.pid, proc.ppid, { argv: [...launch.argv], cwd: launch.cwd });
+  if (runToken !== null) setRunPid(runToken, proc.pid, proc.ppid, { argv: [...launch.argv], cwd: launch.cwd, env: launch.env });
   const releaseRun = runToken === null ? null : __recordRun(runToken, {
     process: proc,
     stdout: appendStdout,
@@ -2594,7 +2594,8 @@ function startChildRun(request: RunRequest): StartedRun {
   const parentPid = runPid(nodeProcessRealmToken() ?? request.owner)?.pid ?? 0;
   const pid = mintPid(parentPid, request.detached === true, request.owner, request.runAs);
   setRunPid(token, pid, parentPid,
-    { detached: request.detached, argv: request.args.length ? request.args : [request.file], ...(request.cwd ? { cwd: request.cwd } : {}) }, request.owner);
+    { detached: request.detached, argv: request.args.length ? request.args : [request.file], ...(request.cwd ? { cwd: request.cwd } : {}),
+      ...(request.env ? { env: request.env } : {}) }, request.owner);
   const controller = new AbortController();
   const pendingStdin: Array<Uint8Array | null> = [];
   // A host terminal consumes input incrementally. The old string-only
