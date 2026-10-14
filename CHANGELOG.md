@@ -6,6 +6,21 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+The browser-substrate ADR-0129 integration (the kernel owns every process), with the synchronous-child ownership
+below. Each feature is additive and announced by a marker a host checks before it relies on it, so an engine without
+it is never asked; none changes the lowered text, so the prepared format stays `tabnode-prepared-7`. Cut as 0.13.0, a
+minor release, for the new public run options and exports.
+
+- The engine as a client of the kernel's store, its citations naming ADR-0006 on this line.
+- A run's fd 0 can be a reader over the host kernel's own pipe (`RunOptions.stdinReader`; marker `RUN_STDIN_READER`).
+- A process's signal listeners are its dispositions, told to its registry (`ProcessRegistry.disposition`; marker
+  `RUN_SIGNAL_DISPOSITIONS`); a listener's name reaches the disposition words only as a signal's own name.
+- A run handed its own tree gets that tree's shell at routing, and `run()` reads `RunOptions.filesystem` as `runNode`
+  does (marker `RUN_LINE_FILESYSTEM`); `tokenOfPid` takes the caller's pid namespace.
+- A run's initial environment is published with its identity, for the process table's `/proc/<pid>/environ`.
+- IPC handles: a queued connection is the socket's until a member accepts it; a Pipe binder's close takes the socket's
+  name with its node, as libuv and Linux do; a closing last listener resets what is queued (ECONNRESET); an abstract
+  name passes as one.
 - Let a trusted synchronous child host explicitly own all children of the current
   run, including image scripts and Node programs the engine can resolve. Use the
   existing admitted host process/wait path before Worker fallback; preserve
