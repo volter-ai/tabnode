@@ -1,4 +1,4 @@
-// Autorelease: every push to main releases what changed. Run by the publish
+// Autorelease: an authorized push to publish releases what changed. Run by the publish
 // workflow before its build and publish steps:
 //
 //   PACKAGES="<dir> …" [LOCKSTEP=1] [SOURCES="<path> …"] [PATHS="<dir>=<path>,… …"]
@@ -10,7 +10,7 @@
 // package that depends on a released one through an exact pin or a `workspace:`
 // range is released with it; LOCKSTEP=1 releases all of them together. Each
 // released package moves to the next patch after the higher of its version on
-// main and on npm (a version on main that npm lacks is released as it is);
+// publish and on npm (a version on publish that npm lacks is released as it is);
 // exact pins on it in the packages' manifests and in PIN_FILES follow, and so
 // does its version string in each VERSION_TEXT file. The workflow
 // then builds, publishes every version npm lacks, and commits the bump to main.

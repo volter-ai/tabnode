@@ -1,3 +1,5 @@
+The GitHub measurement workflow is retired under the owner rule of 2026-10-14. The commands below describe source helpers for an explicitly requested local measurement; do not dispatch remote tests.
+
 # Objective proof scope: Node v24.21.0
 
 The immutable behavior denominator is
