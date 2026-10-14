@@ -1086,8 +1086,24 @@ type LoadClock = { fs?: LoadClockFs; phase: LoadPhase; at: number; kernelAt: num
   linkSplit: { utf8CountMs: number; byteCounts: number }; compileSplit: { sourceCaptureMs: number; nativeEvalMs: number; sourceCaptures: number; evals: number };
   outside: OutsideSplit; guestAt: number; began: number; said: number;
   /** When its 'quiet' line was said, and whether its 'exit' line has been (S2 R71): an exit after quiet is said once. */
-  quietSaidAt?: number; exitSaid?: boolean };
+  quietSaidAt?: number; exitSaid?: boolean;
+  /** The bodies that took longest from their link to their evaluation's return, nested requires within (S2 AC-LC5). */
+  heaviest?: Array<{ path: string; ms: number }> };
 const __substrateLoadClocks = new WeakMap<object, LoadClock>();
+/** How many of a process's heaviest bodies its load clock says. */
+const HEAVIEST_BODIES = 24;
+/**
+ * A body's inclusive time, kept where it is among the clock's heaviest (S2 AC-LC5: a CLI's 130 ms of "runtime modules
+ * loaded" said nothing of which of its 464 bodies held it). Inclusive of the requires its evaluation made, so an
+ * importer's time holds its imports'; its own resolve and read, before its link, are its importer's.
+ */
+function __substrateKeepHeaviest(clock: LoadClock, path: string, ms: number): void {
+  const kept = clock.heaviest ??= [];
+  if (kept.length >= HEAVIEST_BODIES && ms <= kept[kept.length - 1]!.ms) return;
+  kept.push({ path, ms });
+  kept.sort((a, b) => b.ms - a.ms);
+  if (kept.length > HEAVIEST_BODIES) kept.length = HEAVIEST_BODIES;
+}
 type VmClock = { phase: VmScriptPhase | undefined; at: number; wall: Record<VmScriptPhase, number>;
   calls: Record<VmScriptPhase, number>; runs: { context: number; thisContext: number };
   codeUnits: number; cacheHits: number; cacheMisses: number; parseFailures: number; acornParses: number; declarationScanSkips: number };
@@ -1327,6 +1343,7 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
     outsideSplit: __substrateOutsideSnapshot(process, clock, now, saidAfter),
     readSplit: split ? traceRoundFields({ ...split }) : null,
     resolveSplit: { packageConfigs: configs ? { ...configs } : null, keptPaths: __substratePathCountsBy.has(process) ? { ...__substratePathCountsBy.get(process)! } : null },
+    ...(clock.heaviest ? { heaviestBodies: clock.heaviest.map(({ path, ms }) => ({ path, ms: traceRound(ms) })) } : {}),
     bodies: clock.bodies, bodyBytes: clock.bodyBytes, sinceFirstRequireMs: traceRound(now - clock.began - saidAfter), ...(saidAfter > 0 ? { saidAfterQuietMs: traceRound(saidAfter) } : {}),
     ...(sinceQuiet !== undefined ? { sinceQuietMs: traceRound(sinceQuiet) } : {}), wallMs: round(wall), kernelMs: round(kernel),
     // What the kernel split was read from: on one run every process said zeros for it beside seconds blocked in its
@@ -3501,6 +3518,7 @@ function createRequire(
   let runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false, utf8Bytes?: number): void => {
     __substrateLoadPhase(process, vfs, 'link');
     const loadClock = __substrateLoadClocks.get(process);
+    const bodyBegan = loadClock ? __substrateLoadNow() : 0;
     if (loadClock) {
       loadClock.bodies += 1; loadClock.bodyBytes += prepared.length;
       // C6: count the body actually handed off, not a prepared read attempt or a module-cache hit. Newly kept
@@ -3593,6 +3611,7 @@ function createRequire(
       __substrateLoadPhase(process, vfs, 'evaluate');
       const body = __substrateInStatWindow(process, () => withGuestExecution(() => __substrateRunWrapped(fn,
         module.exports, moduleRequire, module, resolvedPath, dirname, process, consoleWrapper, importMeta, dynamicImport), 'module'));
+      if (loadClock) __substrateKeepHeaviest(loadClock, resolvedPath, __substrateLoadNow() - bodyBegan);
 
       // The body has returned. With no require in flight it was an entry's (started through `_load`, at depth 0), and
       // what follows is the program's life, not a load: left as 'evaluate', every process's line counted its wait
