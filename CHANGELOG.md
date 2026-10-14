@@ -6,6 +6,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+Kept paths carried across runs (browser-substrate ADR-0152, S2 AC-LC10). Additive: two new exports, which a host
+detects by their presence before it hands a seed, so an engine without them is never asked; nothing a realm resolves
+changes for a host that hands none, and no lowered text changes, so the prepared format stays `tabnode-prepared-7`.
+Cut as 0.15.0, a minor release, for the new public exports.
+
 - **A process can start with the paths its project's last run kept** (browser-substrate ADR-0152, S2 AC-LC10).
   `seedKeptResolutions(entries, filesystem?)` seeds every kept-paths table the realm makes (only that filesystem's, where one is named) with `(directory + "\0" + name, path)`
   pairs, within R76's bounds; `keptResolutions()` returns what the realm's tables keep now. The host hands a seed only
