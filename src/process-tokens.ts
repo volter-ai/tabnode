@@ -283,15 +283,17 @@ export function mintPid(parentPid?: number, newSession = false, parent: ProcessT
  * Record the numbers a named run was started with, for the run to read back, in the registry of `parent`, the run
  * that forked it (whose registry the run's own calls then go through).
  */
-export function setRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string; detached?: boolean }, parent: ProcessToken | null = null): void {
+export function setRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string; env?: Readonly<Record<string, string>>; detached?: boolean }, parent: ProcessToken | null = null): void {
   registryUsed = true;
   const registry = registryFor(parent);
   if (registry !== processRegistry && !runRegistries.has(token)) runRegistries.set(token, registry);
   // Node's detached spawn starts a private group. Every other child inherits
   // its parent's, and a second publication preserves an adopted group.
   const pgid = pidsOfRuns.get(token)?.pgid ?? (started?.detached ? pid : registry.lookup(ppid)?.pgid ?? pid);
-  const { detached: _detached, ...description } = started ?? {};
-  registryFor(token).publish(token, { pid, ppid, pgid, ...description, startedAt: Date.now() });
+  const { detached: _detached, env, ...description } = started ?? {};
+  // Its initial environment goes to the process table as execve's envp (browser-substrate ADR-0129).
+  registryFor(token).publish(token, { pid, ppid, pgid, ...description,
+    ...(env ? { env: Object.entries(env).map(([name, value]) => `${name}=${value}`) } : {}), startedAt: Date.now() });
   pidsOfRuns.set(token, { pid, ppid, pgid });
 }
 
