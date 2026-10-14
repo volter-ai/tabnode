@@ -57,7 +57,7 @@
     ]
   },
   "kind": "tabnode.owned-sync-child-door-source",
-  "version": 1,
+  "version": 2,
   "base": "c1810fdd38dd8c1171b848393f8aa00abde4713c",
   "nativeBehavior": "Node spawnSync runs the child under its process host and blocks until its real end, returning status/signal/output or a launch error.",
   "sourceCause": "The installed synchronous host door was offered only to host-classified programs (or explicit-identity Node). An engine-resolvable image program could instead reach the Worker fallback after the embedding removed raw Worker authority. The original live classification value was not recorded.",
@@ -72,8 +72,8 @@
   "sourceFiles": [
     {
       "path": "src/node-lib/binding/spawn_sync.ts",
-      "bytes": 17603,
-      "sha256": "1c020ee1c505c731a1a4cfe4346df1178840f621b48d60def9ca035b18b559bd"
+      "bytes": 17721,
+      "sha256": "dc089647be3d84e28a6d6103f3408fdcf2b092eb7e77dde2a24ca5436f40d9c9"
     }
   ],
   "pairedHost": {
@@ -81,9 +81,41 @@
     "base": "b94aa84947d36cfbd30f5fd1ff92fed264ad1bc8",
     "source": {
       "path": "packages/node/src/cross-origin-container-worker.ts",
-      "bytes": 216030,
-      "sha256": "3b72c76029a6c5b60100c5a8bc2402b45c20c6ca59b8bf300d9ca2da56eeacb0"
+      "bytes": 216045,
+      "sha256": "e3dfeec0866554b751db7dc67417cdcc024316f730c6cc06ff470427d81afc7c"
     },
-    "declaration": "Current run must have both a kernel tree and its process registry."
+    "declaration": "Current run must have both a kernel tree and its process registry.",
+    "synchronousBridge": {
+      "path": "packages/node/src/sync-child-processes.ts",
+      "bytes": 16435,
+      "sha256": "f8a700a2434d9bfb765957fb1c96c35bc22463f9d1b8b367eaefa32ac511d328"
+    }
+  },
+  "reviewCorrection": {
+    "verdict": "REQUEST CHANGES",
+    "engine": "3ee4d4aa877b8b29f107dc48b0481dad015124a1",
+    "product": "7e36958c24620c64edfdbee431cf9e4d73703fed",
+    "fullReceipt": "/Users/yueranyuan/volter/heavy-runs/review/five-on-the-ledger/c61-review-receipts/owned-sync-child-3ee4-7e36-r1.md",
+    "bytes": 4918,
+    "sha256": "9eb55f3c0ab9336ba9e3ac3796370ce158e924555db97e9878a5d3150ea81d96",
+    "blocker": "An admission-refusal result75 could publish shared completion while its admitted kernel child and unused descriptor copy remained live.",
+    "status": "Source correction prepared; fresh independent full paired review required."
+  },
+  "lifecycle": {
+    "returnedUnconsumedProgram": "Before completion, post the actual outcome wait status as host-program-end/host-image-end on the still-owned descriptor copy. The existing kernel receiver releases the copy and records that child end; the existing reap can then complete.",
+    "neverStartedRejection": "Post126/127 or the caller-selected abort signal on the unused copy before refusal completion. Failed end publication attempts the existing channel-release door and leaves endPosted false, retaining diagnostics.",
+    "handedImage": "browserProcessStarted records actual image handoff. That image retains its own descriptor close/end ordering even on rejection; no local death is manufactured.",
+    "evidence": "Two spare words in the existing eight-word shared record carry hostStarted/endPosted. These are additive evidence fields; rejected answers retain started:false and their existing refusal.",
+    "engine": "Only neither-hostStarted-nor-endPosted permits the old local never-started fallback. Reap reads the kernel actual end. A host refusal remains a refusal after reap.",
+    "cancelBeforeImage": "The existing caller timeout/output-limit response preserves its selected signal. A posted end or real handoff avoids a second local endBeforeStart and keeps the existing ETIMEDOUT/ENOBUFS result.",
+    "unchanged": [
+      "shared allocation sizes",
+      "all timeouts/polls/limits",
+      "raw Worker restriction",
+      "standalone program classification",
+      "vendored Node library",
+      "prepared format",
+      "native/package/provider selection"
+    ]
   }
 }

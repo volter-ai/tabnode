@@ -65,7 +65,7 @@ interface SyncChildHost {
     killSignal?: number;
     onStdout(bytes: Uint8Array): void;
     onStderr(bytes: Uint8Array): void;
-  }): { started: boolean; status: number | null; signal: string | null; error?: 'ETIMEDOUT' | 'ENOBUFS' | 'ENOENT' | 'ENOTDIR'; refusal?: string };
+  }): { started: boolean; status: number | null; signal: string | null; error?: 'ETIMEDOUT' | 'ENOBUFS' | 'ENOENT' | 'ENOTDIR'; refusal?: string; hostStarted?: boolean; endPosted?: boolean };
 }
 const hostExecutorSymbol = Symbol.for('@volter/browser-runtime/child-process-executor');
 let nextSyncChild = 1;
@@ -219,9 +219,10 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
       answer = { started: false, status: null, signal: null, refusal: cause instanceof Error ? cause.message : String(cause) };
     }
     releaseSinks();
-    // A child the host never started ends here, as one the engine never started does; one it ran reported its own
-    // end. Either way this wait reaps it, and the end it answers is the one the process table holds.
-    if (!answer.started) exitRunProcess(childPid, parentPid, 0, 'SIGKILL', owner);
+    // Only a child with neither an image handoff nor an already posted end
+    // permits a local launch failure. The kernel's actual end wins at reap;
+    // a host rejection must not kill a handed image or replace a posted end.
+    if (!answer.started && answer.hostStarted !== true && answer.endPosted !== true) exitRunProcess(childPid, parentPid, 0, 'SIGKILL', owner);
     const ended = reapRunProcess(childPid, parentPid, answer.status ?? 0, answer.signal, owner);
     forgetRunPid(token);
     // A working directory that is not there is the child's ENOENT, as Node reports a bad `cwd` for a spawn.

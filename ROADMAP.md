@@ -4,6 +4,10 @@ Substrate Articles 1/5/6/8/9. A trusted embedding may declare that its existing
 synchronous child door owns every child of the current run. Select that door
 before engine program classification; retain its fork, credentials, descriptors,
 wait, cancellation and reap path. Restricted realms keep raw Worker unavailable.
+The host retires an unconsumed admitted descriptor copy with its actual kernel
+end before publishing completion; explicit image-handoff/end evidence prevents
+a second local exit. Rejections keep their refusal while the real image owns
+its own close/end sequence.
 The retained Hoppscotch root refused before starting import-meta-env because the
 engine selected its Worker fallback despite that installed door. Original child
 arguments and a successful successor remain unobserved. Independent paired

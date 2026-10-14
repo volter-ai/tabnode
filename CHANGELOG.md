@@ -10,6 +10,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   run, including image scripts and Node programs the engine can resolve. Use the
   existing admitted host process/wait path before Worker fallback; preserve
   other embeddings' classification, precise refusals and raw Worker restriction.
+  Honor explicit host image-handoff/end evidence before synthesizing a local
+  launch failure; an admitted child still reaps its actual kernel end.
   Source only; paired host integration, release and application qualification
   remain separate (substrate Articles 1/5/6/8/9).
 
