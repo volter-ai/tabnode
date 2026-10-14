@@ -12,6 +12,8 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   other embeddings' classification, precise refusals and raw Worker restriction.
   Honor explicit host image-handoff/end evidence before synthesizing a local
   launch failure; an admitted child still reaps its actual kernel end.
+  The paired page retires its original descriptor release lease separately
+  from an image's own close/end, including when Node receives a second channel.
   Source only; paired host integration, release and application qualification
   remain separate (substrate Articles 1/5/6/8/9).
 

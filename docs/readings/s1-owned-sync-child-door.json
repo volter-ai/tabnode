@@ -57,7 +57,7 @@
     ]
   },
   "kind": "tabnode.owned-sync-child-door-source",
-  "version": 2,
+  "version": 3,
   "base": "c1810fdd38dd8c1171b848393f8aa00abde4713c",
   "nativeBehavior": "Node spawnSync runs the child under its process host and blocks until its real end, returning status/signal/output or a launch error.",
   "sourceCause": "The installed synchronous host door was offered only to host-classified programs (or explicit-identity Node). An engine-resolvable image program could instead reach the Worker fallback after the embedding removed raw Worker authority. The original live classification value was not recorded.",
@@ -87,8 +87,13 @@
     "declaration": "Current run must have both a kernel tree and its process registry.",
     "synchronousBridge": {
       "path": "packages/node/src/sync-child-processes.ts",
-      "bytes": 16435,
-      "sha256": "f8a700a2434d9bfb765957fb1c96c35bc22463f9d1b8b367eaefa32ac511d328"
+      "bytes": 17945,
+      "sha256": "27791dcada54a5e326f35b2869e04a0db17af373442fcc36ca6ed9c345351a3b"
+    },
+    "descriptorOwner": {
+      "path": "packages/node/src/cross-origin-container.ts",
+      "bytes": 164724,
+      "sha256": "cde538afe4ecff6578c793fa4e7b3288823586660f11cee45a6ad49374800f61"
     }
   },
   "reviewCorrection": {
@@ -104,7 +109,7 @@
   "lifecycle": {
     "returnedUnconsumedProgram": "Before completion, post the actual outcome wait status as host-program-end/host-image-end on the still-owned descriptor copy. The existing kernel receiver releases the copy and records that child end; the existing reap can then complete.",
     "neverStartedRejection": "Post126/127 or the caller-selected abort signal on the unused copy before refusal completion. Failed end publication attempts the existing channel-release door and leaves endPosted false, retaining diagnostics.",
-    "handedImage": "browserProcessStarted records actual image handoff. That image retains its own descriptor close/end ordering even on rejection; no local death is manufactured.",
+    "handedImage": "browserProcessStarted records image handoff only, not ownership of the original release lease. The image keeps its own close/end ordering; the page retains and retires its original channel release lease separately, including rejection cleanup.",
     "evidence": "Two spare words in the existing eight-word shared record carry hostStarted/endPosted. These are additive evidence fields; rejected answers retain started:false and their existing refusal.",
     "engine": "Only neither-hostStarted-nor-endPosted permits the old local never-started fallback. Reap reads the kernel actual end. A host refusal remains a refusal after reap.",
     "cancelBeforeImage": "The existing caller timeout/output-limit response preserves its selected signal. A posted end or real handoff avoids a second local endBeforeStart and keeps the existing ETIMEDOUT/ENOBUFS result.",
@@ -116,6 +121,18 @@
       "vendored Node library",
       "prepared format",
       "native/package/provider selection"
-    ]
+    ],
+    "descriptorLease": "Keep the original release port on the page and pass a channel copy without that port to the runner. Install the release-receipt listener before handoff. After an image returns, request and await that original lease release before shared completion. An unconsumed actual end already retires its lease, so await that receipt without sending a competing release request on another port.",
+    "authority": "Use the existing descriptor host release port/shared request word and acknowledgement, with no new timer, polling loop or fabricated kernel end. A rejection records an unused launch failure only before actual image handoff."
+  },
+  "descriptorLeaseReviewCorrection": {
+    "verdict": "REQUEST CHANGES",
+    "engine": "d7bd9d4ae33687cc822f747eea25c68db202902a",
+    "product": "2f8d70ceb325e365c088633393ca9f6b9b4c2f2c",
+    "fullReceipt": "/Users/yueranyuan/volter/heavy-runs/review/five-on-the-ledger/c61-review-receipts/owned-sync-child-d7bd-2f8d-r2.md",
+    "bytes": 7289,
+    "sha256": "e1138bff007ef49253853342eb97c70074e4257b0e3e307a27b752f18f92f90a",
+    "blocker": "A successful Node handoff receives a second descriptor channel, so the page-held original release lease remained in returningChannels after the image closed.",
+    "status": "Source correction prepared; fresh full independent paired review required."
   }
 }

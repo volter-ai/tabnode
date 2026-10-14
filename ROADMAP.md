@@ -8,6 +8,9 @@ The host retires an unconsumed admitted descriptor copy with its actual kernel
 end before publishing completion; explicit image-handoff/end evidence prevents
 a second local exit. Rejections keep their refusal while the real image owns
 its own close/end sequence.
+The paired page keeps the original descriptor release lease independently of
+image handoff and awaits its receipt after the image closes or the actual
+unconsumed result is recorded; image-owned death is never replaced.
 The retained Hoppscotch root refused before starting import-meta-env because the
 engine selected its Worker fallback despite that installed door. Original child
 arguments and a successful successor remain unobserved. Independent paired
