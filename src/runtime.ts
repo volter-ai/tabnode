@@ -3881,7 +3881,13 @@ function createRequire(
       // A relative entry is the process's working directory's, as Node's Module._resolveFilename makes it.
       const requireStack = parentModule && typeof parentModule.filename === 'string' ? [parentModule.filename] : [];
       for (const from of options.paths as string[]) {
-        try { return resolveModule(id, pathShim.resolve(process.cwd(), from)); } catch { /* the next directory */ }
+        try { return resolveModule(id, pathShim.resolve(process.cwd(), from)); }
+        catch (cause) {
+          // A package found whose exports map refuses the subpath ends the lookup, as Node's _findPath over the
+          // paths' node_modules does (packageExportsResolve throws): it is the answer, never a reason to look on.
+          if ((cause as { code?: unknown } | null)?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw cause;
+          /* the next directory */
+        }
       }
       throw Object.assign(new Error(`Cannot find module '${id}'${requireStack.length ? `\nRequire stack:\n- ${requireStack.join('\n- ')}` : ''}`), { code: 'MODULE_NOT_FOUND', requireStack });
     }

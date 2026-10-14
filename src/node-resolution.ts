@@ -371,7 +371,8 @@ export function createNodeResolver(options: NodeResolverOptions): NodeResolver {
     let directory = fromDir;
     while (directory !== "/" && !directory.endsWith("/node_modules")) {
       const pkg = manifest(directory);
-      if (pkg) return pkg.name === packageName && pkg.exports !== undefined && pkg.exports !== null ? loadPackageExports(directory, pkg, specifier, packageName) : null;
+      // A package importing itself by a subpath its map refuses is refused as Node's packageSelfResolve refuses it.
+      if (pkg) return pkg.name === packageName && pkg.exports !== undefined && pkg.exports !== null ? loadPackageExports(directory, pkg, specifier, packageName, options.throwNotExported === true) : null;
       directory = parent(directory);
     }
     return null;
