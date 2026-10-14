@@ -26,7 +26,7 @@ function describedIdentity(identity: ProcessIdentity): ProcessIdentity {
   return Object.freeze(described);
 }
 
-/** A run already admitted by the container owner into this realm's scope. */
+/** The realm's own process, as its host admitted it (a kernel process: its identity is its kernel's). */
 export interface InitialProcessRegistration {
   readonly token: string;
   readonly identity: ProcessIdentity;
@@ -84,6 +84,7 @@ export interface ProcessRegistry {
   signalGroup?(pgid: number, signal: string): boolean;
 }
 
+/** The engine's own local registry (createProcessRegistryOwner's scope); a host's registry is a ProcessRegistry. */
 export interface ProcessRegistryScope extends ProcessRegistry {
   /** Trusted owner only: how this realm answers a signal sent to one of its processes. */
   receiveSignals(handler: (pid: number, signal: string) => boolean): void;
@@ -98,9 +99,9 @@ export interface ProcessRegistryScope extends ProcessRegistry {
 }
 
 /**
- * One container owns the counter and live table. Each realm receives a scope,
- * so identical local run tokens cannot overwrite or release another realm's
- * process. Allocation alone does not announce a live process.
+ * The engine's own registry for a realm no host gives one: a counter and live
+ * table of this realm's processes. Allocation alone does not announce a live
+ * process.
  */
 export function createProcessRegistryOwner(): {
   createScope(): ProcessRegistryScope;
@@ -117,7 +118,7 @@ export function createProcessRegistryOwner(): {
   // Every number a scope holds, allocated or claimed, so no two runs share one.
   const held = new Set<number>();
   const live = new Map<number, ProcessIdentity>();
-  // Which realm's scope answers for each live pid, including after handoff.
+  // Which scope answers for each live pid.
   const receivers = new Map<number, { handler?: (pid: number, signal: string) => boolean }>();
   return {
     createScope() {

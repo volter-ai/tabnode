@@ -18,7 +18,7 @@ import type { ProcessCredentials } from './process-credentials';
 
 import type { Process } from './shims/process';
 import { AsyncLocalStorage, routeUncaughtExceptions } from './shims/async_hooks';
-import { createProcessRegistryOwner, type ProcessIdentity, type ProcessRegistry, type ProcessRegistryScope, type InitialProcessRegistration } from './process-registry';
+import { createProcessRegistryOwner, type ProcessRegistry, type InitialProcessRegistration } from './process-registry';
 
 /** Whatever the embedding runtime uses to name one guest process. */
 export type ProcessToken = string;
@@ -191,10 +191,10 @@ export function installProcessRegistry(registry: ProcessRegistry, initial?: Init
   if (registryInstalled || registryUsed) throw new Error('Process registry must be installed once before creating processes.');
   if (initial) {
     if (typeof initial.token !== 'string' || initial.token.length === 0) throw new Error('Invalid initial process token.');
-    // Validate with the owner before installing any local state. For an
-    // adopted child this is an idempotent publication, not a new PID or a
-    // guest claim to another realm's parent. Container construction can
-    // allocate an anonymous Runtime first; that must not consume this PID.
+    // Validate with the registry before installing any local state: the
+    // realm's own process, as its host admitted it, not a new PID or a guest
+    // claim to another process. Container construction can allocate an
+    // anonymous Runtime first; that must not consume this PID.
     const identity = Object.freeze({ pid: initial.identity.pid, ppid: initial.identity.ppid,
       ...(initial.identity.pgid !== undefined ? { pgid: initial.identity.pgid } : {}) });
     registry.publish(initial.token, identity);
