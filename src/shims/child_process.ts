@@ -51,7 +51,7 @@ import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-modul
 import { __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
-import { StdinRingReader, kStdinRing } from '../stdin-ring';
+import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
 import { nodeProcessHostFor, nodeProcessHostInstalled, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import { Pipe, constants as pipeConstants } from '../node-lib/binding/pipe_wrap';
@@ -196,6 +196,8 @@ export interface RunStreams {
   stdinStream?: AsyncIterable<Uint8Array>;
   /** fd 0 as a shared ring a host writes from another thread (`stdin-ring.ts`); where given, fd 0's only source. */
   stdinShared?: SharedArrayBuffer;
+  /** fd 0 as a reader over the host kernel's own pipe (`StdinReader`); where given, fd 0's only source. */
+  stdinReader?: StdinReader;
   terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
   /** Which of fds 0, 1 and 2 is a terminal; absent, a held or terminal run is a terminal on all three. */
   stdioIsTTY?: readonly [boolean, boolean, boolean];
@@ -668,7 +670,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     lastWrite.at = Date.now(); lastWrite.fd = fd; lastWrite.bytes = data.length; lastWrite.writes += 1;
     lastWrite.head = typeof data === 'string' ? data.slice(0, 80) : '';
   };
-  const stdinRing = streams?.stdinShared ? new StdinRingReader(streams.stdinShared) : undefined;
+  const stdinRing: StdinReader | undefined = streams?.stdinReader ?? (streams?.stdinShared ? new StdinRingReader(streams.stdinShared) : undefined);
   const stdoutBytes = streams?.onStdoutBytes;
   const stderrBytes = streams?.onStderrBytes;
   const outputEncoder = new TextEncoder();
