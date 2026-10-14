@@ -3466,6 +3466,10 @@ function createRequire(
    * hands the result to it; the engine's own pipeline is what makes the
    * body Node-shaped here.
    */
+  // A module's `console` is the process's one console, as Node's is: one wrapper for every body this runtime runs,
+  // not one made for each body (S2 AC-LC14: ten closures and an object a body, made thousands of times at a server's
+  // start).
+  const consoleWrapper = createConsoleWrapper(options.onConsole);
   let runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false, utf8Bytes?: number): void => {
     __substrateLoadPhase(process, vfs, 'link');
     const loadClock = __substrateLoadClocks.get(process);
@@ -3505,9 +3509,6 @@ function createRequire(
     );
     moduleRequire.cache = moduleCache;
 
-    // Create console wrapper
-    const consoleWrapper = createConsoleWrapper(options.onConsole);
-
     // Execute module code
     // We use an outer/inner function pattern to avoid conflicts:
     // - Outer function receives parameters and sets up vars
@@ -3533,7 +3534,7 @@ function createRequire(
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
       // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
       const guestScoped = __substrateGuestScoped(code);
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
 
@@ -4311,7 +4312,7 @@ export class Runtime {
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
       // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
       const guestScoped = __substrateGuestScoped(code);
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; global.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval, setImmediate = globalThis.setImmediate, clearImmediate = globalThis.clearImmediate; globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
 
