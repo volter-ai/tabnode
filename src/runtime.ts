@@ -3458,6 +3458,8 @@ function createRequire(
     return code;
   };
 
+  const consoleWrapper = runtimeConsole(options);
+
   /**
    * Runs a body as the module, on the module's own require and console, and
    * keeps it settling where it must. Node compiles a body in place through
@@ -3466,10 +3468,6 @@ function createRequire(
    * hands the result to it; the engine's own pipeline is what makes the
    * body Node-shaped here.
    */
-  // A module's `console` is the process's one console, as Node's is: one wrapper for every body this runtime runs,
-  // not one made for each body (S2 AC-LC14: ten closures and an object a body, made thousands of times at a server's
-  // start).
-  const consoleWrapper = createConsoleWrapper(options.onConsole);
   let runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false, utf8Bytes?: number): void => {
     __substrateLoadPhase(process, vfs, 'link');
     const loadClock = __substrateLoadClocks.get(process);
@@ -4041,6 +4039,18 @@ function createRequire(
 /**
  * Create a console wrapper that can capture output
  */
+/**
+ * A runtime's one `console`, as a Node process's modules share one: made at a runtime's first body and given to every
+ * body after it, by its options object (S2 AC-LC14: ten closures and an object made for every body, thousands at a
+ * server's start).
+ */
+const runtimeConsoles = new WeakMap<object, Console>();
+function runtimeConsole(options: { onConsole?: (method: string, args: unknown[]) => void }): Console {
+  let made = runtimeConsoles.get(options);
+  if (!made) { made = createConsoleWrapper(options.onConsole); runtimeConsoles.set(options, made); }
+  return made;
+}
+
 function createConsoleWrapper(
   onConsole?: (method: string, args: unknown[]) => void
 ): Console {
@@ -4263,8 +4273,7 @@ export class Runtime {
       module.id = '.';
     }
 
-    // Create console wrapper
-    const consoleWrapper = createConsoleWrapper(this.options.onConsole);
+    const consoleWrapper = runtimeConsole(this.options);
 
     // Transform code the same way loadModule does
     // Strip shebang line if present (e.g. #!/usr/bin/env node)
@@ -4478,7 +4487,7 @@ export class Runtime {
       this.options,
       this.processedCodeCache
     );
-    const consoleWrapper = createConsoleWrapper(this.options.onConsole);
+    const consoleWrapper = runtimeConsole(this.options);
     const process = this.process;
     const buffer = bufferShim.Buffer;
 
