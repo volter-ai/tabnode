@@ -1,4 +1,3 @@
-import { traceOutput } from '../../trace-output';
 import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials, type ProcessCredentials } from '../../process-credentials';
 /**
  * `internalBinding('process_wrap')`: one run of the engine, seen as libuv sees
@@ -26,6 +25,7 @@ import {
 import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { nativeStreamFor } from '../../native-stream-binding';
 import { UV_EBADF, UV_ENOENT, UV_ESRCH, UV_EPERM, UV_EINVAL } from './uv';
+import { traceReadingRequested, traceOutput } from '../../trace-output';
 import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle, observeNodeHandle, nodeHandleHasRef, nodeHandleIsInitialized,
   ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
@@ -396,6 +396,10 @@ export class Process implements OwnedHandle {
     catch (cause) {
       this.closeFarEnds();
       const code = (cause as { code?: string })?.code;
+      // AN INSTRUMENT (Workbench in a tab, browser-substrate card t_d4b07ea8: `execFile('git', ['-C', root, 'add', '-A'], cb)`
+      // from an earlier git's exit callback threw "spawn EINVAL", and the server ended): the start's own refusal, which
+      // the errno alone does not say.
+      if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-start-refused', at: Date.now(), file: request.file, args: request.args?.slice(0, 6), cwd: request.cwd ?? null, code: code ?? null, message: cause instanceof Error ? cause.message.slice(0, 300) : String(cause).slice(0, 300), stack: cause instanceof Error ? (cause.stack ?? '').split('\n').slice(0, 8).join(' | ') : null });
       if (code === 'EPERM') return UV_EPERM;
       if (code === 'EINVAL') return UV_EINVAL;
       throw cause;
