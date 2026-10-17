@@ -6,6 +6,12 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **A `file:` request under a native-binding map resolves again** (browser-substrate card t_d4b07ea8). The map's
+  resolver read a `file:` specifier with the process's node-lib `url`, which the node-lib scope does not carry, so
+  every such request threw "node-lib: no builtin 'url' in this process": Tailwind v4's `module.register` of its loader,
+  in videogame.ai's Astro config, stopped the server. It is read with the url module's `fileURLToPath`, which now
+  refuses as Node's does: a host other than empty or `localhost` (ERR_INVALID_FILE_URL_HOST) and an encoded `/`
+  (ERR_INVALID_FILE_URL_PATH), and a scheme other than `file:` carries ERR_INVALID_URL_SCHEME.
 - **A realm compiles Node's own library once, and may do it ahead** (browser-substrate S2 AC-LC12). A builtin's file is
   compiled to a function once a realm and called into a module scope of its own at each load, as before. The new
   export `precompileNodeLib(name)` compiles one ahead of its first require, running none of it, so a realm waiting for

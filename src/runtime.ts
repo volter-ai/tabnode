@@ -3085,9 +3085,11 @@ function createRequire(
     const latest = maps[0]!;
     const underRoot = (addons: SubstrateAddons, path: string): boolean => addons.roots.some(root => path === root || path.startsWith(root + '/'));
     const named = id.startsWith('file:') || id.includes('.node') || /(^|\/)\.\.?\/*$/.test(id);
-    // A file: URL is read by Node's own fileURLToPath, as the prelude's hook read it: an encoded '/' and a host other
-    // than localhost still throw.
-    const requested = !named ? void 0 : id.startsWith('file:') ? (loadNodeLibFor(process, 'url') as { fileURLToPath(url: string): string }).fileURLToPath(id)
+    // A file: URL is read by the url module's fileURLToPath, which is Node's (shims/url.ts): an encoded '/' and a host
+    // other than localhost still throw. It was asked of the process's node-lib scope, which carries no 'url' (Node's
+    // public url.js is not one of its vendored files), so every file: request under a native-binding map threw "node-lib:
+    // no builtin 'url' in this process": Tailwind v4's module.register of its loader, in videogame.ai's astro config.
+    const requested = !named ? void 0 : id.startsWith('file:') ? urlShim.fileURLToPath(id)
       : id.startsWith('/') ? pathShim.resolve(id) : id.startsWith('.') ? pathShim.resolve(currentDir, id) : void 0;
     if (requested?.endsWith('.node')) for (const addons of maps) {
       if (underRoot(addons, requested)) addons.refuse(requested);
