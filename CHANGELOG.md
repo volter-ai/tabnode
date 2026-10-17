@@ -6,6 +6,13 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **A host install's package bin named by a shell line runs under node** (browser-substrate card t_d4b07ea8). The
+  engine's shell runs every file it finds on PATH as a shell script, whatever its `#!` line names, so a bin npm or bun
+  linked to a `#!/usr/bin/env node` file was parsed as shell: videogame.ai's `npm run preview` ran `astro preview`, and
+  node_modules/.bin/astro ended "bash: line 14: unexpected EOF". Before a line runs, a simple command whose literal
+  name is found on the line's PATH as a plain Node script is run by the shell's own `node` with the script's real path
+  (src/shims/package-bins.ts); builtins, registered commands, functions the line defines, names with a `/`, commands
+  that set PATH themselves and scripts whose `#!` line gives node flags keep the shell's lookup.
 - **A `file:` request under a native-binding map resolves again** (browser-substrate card t_d4b07ea8). The map's
   resolver read a `file:` specifier with the process's node-lib `url`, which the node-lib scope does not carry, so
   every such request threw "node-lib: no builtin 'url' in this process": Tailwind v4's `module.register` of its loader,
