@@ -1,4 +1,5 @@
 import { traceRound, traceRoundFields } from './trace-values';
+import { engineSymbolFor } from './engine-symbol';
 import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested, traceCostsRequested, retainTraceInput, releaseTraceInput } from './trace-output';
 import { recordProcessHostname, recordProcessHosts } from './process-hostname';
 import { processCredentialsOf } from './process-credentials';
@@ -996,7 +997,7 @@ function __substrateTranspileKey(process: unknown, module: object, ownCompile: u
   try { wrapperText = Function.prototype.toString.call(wrapper); } catch { return undefined; }
   if (!wrapperText.includes('.compile(')) return undefined;
   const host = process as { env?: Record<string, string | undefined>; execArgv?: string[] } & Record<symbol, unknown>;
-  const service = host[Symbol.for('ts-node.register.instance')] as { options?: Record<string, unknown>; config?: { options?: unknown }; ts?: { version?: unknown };
+  const service = host[engineSymbolFor('ts-node.register.instance')] as { options?: Record<string, unknown>; config?: { options?: unknown }; ts?: { version?: unknown };
     enabled?: () => boolean; ignored?: (fileName: string) => boolean } | undefined;
   if (!service || typeof service !== 'object') return undefined;
   const options = service.options ?? {};
@@ -1680,7 +1681,7 @@ function __substrateDataModuleSource(url: string): string | undefined {
     : decodeURIComponent(payload);
 }
 
-const __substratePending = Symbol.for('substrate.pending');
+const __substratePending = engineSymbolFor('substrate.pending');
 // Loading state belongs to the module, not to properties of a guest's arbitrary exports object.
 const __substratePendingModules = new WeakMap<Module, object>();
 export function __substratePendingOf(value: unknown): Promise<void> | undefined {
@@ -2020,7 +2021,7 @@ const __browserRuntimePunycode = (() => { const module = { exports: {} }; new Fu
  * the resolved file would have produced, and only on the filesystem it was made
  * for.
  */
-const __substrateNativeModules = Symbol.for("@volter/browser-node/rolldown-modules");
+const __substrateNativeModules = engineSymbolFor("@volter/browser-node/rolldown-modules");
 /** `pkg:<name>@<version>/<path within the package>` for a file, from the nearest package.json above it; undefined outside a package. */
 const __substrateIdentityCache = new WeakMap<object, Map<string, string | null>>();
 function __substratePackageIdentity(vfs: VirtualFS, file: string): string | undefined {
@@ -3553,7 +3554,7 @@ function createRequire(
       if (bodySource === 'prepared') loadClock.preparedBodies += 1;
       else loadClock.sourceBodies += 1;
       // K5's turn-order reading: the count so far, where the process's own http server can say it beside a request.
-      (process as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.k5.bodies')] = loadClock.bodies;
+      (process as unknown as Record<symbol, unknown>)[engineSymbolFor('tabnode.k5.bodies')] = loadClock.bodies;
     }
     let code = prepared;
     // Create require for this module
@@ -3879,7 +3880,7 @@ function createRequire(
     // registers itself under this symbol and answers the module for a guest. Its fourth argument is the
     // process-owned credential snapshot to pass through thread admission into RuntimeOptions.credentials.
     if (id === 'worker_threads') {
-      const bridge = (globalThis as Record<symbol, unknown>)[Symbol.for("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown, credentials?: Readonly<ProcessCredentials>) => unknown } | undefined;
+      const bridge = (globalThis as Record<symbol, unknown>)[engineSymbolFor("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown, credentials?: Readonly<ProcessCredentials>) => unknown } | undefined;
       const module = bridge && typeof bridge.module === "function" ? bridge.module(vfs, process, builtinModules.worker_threads, processCredentialsOf(process)) : undefined;
       return guestMessageModule(process, (module ?? workerThreadsShim) as Record<string, unknown>, !module);
     }
@@ -4676,7 +4677,7 @@ forGuestRealm(() => {
   // guest constructs is given one, settled by its own controller. The
   // constructor stays the browser's (a proxy of it), so a stream the platform
   // made is still `instanceof ReadableStream`.
-  const kIsClosedPromise = Symbol.for('nodejs.webstream.isClosedPromise');
+  const kIsClosedPromise = engineSymbolFor('nodejs.webstream.isClosedPromise');
   const Native = globalThis.ReadableStream;
   if (typeof Native !== 'function' || (Native as unknown as { __substrateClosedPromise?: boolean }).__substrateClosedPromise) return;
   type Source = { start?: (controller: unknown) => unknown; pull?: (controller: unknown) => unknown; cancel?: (reason: unknown) => unknown };

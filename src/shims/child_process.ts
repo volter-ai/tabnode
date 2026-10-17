@@ -1,4 +1,5 @@
 import { traceReadingRequested, traceOutput } from '../trace-output';
+import { engineSymbolFor } from '../engine-symbol';
 import { copyProcessCredentials, type ProcessCredentials } from '../process-credentials';
 import { queueNativeFsTask } from '../native-fs-tasks';
 import { withGuestCallback } from '../guest-loop';
@@ -134,7 +135,7 @@ function treeForRun(): VirtualFS | null {
   // import the fs binding (that import put constantsBinding in the
   // consumer bundle's cycle with crypto).
   const realm = globalThis as unknown as { process?: Record<symbol, unknown> };
-  const found = realm.process?.[Symbol.for('tabnode.run.vfs')] as VirtualFS | undefined;
+  const found = realm.process?.[engineSymbolFor('tabnode.run.vfs')] as VirtualFS | undefined;
   return found ?? currentVfs;
 }
 
@@ -765,7 +766,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // What fds 0, 1 and 2 are, where the fs binding's fstat reads them (the
   // symbol is the binding's `kStdioKinds`, named here so this file does not
   // import the fs binding).
-  (proc as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.run.stdioKinds')] = stdioKinds;
+  (proc as unknown as Record<symbol, unknown>)[engineSymbolFor('tabnode.run.stdioKinds')] = stdioKinds;
   // This run's numbers, recorded under its name: a child it spawns reads
   // them for its own `ppid`, and `process.kill(pid, 0)` asks this registry
   // whether a pid is a live process.
@@ -1957,7 +1958,7 @@ interface ChildProcessHost {
   parentSignal?: AbortSignal;
 }
 
-const __browserRuntimeChildProcessExecutorSymbol = Symbol.for("@volter/browser-runtime/child-process-executor");
+const __browserRuntimeChildProcessExecutorSymbol = engineSymbolFor("@volter/browser-runtime/child-process-executor");
 
 /** The host's executor, where one is published and has not bypassed this run. */
 function hostExecutor(): ChildProcessHost | null {
