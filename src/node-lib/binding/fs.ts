@@ -31,7 +31,7 @@ import { createNodeError as vfsError } from '../../virtual-fs';
 import { registerHandle, releaseHandle, refHandle, unrefHandle, currentOwner, ownedRun, ownerOfInstance, observeNodeHandle, forgetNodeHandle, observeNodeRequest, forgetNodeRequest, captureNodeResourceScope, nodeHandleHasRef, nodeHandleIsClosing } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
 import { queueBindingTask } from '../../guest-loop';
-import { kStdinRing, type StdinReader } from '../../stdin-ring';
+import { kStdinRing, stdinRingWaitsAsync, type StdinReader } from '../../stdin-ring';
 // The guest stdin stream's engine-side read (shims/process.ts `kEngineStdinRead`),
 // named here so this binding does not import the process shim.
 const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
@@ -372,8 +372,21 @@ function stdinWait(fd: number, position: number, req: FSReq | undefined): Promis
   const owner = currentOwner();
   const process = stdioProcess(owner);
   const stdin = process?.stdin as (NonNullable<StdioStreams['stdin']> & { once?(event: string, listener: () => void): unknown; removeListener?(event: string, listener: () => void): unknown }) | undefined;
-  if (!stdin || typeof stdin.once !== 'function' || (process as Record<symbol, unknown>)[kStdinRing] !== undefined) return undefined;
+  if (!stdin || typeof stdin.once !== 'function') return undefined;
   if ((stdin.readableLength ?? 0) > 0 || stdin.readableEnded === true || stdin._readableState?.ended === true) return undefined;
+  // A run given a shared ring (stdinShared) blocked this read in takeBlocking: the bytes do come from another thread,
+  // but its own pending writes wait on this loop. esbuild's service wrote its answer with process.stdout.write and then
+  // blocked in its next stdin read, so the answer never left and its parent never wrote again. The asynchronous read
+  // waits on the ring without blocking (Atomics.waitAsync), and the loop flushes meanwhile.
+  const ring = (process as Record<symbol, unknown>)[kStdinRing] as (StdinReader & { available?(): number; closed?(): boolean }) | undefined;
+  if (ring) {
+    if (!stdinRingWaitsAsync() || typeof ring.available !== 'function' || ring.available() > 0 || ring.closed?.() === true) return undefined;
+    if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'stdin-ring-read-waits', at: Date.now(), pid: (process as { pid?: unknown } | undefined)?.pid ?? null });
+    const held = { close: (): void => undefined };
+    ownedRun(owner, () => registerHandle(held));
+    return ring.whenWritten().finally(() => { ownedRun(owner, () => releaseHandle(held)); });
+  }
+  if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'stdin-read-waits', at: Date.now(), pid: (process as { pid?: unknown } | undefined)?.pid ?? null });
   return new Promise<void>((resolve) => {
     // The process's end closes it: the read then asks again and finds the end, as a closed pipe answers.
     const held = { close: (): void => settle() };
@@ -384,6 +397,7 @@ function stdinWait(fd: number, position: number, req: FSReq | undefined): Promis
       settled = true;
       stdin!.removeListener?.('readable', settle); stdin!.removeListener?.('end', settle); stdin!.removeListener?.('close', settle);
       ownedRun(owner, () => releaseHandle(held));
+      if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'stdin-read-woke', at: Date.now(), pid: (process as { pid?: unknown } | undefined)?.pid ?? null, buffered: stdin!.readableLength ?? null });
       resolve();
     }
     stdin.once!('readable', settle); stdin.once!('end', settle); stdin.once!('close', settle);
