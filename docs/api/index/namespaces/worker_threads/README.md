@@ -16,6 +16,7 @@
 ## Variables
 
 - [isMainThread](variables/isMainThread.md)
+- [isMarkedAsUntransferable](variables/isMarkedAsUntransferable.md)
 - [parentPort](variables/parentPort.md)
 - [SHARE\_ENV](variables/SHARE_ENV.md)
 - [threadId](variables/threadId.md)

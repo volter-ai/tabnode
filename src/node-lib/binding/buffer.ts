@@ -10,11 +10,10 @@
  * the realm's own base64, and nothing above it.
  *
  * Every function here has the shape Node's own files call it with: the
- * `*Slice` family is installed as a method and reads `this`; `base64Write`,
- * `base64urlWrite`, `hexWrite` and `ucs2Write` likewise; `asciiWriteStatic`,
- * `latin1WriteStatic` and `utf8WriteStatic` take the buffer as their first
- * argument, which is how `internal/buffer.js` wraps them.
+ * encoding slices and writes take the buffer explicitly, as Node24.21
+ * passes it from both buffer.js and internal/buffer.js.
  */
+import { markUntransferable } from '../../transfer-ownership';
 
 /** libuv has no say here: these are V8's, and the engine's realm is V8's. */
 export const kMaxLength = 4294967296 - 1;
@@ -35,6 +34,25 @@ export const BUFFER = 6;
 export const BASE64URL = 7;
 
 const encoder = new TextEncoder();
+
+/**
+ * A Buffer may be a view of shared memory: Node writes text into one and reads text out of one like any other
+ * (pino's thread-stream is that: a Buffer over a SharedArrayBuffer the main thread writes log lines into and its
+ * thread reads). The platform's encoder and decoder do not take one. The Encoding Standard marks both as allowing
+ * shared memory (`decode(optional AllowSharedBufferSource input)`, `encodeInto(source, [AllowShared] Uint8Array
+ * destination)`), and Chromium's declarations carry neither mark (blink text_decoder.idl `[PassAsSpan] BufferSource
+ * input`, text_encoder.idl `Uint8Array destination`), so Chrome throws "The provided Uint8Array value must not be
+ * shared". Where the bytes are shared, the text goes through an unshared copy of exactly those bytes: encoded into
+ * a scratch and copied in, or copied out and decoded. A buffer that is not shared takes the path it always took.
+ */
+/** By its tag, as `util.types.isSharedArrayBuffer` here tells one (internals/util.ts): `instanceof` is false for a buffer made in another realm. */
+export const isSharedView = (view: ArrayBufferView): boolean => Object.prototype.toString.call(view.buffer) === '[object SharedArrayBuffer]';
+/**
+ * The same bytes where the platform will take them: the view itself, or a copy of it that is not shared. The copy
+ * is `new Uint8Array(view)`, never `view.slice()`: the views this binding is handed are Buffers, and
+ * `Buffer.prototype.slice` is `subarray`, a view of the same shared memory.
+ */
+export const unsharedBytes = (view: Uint8Array): Uint8Array => (isSharedView(view) ? new Uint8Array(view) : view);
 /** A decoder per flavour: `fatal: false` is what Node's lossy decode is. */
 const utf8Decoder = new TextDecoder('utf-8');
 const latin1Decoder = new TextDecoder('latin1');
@@ -59,12 +77,22 @@ function clamp(buffer: Uint8Array, start: number, end: number): [number, number]
 
 // ── Encoding a string into a buffer ────────────────────────────────────────
 
+/**
+ * Whether a view is over shared memory. The web's TextEncoder and TextDecoder refuse such a view ("The provided
+ * Uint8Array value must not be shared"), where Node's StringBytes read and write a Buffer over a SharedArrayBuffer
+ * as any other: so a string goes into one through a private buffer, and comes out of one from a copy.
+ */
+
 /** Node's `StringWrite<UTF8>`: as many whole code points as fit. */
 export function utf8WriteStatic(buf: Uint8Array, string: string, offset = 0, length = buf.byteLength - offset): number {
   const room = Math.min(length, buf.byteLength - offset);
   if (room <= 0) return 0;
-  const { written } = encoder.encodeInto(string, buf.subarray(offset, offset + room));
-  return written ?? 0;
+  if (!isSharedView(buf)) return encoder.encodeInto(string, buf.subarray(offset, offset + room)).written ?? 0;
+  // encodeInto writes whole code points only, into the scratch as it would into the buffer's own room
+  // and no larger than the string can fill: UTF-8 is at most three bytes for each UTF-16 unit
+  const scratch = new Uint8Array(Math.min(room, string.length * 3)), written = encoder.encodeInto(string, scratch).written ?? 0;
+  buf.set(scratch.subarray(0, written), offset);
+  return written;
 }
 
 /** Node's `StringWrite<ASCII>`: the low seven bits of each unit, one byte each. */
@@ -82,27 +110,27 @@ export function latin1WriteStatic(buf: Uint8Array, string: string, offset = 0, l
 }
 
 /** Node's `StringWrite<UCS2>`: whole 16-bit units, little-endian. */
-export function ucs2Write(this: Uint8Array, string: string, offset = 0, length = this.byteLength - offset): number {
-  const room = Math.min(length, this.byteLength - offset);
+export function ucs2Write(buf: Uint8Array, string: string, offset = 0, length = buf.byteLength - offset): number {
+  const room = Math.min(length, buf.byteLength - offset);
   const units = Math.min(string.length, Math.floor(room / 2));
   for (let index = 0; index < units; index += 1) {
     const code = string.charCodeAt(index);
-    this[offset + index * 2] = code & 0xff;
-    this[offset + index * 2 + 1] = code >>> 8;
+    buf[offset + index * 2] = code & 0xff;
+    buf[offset + index * 2 + 1] = code >>> 8;
   }
   return units * 2;
 }
 
 /** Node's `StringWrite<HEX>`: whole byte pairs, stopping at the first that is not one. */
-export function hexWrite(this: Uint8Array, string: string, offset = 0, length = this.byteLength - offset): number {
-  const room = Math.min(length, this.byteLength - offset);
+export function hexWrite(buf: Uint8Array, string: string, offset = 0, length = buf.byteLength - offset): number {
+  const room = Math.min(length, buf.byteLength - offset);
   const pairs = Math.min(Math.floor(string.length / 2), room);
   let written = 0;
   for (let index = 0; index < pairs; index += 1) {
     const high = hexValue(string.charCodeAt(index * 2));
     const low = hexValue(string.charCodeAt(index * 2 + 1));
     if (high < 0 || low < 0) break;
-    this[offset + index] = (high << 4) | low;
+    buf[offset + index] = (high << 4) | low;
     written += 1;
   }
   return written;
@@ -148,57 +176,57 @@ function base64Bytes(string: string): Uint8Array {
 }
 
 /** Node's `StringWrite<BASE64>`. */
-export function base64Write(this: Uint8Array, string: string, offset = 0, length = this.byteLength - offset): number {
+export function base64Write(buf: Uint8Array, string: string, offset = 0, length = buf.byteLength - offset): number {
   const bytes = base64Bytes(string);
-  const room = Math.min(length, this.byteLength - offset, bytes.length);
+  const room = Math.min(length, buf.byteLength - offset, bytes.length);
   if (room <= 0) return 0;
-  this.set(bytes.subarray(0, room), offset);
+  buf.set(bytes.subarray(0, room), offset);
   return room;
 }
 
 /** Node's `StringWrite<BASE64URL>`. */
-export function base64urlWrite(this: Uint8Array, string: string, offset = 0, length = this.byteLength - offset): number {
+export function base64urlWrite(buf: Uint8Array, string: string, offset = 0, length = buf.byteLength - offset): number {
   const bytes = base64Bytes(string);
-  const room = Math.min(length, this.byteLength - offset, bytes.length);
+  const room = Math.min(length, buf.byteLength - offset, bytes.length);
   if (room <= 0) return 0;
-  this.set(bytes.subarray(0, room), offset);
+  buf.set(bytes.subarray(0, room), offset);
   return room;
 }
 
 // ── Decoding a buffer into a string ────────────────────────────────────────
 
-export function utf8Slice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
-  return utf8Decoder.decode(this.subarray(from, to));
+export function utf8Slice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
+  return utf8Decoder.decode(unsharedBytes(buf.subarray(from, to)));
 }
 
-export function asciiSlice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
+export function asciiSlice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
   let out = '';
-  for (let index = from; index < to; index += 1) out += String.fromCharCode((this[index] as number) & 0x7f);
+  for (let index = from; index < to; index += 1) out += String.fromCharCode((buf[index] as number) & 0x7f);
   return out;
 }
 
-export function latin1Slice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
-  return latin1Decoder.decode(this.subarray(from, to));
+export function latin1Slice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
+  return latin1Decoder.decode(unsharedBytes(buf.subarray(from, to)));
 }
 
-export function ucs2Slice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
+export function ucs2Slice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
   // A trailing odd byte is dropped, as Node drops it.
   const whole = to - ((to - from) % 2);
-  const bytes = this.subarray(from, whole);
+  const bytes = buf.subarray(from, whole);
   // A view whose offset is odd cannot be a `Uint16Array`; copy that one.
   const aligned = (bytes.byteOffset % 2) === 0 ? bytes : new Uint8Array(bytes);
-  return ucs2Decoder.decode(aligned);
+  return ucs2Decoder.decode(unsharedBytes(aligned));
 }
 
-export function hexSlice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
+export function hexSlice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
   let out = '';
   for (let index = from; index < to; index += 1) {
-    const byte = this[index] as number;
+    const byte = buf[index] as number;
     out += HEX_DIGITS[byte >>> 4] as string;
     out += HEX_DIGITS[byte & 0x0f] as string;
   }
@@ -230,14 +258,14 @@ function base64Text(bytes: Uint8Array, url: boolean): string {
   return out.replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 }
 
-export function base64Slice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
-  return base64Text(this.subarray(from, to), false);
+export function base64Slice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
+  return base64Text(buf.subarray(from, to), false);
 }
 
-export function base64urlSlice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
-  return base64Text(this.subarray(from, to), true);
+export function base64urlSlice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
+  return base64Text(buf.subarray(from, to), true);
 }
 
 // ── The rest of what `buffer.js` asks for ──────────────────────────────────
@@ -330,10 +358,10 @@ export function bytesOfString(value: string, encoding: string): Uint8Array {
     case 'latin1': case 'binary': { const out = new Uint8Array(value.length); latin1WriteStatic(out, value, 0, out.length); return out; }
     case 'ucs2': case 'ucs-2': case 'utf16le': case 'utf-16le': {
       const out = new Uint8Array(value.length * 2);
-      ucs2Write.call(out, value, 0, out.length);
+      ucs2Write(out, value, 0, out.length);
       return out;
     }
-    case 'hex': { const out = new Uint8Array(Math.floor(value.length / 2)); const written = hexWrite.call(out, value, 0, out.length); return out.subarray(0, written); }
+    case 'hex': { const out = new Uint8Array(Math.floor(value.length / 2)); const written = hexWrite(out, value, 0, out.length); return out.subarray(0, written); }
     case 'base64': case 'base64url': return base64Bytes(value);
     default: return encoder.encode(value);
   }
@@ -426,7 +454,7 @@ export function swap64(buf: Uint8Array): Uint8Array {
 
 /** Node's `IsUtf8`: whether the bytes decode without a replacement. */
 export function isUtf8(buf: Uint8Array): boolean {
-  try { new TextDecoder('utf-8', { fatal: true }).decode(buf); return true; } catch { return false; }
+  try { new TextDecoder('utf-8', { fatal: true }).decode(unsharedBytes(buf)); return true; } catch { return false; }
 }
 
 /** Node's `IsAscii`: every byte under 128. */
@@ -456,6 +484,16 @@ export function getZeroFillToggle(): Uint32Array {
   return zeroFillToggle;
 }
 
+/** Browser allocations are genuinely zeroed, even for Node's unsafe path. */
+export function createUnsafeArrayBuffer(size: number): ArrayBuffer {
+  return new ArrayBuffer(size);
+}
+
+/** Native V8 detach keys are enforced at this engine's guest transfer doors. */
+export function setDetachKey(buffer: ArrayBuffer, _key: unknown): void {
+  markUntransferable(buffer);
+}
+
 /**
  * Node's `DetachArrayBuffer` and `CopyArrayBuffer`, which `Blob` and the
  * worker's message port use. A realm can detach through `structuredClone`'s
@@ -482,5 +520,5 @@ export default {
   swap16, swap32, swap64, kMaxLength, kStringMaxLength, atob, btoa,
   asciiSlice, base64Slice, base64urlSlice, latin1Slice, hexSlice, ucs2Slice, utf8Slice,
   asciiWriteStatic, base64Write, base64urlWrite, latin1WriteStatic, hexWrite, ucs2Write, utf8WriteStatic,
-  getZeroFillToggle, detachArrayBuffer, copyArrayBuffer, setBufferPrototype, createFromString,
+  getZeroFillToggle, createUnsafeArrayBuffer, setDetachKey, detachArrayBuffer, copyArrayBuffer, setBufferPrototype, createFromString,
 };

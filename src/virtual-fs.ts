@@ -132,6 +132,21 @@ export interface NodeError extends Error {
   path?: string;
 }
 
+/**
+ * A time as Node's fs reads it (lib/internal/fs/utils.js toUnixTimestamp), in milliseconds: a numeric string and a
+ * finite number are seconds, a negative number is now, and a Date is its time, read by value so a Date from another
+ * realm (a confined realm's, a worker's) is not NaN; anything else is Node's ERR_INVALID_ARG_TYPE.
+ */
+export function unixMs(time: unknown, name: string): number {
+  // eslint-disable-next-line eqeqeq -- Node's own test: a string equal to its number
+  if (typeof time === 'string' && +time == (time as unknown as number)) return +time * 1000;
+  if (typeof time === 'number' && Number.isFinite(time)) return time < 0 ? Date.now() : time * 1000;
+  if (Object.prototype.toString.call(time) === '[object Date]') return Number(time);
+  const error = new TypeError(`The "${name}" argument must be an instance of Date or a time in seconds. Received ${time === null ? 'null' : typeof time}`) as TypeError & { code: string };
+  error.code = 'ERR_INVALID_ARG_TYPE';
+  throw error;
+}
+
 export function createNodeError(
   code: 'ENOENT' | 'ENOTDIR' | 'EISDIR' | 'EEXIST' | 'ENOTEMPTY' | 'ELOOP' | 'EINVAL' | 'EROFS',
   syscall: string,
@@ -167,6 +182,8 @@ export function createNodeError(
 }
 
 export class VirtualFS {
+  /** A kernel-backed tree supplies this process channel's current UTS name. */
+  processHostname(): string { return "localhost"; }
   private root: FSNode;
   private encoder = new TextEncoder();
   private decoder = new TextDecoder();
@@ -223,6 +240,30 @@ export class VirtualFS {
         }
       }
     }
+  }
+
+  /**
+   * A path's entry was created or changed: its bytes, its mode or times, a
+   * directory or a link. Every mutating method says so, with 'delete' for an
+   * entry that went, so a host that keeps an index of this tree (the page's)
+   * hears every change it must apply; `chmod`, `utimes`, `symlink`, `mkdir`,
+   * `rmdir` and `rename` said nothing, and a mode set here never reached the
+   * host. A file's event carries its bytes as text, as a write's does; a
+   * directory's or a link's carries none.
+   */
+  private emitChanged(path: string): void {
+    if (!this.eventListeners.get('change')?.size) return;
+    const node = this.__substrateNode(path, false, 0);
+    this.emit('change', path, node?.type === 'file' && node.content ? this.decoder.decode(node.content) : '');
+  }
+
+  /** Every path in a subtree, the subtree's root first, as it is named under `path`. */
+  private subtreePaths(path: string, node: FSNode, into: string[] = []): string[] {
+    into.push(path);
+    if (node.type === 'directory' && node.children) {
+      for (const [name, child] of node.children) this.subtreePaths(path === '/' ? `/${name}` : `${path}/${name}`, child, into);
+    }
+    return into;
   }
 
   /**
@@ -482,6 +523,7 @@ export class VirtualFS {
     }
     parent.children!.set(basename, { type: 'symlink', target: String(target), mtime: Date.now() });
     this.notifyWatchers(normalized, 'rename');
+    this.emitChanged(normalized);
   }
   readlinkSync(path: string): string {
     const node = this.__substrateNode(path, false, 0);
@@ -515,6 +557,7 @@ export class VirtualFS {
         // reports one, and it is the only event a watcher of a tree has to
         // start watching the new directory from.
         this.notifyWatchers('/' + segments.slice(0, index + 1).join('/'), 'rename');
+        this.emitChanged('/' + segments.slice(0, index + 1).join('/'));
       } else if (child.type === 'symlink') {
         // A directory reached through a link is the link's target.
         const linkPath = '/' + segments.slice(0, index + 1).join('/');
@@ -532,6 +575,17 @@ export class VirtualFS {
   }
 
   /**
+   * The plain SHA-256 of a file's current bytes, as 64 lowercase hex characters; undefined where the tree holds
+   * no digest (a file written since its image, a tree that keeps no digests). An image record is an answer only
+   * after its bytes have been verified against it, before first use. An adapter may read once for that
+   * verification and retain the result for the immutable pack generation and extent; a path alone is no identity.
+   * This tree keeps none. The loader uses an answer as a content digest, never as a path-based prepared key.
+   */
+  contentDigest(_path: string): string | undefined {
+    return undefined;
+  }
+
+  /**
    * Check if path exists
    */
   existsSync(path: string): boolean {
@@ -546,16 +600,16 @@ export class VirtualFS {
     const node = this.getNode(path);
     if (!node) throw createNodeError('ENOENT', 'chmod', path);
     node.mode = mode & 0o7777;
+    this.emitChanged(this.normalizePath(path));
   }
 
-  utimesSync(path: string, atime: number | Date, mtime: number | Date): void {
+  utimesSync(path: string, atime: number | string | Date, mtime: number | string | Date): void {
     this.assertWritable(path, 'utime');
     const node = this.getNode(path);
     if (!node) throw createNodeError('ENOENT', 'utimes', path);
-    // A number is seconds, as Node reads it; anything else is a Date, read by value, so a Date from another realm
-    // (a confined realm's, a worker's) is its milliseconds rather than NaN.
-    node.atime = typeof atime === 'number' ? atime * 1000 : Number(atime);
-    node.mtime = typeof mtime === 'number' ? mtime * 1000 : Number(mtime);
+    node.atime = unixMs(atime, 'atime');
+    node.mtime = unixMs(mtime, 'mtime');
+    this.emitChanged(this.normalizePath(path));
   }
 
   statSync(path: string): Stats;
@@ -816,6 +870,7 @@ export class VirtualFS {
       mtime: Date.now(),
     });
     this.notifyWatchers(normalized, 'rename');
+    this.emitChanged(normalized);
   }
 
   /**
@@ -904,6 +959,7 @@ export class VirtualFS {
     parent.children!.delete(basename);
     // A directory that goes is a `rename` in its parent too, as its removal is.
     this.notifyWatchers(normalized, 'rename');
+    this.emit('delete', normalized);
   }
 
   /**
@@ -934,12 +990,25 @@ export class VirtualFS {
 
     const newParent = this.ensureDirectory(newParentPath);
 
+    const replaced = newParent.children!.get(newBasename);
     oldParent.children!.delete(oldBasename);
     newParent.children!.set(newBasename, node);
 
     // Notify watchers
     this.notifyWatchers(normalizedOld, 'rename');
     this.notifyWatchers(normalizedNew, 'rename');
+    // Every path the move took away goes, and every path it made appears:
+    // a moved directory moves its whole subtree. An entry the move replaced
+    // at the new name goes with what it held.
+    if (this.eventListeners.get('delete')?.size) {
+      const gone = this.subtreePaths(normalizedOld, node);
+      if (replaced && replaced !== node) {
+        const made = new Set(this.subtreePaths(normalizedNew, node));
+        for (const path of this.subtreePaths(normalizedNew, replaced)) if (!made.has(path)) gone.push(path);
+      }
+      for (const path of gone.reverse()) this.emit('delete', path);
+    }
+    for (const path of this.subtreePaths(normalizedNew, node)) this.emitChanged(path);
   }
 
   /**

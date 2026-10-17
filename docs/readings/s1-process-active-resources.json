@@ -1,0 +1,157 @@
+{
+  "kind": "tabnode.process-active-resources-source-reading",
+  "version": 5,
+  "articles": [
+    5,
+    6,
+    8,
+    9
+  ],
+  "base": "1ef1b4d8e89a23c90efa5080ad0e0885757297a1",
+  "at": "2026-10-13T22:41:39.299107+00:00",
+  "cause": {
+    "repo": "activepieces/activepieces",
+    "recordStart": "2026-10-13T20:40:11Z",
+    "owner": "72102",
+    "head": "88f02a974938ba2097ce2eef322b07d0573e649a",
+    "engine": "8b526a87",
+    "source": "sweep/image-cycle/results.jsonl observedErrorContext line251",
+    "nativeCaller": "/usr/local/lib/node_modules/pm2/node_modules/@pm2/io/build/main/transports/IPCTransport.js:34:32",
+    "error": "currentProcess._getActiveHandles is not a function",
+    "applicationClearance": false
+  },
+  "nodeReference": [
+    {
+      "path": "node_process_methods.cc",
+      "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/src/node_process_methods.cc",
+      "bytes": 28926,
+      "sha256": "4ba467781cdaf3a892abaa8a5aadeda01395622570d4bd623ee13ca13ccf1bcf"
+    },
+    {
+      "path": "handle_wrap.h",
+      "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/src/handle_wrap.h",
+      "bytes": 4355,
+      "sha256": "9f3a9838da4e752d277582e4c750bed44f9a8a1aa765a7f0d9bae6ab7c969dd9"
+    },
+    {
+      "path": "async_wrap.cc",
+      "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/src/async_wrap.cc",
+      "bytes": 27427,
+      "sha256": "fd65099014346507b322ec221917c504045ba7a5e5bbb5a8b473588879eef294"
+    },
+    {
+      "path": "stream_base.cc",
+      "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/src/stream_base.cc",
+      "bytes": 28312,
+      "sha256": "0e5390e15073f4782df139ef0513c69e7dc293fca51b916de4db81d8279b8bd4"
+    },
+    {
+      "path": "stream_wrap.cc",
+      "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/src/stream_wrap.cc",
+      "bytes": 13107,
+      "sha256": "dfdd17750234228b3b4a79feda9717eed3b1fb739de9a3caa5ebae02a30d04b7"
+    },
+    {
+      "path": "process_wrap.cc",
+      "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/src/process_wrap.cc",
+      "bytes": 12937,
+      "sha256": "e7846979f201876005f046109012e8ec7f3f9c1cf9bbd601ce85ac5715f89fb1"
+    },
+    {
+      "path": "req_wrap-inl.h",
+      "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/src/req_wrap-inl.h",
+      "bytes": 5640,
+      "sha256": "27c770d8756b626c80210f96f9db1cf31bfbf09aab1da53dc35b382314883e67"
+    },
+    {
+      "path": "node_stat_watcher.cc",
+      "url": "https://raw.githubusercontent.com/nodejs/node/v24.21.0/src/node_stat_watcher.cc",
+      "bytes": 4631,
+      "sha256": "58d48a36f5773de273b65c248a77077853123fe9bdce25cd8df6470456c5a8f7"
+    }
+  ],
+  "semantics": [
+    "Node24 GetActiveHandles enumerates initialized referenced HandleWraps; uv_is_active is not a filter. Follow object-valued owner_symbol links to the actual Socket, Server, ChildProcess or watcher; suppress owner-getter exceptions.",
+    "Node24 GetActiveRequests enumerates actual ReqWrap objects and follows the same owner link. TCP/Pipe connects, asynchronous stream writes/shutdowns and filesystem operations retain their actual request identity through their completion. Synchronous writes and failed dispatch do not leave a request entry.",
+    "Weak rows, collection finalizers and explicit completion/close/exit cleanup avoid retaining any resource. Handle ref/unref state controls enumeration independently of the existing active-and-referenced liveness count.",
+    "Registered guests use their existing process token. Every binding call/constructor carries its explicit process through a private synchronous observation scope; standalone Runtime processes receive private symbol identities. This explicit scope takes precedence over an ambient guest token, and try/finally restores nesting without adding asynchronous scheduling or an async-local frame to each binding call.",
+    "Local closing wrappers remain visible until the existing close-task boundary; native streams remain visible until their owner reports close. Accepted and transferred handles follow existing handle adoption."
+  ],
+  "implementationFiles": [
+    {
+      "path": "src/native-stream-binding.ts",
+      "sha256": "27cf0aba3cb0101754b026cc39f07260db876f3d5577942454cbfb5a67c20599"
+    },
+    {
+      "path": "src/node-lib/binding/fs.ts",
+      "sha256": "7ec64c37c75aab7f69494237ef9cc54dc335252ee4781e20d8435ced96f98a06"
+    },
+    {
+      "path": "src/node-lib/binding/handles.ts",
+      "sha256": "3b3a28228943185d0878ee3ff103bb3b72743abf9240a48fbffaf319838aa439"
+    },
+    {
+      "path": "src/node-lib/binding/pipe_wrap.ts",
+      "sha256": "bb2620693fe10dfb3f732ce75bb8bf3ca716cb5bd29c76de6e947732165014eb"
+    },
+    {
+      "path": "src/node-lib/binding/process_wrap.ts",
+      "sha256": "847c3c35b66512c1014acf466cba617a70013dfa79a5b3c99ea604347fe8449a"
+    },
+    {
+      "path": "src/node-lib/binding/stream_wrap.ts",
+      "sha256": "465402bf27e94257e4fe2e2aebd8bb3c01a3a898d203aa67c496f37d44c74f9b"
+    },
+    {
+      "path": "src/node-lib/binding/tcp_wrap.ts",
+      "sha256": "d863b48e20a760ff64ddca0972c2e08fe0574381b886cce9f83fbd715983ccd5"
+    },
+    {
+      "path": "src/node-lib/binding/tty_wrap.ts",
+      "sha256": "782de124c423d7304381ec684e3d578bf08b66d246005652a32461c54abd541f"
+    },
+    {
+      "path": "src/node-lib/internals/runtime.ts",
+      "sha256": "5227b56e8b198965ff607501b9ae159a612613157a844614c10d5f70a62bff04"
+    },
+    {
+      "path": "src/node-lib/load.ts",
+      "sha256": "e123fdd566cb6e6625af81550cb45f9d8c7cec10e30cac7dc52a9d9798e7de35"
+    },
+    {
+      "path": "src/shims/process.ts",
+      "sha256": "166bf2b6d46a7ae0bf5ea0032f94b9d731a553be3b85d552c633de4627069d74"
+    },
+    {
+      "path": "src/node-lib/binding/owner-symbol.ts",
+      "sha256": "32e25a35a9097579f8bdb91b6398b883016c40c2471e41acb536579328897318"
+    }
+  ],
+  "limits": [
+    "No vendored Node JavaScript changed; bindings and native process seam only.",
+    "Direct stdio, resolver and unsupported datagram shims that have no existing native wrapper are not invented as handles or requests. This unit enumerates actual implemented wrappers and preserves their current transport behavior.",
+    "The retained Activepieces record has independent addon/application errors; fixing this API exception is not application clearance.",
+    "No build, test, typecheck, probe, app, guest or native target executed here; independent static review and ordinary image qualification remain separate."
+  ],
+  "checks": {
+    "tests": false,
+    "apps": false,
+    "compiler": false,
+    "typecheck": false
+  },
+  "reviewCorrections": [
+    "Transfer the actual receiver resource-scope identity during standalone TCP/Pipe accept, descriptor receive and native adoption; intentional null custody remains unenumerated.",
+    "Observe ProcessWrap at the attempted spawn initialization boundary, including ENOENT, and keep its closing observation through the existing close task.",
+    "Observe StatWatcher at native constructor initialization, independent of whether polling is active; stop leaves a referenced wrapper observable.",
+    "Keep filesystem watcher observations until close completion with reference state preserved; repeated close cannot clear the reference early.",
+    "Process close observations retire at its existing single queued task before the close callback; stream close retains its existing two-task boundary.",
+    "FSEvent initializes before the watch attempt; failed starts keep a referenced closing wrapper until pending-close completion, without adding liveness ownership.",
+    "Explicit standalone/registered binding ownership takes precedence over ambient tokens. The private observation scope only spans synchronous native constructors/dispatch and restores nesting in finally.",
+    "IPC-transferred stream requests use the adopted operation handle\u2019s owner, including standalone scope identities, rather than the sender facade\u2019s original prototype scope.",
+    "Returned directory read/close methods and deferred filesystem work capture the actual binding scope; unscoped re-observation preserves an initialized request\u2019s custody.",
+    "process.binding returns the same per-process binding cache/surface as vendored internalBinding, preserving its allowlist and deprecation warning.",
+    "Adopt observations from the supplied receiver resource row before an ambient liveness token; intentional null host custody without a receiver remains unenumerated.",
+    "Ignore Process reference toggles before native initialization and after completed close; attempted spawn observes its initialized referenced wrapper, including ENOENT.",
+    "Allow FSEvent reference changes through pending close, including failed-start close, and report hasRef from initialized observation state until completion."
+  ]
+}

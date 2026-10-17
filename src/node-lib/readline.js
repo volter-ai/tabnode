@@ -30,6 +30,7 @@ const {
   Promise,
   PromiseReject,
   StringPrototypeSlice,
+  SymbolDispose,
 } = primordials;
 
 const {
@@ -50,7 +51,6 @@ const {
 const {
   kEmptyObject,
   promisify,
-  SymbolDispose,
 } = require('internal/util');
 const { validateAbortSignal } = require('internal/validators');
 
@@ -115,7 +115,9 @@ function Interface(input, output, completer, terminal) {
   FunctionPrototypeCall(InterfaceConstructor, this,
                         input, output, completer, terminal);
 
-  if (process.env.TERM === 'dumb') {
+  // Reading process.env is expensive and _ttyWrite is only used in
+  // terminal mode, so only check for a dumb terminal when relevant.
+  if (this.terminal && process.env.TERM === 'dumb') {
     this._ttyWrite = FunctionPrototypeBind(_ttyWriteDumb, this);
   }
 }

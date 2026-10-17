@@ -23,16 +23,24 @@
  * guest's `process` when it enters one, so the filesystem is read off that
  * process at call time -- the same way a vendored file gets the right
  * `process` at all. An asynchronous call captures the tree here and carries
- * it into the tick, because that tick can run after another guest has put
+ * it into the completion turn, because that turn can run after another guest has put
  * its own process on the realm. One `fs` module, many runs, each seeing its
  * own tree.
  */
 import { createNodeError as vfsError } from '../../virtual-fs';
-import { registerHandle, releaseHandle, refHandle, unrefHandle, handleHasRef, currentOwner } from './handles';
-import { enterRun } from '../../process-tokens';
+import { registerHandle, releaseHandle, refHandle, unrefHandle, currentOwner, ownedRun, ownerOfInstance, observeNodeHandle, forgetNodeHandle, observeNodeRequest, forgetNodeRequest, captureNodeResourceScope, nodeHandleHasRef, nodeHandleIsClosing } from './handles';
+import { __runFor, type ProcessToken } from '../../process-tokens';
+import { queueBindingTask } from '../../guest-loop';
+import { kStdinRing, type StdinReader } from '../../stdin-ring';
+// The guest stdin stream's engine-side read (shims/process.ts `kEngineStdinRead`),
+// named here so this binding does not import the process shim.
+const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
 import { allocateFd, handleForFd } from './fds';
+import { treeDescriptorsOf, type TreeDescriptors, type TreeDescriptorStats, type TreeAdvisoryLocks } from '../../tree-descriptors';
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
-import { errname } from './uv';
+import { traceOutput, traceReadingRequested } from '../../trace-output';
+import { errname, UV_ENOENT } from './uv';
+import { queueNativeFsTask } from '../../native-fs-tasks';
 
 /**
  * An errno error, as the filesystem makes one. The tree's own maker knows the
@@ -42,7 +50,9 @@ import { errname } from './uv';
 function createNodeError(code: string, syscall: string, path: string): Error {
   const known = ['EEXIST', 'EINVAL', 'EISDIR', 'ENOENT', 'ENOTDIR', 'ENOTEMPTY', 'ELOOP', 'EROFS'];
   if (known.includes(code)) return vfsError(code as 'ENOENT', syscall, path);
-  return Object.assign(new Error(`${code}: ${syscall} '${path}'`), { code, syscall, path, errno: -9 });
+  // Linux's numbers for the stream errors a descriptor answers.
+  const errno = ({ EAGAIN: -11, ESPIPE: -29, EPIPE: -32 } as Record<string, number>)[code] ?? -9;
+  return Object.assign(new Error(`${code}: ${syscall} '${path}'`), { code, syscall, path, errno });
 }
 
 /**
@@ -67,6 +77,7 @@ function treeHoldsLinks(): boolean {
 import type { VirtualFS, Stats as VfsStats } from '../../virtual-fs';
 import { constantsBinding } from './misc';
 import { Buffer as NodeBuffer } from '../buffer-module';
+import { unsharedBytes } from './buffer';
 
 /** The key the engine hangs a run's filesystem off its guest process. */
 export const kRunFilesystem = Symbol.for('tabnode.run.vfs');
@@ -123,20 +134,29 @@ function callingCwd(): string {
  * the wrong bit and answered ENOENT for a file it was being asked to create.
  * One table, one answer.
  */
-function flagBits(): { create: number; excl: number; truncate: number; append: number } {
+function flagBits(): { create: number; excl: number; truncate: number; append: number; nonblock: number } {
   const fs = (constantsBinding as unknown as { fs?: Record<string, number> }).fs ?? {};
   return {
     create: fs.O_CREAT ?? 0o100,
     excl: fs.O_EXCL ?? 0o200,
     truncate: fs.O_TRUNC ?? 0o1000,
     append: fs.O_APPEND ?? 0o2000,
+    nonblock: fs.O_NONBLOCK ?? 0o4000,
   };
 }
+
+/** Node's utf8 read: a leading U+FEFF is the file's text, kept (a default TextDecoder drops it); bad bytes are U+FFFD. */
+const utf8KeepingBom = new TextDecoder('utf-8', { ignoreBOM: true });
 
 /** The file-type bits a `mode` carries, which is how `Stats` answers `isFile()`. */
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
 const S_IFLNK = 0o120000;
+const S_IFCHR = 0o020000;
+const S_IFIFO = 0o010000;
+const S_IFBLK = 0o060000;
+const S_IFSOCK = 0o140000;
+const S_IFMT = 0o170000;
 
 interface OpenFile {
   path: string;
@@ -164,6 +184,209 @@ interface OpenFile {
 /** Every descriptor this engine has open, and the next number to hand out. */
 const openFiles = new Map<number, OpenFile>();
 
+/**
+ * fd 0, 1 and 2 are descriptors of every process, as on Linux: a program
+ * that writes its output through `fs.writeSync(1, buf)`, or opens
+ * `/dev/stdout`, `/dev/fd/1` or `/proc/self/fd/1` and writes there, writes
+ * the bytes its `process.stdout` writes, to the same place and in the same
+ * order; one that reads `fs.readSync(0, buf)` or `/dev/stdin` reads what its
+ * `process.stdin` reads; `fstat` of each says what it is. The engine
+ * registered no such descriptors, so all of it was EBADF. A path of these
+ * opens a new descriptor that names the stream, as open(2) on it does.
+ */
+type StdioFd = 0 | 1 | 2;
+const STDIO_PATHS = new Map<string, StdioFd>([
+  ['/dev/stdin', 0], ['/dev/stdout', 1], ['/dev/stderr', 2],
+  ['/dev/fd/0', 0], ['/dev/fd/1', 1], ['/dev/fd/2', 2],
+  ['/proc/self/fd/0', 0], ['/proc/self/fd/1', 1], ['/proc/self/fd/2', 2],
+]);
+const stdioAliases = new Map<number, StdioFd>();
+/** Descriptors on a standard stream that were opened O_NONBLOCK: a read with nothing there is EAGAIN. */
+const nonblockingAliases = new Set<number>();
+
+/** The standard stream a descriptor names, where it names one. */
+function stdioOf(fd: number): StdioFd | null {
+  const alias = stdioAliases.get(fd);
+  if (alias !== undefined) return alias;
+  return (fd === 0 || fd === 1 || fd === 2) && !openFiles.has(fd) && !ownedFds.has(fd) ? fd : null;
+}
+
+/**
+ * The standard stream a path names. Besides the fixed names above, Linux's procfs has every process's descriptors
+ * under its number: `/proc/<pid>/fd/N` of the process's own pid is `/proc/self/fd/N`. And `/proc/1/fd/1` and
+ * `/proc/1/fd/2` are how a program in a container writes to the container's log from wherever it is (pid 1 is the
+ * container's first process, and its output is the log): a logger given that path as its file, `fs.appendFileSync`
+ * of it from a child whose own output is piped. A process here is given its own standard stream for pid 1's: its
+ * output and the first process's go to the same place. It was ENOENT or, over a kernel's tree, EBADF at the write.
+ * Where it differs from Linux: a process whose own stream is not the first process's (its stdout redirected to a
+ * file by its parent) writes pid 1's path to its own; no other process's descriptor is opened by a path.
+ */
+function stdioPath(name: string): StdioFd | undefined {
+  const fixed = STDIO_PATHS.get(name);
+  if (fixed !== undefined) return fixed;
+  const match = /^\/proc\/(\d+)\/fd\/([012])$/.exec(name);
+  if (!match) return undefined;
+  const pid = Number(match[1]), own = (stdioProcess() as { pid?: unknown } | undefined)?.pid;
+  return pid === 1 || pid === own ? Number(match[2]) as StdioFd : undefined;
+}
+
+/** Where a run's process carries what each of its fds 0, 1 and 2 is: 'tty', 'pipe', 'file' or 'char'. */
+export const kStdioKinds = Symbol.for('tabnode.run.stdioKinds');
+
+/** What a run's standard streams are, as the fs binding reads them. */
+interface StdioStreams {
+  stdin?: { isTTY?: boolean; read(size?: number): unknown; [kEngineStdinRead]?: (size?: number) => unknown; unshift(chunk: Uint8Array): void; readableEnded?: boolean; readableLength?: number; _readableState?: { ended?: boolean } };
+  stdout?: { isTTY?: boolean };
+  stderr?: { isTTY?: boolean };
+}
+
+/** A read of the guest's stdin by the engine, not counted as the program reading its stream. */
+function engineRead(stdin: NonNullable<StdioStreams['stdin']>, size?: number): unknown {
+  const own = stdin[kEngineStdinRead];
+  return typeof own === 'function' ? own.call(stdin, size) : stdin.read(size);
+}
+
+/** The asking run's process -- its own, not whichever guest holds the realm's name. */
+function stdioProcess(token: ProcessToken | null = currentOwner()): StdioStreams | undefined {
+  const run = token === null ? undefined : __runFor(token);
+  if (run) return run.process as unknown as StdioStreams;
+  return (globalThis as unknown as { process?: StdioStreams }).process;
+}
+
+/**
+ * A read of fd 0 for a run whose stdin is a shared ring written from another
+ * thread, as Linux reads a blocking pipe: the bytes the guest's stream
+ * already holds first (taken without asking the stream for more, which would
+ * start its drain from the ring: `fs.readSync(0)` never touches
+ * process.stdin in Node), then the ring's next ones, waiting for them, or 0
+ * at its end. An O_NONBLOCK descriptor gets EAGAIN instead of a wait.
+ */
+function readStdinRing(fd: number, stdin: NonNullable<StdioStreams['stdin']>, ring: StdinReader, buffer: Uint8Array, offset: number, length: number): number {
+  const buffered = stdin.readableLength ?? 0;
+  if (buffered > 0) {
+    const chunk = engineRead(stdin, Math.min(length, buffered));
+    if (chunk !== null && chunk !== undefined) {
+      const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk as Uint8Array;
+      const count = Math.min(length, bytes.length);
+      buffer.set(bytes.subarray(0, count), offset);
+      if (count < bytes.length) stdin.unshift(bytes.slice(count));
+      return count;
+    }
+  }
+  if (stdin.readableEnded === true || stdin._readableState?.ended === true) return 0;
+  if (nonblockingAliases.has(fd)) {
+    const taken = ring.take(buffer, offset, length);
+    if (taken === null) throw createNodeError('EAGAIN', 'read', String(fd));
+    return taken;
+  }
+  try { return ring.takeBlocking(buffer, offset, length); } catch (cause) {
+    throw Object.assign(new Error(
+      `read(${fd}): this realm refuses to block (${cause instanceof Error ? cause.message : String(cause)}), `
+      + 'as a page\'s main thread does, so a blocking read of stdin cannot wait here. Run the program in a worker.'), {
+      code: 'ERR_STDIN_BLOCKING_READ', syscall: 'read', fd,
+    });
+  }
+}
+
+/**
+ * `fstat` of a standard stream, as Linux answers it for what the run was
+ * given on that fd (`stdioKind`, else its terminals): a terminal is a
+ * character device (a pts, major 136), a file a regular file, anything else
+ * a pipe. A file's size is not one the run supplies, and is 0.
+ */
+function stdioStat(stream: StdioFd, bigint: boolean): Float64Array | BigInt64Array {
+  const proc = stdioProcess();
+  const kinds = (proc as Record<symbol, unknown> | undefined)?.[kStdioKinds] as readonly string[] | undefined;
+  const tty = (stream === 0 ? proc?.stdin : stream === 1 ? proc?.stdout : proc?.stderr)?.isTTY === true;
+  const kind = kinds?.[stream] ?? (tty ? 'tty' : 'pipe');
+  const now = Date.now();
+  const seconds = Math.floor(now / 1000);
+  const nanos = Math.floor((now % 1000) * 1e6);
+  // A character device that is not a terminal is /dev/null's shape: 0666, device 1,3.
+  const mode = kind === 'tty' ? S_IFCHR | 0o620 : kind === 'char' ? S_IFCHR | 0o666
+    : kind === 'file' ? S_IFREG | 0o644 : S_IFIFO | 0o600;
+  const values = [
+    0, mode, 1,
+    0, 0, kind === 'tty' ? 136 << 8 : kind === 'char' ? (1 << 8) | 3 : 0,
+    4096, stream + 1, 0, 0,
+    seconds, nanos, seconds, nanos, seconds, nanos, seconds, nanos,
+  ];
+  return bigint ? BigInt64Array.from(values, (value) => BigInt(value)) : Float64Array.from(values);
+}
+
+/**
+ * A read of the run's fd 0: the bytes its `process.stdin` holds, taken from
+ * that same stream so the two read in order, the rest left for the next
+ * read; at the writer's end, 0. That covers every stdin a run is given
+ * whole (`stdin`, a `<` file, a pipe whose writer finished first).
+ *
+ * With nothing there and the writer still open, Linux blocks a blocking fd
+ * and answers EAGAIN on an O_NONBLOCK one. The second is answered. The
+ * first cannot be, in this realm: every byte a run's stdin can still
+ * receive arrives through this realm's own loop (a host's `stdinStream`, its
+ * `sendInput`, a parent guest's pipe write), and a thread blocked in this
+ * read would hold that loop and never receive it -- a wait here is a
+ * deadlock, not a slow read. A run given a shared ring (`stdin-ring.ts`)
+ * is written from another thread, and its read waits on the ring. Any other
+ * run's is refused by name rather than with an EAGAIN the program did not
+ * ask for.
+ */
+function readStdin(fd: number, buffer: Uint8Array, offset: number, length: number): number {
+  const stdin = stdioProcess()?.stdin;
+  if (!stdin || typeof stdin.read !== 'function') throw createNodeError('EBADF', 'read', '0');
+  if (length <= 0) return 0;
+  const ring = (stdioProcess() as Record<symbol, unknown> | undefined)?.[kStdinRing] as StdinReader | undefined;
+  if (ring) return readStdinRing(fd, stdin, ring, buffer, offset, length);
+  const chunk = engineRead(stdin);
+  if (chunk === null || chunk === undefined) {
+    if (stdin.readableEnded === true || stdin._readableState?.ended === true) return 0;
+    if (nonblockingAliases.has(fd)) throw createNodeError('EAGAIN', 'read', String(fd));
+    throw Object.assign(new Error(
+      `read(${fd}): this run's stdin is still open and holds no bytes yet, and a blocking read cannot wait for them: `
+      + 'they arrive on this realm\'s own event loop, which a blocked read would hold. Read it asynchronously '
+      + '(process.stdin), give the run its whole stdin before it starts, or give it a shared ring (stdinShared).'), {
+      code: 'ERR_STDIN_BLOCKING_READ', syscall: 'read', fd,
+    });
+  }
+  const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk as Uint8Array;
+  const count = Math.min(length, bytes.length);
+  buffer.set(bytes.subarray(0, count), offset);
+  if (count < bytes.length) stdin.unshift(bytes.slice(count));
+  return count;
+}
+
+/**
+ * Bytes on the asking run's fd 1 or 2: the run's own stream sink, which is
+ * what its `process.stdout`/`stderr` writes into -- not a guest's replacement
+ * of `process.stdout.write`, which a write to the descriptor never calls.
+ */
+function writeStdio(stream: 1 | 2, bytes: Uint8Array, token: ProcessToken | null = currentOwner()): void {
+  const run = token === null ? undefined : __runFor(token);
+  if (run) { (stream === 1 ? run.stdout : run.stderr)(bytes.slice()); return; }
+  const realm = (globalThis as unknown as { process?: { stdout?: { write(chunk: Uint8Array): unknown }; stderr?: { write(chunk: Uint8Array): unknown } } }).process;
+  const sink = stream === 1 ? realm?.stdout : realm?.stderr;
+  if (!sink || typeof sink.write !== 'function') throw createNodeError('EBADF', 'write', String(stream));
+  sink.write(bytes.slice());
+}
+
+/**
+ * Descriptors a tree owns (`tree-descriptors.ts`): the number is the tree's,
+ * and every operation on it is the tree's own call, so its offset, its
+ * O_APPEND and its sharing with other processes are the owner's. The engine
+ * keeps only which owner answers for the number.
+ */
+const ownedFds = new Map<number, TreeDescriptors>();
+
+/** The owner of a descriptor a tree opened, where the tree opened it. */
+function ownerOf(fd: number): TreeDescriptors | undefined {
+  return ownedFds.get(fd);
+}
+
+/** A position as the tree takes it: null for the description's own offset. */
+function positionOf(position: number | null | undefined): number | null {
+  return position === null || position === undefined || position < 0 ? null : position;
+}
+
 function fileFor(fd: number): OpenFile {
   const file = openFiles.get(fd);
   if (!file) throw createNodeError('EBADF', 'read', String(fd));
@@ -179,10 +402,88 @@ function fileFor(fd: number): OpenFile {
  * is a stream (a socket, a pipe) is written as a stream. Anything else is
  * not a sink, and the child's output there goes nowhere, as `ignore` does.
  */
-export function descriptorWriter(fd: number): ((text: string) => void) | null {
+export type DescriptorWriter = ((chunk: string | Uint8Array) => void) & {
+  /** The child has ended: its own reference to the description goes (a dup the tree made). */
+  release?(): void;
+};
+
+export function descriptorWriter(fd: number): DescriptorWriter | null {
+  if (fd > 2 && traceReadingRequested()) return tracedDescriptorWriter(fd, descriptorWriterOf(fd, { sayFailures: true }));
+  return descriptorWriterOf(fd, { sayFailures: false });
+}
+
+/**
+ * An instrument: what reached a child's stdio that names a file of the parent's (`stdio: ['ignore', fd, fd]`), said
+ * when the writer is made, at its first write, at its first failure and when the child ends. A write here that fails
+ * is dropped by design (a closed description drops the child's output), so a log that stays empty said nothing of
+ * why: a World's native-postgres.log read 0 characters on both visits of the Umami f7b17202 pair (S2 L1).
+ */
+function tracedDescriptorWriter(fd: number, writer: DescriptorWriter | null): DescriptorWriter | null {
+  const owner = ownerOf(fd);
+  const file = openFiles.get(fd);
+  const where = { fd, sink: writer === null ? 'none' : owner ? 'owner' : handleForFd(fd) instanceof LibuvStreamWrap ? 'stream' : file ? 'tree' : 'standard', ...(file ? { path: file.path } : {}) };
+  traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'made', at: Date.now(), ...where });
+  if (writer === null) return null;
+  const counts = { chunks: 0, bytes: 0, failures: 0 };
+  const traced: DescriptorWriter = (chunk) => {
+    const length = typeof chunk === 'string' ? chunk.length : chunk.byteLength;
+    counts.chunks += 1;
+    counts.bytes += length;
+    if (counts.chunks === 1) traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'first-write', at: Date.now(), ...where, bytes: length });
+    try { writer(chunk); }
+    catch (cause) {
+      counts.failures += 1;
+      if (counts.failures === 1) traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'failed', at: Date.now(), ...where, error: cause instanceof Error ? cause.message.slice(0, 200) : String(cause).slice(0, 200) });
+      // an owner's failure is dropped, as it is untraced (it is thrown here only to be said); any other goes on as before
+      if (where.sink !== 'owner') throw cause;
+    }
+  };
+  traced.release = () => {
+    traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'released', at: Date.now(), ...where, ...counts });
+    writer.release?.();
+  };
+  return traced;
+}
+
+/** `sayFailures`: an owner's failed write is thrown to the instrument that wraps this writer, which says and drops it; elsewhere it is dropped here. */
+function descriptorWriterOf(fd: number, { sayFailures }: { sayFailures: boolean }): DescriptorWriter | null {
+  // A descriptor takes bytes; a chunk a child wrote as bytes goes on as them.
+  const bytesOf = (chunk: string | Uint8Array): Uint8Array => typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
+  // A description a tree owns is written through it: one offset, the
+  // owner's, shared with the parent's copy as a dup'd descriptor's is.
+  const owner = ownerOf(fd);
+  if (owner) {
+    // The child's own number for the description, taken now, while the parent's is open: the parent
+    // closing (or reusing) its number then changes nothing for the child (fork's copy plus dup2).
+    let own: number | undefined;
+    try { own = owner.dup?.(fd); } catch { own = undefined; }
+    const target = own ?? fd;
+    const writer: DescriptorWriter = (chunk) => {
+      const bytes = bytesOf(chunk);
+      try { owner.write(target, bytes, 0, bytes.length, null); }
+      catch (cause) { if (sayFailures) throw cause; /* a closed description drops the child's output */ }
+    };
+    if (own !== undefined) {
+      let released = false;
+      writer.release = () => {
+        if (released) return;
+        released = true;
+        try { owner.close(own!); } catch { /* the tree has already let it go */ }
+      };
+    }
+    return writer;
+  }
+  // The parent's own fd 1 or 2 (or a descriptor it opened on /dev/stdout):
+  // the child writes the parent's stream, read against the parent, whose
+  // code is the code running now.
+  const standard = stdioOf(fd);
+  if (standard !== null && standard !== 0 && handleForFd(fd) === undefined) {
+    const parent = currentOwner();
+    return (chunk) => { try { writeStdio(standard, bytesOf(chunk), parent); } catch { /* a closed stream drops the child's output */ } };
+  }
   const stream = handleForFd(fd);
   if (stream instanceof LibuvStreamWrap) {
-    return (text) => { try { stream.writeBuffer(new WriteWrap(), new TextEncoder().encode(text)); } catch { /* a closed stream drops the child's output, as a closed pipe does */ } };
+    return (chunk) => { try { stream.writeBuffer(new WriteWrap(), bytesOf(chunk)); } catch { /* a closed stream drops the child's output, as a closed pipe does */ } };
   }
   const file = openFiles.get(fd);
   if (!file || file.directory || (file.flags & 3) === 0) return null;
@@ -194,8 +495,8 @@ export function descriptorWriter(fd: number): ((text: string) => void) | null {
   let cursor = descriptorCursors.get(file);
   if (!cursor) { cursor = { position: file.position }; descriptorCursors.set(file, cursor); }
   const offset = cursor;
-  return (text) => {
-    const bytes = new TextEncoder().encode(text);
+  return (chunk) => {
+    const bytes = bytesOf(chunk);
     // the parent's copy, while it is open, holds the file's bytes as it last wrote them
     const shared = openFiles.get(fd) === file ? file : null;
     if (shared) offset.position = shared.position;
@@ -212,18 +513,25 @@ export function descriptorWriter(fd: number): ((text: string) => void) | null {
 const descriptorCursors = new WeakMap<object, { position: number }>();
 
 /** Node's stat array: eighteen numbers, with each time a second and a nanosecond. */
-function statArray(stats: VfsStats, bigint: boolean, path?: string): Float64Array | BigInt64Array {
+function statArray(stats: VfsStats | TreeDescriptorStats, bigint: boolean, path?: string): Float64Array | BigInt64Array {
   const mtime = stats.mtime instanceof Date ? stats.mtime.getTime() : Number(stats.mtimeMs ?? 0);
   const atime = stats.atime instanceof Date ? stats.atime.getTime() : Number(stats.atimeMs ?? mtime);
   const ctime = stats.ctime instanceof Date ? stats.ctime.getTime() : Number(stats.ctimeMs ?? mtime);
   const birth = stats.birthtime instanceof Date ? stats.birthtime.getTime() : Number(stats.birthtimeMs ?? mtime);
   const seconds = (ms: number): number => Math.floor(ms / 1000);
   const nanos = (ms: number): number => Math.floor((ms % 1000) * 1e6);
-  // The tree keeps permissions but not the type bits; `Stats.isFile()` is
-  // `mode & S_IFMT`, so the type the tree does know is put where Node looks.
+  // `Stats.isFile()` is `mode & S_IFMT`, so the entry's type goes where Node
+  // looks: the type bits a tree's mode carries, else every kind its stat
+  // answers -- a directory, a link, a character or block device, a FIFO, a
+  // socket -- and a regular file only when it is none of them. Deriving only
+  // dir/link/reg made a kernel's character device (/dev/null) a regular file
+  // through a path stat while fstat of its descriptor said S_IFCHR.
   // `chmod` stores what it set; a path it has not touched keeps the tree's.
   const permissions = Number(stats.mode ?? (stats.isDirectory?.() ? 0o755 : 0o644)) & 0o7777;
-  const type = stats.isDirectory?.() ? S_IFDIR : stats.isSymbolicLink?.() ? S_IFLNK : S_IFREG;
+  const type = (Number(stats.mode ?? 0) & S_IFMT)
+    || (stats.isDirectory?.() ? S_IFDIR : stats.isSymbolicLink?.() ? S_IFLNK
+      : stats.isCharacterDevice?.() ? S_IFCHR : stats.isBlockDevice?.() ? S_IFBLK
+        : stats.isFIFO?.() ? S_IFIFO : stats.isSocket?.() ? S_IFSOCK : S_IFREG);
   const values = [
     Number(stats.dev ?? 0), type | permissions, Number(stats.nlink ?? 1),
     Number(stats.uid ?? 0), Number(stats.gid ?? 0), Number(stats.rdev ?? 0),
@@ -237,23 +545,50 @@ function statArray(stats: VfsStats, bigint: boolean, path?: string): Float64Arra
   return bigint ? BigInt64Array.from(values, (value) => BigInt(Math.floor(value))) : Float64Array.from(values);
 }
 
-/** A request object `fs.js` hands an asynchronous call, answered on a tick. */
+/** A request object `fs.js` hands an asynchronous call, answered from the loop. */
 interface FSReq { oncomplete?: (error: Error | null, ...rest: unknown[]) => void }
 
-/** The next tick of whatever realm this is: a guest's process, else the microtask queue. */
-function onNextTick(fn: () => void): void {
-  const tick = (globalThis as unknown as { process?: { nextTick?: (fn: () => void) => void } }).process?.nextTick;
-  if (typeof tick === 'function') tick(fn); else queueMicrotask(fn);
+/** Pending native fs work holds its process until completion; process exit cancels work not yet begun. */
+class FSRequest {
+  private cancel?: () => void;
+  private ended = false;
+  private readonly request: object;
+
+  /** `source`: the guest function the request answers (its `oncomplete`), which names it in the realm's entry account
+   *  (guest-loop.ts, S2 R27); the outer bracket is the one counted, so it carries the name. */
+  constructor(owner: ProcessToken | null, run: () => void, source?: unknown, request?: object) {
+    this.request = request ?? this;
+    const inScope = captureNodeResourceScope();
+    ownedRun(owner, () => { registerHandle(this); observeNodeRequest(this.request); });
+    try {
+      this.cancel = queueNativeFsTask(() => {
+        if (this.ended) return;
+        try { ownedRun(owner, () => inScope(run), true, 'fs', source ?? run); }
+        finally { this.close(); }
+      });
+    } catch (cause) { this.close(); throw cause; }
+  }
+
+  close(): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.cancel?.();
+    forgetNodeRequest(this.request);
+    releaseHandle(this);
+  }
 }
+
+/** The actual pending promise filesystem operation, corresponding to Node’s FSReqPromise. */
+class FSReqPromise extends FSRequest {}
 
 /**
  * Every operation below is written once, synchronously, and this is what
  * makes one asynchronous: Node passes a request object as the last argument
- * when it wants a callback, and the answer arrives on the next tick rather
- * than in the caller's own stack -- which is the whole of the difference a
- * program can observe between `fs.readFile` and `fs.readFileSync` here.
+ * when it wants a callback, and the answer arrives from a host task, as a
+ * libuv filesystem completion arrives from the loop. Delivering it on a tick
+ * or microtask let asynchronous fs chains run ahead of queued server accepts.
  *
- * The tree and the cwd are captured on this stack, not on that tick. The
+ * The tree and the cwd are captured on this stack, not on that turn. The
  * realm's process is swapped per run, so a `vfs()` or `process.cwd()` inside
  * the work would read whichever guest is executing then -- another run's
  * view, or none -- and a file `ls` listed (synchronous readdir) was ENOENT
@@ -280,7 +615,7 @@ function answer<T>(req: FSReq | undefined, work: () => T): T | undefined {
   const run = (): T => withFilesystem(tree, () => withCwd(cwd, work));
   if (usePromises) {
     return new Promise<T>((resolve, reject) => {
-      onNextTick(() => { try { resolve(run()); } catch (error) { reject(error); } });
+      new FSReqPromise(currentOwner(), () => { try { resolve(run()); } catch (error) { reject(error); } });
     }) as unknown as T;
   }
   // Node's binding invokes `req.oncomplete` as a method of the request:
@@ -290,11 +625,13 @@ function answer<T>(req: FSReq | undefined, work: () => T): T | undefined {
   // properties of undefined (reading 'context')` at `node:fs:297:24`.
   const request = req as FSReq;
   const complete = request.oncomplete!;
-  onNextTick(() => {
+  // Called as MakeCallback calls it: in the request's owner's run, its throw that run's uncaught exception.
+  const owner = ownerOfInstance(request as object);
+  new FSRequest(owner, () => {
     let value: T;
-    try { value = run(); } catch (error) { complete.call(request, error as Error); return; }
-    complete.call(request, null, value as unknown);
-  });
+    try { value = run(); } catch (error) { ownedRun(owner, () => complete.call(request, error as Error), true, 'fs', complete); return; }
+    ownedRun(owner, () => complete.call(request, null, value as unknown), true, 'fs', complete);
+  }, complete, request);
   return undefined;
 }
 
@@ -318,7 +655,7 @@ function encodeFsName(name: string, encoding: unknown): string | Uint8Array {
 /** The path as Node handed it, with a Buffer decoded. A symlink's target is this, not resolved. */
 function asWritten(path: unknown): string {
   if (typeof path === 'string') return path;
-  if (path instanceof Uint8Array) return new TextDecoder().decode(path);
+  if (path instanceof Uint8Array) return new TextDecoder().decode(unsharedBytes(path));
   return String(path);
 }
 
@@ -352,7 +689,7 @@ function asPath(path: unknown): string {
 class FSReqCallback {
   oncomplete: ((error: Error | null, ...rest: unknown[]) => void) | undefined;
   context: unknown;
-  constructor(public bigint = false) {}
+  constructor(public bigint = false) { observeNodeRequest(this); }
 }
 
 /** The symbol `fs.promises` passes where a callback would go. */
@@ -364,6 +701,7 @@ class FSReqCallback {
  * a flat list of name and type, and `null` when there is nothing left.
  */
 class DirHandle {
+  readonly #inScope = captureNodeResourceScope();
   #entries: Array<[string, number]>;
   #at = 0;
   #encoding: unknown;
@@ -381,7 +719,7 @@ class DirHandle {
     });
   }
   read(encoding?: string, bufferSize = 32, req?: FSReq): unknown {
-    return answer(req, () => {
+    return this.#inScope(() => answer(req, () => {
       if (this.#at >= this.#entries.length) return null;
       const batch: unknown[] = [];
       const enc = encoding ?? this.#encoding;
@@ -390,10 +728,10 @@ class DirHandle {
         batch.push(encodeFsName(name, enc), type);
       }
       return batch;
-    });
+    }));
   }
   close(req?: FSReq): undefined {
-    return answer(req, () => { this.#at = this.#entries.length; return undefined; });
+    return this.#inScope(() => answer(req, () => { this.#at = this.#entries.length; return undefined; }));
   }
 }
 
@@ -420,6 +758,8 @@ class FSEvent {
     const tree = vfs();
     const cwd = callingCwd();
     const owner = currentOwner();
+    // uv_fs_event_init initializes a referenced handle before start can fail.
+    observeNodeHandle(this, () => true);
     try {
       this.#watcher = tree.watch(name, { recursive: Boolean(recursive) }, ((event: string, filename: string | null) => {
         // libuv names a change `change` and a create or a remove `rename`,
@@ -428,48 +768,57 @@ class FSEvent {
           // libuv encodes the filename at this binding, including Buffer
           // when requested. Node's FSWatcher forwards it without conversion.
           this.onchange?.(0, event === 'rename' ? 'rename' : 'change', encodeFsName(filename ?? '', encoding))));
-        if (owner === null) notify();
-        else enterRun(owner, notify);
+        ownedRun(owner, notify, true, 'fs', this.onchange);
       }) as never) as unknown as { close(): void };
       this.initialized = true;
-      registerHandle(this);
+      registerHandle(this, true);
       if (persistent === false) unrefHandle(this);
       return 0;
     } catch (error) {
+      releaseHandle(this, true);
       const code = (error as { code?: string }).code;
       return code === 'ENOENT' ? -2 : -22;
     }
   }
 
   close(): void {
-    releaseHandle(this);
+    releaseHandle(this, true);
     this.initialized = false;
     try { this.#watcher?.close(); } catch { /* a watcher already closed is closed */ }
     this.#watcher = null;
   }
 
-  ref(): void { if (this.initialized) refHandle(this); }
-  unref(): void { unrefHandle(this); }
+  ref(): void { if (this.initialized || nodeHandleIsClosing(this)) refHandle(this); }
+  unref(): void { if (this.initialized || nodeHandleIsClosing(this)) unrefHandle(this); }
   getAsyncId(): number { return 0; }
-  hasRef(): boolean { return this.initialized && handleHasRef(this); }
+  hasRef(): boolean { return nodeHandleHasRef(this); }
 }
 
 /**
  * `StatWatcher`: what `fs.watchFile` is. It polls, as libuv's does, and the
  * interval is the one the program asked for.
  */
+/** The fields of one stat as the binding passes them (Node's kFsStatsFieldsNumber, 18 in v24.21.0). */
+const FS_STATS_FIELDS = 18;
 class StatWatcher {
-  onchange: ((current: Float64Array | BigInt64Array, previous: Float64Array | BigInt64Array) => void) | null = null;
+  #referenced = true;
+  #closed = false;
+  #closing = false;
+  /** Node's callback: the poll's status (0, or libuv's error for a file that is not there) and ONE array, the new stat's fields then the old one's. */
+  onchange: ((status: number, stats: Float64Array | BigInt64Array) => void) | null = null;
   #timer: ReturnType<typeof setInterval> | null = null;
   #previous: Float64Array | BigInt64Array | null = null;
-  constructor(public bigint = false) {}
+  constructor(public bigint = false) {
+    observeNodeHandle(this, handle => { const watcher = handle as StatWatcher; return !watcher.#closed && watcher.#referenced; });
+  }
 
   start(path: unknown, interval = 5007): number {
     const name = asPath(path);
     const tree = vfs();
+    let status = 0;
     const read = (): Float64Array | BigInt64Array => {
-      try { return statArray(tree.statSync(name), this.bigint); }
-      catch { return this.bigint ? new BigInt64Array(18) : new Float64Array(18); }
+      try { const values = statArray(tree.statSync(name), this.bigint); status = 0; return values; }
+      catch { status = UV_ENOENT; return this.bigint ? new BigInt64Array(FS_STATS_FIELDS) : new Float64Array(FS_STATS_FIELDS); }
     };
     this.#previous = read();
     this.#timer = setInterval(() => {
@@ -479,18 +828,31 @@ class StatWatcher {
       for (let index = 0; index < current.length; index += 1) {
         if (current[index] !== previous[index]) { changed = true; break; }
       }
-      if (changed) { this.#previous = current; this.onchange?.(current, previous); }
+      if (!changed) return;
+      this.#previous = current;
+      // lib/internal/fs/watchers.js `onchange(newStatus, stats)` reads the new stat at 0 and the old one at
+      // kFsStatsFieldsNumber of the same array. Handed two arrays, it took the old stat for both, so a
+      // `fs.watchFile` listener was called with `curr` equal to `prev` and saw no change in either.
+      const both = this.bigint ? new BigInt64Array(2 * FS_STATS_FIELDS) : new Float64Array(2 * FS_STATS_FIELDS);
+      (both as Float64Array).set(current as Float64Array, 0);
+      (both as Float64Array).set(previous as Float64Array, FS_STATS_FIELDS);
+      this.onchange?.(status, both);
     }, interval);
     (this.#timer as unknown as { unref?: () => void }).unref?.();
     return 0;
   }
 
   stop(): void { if (this.#timer !== null) { clearInterval(this.#timer); this.#timer = null; } }
-  close(): void { this.stop(); }
-  ref(): void {}
-  unref(): void {}
+  close(): void {
+    if (this.#closed || this.#closing) return;
+    this.#closing = true;
+    this.stop();
+    queueBindingTask(() => queueBindingTask(() => { this.#closed = true; forgetNodeHandle(this); }));
+  }
+  ref(): void { this.#referenced = true; }
+  unref(): void { this.#referenced = false; }
   getAsyncId(): number { return 0; }
-  hasRef(): boolean { return this.#timer !== null; }
+  hasRef(): boolean { return !this.#closed && this.#referenced; }
 }
 
 const fsEventWrapBinding = { FSEvent };
@@ -502,15 +864,65 @@ const fsEventWrapBinding = { FSEvent };
  */
 class FileHandle {
   constructor(public fd: number) {}
-  close(): Promise<void> { openFiles.delete(this.fd); return Promise.resolve(); }
+  close(): Promise<void> {
+    // A description a tree owns is closed by its owner, as `close` does.
+    const owner = ownedFds.get(this.fd);
+    if (owner) {
+      ownedFds.delete(this.fd);
+      try { owner.close(this.fd); } catch (error) { return Promise.reject(error); }
+      return Promise.resolve();
+    }
+    openFiles.delete(this.fd);
+    return Promise.resolve();
+  }
   release(): void { openFiles.delete(this.fd); }
   getAsyncId(): number { return this.fd; }
 }
 
+/** A native port can operate only on this caller's descriptor capability. */
+function advisoryOwner(fd: number, caller: TreeDescriptors | undefined): TreeAdvisoryLocks {
+  if (!Number.isInteger(fd) || fd < 0) throw createNodeError('EBADF', 'fcntl', String(fd));
+  const owner = ownerOf(fd);
+  if (!owner) {
+    fileFor(fd); // Preserve EBADF for an unknown or closed descriptor.
+    throw Object.assign(new Error('ENOSYS: descriptor owner has no advisory locks'), { code: 'ENOSYS', errno: -38 });
+  }
+  if (owner !== caller) throw createNodeError('EBADF', 'fcntl', String(fd));
+  if (!owner.advisoryLocks) {
+    throw Object.assign(new Error('ENOSYS: descriptor owner has no advisory locks'), { code: 'ENOSYS', errno: -38 });
+  }
+  return owner.advisoryLocks;
+}
+
 const fsBinding = {
+  // Native addons have OS advisory locks; Node's public fs API does not.
+  // A port asks only the already opened descriptor's real owner. No fallback
+  // table, fabricated success, native ABI number or ambient worker authority.
+  [Symbol.for('tabnode.fs.advisory-locks')](): TreeAdvisoryLocks {
+    const token = currentOwner(), tree = vfs(), caller = treeDescriptorsOf(tree);
+    // A compiled addon's proxy turn may enter after another guest ran. Keep
+    // this admitted caller and tree, like ordinary asynchronous fs requests.
+    const invoke = <T>(work: () => T): T => {
+      const result = ownedRun(token, () => withFilesystem(tree, () => ({ value: work() })));
+      if (!result) throw Object.assign(new Error('ESRCH: native descriptor caller did not run'), { code: 'ESRCH', errno: -3 });
+      return result.value;
+    };
+    return Object.freeze({
+      fcntl(fd, command, record) {
+        return invoke(() => advisoryOwner(fd, caller).fcntl(fd, command, record));
+      },
+      flock(fd, operation) {
+        invoke(() => advisoryOwner(fd, caller).flock(fd, operation));
+      },
+      releasePosixOnClose(fd) {
+        invoke(() => advisoryOwner(fd, caller).releasePosixOnClose(fd));
+      },
+    } satisfies TreeAdvisoryLocks);
+  },
   FSReqCallback,
   kUsePromises,
   StatWatcher,
+  kFsStatsFieldsNumber: FS_STATS_FIELDS,
 
   /** `fs.promises.open`: the same open, answered as a promise with a handle. */
   openFileHandle(path: unknown, flags: number, mode: number, usePromises?: unknown): Promise<FileHandle> | FileHandle {
@@ -522,7 +934,22 @@ const fsBinding = {
   open(path: unknown, flags: number, _mode: number, req?: FSReq): number | undefined {
     return answer(req, () => {
       const name = asPath(path);
+      const standard = stdioPath(name);
+      if (standard !== undefined) {
+        const fd = allocateFd();
+        stdioAliases.set(fd, standard);
+        if ((flags & flagBits().nonblock) !== 0) nonblockingAliases.add(fd);
+        return fd;
+      }
       const tree = vfs();
+      // A tree that owns its descriptions opens the file itself, flags and
+      // mode as given: the rules of open(2) are its own.
+      const owner = treeDescriptorsOf(tree);
+      if (owner) {
+        const fd = owner.open(name, flags, _mode);
+        ownedFds.set(fd, owner);
+        return fd;
+      }
       const bits = flagBits();
       const exists = tree.existsSync(name);
       if (exists && ((flags & 3) !== 0 || (flags & (bits.create | bits.truncate | bits.append)) !== 0)) {
@@ -547,8 +974,11 @@ const fsBinding = {
 
   close(fd: number, req?: FSReq): undefined {
     return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (owner) { ownedFds.delete(fd); owner.close(fd); return undefined; }
       const stream = handleForFd(fd);
       if (stream instanceof LibuvStreamWrap) { stream.close(); return undefined; }
+      if (stdioOf(fd) !== null) { stdioAliases.delete(fd); nonblockingAliases.delete(fd); return undefined; }
       fileFor(fd); openFiles.delete(fd); return undefined;
     });
   },
@@ -556,6 +986,15 @@ const fsBinding = {
   // ---- reading ------------------------------------------------------------
   read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number, req?: FSReq): number | undefined {
     return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (owner) return owner.read(fd, buffer, offset, length, positionOf(position));
+      const standard = handleForFd(fd) === undefined ? stdioOf(fd) : null;
+      if (standard !== null) {
+        // fd 1 and 2 are the write ends the run was given.
+        if (standard !== 0) throw createNodeError('EBADF', 'read', String(fd));
+        if (position !== null && position !== undefined && position >= 0) throw createNodeError('ESPIPE', 'read', String(fd));
+        return readStdin(fd, buffer, offset, length);
+      }
       const file = fileFor(fd);
       if ((file.flags & 3) === 1) throw createNodeError('EBADF', 'read', file.path);
       if (file.cached === undefined) file.cached = file.tree.readFileSync(file.path) as Uint8Array;
@@ -584,12 +1023,58 @@ const fsBinding = {
   /** Node's fast path for `readFile` with an encoding it can decode itself. */
   readFileUtf8(path: unknown, flags: number): string {
     const owned = typeof path !== 'number';
+    // A regular file's path read whole, read-only, over a tree that owns its descriptions is the tree's own whole
+    // read (S2 R23): the realm's store answers a stored file with no request, and anything else is one request of
+    // the kernel, where an open, an fstat, two reads and a close were five. Read permission and a file changed since
+    // the image are the tree's to say. Anything not a regular file (absent, a directory, a FIFO, a socket, a device)
+    // and /dev, /proc keep the descriptor path, where its open or read fails or blocks as Node's does.
+    if (owned && flags === 0) {
+      const name = asPath(path);
+      const tree = vfs();
+      const descriptors = treeDescriptorsOf(tree);
+      if (!name.startsWith('/dev/') && !name.startsWith('/proc/') && stdioPath(name) === undefined && descriptors) {
+        // A stat that fails (EACCES, ELOOP, ENAMETOOLONG) leaves the read to the open, whose error native gives:
+        // syscall 'open', where the stat's said 'stat' (review of 5cfc7d14c, minor 3).
+        let stats: ReturnType<typeof tree.statSync> | null;
+        try { stats = tree.statSync(name, { throwIfNoEntry: false }); } catch { stats = null; }
+        if (stats?.isFile()) return utf8KeepingBom.decode(tree.readFileSync(name) as Uint8Array);
+        // ABSENT, BY THE TREE'S OWN STAT (S2 T11): the ENOENT the open below would fetch from the kernel, thrown here
+        // as the tree's open builds it. Only a stat that answered undefined and that the tree knows was ENOENT:
+        // ENOTDIR answers undefined too and keeps the open, and a stat that fails leaves the read to the open below.
+        // A kept miss holds only while its directories' search does (the tree moves its namespace word on a chmod or
+        // chown of a directory). Dub's Next server read its optional manifests this way at
+        // its start (c6a11f38, the scored warm-up, worker 49, pid 10002: 292 ms of openAt -> syscall under
+        // readFileUtf8). A file made between the stat and where the open would have run is answered absent; native
+        // has the same window between two syscalls.
+        // The tree says whether that absence was ENOENT; an ENOTDIR (a file on the way) is left to the open's own error.
+        const absent = stats === undefined ? descriptors.absent?.(name) : undefined;
+        if (absent) throw absent;
+      }
+    }
     const fd = owned ? fsBinding.open(path, flags, 0o666) as number : path as number;
     try {
+      const owner = ownerOf(fd);
+      if (owner) {
+        // The size is the description's; a file still growing reads to its end.
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        for (let size = Math.max(owner.fstat(fd).size, 65536); ;) {
+          const chunk = new Uint8Array(size);
+          const read = owner.read(fd, chunk, 0, chunk.length, null);
+          if (read === 0) break;
+          chunks.push(chunk.subarray(0, read));
+          total += read;
+          size = 65536;
+        }
+        const whole = new Uint8Array(total);
+        let at = 0;
+        for (const chunk of chunks) { whole.set(chunk, at); at += chunk.length; }
+        return utf8KeepingBom.decode(whole);
+      }
       const file = fileFor(fd);
       const bytes = new Uint8Array(file.tree.statSync(file.path).size);
       const length = fsBinding.read(fd, bytes, 0, bytes.length, -1) as number;
-      return new TextDecoder().decode(bytes.subarray(0, length));
+      return utf8KeepingBom.decode(bytes.subarray(0, length));
     } finally { if (owned) fsBinding.close(fd); }
   },
 
@@ -602,6 +1087,18 @@ const fsBinding = {
         const bytes = buffer.subarray(offset, offset + length);
         const status = stream.writeBuffer(new WriteWrap(), bytes);
         if (status !== 0) throw createNodeError(errname(status), 'write', String(fd));
+        return bytes.length;
+      }
+      const owner = ownerOf(fd);
+      if (owner) return owner.write(fd, buffer, offset, length, positionOf(position));
+      const standard = stdioOf(fd);
+      if (standard !== null) {
+        // fd 0 is the read end the run was given.
+        if (standard === 0) throw createNodeError('EBADF', 'write', String(fd));
+        // A stream has no position, as a pipe or a terminal has none.
+        if (position !== null && position !== undefined && position >= 0) throw createNodeError('ESPIPE', 'write', String(fd));
+        const bytes = buffer.subarray(offset, offset + length);
+        writeStdio(standard, bytes);
         return bytes.length;
       }
       const file = fileFor(fd);
@@ -680,9 +1177,13 @@ const fsBinding = {
   },
 
   writeString(fd: number, value: string, position: number | null, encoding: string | undefined, req?: FSReq): number | undefined {
+    // The string's bytes in the encoding it was written with, as Node's own
+    // Buffer makes them: `writeSync(fd, 'ff', null, 'hex')` is one byte. Every
+    // encoding but UTF-8 was taken as latin1, so hex, base64 and utf16le
+    // wrote their text's characters instead.
     const bytes = encoding === 'utf8' || encoding === undefined || encoding === 'utf-8'
       ? new TextEncoder().encode(value)
-      : Uint8Array.from(value, (character) => character.charCodeAt(0) & 0xff);
+      : new Uint8Array(Bytes().from(value, encoding as BufferEncoding));
     return fsBinding.writeBuffer(fd, bytes, 0, bytes.length, position ?? null, req);
   },
 
@@ -731,6 +1232,10 @@ const fsBinding = {
 
   fstat(fd: number, bigint: boolean, req?: FSReq): Float64Array | BigInt64Array | undefined {
     return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (owner) return statArray(owner.fstat(fd), bigint);
+      const standard = handleForFd(fd) === undefined ? stdioOf(fd) : null;
+      if (standard !== null) return stdioStat(standard, bigint);
       const file = fileFor(fd);
       return statArray(file.tree.statSync(file.path), bigint, file.path);
     });
@@ -742,11 +1247,11 @@ const fsBinding = {
    * a disk: a block size, and a count no program can exhaust.
    */
   statfs(_path: unknown, bigint: boolean, req?: FSReq): Float64Array | BigInt64Array | undefined {
-    // The order Node's `getStatFsFromBinding` reads: type, bsize, blocks,
-    // bfree, bavail, files, ffree. `fs.statfs` and `fs.promises.statfs` pass
-    // their flavour here like every other call, and it was read as nothing.
+    // The order Node's `getStatFsFromBinding` reads (v24.21.0, eight fields): type, bsize, frsize, blocks,
+    // bfree, bavail, files, ffree. Seven were handed, without frsize, so every field after bsize was read one
+    // place early: frsize as the block count, bavail as the file count, ffree as undefined.
     return answer(req, () => {
-      const values = [0, 4096, 2 ** 31, 2 ** 31, 2 ** 31, 2 ** 20, 2 ** 20];
+      const values = [0, 4096, 4096, 2 ** 31, 2 ** 31, 2 ** 31, 2 ** 20, 2 ** 20];
       return bigint ? BigInt64Array.from(values.map((value) => BigInt(value))) : Float64Array.from(values);
     });
   },
@@ -840,12 +1345,16 @@ const fsBinding = {
     return answer(req, () => {
       const name = asPath(path);
       const tree = vfs();
-      const names = tree.readdirSync(name).map((entry) => encodeFsName(entry, encoding));
+      const entries = tree.readdirSync(name);
+      const names = entries.map((entry) => encodeFsName(entry, encoding));
       if (!withFileTypes) return names;
       // Node's own `Dirent` is built from a name and a type number, and the
       // binding answers the two lists side by side. Types are matched to the
-      // tree's string names; the encoding only changes what the caller reads.
-      const types = tree.readdirSync(name).map((entry) => {
+      // tree's string names, from the one listing the names came from (a
+      // second listing was a second open, getdents and close of the kernel's,
+      // and could differ from the first); the encoding only changes what the
+      // caller reads.
+      const types = entries.map((entry) => {
         try {
           const stats = tree.lstatSync(`${name.endsWith('/') ? name.slice(0, -1) : name}/${entry}`);
           if (stats.isDirectory()) return 2;
@@ -861,20 +1370,71 @@ const fsBinding = {
     return answer(req, () => {
       const name = asPath(path);
       const tree = vfs();
-      const wanted = mode & 0o777;
+      // Node's: the mode under the process's umask (uv_fs_mkdir is mkdir(2), which applies it), for every directory
+      // a recursive mkdir makes; it set the mode bare, so mkdirSync(p) made 0o777 where Node makes 0o755.
+      const realm = globalThis as unknown as { process?: { umask?: () => number } };
+      const mask = typeof realm.process?.umask === 'function' ? realm.process.umask() : 0o022;
+      const wanted = mode & 0o777 & ~mask;
       if (tree.existsSync(name)) {
         const stats = tree.statSync(name);
         if (!recursive || !stats.isDirectory()) throw createNodeError('EEXIST', 'mkdir', name);
         return undefined;
       }
+      // The directories this makes, shallowest first: a recursive mkdir answers the first (Node's
+      // MKDirpSync/MKDirpAsync: the first directory created).
+      const made = [name];
+      if (recursive) {
+        for (let parent = made[0]!.slice(0, made[0]!.lastIndexOf('/')); parent && !tree.existsSync(parent); parent = parent.slice(0, parent.lastIndexOf('/'))) made.unshift(parent);
+      }
       tree.mkdirSync(name, { recursive });
-      tree.chmodSync(name, wanted);
-      return undefined;
+      for (const directory of made) tree.chmodSync(directory, wanted);
+      return recursive ? made[0] : undefined;
     });
   },
 
   rmdir(path: unknown, req?: FSReq): undefined {
     return answer(req, () => { vfs().rmdirSync(asPath(path)); return undefined; });
+  },
+
+  /** Node24 moved synchronous rm out of JS rimraf into this binding. */
+  rmSync(path: unknown, maxRetries: number, recursive: boolean, retryDelay: number): undefined {
+    const name = asPath(path);
+    const tree = vfs();
+    const retryable = new Set(['EBUSY', 'EMFILE', 'ENFILE', 'ENOTEMPTY', 'EPERM']);
+    // The native entry uses status (follows links) before remove/remove_all,
+    // whose traversal itself never follows a link. Keep the same distinction.
+    const initial = tree.statSync(name, { throwIfNoEntry: false });
+    if (!initial) return undefined;
+    if (initial.isDirectory() && !recursive) {
+      throw Object.assign(createNodeError('EISDIR', 'rm', name), { code: 'ERR_FS_EISDIR' });
+    }
+    const remove = (target: string): void => {
+      const stats = tree.lstatSync(target, { throwIfNoEntry: false });
+      if (!stats) return;
+      if (!stats.isDirectory()) { tree.unlinkSync(target); return; }
+      if (!recursive) throw Object.assign(createNodeError('EISDIR', 'rm', target), { code: 'ERR_FS_EISDIR' });
+      for (const entry of tree.readdirSync(target)) remove(`${target.endsWith('/') ? target.slice(0, -1) : target}/${entry}`);
+      tree.rmdirSync(target);
+    };
+    for (let attempt = 0; ; attempt++) {
+      try { remove(name); return undefined; }
+      catch (error) {
+        const code = (error as { code?: string }).code;
+        if (code === 'ENOENT') return undefined;
+        if (!recursive || !code || !retryable.has(code) || attempt >= maxRetries) {
+          if (code && code !== 'ERR_FS_EISDIR') throw createNodeError(code, 'rm', name);
+          throw error;
+        }
+        // The isolated worker can block as Node's synchronous rm does. Only
+        // an actual transient filesystem failure needs this wait; no pending
+        // timer or fabricated successful deletion substitutes for it.
+        if (retryDelay > 0) {
+          if (typeof SharedArrayBuffer !== 'function') throw createNodeError('ENOTSUP', 'rm', name);
+          try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, (attempt + 1) * retryDelay); }
+          catch { throw createNodeError('ENOTSUP', 'rm', name); }
+        }
+      }
+    }
   },
 
   unlink(path: unknown, req?: FSReq): undefined {
@@ -953,26 +1513,50 @@ const fsBinding = {
   },
   fchmod(fd: number, mode: number, req?: FSReq): undefined {
     return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (owner) { owner.fchmod(fd, mode); return undefined; }
       const file = fileFor(fd);
       file.tree.chmodSync(file.path, mode);
       return undefined;
     });
   },
-  chown(_path: unknown, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => unsupportedMetadata('chown')); },
-  fchown(_fd: number, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => unsupportedMetadata('fchown')); },
-  lchown(_path: unknown, _uid: number, _gid: number, req?: FSReq): undefined { return answer(req, () => unsupportedMetadata('lchown')); },
+  chown(path: unknown, uid: number, gid: number, req?: FSReq): undefined {
+    return answer(req, () => {
+      const owner = treeDescriptorsOf(vfs());
+      if (!owner?.chown) return unsupportedMetadata('chown');
+      owner.chown(asPath(path), uid, gid, true); return undefined;
+    });
+  },
+  fchown(fd: number, uid: number, gid: number, req?: FSReq): undefined {
+    return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (!owner?.fchown) return unsupportedMetadata('fchown');
+      owner.fchown(fd, uid, gid); return undefined;
+    });
+  },
+  lchown(path: unknown, uid: number, gid: number, req?: FSReq): undefined {
+    return answer(req, () => {
+      const owner = treeDescriptorsOf(vfs());
+      if (!owner?.chown) return unsupportedMetadata('lchown');
+      owner.chown(asPath(path), uid, gid, false); return undefined;
+    });
+  },
   utimes(path: unknown, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => { vfs().utimesSync(asPath(path), new Date(atime * 1000), new Date(mtime * 1000)); return undefined; }); },
-  futimes(fd: number, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => { const file = fileFor(fd); file.tree.utimesSync(file.path, new Date(atime * 1000), new Date(mtime * 1000)); return undefined; }); },
+  futimes(fd: number, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => { const owner = ownerOf(fd); if (owner) { owner.futimes(fd, atime, mtime); return undefined; } const file = fileFor(fd); file.tree.utimesSync(file.path, new Date(atime * 1000), new Date(mtime * 1000)); return undefined; }); },
   lutimes(path: unknown, atime: number, mtime: number, req?: FSReq): undefined { return answer(req, () => {
     if (treeHoldsLinks()) return unsupportedMetadata('lutimes');
     vfs().utimesSync(asPath(path), new Date(atime * 1000), new Date(mtime * 1000));
     return undefined;
   }); },
-  fsync(_fd: number, req?: FSReq): undefined { return answer(req, () => undefined); },
-  fdatasync(_fd: number, req?: FSReq): undefined { return answer(req, () => undefined); },
+  // The engine's own tree is memory, with nothing to flush; a tree that owns
+  // the description flushes it as its fsync(2) does.
+  fsync(fd: number, req?: FSReq): undefined { return answer(req, () => { ownerOf(fd)?.fsync(fd); return undefined; }); },
+  fdatasync(fd: number, req?: FSReq): undefined { return answer(req, () => { ownerOf(fd)?.fsync(fd); return undefined; }); },
 
   ftruncate(fd: number, length: number, req?: FSReq): undefined {
     return answer(req, () => {
+      const owner = ownerOf(fd);
+      if (owner) { owner.ftruncate(fd, length); return undefined; }
       const file = fileFor(fd);
       if ((file.flags & 3) === 0) throw createNodeError('EBADF', 'ftruncate', file.path);
       const tree = file.tree;

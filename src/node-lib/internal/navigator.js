@@ -79,8 +79,10 @@ function getNavigatorPlatform(arch, platform) {
 }
 
 class Navigator {
-  // Private properties are used to avoid brand validations.
+  // Private properties are used to avoid brand validations: reading a private
+  // field from a non-Navigator receiver throws a TypeError on its own.
   #availableParallelism;
+  #locks;
   #userAgent;
   #platform;
   #languages;
@@ -93,7 +95,7 @@ class Navigator {
   }
 
   /**
-   * @return {number}
+   * @returns {number}
    */
   get hardwareConcurrency() {
     this.#availableParallelism ??= getAvailableParallelism();
@@ -101,16 +103,28 @@ class Navigator {
   }
 
   /**
-   * @return {string}
+   * @returns {LockManager}
+   */
+  get locks() {
+    this.#locks ??= require('internal/locks').locks;
+    return this.#locks;
+  }
+
+  /**
+   * @returns {string}
    */
   get language() {
+    // `language` does not read a private field, so brand-check explicitly
+    // to keep parity with the other getters when called on a non-Navigator
+    // receiver (e.g. `Navigator.prototype.language`).
+    this.#languages; // eslint-disable-line no-unused-expressions
     // The default locale might be changed dynamically, so always invoke the
     // binding.
     return getDefaultLocale() || 'en-US';
   }
 
   /**
-   * @return {Array<string>}
+   * @returns {Array<string>}
    */
   get languages() {
     this.#languages ??= ObjectFreeze([this.language]);
@@ -118,7 +132,7 @@ class Navigator {
   }
 
   /**
-   * @return {string}
+   * @returns {string}
    */
   get userAgent() {
     this.#userAgent ??= `Node.js/${StringPrototypeSlice(nodeVersion, 1, StringPrototypeIndexOf(nodeVersion, '.'))}`;
@@ -126,7 +140,7 @@ class Navigator {
   }
 
   /**
-   * @return {string}
+   * @returns {string}
    */
   get platform() {
     this.#platform ??= getNavigatorPlatform(arch, platform);
@@ -140,6 +154,7 @@ ObjectDefineProperties(Navigator.prototype, {
   languages: kEnumerableProperty,
   userAgent: kEnumerableProperty,
   platform: kEnumerableProperty,
+  locks: kEnumerableProperty,
 });
 
 module.exports = {

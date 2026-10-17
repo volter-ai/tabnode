@@ -9,9 +9,12 @@
  * when the running program's own `process.stdout.isTTY` says so -- which is
  * what a held run gets, and what a program reads to decide on colour.
  */
+import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
 import { guessHandleTypeOfFd, handleForFd, registerFd, releaseFd } from './fds';
 import { UV_EBADF, UV_EIO, UV_ENOTSUP } from './uv';
+import { currentOwner, forgetNodeHandle } from './handles';
+import { __runFor } from '../../process-tokens';
 
 export interface TerminalState {
   columns: number;
@@ -32,7 +35,7 @@ class TerminalEndpoint {
   pump(): void {
     if (this.scheduled) return;
     this.scheduled = true;
-    queueMicrotask(() => {
+    queueBindingTask(() => {
       this.scheduled = false;
       while (this.input.length) {
         const reader = [...this.readers].find(handle => handle.reading && !handle.closed && !handle.descriptor.closed);
@@ -75,6 +78,7 @@ export class TTY extends LibuvStreamWrap {
     this.endpoint?.readers.add(this);
     if (ctx && typeof ctx === 'object' && !isTTY(fd)) {
       ctx.code = 'ENOTTY';
+      forgetNodeHandle(this);
     }
   }
 
@@ -173,11 +177,30 @@ export function resizePty(fd: number, columns: number, rows: number): void {
 /** libuv's `uv_guess_handle(fd) === UV_TTY`, as the running program sees it. */
 export function isTTY(fd: number): boolean {
   if (fd !== 0 && fd !== 1 && fd !== 2) return guessHandleTypeOfFd(fd) === 'TTY';
-  const realm = (globalThis as unknown as {
-    process?: { stdin?: { isTTY?: boolean }; stdout?: { isTTY?: boolean }; stderr?: { isTTY?: boolean } };
-  }).process;
-  const stream = fd === 0 ? realm?.stdin : fd === 1 ? realm?.stdout : realm?.stderr;
+  // The asking run's own streams, which carry its per-fd terminals: in a
+  // realm several guests share, the global `process` is whichever ran last.
+  type Streams = { stdin?: { isTTY?: boolean }; stdout?: { isTTY?: boolean }; stderr?: { isTTY?: boolean } };
+  const token = currentOwner();
+  const own = token === null ? undefined : __runFor(token)?.process as unknown as Streams | undefined;
+  const proc = own ?? (globalThis as unknown as { process?: Streams }).process;
+  const stream = fd === 0 ? proc?.stdin : fd === 1 ? proc?.stdout : proc?.stderr;
   return stream?.isTTY === true;
 }
 
-export default { TTY, isTTY, openPty, resizePty };
+/**
+ * What the asking run's fd 0, 1 or 2 is, as the run said (`stdioKind`, kept on
+ * its process), else a terminal or a pipe by its stream's `isTTY`.
+ */
+export function stdioKindOf(fd: 0 | 1 | 2): 'tty' | 'pipe' | 'file' | 'char' {
+  const token = currentOwner();
+  const own = token === null ? undefined : __runFor(token)?.process as unknown as Record<symbol, unknown> | undefined;
+  const proc = own ?? (globalThis as unknown as { process?: Record<symbol, unknown> }).process;
+  const kinds = proc?.[Symbol.for('tabnode.run.stdioKinds')] as readonly ('tty' | 'pipe' | 'file' | 'char')[] | undefined;
+  return kinds?.[fd] ?? (isTTY(fd) ? 'tty' : 'pipe');
+}
+
+// Node24.21/libuv uv_tty_mode_t; endpoint mode refusals remain ADR-0023.
+export const UV_TTY_MODE_NORMAL = 0;
+export const UV_TTY_MODE_IO = 2;
+export const UV_TTY_MODE_RAW_VT = 3;
+export default { TTY, isTTY, openPty, resizePty, UV_TTY_MODE_NORMAL, UV_TTY_MODE_IO, UV_TTY_MODE_RAW_VT };

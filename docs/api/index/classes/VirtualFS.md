@@ -163,6 +163,28 @@ Get stats for path
 
 ***
 
+### contentDigest()
+
+> **contentDigest**(`_path`): `string` \| `undefined`
+
+The plain SHA-256 of a file's current bytes, as 64 lowercase hex characters; undefined where the tree holds
+no digest (a file written since its image, a tree that keeps no digests). An image record is an answer only
+after its bytes have been verified against it, before first use. An adapter may read once for that
+verification and retain the result for the immutable pack generation and extent; a path alone is no identity.
+This tree keeps none. The loader uses an answer as a content digest, never as a path-based prepared key.
+
+#### Parameters
+
+##### \_path
+
+`string`
+
+#### Returns
+
+`string` \| `undefined`
+
+***
+
 ### copyFileSync()
 
 > **copyFileSync**(`src`, `dest`): `void`
@@ -526,6 +548,18 @@ Add event listener (for change notifications to workers)
 ##### Returns
 
 `this`
+
+***
+
+### processHostname()
+
+> **processHostname**(): `string`
+
+A kernel-backed tree supplies this process channel's current UTS name.
+
+#### Returns
+
+`string`
 
 ***
 

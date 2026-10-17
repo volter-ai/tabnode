@@ -208,6 +208,30 @@ The numbers a live process carries, looked up by its own pid.
 
 > **exports**: `unknown`
 
+### runNode
+
+> **runNode**: (`argv`, `options?`) => `Promise`\<[`RunResult`](../interfaces/RunResult.md)\>
+
+Start the engine's Node from an argv vector, as `execve` starts a program:
+`argv[0]` is the program's name (`process.argv0`), then Node's options,
+the script or `-e` source, and its arguments. No command line is built and
+no shell runs; `env` is the whole environment. The options and the answer
+are `run`'s.
+
+#### Parameters
+
+##### argv
+
+readonly `string`[]
+
+##### options?
+
+[`RunOptions`](../interfaces/RunOptions.md)
+
+#### Returns
+
+`Promise`\<[`RunResult`](../interfaces/RunResult.md)\>
+
 ### runPid
 
 > **runPid**: (`token?`) => \{ `pid`: `number`; `ppid`: `number`; \} \| `undefined`

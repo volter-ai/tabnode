@@ -6,7 +6,7 @@
 
 # Interface: InitialProcessRegistration
 
-A run already admitted by the container owner into this realm's scope.
+The realm's own process, as its host admitted it (a kernel process: its identity is its kernel's).
 
 ## Properties
 

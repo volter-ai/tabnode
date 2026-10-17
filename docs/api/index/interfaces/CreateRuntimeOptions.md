@@ -14,6 +14,18 @@ Options for creating a runtime
 
 ## Properties
 
+### credentials?
+
+> `optional` **credentials?**: [`ProcessCredentials`](ProcessCredentials.md)
+
+Host-configured numeric identity; absent preserves uid/gid 1000 and groups [1000].
+
+#### Inherited from
+
+[`IRuntimeOptions`](IRuntimeOptions.md).[`credentials`](IRuntimeOptions.md#credentials)
+
+***
+
 ### cwd?
 
 > `optional` **cwd?**: `string`
@@ -31,6 +43,18 @@ Options for creating a runtime
 #### Inherited from
 
 [`IRuntimeOptions`](IRuntimeOptions.md).[`env`](IRuntimeOptions.md#env)
+
+***
+
+### httpParserModule?
+
+> `optional` **httpParserModule?**: `Module`
+
+llhttp compiled by the creating worker; structured-cloned into the guest realm.
+
+#### Inherited from
+
+[`IRuntimeOptions`](IRuntimeOptions.md).[`httpParserModule`](IRuntimeOptions.md#httpparsermodule)
 
 ***
 

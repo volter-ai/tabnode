@@ -1,8 +1,889 @@
 # Changelog
 
+Container hostname review correction: Node lookup uses the caller's mounted /etc/hosts, Docker image Hostname is ignored, and container domain defaults to (none). Admission requires a trusted identity; missing UTS transport returns ENOSYS; standalone DNS aliases stay outside identified containers. Older-engine adapters are guarded and the0.9.0 pin stays. Changed production outputs and full engine declarations emit; independent re-read and cycle execution remain.
+
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
 ## Unreleased
+
+- **A realm compiles Node's own library once, and may do it ahead** (browser-substrate S2 AC-LC12). A builtin's file is
+  compiled to a function once a realm and called into a module scope of its own at each load, as before. The new
+  export `precompileNodeLib(name)` compiles one ahead of its first require, running none of it, so a realm waiting for
+  its process can spend the wait there (LibreChat run 4: 332 ms of `compileNodeLib` self time over its 20 Node realms,
+  each on its own process's start). The realm keeps each compiled file for its life. Additive: a host detects the
+  export by its presence.
+- **A process's load clock says its heaviest bodies** (browser-substrate S2 AC-LC5). Where a reading is requested, the
+  `load-clock` record carries `heaviestBodies`: the 24 bodies that took longest from their link to their evaluation's
+  return, with the requires their evaluation made, by path. An importer's time holds its imports'; a body's own
+  resolve and read are its importer's, and an async or generator body is timed to its first suspension. A run with no
+  reading requested keeps no clock, and none of this.
+- **A module's body is shorter to compile and quicker to link** (browser-substrate S2 AC-LC15). The wrapper's scope is
+  its parameters, given their values at the call, instead of a header of 25 `var` statements copying them from other
+  parameters and from the guest's global: 1,025 characters a body, compiled again for each with their bytecode, are now
+  510 (501 for an ES module, 29 fewer where a body needs no `with`) with no statement but the `process` assignment.
+  Which way a body runs is read from its marks where they can be: the top-level-await mark at its end only, the import
+  await mark in an ES module's body only, instead of two scans of every body's whole text. A body whose own source
+  merely holds a mark's text is no longer taken for an async or generator body. A stack column on a body's first line
+  moves with the shorter header, as it moved with the longer one. The wrapper's `$filename`, `$dirname`, `$console` and `$importMeta` names, which no lowered
+  text uses, are no longer in a body's scope: a body sees Node's names and the `$` names lowered text uses.
+- **A module's body starts with less of the engine's own work** (browser-substrate S2 AC-LC14). Every module of a
+  runtime (its REPL too) shares one `console` wrapper, made at its first body and kept by its options, as Node's
+  modules share one console, instead of a new object of ten closures made for each body and each `require`; and a body's header assigns `process` to its global once, not twice through the same
+  object (`global` is `globalThis`), so one guest-global trap fewer runs for each body.
+
+## v0.15.1 — 2026-10-14
+
+- **An awaiting turn queues one microtask, not two** (browser-substrate S2 AC-LC9). A compiled async function's
+  resumption made a closure and queued it to end its turn's account, and queued a second task to put its context
+  frame back to the root where its frame changed; the turn's end is now one function, queued once, and it puts the
+  frame back too. Where a turn's end was already pending, the frame now goes back with it, before a task queued in that
+  turn rather than after it, as the next turn's start from the root has it.
+
+## v0.15.0 — 2026-10-14
+
+Kept paths carried across runs (browser-substrate ADR-0152, S2 AC-LC10). Additive: two new exports, which a host
+detects by their presence before it hands a seed, so an engine without them is never asked; nothing a realm resolves
+changes for a host that hands none, and no lowered text changes, so the prepared format stays `tabnode-prepared-7`.
+Cut as 0.15.0, a minor release, for the new public exports.
+
+- **A process can start with the paths its project's last run kept** (browser-substrate ADR-0152, S2 AC-LC10).
+  `seedKeptResolutions(entries, filesystem?)` seeds every kept-paths table the realm makes (only that filesystem's, where one is named) with `(directory + "\0" + name, path)`
+  pairs, within R76's bounds; `keptResolutions()` returns what the realm's tables keep now. The host hands a seed only
+  for a table resolved on the same files; nothing changes for a host that hands none. `resolveSplit.keptPaths.carried`
+  says how many a table started with.
+
+## v0.14.0 — 2026-10-14
+
+- **Breaking: tabnode's scope form leaves the public API** (browser-substrate ADR-0129 step 3). A container owner no
+  longer hands a run from its realm's registry to another realm's: `createProcessRegistryScope`,
+  `ownerProcessRegistryScope`, `ownerProcessTable` and `ProcessRegistryScope.adoptRun` are removed. A host gives each
+  realm a kernel's registry through `installProcessRegistry`, which stays, as does the engine's own local registry
+  for a realm no host gives one. Released as 0.14.0: in 0.x a minor version carries a breaking change, so a `^0.13`
+  consumer is not moved onto it.
+
+## v0.13.0 — 2026-10-14
+
+The browser-substrate ADR-0129 integration (the kernel owns every process), with the synchronous-child ownership
+below. Each feature is additive and announced by a marker a host checks before it relies on it, so an engine without
+it is never asked; none changes the lowered text, so the prepared format stays `tabnode-prepared-7`. Cut as 0.13.0, a
+minor release, for the new public run options and exports.
+
+- The engine as a client of the kernel's store, its citations naming ADR-0006 on this line.
+- A run's fd 0 can be a reader over the host kernel's own pipe (`RunOptions.stdinReader`; marker `RUN_STDIN_READER`).
+- A process's signal listeners are its dispositions, told to its registry (`ProcessRegistry.disposition`; marker
+  `RUN_SIGNAL_DISPOSITIONS`); a listener's name reaches the disposition words only as a signal's own name.
+- **Behaviour change for a host whose registry sets `ProcessRegistry.kernel`:** a host-run child's `kill()` now goes
+  through the kernel registry (the kernel delivers it), where 0.12.0 ended the run itself. A kernel refusal (EPERM)
+  is thrown out of `ChildProcess.kill()`, and SIGSTOP and SIGCONT are delivered as SIGTERM (no stop is modelled
+  yet). A host that does not set `kernel` is unchanged.
+- A run handed its own tree gets that tree's shell at routing, and `run()` reads `RunOptions.filesystem` as `runNode`
+  does (marker `RUN_LINE_FILESYSTEM`); `tokenOfPid` takes the caller's pid namespace.
+- A run's initial environment is published with its identity, for the process table's `/proc/<pid>/environ`.
+- **A TCP server or Unix-socket listener passed over IPC is a duplicate of its socket**, as SCM_RIGHTS duplicates a
+  descriptor: before, it crossed as the sender's own instance, so the sender's close ended the receiver's listener.
+  Either member accepts, in turn, and the socket listens until its last member closes; a bound, not-yet-listening
+  socket (cluster's shared handle) keeps its bound name in the copy. A connection reaching a socket no member serves
+  yet waits in the socket's accept queue, owned by no run until a member accepts it; the last listener's close
+  resets what is queued (ECONNRESET), as Linux does. For a Pipe, the binder's close takes the socket's path with its
+  node, as libuv and Linux do, and a passed copy accepts only by descriptor; a socket in the abstract namespace has
+  no node, so its name passes at a close to a member still open.
+- Let a trusted synchronous child host explicitly own all children of the current
+  run, including image scripts and Node programs the engine can resolve. Use the
+  existing admitted host process/wait path before Worker fallback; preserve
+  other embeddings' classification, precise refusals and raw Worker restriction.
+  Honor explicit host image-handoff/end evidence before synthesizing a local
+  launch failure; an admitted child still reaps its actual kernel end.
+  The paired page retires its original descriptor release lease separately
+  from an image's own close/end, including when Node receives a second channel.
+  Source only; paired host integration, release and application qualification
+  remain separate (substrate Articles 1/5/6/8/9).
+
+## v0.12.0 — 2026-10-14
+
+- A rewritten `new` passes the making module's dynamic import in both of the engine's lowerings (Codex 91): the
+  guest-name rewrite passed only `$process`, so a guest-scoped body's `new Function(...)` lost its module's loader,
+  while the `with`-scope rewrite passed it. The lowered text changes, so the prepared format moves to
+  `tabnode-prepared-7`: bodies prepared by 0.11.x (format 6, the old constructor wrap) are not found and are prepared
+  again, at both scoped `runModuleBody` read paths. A minor release, 0.12.0 (CONTRIBUTING's rule; the merge that sets
+  the version is published as it, RELEASING.md). `String(fn)` restores both wraps, which only gives back source text
+  and never upgrades a stale body's execution.
+
+## v0.11.2 — 2026-10-14
+
+- The publish workflow sees a version set in a merge commit: `.github/autorelease.mjs` reads the version line's last
+  change with `--first-parent`, so a merge to `main` that sets a minor version is published as that version. Before,
+  `git log -G` skipped merges and took the bot's last release commit as the setter, so the merge of `w3/load-clock`
+  that set 0.11.0 was published as 0.11.1.
+
+## v0.11.1 — 2026-10-14
+
+- Merging `w3/load-clock` into `main`: both lines had moved the prepared format to `tabnode-prepared-5` for
+  different lowerings (main's for #12's made-function loader, load-clock's for K1/R16's guest-scope rewrite), so a
+  body prepared by v0.10.x would be taken under the same name by an engine that lowers its source differently. The
+  merged engine has both changes and moves the format to `tabnode-prepared-6`; bodies prepared by any earlier
+  version are prepared again (CONTRIBUTING's rule, a minor release).
+
+- Throw Node's ERR_PACKAGE_PATH_NOT_EXPORTED from `require` when the first package found has an `exports` map that names the subpath under no condition set, and stop the walk there; before, the resolver returned null, the walk went on to parent and global roots, and `require` said MODULE_NOT_FOUND. A program that branches on the code read the wrong answer: MeshCentral 1.2.6 took `require("otplib/package.json")` for a missing module and went to install it with npm. Stand-ins still answer first. A map that names the subpath but points at a missing file is unchanged, and so is the bundler's resolver (substrate Articles 5/8/9). `require.resolve(id, { paths })` lets that refusal end its lookup instead of trying the next directory, and a package's self-reference to a subpath its map refuses is refused the same way (Node's packageSelfResolve).
+
+- Preserve explicit receiver resource ownership during adoption, ignore Process reference changes before initialization, and permit watcher reference changes until pending close completes (substrate Articles 5/6/8/9).
+
+- Keep transferred stream requests with their adopted handle owner, retain directory operation scopes, and share process.binding’s native surface with the process-owned internal binding cache (substrate Articles 5/6/8/9).
+
+- Preserve failed watcher-start and exact Process close-callback observations; give explicit binding ownership priority over ambient guest tokens in nested standalone runtimes (substrate Articles 5/6/8/9).
+
+- Correct standalone accepted-handle custody, failed-spawn initialization and polling-watcher initialization/close observations in process enumeration; preserve real resource identity and existing liveness/transport behavior (substrate Articles 5/6/8/9).
+
+- Add process._getActiveHandles and process._getActiveRequests over real process-owned binding wrappers and requests, following Node’s owner links and reference filtering. Preserve resource identity, liveness accounting and transport behavior; remove observations on completion, close and exit. Activepieces’ pm2 caller previously threw because these APIs were absent (substrate Articles 5/6/8/9; [source reading](docs/readings/s1-process-active-resources.json)). Source only; application qualification remains open.
+
+- A run's native-binding map (the substrate's ADR-0094) is given to the engine as data, once, and applied inside
+  its own resolution only where it can apply, so no require runs a resolve hook (S2: the hook chain was ~83 ms of
+  LibreChat's server start in the tab). The map is fixed once given (a non-writable property, a frozen lookup), and a
+  file: specifier is read by Node's own fileURLToPath, so an encoded '/' or a foreign host still throws. One answer
+  changed: requirePlain's rollup, esbuild and prettier intercepts run before the map, so a request for one of them
+  that the map would have refused (or that does not resolve) is answered with the engine's stand-in, where the hook
+  answered MODULE_NOT_FOUND or ERR_UNPREPARED_PROVISION. That is the engine's own answer with no hook, and it is
+  kept (Articles 5/9).
+
+- Route native-addon fcntl/flock and logical POSIX close through the captured
+  process/tree's actual descriptor owner, refusing absent authority and
+  foreign descriptors; preserve Node's library files and ordinary fs APIs
+  (Articles 5/6/9). Source only, paired runtime review/admission remains.
+
+- Requested module evaluation evidence includes the digest of original _compile text, or the verified source digest selecting an image-prepared body, and whether the completed synchronous body replaced exports. Only an explicitly selected source is hashed; original loading, cached-body use, exports and errors remain unchanged. Host callbacks receive immutable scalar evidence, and source records retire when their compilation or prepared-body execution ends (substrate Articles 1/5/6/8/9).
+
+
+- Failed child host handoff (substrate Articles5/6/8/9): a synchronous throw or
+  rejected host run returns exit ownership only when the holder confirms no image
+  started and no end was posted. Publish a launch failure as127 (126 for permission
+  denial); live images, unknown lifecycle and already posted ends keep their host
+  exit ownership and descriptor-close ordering. Print a bounded code, child pid
+  and command path in the console without writing to a parent's protocol stderr.
+  Full production declarations emit against load-clock1e4e9e6; independent review
+  and the paired substrate cleanup's application reading remain pending.
+
+- K1/R16 evaluate (substrate Articles5/6/9; lead ruling m-71c68f37): a module
+  body runs in Node's own wrapper form, with no `with`. Preparation rewrites only
+  the free references to the 19 guest-global names (reads, writes, `typeof`,
+  updates, shorthand properties) to `__substrateGuestScope.<name>`, a bare call
+  keeping Node's undefined receiver; every other free name resolves lexically,
+  then globally, as in Node, instead of as a dynamic lookup through the `with`
+  object at every call. A body with a `with` statement or a direct `eval`, or one
+  that does not parse, keeps the `with` wrapper. Prepared bodies move to format
+  `tabnode-prepared-5` (`-6` once merged with #12's; see above). Unchanged from before: a bare read of a guest name the
+  guest lacks gives `undefined` where Node throws. A function's text
+  (`Function.prototype.toString`) reads as written: each edit's shape names the
+  reserved scope and is told apart by its own text, a body that names the
+  reserved names or writes a guest name with escapes keeps the `with` wrapper,
+  and a `new` callee's constructor wrap is undone too. Scopes follow Node's
+  (function and catch parameters do not see body declarations, a block's class
+  or a strict block's function is not hoisted, a static block is its own var
+  scope); a source's own guest-scoped mark is blanked, never trusted. Source only.
+
+- PLACEMENT-LOADER current-head integration (substrate Articles1/2/5/6/8/9):
+  merge approved private observation with34b5101's counted bodies, forwarding
+  utf8Bytes unchanged, and enable only an own observer options property via a
+  captured native check without absent-case allocations. Original worker/index
+  bundle stages and all declarations emit; [receipt](evidence/placement-loader/current-head-build-record.json).
+  Actual inspector/vendor-loader transport remains independently unqualified.
+
+- PLACEMENT-LOADER-RECORDS (substrate Articles1/2/5/6/8/9): replace filename
+  arrays with the host's private observes predicate over frozen records.
+  Own module state uses captured reflection and frozen argument records with
+  no prototype, excluding inherited array setters and mutable selection.
+  Changed worker/library bundles, runtime module closure and all declarations
+  emit within the original fixed bound; [build receipt](evidence/placement-loader/records-build-record.json).
+  Real paused-inspector/loader transport and manifest identity remain unqualified.
+
+- PLACEMENT-LOADER-INTRINSICS (substrate Articles1/2/5/6/8/9): capture
+  requested observer Reflect/Object/Set intrinsics before guest entry,
+  populate selection with indexed access, and observe only own loaded/export
+  data descriptors. Guest replacement of shared-realm methods cannot forge
+  the selection or its observer callback. Changed index/worker output and
+  all declarations emit in separate bounded stages of the unchanged config;
+  [build receipt](evidence/placement-loader/intrinsics-build-record.json).
+  Private consumer output and actual app/inspector transport await review.
+
+- PLACEMENT-LOADER-HOST (substrate Articles1/2/5/6/8/9): allow a local
+  execution host to observe successful synchronous module evaluation at
+  exact selected filenames through private Runtime/RunOptions. Ordinary
+  execution installs no body wrapper or per-body check. No guest global,
+  public Module hook, child-host inheritance or vendor call is added;
+  original outcomes remain intact. All original library outputs and declarations
+  emit in bounded, separate production invocations of the unchanged Vite
+  config; [source/build receipt](evidence/placement-loader/build-record.json).
+  Actual application observation and consumer transport remain unqualified.
+
+- R5 reading: the load clock says its body-count input's declared retained
+  bytes, now and at their peak (`retainedInputBytes`, `peakRetainedInputBytes`),
+  beside the exact-or-null byte totals. Readings only.
+
+- R5 counted bodies (substrate Articles5/6/9): where a reading is requested and
+  the tree says a prepared body's exact UTF-8 length beside its text (the
+  substrate's `readTextCounted`), the body is counted at once and only 64 bytes
+  are retained for it, not its text. A tree that says no length leaves the
+  body to the deferred count, unchanged. Source only.
+
+- R5 retention (Articles5/6/8/9): declare deferred load-clock prefix inputs
+  to the host's share of the requested 256 MiB tab trace bound; drop/release whole source cohorts
+  with explicit loss and null subsequent byte totals. Exact surviving UTF8
+  cohorts still materialize only after release or before terminal handoff.
+  Terminal ownership releases arrays while retaining cumulative scalars.
+  Old-host delivery remains compatible; no raw-file-length shortcut lands.
+
+- S2 K1 compile (substrate Articles5/6/8/9): a body's wrapper no longer carries
+  the 19 guest-global accessors as an object literal. One null-prototype scope
+  of the same live, sloppy-silent accessors is made per process and passed in,
+  so V8 no longer parses ~2,100 characters and 38 accessor functions per
+  compiled body or makes 38 closures per run (Cal: 8,456 bodies to first head,
+  compile 743 ms). Its accessors are non-configurable, so one body's `delete`
+  cannot strip a name from later bodies. Saving awaits a mini Cal lap.
+
+- Reuse the private internal require context for an admitted module parent
+  within its module-cache class. Keep the filename live, preserve fresh public
+  createRequire/arbitrary-parent behavior and live hooks, and reset both
+  transient maps plus currentVfs before reuse. Existing successful-path and
+  package-config cache lifetimes are unchanged (substrate Articles5/6/7/8/9;
+  production emission/review and Cal runtime saving pending).
+- Container hostname follow-up: handle missing and unreadable /etc/hosts in one DNS fallback path; surface EIO transport failures. Full declarations and changed production JS emit. No app execution or runtime qualification. Retained receipt hostname-hosts-error-followup.json SHA256 e128facd7b9414c88c819a0224c1e7878ad230eaf1b4a27f9989ed6eab5430bd.
+
+Container hostname fork/inspect correction: the inherited kernel channel supplies the fork's container identity to root/pthread UTS and resolver policy. Docker inspect reports the prepared identity and creation hostname; Node lookup skips an unreadable hosts file. Changed production closures and full engine declarations pass; independent re-read and cycle qualification remain.
+
+- First-request attribution (substrate Articles5/6/8/9): add requested-only
+  outsideSplit to the existing deferred load clock. Intersect synchronous VM
+  phases with outside, then partition its remainder using existing realm guest
+  dispatch brackets. Retain an explicitly unbracketed remainder, report clock
+  clipping, and exclude deferred byte-count work from the bracket account.
+  Filesystem blocking remains a nested overlay. No new timer, guest hook,
+  scheduling change or compile-cache claim; runtime figures await the mini.
+
+- Restore Node/libuv spawn uid/gid in async and sync child setup and registry admission; preserve private-record inheritance and default 1000. Source build validation only; runtime qualification pending.
+
+- K5b (substrate Articles 5/6/8/9): reuse process-owned VM declaration preparation by source and a frozen realm-local evaluator, preserve fresh sandbox scopes/arrays and captured source, and gate parse/setup/eval/cache counters on the R5 reading request. Runtime graph and package declarations emit; independent review/full consumer emission/five-lap attribution remain.
+
+- R5 compatibility correction (substrate Articles5/6/8/9): an installed old-host trace sink without selection symbols retains full readings across independently updated heads; explicit selection remains authoritative. Skip require-path counters/replacement source/stack capture when unrequested, while warning reports retain their host/console path. Production library bundle/declarations pass; early dedicated-worker delivery still requires the independent lap.
+
+- R5 (substrate Articles5/6/8/9): collect module clocks, resolver counters, HTTP boundary samples and native-stream/socket evidence only for a host-requested reading. Unrequested browser realms retain their functional caches, guest output and stream accounting; standalone/file hosts retain their existing readings unless explicitly deselected. Producer timestamps and quiet timers are skipped before payload construction. Production library bundle/declarations emitted; record delivery and cost remain independently unqualified.
+- Delegate uncached CommonJS files through their actual `module.load` so caller-installed completed-load hooks publish exports. Preserve the longest extension selector and cached circular partial exports. Track pending load state on the module without inspecting arbitrary guest exports; a rejected body removes only its own cached module and original admission parent edge (substrate Articles5/8/9; [source/build receipt](evidence/module-load/reading.json), production bundle/declarations compiled and bounded independent source review cleared; unchanged Wekan start pending).
+
+- R11 follow-up (substrate Articles5/6/8/9): stop self-reference and #imports package-scope walks before root/node_modules, matching Node24.21 TraverseParent; a nearest config without imports ends that lookup. Document statSync's undefined-only-ENOENT/ENOTDIR contract. The kernel-backed implementation already throws EACCES/EIO; source evidence is retained, with no kernel behavior change or measured gain claimed.
+
+- R11 (substrate Articles5/6/8/9): retain proved ENOENT/ENOTDIR/EISDIR package-config absences for the process and filesystem lifetime, matching Node24.21 GetPackageJSON. A later-created package.json remains unseen by that process. General file/stat misses, invalid/unreadable configs and other process/trees do not acquire sticky absences. Existing deferred module-clock records add resolveSplit.packageConfigs lookup/positive-hit/negative-hit/check/read/retained-miss counters. Production library bundle/declarations pass; independent first-request cost and behavior remain unqualified.
+
+- R9 post-merge (substrate Articles 1/5/6/8/9): deliver native owner-stop read/close callbacks as deferred binding work after the current call and Node's write-error ticks. A write that discovers transport loss returns EPIPE before stopped is set; late completions cannot change bytesWritten or submit remaining chunks after their request ended. The paired transport pauses sync attempts for100ms after a handoff and documents conservative channel-close priority. Production bundle/declarations pass; independent Dub reading owed, with no measured saving claimed.
+
+- R9 (substrate Articles 1/5/6/8/9): restore Node's native try-write/async flag for fully accepted bounded TCP/Pipe writes. The paired holder limits its synchronous wait to1ms, then atomically hands the same submission to ordered async completion. The driver awaits its Promise without resending bytes; EAGAIN, larger vectors and descriptor sends keep their native queue. Transport failure returns ECANCELED/EPIPE through Node's write-error path and emits completion evidence. Synchronous callbacks, request lifetime and queue accounting settle once. Older holders without the bounded method stay async. Corrected bundle/declaration compilation passes; independent static/Dub reading owed, with no measured saving claimed.
+
+- R11 (substrate Articles 5/6/7/8/9): capture the existing module clock at the process-owned first HTTP request and successful writeHead. Reuse K5's scalar identity and deferred evidence owner, preserving quiet/exit records and Node delegation. Production bundle/declarations compile; actual phase attribution and runtime gain remain pending.
+
+
+- D2 audit (substrate Articles 1/5/6/8/9): retain hashes and drain fields from 17 mini logs. The first-empty cut and named-loop completion are already on the head; current records observe zero timed empty looks. Identify Cal's pre-page seed separately from later World URL queries. Runtime behavior is unchanged.
+
+- J2 (substrate Articles5/6/8/9): make shell kill -0 use the caller's signal-zero authority before retained child handles and preserve signed query targets. Record the merged process.kill path through the shared kernel table and the existing World reclaimer/client-holder instruments; sibling runtime proof remains owed.
+
+- Keep K5 evidence data-only: capture body totals from the private process clock and prefer the recorded run PID, with scalar-only URL/PID/status fields. Non-scalar status arguments retain their Node coercion/delegation and record null plus statusType; caller functions/ports never enter trace transport (R5/K5; Articles 5/6/8/9; compiler evidence only).
+
+- R5/K5 (substrate Articles 5/6/8/9): restore the HTTP server to the unchanged Node24.21 bytes from495fed2 and move its bounded request/writeHead observer into owned runtime source. HTTP/HTTPS share three process-owned slots, with the existing private World-path exclusion and exact K5 fields/rounding plus pid for deferred producer identity. Raw evidence uses the deferred host owner; detach the emitter observer after sampling. Compilation and source identity only; delivery/cost qualification remains independent.
+
+- R5 (substrate Articles 5/6/8/9): route existing engine instrument lines from the guest console wrapper to the host evidence owner once, preventing synchronous duplicate console/stdout transport. Ordinary output keeps its existing path. R5/K5 above removes the remaining diagnostic insertion from Node's file; runtime delivery and first-page cost remain unqualified.
+
+- S2 initialization evidence (substrate Articles 5/6/8/9): capture the existing module clock at bounded native accepted-socket read and write-vector boundaries, attributed to the handle's actual process. Add shared timestamps and scalar stream correlation while preserving every existing field and quiet/exit emission. Byte totals remain deferred; no guest scheduling or application behavior changes. Initialization attribution awaits an independent matched capture.
+
+- Remove the unused S2 scoped HTTP-client API after tracing all five server launches to their already native-backed holder/client. Keep bounded writev gathering and write evidence. The earlier response-delay attribution is withdrawn; runtime interleaving remains unqualified (Articles 5/6/8/9).
+
+- S2 write evidence (substrate Articles 5/6/8/9): sample the first three accepted TCP write vectors per native listener and their first three transport chunks, recording vector sizes/iovec lengths, submission and completion. Diagnostic fields remain bounded and carry no bytes or capabilities; write ordering/credit is unchanged. No delay cause or runtime gain is claimed.
+
+- S2 first-answer (substrate Articles 5/6/8/9): provide a holder-loop HTTP client/parser scoped to the process's actual native listener, with cancellation through the existing stream client. Gather writev buffers within the existing transport chunk credit so small response heads/bodies/terminators are submitted together; keep asynchronous completions and larger-write backpressure. Vendored files and guest promise/preload scheduling are unchanged. Production compilation only; response interleaving remains independently unqualified.
+
+- Acknowledge listening-port registration/primary mapping on the controlling service-worker channel without invoking Node's HTTP handler; report actual document-response metadata for preview selection (E18; substrate Articles 5/6/8/9). Pending checks follow channel reconnects and reject closure/supersession/unsupported old workers. Bundle/declaration compilation only; runtime and cycle gain pending.
+- Port the existing registry-derived `crypto.getCurves()` repair (39754de) onto
+  the current load-clock engine: return fresh sorted names from its genuine
+  P-256/P-384/P-521 binding through named/default crypto exports, with export
+  accounting updated (substrate Articles 5/6/9; actual Seerr start pending).
+
+- Defer diagnostic UTF8 body counts through the host-owned evidence seam and retain compiled scripts by their already-known names for Node error positions (C6; substrate Articles 5/6/8/9; runtime/app-time reading pending).
+
+- Restore the module-clock caller phase after every require and include current-phase kernel blocking in captures; keep require-depth/stat-window and guest loading behavior unchanged (C6; substrate Articles5/6/8/9; runtime attribution pending).
+- S1-npm-version (substrate Articles 5/6/8/9): answer npm -v/--version from the calling image’s installed npm manifest and verified bin relationship, including symlinked CLI paths and catalog-replaced global aliases. Refuse absent, malformed or ambiguous metadata; no invented vendor version or install exemption. Image behavior remains independently unqualified.
+
+- Send engine instrumentation as owned fields through the host trace seam; defer summaries/JSON while preserving producer clocks and guest console behavior (R5; app-time qualification pending).
+- S2-D3 (substrate Articles 5/6/8/9): end a named Node process once its referenced loop remains empty after a native task/rejection checkpoint, including a silent entry. Recheck work scheduled by `beforeExit`; retain real references, caller holds and unregistered-run uncertainty rules. The checkpoint uses the existing native task channel, and drain traces retain D1 fields while adding actual timer wait, look work, checkpoint time and realm identity. Runtime cost and behavior remain with the independent N2 floors reading.
+
+- preparation-heap (substrate Articles1/2/6/8/9): assemble ESM declaration edits once with the shared span assembler, preserving source semicolons and stable ordering. Release AST references before output assembly and nested ESM lowering parses. Source recognition, transformations, body bytes/keys and heap limits stay unchanged; the original code-server image's build remains independent qualification.
+
+- D2 (substrate Articles 1/5/6/8/9): printed programs end at the first existing look with no new output and no referenced input, timers, ports, handles or held work. Remove the 500/100 ms idle waits and retain the 2 s silent rule, 60 s bound and caller-held lifetime. Short first-empty drains retain the D1 trace fields; five-app behavior remains the independent cycle's qualification.
+- process-load-env-file (substrate Articles 6/8/9): expose Node's synchronous `process.loadEnvFile`, reading the default `.env` or a validated string/byte/file-URL path through the process's native filesystem scope. Reuse the existing `util.parseEnv` binding, retain existing environment keys and interpreter options, and report Node's open/read errors while closing the descriptor. Bundle/declaration compilation and independent image qualification are recorded separately in the roadmap.
+
+- R4 (substrate Articles 3/5/6/8/9): extend socket-connect evidence through the actual TCP request callback, socket connect/timeout events and internal timeout firing. Retain native descriptor/request and guest socket identity, with connecting/destroyed state, connect listener count and timer cancellation state. Vendored Node files, callback ownership, connection and timer behavior stay unchanged; the historical Twenty timeout remains unresolved until its application socket trace is held.
+
+- C6-module-allocation (substrate Articles 1/6/8): the load-clock's exact UTF-8 body counters use the existing Node buffer binding, avoiding the legacy polyfill's temporary array of every encoded byte. The same trace adds `linkSplit.utf8CountMs` / `byteCounts` and `compileSplit.sourceCaptureMs` / `nativeEvalMs` / `sourceCaptures` / `evals`; compile splits cover the module compile phase only. Existing fields, source retention and guest execution stay unchanged. Bundle and declarations compile; app-time gain and the largest remaining phase await the mini.
+
+- Configure per-process numeric credentials through Runtime/createProcess, worker options and container runs; process uid/gid/effective-id getters and os.userInfo agree, and Node getgroups includes the effective gid. Scoped native spawn bindings carry immutable credentials through local/host children, shell runs and synchronous child workers. Defaults stay uid/gid 1000 and groups [1000]; image USER resolution and runtime qualification remain with the permissions family (ADR-0129).
+
+- K5 (substrate Articles 5/6/8): asynchronous fs callback and promise operations complete from host task turns instead of nextTick/microtasks, retaining the captured tree/cwd and owning run. Pending operations keep the run alive and cancel when it ends; synchronous fs calls are unchanged. Targeted source bundle emission passed; runtime and first-answer effect remain unqualified.
+
+- Node commands load --require/-r preloads before awaited --import preloads from NODE_OPTIONS and the command line, using the entry’s process cache and cwd. Imports settle before file or eval execution; execArgv remains available for child inheritance. Runtime qualification is pending.
+
+- C6: each existing `load-clock` line adds `script` (the basename of the process's entry argument), `preparedBodies`/`preparedBodyBytes` and `sourceBodies`/`sourceBodyBytes`. The new byte counters measure UTF-8 bodies before wrapping; bodies prepared and kept during this process count as source. Startup-stream files reach the same filesystem paths. Runtime counts and the native comparison await the metrics cycle.
+
+- K5a (substrate Articles 1/6): clarify that a filesystem's image digest is answered only after the bytes match that record, before first use. Packed adapters may retain verification by immutable generation and extent. The existing loader already derives prepared keys from that content digest; its key format and kernel path are unchanged. Compilation is the builder's check; runtime proof is separate.
+
+- llhttp can be compiled once asynchronously by the worker creating guest realms, then structured-cloned through `RuntimeOptions.httpParserModule`. The engine's WorkerRuntime shares that compile across workers. Each realm keeps its own parser instance, memory and callbacks; a standalone realm retains the synchronous compile and ERR_HTTP_PARSER_UNAVAILABLE. Count-only `llhttp-module` boot traces record compilation and installation; runtime proof across multiple realms is pending.
+- J2 (Constitution Article 6): process.kill(pid, 0) asks its registry's no-delivery signal-zero contract before self or child handles, keeping signed target meanings and errors other than ESRCH. Standalone process owners answer from their own map without raising a guest signal. Consumer integration and runtime proof remain owed.
+
+- Both module wrappers bind bare setImmediate and clearImmediate through the process’s existing guest timer face, so immediates return Node handles and participate in that process’s lifetime. Etherpad’s pinned queue rerun is pending.
+
+- esbuild.useHost returns the compiler thread’s attachment settlement so an embedder can finish initialization before a guest makes a synchronous call. Ending the host settles pending attachment and retires the worker’s blob URL. Companion and rerun proof pending.
+- Text is written into and read out of a `Buffer` over shared memory, as Node
+  does it. The platform's `TextEncoder.encodeInto` and `TextDecoder.decode`
+  refuse a shared view in Chromium, so `buffer.write`, `buffer.toString`
+  (UTF-8, latin1, UCS-2), `buffer.isUtf8`, a path given as bytes, a
+  `TextDecoder` given shared bytes and a `fetch` body that is a shared view go
+  through an unshared copy of exactly those bytes. pino's thread-stream is
+  such a Buffer. A buffer that is not shared takes the path it always took.
+
+## v0.10.1 — 2026-10-13
+
+## v0.10.0 — 2026-10-13
+
+- `import()` inside a function made with `new Function` loads through the module that made the function, so its
+  specifiers resolve as that module's own would (#12). The lowered module text changed with it, so
+  `PREPARED_MODULES_FORMAT` is now `tabnode-prepared-5`, and modules prepared by an earlier version are prepared
+  again: a minor release under CONTRIBUTING's rule (#13).
+
+## v0.9.1 — 2026-10-13
+
+- To follow, not yet changed: four optional members added in v0.9.0 and before
+  are second paths that only an embedder without them takes (the stream
+  transport's `post`, a started run's `setRef`, the host request's
+  `hold.changed`, the tree's `contentDigest`). Once browser-substrate
+  implements all four they become required, and the paths without them go.
+
+## v0.9.0 — 2026-10-08
+
+The engine answers more of Node 24.21.0's surface and several things every
+guest meets changed. The exported surface changed and one export answers
+differently for the same input, hence a minor release.
+
+**Breaking for a consumer that keeps prepared module bodies.**
+`preparedModuleKey` names the same file differently: the format id moved from
+`tabnode-prepared-3` to `tabnode-prepared-4` (e86c6e2). The key was a hash the
+engine computed over each source in JavaScript; it is now text made of the
+format id, the kind and the plain SHA-256 of the file's bytes, so a tree that
+already holds a file's digest gives the key with no read and no hash (Rallly
+spent 1.78 s of a 4.4 s start hashing sources, and 0.45 s reading them only to
+hash them). Bodies prepared under `tabnode-prepared-3` are not found by this
+engine. Nothing fails: each module is prepared again in the tab on first use,
+which is slow and silent. A consumer rebuilds its images when it moves the pin.
+
+Added
+
+- A second entry point, `@volter/tabnode/prepared-key`: the prepared body's
+  key derivation with no import of the engine, for a host that builds an image
+  and a page that reads one. From the index too: `preparedModuleKeyOf`,
+  `preparedModuleKind`, `isPreparedModuleKey`, `PREPARED_MODULES_FORMAT`,
+  `PREPARED_MODULES_KEPT`.
+- `VirtualFS` may answer `contentDigest(path)`; a tree that does lets a
+  prepared body be taken without reading its source.
+- `NativeStreamTransport` gains an optional `post(operation)`: a read grant and
+  a shutdown are sent without waiting for the stream owner's thread where the
+  transport offers it; a refusal arrives as the handle's failed read or the
+  shutdown's completion. A stream that stops reading takes an outstanding grant
+  back with a `readStop` call, so an owner never reads ahead for a socket its
+  realm has paused. Without `post` every operation is a call, as before.
+- `dist/surface.json`, made by `npm run build:surface`: every builtin's exports
+  against Node 24.21.0's (same, differs, wrong type, missing) and the binding
+  members Node's library asks for, measured from the built engine.
+- A runtime dependency, `@noble/curves` 2.3.0, for the curves below.
+- `node:crypto`: every export name Node 24.21.0 has is present; `hkdf`,
+  `hkdfSync`, `scrypt`, `scryptSync` and synchronous EC (P-256, P-384, P-521)
+  and Ed25519 key pairs, their PEM, DER and JWK encodings, `sign` and `verify`
+  are implemented; what is not implemented throws by name at the call.
+  `createPrivateKey` and `createPublicKey` refuse what is not a key.
+  No option of a key's encoding is dropped: each is read or refused by name.
+  A private key asked for with `cipher` and `passphrase` (from
+  `KeyObject.export`, `generateKeyPair` or `generateKeyPairSync`) is refused,
+  `ERR_CRYPTO_UNSUPPORTED_OPERATION`: this engine encrypts no key, and it does
+  not hand back the clear one. An encrypted key on the way in is refused as
+  encrypted (`ERR_MISSING_PASSPHRASE` with no passphrase, unsupported with
+  one). See "Where node:crypto's keys differ from Node's" below.
+- `navigator.locks` (one process's lock manager), `buffer.transcode`,
+  `process.release`, `process.getuid`/`geteuid`/`getgid`/`getegid`/`getgroups`,
+  `process.versions.acorn`, `process.features.typescript`.
+- Instrument lines on the realm's console, each one line of JSON:
+  `[boot-trace] node-line`, `[boot-trace] stat-window`, the resolver's probe
+  counts on the `prepared-bodies` counts line, `[stream-calls]` and
+  `[rows-used]` at a process's end.
+- `installHostNames(names)`: a host supplies the names that are this host
+  besides `localhost` (ADR-0002). `dns.lookup` resolves a held name to the
+  loopback in the caller's family, and `dns.resolve4`/`resolve6` answer its
+  loopback records. With no host table installed nothing changes.
+
+Changed, for every guest
+
+- `process.version` is the `NODE_VERSION` its environment names; the library is
+  Node 24.21.0's whatever it says. On line 20 an `import()` that first runs an
+  ES module settles after a loop turn, as Node 20's does (ADR-0005).
+- A process whose loop drains emits `exit`, with `process.exitCode || 0`; only
+  `process.exit()` did. `beforeExit` is still not emitted. A listener that
+  calls `process.exit(n)` while `exit` is being emitted ends the process with
+  `n`, as Node does, whether the process was draining or exiting (the code was
+  dropped: a test runner that reports its failures that way read as passed).
+- Resolution asks the tree what Node asks: an entry's body runs at require
+  depth 0 (`Module._load` no longer counts as a `require` call), so the stat
+  cache Node keeps for that body exists; a level with no `node_modules`
+  directory is one probe; a path is asked once in one resolution; a package's
+  self-reference reads the nearest `package.json` only, as Node's does (an
+  outer package of the same name with `exports` no longer answers).
+- `fs.watchFile`'s listener gets the new stat and the old one (it got the same
+  one twice). `os.release()` and `os.version()` are no longer swapped;
+  `os.networkInterfaces()` gives `family` as `IPv4`/`IPv6`; `fs.statfs` has its
+  eight fields in Node's order.
+- `process.features.typescript` follows the line: absent for a guest told it
+  is Node 20 (Node 20.20.2 has no such property), `"strip"` otherwise.
+- `process.memoryUsage()` is the realm's own heap where the realm reports one
+  (`performance.memory`); elsewhere the fixed figures it always gave.
+- `--enable-source-maps` and `process.setSourceMapsEnabled` keep the switch and
+  warn once (`TABNODE_SOURCE_MAPS_NOT_APPLIED`): stacks are not remapped.
+- `Function.prototype.toString` makes a function's written source once.
+
+Where node:crypto's keys differ from Node's
+
+Measured with one script of 131 cases (`scripts/crypto-keys-compare.mjs`),
+hostile inputs among them, on Node v24.21.0 and in a guest: 85 answer the
+same, and in 20 more both refuse with different error codes (OpenSSL's own
+codes are not reproduced). The rest:
+
+- Not carried, refused by name where Node does it: encrypting a private key on
+  export; reading an encrypted key (with a passphrase offered the answer is
+  "unsupported" whatever the passphrase, right or wrong: none is tried);
+  `paramEncoding: 'explicit'`; curves other
+  than P-256, P-384 and P-521 (secp256k1 among them); signing or hashing with
+  SHA-512/224, SHA-512/256 or SHA-3 (`sha512-256` was read as SHA-512).
+- Stricter than Node, which accepts each of these and this engine refuses: a
+  DER length not in its shortest form, and bytes after the key; a SEC1 key
+  whose version is not 1; a public key's bit string with unused bits; a
+  private key whose stated public half is not its own (OpenSSL keeps the
+  stated one: it signs with one key and exports another's public half); a
+  private value of zero or beyond the curve's order; a PKCS#8 key that names
+  one curve outside and another inside; a JWK whose `d` is not the private
+  value of its `x` and `y` (EC) or `x` (Ed25519). None of these depends on a
+  key's value, and no tool writes them; one that does is the finding.
+- Read as Node reads them, because a correct tool writes them for some keys:
+  a JWK member without its leading zero bytes (one key in 128 a coordinate),
+  or with one more, or in the standard base64 alphabet; an EC public point in
+  compressed or hybrid form (`openssl ec -conv_form`), written back in the
+  form it was read; a private value shorter than its curve's width; the first
+  key among several PEM blocks, the `EC PARAMETERS` block that `openssl
+  ecparam -genkey` writes before the key among them.
+- The same as Node, and not the curve library's default: Ed25519 verification
+  without the cofactor, refusing small-order keys and `R`; of the twelve
+  vectors of "Taming the many EdDSAs" both accept one. Against Node at volume
+  (`scripts/crypto-ed25519-volume.mjs`): 3,000 generated keys and messages,
+  both directions, with flipped bits in signature, message and key, and RFC
+  8032's first three vectors: 18,018 checks, none differing.
+- A caller's DER is copied when a key is read; zeroing the buffer afterwards
+  does not change the key.
+
+- A guest's global object is the guest's own, with Node's names and shapes.
+  `for (name in globalThis)` gives Node's fifteen names and none of the
+  realm's; `Buffer` and `performance` are accessors with a setter, `crypto`
+  one without, the rest writable values; `atob`, `btoa`, `Buffer` and
+  `performance` are the objects their modules export. What a program assigns,
+  defines or deletes there is its own and is what every later read, walk and
+  descriptor answers: before, an assignment to a timer, `queueMicrotask` or
+  `structuredClone` changed the realm's global for every program in it.
+  The realm's `window`, `document` and `location` are absent until a program
+  makes them, and then are its own: `globalThis.window = dom.window` reads
+  back, and a bare `document` in any module finds what was assigned. `process`
+  is answered ahead of the guest's own properties, because the engine finds
+  the run that is asking by the realm's `process`. A guest may delete it or
+  assign another object, which it then reads back; neither reaches the
+  realm (an assignment used to be written there, where it stood in the
+  engine's way: every filesystem call after it found no run). The next
+  module's start puts the run's own process back. `scripts/guest-globals.cjs`
+  assigns, defines (whole, attributes only, `writable` only), deletes,
+  restores and fixes each name under Node and in a guest: 73 rows.
+- A process emits `exit` when its loop has drained, and what "drained" means
+  here is the engine's rule for ending a run, which this release does not
+  change: the entry has returned and, with nothing the engine counts still
+  pending (timers, ports, handles, a read stdin, held work), no output for
+  half a second, or two seconds for a program that printed nothing. Work the
+  engine does not count does not hold a run: WebCrypto and asynchronous
+  `node:crypto` jobs, DNS, asynchronous zlib, a pending filesystem request, a
+  `fetch` with no host transport, any other promise of the host's. A program
+  whose last act is one of those is ended by that rule, as it was on v0.8.0,
+  and its `exit` listeners now run at that moment, where before they did not
+  run at all. A tick the process had queued, or queues from an `exit` listener,
+  does not run once `exit` is being emitted, as in Node, where the process is
+  gone by then. A program that emits `'exit'` itself has only called its own
+  listeners and goes on running, ticks included.
+- `process.nextTick` callbacks queued by a callback the loop entered run when
+  that callback returns, before any promise it queued, and ticks they queue
+  run with them (`cb, tick, promise`, as Node). A callback made while other
+  code is still running does not drain them, bracketed by the engine or not.
+  What a stream's callback queues runs before that stream's next callback
+  (`scripts/callback-ticks.cjs`, a request dumped by its response).
+- A child whose `stdio` names a descriptor the caller does not hold fails to
+  start with `EBADF` (`spawnSync`: `error.code`, no pid, no output; `spawn`
+  throws), as Node's does. Its output was dropped in silence.
+
+Known cost
+
+- A stream that stops reading while a read grant is with its owner makes one
+  synchronous call to take it back. Under heavy back-pressure (a reader that
+  pauses and resumes at every chunk) that is a call per pause; how often it
+  happens in a real server is not measured, and the `[stream-calls]` line
+  counts it (`readStop`).
+
+Known differences from Node, for a guest's globals and its ticks
+
+- A bare name reads the value the global had when its module began, for
+  `global`, `Buffer`, `atob`, `btoa`, `queueMicrotask`, `structuredClone` and
+  the six timer functions, and `crypto` reads the realm's: after
+  `globalThis.setTimeout = mine`, `globalThis.setTimeout` is `mine` and a bare
+  `setTimeout` in the same module is still the first. After a delete, a bare
+  name is `undefined` or its first value where Node throws a ReferenceError.
+  The property, the walk and the descriptor are Node's in every case
+  (`scripts/guest-globals.cjs`, the `bare` column). Not new in this release:
+  v0.8.0 binds the same names the same way.
+- The six timer globals are not the functions `require('timers')` exports
+  (the same script, `is-owner's`).
+- `child.kill()` emits the child's `exit` before it returns (`exit, after,
+  tick` where Node gives `after, tick, exit`), for code entered any way. The
+  same on v0.8.0 (`scripts/callback-ticks.cjs`, section 3).
+- A tick queued from a promise reaction runs before a promise queued after it
+  in the same reaction (`fs.promises.readFile(f).then(cb)`: `cb, tick,
+  promise`); Node finishes the promises first (`cb, promise, tick`). The same
+  on v0.8.0 (`scripts/callback-ticks.cjs`, the one row that differs).
+
+Known differences from Node, for a synchronous child's `stdio`
+(`scripts/sync-child-stdio-differences.cjs`, each line read under Node
+v24.21.0 and as a guest)
+
+- The child's fd 0 given as a descriptor of the caller's (a file opened for
+  reading, or `'inherit'`): the child reads an empty stdin and ends; Node's
+  reads the file (`"child read \"from a file\""`, here `"child read \"\""`).
+  Only `input` reaches a synchronous child's stdin.
+- An entry past fd 2 (`stdio[3]` as `'pipe'` or as a file's descriptor): the
+  child has no fd 3 and its write fails with `EBADF`; `output[3]` is `null`
+  and the file stays empty. Node gives the child the descriptor and answers
+  `output[3]`.
+- `process.stdout` or `process.stderr` itself as an entry throws
+  `ERR_INVALID_ARG_VALUE` from Node's own `getValidStdio`: the guest's stream
+  carries neither a descriptor nor a handle Node recognises. Node passes it
+  on. A stream that carries a descriptor (`fs.createWriteStream`) is passed on
+  here as there.
+
+Fixed
+
+- A default export's expression keeps its parentheses when lowered.
+- `node`'s refusals go where its stderr goes when fd 2 is taken as bytes.
+- A synchronous child's output goes to the caller's own descriptor when
+  `stdio` names one by number, which is what `stdio: 'inherit'` is by the time
+  it reaches the binding: `spawnSync`/`execSync` with `'inherit'` printed
+  nothing and returned the bytes as `stdout`/`stderr` instead, a descriptor of
+  an open file stayed empty, and passed-on bytes counted toward `maxBuffer`.
+  Both paths (a child the engine runs, a child the host runs) go by the rule an
+  asynchronous child's stdio goes by (`scripts/sync-child-stdio.cjs`).
+- crypto: a base64 signature verifies; the legacy names `pseudoRandomBytes`,
+  `prng` and `rng` are accessors as in Node.
+
+## v0.8.0 — 2026-10-07
+
+One process table (browser-substrate ADR-0129 step 1): a host whose kernel
+owns its processes gives each run that kernel's numbers, and tabnode keeps no
+second table for it. The exported surface changed, hence a minor release.
+
+- A run can carry its own process registry (`RunOptions.registry`, for
+  `runNode` and `container.run`): a run whose process has a kernel connection
+  of its own takes its pid, its children, `kill`, liveness and group lookups
+  from that registry, in the run's own pid namespace. Every other run, and the
+  realm's own process, use the realm's registry as before.
+- `ProcessRegistry` gains `exec`, `exit` and `reap`, and `allocate` takes the
+  parent pid and whether the child leads a session of its own. A pid is made
+  only at a fork. An image that starts in a process another forked (a
+  kernel's shell exec'ing `node`) is an `exec` and keeps its pid, so it is no
+  longer refused with "Process identifier is already held." An embedder that
+  implements `ProcessRegistry` adds the three methods (one on the old
+  interface fails at its first child's exit, not only at an exec); tabnode's
+  own registry stays the standalone implementation, where `exec` is the claim
+  it was.
+- `runNode` and `container.run` given `process` in a realm that is a registry
+  client no longer throw "This realm is a process registry client": the run is
+  an exec in its registry. A `container.run` line given `process` or
+  `registry` is a kernel's shell process: each `node` it runs is that shell's
+  child, numbered through its registry, and the line gives its pid back when it
+  ends.
+- A child's end is the status its zombie holds, which its parent's wait reaps;
+  a run the runtime failed to run is killed (`SIGKILL`) rather than given an
+  exit code it never passed, and a killed run ends with its signal and no exit
+  code, libuv's pair.
+- A run is attributed by its scope, never by which run launched last: a
+  binding's callbacks run inside the run that owns the binding, as Node's
+  MakeCallback runs them, and a throw from a timer, immediate or microtask is
+  the uncaught exception of the run that scheduled it. A child's parent is the
+  run whose `Process` handle spawned it.
+
+## v0.7.4 — 2026-10-07
+
+## Unreleased
+
+- `kill()` on a child the host runs (a program pack, a WALI image) sends the
+  signal and lets the host's result end the run: 'exit' and 'close' fire when
+  the program exits, with the signal it ended by, as Linux keeps a signalled
+  child live until it exits. Children the engine runs itself are unchanged.
+  Ships with browser-substrate's host-child identity (the abort carries the
+  signal number); neither is consistent alone.
+
+## v0.7.3 — 2026-10-07
+
+- A spawn tells a file's kind from its first 256 bytes, not the whole file:
+  a Node script's `#!` line and a binary image's first bytes are read
+  through the tree's own descriptors where it offers them, so spawning a
+  multi-megabyte binary by path no longer reads all of it.
+- `process.dlopen` of a missing file fails as Node's does, with
+  `ERR_DLOPEN_FAILED` and the dynamic linker's message, not require's
+  `MODULE_NOT_FOUND`; loaders such as Prisma's report on that code.
+- A child's fd stdio holds its own reference to the parent's description
+  (`TreeDescriptors.dup`), as fork and dup2 give it on Linux: a parent that
+  hands a log file to a long-lived child and closes its fd (twin-world's
+  pgliteUp) no longer cuts the child's output.
+
+## v0.7.0 — 2026-10-06
+
+The container's processes and a kernel's are one pid space. A minor
+release: the exported surface gained `installProcessIdAllocator` and
+`RunOptions.process`.
+
+- `installProcessIdAllocator(allocate)` (container owner): every process
+  number is taken from the host's own pid counter from then on, so a guest's
+  `process.pid`, its child's `process.ppid` and the kernel's
+  `/proc/<pid>/stat` name one process, and no number is given twice. A number
+  still held is passed over.
+- `RunOptions.process` (for `runNode`): `{ pid, ppid }` a host already gave
+  the run, a kernel's for a `node` its shell exec'd. The run is that process,
+  its parent the host's, which the registry need not hold.
+
+## v0.6.1
+
+A host's tree may own a run's open file descriptions and stand in for the
+container's tree in one run (ADR-0006 steps 1 and 2); with `VirtualFS`
+nothing changes. Released as v0.6.1; the workflow dates this section when it
+publishes.
+
+- `RunOptions.filesystem` (for `runNode`): the tree one run's Node reads and
+  writes, in place of the container's, while it keeps the container's port
+  space and process table (ADR-0006 step 2). A synchronous child reads its
+  parent run's tree.
+- A stat keeps an entry's full file type: the type bits a tree's mode
+  carries, else every kind its stat answers (a character or block device, a
+  FIFO, a socket as well as a directory or a link). A host tree's
+  `/dev/null` stat'ed by path is a character device, as its fstat says;
+  `VirtualFS` answers no device kinds and is unchanged.
+- A tree a host supplies may own its open file descriptions: one that offers
+  `TREE_DESCRIPTORS` (`open`, `close`, `read`, `write`, `fstat`, `ftruncate`,
+  `fsync`, `fchmod`, `futimes`, `reserve`, `release`) is asked for every
+  descriptor operation on a file it opened, with its own fd numbers, offsets
+  and `O_APPEND`, and gives the numbers of the engine's own pipes and sockets.
+  A tree without it, every `VirtualFS`, keeps the engine's descriptor table
+  as before (ADR-0006 step 1). `TreeDescriptorStats` may answer
+  `isCharacterDevice`, `isBlockDevice`, `isFIFO` and `isSocket`.
+
+## v0.6.0 — 2026-10-06
+
+The host API gains an argv entry for the engine's Node, per-fd standard
+streams (kind, terminal, bytes) and a shared-memory stdin, and a guest's
+processes and files carry bytes and modes as Linux does. Released as v0.6.0
+(the exported surface changed); the workflow dates this section when it
+publishes.
+
+### New API
+
+- `container.runNode(argv, options)`: the engine's Node started from an
+  `execve`-style vector (`argv[0]` is `process.argv0`), with `run`'s options
+  and answer, through the same launch the shell's `node` uses; no command line
+  is built and no shell runs. `env` is the whole environment; `cwd` defaults
+  to `/`.
+- `RunOptions` (for `run` and `runNode`):
+  - `stdioKind: ['tty'|'pipe'|'file'|'char', x3]` says what each of fds 0, 1,
+    2 is ('char' is a character device that is not a terminal, `/dev/null`);
+    `stdioIsTTY: [b, b, b]` says only which is a terminal (used where
+    `stdioKind` is absent). Each fd is a terminal or not on its own.
+  - `onStdoutBytes` / `onStderrBytes(Uint8Array)` take fd 1 / fd 2 as the
+    bytes the program wrote, before any decode.
+  - `stdinShared: SharedArrayBuffer` gives fd 0 as a ring a host writes from
+    its own thread; `STDIN_RING` (the layout), `createStdinRing`,
+    `stdinRingProblem` and the producer `StdinRingWriter` (`write(bytes)`
+    waits with `Atomics.waitAsync` when the ring is full; `close()` is EOF)
+    are exported. The header is eight Int32 words (32 bytes): `WRITE_INDEX`,
+    `READ_INDEX`, `CLOSED`, `CAPACITY` and `SIGNAL`, which the producer bumps
+    and notifies after every write and at close, and on which readers wait,
+    so a close between a reader's look and its wait still wakes it; three
+    words are reserved. A host writes the ring only through `StdinRingWriter`.
+  - `stdin` accepts bytes.
+- `@volter/tabnode/stdin-ring`: the ring's layout, producer and helpers alone,
+  a module that imports nothing, for a page that writes a run's stdin without
+  loading the engine. The engine's reader is the same module.
+- Types `StdioKind` exported. The host-executor request a page publishes
+  (`Symbol.for('@volter/browser-runtime/child-process-executor')`) is offered
+  `onStdoutBytes` / `onStderrBytes`; `NodeProcessLaunch.stdin` may be bytes.
+- Declarations say what the implementation already took: the engine's process
+  streams' `write` and a WASI host process's `write` accept `Uint8Array` as
+  well as strings, and the guest stdin's `read()` answers
+  `string | Uint8Array | null`, as `Readable`'s does.
+- `NodeProcessLaunch.argv0`: the process's own name, `argv[0]` of the vector
+  it was started with. A Node process host starts the process with it as
+  `argv[0]`; `argv` stays the words after it. A host that rebuilt the vector
+  as `["node", ...argv]` gave every hosted process `process.argv0 === 'node'`
+  (a kernel's exec of a renamed executable reported `node`); it must use
+  `argv0`.
+
+### Behaviour changes a consumer must know
+
+- `VirtualFS` emits an event for every mutation: `change` for an entry created
+  or changed (bytes, mode, times, a directory, a link; a file's carries its
+  text, others none) and `delete` for one that went. `chmodSync`, `utimesSync`,
+  `symlinkSync`, `mkdirSync` (and the directories a write or a rename makes),
+  `rmdirSync` and `renameSync` emitted nothing; a rename now reports every
+  path of the moved subtree gone at the old name and made at the new.
+
+- File modes are real. The shell's filesystem reports each file's own mode and
+  its `chmod` sets it; the `/node_modules/.bin/` rule that made only those
+  files executable is gone. A host that writes an executable must write it
+  0755 (or `chmodSync` it); a 0644 file is not found on PATH or run by path.
+  The engine's own writers set modes: npm install keeps each archive entry's
+  mode (`(mode | 0666) & ~022`, directories `| 0777`), makes each bin target
+  and its `.bin` stub executable.
+- The engine writes nothing into a tree a host supplied (`createContainer({ vfs })`):
+  the `/usr/local/bin/node` (`process.execPath`) file it used to create in any
+  tree that lacked one is created, 0755, only in a tree the engine made itself.
+  A host's tree carries its own program at `process.execPath` (any file there
+  named `node` runs the engine's `node` from the shell); without one, a shell
+  line naming the path gets "No such file or directory".
+- A guest's `node` child (`spawn`/`execFile`/`fork` of `node` or of
+  `process.execPath`, and `spawnSync`/`execFileSync` of them) starts from its
+  argv through the Node launch, not as a line for the engine's shell. It is one
+  process whose pid is the one its parent's handle holds (there is no shell
+  process between), and its environment is exactly the one it was spawned with
+  (the shell's own HOME/USER/PATH defaults are not added). A shell line
+  (`exec`, `execSync`, `{ shell: true }`) is unchanged.
+- Child stdio carries bytes: a Node child's fd 0/1/2 reach the parent's pipe,
+  inherited stdio or descriptor as bytes, and Node's `child_process` returns a
+  Buffer or a string by its encoding option, as on Linux. Output that was
+  invalid UTF-8 used to arrive with replacement characters.
+- A run given `onStdoutBytes`/`onStderrBytes` gets that fd only as bytes:
+  `onStdout`/`onStderr` are not called for it and `RunResult.stdout`/`stderr`
+  is empty for it. Text callbacks now decode with one streaming decoder per fd,
+  so a character split across two writes arrives whole.
+- `process.stdout.write(string, encoding)` writes the string in that encoding
+  (`'ff', 'hex'` is one byte); the encoding was ignored. `fs.writeSync(fd,
+  string, pos, encoding)` likewise (every non-UTF-8 encoding was latin1).
+- fd 0, 1 and 2 are descriptors of every run. `fs.writeSync(1|2)` and writes to
+  `/dev/stdout`, `/dev/stderr`, `/dev/fd/1|2`, `/proc/self/fd/1|2` go to the
+  run's stdout/stderr in order with `process.stdout` (they were EBADF);
+  `fs.readSync(0)` and `/dev/stdin` read the run's stdin in order with
+  `process.stdin` (EBADF before). A blocking read with the writer open and
+  nothing buffered waits on `stdinShared` where the run has one, and is
+  otherwise refused as `ERR_STDIN_BLOCKING_READ`; an `O_NONBLOCK` descriptor
+  gets EAGAIN. `fs.fstat(0|1|2)` is a terminal (pts), a FIFO, a regular file
+  or a non-terminal character device (0666, device 1,3) by the fd's kind.
+  `tty.isatty(fd)` and `guessHandleType(fd)` answer from the asking run's own
+  streams, as libuv does: a terminal fd is `'TTY'` (so `new net.Socket({ fd })`
+  on it fails as in Node), a file or character device `'FILE'`, a pipe
+  `'PIPE'`; it was `'PIPE'` for all three.
+- A run's life and its stdin, as in Node. A program that reads fd 0 with
+  `fs.readSync(0)` or `/dev/stdin` and returns ends when its loop is empty,
+  whether or not the stdin writer has closed: those reads take what
+  `process.stdin` already holds and then read the ring, without starting the
+  stream (the run used to live until the ring closed, and forever if it never
+  did). A run whose program consumes `process.stdin` (a `'data'` or
+  `'readable'` listener, flowing mode, or its own `read()` call) is kept alive
+  until the stream ends; a bare `process.stdin.read()` used to let it end early.
+- A WASI guest's stdout/stderr are written as its bytes, not decoded text.
+- A background job (`cmd &`) writes its parent's byte sinks where the parent
+  has them; its output was dropped when the parent took bytes only.
+- A host's totals: an fd a host executor or a Node process host streamed
+  through its byte sink has an empty total, and is never replayed through the
+  text callbacks. A host that streamed no bytes is read as before. The Node
+  process host is handed a view of the run's streams (its fields read through
+  to the run's own object), not the object itself.
+- A Node entry whose top-level `await` fails prints its error on stderr (it was
+  only appended to the result); a run's idle detection counts what was
+  printed, by length, in either form.
+
+## v0.5.70 — 2026-10-05
+
+- Development prohibits incidental verification locally and remotely. Requested
+  measurements run locally; GitHub Actions requires explicit authorization for
+  the remote run and no longer starts measurements automatically on a push.
+
+## v0.5.69 — 2026-10-05
+
+- Replace the partial historical fixture measure with the complete Node v24.21.0
+  parallel/WASI file list. Retain raw failures, native-read inventory, recursive
+  public export comparisons, four completion counts, and an objective capability
+  ledger with done / doing / todo / won't do states. Missing evidence stays open;
+  no browser-parity or finalized scope claim is made before the baseline.
+
+## v0.5.68 — 2026-10-05
+
+- Move the unchanged vendored library and primordials to Node24.21.0; adapt
+  Buffer allocation/encoding and transfer ownership, actual timer/context
+  accounting, diagnostics links, packed child spawn flags and TTY/TCP
+  contracts. Preserve DNS and detached process groups. Default JSON IPC
+  works; unavailable V8 binary IPC serialization fails explicitly at use.
+  Page readings qualify these contracts; no full Node24 suite score or
+  Twenty application startup is claimed.
+
+
+## v0.5.67 — 2026-10-05
+
+- Move the unchanged vendored library to Node v24.5.0 with its filesystem removal, TypeScript cache-disabled binding and readline history contracts; report the implemented library version by default, preserving host-name and POSIX process-group semantics (ADR-0003).
+
+- Restore perf_hooks GC-kind constants and event-loop utilization from monotonic guest execution intervals, including idle and snapshot differences, without inventing native CPU/GC observations (ADR-0003).
+
+## v0.5.66 — 2026-10-05
+
+- Browser worker messaging globals stay guest-local; trusted host transports retain their native methods. File entries use the normal image-prepared module loader and keep Node main-module identity (ADR-0004).
+
+- A thread whose native Worker authority is withheld can initialize the child_process builtin; speculative synchronous-child warming no longer aborts its entry. An actual synchronous spawn retains the original constructor refusal.
+- Give global and worker_threads MessagePorts real per-process loop references: the first message listener refs/starts its real transport, unref releases its hold, and close/process teardown releases and closes it (ADR-0004).
+
+## v0.5.65 — 2026-10-05
+
+### Fixed
+
+- Spawned `env` wrappers preserve host package-bin dispatch, cwd and environment instead of losing their executable in the engine-private shell.
+
+## v0.5.64 — 2026-10-05
+
+- Host lookup retains IP literals and resolves the engine’s loopback; names without a host route now report asynchronous ENOTFOUND instead of 0.0.0.0, which could connect to an unrelated local listener. Callback and Promise lookup share the behavior; unsupported DNS record and reverse queries also fail explicitly (ADR-0002, substrate Article 6).
+
+## v0.5.63 — 2026-10-05
+
+- Detached children start private POSIX process groups; ordinary descendants inherit them, and negative-PID liveness and signals resolve every live member across worker realms, including after the leader exits. Older embedding hosts retain their existing PID operations. World teardown previously saw a live group while its SIGTERM and SIGKILL deliveries were refused.
+
+## v0.5.62 — 2026-10-05
+
+- Guest-created `Worker` and `self` globals are process-local bare bindings in module wrappers and guest eval/Function scopes; browser worker authority stays hidden. Sharp's upstream pthread glue assigns `global.Worker` then calls bare `new Worker`, and assigns `globalThis.self` then reads bare `self`.
+
+## v0.5.61 — 2026-10-05
+
+- `node` takes the first word after its options as the script, as Node does, with value-taking options (`-r`, `--import`, `--conditions`, ...) consuming their value: it used to run the first later word that named a file, so `node <next-bin> start apps/web` ran the directory `apps/web` (EISDIR) when the bin did not resolve.
+
+## v0.5.60 — 2026-10-05
+
+- `crypto.webcrypto` and `crypto.subtle` exist, as in Node (the page's Web Crypto): Tailwind's oxide and lightningcss native hooks read `require('crypto').webcrypto` and found `undefined`.
+
+## v0.5.59 — 2026-10-05
+
+- `dns.lookup` answers an IP literal with itself in its own family, as Node does: `::` stayed IPv4 `0.0.0.0`, so `listen({ host: '::', ipv6Only: true })` bound IPv4 and collided with the IPv4 listener on the same port (measured in the tab with `NODE_DEBUG=net`: `setupListenHandle 0.0.0.0 … 4`).
+
+## v0.5.58 — 2026-10-05
+
+- An `ipv6Only` listener can share a port number with an IPv4 one, and a dual-stack IPv6 bind holds both families, as on a host: the engine kept one port space, so a probe that binds `0.0.0.0` and then `::` with `ipv6Only` on the same port got `EADDRINUSE` every time (Volter World's port allocator gave up after 32 attempts in the tab).
+
+## v0.5.57 — 2026-10-02
 
 ## v0.5.56 — 2026-10-02
 

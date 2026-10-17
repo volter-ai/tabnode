@@ -18,6 +18,22 @@ Arguments after the Node executable, preserving each parsed word.
 
 ***
 
+### argv0
+
+> **argv0**: `string`
+
+The process's own name, `argv[0]` as `execve` was given it: what `process.argv0` reports.
+
+***
+
+### credentials?
+
+> `optional` **credentials?**: [`ProcessCredentials`](ProcessCredentials.md)
+
+Retained process credentials for the host to pass to Runtime/contained realm admission.
+
+***
+
 ### cwd
 
 > **cwd**: `string`
@@ -52,7 +68,9 @@ This entry's filesystem view, including any host-prepared entry wrapper.
 
 ### stdin?
 
-> `optional` **stdin?**: `string`
+> `optional` **stdin?**: `string` \| `Uint8Array`\<`ArrayBufferLike`\>
+
+Bytes already on fd 0 when the process begins; a parent's pipe carries bytes.
 
 ***
 

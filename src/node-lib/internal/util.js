@@ -8,6 +8,7 @@ const {
   Error,
   ErrorCaptureStackTrace,
   FunctionPrototypeCall,
+  FunctionPrototypeSymbolHasInstance,
   NumberParseInt,
   ObjectDefineProperties,
   ObjectDefineProperty,
@@ -15,7 +16,7 @@ const {
   ObjectGetOwnPropertyDescriptor,
   ObjectGetOwnPropertyDescriptors,
   ObjectGetPrototypeOf,
-  ObjectPrototypeHasOwnProperty,
+  ObjectKeys,
   ObjectSetPrototypeOf,
   ObjectValues,
   Promise,
@@ -44,6 +45,7 @@ const {
   SymbolPrototypeGetDescription,
   SymbolReplace,
   SymbolSplit,
+  globalThis,
 } = primordials;
 
 const {
@@ -51,6 +53,7 @@ const {
     ERR_NO_CRYPTO,
     ERR_NO_TYPESCRIPT,
     ERR_UNKNOWN_SIGNAL,
+    ERR_WEBASSEMBLY_NOT_SUPPORTED,
   },
   isErrorStackTraceLimitWritable,
   overrideStackTrace,
@@ -58,6 +61,7 @@ const {
 } = require('internal/errors');
 const { signals } = internalBinding('constants').os;
 const {
+  constructSharedArrayBuffer,
   guessHandleType: _guessHandleType,
   defineLazyProperties,
   privateSymbols: {
@@ -96,7 +100,7 @@ function isError(e) {
   // An error could be an instance of Error while not being a native error
   // or could be from a different realm and not be instance of Error but still
   // be a native error.
-  return isNativeError(e) || e instanceof Error;
+  return isNativeError(e) || FunctionPrototypeSymbolHasInstance(Error, e);
 }
 
 // Keep a list of deprecation codes that have been warned on so we only warn on
@@ -104,6 +108,7 @@ function isError(e) {
 const codesWarned = new SafeSet();
 
 let validateString;
+let validateOneOf;
 
 function getDeprecationWarningEmitter(
   code, msg, deprecated, useEmitSync,
@@ -135,6 +140,17 @@ function isPendingDeprecation() {
     !getOptionValue('--no-deprecation');
 }
 
+function deprecateProperty(key, msg, code, isPendingDeprecation) {
+  const emitDeprecationWarning = getDeprecationWarningEmitter(
+    code, msg, undefined, false, isPendingDeprecation,
+  );
+  return (options) => {
+    if (key in options) {
+      emitDeprecationWarning();
+    }
+  };
+}
+
 // Internal deprecator for pending --pending-deprecation. This can be invoked
 // at snapshot building time as the warning permission is only queried at
 // run time.
@@ -158,7 +174,7 @@ function pendingDeprecate(fn, msg, code) {
 // Mark that a method should not be used.
 // Returns a modified function which warns once by default.
 // If --no-deprecation is set, then it is a no-op.
-function deprecate(fn, msg, code, useEmitSync) {
+function deprecate(fn, msg, code, useEmitSync, modifyPrototype = true) {
   // Lazy-load to avoid a circular dependency.
   if (validateString === undefined)
     ({ validateString } = require('internal/validators'));
@@ -171,7 +187,6 @@ function deprecate(fn, msg, code, useEmitSync) {
   );
 
   function deprecated(...args) {
-    // TODO(joyeecheung): use getOptionValue('--no-deprecation') instead.
     if (!process.noDeprecation) {
       emitDeprecationWarning();
     }
@@ -181,21 +196,33 @@ function deprecate(fn, msg, code, useEmitSync) {
     return ReflectApply(fn, this, args);
   }
 
-  // The wrapper will keep the same prototype as fn to maintain prototype chain
-  ObjectSetPrototypeOf(deprecated, fn);
-  if (fn.prototype) {
-    // Setting this (rather than using Object.setPrototype, as above) ensures
-    // that calling the unwrapped constructor gives an instanceof the wrapped
-    // constructor.
-    deprecated.prototype = fn.prototype;
+  if (modifyPrototype) {
+    // The wrapper will keep the same prototype as fn to maintain prototype chain
+    // Modifying the prototype does alter the object chains, and as observed in
+    // most cases, it slows the code.
+    ObjectSetPrototypeOf(deprecated, fn);
+    if (fn.prototype) {
+      // Setting this (rather than using Object.setPrototype, as above) ensures
+      // that calling the unwrapped constructor gives an instanceof the wrapped
+      // constructor.
+      deprecated.prototype = fn.prototype;
+    }
+
+    ObjectDefineProperty(deprecated, 'length', {
+      __proto__: null,
+      ...ObjectGetOwnPropertyDescriptor(fn, 'length'),
+    });
   }
 
-  ObjectDefineProperty(deprecated, 'length', {
-    __proto__: null,
-    ...ObjectGetOwnPropertyDescriptor(fn, 'length'),
-  });
-
   return deprecated;
+}
+
+function deprecateInstantiation(target, code, ...args) {
+  assert(typeof code === 'string');
+
+  getDeprecationWarningEmitter(code, `Instantiating ${target.name} without the 'new' keyword has been deprecated.`, target)();
+
+  return ReflectConstruct(target, args);
 }
 
 function decorateErrorStack(err) {
@@ -218,6 +245,8 @@ function assertCrypto() {
 function assertTypeScript() {
   if (noTypeScript)
     throw new ERR_NO_TYPESCRIPT();
+  if (globalThis.WebAssembly === undefined)
+    throw new ERR_WEBASSEMBLY_NOT_SUPPORTED('TypeScript');
 }
 
 /**
@@ -324,26 +353,6 @@ function cachedResult(fn) {
   };
 }
 
-// Useful for Wrapping an ES6 Class with a constructor Function that
-// does not require the new keyword. For instance:
-//   class A { constructor(x) {this.x = x;}}
-//   const B = createClassWrapper(A);
-//   B() instanceof A // true
-//   B() instanceof B // true
-function createClassWrapper(type) {
-  function fn(...args) {
-    return ReflectConstruct(type, args, new.target || type);
-  }
-  // Mask the wrapper function name and length values
-  ObjectDefineProperties(fn, {
-    name: { __proto__: null, value: type.name },
-    length: { __proto__: null, value: type.length },
-  });
-  ObjectSetPrototypeOf(fn, type);
-  fn.prototype = type.prototype;
-  return fn;
-}
-
 let signalsToNamesMapping;
 function getSignalsToNamesMapping() {
   if (signalsToNamesMapping !== undefined)
@@ -367,6 +376,17 @@ function convertToValidSignal(signal) {
   }
 
   throw new ERR_UNKNOWN_SIGNAL(signal);
+}
+
+function convertProcessSignalToExitCode(signalCode) {
+  // Lazy-load to avoid a circular dependency.
+  if (validateOneOf === undefined)
+    ({ validateOneOf } = require('internal/validators'));
+
+  validateOneOf(signalCode, 'signalCode', ObjectKeys(signals));
+
+  // POSIX standard: exit code for signal termination is 128 + signal number.
+  return 128 + signals[signalCode];
 }
 
 function getConstructorOf(obj) {
@@ -608,16 +628,6 @@ function exposeNamespace(target, name, namespaceObject) {
   });
 }
 
-function exposeGetterAndSetter(target, name, getter, setter = undefined) {
-  ObjectDefineProperty(target, name, {
-    __proto__: null,
-    enumerable: false,
-    configurable: true,
-    get: getter,
-    set: setter,
-  });
-}
-
 function defineReplaceableLazyAttribute(target, id, keys, writable = true, check) {
   let mod;
   for (let i = 0; i < keys.length; i++) {
@@ -685,23 +695,12 @@ const lazyDOMException = (message, name) => {
 
 };
 
-const kEnumerableProperty = { __proto__: null };
-kEnumerableProperty.enumerable = true;
-ObjectFreeze(kEnumerableProperty);
+const kEnumerableProperty = ObjectFreeze({
+  __proto__: null,
+  enumerable: true,
+});
 
 const kEmptyObject = ObjectFreeze({ __proto__: null });
-
-function filterOwnProperties(source, keys) {
-  const filtered = { __proto__: null };
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    if (ObjectPrototypeHasOwnProperty(source, key)) {
-      filtered[key] = source[key];
-    }
-  }
-
-  return filtered;
-}
 
 /**
  * Mimics `obj[key] = value` but ignoring potential prototype inheritance.
@@ -711,13 +710,14 @@ function filterOwnProperties(source, keys) {
  * @returns {any}
  */
 function setOwnProperty(obj, key, value) {
-  return ObjectDefineProperty(obj, key, {
+  ObjectDefineProperty(obj, key, {
     __proto__: null,
     configurable: true,
     enumerable: true,
     value,
     writable: true,
   });
+  return value;
 }
 
 let internalGlobal;
@@ -931,25 +931,25 @@ module.exports = {
   assertTypeScript,
   assignFunctionName,
   cachedResult,
+  constructSharedArrayBuffer,
+  convertProcessSignalToExitCode,
   convertToValidSignal,
-  createClassWrapper,
   decorateErrorStack,
   defineOperation,
   defineLazyProperties,
   defineReplaceableLazyAttribute,
   deprecate,
+  deprecateInstantiation,
+  deprecateProperty,
   emitExperimentalWarning,
   encodingsMap,
   exposeInterface,
   exposeLazyInterfaces,
   exposeNamespace,
-  exposeGetterAndSetter,
   filterDuplicateStrings,
-  filterOwnProperties,
   getConstructorOf,
   getCIDR,
   getCWDURL,
-  getInternalGlobal,
   getStructuredStack,
   getSystemErrorMap,
   getSystemErrorName,
@@ -972,14 +972,6 @@ module.exports = {
   spliceOne,
   setupCoverageHooks,
   removeColors,
-
-  // Define Symbol.dispose and Symbol.asyncDispose
-  // Until these are defined by the environment.
-  // TODO(MoLow): Remove this polyfill once Symbol.dispose and Symbol.asyncDispose are available in primordials.
-  // eslint-disable-next-line node-core/prefer-primordials
-  SymbolDispose: Symbol.dispose || SymbolFor('nodejs.dispose'),
-  // eslint-disable-next-line node-core/prefer-primordials
-  SymbolAsyncDispose: Symbol.asyncDispose || SymbolFor('nodejs.asyncDispose'),
 
   // Symbol used to customize promisify conversion
   customPromisifyArgs: kCustomPromisifyArgsSymbol,

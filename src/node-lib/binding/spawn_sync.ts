@@ -1,3 +1,4 @@
+import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials, type ProcessCredentials } from '../../process-credentials';
 /**
  * `internalBinding('spawn_sync')`: a child run to its end before the call
  * returns.
@@ -11,9 +12,11 @@
  * `UV_ENOSYS`, which is what Node reports for a child it could not start.
  */
 import { libRequire } from '../require-hook';
-import { UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS } from './uv';
+import { UV_EPERM, UV_EINVAL, UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ETIMEDOUT, UV_EBADF } from './uv';
 import { runSyncChild, syncChildRefusal } from '../../shims/sync-child';
-import { __substrateLineFor, __substrateShellLine } from '../../shims/command-line';
+import { __substrateArgvFor, __substrateHostRuns, __substrateLineFor, __substrateRunsNode, __substrateShellLine, __substrateShellWord } from '../../shims/command-line';
+import { inheritedWriter } from './process_wrap';
+import { __currentProcessToken, enterRun, exitRunProcess, forgetRunPid, mintPid, reapRunProcess, runPid, setRunPid } from '../../process-tokens';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio(stdio, true)` builds it. */
 interface SyncStdioEntry {
@@ -25,13 +28,47 @@ interface SyncStdioEntry {
 /** What `child_process.js`'s `spawnSync` hands the binding. */
 interface SyncSpawnOptions {
   file: string;
+  uid?: number;
+  gid?: number;
   args?: string[];
   cwd?: string;
   envPairs?: string[];
   stdio?: SyncStdioEntry[];
   maxBuffer?: number;
   killSignal?: number;
+  timeout?: number;
 }
+
+/**
+ * A host's door for a synchronous child it runs (a program its kernel holds): the twin of its `run`. It blocks this
+ * realm until the child has ended, handing each fd's bytes to `onStdout`/`onStderr` as they arrive, and answers
+ * the child's end. A host that cannot (a realm that may not block, a host with no such door here) answers a
+ * `refusal` that says why and starts nothing.
+ */
+interface SyncChildHost {
+  /** The embedding owns every child of the current run, including Node and
+   * image scripts the engine can also resolve. This is a trusted host choice,
+   * not a request to recover a raw Worker constructor in a restricted realm. */
+  readonly ownsAllSyncChildren?: boolean;
+  runSync?(command: string, request: {
+    argv?: readonly string[];
+    /** The actual exec selector, independent of a caller's custom argv[0]. */
+    executablePath?: string;
+    cwd?: string;
+    env?: Record<string, string>;
+    credentials?: ProcessCredentials;
+    input?: Uint8Array;
+    /** Which of fd 1 and fd 2 count toward `maxBuffer`: the ones the caller captures. */
+    captured: [boolean, boolean];
+    maxBuffer?: number;
+    timeout?: number;
+    killSignal?: number;
+    onStdout(bytes: Uint8Array): void;
+    onStderr(bytes: Uint8Array): void;
+  }): { started: boolean; status: number | null; signal: string | null; error?: 'ETIMEDOUT' | 'ENOBUFS' | 'ENOENT' | 'ENOTDIR'; refusal?: string; hostStarted?: boolean; endPosted?: boolean };
+}
+const hostExecutorSymbol = Symbol.for('@volter/browser-runtime/child-process-executor');
+let nextSyncChild = 1;
 
 /** What libuv answers for one synchronous child. */
 interface SyncSpawnResult {
@@ -55,16 +92,12 @@ function environmentOf(envPairs: string[] | undefined): Record<string, string> |
   return env;
 }
 
-/** The program a caller can still write to: the engine's own stdout and stderr. */
-function inheritedWriter(fd: number): ((text: string) => void) | undefined {
-  const realm = (globalThis as unknown as {
-    process?: { stdout?: { write(text: string): unknown }; stderr?: { write(text: string): unknown } };
-  }).process;
-  const stream = fd === 1 ? realm?.stdout : realm?.stderr;
-  if (!stream || typeof stream.write !== 'function') return undefined;
-  return (text: string) => {
-    try { stream.write(text); } catch { /* a stream that refuses still lets the child run */ }
-  };
+/**
+ * Whether a child's fd is the caller's own descriptor rather than bytes kept for the caller: an `inherit` entry,
+ * or a descriptor named by number, which is what `stdio: 'inherit'` reaches this binding as.
+ */
+function passedOn(entry: SyncStdioEntry | undefined): boolean {
+  return entry?.type === 'inherit' || entry?.type === 'fd';
 }
 
 /**
@@ -77,40 +110,190 @@ function bufferClass(): { from(value: unknown, encoding?: string): Uint8Array & 
   return (libRequire('buffer') as { Buffer: { from(value: unknown, encoding?: string): Uint8Array & { toString(encoding?: string): string } } }).Buffer;
 }
 
-function spawn(options: SyncSpawnOptions): SyncSpawnResult {
+function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentials> = copyProcessCredentials()): SyncSpawnResult {
   const Buffer = bufferClass();
   const pid = nextPid++;
   const argv = options.args ?? [options.file];
   const stdio = options.stdio ?? [];
-  const nothing = (error: number): SyncSpawnResult => ({ pid, output: null, status: null, signal: null, error });
+  const nothing = (error: number, of: number = pid): SyncSpawnResult => ({ pid: of, output: null, status: null, signal: null, error });
 
-  if (syncChildRefusal() !== null) return nothing(UV_ENOSYS);
+  const parentCredentials = credentials;
+  const declaredIdentity = options.uid != null || options.gid != null;
+  try { credentials = spawnedProcessCredentials(credentials, options.uid, options.gid); }
+  catch (cause) { return nothing((cause as { code?: string })?.code === 'EPERM' ? UV_EPERM : UV_EINVAL, 0); }
+
+  // A realm that cannot run a synchronous child at all says which of its reasons it is. libuv's record has room for
+  // an errno only, and Node's own `spawnSync` (internal/child_process.js) makes the Error from it and stores it back
+  // on the record's `error`; the reason is added to that Error's message as it is stored, so `result.error.message`
+  // and the Error `execSync` throws read "spawnSync <file> ENOSYS: <reason>". Without it the four refusals were one
+  // indistinguishable ENOSYS.
+  const refusedBecause = (refusal: string, of: number = pid): SyncSpawnResult => {
+    let error: unknown = UV_ENOSYS;
+    const refused = nothing(UV_ENOSYS, of);
+    Object.defineProperty(refused, 'error', {
+      enumerable: true,
+      configurable: true,
+      get: () => error,
+      set: (value: unknown) => {
+        const made = value as { message?: unknown } | null;
+        if (made && typeof made === 'object' && typeof made.message === 'string' && !made.message.includes(refusal)) made.message = `${made.message}: ${refusal}`;
+        error = value;
+      },
+    });
+    return refused;
+  };
+
+  // Where the child's fd 1 and fd 2 go when they are the caller's own descriptors, by the rule an asynchronous
+  // child's go by; a writer holding its own reference to a description lets it go when the child has ended.
+  const asking = __currentProcessToken();
+  const sinks = ([1, 2] as const).map((index) => passedOn(stdio[index]) ? inheritedWriter(stdio[index]!.fd ?? index, asking) : null);
+  const sink = (index: 1 | 2): ((bytes: Uint8Array) => void) | undefined => sinks[index - 1] ?? undefined;
+  const releaseSinks = (): void => { for (const held of sinks) held?.release?.(); };
+  // A descriptor the caller names and does not hold fails the spawn, as libuv's does (`spawnSync ... EBADF`, no
+  // pid, no output): the child's bytes were dropped in silence. The caller's own fd 1 and 2 always stand for its
+  // output, held or not.
+  if (([1, 2] as const).some((index) => passedOn(stdio[index]) && sinks[index - 1] === null && (stdio[index]!.fd ?? index) > 2)) {
+    releaseSinks();
+    return nothing(UV_EBADF, 0);
+  }
 
   const input = stdio[0]?.input;
-  const realm = (globalThis as unknown as { process?: { cwd?: () => string; env?: Record<string, string> } }).process;
+  const realm = (globalThis as unknown as { process?: { cwd?: () => string; env?: Record<string, string> } & Record<symbol, unknown> }).process;
+  // The tree of the run that asks, which a host may have given that run alone.
+  const runTree = realm?.[Symbol.for('tabnode.run.vfs')] as Parameters<typeof runSyncChild>[0]['tree'];
+  const cwd = options.cwd ?? (typeof realm?.cwd === 'function' ? realm.cwd() : undefined);
+  const env = environmentOf(options.envPairs) ?? (realm?.env ? { ...realm.env } : undefined);
+
+  // A host may own every child of this run: even an engine-resolvable image
+  // script must then use that process owner. A restricted realm deliberately
+  // has no raw Worker; selecting the fallback because its shell knows a program
+  // refused spawnSync before reaching the already installed synchronous door.
+  // Other embeddings retain the same program classification as async children.
+  // The child is forked under this run before the wait and reaped at its end.
+  const host = (globalThis as unknown as Record<symbol, SyncChildHost | undefined>)[hostExecutorSymbol];
+  const ownsAllSyncChildren = host?.ownsAllSyncChildren === true;
+  if (host && typeof host.runSync === 'function' && (ownsAllSyncChildren || __substrateHostRuns(options.file, cwd, env ?? {}) || (declaredIdentity && __substrateRunsNode(options.file, cwd)))) {
+    const owner = __currentProcessToken();
+    const parentPid = runPid(owner)?.pid ?? 0;
+    const token = `sync-child-${nextSyncChild++}`;
+    let childPid: number;
+    try { childPid = mintPid(parentPid, false, owner, declaredIdentity ? credentials : undefined); }
+    catch (cause) {
+      releaseSinks();
+      const code = (cause as { code?: string })?.code;
+      if (code === 'EPERM' || code === 'EINVAL') return nothing(code === 'EPERM' ? UV_EPERM : UV_EINVAL, 0);
+      throw cause;
+    }
+    setRunPid(token, childPid, parentPid, { argv, ...(cwd ? { cwd } : {}), ...(env ? { env } : {}) }, owner);
+    const kept: [Uint8Array[], Uint8Array[]] = [[], []];
+    const take = (index: 0 | 1) => (bytes: Uint8Array): void => {
+      const entry = stdio[index + 1];
+      if (passedOn(entry)) sink((index + 1) as 1 | 2)?.(bytes);
+      else if (entry?.type !== 'ignore') kept[index].push(bytes.slice());
+    };
+    const captured = (index: 1 | 2): boolean => stdio[index]?.type !== 'ignore' && !passedOn(stdio[index]);
+    let answer: ReturnType<NonNullable<SyncChildHost['runSync']>>;
+    try {
+      // An owning kernel resolves the original file itself; engine aliases
+      // must not turn an absolute Node path into a different PATH lookup, or
+      // replace custom argv[0]. Shell argv also stays whole on this route.
+      const list = ownsAllSyncChildren ? [...argv] : __substrateArgvFor(options.file, argv, options.cwd);
+      const line = ownsAllSyncChildren
+        ? [options.file, ...argv.slice(1)].map((word) => __substrateShellWord(String(word))).join(' ')
+        : __substrateLineFor(options.file, argv, options.cwd);
+      answer = enterRun(token, () => host.runSync!(line, {
+        ...(list ? { argv: list } : {}),
+        ...(ownsAllSyncChildren ? { executablePath: options.file } : {}),
+        ...(cwd ? { cwd } : {}),
+        ...(env ? { env } : {}),
+        credentials,
+        ...(input === undefined ? {} : { input: new Uint8Array(input) }),
+        captured: [captured(1), captured(2)],
+        ...(typeof options.maxBuffer === 'number' && options.maxBuffer >= 0 && Number.isFinite(options.maxBuffer) ? { maxBuffer: options.maxBuffer } : {}),
+        ...(typeof options.timeout === 'number' && options.timeout > 0 ? { timeout: options.timeout } : {}),
+        ...(typeof options.killSignal === 'number' ? { killSignal: options.killSignal } : {}),
+        onStdout: take(0),
+        onStderr: take(1),
+      }));
+    } catch (cause) {
+      answer = { started: false, status: null, signal: null, refusal: cause instanceof Error ? cause.message : String(cause) };
+    }
+    releaseSinks();
+    // Only a child with neither an image handoff nor an already posted end
+    // permits a local launch failure. The kernel's actual end wins at reap;
+    // a host rejection must not kill a handed image or replace a posted end.
+    if (!answer.started && answer.hostStarted !== true && answer.endPosted !== true) exitRunProcess(childPid, parentPid, 0, 'SIGKILL', owner);
+    const ended = reapRunProcess(childPid, parentPid, answer.status ?? 0, answer.signal, owner);
+    forgetRunPid(token);
+    // A working directory that is not there is the child's ENOENT, as Node reports a bad `cwd` for a spawn.
+    if (!answer.started && (answer.error === 'ENOENT' || answer.error === 'ENOTDIR')) return nothing(UV_ENOENT, childPid);
+    if (!answer.started) return refusedBecause(answer.refusal ?? 'the host did not start the child', childPid);
+    const join = (chunks: Uint8Array[]): Uint8Array => {
+      const whole = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+      let at = 0;
+      for (const chunk of chunks) { whole.set(chunk, at); at += chunk.byteLength; }
+      return Buffer.from(whole);
+    };
+    const hostOutput: Array<Uint8Array | null> = [null];
+    for (let index = 1; index < Math.max(3, stdio.length); index += 1) {
+      hostOutput.push((index === 1 || index === 2) && captured(index) ? join(kept[index - 1]!) : null);
+    }
+    // The shell's own "not found" for a program the caller named is ENOENT, as below.
+    const saidByHost = __substrateShellLine(options.file, argv) === null && (ended.code === 127 || ended.code === 126) && captured(2) ? new TextDecoder().decode(join(kept[1])) : '';
+    if (ended.code === 127 && /command not found|No such file or directory/u.test(saidByHost)) return nothing(UV_ENOENT, childPid);
+    if (ended.code === 126 && /Permission denied|not executable/u.test(saidByHost)) return nothing(UV_EACCES, childPid);
+    return {
+      pid: childPid,
+      output: hostOutput,
+      status: ended.signal ? null : ended.code,
+      signal: ended.signal,
+      ...(answer.error === 'ETIMEDOUT' ? { error: UV_ETIMEDOUT } : answer.error === 'ENOBUFS' ? { error: UV_ENOBUFS } : {}),
+    };
+  }
+
+
+  // The fallback worker proxies filesystem calls through the parent tree. It cannot act as a different
+  // kernel identity: declared Node children use the host door above; an embedding without it is refused.
+  if (credentials.uid !== parentCredentials.uid || credentials.gid !== parentCredentials.gid
+    || credentials.groups.length !== parentCredentials.groups.length
+    || credentials.groups.some((group, index) => group !== parentCredentials.groups[index])) {
+    releaseSinks(); return refusedBecause('a synchronous child with different credentials requires a kernel host child door');
+  }
+  // A realm that cannot run a synchronous child of the engine's own says which of its reasons it is.
+  const refusal = syncChildRefusal();
+  if (refusal !== null) { releaseSinks(); return refusedBecause(refusal); }
   let answer;
   try {
+    // A child that is the engine's Node goes by its argv, as `spawn` starts
+    // one, and its fds are bytes both ways; the input is the bytes Node's
+    // `spawnSync` was given, whatever their encoding.
     answer = runSyncChild({
+      ...(runTree ? { tree: runTree } : {}),
       command: __substrateLineFor(options.file, argv, options.cwd),
-      cwd: options.cwd ?? (typeof realm?.cwd === 'function' ? realm.cwd() : undefined),
-      env: environmentOf(options.envPairs) ?? (realm?.env ? { ...realm.env } : undefined),
-      input: input === undefined ? undefined : Buffer.from(input).toString('utf8'),
-      onStdout: stdio[1]?.type === 'inherit' ? inheritedWriter(1) : undefined,
-      onStderr: stdio[2]?.type === 'inherit' ? inheritedWriter(2) : undefined,
+      ...(__substrateRunsNode(options.file, options.cwd) ? { argv } : {}),
+      cwd,
+      env,
+      credentials,
+      ...(input === undefined ? {} : { input: new Uint8Array(input) }),
+      onStdout: sink(1),
+      onStderr: sink(2),
     });
   } catch {
+    releaseSinks();
     return nothing(UV_ENOSYS);
   }
+  releaseSinks();
 
   // A program the shell has no command for is absent, as it is on a machine
   // that does not carry that binary; a path that is there and is not a program
   // is the shell's 126 and Node's EACCES. Only a caller that named a program
   // can say so: a `-c` line is the shell's own, and its 127 is the line's.
   const named = __substrateShellLine(options.file, argv) === null;
-  if (named && answer.status === 127 && /command not found|No such file or directory/u.test(answer.stderr)) {
+  const said = named && (answer.status === 127 || answer.status === 126) ? new TextDecoder().decode(answer.stderr) : '';
+  if (named && answer.status === 127 && /command not found|No such file or directory/u.test(said)) {
     return nothing(UV_ENOENT);
   }
-  if (named && answer.status === 126 && /Permission denied|not executable/u.test(answer.stderr)) {
+  if (named && answer.status === 126 && /Permission denied|not executable/u.test(said)) {
     return nothing(UV_EACCES);
   }
 
@@ -119,14 +302,15 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
   // over what it read, which is why Node's own test says "we can have buffers
   // larger than maxBuffer".
   const limit = typeof options.maxBuffer === 'number' && options.maxBuffer >= 0 ? options.maxBuffer : Infinity;
-  const stdout = Buffer.from(answer.stdout, 'utf8');
-  const stderr = Buffer.from(answer.stderr, 'utf8');
-  const overflowed = stdout.length > limit || stderr.length > limit;
+  const stdout = Buffer.from(answer.stdout);
+  const stderr = Buffer.from(answer.stderr);
+  // Only bytes kept for the caller count: a descriptor passed on is not a buffer of this call's.
+  const kept = (index: 1 | 2): boolean => stdio[index]?.type !== 'ignore' && !passedOn(stdio[index]);
+  const overflowed = (kept(1) && stdout.length > limit) || (kept(2) && stderr.length > limit);
   const output: Array<Uint8Array | null> = [null];
   for (let index = 1; index < Math.max(3, stdio.length); index += 1) {
     const bytes = index === 1 ? stdout : index === 2 ? stderr : null;
-    const kind = stdio[index]?.type;
-    output.push(bytes === null || kind === 'ignore' || kind === 'inherit' ? null : bytes);
+    output.push(bytes === null || !kept(index as 1 | 2) ? null : bytes);
   }
 
   return {
@@ -139,3 +323,8 @@ function spawn(options: SyncSpawnOptions): SyncSpawnResult {
 }
 
 export default { spawn };
+
+/** The binding captures its caller's own process independently of ambient globals. */
+export function createSpawnSyncBinding(parent: object): { spawn: (options: SyncSpawnOptions) => SyncSpawnResult } {
+  return { spawn: options => spawn(options, processCredentialsOf(parent)) };
+}

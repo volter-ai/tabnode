@@ -1,14 +1,63 @@
 /**
- * dns shim - DNS operations are not available in browser
- * Provides stubs that work for basic use cases
+ * Host lookup for this engine's loopback. There is no outbound DNS service.
+ * The World can wrap this door; a miss must never become a local wildcard.
  */
 
 // DNS lookup callback type
 type LookupCallback = (err: Error | null, address?: string, family?: number) => void;
 type LookupAllCallback = (err: Error | null, addresses?: Array<{ address: string; family: number }>) => void;
+type LookupOptions = { family?: number | 'IPv4' | 'IPv6'; all?: boolean; order?: 'verbatim' | 'ipv4first' | 'ipv6first' };
 
 /**
- * Lookup a hostname - returns localhost in browser
+ * The names that are this host besides `localhost`, as the host that owns the tab's loopback holds them (the
+ * services of a stack, the host's own name). The engine keeps no name table of its own (ADR-0002): the host
+ * installs its one, and a lookup asks it each time, so a name the host takes or drops is seen at once.
+ */
+let hostNames: (() => Iterable<string>) | undefined;
+
+/** Host bootstrap only, as the realm starts (the door `installNativeStreamTransport` is). */
+export function installHostNames(names: () => Iterable<string>): void {
+  hostNames = names;
+}
+
+/** Whether a name the host holds is this host: compared as DNS compares, without case or a trailing dot. */
+function heldByHost(hostname: string): boolean {
+  if (!hostNames) return false;
+  const name = hostname.toLowerCase().replace(/\.$/, '');
+  for (const held of hostNames()) if (held.toLowerCase() === name) return true;
+  return false;
+}
+
+function notFound(hostname: string, syscall = 'getaddrinfo'): Error {
+  return Object.assign(new Error(`${syscall} ENOTFOUND ${hostname}`), { code: 'ENOTFOUND', errno: -3008, syscall, hostname });
+}
+
+/** 4 or 6 for an IPv4 or IPv6 literal (brackets allowed), 0 for a name. */
+function literalFamily(hostname: string): 4 | 6 | 0 {
+  const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  if (/^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(bare)) return 4;
+  const host = bare.split('%')[0];
+  if (host.includes(':')) {
+    try { new URL(`http://[${host}]/`); return 6; } catch { /* malformed names are not IP literals */ }
+  }
+  return 0;
+}
+
+/** /etc/hosts aliases from this process's mounted file, in file order. */
+function hostsAddresses(content: string, hostname: string): Array<{ address: string; family: number }> | undefined {
+  const name = hostname.toLowerCase().replace(/\.$/, '');
+  const addresses: Array<{ address: string; family: number }> = [];
+  for (const line of content.split(/\r?\n/)) {
+    const [address, ...names] = line.split('#', 1)[0].trim().split(/\s+/);
+    const family = literalFamily(address ?? '');
+    if (family && names.some(alias => alias.toLowerCase().replace(/\.$/, '') === name)
+      && !addresses.some(row => row.address === address && row.family === family)) addresses.push({ address, family });
+  }
+  return addresses.length ? addresses : undefined;
+}
+
+/**
+ * Node's getaddrinfo shape over the names this host can actually reach.
  */
 export function lookup(
   hostname: string,
@@ -16,52 +65,96 @@ export function lookup(
 ): void;
 export function lookup(
   hostname: string,
-  options: { family?: number; all?: true },
+  options: LookupOptions & { all: true },
   callback: LookupAllCallback
 ): void;
 export function lookup(
   hostname: string,
-  options: { family?: number; all?: boolean },
+  options: number | LookupOptions,
   callback: LookupCallback | LookupAllCallback
 ): void;
 export function lookup(
   hostname: string,
-  optionsOrCallback: { family?: number; all?: boolean } | LookupCallback,
+  optionsOrCallback: number | LookupOptions | LookupCallback,
   callback?: LookupCallback | LookupAllCallback
 ): void {
-  const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
-  const options = typeof optionsOrCallback === 'object' ? optionsOrCallback : {};
+  lookupWithHosts(undefined, hostname, optionsOrCallback, callback);
+}
 
-  // In browser, we can't do real DNS lookups
-  // Return localhost for localhost, or a fake IP for other hostnames
+function lookupWithHosts(
+  readHosts: (() => string) | undefined,
+  hostname: string,
+  optionsOrCallback: number | LookupOptions | LookupCallback,
+  callback?: LookupCallback | LookupAllCallback,
+): void {
+  const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+  const options = typeof optionsOrCallback === 'number' ? { family: optionsOrCallback } : typeof optionsOrCallback === 'object' && optionsOrCallback ? optionsOrCallback : {};
+  if (typeof cb !== 'function') throw Object.assign(new TypeError('The callback argument must be a function'), { code: 'ERR_INVALID_ARG_TYPE' });
+  if (hostname && typeof hostname !== 'string') throw Object.assign(new TypeError('The hostname argument must be a string'), { code: 'ERR_INVALID_ARG_TYPE' });
+  const requested = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family ?? 0;
+  if (![0, 4, 6].includes(requested)) throw Object.assign(new TypeError(`Invalid address family: ${requested}`), { code: 'ERR_INVALID_ARG_VALUE' });
+
   setImmediate(() => {
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-      if (options.all) {
-        (cb as LookupAllCallback)(null, [{ address: '127.0.0.1', family: 4 }]);
-      } else {
-        (cb as LookupCallback)(null, '127.0.0.1', 4);
+    if (!hostname) {
+      if (options.all) (cb as LookupAllCallback)(null, []);
+      else (cb as LookupCallback)(null, undefined, requested === 6 ? 6 : 4);
+      return;
+    }
+    // An IP literal is its own answer, in its own family, as Node's lookup short-circuits it: `::` must stay IPv6.
+    const family = literalFamily(hostname);
+    if (family) {
+      const address = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+      if (options.all) (cb as LookupAllCallback)(null, [{ address, family }]);
+      else (cb as LookupCallback)(null, address, family);
+      return;
+    }
+    // hosts(5) belongs to the requesting process. Preserve the actual addresses and families,
+    // including aliases, rather than making every held name an IPv4/IPv6 wildcard.
+    let fileAddresses: Array<{ address: string; family: number }> | undefined;
+    try { fileAddresses = readHosts ? hostsAddresses(readHosts(), hostname) : undefined; }
+    catch (cause) {
+      // nss_files reports an unreadable hosts source as unavailable; lookup continues with
+      // the next resolver source. Kernel-owner/protocol, EIO transport and programming failures still surface.
+      const code = cause && typeof cause === 'object' ? (cause as { code?: string }).code : undefined;
+      if (!["ENOENT", "ENOTDIR", "EACCES", "EPERM", "EISDIR", "ELOOP", "EMFILE", "ENFILE"].includes(code ?? '')) {
+        cb(cause instanceof Error ? cause : new Error(String(cause))); return;
       }
+    }
+    if (fileAddresses !== undefined) {
+      let addresses = fileAddresses.filter(row => !requested || row.family === requested);
+      if (options.order === 'ipv4first' || options.order === 'ipv6first') {
+        const first = options.order === 'ipv6first' ? 6 : 4;
+        addresses = [...addresses.filter(row => row.family === first), ...addresses.filter(row => row.family !== first)];
+      }
+      if (!addresses.length) { cb(notFound(hostname)); return; }
+      if (options.all) (cb as LookupAllCallback)(null, addresses);
+      else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
+      return;
+    }
+    if (hostname.toLowerCase().replace(/\.$/, '') === 'localhost' || heldByHost(hostname)) {
+      const families = requested ? [requested] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
+      const addresses = families.map(family => ({ address: family === 6 ? '::1' : '127.0.0.1', family }));
+      if (options.all) (cb as LookupAllCallback)(null, addresses);
+      else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
     } else {
-      // For other hostnames, we can't resolve them in browser
-      // Return an error or a placeholder
-      if (options.all) {
-        (cb as LookupAllCallback)(null, [{ address: '0.0.0.0', family: 4 }]);
-      } else {
-        (cb as LookupCallback)(null, '0.0.0.0', 4);
-      }
+      // TCP accepts 0.0.0.0 as this host. Returning it for an unknown name
+      // silently connected a program to an unrelated local listener.
+      cb(notFound(hostname));
     }
   });
 }
 
 /**
- * Resolve hostname - stub
+ * Resource-record queries require a DNS service, which this host does not have. A name the host holds as itself
+ * has the loopback's records, as the resolver that serves it to every other program answers: A 127.0.0.1.
  */
 export function resolve(
   hostname: string,
   callback: (err: Error | null, addresses?: string[]) => void
 ): void {
   setImmediate(() => {
-    callback(null, ['0.0.0.0']);
+    if (heldByHost(hostname)) callback(null, ['127.0.0.1']);
+    else callback(notFound(hostname, 'queryA'));
   });
 }
 
@@ -77,19 +170,20 @@ export function resolve6(
   callback: (err: Error | null, addresses?: string[]) => void
 ): void {
   setImmediate(() => {
-    callback(null, ['::1']);
+    if (heldByHost(hostname)) callback(null, ['::1']);
+    else callback(notFound(hostname, 'queryAaaa'));
   });
 }
 
 /**
- * Reverse lookup - stub
+ * No PTR resolver is installed; an arbitrary address is never localhost.
  */
 export function reverse(
   ip: string,
   callback: (err: Error | null, hostnames?: string[]) => void
 ): void {
   setImmediate(() => {
-    callback(null, ['localhost']);
+    callback(notFound(ip, 'getHostByAddr'));
   });
 }
 
@@ -124,9 +218,9 @@ export function getDefaultResultOrder(): string {
 
 // Promises API
 export const promises = {
-  lookup: (hostname: string, options?: { family?: number; all?: boolean }) => {
+  lookup: (hostname: string, options?: number | LookupOptions) => {
     return new Promise((resolve, reject) => {
-      if (options?.all) {
+      if (typeof options === 'object' && options?.all) {
         lookup(hostname, options, ((err: Error | null, addresses?: Array<{ address: string; family: number }>) => {
           if (err) reject(err);
           else resolve(addresses || []);
@@ -134,7 +228,7 @@ export const promises = {
         return;
       }
 
-      lookup(hostname, options || {}, (err, address, family) => {
+      lookup(hostname, options ?? {}, (err, address, family) => {
         if (err) reject(err);
         else resolve({ address, family });
       });
@@ -150,13 +244,13 @@ export const promises = {
   },
   resolve4: (hostname: string) => promises.resolve(hostname),
   resolve6: (hostname: string) => {
-    return new Promise<string[]>((resolve) => {
-      resolve(['::1']);
+    return new Promise<string[]>((resolve, reject) => {
+      resolve6(hostname, (err, addresses) => { if (err) reject(err); else resolve(addresses || []); });
     });
   },
   reverse: (ip: string) => {
-    return new Promise<string[]>((resolve) => {
-      resolve(['localhost']);
+    return new Promise<string[]>((resolve, reject) => {
+      reverse(ip, (err, hostnames) => { if (err) reject(err); else resolve(hostnames || []); });
     });
   },
   setServers: (_servers: string[]) => {},
@@ -193,9 +287,19 @@ const dnsCodes = {
   LOADIPHLPAPI: "ELOADIPHLPAPI", ADDRGETNETWORKPARAMS: "EADDRGETNETWORKPARAMS", CANCELLED: "ECANCELLED"
 };
 
-export function createDnsModule() {
-  const promiseModule = { ...promises, ...dnsCodes };
-  return { ...dnsModule, ...dnsCodes, promises: promiseModule };
+export function createDnsModule(readHosts?: () => string) {
+  const processLookup = ((hostname: string, optionsOrCallback: number | LookupOptions | LookupCallback, callback?: LookupCallback | LookupAllCallback) => {
+    lookupWithHosts(readHosts, hostname, optionsOrCallback, callback);
+  }) as typeof lookup;
+  const promiseModule = { ...promises, ...dnsCodes, lookup: (hostname: string, options?: number | LookupOptions) =>
+    new Promise((resolve, reject) => {
+      if (typeof options === 'object' && options?.all) {
+        processLookup(hostname, options, (err: Error | null, addresses?: Array<{ address: string; family: number }>) => err ? reject(err) : resolve(addresses ?? []));
+      } else {
+        processLookup(hostname, options ?? {}, (err, address, family) => err ? reject(err) : resolve({ address, family }));
+      }
+    }) };
+  return { ...dnsModule, ...dnsCodes, lookup: processLookup, promises: promiseModule };
 }
 
 export default dnsModule;

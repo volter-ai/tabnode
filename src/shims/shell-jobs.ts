@@ -37,10 +37,10 @@
 import { defineCommand } from 'just-bash';
 import type { Bash, CommandContext } from 'just-bash';
 import {
-  PROCESS_TOKEN_ENV, enterRun, mintPid, setRunPid, runPid, forgetRunPid, pidIsLive, signalPid,
+  PROCESS_TOKEN_ENV, enterRun, mintPid, setRunPid, runPid, forgetRunPid, pidIsLive, signalPid, exitRunProcess, reapRunProcess,
   tokenOfPid, __signalOwnedProcess, __stopOwnedProcess, type ProcessToken,
 } from '../process-tokens';
-import { __substrateChildren, __substrateSignals, __substrateSignalNames } from './process';
+import { __substrateChildrenOf, __substrateSignals, __substrateSignalNames } from './process';
 import { __releaseOwnedServers, __releaseOwnedHandles } from '../node-lib/net-module';
 import type { RunStreams } from './child_process';
 import { unstreamedOutput } from './streamed-output';
@@ -207,19 +207,37 @@ function signalName(spec: string): string | null {
   return __substrateSignals[name] !== undefined ? name : null;
 }
 
+/**
+ * A job's output, on its parent run's fd: as bytes where the parent takes
+ * bytes, else as text. A parent that gave only byte sinks gets a builtin's
+ * text as its UTF-8 bytes; it is never dropped for want of a text sink.
+ */
+function toRun(streams: RunStreams | undefined, fd: 1 | 2, chunk: string | Uint8Array): void {
+  if (!streams) return;
+  const bytes = fd === 1 ? streams.onStdoutBytes : streams.onStderrBytes;
+  if (bytes) { bytes(typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk); return; }
+  const text = fd === 1 ? streams.onStdout : streams.onStderr;
+  text?.(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+}
+
 function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script: Node, sourceText: string): Job {
   const token: ProcessToken = `job-${nextJob++}`;
   const parent = host.runTokenOf(ctx);
   const parentPid = runPid(parent)?.pid;
-  const pid = mintPid();
-  setRunPid(token, pid, parentPid !== undefined && pidIsLive(parentPid) ? parentPid : 0, { argv: ['sh', '-c', sourceText], cwd: ctx.cwd });
+  const liveParent = parentPid !== undefined && pidIsLive(parentPid, parent) ? parentPid : 0;
+  const pid = mintPid(liveParent, false, parent);
+  setRunPid(token, pid, liveParent, { argv: ['sh', '-c', sourceText], cwd: ctx.cwd }, parent);
   const controller = new AbortController();
   let streamedOut: string[] = [];
   let streamedErr: string[] = [];
   const live = (): RunStreams | undefined => (parent === null ? undefined : host.runStreamsFor(parent));
   host.registerRunStreams(token, {
-    onStdout: (data: string) => { streamedOut.push(data); live()?.onStdout?.(data); },
-    onStderr: (data: string) => { streamedErr.push(data); live()?.onStderr?.(data); },
+    onStdout: (data: string) => { streamedOut.push(data); toRun(live(), 1, data); },
+    onStderr: (data: string) => { streamedErr.push(data); toRun(live(), 2, data); },
+    // A `node` of the job writes the parent's fds as bytes where the parent
+    // takes bytes, as a `node` of the parent's own shell does.
+    onStdoutBytes: (bytes: Uint8Array) => { toRun(live(), 1, bytes); },
+    onStderrBytes: (bytes: Uint8Array) => { toRun(live(), 2, bytes); },
     signal: controller.signal,
     held: false,
   });
@@ -234,7 +252,7 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
       // A `node` of the job, here or in a realm of its own, takes the signal
       // as a process does: its listeners, else its default action, which ends
       // the job with it.
-      if (__signalOwnedProcess(token, signal) || signalPid(pid, signal)) return true;
+      if (__signalOwnedProcess(token, signal) || signalPid(pid, signal, parent)) return true;
       if (IGNORED_BY_DEFAULT.has(signal)) return true;
       // Nothing of the job's receives signals (a builtin, `sleep`): it ends
       // now, as a killed child's run ends, and reports the signal.
@@ -250,8 +268,11 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
     if (job.status !== null) return;
     job.status = status;
     host.releaseRunStreams(token);
+    // The job ran in this realm's shell: it exits with its status, and its end is its shell's wait.
+    exitRunProcess(pid, liveParent, status, null, parent);
+    reapRunProcess(pid, liveParent, status, null, parent);
     forgetRunPid(token);
-    __substrateChildren.delete(pid);
+    __substrateChildrenOf(parent).delete(pid);
     settle(status);
   };
   const hold = (text: string, key: 'pendingOut' | 'pendingErr'): void => {
@@ -263,7 +284,7 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
   delete env[SHELL_VAR];
   env[PROCESS_TOKEN_ENV] = token;
   handoff.set(token, script);
-  __substrateChildren.set(pid, {
+  __substrateChildrenOf(parent).set(pid, {
     get exitCode() { return job.status; },
     signalCode: null,
     kill: (signal = 'SIGTERM') => job.kill(signal),
@@ -278,8 +299,8 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
       const stderr = result.stderr ?? '';
       const restOut = unstreamedOutput(stdout, streamedOut);
       const restErr = unstreamedOutput(stderr, streamedErr);
-      if (restOut) live()?.onStdout?.(restOut);
-      if (restErr) live()?.onStderr?.(restErr);
+      if (restOut) toRun(live(), 1, restOut);
+      if (restErr) toRun(live(), 2, restErr);
       hold(stdout, 'pendingOut');
       hold(stderr, 'pendingErr');
       streamedOut = [];
@@ -289,7 +310,7 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
     (error: unknown) => {
       handoff.delete(token);
       const text = `${error instanceof Error ? error.message : String(error)}\n`;
-      live()?.onStderr?.(text);
+      toRun(live(), 2, text);
       hold(text, 'pendingErr');
       end(1);
     },
@@ -458,7 +479,7 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
     return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', exitCode: result.exitCode ?? 0 };
   }));
 
-  bash.registerCommand(defineCommand('kill', async (args) => {
+  bash.registerCommand(defineCommand('kill', async (args, ctx) => {
     let signal = 'SIGTERM';
     let index = 0;
     if (args[0] === '-l' || args[0] === '-L') {
@@ -490,8 +511,10 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
     for (const target of targets) {
       if (target.startsWith('%')) { stderr += `bash: kill: ${target}: no such job\n`; status = 1; continue; }
       if (!/^-?\d+$/u.test(target)) { stderr += `bash: kill: ${target}: arguments must be process or job IDs\n`; status = 1; continue; }
-      const pid = Math.abs(Number(target));
-      if (!deliver(pid, signal)) { stderr += `bash: kill: (${target}) - No such process\n`; status = 1; }
+      // Signal zero is the caller's kill(2) query, including signed group
+      // targets. It must reach that authority with the number the shell read.
+      const pid = signal === '0' ? Number(target) : Math.abs(Number(target));
+      if (!deliver(host.runTokenOf(ctx), pid, signal)) { stderr += `bash: kill: (${target}) - No such process\n`; status = 1; }
     }
     return { stdout: '', stderr, exitCode: status };
   }));
@@ -512,12 +535,15 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
  * take it through their handle; any other run of the engine through its
  * process, or through the realm that holds it.
  */
-function deliver(pid: number, signal: string): boolean {
-  const child = __substrateChildren.get(pid);
+function deliver(caller: ProcessToken | null, pid: number, signal: string): boolean {
+  // A saved child handle may outlive its kernel PID. Like process.kill(pid,0),
+  // shell liveness is only the caller authority's no-delivery answer.
+  if (signal === '0') return pidIsLive(pid, caller);
+  // The calling shell's own children are found among its own; any other pid goes to the kernel's kill.
+  const child = __substrateChildrenOf(caller).get(pid);
   const childLive = child !== undefined && child.exitCode === null && child.signalCode === null;
-  if (signal === '0') return childLive || pidIsLive(pid);
   if (childLive) return child.kill(signal);
-  const token = tokenOfPid(pid);
+  const token = tokenOfPid(pid, caller);
   if (token !== null && __signalOwnedProcess(token, signal)) return true;
-  return signalPid(pid, signal);
+  return signalPid(pid, signal, caller);
 }

@@ -12,7 +12,11 @@ dist/
 
 # OS
 .DS_Store
+.metadata_never_index
 Thumbs.db
 
 # Claude Code
 .claude/
+
+# Objective measurement artifacts are retained by the workflow.
+measurement/

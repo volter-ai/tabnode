@@ -6,7 +6,7 @@
 
 # Function: runPid()
 
-> **runPid**(`token`): \{ `pid`: `number`; `ppid`: `number`; \} \| `undefined`
+> **runPid**(`token`): \{ `pgid?`: `number`; `pid`: `number`; `ppid`: `number`; \} \| `undefined`
 
 The numbers a named run was started with, where one was recorded.
 
@@ -18,4 +18,4 @@ The numbers a named run was started with, where one was recorded.
 
 ## Returns
 
-\{ `pid`: `number`; `ppid`: `number`; \} \| `undefined`
+\{ `pgid?`: `number`; `pid`: `number`; `ppid`: `number`; \} \| `undefined`

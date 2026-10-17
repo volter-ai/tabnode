@@ -3,7 +3,9 @@ import { TCP, TCPConnectWrap, type SockName } from './node-lib/binding/tcp_wrap'
 import { Pipe, PipeConnectWrap } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset } from './node-lib/binding/stream_wrap';
 import { __adoptHandle } from './node-lib/binding/handles';
-import { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOBUFS, UV_ENOTSUP, UV_EPIPE, UV_EMFILE, UV_EBUSY, UV_EALREADY } from './node-lib/binding/uv';
+import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOBUFS, UV_ENOTSUP, UV_EPIPE, UV_EMFILE, UV_EBUSY, UV_EALREADY, UV_ENOSYS } from './node-lib/binding/uv';
+
+const UV_EAGAIN = uv.UV_EAGAIN as number;
 
 export interface NativeStreamDescriptor { id: number; kind: 'tcp' | 'pipe'; type: number }
 export interface NativeStreamLimits {
@@ -31,10 +33,30 @@ export type NativeStreamOperation =
   | { operation: 'readStart' | 'readStop' | 'ref' | 'unref' | 'getsockname' | 'getpeername'; id: number }
   | { operation: 'shutdown' | 'close' | 'reset'; id: number; request: number };
 export interface NativeStreamReply { status: number; handle?: NativeStreamDescriptor; handleType?: 'TCP' | 'PIPE'; address?: Partial<SockName> }
+/** Bounded evidence only; no stream authority or payload bytes. */
+export interface NativeStreamWriteTrace { listener: number; vector: number; chunk: number }
 export interface NativeStreamTransport {
   readonly limits: Readonly<NativeStreamLimits>;
   call(operation: NativeStreamOperation): NativeStreamReply;
-  write(id: number, bytes: Uint8Array, handle?: number): Promise<number>;
+  /**
+   * An operation whose answer nothing waits for, sent without waiting for
+   * the owner: the owner takes it in order with every call after it, and one
+   * it refuses completes with its status: a read grant as the handle's failed
+   * read, a shutdown as its completion. Optional; without it each is a call.
+   */
+  post?(operation: { operation: 'readStart'; id: number } | { operation: 'shutdown'; id: number; request: number } | { operation: 'ref' | 'unref'; id: number }): void;
+  /**
+   * Whether `post` takes `ref` and `unref` too (S2 R73): a transport that does not say so is posted neither, and they
+   * stay calls. A handle's ref only keeps the owner's loop alive for it; nothing waits for its answer.
+   */
+  readonly postsRefs?: boolean;
+  write(id: number, bytes: Uint8Array, handle?: number, trace?: NativeStreamWriteTrace): Promise<number>;
+  /** Whole bounded write, without a descriptor: 0 means all bytes accepted.
+   * EAGAIN (or undefined when local credit prevents an attempt) accepts none.
+   * The host bounds the synchronous wait. A Promise owns the ALREADY submitted
+   * write's async completion: do not submit its bytes again. Older holders omit
+   * this bounded method and their ordered writes stay async. */
+  tryWriteWithinBudget?(id: number, bytes: Uint8Array, trace?: NativeStreamWriteTrace): number | Promise<number> | undefined;
   onEvent(listener: (event: NativeStreamEvent) => void): () => void;
 }
 
@@ -56,6 +78,8 @@ export class NativeStreamScope {
   private readonly entries = new Map<number, Entry>();
   private readonly descriptors = new Map<number, number>();
   private readonly writes = new Map<number, (status: number) => void>();
+  /** S2 T14: each credited handle's connection end's send credit (SendCredit), with the handle it was taken for. */
+  private readonly credits = new Map<number, { credit: SendCredit; handle: LibuvStreamWrap }>();
   private readonly connects = new Map<number, number>();
   private nextId = 1;
   private pendingWriteBytes = 0;
@@ -175,7 +199,8 @@ export class NativeStreamScope {
       }
       case 'bind': {
         if (typeof operation.address !== 'string') return { status: UV_EINVAL };
-        if (handle instanceof Pipe) return { status: handle.bind(operation.address) };
+        // The guest's realm made the socket's node in its own tree; the owner takes the name alone.
+        if (handle instanceof Pipe) return { status: handle.bindName(operation.address) };
         if (!Number.isInteger(operation.port) || operation.port! < 0 || operation.port! > 65535) return { status: UV_EINVAL };
         return { status: operation.ipv6 ? handle.bind6(operation.address, operation.port!, operation.flags) : handle.bind(operation.address, operation.port!, operation.flags) };
       }
@@ -207,6 +232,7 @@ export class NativeStreamScope {
             if (held.handle.getsockname(local) === 0 && held.handle.getpeername(remote) === 0) handle.adoptNames(local as SockName, remote as SockName);
           }
           handle.takeOverFrom(held.handle);
+          this.uncredit(inherited!);
           this.entries.delete(inherited!);
           scopes.delete(held.handle);
           held.handle.close();
@@ -243,6 +269,93 @@ export class NativeStreamScope {
         if (!Number.isSafeInteger(operation.request) || operation.request < 1) return { status: UV_EINVAL };
         return this.close(operation.id, operation.request);
     }
+  }
+
+  /** Node's DoTryWrite: never wait, queue, partially accept, or carry a handle.
+   * The local binding copies bytes into the peer's native queue before returning
+   * 0, and schedules the reader separately. EAGAIN leaves that queue untouched. */
+  tryWrite(id: number, bytes: Uint8Array): number {
+    const handle = this.entry(id)?.handle;
+    if (!handle || handle.closed) return UV_EBADF;
+    if (!(bytes instanceof Uint8Array)) return UV_EINVAL;
+    if (bytes.byteLength > this.limits.maxReadChunkBytes
+      || this.writes.has(id)
+      || this.pendingWriteBytes + bytes.byteLength > this.limits.maxPendingWriteBytes) return UV_EAGAIN;
+    if (!handle.peer) return UV_EPIPE;
+    if (handle.peerQueuedBytes + bytes.byteLength > this.limits.maxQueuedBytes) return UV_EAGAIN;
+    const status = handle.writeBuffer(new WriteWrap(), bytes);
+    this.publishCredit(id);
+    return status;
+  }
+
+  /**
+   * S2 T14: this handle's connection end's send credit (SendCredit). The first credited descriptor of an end gives its
+   * `word`; a duplicate is answered with the end's word, which the realm then reserves from. Published now, after every
+   * write made through any holder, and whenever the peer reads. A handle without a peer holds a word that publishes no
+   * room and never reopens (it has no peer to read). Refused where the window and a chunk could pass 2^31.
+   */
+  creditWrites(id: number, word: Int32Array): { status: number; word?: Int32Array } {
+    const handle = this.entry(id)?.handle;
+    if (!handle || handle.closed) return { status: UV_EBADF };
+    if (this.credits.has(id) || !(word.buffer instanceof SharedArrayBuffer) || word.length < SEND_CREDIT_WORDS
+      || this.limits.maxQueuedBytes + this.limits.maxReadChunkBytes >= 2 ** 31) return { status: UV_EINVAL };
+    // One send buffer per socket: a duplicate of a connection end already credited (here or in another scope of this
+    // worker) is given that end's word, and its writes reserve from the same window.
+    const end = handle.connectionEnd;
+    let credit = sendCredits.get(end);
+    if (!credit) {
+      credit = { word, written: 0, maxQueuedBytes: this.limits.maxQueuedBytes, holders: new Map() };
+      sendCredits.set(end, credit);
+    }
+    const shared = credit;
+    shared.holders.set(handle, handle.onPeerReadCapacity(() => publishSendCredit(shared)));
+    this.credits.set(id, { credit: shared, handle });
+    publishSendCredit(shared);
+    return { status: 0, word: shared.word };
+  }
+
+  /**
+   * S2 T14: a write the realm accepted against this handle's credit, as native's write(2) into its send buffer: put in
+   * the peer's queue now, in port order, never queued, never waited for capacity, so no close cancels it. Its status
+   * is the realm's to report on the handle's next write (a failure); success has no answer.
+   */
+  postWrite(id: number, bytes: Uint8Array): number {
+    const credit = this.credits.get(id)?.credit;
+    if (credit) credit.written = (credit.written + bytes.byteLength) | 0;
+    const handle = this.entry(id)?.handle;
+    const status = !handle || handle.closed ? UV_EBADF : !(bytes instanceof Uint8Array) ? UV_EINVAL
+      : !handle.peer ? UV_EPIPE : handle.writeBuffer(new WriteWrap(), bytes);
+    this.publishCredit(id);
+    return status;
+  }
+
+  /**
+   * A handle's credit ends with its entry. Its connection end's credit goes on for the duplicates still holding it;
+   * with the last, the word closes at its processed count, so no further write is accepted against it.
+   */
+  private uncredit(id: number): void {
+    const held = this.credits.get(id);
+    if (!held) return;
+    this.credits.delete(id);
+    const { credit, handle } = held;
+    credit.holders.get(handle)?.();
+    credit.holders.delete(handle);
+    if (credit.holders.size > 0) { publishSendCredit(credit); return; }
+    Atomics.store(credit.word, SEND_CREDIT_LIMIT, credit.written);
+    sendCredits.delete(handle.connectionEnd);
+  }
+
+  private publishCredit(id: number): void {
+    const held = this.credits.get(id);
+    if (held) publishSendCredit(held.credit);
+  }
+
+  /** The caller's short wait ended after we claimed its attempt. Only the
+   * native statuses that accepted NO bytes may enter the ordinary write queue.
+   * Otherwise that same submission completes with its actual native status. */
+  finishTryWrite(id: number, bytes: Uint8Array, status: number): Promise<number> {
+    return status === UV_EAGAIN || status === UV_ENOSYS
+      ? this.write(id, bytes) : Promise.resolve(status);
   }
 
   /**
@@ -294,6 +407,7 @@ export class NativeStreamScope {
         if (retained && handle.peerQueuedHandles >= this.limits.maxQueuedHandles) return;
         try { finish(handle.writeBuffer(new WriteWrap(), owned, retained)); }
         catch (cause) { finish(UV_ECANCELED, cause); }
+        this.publishCredit(id);
       };
       this.writes.set(id, finish);
       unsubscribe = handle.onPeerReadCapacity(attempt);
@@ -319,6 +433,9 @@ export class NativeStreamScope {
     const entry = this.entries.get(id);
     if (!entry) return { status: UV_EBADF };
     this.writes.get(id)?.(UV_ECANCELED);
+    // Credit-accepted writes are already in the peer's queue (port order): nothing of them is cancelled. The word is
+    // closed to its processed count, so no further write is accepted against it.
+    this.uncredit(id);
     const connecting = this.connects.get(id);
     this.connects.delete(id);
     if (connecting !== undefined) this.publish({ type: 'connect', id, request: connecting, status: UV_ECANCELED });
@@ -341,6 +458,29 @@ export class NativeStreamScope {
     }
     if (failures.length) throw new AggregateError(failures, 'Native stream scope cleanup failed.');
   }
+}
+
+/**
+ * S2 T14, a socket's send buffer, one per connection end as native's is one per socket, shared by every credited
+ * duplicate of it in this worker's scopes. Its word: LIMIT, `written + free` (the bytes of credit-accepted writes
+ * processed, failed ones included, and the peer queue's room, maxQueuedBytes being the send buffer's size), and
+ * RESERVED, the bytes the realms holding it have accepted against it, which each takes by compare-exchange, so two
+ * writers never take the same room. Both count as wrapping 32-bit integers, compared by the sign of their difference.
+ */
+interface SendCredit { readonly word: Int32Array; written: number; readonly maxQueuedBytes: number; readonly holders: Map<LibuvStreamWrap, () => void> }
+const SEND_CREDIT_LIMIT = 0;
+/** LIMIT and RESERVED. */
+const SEND_CREDIT_WORDS = 2;
+const sendCredits = new WeakMap<object, SendCredit>();
+
+function publishSendCredit(credit: SendCredit): void {
+  let free = 0;
+  for (const handle of credit.holders.keys()) {
+    if (handle.closed || !handle.peer) continue;
+    free = Math.max(0, credit.maxQueuedBytes - handle.peerQueuedBytes);
+    break;
+  }
+  Atomics.store(credit.word, SEND_CREDIT_LIMIT, (credit.written + free) | 0);
 }
 
 /** The process a handle opened for another worker's process belongs to, where a scope holds it. */

@@ -10,7 +10,7 @@
 
 ### resolve()
 
-> **resolve**(`specifier`, `fromDir`): `string` \| `null`
+> **resolve**(`specifier`, `fromDir`, `kept?`): `string` \| `null`
 
 The file a specifier names from a directory, or null when the tree does not answer it. Builtins are the caller's.
 
@@ -23,6 +23,10 @@ The file a specifier names from a directory, or null when the tree does not answ
 ##### fromDir
 
 `string`
+
+##### kept?
+
+`ResolutionKept`
 
 #### Returns
 

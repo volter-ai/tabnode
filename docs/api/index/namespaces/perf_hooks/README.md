@@ -13,11 +13,13 @@
 
 ## Interfaces
 
+- [EventLoopUtilization](interfaces/EventLoopUtilization.md)
 - [PerformanceEntry](interfaces/PerformanceEntry.md)
 - [PerformanceObserverEntryList](interfaces/PerformanceObserverEntryList.md)
 
 ## Variables
 
+- [constants](variables/constants.md)
 - [performance](variables/performance.md)
 
 ## Functions

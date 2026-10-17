@@ -86,6 +86,18 @@ Extensions a member's source may have, when the lane can run them.
 
 ***
 
+### throwNotExported?
+
+> `optional` **throwNotExported?**: `boolean`
+
+A package found whose `exports` map names the subpath under no condition set throws ERR_PACKAGE_PATH_NOT_EXPORTED and
+ends the walk, as Node's `packageExportsResolve` does, where a null would let the caller say MODULE_NOT_FOUND. The
+code is the answer a program reads: MeshCentral's InstallModules (meshcentral.js:4188, 029b7338) asks
+`require("otplib/package.json")`, falls back to reading the file for this code alone, and took any other for a
+missing module, which it went to install with npm.
+
+***
+
 ### workspaceMembers?
 
 > `optional` **workspaceMembers?**: () => `ReadonlySet`\<`string`\> \| `undefined`

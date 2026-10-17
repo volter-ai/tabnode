@@ -1,4 +1,6 @@
 /** A Node Duplex as a libuv stream handle. Node still owns both socket APIs. */
+import { queueBindingTask } from '../../guest-loop';
+import { invokeOwned } from './handles';
 import { LibuvStreamWrap, type WriteWrap, type ShutdownWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './stream_wrap';
 import { UV_EBADF, UV_ECONNRESET, UV_ENOTSUP } from './uv';
 
@@ -55,7 +57,7 @@ export class DuplexStreamHandle extends LibuvStreamWrap {
       complete = true;
       this.pendingWrite = undefined;
       this.writeQueueSize = 0;
-      queueMicrotask(() => req.oncomplete?.(status));
+      queueBindingTask(() => invokeOwned(req, 'oncomplete', status));
     };
     this.pendingWrite = finish;
     const next = (): void => {
@@ -73,13 +75,13 @@ export class DuplexStreamHandle extends LibuvStreamWrap {
         next();
       });
     };
-    queueMicrotask(next);
+    queueBindingTask(next);
     return 0;
   }
 
   override shutdown(req: ShutdownWrap): number {
     if (this.closed) return UV_EBADF;
-    this.transport.end(() => req.oncomplete?.(0));
+    this.transport.end(() => invokeOwned(req, 'oncomplete', 0));
     return 0;
   }
 

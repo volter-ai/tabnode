@@ -1,18 +1,32 @@
+import { traceReadingRequested, traceOutput } from '../trace-output';
 /**
  * Node.js process shim
  * Provides minimal process object for browser environment
  * Process is an EventEmitter in Node.js
  */
 
+import { queueGuestNextTick } from '../guest-loop';
 import { EventEmitter } from '../node-lib/events-module';
 import type { EventListener } from '../node-lib/events-module';
 import { Readable } from '../node-lib/stream-module';
-import { loadNodeLibFor } from '../node-lib/load';
+import { loadNodeLibFor, nodeLibBindingFor } from '../node-lib/load';
+import { kRunFilesystem, withFilesystem } from '../node-lib/binding/fs';
+import { createNodeError, type VirtualFS } from '../virtual-fs';
 import { constantsBinding } from './constants';
-import ttyWrapBinding from '../node-lib/binding/tty_wrap';
-import { mintPid, pidIsLive, signalPid, __recordTermination } from '../process-tokens';
-import { NODE_LTS_VERSION, nodeVersions } from '../node-lib/node-versions';
+import { nodeLibBinding } from '../node-lib/binding/index';
+import { nodeActiveHandles, nodeActiveRequests } from '../node-lib/binding/handles';
+
+/** The names Node 24's `process.binding` answers with `internalBinding(name)` (lib/internal/bootstrap/realm.js). */
+const PROCESS_BINDING_ALLOWED = new Set(['buffer', 'cares_wrap', 'config', 'constants', 'contextify', 'fs', 'fs_event_wrap', 'icu', 'inspector',
+  'js_stream', 'os', 'pipe_wrap', 'process_wrap', 'spawn_sync', 'stream_wrap', 'tcp_wrap', 'tls_wrap', 'tty_wrap', 'udp_wrap', 'uv', 'zlib']);
+import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, publishSignalDisposition, type ProcessToken } from '../process-tokens';
+import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
+import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
 import { freemem as osFreemem } from './os';
+import { copyProcessCredentials, recordProcessCredentials, type ProcessCredentials } from '../process-credentials';
+import { version as acornVersion } from 'acorn';
+import { ERR_INVALID_ARG_TYPE } from '../node-internals';
+import { setSourceMapsSupportOf, sourceMapsSupportOf } from '../node-lib/internals/events-util';
 
 export interface ProcessEnv {
   [key: string]: string | undefined;
@@ -60,7 +74,7 @@ interface ProcessStream {
 }
 
 interface ProcessWritableStream extends ProcessStream {
-  write: (data: string | Buffer, ...rest: unknown[]) => boolean;
+  write: (data: string | Uint8Array, ...rest: unknown[]) => boolean;
   end?: (...args: unknown[]) => void;
 }
 
@@ -91,9 +105,22 @@ interface ProcessWritableStream extends ProcessStream {
  * the superclass at class-definition time, which is before the loader that
  * builds it exists. See `node-lib/lazy.ts`.
  */
+/**
+ * A read of the guest's stdin stream by the engine itself (a `fs.readSync(0)`,
+ * a WASI guest's fd 0): it takes what the stream holds and is not the program
+ * asking its stream for bytes, so it does not keep the process alive.
+ */
+export const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
+
 export interface ProcessStdin extends Readable {
   readonly fd: number;
   isTTY: boolean;
+  /**
+   * The program has called `read()` on this stream. Node starts reading fd 0
+   * then, with its handle ref'd, so the process lives until the stream ends.
+   */
+  readonly __substrateGuestRead: boolean;
+  [kEngineStdinRead](size?: number): unknown;
   setRawMode(mode: boolean): ProcessStdin;
   __substrateStdinWrite(data: string | Uint8Array): void;
   __substrateStdinEnd(): void;
@@ -111,6 +138,23 @@ function processStdinClass(ReadableClass: typeof Readable): new () => ProcessStd
 
     /** Node's `Readable` asks for this; the engine pushes, so there is nothing to pull. */
     _read(): void {}
+
+    __substrateGuestRead = false;
+
+    /**
+     * The program's `read()`. `read(0)` is the stream's own refresh, which
+     * Node's Readable calls itself (after a push, on resume); any other is
+     * the program asking for bytes, and is recorded.
+     */
+    read(size?: number): string | Uint8Array | null {
+      if (size !== 0) this.__substrateGuestRead = true;
+      return super.read(size);
+    }
+
+    /** A read the engine makes, which is not the program's. */
+    [kEngineStdinRead](size?: number): unknown {
+      return super.read(size);
+    }
     /** False: there is no terminal in a tab. A runner that drives an interactive program sets it. */
     isTTY = false;
 
@@ -137,13 +181,25 @@ function processStdinClass(ReadableClass: typeof Readable): new () => ProcessStd
 type ProcessReadableStream = ProcessStdin;
 
 export interface Process {
+  _getActiveHandles(): object[];
+  _getActiveRequests(): object[];
   env: ProcessEnv;
+  loadEnvFile: (path?: string | Uint8Array | URL) => void;
   title: string;
   cwd: () => string;
   chdir: (directory: string) => void;
   platform: string;
+  report: { getReport(): Record<string, unknown>; [name: string]: unknown };
   version: string;
-  versions: { node: string; v8: string; uv: string; webcontainer?: string; openssl?: string };
+  versions: { node: string; v8: string; uv: string; webcontainer?: string; openssl?: string; acorn?: string };
+  release?: { name: string; lts?: string; sourceUrl: string; headersUrl: string };
+  getuid?: () => number;
+  geteuid?: () => number;
+  getgid?: () => number;
+  getegid?: () => number;
+  getgroups?: () => number[];
+  setSourceMapsEnabled?: (enabled: unknown) => void;
+  readonly sourceMapsEnabled?: boolean;
   arch?: string;
   argv: string[];
   argv0: string;
@@ -223,7 +279,7 @@ export interface Process {
 // readable stream, as Node's is, and is built by `ProcessStdin` above.
 function createProcessStream(
   isWritable: boolean,
-  writeImpl?: (data: string) => boolean
+  writeImpl?: (data: string | Uint8Array, encoding?: string) => boolean
 ): ProcessWritableStream {
   const emitter = new EventEmitter();
 
@@ -302,7 +358,7 @@ function createProcessStream(
       return stream;
     },
     // Default write implementation (no-op for readable streams)
-    write(_data: string | Buffer, ...rest: unknown[]) {
+    write(_data: string | Uint8Array, ...rest: unknown[]) {
       const callback = trailingCallback(rest);
       if (callback) queueMicrotask(callback);
       return true;
@@ -326,26 +382,24 @@ function createProcessStream(
 
   // Override write for actual writable streams
   if (isWritable && writeImpl) {
-    stream.write = (data: string | Buffer, ...rest: unknown[]) => {
-      const result = writeImpl(textOf(data));
+    // The chunk goes on as the program wrote it, bytes or a string with its
+    // encoding (`write(chunk[, encoding][, callback])`); the sink decides
+    // whether it wants text or bytes.
+    stream.write = (data: string | Uint8Array, ...rest: unknown[]) => {
+      const result = writeImpl(data, typeof rest[0] === 'string' ? rest[0] : undefined);
       const callback = trailingCallback(rest);
       if (callback) queueMicrotask(callback);
       return result;
     };
     stream.end = (...args: unknown[]) => {
       const data = args[0];
-      if (typeof data === 'string' || data instanceof Uint8Array) writeImpl(textOf(data));
+      if (typeof data === 'string' || data instanceof Uint8Array) writeImpl(data, typeof args[1] === 'string' ? args[1] : undefined);
       const callback = trailingCallback(args);
       if (callback) queueMicrotask(callback);
     };
   }
 
   return stream;
-}
-
-/** A chunk's text: bytes, a Buffer's or a plain Uint8Array's, are UTF-8. */
-function textOf(data: string | Uint8Array): string {
-  return typeof data === 'string' ? data : new TextDecoder().decode(data);
 }
 
 /**
@@ -362,6 +416,34 @@ function trailingCallback(args: readonly unknown[]): (() => void) | undefined {
   return undefined;
 }
 
+/**
+ * A written chunk's bytes, as the fd receives them: a string in the encoding
+ * it was written with (`write('ff', 'hex')` is one byte), bytes copied, so a
+ * program that reuses its buffer after the write does not change what was
+ * written.
+ */
+function bytesOf(owner: object, data: string | Uint8Array, encoding?: string): Uint8Array {
+  if (typeof data !== 'string') return new Uint8Array(data);
+  if (encoding === undefined || encoding === 'utf8' || encoding === 'utf-8') return new TextEncoder().encode(data);
+  const { Buffer: NodeBuffer } = loadNodeLibFor(owner, 'buffer') as { Buffer: { from(text: string, encoding: string): Uint8Array } };
+  return new Uint8Array(NodeBuffer.from(data, encoding));
+}
+
+/**
+ * A written chunk as text for a text sink: a string written in another
+ * encoding is its bytes, read as UTF-8 by the fd's own streaming decoder, so
+ * a character whose bytes arrive in two writes reaches the sink whole.
+ */
+function chunkText(owner: object, decoder: TextDecoder, data: string | Uint8Array, encoding?: string): string {
+  if (typeof data === 'string' && (encoding === undefined || encoding === 'utf8' || encoding === 'utf-8')) return data;
+  return decoder.decode(bytesOf(owner, data, encoding), { stream: true });
+}
+
+/** Whether a run's fd is a terminal, from one flag for all three or one per fd. */
+export function ttyOfFd(tty: boolean | readonly [boolean, boolean, boolean] | undefined, fd: 0 | 1 | 2): boolean {
+  return Array.isArray(tty) ? tty[fd] === true : tty === true;
+}
+
 /** The signal numbers a guest sees, and the signals a tab must ignore. */
 export const __substrateSignals: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGWINCH: 28 };
 export const __substrateSignalNames: Record<number, string> = Object.fromEntries(Object.entries(__substrateSignals).map(([name, number]) => [number, name]));
@@ -376,7 +458,18 @@ const __substrateIgnoredSignals = new Set(["SIGCHLD", "SIGCONT", "SIGURG", "SIGW
  * children's pids and asks whether they still run judged every live child dead.
  * src/shims/child_process.ts fills this table as it spawns.
  */
-export const __substrateChildren = new Map<number, { exitCode: number | null; signalCode: string | null; kill(signal?: string): boolean }>();
+/** A child a run spawned, as its parent's handle holds it. */
+export interface SubstrateChild { exitCode: number | null; signalCode: string | null; kill(signal?: string): boolean }
+const childrenByParent = new Map<ProcessToken | null, Map<number, SubstrateChild>>();
+/**
+ * The children one run spawned, by the pid it numbers them by: its own, never another run's (a pid in one run's pid
+ * namespace may name another process in another's). `parent` null is the realm process's own.
+ */
+export function __substrateChildrenOf(parent: ProcessToken | null): Map<number, SubstrateChild> {
+  let children = childrenByParent.get(parent);
+  if (!children) { children = new Map(); childrenByParent.set(parent, children); }
+  return children;
+}
 
 /**
  * A guest's `process.version` is the version its image names. The engine said
@@ -452,7 +545,26 @@ export function __substrateExitCode(code: unknown): number {
   return Number.isNaN(asNumber) ? 0 : asNumber;
 }
 
+/**
+ * `process.memoryUsage()` from what the realm can measure. A process is one realm and the realm's JavaScript heap is
+ * the process's: where the realm reports it (`performance.memory`, Chromium; exact when the page is cross-origin
+ * isolated, which a page running this engine's threads is), `heapUsed` and `heapTotal` are those readings.
+ * Nothing in a realm reports resident memory, memory outside the heap or ArrayBuffer bytes: `rss` is then the heap's
+ * total, a floor and not a measurement (a process's resident size is never less than its heap), and `external` and
+ * `arrayBuffers` are 0, meaning not counted. A realm with no heap reading at all (Firefox, Safari) answers the fixed
+ * figures this function always gave, which are a shape for callers and measure nothing.
+ */
+function measuredMemory(): { rss: number; heapTotal: number; heapUsed: number; external: number; arrayBuffers: number } {
+  const heap = (performance as unknown as { memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number } }).memory;
+  const used = heap?.usedJSHeapSize, total = heap?.totalJSHeapSize;
+  if (typeof used === 'number' && typeof total === 'number' && total > 0) {
+    return { rss: total, heapTotal: total, heapUsed: used, external: 0, arrayBuffers: 0 };
+  }
+  return { rss: 50 * 1024 * 1024, heapTotal: 30 * 1024 * 1024, heapUsed: 20 * 1024 * 1024, external: 1 * 1024 * 1024, arrayBuffers: 0 };
+}
+
 export function createProcess(options?: {
+  credentials?: ProcessCredentials;
   cwd?: string;
   env?: ProcessEnv;
   /** This process's own number and its parent's, as Node gives every process. */
@@ -461,8 +573,15 @@ export function createProcess(options?: {
   onExit?: (code: number) => void;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
+  /**
+   * fd 1 and fd 2 as bytes: every write's chunk exactly as the program wrote
+   * it, before any decode, as a file or pipe receives it. Where given, the
+   * text sink of the same fd is not called.
+   */
+  onStdoutBytes?: (bytes: Uint8Array) => void;
+  onStderrBytes?: (bytes: Uint8Array) => void;
   /** What the runner put on the guest's fd 0, as a shell puts the left of a pipe there. */
-  stdin?: string;
+  stdin?: string | Uint8Array;
   /**
    * The runner can still write to the guest's fd 0 (a held run fed with
    * `sendStdin`), so standard input does not end when the guest starts. Node's
@@ -474,9 +593,14 @@ export function createProcess(options?: {
    * held) is not one: Node does not inherit FORCE_COLOR onto a pipe, and
    * `util.inspect` of an Error would colorize a stack and then ask
    * `BuiltinModule.exists` of every `node:` frame.
+   *
+   * One flag for all three, or one per fd as `[stdin, stdout, stderr]`:
+   * `node x > out.log` at a terminal has fd 1 a file and fd 0 and 2 the
+   * terminal.
    */
-  tty?: boolean;
+  tty?: boolean | readonly [boolean, boolean, boolean];
 }): Process {
+  const credentials = copyProcessCredentials(options?.credentials);
   let currentDir = options?.cwd || '/';
   // Node sets no NODE_ENV and neither does the `node` image, so an app that
   // reads it to choose its shape took its development path under a Dockerfile
@@ -496,19 +620,83 @@ export function createProcess(options?: {
   // not, and a cell that printed a number would wrap it in CSI 33m. stdin
   // being held open is a pipe whose writer has not closed, not a TTY --
   // child_process tests hand pipes to children that way.
-  if (!options?.tty) {
+  // Per fd, the colour that matters is fd 1's: `console.log` writes there.
+  if (!ttyOfFd(options?.tty, 1)) {
     delete env.FORCE_COLOR;
   }
 
   // Create an EventEmitter for process events
   const emitter = new EventEmitter();
+  // A signal's disposition is the process's listeners for it: told to its registry as they come and go, so a kernel
+  // that delivers its signals knows them (browser-substrate ADR-0129 4.4).
+  const publishDisposition = (name: string | symbol, adding: boolean): void => {
+    if (typeof name !== 'string' || !Object.hasOwn(__substrateSignals, name) || name === 'SIGKILL' || name === 'SIGSTOP') return;
+    try { publishSignalDisposition(proc, __substrateSignals[name]!, adding || emitter.listenerCount(name) > 0); } catch { /* a registry that refuses keeps its own view */ }
+  };
+  emitter.on('newListener', (name: string | symbol) => publishDisposition(name, true));
+  emitter.on('removeListener', (name: string | symbol) => publishDisposition(name, false));
+  // Once the process is ending, nothing it queued, before or from an `exit` listener, runs afterwards. Node exits
+  // when the listeners return; here the realm goes on, so a queued tick would otherwise run in a process that has
+  // already said its last (Node's own test-next-tick queues one from `exit` and requires that it never be called).
+  // The mark is set where the engine ends the process and nowhere else: `exit()` below, and the launcher through
+  // `__substrateProcessEnding`. A program that emits 'exit' itself has called its own listeners and is still running,
+  // as in Node; its ticks run.
+  let exiting = false;
   const startTime = Date.now();
   // The guest's fd 0: the bytes the runner put there, then the end of them.
   // Nothing more can arrive unless the runner says it holds the input open.
   let stdinStream: ProcessStdin | undefined;
 
+  const stdoutDecoder = new TextDecoder();
+  const stderrDecoder = new TextDecoder();
+  // A process object no run names is the realm's own process, never a second one forked for it.
+  const own = options?.pid === undefined ? ownProcessIdentity() : undefined;
   const proc: Process = {
+    _getActiveHandles: () => nodeActiveHandles(proc, __tokenForProcess(proc)),
+    _getActiveRequests: () => nodeActiveRequests(proc, __tokenForProcess(proc)),
     env,
+    // Node's native process method reads synchronously and uses the same
+    // parser as util.parseEnv. Capture the tree/cwd even when this
+    // method is called without a receiver or while another run is current.
+    // Loading NODE_OPTIONS adds an environment value; it does not reparse
+    // interpreter options after the process has already started.
+    loadEnvFile(path: unknown = undefined): void {
+      const { getValidatedPath } = loadNodeLibFor(proc, 'internal/fs/utils') as {
+        getValidatedPath(path: unknown): string | Uint8Array;
+      };
+      const filename = getValidatedPath(path ?? '.env');
+      const written = typeof filename === 'string' ? filename : new TextDecoder().decode(new Uint8Array(filename));
+      if (written === '') throw createNodeError('ENOENT', 'open', written);
+      const absolute = written.startsWith('/') ? written : `${proc.cwd()}/${written}`;
+      const tree = (proc as unknown as Record<symbol, unknown>)[kRunFilesystem] as VirtualFS | undefined;
+      if (tree === undefined) {
+        throw Object.assign(new Error('fs: this process has no filesystem; the engine gives a run one when it starts'), { code: 'ENOSYS' });
+      }
+      // Use native bindings: replacing fs.readFileSync or util.parseEnv in
+      // a public module does not replace Node's native process method.
+      const fs = nodeLibBinding('fs')!() as {
+        open(path: string, flags: number, mode: number): number;
+        readFileUtf8(fd: number, flags: number): string;
+        close(fd: number): void;
+      };
+      const util = nodeLibBinding('util')!() as { parseEnv(content: string): Record<string, string> };
+      let fd: number;
+      try { fd = withFilesystem(tree, () => fs.open(absolute, 0, 0o666)); }
+      catch {
+        // Node's LoadEnvFile maps a failed open to ENOENT and reports the
+        // path as requested, including `.env` when no argument was given.
+        throw createNodeError('ENOENT', 'open', written);
+      }
+      let content: string;
+      try { content = fs.readFileUtf8(fd, 0); }
+      catch {
+        throw Object.assign(new TypeError(`Contents of '${written}' should be a valid string.`), { code: 'ERR_INVALID_ARG_TYPE' });
+      } finally { fs.close(fd); }
+      const parsed = util.parseEnv(content);
+      for (const [key, value] of Object.entries(parsed)) {
+        if (!Object.prototype.hasOwnProperty.call(proc.env, key)) proc.env[key] = value;
+      }
+    },
     // Node exposes a writable title even before application code sets it.
     // Packages use its presence when distinguishing Node from a browser.
     title: 'node',
@@ -517,19 +705,74 @@ export function createProcess(options?: {
       return currentDir;
     },
 
-    chdir(directory: string) {
-      console.log('[process] chdir called:', directory, 'from:', currentDir);
+    chdir(this: unknown, directory: string) {
       if (!directory.startsWith('/')) {
         directory = currentDir + '/' + directory;
       }
+      // A run whose tree is its kernel process's has its working directory there (chdir(2)): the kernel resolves
+      // and checks the path, a child forked afterwards is born in it, and its own answer is what `cwd()` then says.
+      // A tree with no process of its own keeps the directory here, as before.
+      const tree = (this as Record<symbol, unknown> | null | undefined)?.[Symbol.for('tabnode.run.vfs')] as { chdir?: (path: string) => void; currentWorkingDirectory?: () => string } | undefined;
+      if (tree && typeof tree.chdir === 'function') {
+        tree.chdir(directory);
+        currentDir = typeof tree.currentWorkingDirectory === 'function' ? tree.currentWorkingDirectory() : directory;
+        return;
+      }
       currentDir = directory;
-      console.log('[process] chdir result:', currentDir);
     },
 
     platform: 'linux', // Pretend to be linux for better compatibility
     version: 'v' + __browserRuntimeNodeVersion(env),
-    versions: nodeVersions(__browserRuntimeNodeVersion(env)),
+    // `acorn` is the parser this engine bundles, by its own version; the library's internals do not read it.
+    versions: { ...nodeVersions(__browserRuntimeNodeVersion(env)), acorn: acornVersion },
+    // What a program reads to learn it is Node at all: lib0, y-protocols, the `ai` SDK, sharp and OpenTelemetry
+    // test `process.release.name`, and with no `release` each took its not-Node branch without a word.
+    release: nodeRelease(__browserRuntimeNodeVersion(env)),
+    // Configured process credentials, inherited at fork and kept at exec by the host (ADR-0129).
+    // No setuid means real/effective ids are equal. Node always includes the effective gid in getgroups().
+    getuid: (): number => credentials.uid,
+    geteuid: (): number => credentials.uid,
+    getgid: (): number => credentials.gid,
+    getegid: (): number => credentials.gid,
+    getgroups: (): number[] => [...new Set([...credentials.groups, credentials.gid])],
+    // Node's switch for source maps (lib/internal/process/per_thread and the source-map cache): one state, read
+    // here and through `module.getSourceMapsSupport()`. Turning it on with this call covers every kind of code,
+    // as Node's does. It remaps nothing here (see the cache's note).
+    setSourceMapsEnabled(enabled: unknown): void {
+      if (typeof enabled !== 'boolean') throw new ERR_INVALID_ARG_TYPE('enabled', 'boolean', enabled);
+      setSourceMapsSupportOf(this, enabled, { nodeModules: enabled, generatedCode: enabled });
+    },
+    get sourceMapsEnabled(): boolean { return sourceMapsSupportOf(this).enabled; },
     arch: 'x64',
+
+    // `process.report.getReport()`: what a program reads to learn the C library it runs on (detect-libc, and
+    // through it sharp, node-gyp-build and every package that picks a prebuilt binary by libc family). Node fills
+    // `header.glibcVersionRuntime` from the libc it is linked to and leaves it out on musl. This process is linked
+    // to none, so the answer is its image's: the base image's own `/usr/bin/ldd` in this process's tree, the file
+    // a Linux program reads for the same question. No such file, or one that is not glibc's: the field is absent,
+    // as on musl. Nothing here names a family the tree does not state.
+    report: {
+      compact: false, directory: '', filename: '', excludeNetwork: false,
+      reportOnFatalError: false, reportOnSignal: false, reportOnUncaughtException: false, signal: 'SIGUSR2',
+      getReport(): Record<string, unknown> {
+        let glibc: string | undefined;
+        try {
+          const tree = (proc as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.run.vfs')] as { readFileSync?: (path: string, encoding: 'utf8') => string } | undefined;
+          const ldd = tree?.readFileSync?.('/usr/bin/ldd', 'utf8');
+          if (ldd !== undefined && ldd.includes('GNU C Library')) glibc = /LIBC[a-z0-9 \-).]*?(\d+\.\d+)/iu.exec(ldd)?.[1];
+        } catch { /* a tree with no ldd states no libc */ }
+        return {
+          header: {
+            reportVersion: 5, event: 'JavaScript API', trigger: 'GetReport', filename: null,
+            nodejsVersion: proc.version, ...(glibc ? { glibcVersionRuntime: glibc, glibcVersionCompiler: glibc } : {}),
+            wordSize: 64, arch: proc.arch, platform: proc.platform, componentVersions: { ...proc.versions },
+            cwd: proc.cwd(), commandLine: [...proc.argv], processId: proc.pid,
+          },
+          javascriptStack: { message: 'No stack.', stack: ['Unavailable.'] },
+          sharedObjects: [],
+        };
+      },
+    },
 
     argv: ['node', '/index.js'],
     argv0: 'node',
@@ -554,7 +797,9 @@ export function createProcess(options?: {
       __substrateCaptureCallback = callback;
     },
     hasUncaughtExceptionCaptureCallback() { return __substrateCaptureCallback !== null; },
-    features: { debug: false, inspector: false, tls: false, cached_builtins: true, ipv6: true, require_module: true, tls_alpn: false, tls_ocsp: false, tls_sni: false, typescript: false, uvwasi: true },
+    features: { debug: false, inspector: false, tls: false, cached_builtins: true, ipv6: true, require_module: true, tls_alpn: false, tls_ocsp: false, tls_sni: false, uvwasi: true,
+      // By the line the guest was told it is: Node 20 has no such property (node-line.ts).
+      ...(featuresTypescriptPresent(nodeLineOf(`v${__browserRuntimeNodeVersion(env)}`)) ? { typescript: 'strip' } : {}) },
     // The tab's tree carries no mode mask; Node's own default is what a
     // process that has not set one reports, and setting one answers the mask
     // it replaced, as Node's does.
@@ -567,12 +812,14 @@ export function createProcess(options?: {
     // Every process has its own number, and `ppid` names the one that
     // started it: `src/process-tokens.ts` says what reads them and what it
     // cost when they were 1 and 0 for everyone.
-    pid: options?.pid ?? mintPid(),
-    ppid: options?.ppid ?? 0,
+    pid: options?.pid ?? own!.pid,
+    ppid: options?.ppid ?? (options?.pid === undefined ? own!.ppid : 0),
 
     exit(code: number | string | null | undefined = 0) {
       code = __substrateExitCode(code);
+      exiting = true;
       emitter.emit('exit', code);
+      (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
       if (options?.onExit) {
         options.onExit(code);
       }
@@ -584,29 +831,46 @@ export function createProcess(options?: {
       if (signal !== 0 && (typeof name !== "string" || __substrateSignals[name] === void 0)) {
         throw Object.assign(new TypeError("Unknown signal: " + signal), { code: "ERR_UNKNOWN_SIGNAL" });
       }
+      // Node's kill(pid, 0) asks the caller's process authority before self/child handles. A saved handle is
+      // not evidence of an existing kernel PID; signed targets must reach that authority without abs(pid).
+      if (signal === 0) {
+        if (pidIsLive(pid, __tokenForProcess(proc), proc.pid)) return true;
+        throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
+      }
+      // POSIX negative targets name a group, not abs(pid). World teardown
+      // probes that group then signals every member from another realm; the
+      // former abs(pid) probe succeeded while both termination signals failed.
+      // Keep the legacy path only for hosts without the optional operations.
+      if (pid < 0) {
+        const result = signalGroup(-pid, name, __tokenForProcess(proc));
+        // An instrument (langfuse, 3.0.2176: a World's `down` signalled its Redis twin's group, asked for a minute
+        // whether the group was still there, and gave up, "retirement unconfirmed"): for a signal that is not the
+        // question, whether any member took it and whether the group is there before and after. Three ends look the
+        // same from outside: no member takes the signal, the member takes it and does not end, or it ends and the
+        // table still lists it.
+        if (signal !== 0) {
+          const token = __tokenForProcess(proc);
+          if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'group-signal', at: Date.now(), from: proc.pid, pgid: -pid, signal: name, delivered: result ?? 'this host has no group operations', listedAfter: groupIsLive(-pid, token) ?? null, leaderListed: pidIsLive(-pid, token) });
+        }
+        if (result === true) return true;
+        if (result === false) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
+      }
       // A signal to the guest's own pid is raised on its own process object
       // the way Node raises one; its children take theirs through their
       // handles, other live processes of the container through the process
       // registry, and every other pid is ESRCH rather than a silent success.
       if (pid !== proc.pid) {
-        const child = __substrateChildren.get(Math.abs(pid));
+        const child = __substrateChildrenOf(__tokenForProcess(proc)).get(Math.abs(pid));
         if (child === void 0 || child.exitCode !== null || child.signalCode !== null) {
-          // Signal 0 is the question "is that process there?", and a program
-          // asks it about processes that are not its own children: a pid out
-          // of a lock file, a parent's. A live run answers yes and carries no
-          // signal; anything else is `ESRCH`, as it is on a machine.
-          if (signal === 0 && pidIsLive(Math.abs(pid))) return true;
           // Any other live process of the container takes the signal too,
           // including one whose parent has exited; otherwise nothing could
           // ever end it.
-          if (signal !== 0 && child === void 0 && pid > 0 && signalPid(pid, name)) return true;
+          if (signal !== 0 && child === void 0 && pid > 0 && signalPid(pid, name, __tokenForProcess(proc))) return true;
           throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH", errno: -3, syscall: "kill" });
         }
-        if (signal === 0) return true;
         child.kill(name);
         return true;
       }
-      if (signal === 0) return true;
       if (name !== "SIGKILL" && name !== "SIGSTOP" && emitter.listenerCount(name) > 0) {
         emitter.emit(name, name);
         return true;
@@ -623,11 +887,12 @@ export function createProcess(options?: {
      * before it reads anything public: the Prisma CLI asks for `constants`,
      * `buffer` and `tty_wrap` on its way in. The engine had no such function,
      * so the call was `undefined is not a function` -- a TypeError where Node
-     * answers. `constants` is the one binding a tab can serve honestly, and it
-     * is the engine's own table, the same numbers `require("constants")` hands
-     * out; every other name gets the error Node raises for a module it does
-     * not have, because a binding a tab cannot back is a surface that answers
-     * and then cannot act. Node prints the DEP0111 warning only under
+     * answers. A name on Node's allow list is answered with the engine's own
+     * internal binding of that name, the one Node's vendored lib runs on, so
+     * it acts as Node's lib does (`constants` is the engine's table, the same
+     * numbers `require("constants")` hands out). A listed name the engine has
+     * no binding for, and every unlisted one, gets the error Node raises for a
+     * module it does not have. Node prints the DEP0111 warning only under
      * `--pending-deprecation`, and only once, so this does the same.
      */
     binding(name: string): unknown {
@@ -636,7 +901,14 @@ export function createProcess(options?: {
         proc.emitWarning("process.binding() is deprecated. Please use public APIs instead.", "DeprecationWarning", "DEP0111");
       }
       if (name === "constants") return constantsBinding();
-      if (name === "tty_wrap") return ttyWrapBinding;
+      if (name === "tty_wrap") return nodeLibBindingFor(proc, name);
+      // Node answers `internalBinding(name)` for a name on its allow list (lib/internal/bootstrap/realm.js,
+      // processBindingAllowList, Node 24), and the engine's internal bindings are the ones Node's own vendored lib
+      // runs on: `fs` among them, whose `stat` and `FSReqCallback` a fast stat reaches for (audiobookshelf's
+      // ripstat: `const { stat, FSReqCallback } = process.binding('fs')`, which threw here at load). A listed name
+      // the engine holds no binding for raises Node's own error, as an unlisted one does.
+      const binding = PROCESS_BINDING_ALLOWED.has(name) ? nodeLibBinding(name) : undefined;
+      if (binding) return nodeLibBindingFor(proc, name);
       throw new Error("No such module: " + name);
     },
 
@@ -645,7 +917,8 @@ export function createProcess(options?: {
       // A throw from a tick callback is this process's uncaught exception in
       // Node. Out of a microtask it would be the realm's instead, and in the
       // tab the worker's, which the substrate takes for a dead host.
-      queueMicrotask(() => {
+      queueGuestNextTick(() => {
+        if (exiting) return;
         try { run(...args); }
         catch (error) { if (!__reportUncaughtException(proc, error)) throw error; }
       });
@@ -681,20 +954,24 @@ export function createProcess(options?: {
       queueMicrotask(() => { emitter.emit('warning', raised); });
     },
 
-    stdout: createProcessStream(true, (data: string) => {
-      if (options?.onStdout) {
-        options.onStdout(data);
+    stdout: createProcessStream(true, (data, encoding) => {
+      if (options?.onStdoutBytes) {
+        options.onStdoutBytes(bytesOf(proc, data, encoding));
+      } else if (options?.onStdout) {
+        options.onStdout(chunkText(proc, stdoutDecoder, data, encoding));
       } else {
-        console.log(data);
+        console.log(chunkText(proc, stdoutDecoder, data, encoding));
       }
       return true;
     }) as ProcessWritableStream,
 
-    stderr: createProcessStream(true, (data: string) => {
-      if (options?.onStderr) {
-        options.onStderr(data);
+    stderr: createProcessStream(true, (data, encoding) => {
+      if (options?.onStderrBytes) {
+        options.onStderrBytes(bytesOf(proc, data, encoding));
+      } else if (options?.onStderr) {
+        options.onStderr(chunkText(proc, stderrDecoder, data, encoding));
       } else {
-        console.error(data);
+        console.error(chunkText(proc, stderrDecoder, data, encoding));
       }
       return true;
     }) as ProcessWritableStream,
@@ -702,7 +979,7 @@ export function createProcess(options?: {
     get stdin() {
       if (!stdinStream) {
         stdinStream = new (processStdinClass(loadNodeLibFor(proc, 'stream').Readable))();
-        if (typeof options?.stdin === 'string') stdinStream.__substrateStdinWrite(options.stdin);
+        if (options?.stdin !== undefined) stdinStream.__substrateStdinWrite(options.stdin);
         if (!options?.stdinHeld) stdinStream.__substrateStdinEnd();
       }
       return stdinStream;
@@ -725,16 +1002,8 @@ export function createProcess(options?: {
       }
     ),
 
-    memoryUsage() {
-      // Return mock values since we can't access real memory in browser
-      return {
-        rss: 50 * 1024 * 1024,
-        heapTotal: 30 * 1024 * 1024,
-        heapUsed: 20 * 1024 * 1024,
-        external: 1 * 1024 * 1024,
-        arrayBuffers: 0,
-      };
-    },
+    // Node's `process.memoryUsage` is a function with a function on it, `rss()`, for the one number alone.
+    memoryUsage: Object.assign(function memoryUsage() { return measuredMemory(); }, { rss: (): number => measuredMemory().rss }),
 
     /**
      * Node's `process.constrainedMemory`, which reports a cgroup's limit on
@@ -846,8 +1115,15 @@ export function createProcess(options?: {
     },
   };
 
+  processEndings.set(proc, () => { exiting = true; });
+  recordProcessCredentials(proc, credentials);
   return proc;
 }
+
+/** Each process's own mark that it is ending, kept here and not on the process, where a guest could reach it. */
+const processEndings = new WeakMap<object, () => void>();
+/** The launcher says a process is ending, before it emits that process's `exit`. */
+export function __substrateProcessEnding(process: object): void { processEndings.get(process)?.(); }
 
 // There is no default process: a process is made for a run, by the `node`
 // command, and making one when this module is evaluated built the guest's

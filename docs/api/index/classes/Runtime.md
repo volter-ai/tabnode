@@ -253,6 +253,28 @@ Get the virtual file system
 
 ***
 
+### preloadModules()
+
+> **preloadModules**(`requires`, `imports`): `Promise`\<`void`\>
+
+Node's pre-entry modules share this process's cache, cwd and import settlement.
+
+#### Parameters
+
+##### requires
+
+readonly `string`[]
+
+##### imports
+
+readonly `string`[]
+
+#### Returns
+
+`Promise`\<`void`\>
+
+***
+
 ### runFile()
 
 > **runFile**(`filename`): `object`

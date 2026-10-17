@@ -183,8 +183,14 @@ export function extractTarball(
     // Build destination path
     const fullPath = path.join(destPath, entryPath);
 
+    // Each entry keeps the mode its archive gives it, as npm's extraction
+    // (pacote over node-tar) writes it: the archive's bits, at least
+    // readable (files) or traversable (directories), under npm's default
+    // umask of 022. A package's executable stays executable, so a program
+    // that runs it by path finds it runnable.
     if (entry.type === 'directory') {
       vfs.mkdirSync(fullPath, { recursive: true });
+      vfs.chmodSync(fullPath, (entry.mode | 0o777) & ~0o022);
     } else if (entry.type === 'file' && entry.content) {
       // Ensure parent directory exists
       const parentDir = path.dirname(fullPath);
@@ -192,6 +198,7 @@ export function extractTarball(
 
       // Write file
       vfs.writeFileSync(fullPath, entry.content);
+      vfs.chmodSync(fullPath, (entry.mode | 0o666) & ~0o022);
       extractedFiles.push(fullPath);
     }
   }

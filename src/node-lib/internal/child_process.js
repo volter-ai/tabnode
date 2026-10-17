@@ -12,6 +12,7 @@ const {
   ReflectApply,
   StringPrototypeSlice,
   Symbol,
+  SymbolDispose,
   Uint8Array,
 } = primordials;
 
@@ -41,7 +42,7 @@ const dgram = require('dgram');
 const inspect = require('internal/util/inspect').inspect;
 const assert = require('internal/assert');
 
-const { Process } = internalBinding('process_wrap');
+const { Process, constants: processConstants } = internalBinding('process_wrap');
 const {
   WriteWrap,
   kReadBytesOrError,
@@ -55,12 +56,13 @@ const { TTY } = internalBinding('tty_wrap');
 const { UDP } = internalBinding('udp_wrap');
 const SocketList = require('internal/socket_list');
 const { owner_symbol } = require('internal/async_hooks').symbols;
-const { convertToValidSignal, deprecate, SymbolDispose } = require('internal/util');
+const { convertToValidSignal, deprecate } = require('internal/util');
 const { isArrayBufferView } = require('internal/util/types');
 const spawn_sync = internalBinding('spawn_sync');
 const { kStateSymbol } = require('internal/dgram');
 const dc = require('diagnostics_channel');
 const childProcessChannel = dc.channel('child_process');
+const childProcessSpawn = dc.tracingChannel('child_process.spawn');
 
 const {
   UV_EACCES,
@@ -392,7 +394,28 @@ ChildProcess.prototype.spawn = function spawn(options) {
     this.spawnargs = options.args;
   }
 
-  const err = this._handle.spawn(options);
+  if (childProcessSpawn.hasSubscribers) {
+    childProcessSpawn.start.publish({ process: this, options });
+  }
+
+  let spawnFlags = 0;
+  if (options.detached)
+    spawnFlags |= processConstants.kProcessFlagDetached;
+  if (options.windowsHide)
+    spawnFlags |= processConstants.kProcessFlagWindowsHide;
+  if (options.windowsVerbatimArguments)
+    spawnFlags |= processConstants.kProcessFlagWindowsVerbatimArguments;
+
+  const err = this._handle.spawn(
+    options.file,
+    options.args,
+    options.cwd,
+    options.envPairs,
+    options.stdio,
+    spawnFlags,
+    options.uid,
+    options.gid,
+  );
 
   // Run-time errors should emit an error, not throw an exception.
   if (err === UV_EACCES ||
@@ -400,6 +423,13 @@ ChildProcess.prototype.spawn = function spawn(options) {
       err === UV_EMFILE ||
       err === UV_ENFILE ||
       err === UV_ENOENT) {
+    if (childProcessSpawn.hasSubscribers) {
+      childProcessSpawn.error.publish({
+        process: this,
+        error: new ErrnoException(err, 'spawn'),
+      });
+    }
+
     process.nextTick(onErrorNT, this, err);
 
     // There is no point in continuing when we've hit EMFILE or ENFILE
@@ -417,8 +447,20 @@ ChildProcess.prototype.spawn = function spawn(options) {
 
     this._handle.close();
     this._handle = null;
+
+    if (childProcessSpawn.hasSubscribers) {
+      childProcessSpawn.error.publish({
+        process: this,
+        error: new ErrnoException(err, 'spawn'),
+      });
+    }
+
     throw new ErrnoException(err, 'spawn');
   } else {
+    if (childProcessSpawn.hasSubscribers) {
+      childProcessSpawn.end.publish({ process: this });
+    }
+
     process.nextTick(onSpawnNT, this);
   }
 
@@ -556,7 +598,6 @@ class Control extends EventEmitter {
   unrefCounted() {
     if (--this.#refs === 0 && !this.#refExplicitlySet) {
       this.#channel.unref();
-      this.emit('unref');
     }
   }
 
@@ -821,8 +862,7 @@ function setupChannel(target, channel, serializationMode) {
       obj = handleConversion[message.type];
 
       // convert TCP object to native handle object
-      handle = ReflectApply(handleConversion[message.type].send,
-                            target, [message, handle, options]);
+      handle = FunctionPrototypeCall(handleConversion[message.type].send, target, message, handle, options);
 
       // If handle was sent twice, or it is impossible to get native handle
       // out of it - just send a text without the handle.

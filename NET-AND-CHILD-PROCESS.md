@@ -119,6 +119,10 @@ and the run ownership that keeps a run alive while it holds a handle.
   command resolves to nothing); a `pipe` entry past fd 2 is the child's at
   its own number, which an engine `node` child opens by that fd and a
   program the page registered receives as a byte stream in each direction;
+  a child that is the engine's `node` (by name or by `process.execPath`) is
+  started from its argv by the same launch as `container.runNode`, not as a
+  shell line, and its fds 0, 1 and 2 carry the bytes written to them, as a
+  pipe does; a shell builtin's output is the shell's text;
   `kill(signal)`; `onexit(exitCode,
   signalCode)` once, when the run ends; `ref()`, `unref()`.
 - `spawn_sync`: `spawn(options)` answering `{ status, signal, output: [null,

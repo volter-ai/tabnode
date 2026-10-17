@@ -1,4 +1,4 @@
-// Autorelease: every push to main releases what changed. Run by the publish
+// Autorelease: an authorized push to publish releases what changed. Run by the publish
 // workflow before its build and publish steps:
 //
 //   PACKAGES="<dir> …" [LOCKSTEP=1] [SOURCES="<path> …"] [PATHS="<dir>=<path>,… …"]
@@ -10,7 +10,7 @@
 // package that depends on a released one through an exact pin or a `workspace:`
 // range is released with it; LOCKSTEP=1 releases all of them together. Each
 // released package moves to the next patch after the higher of its version on
-// main and on npm (a version on main that npm lacks is released as it is);
+// publish and on npm (a version on publish that npm lacks is released as it is);
 // exact pins on it in the packages' manifests and in PIN_FILES follow, and so
 // does its version string in each VERSION_TEXT file. The workflow
 // then builds, publishes every version npm lacks, and commits the bump to main.
@@ -41,8 +41,11 @@ const byName = new Map(packages.map((pkg) => [pkg.manifest.name, pkg]));
 const fields = ['dependencies', 'peerDependencies', 'optionalDependencies'];
 const exact = (range) => /^\d/.test(range) || range.startsWith('workspace:');
 
+// The version line's last change is read along main's first parents, so a merge that sets the version counts
+// (diffed against main's side, git's --diff-merges=first-parent); a plain log never diffs a merge, and -m would
+// also count a merge that only brings in a branch whose version differs from main's.
 function changed({ dir, file }) {
-  const since = git('log', '-1', '--format=%H', '-G', '"version":', '--', file);
+  const since = git('log', '-1', '--first-parent', '--format=%H', '-G', '"version":', '--', file);
   if (!since) return true;
   const own = list('PATHS').find((entry) => entry.split('=')[0] === dir)?.split('=')[1].split(',');
   const paths = [...(own ?? [dir]), ...list('SOURCES')];
@@ -66,7 +69,7 @@ for (const name of release) {
   const { manifest } = byName.get(name);
   // A version this workflow's own release commit set was published by it, even while npm still
   // holds it as staged and `npm view` says it is absent; anything else npm lacks goes out as it is.
-  const setByRelease = git('log', '-1', '--format=%an', '-G', '"version":', '--', byName.get(name).file) === 'github-actions[bot]';
+  const setByRelease = git('log', '-1', '--first-parent', '--format=%an', '-G', '"version":', '--', byName.get(name).file) === 'github-actions[bot]';
   if (!setByRelease && !onNpm(`${name}@${manifest.version}`)) { bumped.set(name, { from: manifest.version, to: manifest.version }); continue; }
   const latest = onNpm(name);
   const base = latest && newer(latest, manifest.version) ? latest : manifest.version;

@@ -38,6 +38,7 @@ const codes: Record<string, [number, string]> = {
   UV_ENOBUFS: [-105, 'no buffer space available'],
   UV_ENOENT: [-2, 'no such file or directory'],
   UV_ENOMEM: [-12, 'not enough memory'],
+  UV_ENOSPC: [-28, 'no space left on device'],
   UV_ENOSYS: [-38, 'function not implemented'],
   UV_ENOTCONN: [-107, 'socket is not connected'],
   UV_ENOTDIR: [-20, 'not a directory'],
@@ -81,11 +82,13 @@ export function getErrorMap(): Map<number, [string, string]> {
 const uvBinding: Record<string, unknown> = { errname, getErrorMap };
 for (const [name, [value]] of Object.entries(codes)) uvBinding[name] = value;
 
+export const UV_EPERM = codes.UV_EPERM[0];
 export const UV_EOF = codes.UV_EOF[0];
 export const UV_ECONNREFUSED = codes.UV_ECONNREFUSED[0];
 export const UV_ECONNRESET = codes.UV_ECONNRESET[0];
 export const UV_EADDRINUSE = codes.UV_EADDRINUSE[0];
 export const UV_ENOENT = codes.UV_ENOENT[0];
+export const UV_ENOTDIR = codes.UV_ENOTDIR[0];
 export const UV_ENOTSOCK = codes.UV_ENOTSOCK[0];
 export const UV_EPIPE = codes.UV_EPIPE[0];
 export const UV_EINVAL = codes.UV_EINVAL[0];
@@ -98,6 +101,7 @@ export const UV_ENOSYS = codes.UV_ENOSYS[0];
 export const UV_EADDRNOTAVAIL = codes.UV_EADDRNOTAVAIL[0];
 export const UV_EACCES = codes.UV_EACCES[0];
 export const UV_ENOBUFS = codes.UV_ENOBUFS[0];
+export const UV_ETIMEDOUT = codes.UV_ETIMEDOUT[0];
 export const UV_EMFILE = codes.UV_EMFILE[0];
 export const UV_EBUSY = codes.UV_EBUSY[0];
 export const UV_EALREADY = codes.UV_EALREADY[0];

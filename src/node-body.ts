@@ -10,7 +10,11 @@
  * so every POST a route handler read was that string, and NextAuth's
  * credentials callback found no CSRF token in it.
  *
- * Only such a body is changed; every other init is handed on untouched.
+ * A body that is a view of shared memory is the other one changed: undici copies a view's bytes into the request
+ * (`extractBody`: `new Uint8Array(object.buffer.slice(…))`), and the platform's fetch refuses a shared view, so
+ * the request is given an unshared copy of exactly those bytes.
+ *
+ * Only such bodies are changed; every other init is handed on untouched.
  */
 import { Buffer } from './node-lib/buffer-module';
 
@@ -67,8 +71,9 @@ const REQUEST_INIT_MEMBERS = ['method', 'headers', 'referrer', 'referrerPolicy',
 export function withNodeRequestBody<T extends RequestInit | undefined>(init: T): T {
   if (!init) return init;
   const body = (init as RequestInit).body as unknown;
-  if (!isAsyncIterableBody(body)) return init;
-  refuseDisturbed(body);
+  const shared = ArrayBuffer.isView(body) && Object.prototype.toString.call(body.buffer) === '[object SharedArrayBuffer]';
+  if (!shared && !isAsyncIterableBody(body)) return init;
+  if (!shared) refuseDisturbed(body as object);
   const copy: Record<string, unknown> = {};
   for (const member of Object.keys(init)) if (member !== 'body') copy[member] = (init as Record<string, unknown>)[member];
   for (const member of REQUEST_INIT_MEMBERS) {
@@ -76,7 +81,7 @@ export function withNodeRequestBody<T extends RequestInit | undefined>(init: T):
     const value = (init as Record<string, unknown>)[member];
     if (value !== undefined) copy[member] = value;
   }
-  copy.body = streamFrom(body);
+  copy.body = shared ? new Uint8Array(new Uint8Array((body as ArrayBufferView).buffer, (body as ArrayBufferView).byteOffset, (body as ArrayBufferView).byteLength)) : streamFrom(body as AsyncIterable<unknown>);
   return copy as T;
 }
 

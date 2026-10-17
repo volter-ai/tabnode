@@ -54,6 +54,7 @@ const {
   resolve,
   sep,
 } = require('path');
+const fsBinding = internalBinding('fs');
 
 async function cpFn(src, dest, opts) {
   // Warn about using preserveTimestamps on 32-bit node
@@ -299,8 +300,17 @@ async function setDestTimestamps(src, dest) {
   return utimes(dest, updatedSrcStat.atime, updatedSrcStat.mtime);
 }
 
-function onDir(srcStat, destStat, src, dest, opts) {
+async function onDir(srcStat, destStat, src, dest, opts) {
   if (!destStat) return mkDirAndCopy(srcStat.mode, src, dest, opts);
+  if (opts.errorOnExist && !opts.force) {
+    throw new ERR_FS_CP_EEXIST({
+      message: `${dest} already exists`,
+      path: dest,
+      syscall: 'cp',
+      errno: EEXIST,
+      code: 'EEXIST',
+    });
+  }
   return copyDir(src, dest, opts);
 }
 
@@ -326,8 +336,10 @@ async function onLink(destStat, src, dest, opts) {
   if (!opts.verbatimSymlinks && !isAbsolute(resolvedSrc)) {
     resolvedSrc = resolve(dirname(src), resolvedSrc);
   }
+  const srcIsDir = fsBinding.internalModuleStat(src) === 1;
+  const symlinkType = srcIsDir ? 'dir' : 'file';
   if (!destStat) {
-    return symlink(resolvedSrc, dest);
+    return symlink(resolvedSrc, dest, symlinkType);
   }
   let resolvedDest;
   try {
@@ -337,14 +349,15 @@ async function onLink(destStat, src, dest, opts) {
     // Windows may throw UNKNOWN error. If dest already exists,
     // fs throws error anyway, so no need to guard against it here.
     if (err.code === 'EINVAL' || err.code === 'UNKNOWN') {
-      return symlink(resolvedSrc, dest);
+      return symlink(resolvedSrc, dest, symlinkType);
     }
     throw err;
   }
   if (!isAbsolute(resolvedDest)) {
     resolvedDest = resolve(dirname(dest), resolvedDest);
   }
-  if (isSrcSubdir(resolvedSrc, resolvedDest)) {
+
+  if (srcIsDir && isSrcSubdir(resolvedSrc, resolvedDest)) {
     throw new ERR_FS_CP_EINVAL({
       message: `cannot copy ${resolvedSrc} to a subdirectory of self ` +
             `${resolvedDest}`,
@@ -367,12 +380,12 @@ async function onLink(destStat, src, dest, opts) {
       code: 'EINVAL',
     });
   }
-  return copyLink(resolvedSrc, dest);
+  return copyLink(resolvedSrc, dest, symlinkType);
 }
 
-async function copyLink(resolvedSrc, dest) {
+async function copyLink(resolvedSrc, dest, symlinkType) {
   await unlink(dest);
-  return symlink(resolvedSrc, dest);
+  return symlink(resolvedSrc, dest, symlinkType);
 }
 
 module.exports = {

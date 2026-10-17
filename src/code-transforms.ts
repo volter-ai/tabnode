@@ -350,6 +350,7 @@ function __substrateLiveImportBindings(code: any) {
   };
 
   visit(ast, new Set(reads.keys()));
+  ast = undefined;
   edits.sort((a, b) => b[0] - a[0]);
   return applySourceEdits(code, edits);
 }
@@ -357,7 +358,7 @@ function __substrateLiveImportBindings(code: any) {
 /** AST-based ESM→CJS transform using acorn. */
 function transformEsmToCjsAst(code: string): string {
   code = __substrateLiveImportBindings(code);
-  const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  let ast: acorn.Program | undefined = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
 
   // Collect replacements as [start, end, replacement] sorted by start descending
   const replacements: Array<[number, number, string]> = [];
@@ -427,8 +428,12 @@ function transformEsmToCjsAst(code: string): string {
         const classCode = code.slice(decl.start, node.end);
         replacements.push([node.start, node.end, decl.id ? `${classCode}\n${defineDefault(decl.id.name)}` : `const __default_${node.start} = ${classCode};\n${defineDefault(`__default_${node.start}`)}`]);
       } else {
-        // export default <expression>: evaluated here, in order, once.
-        const exprCode = code.slice(decl.start, node.end).replace(/;\s*$/u, '');
+        // export default <expression>: evaluated here, in order, once. The expression's text is the statement's,
+        // from after `default`: an expression's own range leaves out parentheses around it, so a text cut from the
+        // expression's start to the statement's end kept the closing one of `export default (a => b);` without its
+        // opening one (Next's compiled next.config: "Unexpected token ')'").
+        const keyword = /^export(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*default/u.exec(code.slice(node.start, decl.start));
+        const exprCode = code.slice(keyword ? node.start + keyword[0].length : decl.start, node.end).replace(/;\s*$/u, '');
         replacements.push([node.start, node.end, `const __default_${node.start} = (${exprCode});\n${defineDefault(`__default_${node.start}`)}`]);
       }
     } else if (node.type === 'ExportNamedDeclaration') {
@@ -517,18 +522,13 @@ function transformEsmToCjsAst(code: string): string {
     }
   }
 
-  // Apply replacements from end to start to preserve positions
-  let result = code;
+  // Keep the original statement's semicolon using source coordinates. Descending disjoint edits never
+  // changed that character in the old repeated concatenation; assembling spans once gives the same bytes
+  // without copying a generated module for every import/export. Release its AST before allocating output.
+  ast = undefined;
   replacements.sort((a, b) => b[0] - a[0]);
-  for (const [start, end, replacement] of replacements) {
-    // A minified module puts its imports on one line,
-    // `;import{...}from"a";import{...}from"b"`, and each declaration's span takes
-    // its own semicolon with it: the rewrite glued `require("a")const {...} =
-    // require("b")` together, and V8 read an unexpected `const` in
-    // @tailwindcss/vite's plugin. A replaced statement that ended in a semicolon
-    // ends in one still.
-    result = result.slice(0, start) + replacement + (result.charAt(end - 1) === ';' ? ';' : '') + result.slice(end);
-  }
+  for (const edit of replacements) if (code.charAt(edit[1] - 1) === ';') edit[2] += ';';
+  const result = applySourceEdits(code, replacements);
 
   return hoisted.join(' ') + result;
 }
@@ -571,4 +571,237 @@ function transformEsmToCjsRegex(code: string): string {
   );
 
   return transformed;
+}
+
+/**
+ * THE GUEST'S GLOBAL NAMES, REWRITTEN WHERE THEY ARE FREE (S2 K1 evaluate; lead ruling m-71c68f37). A module body ran
+ * inside `with (__substrateGuestScope)` so that the few names whose realm value is not the guest's (the worker's
+ * `self`, `postMessage`, `close` and event names, `window`/`document`/`location` that a Node process has not,
+ * `Promise`, `fetch`, `performance`, `navigator`, `MessageChannel`/`MessagePort`/`Worker`) read the guest's. Node runs
+ * a body in its wrapper with no `with`: every free name resolves lexically, then on the global. The `with` made every
+ * free name of every function in the body a dynamic lookup through that object, at every call. Here only the free
+ * references to those names become `<scope>.<name>`, as reads, writes, `typeof` and update operands, a bare call
+ * keeping Node's undefined receiver (`(0,<scope>["<name>"])(...)`) and a shorthand property its key; every other free
+ * name resolves as Node resolves it. A `new X(...)` callee is wrapped as before (`<construct>(X)`), with a guest name
+ * inside it rewritten too. Answers undefined where name resolution is dynamic in the body itself (a `with` statement,
+ * or a direct `eval`), and the body keeps the `with` wrapper.
+ */
+export function __substrateGuestNameEdits(ast: any, code: string, names: ReadonlySet<string>, scope: string,
+  construct: (callee: string) => string): Array<[number, number, string]> | undefined {
+  const edits: Array<[number, number, string]> = [];
+  let dynamic = false;
+  // Whether the code being walked is strict: an ES module's or "use strict" body, a class. A block's function
+  // declaration reaches the enclosing function's scope only in sloppy code (Annex B); a class never leaves its block.
+  let strict = false;
+  const directive = (statements: any): boolean => {
+    for (const statement of statements ?? []) {
+      if (statement?.type !== "ExpressionStatement" || typeof statement.directive !== "string") return false;
+      if (statement.directive === "use strict") return true;
+    }
+    return false;
+  };
+  // A function's own var names: `var` at any depth short of a nested function or class, and, in sloppy code only, a
+  // function declared in one of its blocks. Its body's own top-level declarations are the lexical names.
+  const hoisted = (node: any, names: Set<string>, sloppy: boolean, top: boolean): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const item of node) hoisted(item, names, sloppy, top); return; }
+    if (typeof node.type !== "string") return;
+    if (node.type === "FunctionDeclaration") { if (!top && sloppy && node.id) names.add(node.id.name); return; }
+    if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression" || node.type === "ClassDeclaration" || node.type === "ClassExpression") return;
+    if (node.type === "VariableDeclaration") { if (node.kind === "var") for (const declarator of node.declarations) __substrateBindingNames(declarator.id, names); return; }
+    for (const key of Object.keys(node)) {
+      if (__substrateSkipKeys.has(key)) continue;
+      hoisted(node[key], names, sloppy, false);
+    }
+  };
+  // Each shape is told apart by its own text, which names the scope: a read is `<scope>.<name>`, a bare call
+  // `(0,<scope>["<name>"])`, a shorthand property `<name>: <scope>['<name>']`. A body that names the scope itself is
+  // never given to this walker, so every occurrence of it in the result is one of these three, and a function's
+  // text is given back exactly (runtime.ts __substrateUnscopeGuestNames). A name written with escapes
+  // (`\u0073elf`) would come back unescaped: the body declines.
+  const read = (name: string): string => `${scope}.${name}`;
+  const called = (name: string): string => `(0,${scope}["${name}"])`;
+  const shorthand = (name: string): string => `${name}: ${scope}['${name}']`;
+  const edit = (node: any, text: string): void => {
+    if (code.slice(node.start, node.end) !== node.name) { dynamic = true; return; }
+    edits.push([node.start, node.end, text]);
+  };
+  const target = (node: any, visible: Set<string>): void => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "Identifier") { if (visible.has(node.name)) edit(node, read(node.name)); return; }
+    if (node.type === "ObjectPattern") {
+      for (const property of node.properties) {
+        if (property.type === "RestElement") { target(property.argument, visible); continue; }
+        if (property.computed) visit(property.key, visible);
+        const value = property.value;
+        if (property.shorthand && value?.type === "Identifier" && visible.has(value.name)) { edit(value, shorthand(value.name)); continue; }
+        if (property.shorthand && value?.type === "AssignmentPattern" && value.left?.type === "Identifier" && visible.has(value.left.name)) {
+          edit(value.left, shorthand(value.left.name)); visit(value.right, visible); continue;
+        }
+        target(value, visible);
+      }
+      return;
+    }
+    if (node.type === "ArrayPattern") { for (const element of node.elements) target(element, visible); return; }
+    if (node.type === "AssignmentPattern") { target(node.left, visible); visit(node.right, visible); return; }
+    if (node.type === "RestElement") { target(node.argument, visible); return; }
+    visit(node, visible);
+  };
+  // A declaration's own pattern binds its names; only its defaults and computed keys are references.
+  const declared = (node: any, visible: Set<string>): void => {
+    if (!node || typeof node !== "object" || node.type === "Identifier") return;
+    if (node.type === "ObjectPattern") { for (const property of node.properties) { if (property.type === "RestElement") declared(property.argument, visible); else { if (property.computed) visit(property.key, visible); declared(property.value, visible); } } return; }
+    if (node.type === "ArrayPattern") { for (const element of node.elements) declared(element, visible); return; }
+    if (node.type === "AssignmentPattern") { declared(node.left, visible); visit(node.right, visible); return; }
+    if (node.type === "RestElement") declared(node.argument, visible);
+  };
+  const callee = (node: any, visible: Set<string>): void => {
+    if (node?.type === "Identifier" && visible.has(node.name)) edit(node, called(node.name));
+    else visit(node, visible);
+  };
+  const visit = (node: any, visible: Set<string>): void => {
+    if (dynamic || !node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const item of node) visit(item, visible); return; }
+    if (typeof node.type !== "string") return;
+    switch (node.type) {
+      case "WithStatement": dynamic = true; return;
+      case "ImportDeclaration": case "ImportSpecifier": case "ImportDefaultSpecifier": case "ImportNamespaceSpecifier":
+      case "ExportSpecifier": case "ExportAllDeclaration": case "MetaProperty": case "BreakStatement": case "ContinueStatement":
+      case "PrivateIdentifier": case "Literal": case "Super": case "ThisExpression":
+        return;
+      case "Identifier":
+        if (visible.has(node.name)) edit(node, read(node.name));
+        return;
+      case "CallExpression":
+        // A direct eval resolves names at run time in this scope: the body keeps the `with`.
+        if (node.callee?.type === "Identifier" && node.callee.name === "eval") { dynamic = true; return; }
+        callee(node.callee, visible); visit(node.arguments, visible);
+        return;
+      case "TaggedTemplateExpression": callee(node.tag, visible); visit(node.quasi, visible); return;
+      case "NewExpression":
+        if (node.callee?.type === "Identifier") {
+          const name = node.callee.name;
+          if (visible.has(name)) edit(node.callee, construct(read(name)));
+          else edits.push([node.callee.start, node.callee.end, construct(code.slice(node.callee.start, node.callee.end))]);
+        } else visit(node.callee, visible);
+        visit(node.arguments, visible);
+        return;
+      case "MemberExpression":
+        visit(node.object, visible);
+        if (node.computed) visit(node.property, visible);
+        return;
+      case "Property": {
+        if (node.computed) visit(node.key, visible);
+        const value = node.value;
+        if (node.shorthand && value?.type === "Identifier" && visible.has(value.name)) { edit(value, shorthand(value.name)); return; }
+        visit(value, visible);
+        return;
+      }
+      case "MethodDefinition": case "PropertyDefinition":
+        if (node.computed) visit(node.key, visible);
+        visit(node.value, visible);
+        return;
+      case "LabeledStatement": visit(node.body, visible); return;
+      case "VariableDeclarator": declared(node.id, visible); visit(node.init, visible); return;
+      case "AssignmentExpression": target(node.left, visible); visit(node.right, visible); return;
+      case "UpdateExpression": target(node.argument, visible); return;
+      case "UnaryExpression": visit(node.argument, visible); return;
+      case "FunctionDeclaration": case "FunctionExpression": case "ArrowFunctionExpression": {
+        const outer = strict;
+        const block = node.body && node.body.type === "BlockStatement";
+        if (block && directive(node.body.body)) strict = true;
+        // A parameter list is a scope of its own: its defaults see the parameters and the function's own name, never
+        // the body's declarations (`function f(x = self) { var self }` reads the outer self).
+        const parameters = new Set<string>();
+        if (node.id && node.type !== "FunctionDeclaration") parameters.add(node.id.name);
+        for (const parameter of node.params) __substrateBindingNames(parameter, parameters);
+        if (node.type !== "ArrowFunctionExpression") parameters.add("arguments");
+        const parameterScope = __substrateShadow(visible, parameters);
+        for (const parameter of node.params) declared(parameter, parameterScope);
+        const bound = new Set<string>(parameters);
+        if (block) { hoisted(node.body.body, bound, !strict, true); __substrateLexicalNames(node.body.body, bound); }
+        const inner = __substrateShadow(visible, bound);
+        if (block) for (const statement of node.body.body) visit(statement, inner);
+        else visit(node.body, inner);
+        strict = outer;
+        return;
+      }
+      case "BlockStatement": {
+        const bound = new Set<string>();
+        __substrateLexicalNames(node.body, bound);
+        const inner = __substrateShadow(visible, bound);
+        for (const statement of node.body) visit(statement, inner);
+        return;
+      }
+      case "StaticBlock": {
+        // A class static block is a var scope of its own, in strict code.
+        const bound = new Set<string>();
+        hoisted(node.body, bound, false, true);
+        __substrateLexicalNames(node.body, bound);
+        const inner = __substrateShadow(visible, bound);
+        for (const statement of node.body) visit(statement, inner);
+        return;
+      }
+      case "ClassDeclaration": case "ClassExpression": {
+        const outer = strict;
+        const bound = new Set<string>();
+        if (node.id) bound.add(node.id.name);
+        const inner = __substrateShadow(visible, bound);
+        // The heritage is evaluated in strict code too, inside the class's own scope.
+        strict = true;
+        visit(node.superClass, inner);
+        visit(node.body, inner);
+        strict = outer;
+        return;
+      }
+      case "CatchClause": {
+        // The parameter's defaults see the parameter alone, never the body's declarations, as a function's do.
+        const parameters = new Set<string>();
+        __substrateBindingNames(node.param, parameters);
+        if (node.param) declared(node.param, __substrateShadow(visible, parameters));
+        const bound = new Set<string>(parameters);
+        __substrateLexicalNames(node.body.body, bound);
+        const inner = __substrateShadow(visible, bound);
+        for (const statement of node.body.body) visit(statement, inner);
+        return;
+      }
+      case "ForStatement": {
+        const bound = new Set<string>();
+        if (node.init && node.init.type === "VariableDeclaration" && node.init.kind !== "var") for (const declarator of node.init.declarations) __substrateBindingNames(declarator.id, bound);
+        const inner = __substrateShadow(visible, bound);
+        visit(node.init, inner); visit(node.test, inner); visit(node.update, inner); visit(node.body, inner);
+        return;
+      }
+      case "ForInStatement": case "ForOfStatement": {
+        const bound = new Set<string>();
+        if (node.left && node.left.type === "VariableDeclaration" && node.left.kind !== "var") for (const declarator of node.left.declarations) __substrateBindingNames(declarator.id, bound);
+        const inner = __substrateShadow(visible, bound);
+        if (node.left && node.left.type === "VariableDeclaration") visit(node.left, inner);
+        else target(node.left, inner);
+        visit(node.right, inner);
+        visit(node.body, inner);
+        return;
+      }
+      case "SwitchStatement": {
+        visit(node.discriminant, visible);
+        const bound = new Set<string>();
+        for (const switchCase of node.cases) __substrateLexicalNames(switchCase.consequent, bound);
+        const inner = __substrateShadow(visible, bound);
+        for (const switchCase of node.cases) { visit(switchCase.test, inner); for (const statement of switchCase.consequent) visit(statement, inner); }
+        return;
+      }
+      default:
+        for (const key of Object.keys(node)) {
+          if (__substrateSkipKeys.has(key)) continue;
+          visit(node[key], visible);
+        }
+    }
+  };
+  // The body's own top level is a function's (the wrapper's): its var, function and lexical names shadow too.
+  strict = directive(ast.body);
+  const top = new Set<string>();
+  hoisted(ast.body, top, !strict, true);
+  __substrateLexicalNames(ast.body, top);
+  visit(ast.body, __substrateShadow(new Set(names), top));
+  return dynamic ? undefined : edits;
 }

@@ -13,6 +13,20 @@
  */
 export type StackOverride = (error: unknown, sites: unknown[]) => unknown;
 
+/**
+ * An instrument: which of the realm's paths formed an error's stack text, and what the error's own text was at that
+ * moment. V8 forms a stack's first line when `.stack` is first read; where the realm hands V8 a function of its own
+ * (a guest's `prepareStackTrace`, an override of Node's own files, the fallback beside one) that function forms it.
+ * An error with no entry had its text formed by V8 alone. Read where an uncaught error is printed (child_process.ts).
+ */
+export const stackFormedBy = new WeakMap<object, { by: string; errorTextThen: string; at: number }>();
+export function noteStackFormed(error: unknown, by: string): void {
+  if (error === null || typeof error !== 'object' || stackFormedBy.has(error)) return;
+  let text = '';
+  try { text = Error.prototype.toString.call(error).slice(0, 160); } catch { text = '(its text could not be read)'; }
+  stackFormedBy.set(error, { by, errorTextThen: text, at: Date.now() });
+}
+
 export const stackOverrides = new Map<object, StackOverride>();
 
 /** A WeakMap-shaped view of the table, which is what `internal/errors` holds. */

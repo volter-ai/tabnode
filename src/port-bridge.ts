@@ -152,6 +152,7 @@ export class PortBridge extends BridgeEvents {
    * container calls it and has its process back; calling it twice is nothing.
    */
   close(): void {
+    for (const pending of [...this.portMappingWaits.values()]) pending.finish(new Error('Port bridge closed'));
     if (this.keepaliveInterval !== null) {
       clearInterval(this.keepaliveInterval);
       this.keepaliveInterval = null;
@@ -181,6 +182,9 @@ export class PortBridge extends BridgeEvents {
    */
   unregisterServer(port: number): void {
     this.servers.delete(port);
+    for (const pending of [...this.portMappingWaits.values()]) {
+      if (pending.port === port) pending.finish(new Error('Preview port closed before mapping acknowledgement'));
+    }
     if (this.primaryPort === port) this.primaryPort = null;
     this.notifyServiceWorker('server-unregistered', { port });
   }
@@ -198,6 +202,9 @@ export class PortBridge extends BridgeEvents {
   setPrimaryPort(port: number | null): void {
     const previous = this.primaryPort;
     this.primaryPort = port;
+    for (const pending of [...this.portMappingWaits.values()]) {
+      if (pending.port !== port) pending.finish(new Error('Preview primary port changed before mapping acknowledgement'));
+    }
     if (previous !== null && previous !== port) {
       const entry = this.servers.get(previous);
       if (entry) this.notifyServiceWorker('server-registered', { port: previous, hostname: entry.hostname, primary: false });
@@ -206,6 +213,47 @@ export class PortBridge extends BridgeEvents {
       const entry = this.servers.get(port);
       this.notifyServiceWorker('server-registered', { port, hostname: entry?.hostname ?? '0.0.0.0', primary: true });
     }
+  }
+
+  /**
+   * Wait until the controlling worker has installed this listening port as
+   * the origin's primary mapping. This exchanges metadata only: it never
+   * calls the application's HTTP handler. Cancellation belongs to the caller.
+   * An older worker must update before using this door; no HTTP probe substitutes.
+   */
+  waitForPrimaryPortMapping(port: number, options: { signal: AbortSignal }): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (options.signal.aborted) { reject(options.signal.reason); return; }
+      if (!this.serviceWorkerReady || !this.messageChannel || !this.servers.has(port) || this.primaryPort !== port) {
+        reject(new Error('Primary port is not registered with an attached service worker')); return;
+      }
+      const id = `port-mapping:${++this.portMappingSequence}`;
+      const finish = (error?: unknown): void => {
+        if (!this.portMappingWaits.delete(id)) return;
+        options.signal.removeEventListener('abort', abort);
+        if (error !== undefined) reject(error); else resolve();
+      };
+      const abort = (): void => finish(options.signal.reason ?? new DOMException('Port mapping cancelled', 'AbortError'));
+      this.portMappingWaits.set(id, { port, channel: this.messageChannel.port1, finish });
+      options.signal.addEventListener('abort', abort, { once: true });
+      this.askPortMapping(id);
+    });
+  }
+  private portMappingSequence = 0;
+  private readonly workerCapabilityPorts = new WeakSet<MessagePort>();
+  private readonly portMappingPorts = new WeakSet<MessagePort>();
+  private readonly portMappingWaits = new Map<string, { port: number; channel: MessagePort; finish(error?: unknown): void }>();
+
+  private askPortMapping(id: string): void {
+    const pending = this.portMappingWaits.get(id);
+    const channel = this.messageChannel?.port1;
+    if (!pending || !channel) return;
+    pending.channel = channel;
+    if (this.workerCapabilityPorts.has(channel) && !this.portMappingPorts.has(channel)) {
+      pending.finish(new Error('The controlling service worker needs an update for port-mapping acknowledgements')); return;
+    }
+    try { channel.postMessage({ type: 'port-mapping-check', id, data: { port: pending.port } }); }
+    catch (error) { pending.finish(error); }
   }
 
   /** Every registration the worker should hold, sent again to a worker that was (re)initialized. */
@@ -296,6 +344,8 @@ export class PortBridge extends BridgeEvents {
     // Set up controllerchange listener BEFORE registration so we don't miss the event.
     // clients.claim() in the SW's activate handler fires controllerchange, and it can
     // happen before our activation wait completes.
+    // Whether an earlier worker controls this page as it starts: the only case the update below is for.
+    const underEarlierWorker = navigator.serviceWorker.controller !== null;
     const controllerReady = navigator.serviceWorker.controller
       ? Promise.resolve()
       : new Promise<void>((resolve) => {
@@ -305,21 +355,33 @@ export class PortBridge extends BridgeEvents {
     // Register service worker
     const registration = await navigator.serviceWorker.register(swUrl, {
       scope: '/',
+      updateViaCache: 'none',
     });
+    // A page loaded under an earlier deploy's worker asks for this deploy's now, before anything depends on the one in
+    // control: otherwise the new worker installs later, claims the page mid-boot and every stream it carries is cut.
+    // bounded: on a slow or captive network the worker in control serves rather than the boot waiting on the fetch.
+    // Only then: a page no worker controlled is registering this deploy's worker just now, from the script it fetched a
+    // moment before, and its update() answered only once the browser's update job settled, 1.2-1.4 s later, while the
+    // worker had been installed, activated and in control within ~25 ms (browser-substrate's sw-attach stamps, the empty
+    // server on the mini: the whole of the attach, and the image's command waited on it).
+    if (underEarlierWorker) {
+      try { await Promise.race([registration.update(), new Promise((resolve) => setTimeout(resolve, 5_000))]); } catch { /* offline: the worker in control serves */ }
+    }
 
-    // Wait for service worker to be active
-    const sw = registration.active || registration.waiting || registration.installing;
+    // The incoming worker when there is one, else the active: the page binds to the worker that will control it
+    const sw = registration.installing || registration.waiting || registration.active;
 
     if (!sw) {
       throw new Error('Service Worker registration failed');
     }
 
     await new Promise<void>((resolve) => {
-      if (sw.state === 'activated') {
+      if (sw.state === 'activated' || sw.state === 'redundant') {
         resolve();
       } else {
         const handler = () => {
-          if (sw.state === 'activated') {
+          // a worker that failed to install, or was replaced, leaves the registration's active one in charge
+          if (sw.state === 'activated' || sw.state === 'redundant') {
             sw.removeEventListener('statechange', handler);
             resolve();
           }
@@ -327,6 +389,20 @@ export class PortBridge extends BridgeEvents {
         sw.addEventListener('statechange', handler);
       }
     });
+    // an incoming worker claims the page as it activates (clients.claim): wait for it to be in control, so the page
+    // starts under the worker it keeps
+    const controlling = sw.state === 'redundant' ? registration.active : sw;
+    // a first install that failed leaves no worker at all: say so, rather than wait for a controller that never comes
+    if (!controlling) throw new Error('Service Worker failed to install');
+    if (navigator.serviceWorker.controller && navigator.serviceWorker.controller !== controlling) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => { console.warn('tabnode: the new service worker did not take control within 10 s; starting under the one in control'); done(); }, 10_000);
+        function done(): void { clearTimeout(timer); navigator.serviceWorker.removeEventListener('controllerchange', changed); resolve(); }
+        function changed(): void { if (navigator.serviceWorker.controller === controlling) done(); }
+        navigator.serviceWorker.addEventListener('controllerchange', changed);
+        changed();
+      });
+    }
 
     // Set up message channel for communication
     this.messageChannel = new MessageChannel();
@@ -334,7 +410,7 @@ export class PortBridge extends BridgeEvents {
 
     this.ownDocuments = options?.ownDocuments;
     // Send port to service worker
-    sw.postMessage({ type: 'init', port: this.messageChannel.port2, data: { ownDocuments: this.ownDocuments ?? [] } }, [
+    controlling.postMessage({ type: 'init', port: this.messageChannel.port2, data: { ownDocuments: this.ownDocuments ?? [] } }, [
       this.messageChannel.port2,
     ]);
 
@@ -355,6 +431,7 @@ export class PortBridge extends BridgeEvents {
           [this.messageChannel.port2]
         );
         this.announceServers();
+        for (const id of this.portMappingWaits.keys()) this.askPortMapping(id);
       }
     };
     navigator.serviceWorker.addEventListener('controllerchange', reinit);
@@ -392,7 +469,26 @@ export class PortBridge extends BridgeEvents {
   private async handleServiceWorkerMessage(event: MessageEvent): Promise<void> {
     const { type, id, data } = event.data;
     if (type === 'sw-capabilities') {
-      if (data?.binaryChunks === 1 && event.target instanceof MessagePort) this.binaryChunkPorts.add(event.target);
+      if (event.target instanceof MessagePort) {
+        if (data?.binaryChunks === 1) this.binaryChunkPorts.add(event.target);
+        this.workerCapabilityPorts.add(event.target);
+        if (data?.portMapping === 1) this.portMappingPorts.add(event.target);
+        else for (const pending of [...this.portMappingWaits.values()]) {
+          if (pending.channel === event.target) pending.finish(new Error('The controlling service worker needs an update for port-mapping acknowledgements'));
+        }
+      }
+      return;
+    }
+    if (type === 'port-mapping-ready') {
+      const pending = this.portMappingWaits.get(id);
+      if (!pending || event.target !== pending.channel || event.target !== this.messageChannel?.port1) return;
+      pending.finish(data?.port === pending.port && data?.registered === true && data?.primary === true
+        && this.servers.has(pending.port) && this.primaryPort === pending.port
+        ? undefined : new Error('Primary port mapping changed before acknowledgement'));
+      return;
+    }
+    if (type === 'document-response') {
+      if (event.target === this.messageChannel?.port1) this.emit('document-response', data);
       return;
     }
 

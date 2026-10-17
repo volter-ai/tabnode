@@ -3,6 +3,7 @@
 const {
   Array,
   FunctionPrototypeBind,
+  FunctionPrototypeCall,
   MathMin,
   ObjectDefineProperty,
   ObjectSetPrototypeOf,
@@ -12,14 +13,18 @@ const {
 } = primordials;
 
 const {
+  ERR_FEATURE_UNAVAILABLE_ON_PLATFORM,
+  ERR_INCOMPATIBLE_OPTION_PAIR,
   ERR_INVALID_ARG_TYPE,
   ERR_METHOD_NOT_IMPLEMENTED,
+  ERR_MISSING_OPTION,
   ERR_OUT_OF_RANGE,
   ERR_STREAM_DESTROYED,
   ERR_SYSTEM_ERROR,
 } = require('internal/errors').codes;
 const {
   deprecate,
+  isWindows,
   kEmptyObject,
 } = require('internal/util');
 const {
@@ -40,6 +45,8 @@ const {
 } = require('internal/fs/utils');
 const { Readable, Writable, finished } = require('stream');
 const { toPathIfFileURL } = require('internal/url');
+const binding = internalBinding('fs');
+const { O_RDONLY, O_WRONLY } = internalBinding('constants').fs;
 const kIoDone = Symbol('kIoDone');
 const kIsPerformingIO = Symbol('kIsPerformingIO');
 
@@ -160,6 +167,26 @@ function importFd(stream, options) {
                                  ['number', 'FileHandle'], options.fd);
 }
 
+function importWindowsHandle(stream, options, flags) {
+  if (options.windowsHandle == null) {
+    throw new ERR_MISSING_OPTION('options.windowsHandle');
+  }
+  if (!isWindows) {
+    throw new ERR_FEATURE_UNAVAILABLE_ON_PLATFORM('windowsHandle');
+  }
+  if (options.fs) {
+    // The HANDLE is wrapped using the real filesystem, so a custom fs
+    // implementation cannot be combined with it.
+    throw new ERR_METHOD_NOT_IMPLEMENTED('windowsHandle with fs');
+  }
+  if (typeof options.windowsHandle !== 'bigint') {
+    throw new ERR_INVALID_ARG_TYPE('options.windowsHandle', 'bigint',
+                                   options.windowsHandle);
+  }
+  stream[kFs] = fs;
+  return binding.handleToFd(options.windowsHandle, flags);
+}
+
 function ReadStream(path, options) {
   if (!(this instanceof ReadStream))
     return new ReadStream(path, options);
@@ -173,7 +200,11 @@ function ReadStream(path, options) {
     options.autoDestroy = false;
   }
 
-  if (options.fd == null) {
+  if (options.fd != null && options.windowsHandle != null) {
+    throw new ERR_INCOMPATIBLE_OPTION_PAIR('windowsHandle', 'fd');
+  } else if (options.windowsHandle != null) {
+    this.fd = getValidatedFd(importWindowsHandle(this, options, O_RDONLY));
+  } else if (options.fd == null) {
     this.fd = null;
     this[kFs] = options.fs || fs;
     validateFunction(this[kFs].open, 'options.fs.open');
@@ -224,7 +255,7 @@ function ReadStream(path, options) {
     }
   }
 
-  ReflectApply(Readable, this, [options]);
+  FunctionPrototypeCall(Readable, this, options);
 }
 ObjectSetPrototypeOf(ReadStream.prototype, Readable.prototype);
 ObjectSetPrototypeOf(ReadStream, Readable);
@@ -330,7 +361,11 @@ function WriteStream(path, options) {
   // Only buffers are supported.
   options.decodeStrings = true;
 
-  if (options.fd == null) {
+  if (options.fd != null && options.windowsHandle != null) {
+    throw new ERR_INCOMPATIBLE_OPTION_PAIR('windowsHandle', 'fd');
+  } else if (options.windowsHandle != null) {
+    this.fd = getValidatedFd(importWindowsHandle(this, options, O_WRONLY));
+  } else if (options.fd == null) {
     this.fd = null;
     this[kFs] = options.fs || fs;
     validateFunction(this[kFs].open, 'options.fs.open');
@@ -392,7 +427,7 @@ function WriteStream(path, options) {
     this.pos = this.start;
   }
 
-  ReflectApply(Writable, this, [options]);
+  FunctionPrototypeCall(Writable, this, options);
 
   if (options.encoding)
     this.setDefaultEncoding(options.encoding);

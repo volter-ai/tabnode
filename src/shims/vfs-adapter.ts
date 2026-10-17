@@ -35,6 +35,12 @@ interface WriteFileOptions {
   encoding?: BufferEncoding;
 }
 
+/** What sees a file the shell is about to read as text, and may answer with other text for it. */
+export type ShellReadWatch = (path: string, tree: VirtualFS) => string | undefined;
+let shellReadWatch: ShellReadWatch | null = null;
+/** Sets the watch for the shell's text reads; null takes it away. One watch, set by the one door into the shell. */
+export function setShellReadWatch(watch: ShellReadWatch | null): void { shellReadWatch = watch; }
+
 export class VirtualFSAdapter implements IFileSystem {
   constructor(private vfs: VirtualFS) {}
 
@@ -50,6 +56,12 @@ export class VirtualFSAdapter implements IFileSystem {
     // VirtualFS only natively supports utf8/utf-8
     // For other encodings, we need to handle the conversion ourselves
     if (!encoding || encoding === 'utf8' || encoding === 'utf-8') {
+      // The shell asks for a file's text with no encoding to run it as a script, to source it, or to redirect it
+      // in: a watch set for the line being run sees the file first (child_process.ts, shellReadsProgram).
+      if (options === undefined && shellReadWatch) {
+        const instead = shellReadWatch(path, this.vfs);
+        if (instead !== undefined) return instead;
+      }
       return this.vfs.readFileSync(path, 'utf8');
     }
 
@@ -125,14 +137,16 @@ export class VirtualFSAdapter implements IFileSystem {
       }
     }
 
-    // Files in .bin/ directories need execute permission for just-bash PATH resolution
-    const isExecutable = isFile && path.includes('/node_modules/.bin/');
-
+    // The file's own permission bits, as `stat(2)` reports them: a program
+    // written 0755 is executable to the shell's PATH lookup, and one written
+    // 0644 is not. Every regular file read 0644 here except under
+    // `/node_modules/.bin/`, so an executable a host wrote with its mode was
+    // not one to the engine.
     return {
       isFile,
       isDirectory,
       isSymbolicLink: false,
-      mode: isDirectory ? 0o755 : (isExecutable ? 0o755 : 0o644),
+      mode: stats.mode & 0o7777,
       size,
       mtime: new Date(),
     };
@@ -344,14 +358,11 @@ export class VirtualFSAdapter implements IFileSystem {
   }
 
   /**
-   * Change file/directory permissions (no-op - VFS doesn't track permissions)
+   * Change file/directory permissions. The tree keeps them, and `stat` above
+   * reports them, so a shell's `chmod +x` makes a program it can then run.
    */
-  async chmod(_path: string, _mode: number): Promise<void> {
-    // VFS doesn't track permissions, but we verify the path exists
-    if (!this.vfs.existsSync(_path)) {
-      throw createNodeError('ENOENT', 'chmod', _path);
-    }
-    // No-op
+  async chmod(path: string, mode: number): Promise<void> {
+    this.vfs.chmodSync(path, mode);
   }
 
   /**

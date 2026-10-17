@@ -35,6 +35,7 @@
  * every promise, settled or not. A program that needs to know awaits it.
  */
 import { guessHandleTypeOfFd } from './fds';
+import { stdioKindOf } from './tty_wrap';
 import { nodeLibInternalRequire } from '../load';
 
 /** Node's `propertyFilter` and promise-state constants, by their own values. */
@@ -49,6 +50,9 @@ const constants = {
   kFulfilled: 1,
   kRejected: 2,
 };
+
+// A real rejection handler marks the host promise handled; no invented state.
+const intrinsicThen = Promise.prototype.then;
 
 /** Whether a key is an array index, which `getOwnNonIndexProperties` leaves out. */
 function isIndexKey(key: string): boolean {
@@ -65,6 +69,18 @@ export const utilBinding = {
     transfer_mode_private_symbol: Symbol('transfer_mode_private_symbol'),
   },
   constants,
+  constructSharedArrayBuffer(length: number): SharedArrayBuffer {
+    if (typeof SharedArrayBuffer !== 'function') {
+      throw Object.assign(new Error('SharedArrayBuffer is unavailable in this execution realm.'), { code: 'ERR_UNSUPPORTED_OPERATION' });
+    }
+    return new SharedArrayBuffer(length);
+  },
+  markPromiseAsHandled(promise: Promise<unknown>): void {
+    intrinsicThen.call(promise, undefined, () => undefined);
+  },
+  arrayBufferViewHasBuffer(view: ArrayBufferView): boolean {
+    return view.buffer !== undefined;
+  },
 
   /** Node warns differently for a deprecation raised inside a dependency; nothing here is. */
   isInsideNodeModules: (): boolean => false,
@@ -144,8 +160,18 @@ export const utilBinding = {
   /** A pointer's value, printed for an external. A tab has no externals. */
   getExternalValue: (): bigint => BigInt(0),
 
-  /** What kind of thing a descriptor is, out of the engine's own table. */
-  guessHandleType: guessHandleTypeOfFd,
+  /**
+   * What kind of thing a descriptor is, out of the engine's own table; a
+   * standard fd is what the run was given on it, as libuv's
+   * `uv_guess_handle` answers: a terminal 'TTY', a regular file or a
+   * character device 'FILE', a pipe 'PIPE'. It agrees with `tty.isatty` and
+   * `fstat` per fd.
+   */
+  guessHandleType: (fd: number) => {
+    if (fd !== 0 && fd !== 1 && fd !== 2) return guessHandleTypeOfFd(fd);
+    const kind = stdioKindOf(fd);
+    return kind === 'tty' ? 'TTY' : kind === 'file' || kind === 'char' ? 'FILE' : guessHandleTypeOfFd(fd);
+  },
 
   /**
    * Node's `defineLazyProperties`: each key becomes a getter that requires

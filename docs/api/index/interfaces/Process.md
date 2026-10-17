@@ -279,9 +279,59 @@ Node's `process.features`: what the binary was built with.
 
 ***
 
+### getegid?
+
+> `optional` **getegid?**: () => `number`
+
+#### Returns
+
+`number`
+
+***
+
+### geteuid?
+
+> `optional` **geteuid?**: () => `number`
+
+#### Returns
+
+`number`
+
+***
+
+### getgid?
+
+> `optional` **getgid?**: () => `number`
+
+#### Returns
+
+`number`
+
+***
+
+### getgroups?
+
+> `optional` **getgroups?**: () => `number`[]
+
+#### Returns
+
+`number`[]
+
+***
+
 ### getMaxListeners
 
 > **getMaxListeners**: () => `number`
+
+#### Returns
+
+`number`
+
+***
+
+### getuid?
+
+> `optional` **getuid?**: () => `number`
 
 #### Returns
 
@@ -374,6 +424,22 @@ Node's `process.kill`, raising a signal on the guest's own process.
 #### Returns
 
 `EventListener`[]
+
+***
+
+### loadEnvFile
+
+> **loadEnvFile**: (`path?`) => `void`
+
+#### Parameters
+
+##### path?
+
+`string` \| `Uint8Array`\<`ArrayBufferLike`\> \| `URL`
+
+#### Returns
+
+`void`
 
 ***
 
@@ -556,6 +622,28 @@ that would pull it in; Node's own tests read it that way.
 
 ***
 
+### release?
+
+> `optional` **release?**: `object`
+
+#### headersUrl
+
+> **headersUrl**: `string`
+
+#### lts?
+
+> `optional` **lts?**: `string`
+
+#### name
+
+> **name**: `string`
+
+#### sourceUrl
+
+> **sourceUrl**: `string`
+
+***
+
 ### removeAllListeners
 
 > **removeAllListeners**: (`event?`) => `Process`
@@ -589,6 +677,24 @@ that would pull it in; Node's own tests read it that way.
 #### Returns
 
 `Process`
+
+***
+
+### report
+
+> **report**: `object`
+
+#### Index Signature
+
+\[`name`: `string`\]: `unknown`
+
+#### getReport()
+
+> **getReport**(): `Record`\<`string`, `unknown`\>
+
+##### Returns
+
+`Record`\<`string`, `unknown`\>
 
 ***
 
@@ -628,6 +734,22 @@ that would pull it in; Node's own tests read it that way.
 
 ***
 
+### setSourceMapsEnabled?
+
+> `optional` **setSourceMapsEnabled?**: (`enabled`) => `void`
+
+#### Parameters
+
+##### enabled
+
+`unknown`
+
+#### Returns
+
+`void`
+
+***
+
 ### setUncaughtExceptionCaptureCallback
 
 > **setUncaughtExceptionCaptureCallback**: (`callback`) => `void`
@@ -645,6 +767,12 @@ and `domain` asks whether one is set before it installs its own handling.
 #### Returns
 
 `void`
+
+***
+
+### sourceMapsEnabled?
+
+> `readonly` `optional` **sourceMapsEnabled?**: `boolean`
 
 ***
 
@@ -710,6 +838,10 @@ Node's `process.umask()`: the file-mode mask this process creates with.
 
 > **versions**: `object`
 
+#### acorn?
+
+> `optional` **acorn?**: `string`
+
 #### node
 
 > **node**: `string`
@@ -729,3 +861,23 @@ Node's `process.umask()`: the file-mode mask this process creates with.
 #### webcontainer?
 
 > `optional` **webcontainer?**: `string`
+
+## Methods
+
+### \_getActiveHandles()
+
+> **\_getActiveHandles**(): `object`[]
+
+#### Returns
+
+`object`[]
+
+***
+
+### \_getActiveRequests()
+
+> **\_getActiveRequests**(): `object`[]
+
+#### Returns
+
+`object`[]

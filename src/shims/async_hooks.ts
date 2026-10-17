@@ -4,6 +4,7 @@
  */
 
 import { forGuestRealm, takeFromHost } from '../host-globals';
+import { withGuestExecution, withGuestCallback, resumeGuestTurn, setGuestTurnEnd, isBindingTask } from '../guest-loop';
 
 /**
  * The context a continuation runs in: every storage's store, as one frame.
@@ -24,14 +25,17 @@ import { forGuestRealm, takeFromHost } from '../host-globals';
 type ContextFrame = ReadonlyMap<AsyncLocalStorage<unknown>, unknown>;
 const ROOT_FRAME: ContextFrame = new Map();
 let currentFrame: ContextFrame = ROOT_FRAME;
-const nativeQueueMicrotask = globalThis.queueMicrotask.bind(globalThis);
 let resetQueued = false;
-const resetFrame = (): void => { resetQueued = false; currentFrame = ROOT_FRAME; };
+const resetFrame = (): void => { if (!resetQueued) return; resetQueued = false; currentFrame = ROOT_FRAME; };
+// The frame goes back to the root where the continuation's turn ends, by the task that ends it (guest-loop.ts):
+// one microtask an awaiting turn, where there were two (S2 AC-LC9).
+setGuestTurnEnd(resetFrame);
 /** A resumed continuation's frame, current until the turn it runs in ends. */
 const resumeFrame = (frame: ContextFrame): void => {
+  resumeGuestTurn();
   if (frame === currentFrame) return;
   currentFrame = frame;
-  if (!resetQueued) { resetQueued = true; nativeQueueMicrotask(resetFrame); }
+  resetQueued = true;
 };
 const withFrame = <R>(frame: ContextFrame, callback: () => R): R => {
   const previous = currentFrame;
@@ -44,6 +48,17 @@ const withFrame = <R>(frame: ContextFrame, callback: () => R): R => {
 };
 
 export class AsyncLocalStorage<T> {
+  private readonly defaultValue: T | undefined;
+  private readonly storageName: string;
+  constructor(options: { defaultValue?: T; name?: unknown } = {}) {
+    if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+      throw Object.assign(new TypeError('The "options" argument must be of type object.'), { code: 'ERR_INVALID_ARG_TYPE' });
+    }
+    this.defaultValue = options.defaultValue;
+    this.storageName = options.name === undefined ? '' : `${options.name}`;
+  }
+  get name(): string { return this.storageName; }
+
   static snapshot() {
     const captured = currentFrame;
     return (callback: (...args: unknown[]) => unknown, ...args: unknown[]) => withFrame(captured, () => callback(...args));
@@ -61,7 +76,9 @@ export class AsyncLocalStorage<T> {
   }
 
   getStore(): T | undefined {
-    return currentFrame.get(this as AsyncLocalStorage<unknown>) as T | undefined;
+    return currentFrame.has(this as AsyncLocalStorage<unknown>)
+      ? currentFrame.get(this as AsyncLocalStorage<unknown>) as T | undefined
+      : this.defaultValue;
   }
 
   run<R>(store: T, callback: (...args: unknown[]) => R, ...args: unknown[]): R {
@@ -70,10 +87,25 @@ export class AsyncLocalStorage<T> {
     return withFrame(next, () => callback(...args));
   }
 
-  exit<R>(callback: () => R): R {
+  exit<R>(callback: (...args: unknown[]) => R, ...args: unknown[]): R {
     const next = new Map(currentFrame);
-    next.delete(this as AsyncLocalStorage<unknown>);
-    return withFrame(next, callback);
+    next.set(this as AsyncLocalStorage<unknown>, undefined);
+    return withFrame(next, () => callback(...args));
+  }
+
+  withScope(store: T) {
+    const previous = this.getStore();
+    this.enterWith(store);
+    let disposed = false;
+    const scope = {
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        this.enterWith(previous as T);
+      },
+      [Symbol.dispose]() { scope.dispose(); },
+    };
+    return scope;
   }
 
   enterWith(store: T): void {
@@ -90,7 +122,7 @@ export class AsyncResource {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   runInAsyncScope<T>(fn: (...args: any[]) => T, thisArg?: unknown, ...args: any[]): T {
-    return withFrame(this.frame, () => fn.apply(thisArg, args));
+    return withGuestExecution(() => withFrame(this.frame, () => fn.apply(thisArg, args)), 'async-resource', fn);
   }
 
   emitDestroy(): this { return this; }
@@ -118,18 +150,37 @@ export class AsyncResource {
  * `setTimeout` and `Promise.prototype.then`; it now waits for the first
  * runtime, and `restoreHostGlobals()` puts them back.
  */
+/**
+ * Where an exception a task callback threw goes while its frame is still current: the run that scheduled it, as Node
+ * reports an exception in a timer to that process (process-tokens.ts installs it). True when a run took it.
+ */
+let routeUncaught: ((error: unknown) => boolean) | undefined;
+export function routeUncaughtExceptions(route: (error: unknown) => boolean): void { routeUncaught = route; }
+
 forGuestRealm(() => {
   // Wrapped once: a second pass would carry through a carrier.
   if ((globalThis as unknown as Record<string, unknown>).__substrateCarried) return;
-  const carried = <T>(callback: T): T => {
+  // `task`: a timer, immediate or microtask, whose throw is its run's uncaught exception; a `then` callback's throw
+  // rejects its promise instead, and is left to.
+  // `kind`: which door the callback came through, for the realm's entry account (guest-loop.ts, S2 R27).
+  const carried = <T>(callback: T, task = false, bindingCallback = false, kind = 'then'): T => {
     if (typeof callback !== "function") return callback;
     const restore = AsyncLocalStorage.snapshot();
-    return function (this: unknown, ...args: unknown[]) { return restore(() => (callback as (...values: unknown[]) => unknown).apply(this, args)); } as T;
+    const call = callback as (...values: unknown[]) => unknown;
+    // The engine's own deferred work for a binding is not program code: it takes no bracket here (guest-loop.ts).
+    const enter = bindingCallback ? withGuestCallback : isBindingTask(callback) ? (<R>(run: () => R, _kind?: string, _source?: unknown): R => run()) : withGuestExecution;
+    return function (this: unknown, ...args: unknown[]) {
+      return enter(() => restore(() => {
+        if (!task) return call.apply(this, args);
+        try { return call.apply(this, args); }
+        catch (error) { if (routeUncaught?.(error)) return undefined; throw error; }
+      }), kind, call);
+    } as T;
   };
   for (const name of ["setTimeout", "setInterval", "setImmediate", "queueMicrotask"]) {
     const original = (globalThis as unknown as Record<string, unknown>)[name];
     if (typeof original !== "function") continue;
-    const wrapped = function (this: unknown, callback: unknown, ...rest: unknown[]) { return original.call(this, carried(callback), ...rest); };
+    const wrapped = function (this: unknown, callback: unknown, ...rest: unknown[]) { return original.call(this, carried(callback, true, name !== 'queueMicrotask', name), ...rest); };
     Object.defineProperty(wrapped, "name", { value: name });
     takeFromHost(globalThis, name, wrapped);
   }

@@ -10,6 +10,8 @@
 // (`npm run build:lib` writes it). --match selects test files by name
 // prefix, `test-stream-` by default.
 import * as nodeFs from "node:fs";
+import { createHash } from "node:crypto";
+import { shardFiles } from "./node-test-shards.mjs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -23,7 +25,9 @@ function argument(name, fallback) {
   return index >= 0 && process.argv[index + 1] !== undefined ? process.argv[index + 1] : fallback;
 }
 const TESTS = nodeFs.realpathSync(argument("tests", ""));
-const ENGINE = resolve(argument("engine", resolve(dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.mjs")));
+const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const DEFAULT_ENGINE = resolve(SOURCE_ROOT, "dist", "index.mjs");
+const ENGINE = resolve(argument("engine", DEFAULT_ENGINE));
 const MATCH = argument("match", "test-stream-");
 const TIMEOUT = Number(argument("timeout", "8000"));
 const LIST = process.argv.includes("--list-failures");
@@ -36,6 +40,11 @@ const PRELUDE = argument("prelude", "");
 // Node keeps most of its tests in `test/parallel` and a module's own beside
 // it: `test/wasi` holds the WASI tests and the compiled fixtures they load.
 const DIR = argument("dir", "test/parallel");
+const ALL = process.argv.includes("--all");
+const REPORT = argument("report-json", "");
+const SHARD_COUNT = Number(argument("shard-count", "1"));
+const SHARD_INDEX = Number(argument("shard-index", "0"));
+const MANIFEST = JSON.parse(nodeFs.readFileSync(new URL("./node24-test-files.json", import.meta.url), "utf8"));
 const MOUNT = "/workspace/app";
 if (!TESTS) { console.error("usage: --tests <node checkout> [--engine <dist/index.mjs>] [--match <prefix>]"); process.exit(2); }
 
@@ -111,43 +120,155 @@ if (ONE) {
   const file = ONE;
   const cwd = `${MOUNT}/${DIR}`;
   const vfs = new DiskVFS();
+  // This harness supplies the tree, so the program at process.execPath is its
+  // to put there: Node's tests spawn `"${process.execPath}" file` through the
+  // shell, which runs its own `node` for that path once a file is there.
+  vfs.mkdirSync("/usr/local/bin", { recursive: true });
+  vfs.writeFileSync("/usr/local/bin/node", 'node "$@"\n');
+  vfs.chmodSync("/usr/local/bin/node", 0o755);
   if (PRELUDE) {
     vfs.writeFileSync(`${MOUNT}/.prelude.cjs`, nodeFs.readFileSync(PRELUDE, "utf8"));
     vfs.writeFileSync(`${cwd}/.run-${file}.cjs`, `require(${JSON.stringify(`${MOUNT}/.prelude.cjs`)});\nrequire("module")._load(${JSON.stringify(`${cwd}/${file}`)}, null, true);\n`);
   }
   const container = createContainer({ vfs });
-  let streamed = "";
-  const result = await container.run(`node ${PRELUDE ? `${cwd}/.run-${file}.cjs` : `${cwd}/${file}`}`, { cwd, onStderr: (text) => { streamed += text; hostErr(text); }, onStdout: () => {} });
-  // What the run reports at its end and did not stream: an uncaught error's text.
+  let streamed = "", printed = "";
+  // `--with-flags`: the file run as test/common would re-run it, with its own `// Flags:` on the command line and
+  // the re-run switched off, so that what the INNER run prints is this run's. A diagnostic, never the judged run.
+  const withFlags = argument("with-flags", null);
+  const result = await container.run(`node ${withFlags ?? ""} ${PRELUDE ? `${cwd}/.run-${file}.cjs` : `${cwd}/${file}`}`, { cwd, ...(withFlags !== null ? { env: { NODE_SKIP_FLAG_CHECK: "1" } } : {}),
+    onStderr: (text) => { streamed += text; hostErr(text); }, onStdout: (text) => { printed += text; hostOut(text); } });
+  // What the run reports at its end and did not stream: an uncaught error's text, and what it printed.
   if (result.stderr && !streamed.includes(result.stderr.trim().slice(0, 80))) hostErr(result.stderr);
+  if (result.stdout && !printed.includes(String(result.stdout).trim().slice(0, 80))) hostOut(String(result.stdout));
   hostExit(result.exitCode);
 }
 
 const { spawn } = await import("node:child_process");
-const files = nodeFs.readdirSync(resolve(TESTS, DIR)).filter((name) => name.startsWith(MATCH) && /\.m?js$/u.test(name)).sort();
+// The full measure has one immutable denominator, including unsupported
+// modules. Verify the checkout itself rather than silently measuring a subset.
+if (ALL && (PRELUDE || process.argv.includes("--match") || process.argv.includes("--dir"))) {
+  throw new Error("--all cannot be narrowed or combined with a diagnostic prelude");
+}
+const discovered = (dir) => nodeFs.readdirSync(resolve(TESTS, dir))
+  .filter((name) => name.startsWith("test-") && /\.(?:c?js|mjs)$/u.test(name))
+  .map((name) => `${dir}/${name}`).sort();
+if (ALL) {
+  const actual = MANIFEST.directories.flatMap(discovered).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(MANIFEST.files)) {
+    throw new Error(`Node ${MANIFEST.nodeVersion} test denominator differs from scripts/node24-test-files.json`);
+  }
+  const { execFileSync } = await import("node:child_process");
+  const commit = execFileSync("git", ["-C", TESTS, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  if (commit !== MANIFEST.nodeCommit) throw new Error(`test checkout is ${commit}, expected ${MANIFEST.nodeCommit}`);
+}
+if (!ALL && (process.argv.includes('--shard-count') || process.argv.includes('--shard-index'))) {
+  throw new Error('sharding requires --all and the complete pinned selection');
+}
+const files = ALL ? shardFiles(MANIFEST.files, SHARD_INDEX, SHARD_COUNT)
+  : discovered(DIR).filter((path) => path.split("/").at(-1).startsWith(MATCH));
+if (!Number.isSafeInteger(JOBS) || JOBS < 1) throw new Error('--jobs must be a positive integer');
+const engineIntegrity = createHash('sha256').update(nodeFs.readFileSync(ENGINE)).digest('hex');
+const { execFileSync } = await import('node:child_process');
+// Caller CWD cannot identify a bundle. The repository's own default build
+// names this source checkout; an external bundle keeps unknown source custody
+// and remains usable for diagnostics without requiring any caller Git state.
+let engineCommit = 'unknown';
+if (ENGINE === DEFAULT_ENGINE) {
+  try {
+    const [checkout, commit] = execFileSync('git', ['rev-parse', '--show-toplevel', 'HEAD'], { cwd: SOURCE_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim().split('\n');
+    // A source archive placed inside another repository is still an archive.
+    if (nodeFs.realpathSync(checkout) === nodeFs.realpathSync(SOURCE_ROOT)) engineCommit = commit;
+  } catch { /* diagnostics also work from a source archive without Git metadata */ }
+}
+if (SHARD_COUNT > 1 && !/^[0-9a-f]{40}$/.test(engineCommit)) {
+  throw new Error('strict sharding needs the source checkout of the default built engine');
+}
 const results = [];
 const started = Date.now();
+// What is kept of a run's output: its end, bounded. The judgement below reads none of it.
+const KEPT_BYTES = 2000;
+const tail = (text) => (text.length > KEPT_BYTES ? text.slice(-KEPT_BYTES) : text);
+const linesOf = (text) => text.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("at ") && !line.includes("cwd() called") && !/^\[(boot-trace|rows-used|stream-calls)\]/u.test(line) && !/"(?:event|pid|at)":/u.test(line));
+/**
+ * A file with a `// Flags:` line is re-run by test/common as a child of itself, and exits with that child's status;
+ * the child's own words do not reach this runner, so such a file's failure was recorded as "exit 1" and nothing
+ * else (about thirty files, and how an unencrypted key export stayed unread for a day). A file that fails saying
+ * nothing is run once more with its flags on its own command line and the re-run switched off, to RECORD what the
+ * inner run says. That second run judges nothing: `passed` is the first run's status, as before.
+ */
+const flagsOf = (file) => { try { return /^\/\/ Flags:(.*)$/mu.exec(nodeFs.readFileSync(resolve(TESTS, file), "utf8"))?.[1].trim() ?? null; } catch { return null; } };
+const said = (file, flags) => new Promise((resolveSaid) => {
+  const args = [process.argv[1], "--tests", TESTS, "--dir", dirname(file), "--one", file.split("/").at(-1), "--engine", ENGINE, "--with-flags", flags];
+  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", (chunk) => { stdout = tail(stdout + chunk); });
+  child.stderr.on("data", (chunk) => { stderr = tail(stderr + chunk); });
+  const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT);
+  child.on("error", (error) => { clearTimeout(timer); resolveSaid({ flags, code: null, lines: [error.message] }); });
+  child.on("exit", (code) => { clearTimeout(timer); resolveSaid({ flags, code, lines: [...linesOf(stderr), ...linesOf(stdout)].slice(0, 6) }); });
+});
 const runOne = (file) => new Promise((resolveRun) => {
-  const args = [process.argv[1], "--tests", TESTS, "--dir", DIR, "--one", file, "--engine", ENGINE, ...(PRELUDE ? ["--prelude", PRELUDE] : [])];
-  const child = spawn(process.execPath, args, { stdio: ["ignore", "ignore", "pipe"] });
-  let stderr = "";
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-  const timer = setTimeout(() => { child.kill("SIGKILL"); stderr += "\ntimeout"; }, TIMEOUT);
+  const args = [process.argv[1], "--tests", TESTS, "--dir", dirname(file), "--one", file.split("/").at(-1), "--engine", ENGINE, ...(PRELUDE ? ["--prelude", PRELUDE] : [])];
+  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "", stdout = "";
+  // HOW EACH PROGRAM OF THE FILE ENDED, as the engine says it (`[boot-trace] run-drained`, its `endedBy`): read from
+  // both streams as they arrive, since the kept output is its bounded end and `linesOf` drops these lines. It judges
+  // nothing; it is what says how many of the suite's programs end by the engine's quiet rule and by which form.
+  const endedBy = [];
+  const drains = (carry) => (chunk) => {
+    const text = carry.text + chunk, lines = text.split("\n");
+    carry.text = lines.pop() ?? "";
+    for (const line of lines) {
+      const at = line.indexOf('{"event":"run-drained"');
+      if (at < 0) continue;
+      try { const said = JSON.parse(line.slice(at)); endedBy.push({ endedBy: said.endedBy, afterEntryMs: said.afterEntryMs }); } catch { /* a line cut by another write */ }
+    }
+  };
+  const drainsOfStderr = drains({ text: "" }), drainsOfStdout = drains({ text: "" });
+  child.stderr.on("data", (chunk) => { stderr += chunk; drainsOfStderr(String(chunk)); });
+  child.stdout.on("data", (chunk) => { stdout = tail(stdout + chunk); drainsOfStdout(String(chunk)); });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); stderr += "\ntimeout"; }, TIMEOUT);
+  child.on("error", (error) => { clearTimeout(timer); resolveRun({ file, passed: false, reason: error.message, lines: [error.message], stderr: error.stack, code: null, signal: null, timedOut }); });
   child.on("exit", (code, signal) => {
     clearTimeout(timer);
     const lines = stderr.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("at ") && !line.includes("cwd() called"));
     const passed = code === 0;
     const reason = passed ? "" : (lines.find((line) => /Error|error:|failed|timeout/u.test(line)) ?? lines[0] ?? `exit ${code ?? signal}`);
-    resolveRun({ file, passed, reason: reason.slice(0, 200), lines: lines.slice(0, 4) });
+    const record = { file, passed, reason: reason.slice(0, 200), lines: lines.slice(0, 4), stderr, stdout: linesOf(stdout).slice(-6), code, signal, timedOut, endedBy };
+    // A failure that said nothing on stderr, in a file test/common re-runs: record what its inner run says.
+    const flags = !passed && !timedOut && lines.length === 0 ? flagsOf(file) : null;
+    if (flags === null) { resolveRun(record); return; }
+    void said(file, flags).then((inner) => {
+      const line = inner.lines.find((text) => /Error|error:|failed|Mismatched|timeout/u.test(text)) ?? inner.lines[0];
+      resolveRun({ ...record, inner, ...(line ? { reason: `exit ${code}; re-run with its flags it says: ${line}`.slice(0, 200) } : {}) });
+    });
   });
 });
 let next = 0;
 await Promise.all(Array.from({ length: Math.min(JOBS, files.length) }, async () => {
-  while (next < files.length) results.push(await runOne(files[next++]));
+  while (next < files.length) {
+    results.push(await runOne(files[next++]));
+    if (ALL && results.length % 100 === 0) hostOut(`Progress: ${results.length}/${files.length}\n`);
+  }
 }));
 results.sort((a, b) => a.file.localeCompare(b.file));
 const passed = results.filter((r) => r.passed).length;
-hostOut(`${passed} of ${results.length} ${MATCH}* tests pass under ${ENGINE} in ${((Date.now() - started) / 1000).toFixed(1)} s\n`);
+const durationSeconds = (Date.now() - started) / 1000;
+hostOut(`${passed} of ${results.length} ${ALL ? "Node " + MANIFEST.nodeVersion : MATCH + "*"} tests pass under ${ENGINE} in ${durationSeconds.toFixed(1)} s\n`);
+if (REPORT) {
+  nodeFs.mkdirSync(dirname(resolve(REPORT)), { recursive: true });
+  nodeFs.writeFileSync(REPORT, JSON.stringify({ nodeVersion: MANIFEST.nodeVersion, nodeCommit: MANIFEST.nodeCommit, engine: ENGINE, fullDenominator: ALL && SHARD_COUNT === 1, fullSelection: ALL, shardIndex: SHARD_INDEX, shardCount: SHARD_COUNT, engineCommit, engineIntegrity, startedAtMs: started, completedAtMs: Date.now(), timeoutMs: TIMEOUT, jobs: JOBS, durationSeconds, results }, null, 2) + "\n");
+}
+// How the suite's programs ended, by the engine's own words, over every program of every file and over the files
+// that pass (a file's last program is its own; the ones before it are children it started).
+const ends = new Map(), endsOfPassing = new Map();
+for (const r of results) for (const end of r.endedBy ?? []) {
+  ends.set(end.endedBy, (ends.get(end.endedBy) ?? 0) + 1);
+  if (r.passed) endsOfPassing.set(end.endedBy, (endsOfPassing.get(end.endedBy) ?? 0) + 1);
+}
+if (ends.size) hostOut(`how ${[...ends.values()].reduce((sum, count) => sum + count, 0)} programs ended (of files that pass, in brackets):\n`);
+for (const [how, count] of [...ends].sort((a, b) => b[1] - a[1])) hostOut(`  ${String(count).padStart(5)} [${String(endsOfPassing.get(how) ?? 0).padStart(5)}]  ${how}\n`);
 const reasons = new Map();
 for (const r of results) if (!r.passed) reasons.set(r.reason, (reasons.get(r.reason) ?? 0) + 1);
 for (const [reason, count] of [...reasons].sort((a, b) => b[1] - a[1]).slice(0, 12)) hostOut(`  ${String(count).padStart(4)}  ${reason}\n`);

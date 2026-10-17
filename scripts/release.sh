@@ -1,6 +1,6 @@
 #!/bin/bash
-# Cuts a minor (or any chosen) release from main; every push is otherwise
-# released at its next patch by .github/workflows/publish.yml. The changelog
+# Cuts a minor (or any chosen) release from the explicitly owner-authorized publish branch; a main push never publishes.
+# Publish advances release versions by .github/workflows/publish.yml. The changelog
 # must already have the version's section; the version is set, committed and
 # tagged v<version>, and pushed, and the workflow publishes @volter/tabnode at
 # that version with provenance and makes the GitHub release from the
@@ -10,7 +10,7 @@
 set -e
 v="${1:?version, e.g. 0.3.1}"
 git diff --quiet && git diff --cached --quiet || { echo "working tree not clean"; exit 1; }
-[ "$(git branch --show-current)" = main ] || { echo "a release is cut from main"; exit 1; }
+[ "$(git branch --show-current)" = publish ] || { echo "publication requires the publish branch and prior explicit owner authorization"; exit 1; }
 grep -q "^## v$v " CHANGELOG.md || { echo "CHANGELOG.md has no '## v$v' section"; exit 1; }
 npm run docs:api > /tmp/tabnode-release-docs.log 2>&1 || { tail -20 /tmp/tabnode-release-docs.log; exit 1; }
 git add docs/api
@@ -19,7 +19,7 @@ git add package.json package-lock.json
 git commit -q -m "release v$v" || true
 git tag -a "v$v" -m "v$v"
 # Two pushes: one push of both refs reports one result, and a rejected
-# branch would otherwise leave a tag whose commit is not on main.
-git push -q origin main
+# branch would otherwise leave a tag whose commit is not on publish.
+git push -q origin HEAD:publish
 git push -q origin "v$v"
 echo "v$v"

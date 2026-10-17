@@ -4,6 +4,7 @@
  */
 
 import { EventEmitter } from '../node-lib/events-module';
+import { markUntransferable, isUntransferable } from '../transfer-ownership';
 
 export const isMainThread = true;
 export const parentPort = null;
@@ -85,8 +86,10 @@ export function receiveMessageOnPort(port: MessagePort): { message: unknown } | 
 export const SHARE_ENV = Symbol.for('nodejs.worker_threads.SHARE_ENV');
 
 export function markAsUntransferable(object: unknown): void {
-  // No-op
+  markUntransferable(object);
 }
+
+export const isMarkedAsUntransferable = isUntransferable;
 
 /**
  * Node 22's `markAsUncloneable` and its query: an object so marked is refused
@@ -126,6 +129,7 @@ export default {
   receiveMessageOnPort,
   SHARE_ENV,
   markAsUntransferable,
+  isMarkedAsUntransferable,
   markAsUncloneable,
   isMarkedAsUncloneable,
   getEnvironmentData,

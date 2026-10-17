@@ -1,3 +1,9 @@
+import { withGuestExecution, withGuestCallback, drainGuestNextTicks } from '../../guest-loop';
+import { AsyncLocalStorage } from '../../shims/async_hooks';
+import { kCancelTimer } from '../../timer-cancellation';
+import { handleOwnerSymbol } from '../binding/owner-symbol';
+import { traceSocketConnect } from '../../socket-connect-trace';
+import { registerHandle, refHandle, unrefHandle, releaseHandle, currentOwner, __adoptHandle } from '../binding/handles';
 /**
  * The internals Node's `net` names that are neither vendored nor a binding:
  * async ids, timers, stream defaults, the option table, and the three
@@ -17,7 +23,7 @@ let nextAsyncId = 1;
 const symbols = {
   async_id_symbol: Symbol('async_id_symbol'),
   trigger_async_id_symbol: Symbol('trigger_async_id_symbol'),
-  owner_symbol: Symbol('owner_symbol'),
+  owner_symbol: handleOwnerSymbol,
   init_symbol: Symbol('init_symbol'),
   destroy_symbol: Symbol('destroy_symbol'),
   async_id_fields: Symbol('async_id_fields'),
@@ -64,6 +70,7 @@ let nextAsyncResourceId = 1;
 export class AsyncResource {
   #asyncId: number;
   #triggerAsyncId: number;
+  #restore = AsyncLocalStorage.snapshot();
 
   constructor(_type: string, options?: { triggerAsyncId?: number; requireManualDestroy?: boolean }) {
     this.#asyncId = nextAsyncResourceId++;
@@ -71,7 +78,7 @@ export class AsyncResource {
   }
 
   runInAsyncScope<T>(fn: (...args: never[]) => T, thisArg?: unknown, ...args: never[]): T {
-    return fn.apply(thisArg, args);
+    return withGuestExecution(() => this.#restore(() => fn.apply(thisArg, args)), 'async-resource', fn) as T;
   }
 
   emitDestroy(): this { return this; }
@@ -79,7 +86,10 @@ export class AsyncResource {
   triggerAsyncId(): number { return this.#triggerAsyncId; }
 
   static bind<T extends (...args: never[]) => unknown>(fn: T, _type?: string): T {
-    return fn;
+    const restore = AsyncLocalStorage.snapshot();
+    return function(this: unknown, ...args: never[]) {
+      return withGuestExecution(() => restore(() => fn.apply(this, args)), 'async-resource', fn);
+    } as T;
   }
 }
 
@@ -114,29 +124,84 @@ function realmClearTimeout(id: unknown): void {
  */
 export class UnrefTimeout {
   private id: unknown = null;
-  private readonly onTimeout: () => void;
-  private readonly msecs: number;
+  private onTimeout: (arg?: unknown) => void;
+  private msecs: number;
+  private arg: unknown;
+  private readonly owner = currentOwner();
+  private referenced = false;
+  private restore = AsyncLocalStorage.snapshot();
+  _destroyed = false;
+  _repeat = null;
+  /** Stopped by clearTimeout (Node's unenroll, `_idleTimeout` -1): a refresh no longer arms it; only a reuse does. */
+  private cleared = false;
 
-  constructor(onTimeout: () => void, msecs: number) {
+  constructor(onTimeout: (arg?: unknown) => void, msecs: number, arg?: unknown) {
     this.onTimeout = onTimeout;
     this.msecs = msecs;
-    this.id = realmSetTimeout(() => { this.id = null; this.onTimeout(); }, msecs);
+    this.arg = arg;
+    this.arm(false);
   }
 
+  private arm(referenced: boolean): void {
+    this.referenced = referenced;
+    this._destroyed = false;
+    this.cleared = false;
+    registerHandle(this);
+    __adoptHandle(this, this.owner);
+    if (!referenced) unrefHandle(this);
+    this.id = realmSetTimeout(() => {
+      this.id = null;
+      this._destroyed = true;
+      releaseHandle(this);
+      traceSocketConnect('timer-fired', this.arg, this);
+      withGuestCallback(() => this.restore(() => this.onTimeout(this.arg)), 'timer', this.onTimeout);
+    }, this.msecs);
+    if (!referenced) (this.id as { unref?: () => void } | null)?.unref?.();
+  }
+
+  /**
+   * Node's `Timeout.prototype.refresh`: a timer pending or already fired starts its whole duration again; a cleared
+   * one stays cleared (lib/internal/timers.js insertGuarded returns for `_idleTimeout` -1, which unenroll set). A
+   * socket keeps its timeout in `kTimeout` after `setTimeout(0)` clears it, and refreshes it at every read and write
+   * (net.js `_unrefTimer`): re-arming a cleared one fired node-redis's 5 s connect timeout on a connected socket, 5 s
+   * after its handshake's reply (S2 R13: Twenty's cache and session clients, ConnectionTimeoutError mid-walk).
+   */
   refresh(): this {
+    if (this.cleared) return this;
+    const referenced = this.referenced;
     if (this.id !== null) realmClearTimeout(this.id);
-    this.id = realmSetTimeout(() => { this.id = null; this.onTimeout(); }, this.msecs);
+    this.arm(referenced);
+    return this;
+  }
+
+  reuse(callback: (arg?: unknown) => void, msecs: number, arg?: unknown): this {
+    this.onTimeout = callback;
+    this.msecs = msecs;
+    this.arg = arg;
+    this.restore = AsyncLocalStorage.snapshot();
+    this.arm(false);
     return this;
   }
 
   stop(): void {
     if (this.id !== null) realmClearTimeout(this.id);
     this.id = null;
+    this._destroyed = true;
+    this.cleared = true;
+    releaseHandle(this);
   }
 
-  ref(): this { return this; }
-  unref(): this { return this; }
-  hasRef(): boolean { return false; }
+  [kCancelTimer](): void { this.stop(); }
+
+  close(callback?: () => void): void {
+    this.stop();
+    releaseHandle(this);
+    callback?.();
+  }
+
+  ref(): this { this.referenced = true; refHandle(this); (this.id as { ref?: () => void } | null)?.ref?.(); return this; }
+  unref(): this { this.referenced = false; unrefHandle(this); (this.id as { unref?: () => void } | null)?.unref?.(); return this; }
+  hasRef(): boolean { return this.referenced; }
 }
 
 export const TIMEOUT_MAX = 2 ** 31 - 1;
@@ -144,6 +209,12 @@ export const TIMEOUT_MAX = 2 ** 31 - 1;
 export const internalTimers = {
   kTimeout,
   TIMEOUT_MAX,
+  reuseOrCreateUnrefTimeout(timer: unknown, callback: (arg?: unknown) => void, after: number, arg?: unknown): UnrefTimeout {
+    if (typeof callback !== 'function') throw Object.assign(new TypeError('callback must be a function'), { code: 'ERR_INVALID_ARG_TYPE' });
+    return timer instanceof UnrefTimeout && timer._destroyed
+      ? timer.reuse(callback, after, arg)
+      : new UnrefTimeout(callback, after, arg);
+  },
   setUnrefTimeout: (fn: () => void, msecs: number): UnrefTimeout => new UnrefTimeout(fn, msecs),
   /** Node's `getTimerDuration`: a number in range, and 1 for anything under it. */
   getTimerDuration(msecs: unknown, name: string): number {
@@ -165,11 +236,11 @@ export const internalStreamsState = {
   setDefaultHighWaterMark: (): void => {},
 };
 
-/** `internal/process/task_queues`: the realm's own microtask queue. */
+/** `internal/process/task_queues`: ticks precede the native microtask queue. */
 export const internalTaskQueues = {
   queueMicrotask: (fn: () => void): void => queueMicrotask(fn),
   setHasTickScheduled: (): void => {},
-  runNextTicks: (): void => {},
+  runNextTicks: drainGuestNextTicks,
 };
 
 /** `internal/event_target`: the one symbol `abort_listener.js` reads. */
@@ -235,6 +306,7 @@ const optionValues: Record<string, unknown> = {
   '--max-http-header-size': 16 * 1024,
   '--insecure-http-parser': false,
   '--enable-source-maps': false,
+  '--use-env-proxy': false,
   '--experimental-transform-types': false,
 };
 

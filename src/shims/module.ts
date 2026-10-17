@@ -12,8 +12,13 @@ export function createRequire(filename: string): (id: string) => unknown {
   };
 }
 
+// Node's subpath builtins are builtins too (`require('module').builtinModules` lists them): a program that asks
+// `isBuiltin('fs/promises')` before it resolves -- require-in-the-middle's wrapper, OpenTelemetry's, an APM's --
+// was told no, resolved the name as a file and threw "Cannot find module 'fs/promises'" (Activepieces' server).
+// Only names the engine answers are listed (runtime.ts checks each has a module).
 export const builtinModules = [
   'assert',
+  'assert/strict',
   'buffer',
   'child_process',
   'cluster',
@@ -22,15 +27,20 @@ export const builtinModules = [
   'crypto',
   'dgram',
   'dns',
+  'dns/promises',
   'domain',
   'events',
   'fs',
+  'fs/promises',
   'http',
   'https',
+  'inspector/promises',
   'module',
   'net',
   'os',
   'path',
+  'path/posix',
+  'path/win32',
   'perf_hooks',
   'process',
   'punycode',
@@ -38,14 +48,18 @@ export const builtinModules = [
   'readline',
   'repl',
   'stream',
+  'stream/consumers',
+  'stream/promises',
   'stream/web',
   'string_decoder',
   'sys',
   'timers',
+  'timers/promises',
   'tls',
   'tty',
   'url',
   'util',
+  'util/types',
   'v8',
   'vm',
   'wasi',

@@ -1,3 +1,5 @@
+import { traceOutput } from '../../trace-output';
+import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials, type ProcessCredentials } from '../../process-credentials';
 /**
  * `internalBinding('process_wrap')`: one run of the engine, seen as libuv sees
  * a child process.
@@ -22,14 +24,16 @@ import {
   LibuvStreamWrap, WriteWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
 } from './stream_wrap';
 import { Pipe, constants as pipeConstants } from './pipe_wrap';
-import { UV_ENOENT, UV_ESRCH } from './uv';
+import { nativeStreamFor } from '../../native-stream-binding';
+import { UV_EBADF, UV_ENOENT, UV_ESRCH, UV_EPERM, UV_EINVAL } from './uv';
 import {
-  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle,
-  ownerOf, type OwnedHandle,
+  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle, observeNodeHandle, nodeHandleHasRef, nodeHandleIsInitialized,
+  ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
 } from './handles';
-import { __runFor, mintPid, type ProcessToken } from '../../process-tokens';
+import { __runFor, type ProcessToken } from '../../process-tokens';
+import { withGuestCallback, queueBindingTask } from '../../guest-loop';
 import { handleForFd } from './fds';
-import { descriptorWriter } from './fs';
+import { descriptorWriter, type DescriptorWriter } from './fs';
 import { TTY, type TerminalState } from './tty_wrap';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio` builds it. */
@@ -42,7 +46,14 @@ export interface StdioEntry {
   writable?: boolean;
 }
 
-/** What `ChildProcess.prototype.spawn` hands `Process.spawn`. */
+/** Node24.21 src/process_wrap.cc's flags; these are not libuv's bit values. */
+export const constants = Object.freeze({
+  kProcessFlagDetached: 1 << 0,
+  kProcessFlagWindowsHide: 1 << 1,
+  kProcessFlagWindowsVerbatimArguments: 1 << 2,
+});
+
+/** What the engine's process runner receives after decoding the native call. */
 export interface ProcessSpawnOptions {
   file: string;
   args?: string[];
@@ -67,6 +78,12 @@ export interface RunChannel {
 
 /** What the binding asks the engine's process model to run. */
 export interface RunRequest {
+  /** A snapshot of the actual spawning process, not its mutable guest getter methods. */
+  credentials: Readonly<ProcessCredentials>;
+  /** Present only for an explicit spawn uid/gid declaration; passed to new-child admission. */
+  runAs?: Readonly<ProcessCredentials>;
+  /** The run whose `Process` handle spawns it: its parent (the handle's NodeLibScope's process), or null for none. */
+  owner: ProcessToken | null;
   /** The program, as the caller named it: a path, a name, or the shell. */
   file: string;
   /** argv, the file first, as Node builds it. */
@@ -74,10 +91,14 @@ export interface RunRequest {
   cwd?: string;
   env: Record<string, string>;
   detached: boolean;
-  /** Where the child's fd 1 goes; null where nothing reads it. */
-  stdout: ((text: string) => void) | null;
+  /**
+   * Where the child's fd 1 goes; null where nothing reads it. A pipe is a
+   * byte stream: a chunk the child wrote as bytes arrives as those bytes, and
+   * text only where the program that ran it produced text.
+   */
+  stdout: ((chunk: string | Uint8Array) => void) | null;
   /** Where the child's fd 2 goes; null where nothing reads it. */
-  stderr: ((text: string) => void) | null;
+  stderr: ((chunk: string | Uint8Array) => void) | null;
   /**
    * True when fd 2 is a pipe the parent holds. A run that ends uncaught or
    * with a nonzero `process.exit` on that pipe writes one receipt to the
@@ -104,14 +125,19 @@ export interface RunRequest {
 export interface StartedRun {
   /** The run's own name, so a handle it holds is counted as its own. */
   token: ProcessToken | null;
-  /** The run's process number, which is what its own `process.pid` reports. */
-  pid?: number;
+  /** The run's process number, made at its fork, which is what its own `process.pid` reports. */
+  pid: number;
   /** libuv's `uv_process_kill`: 0, or `UV_ESRCH` for a run already over. */
   kill(signal: string): number;
   /** Bytes the parent wrote to the child's fd 0. */
   writeStdin(bytes: Uint8Array): void | Promise<void>;
   /** The parent closed the child's fd 0. */
   endStdin(): void;
+  /**
+   * The parent's handle on this child was ref'd or unref'd. A child another runs (a host's program) is waited for by
+   * that host on the parent's behalf, and only while the handle is ref'd: `unref()` is how a program stops waiting.
+   */
+  setRef?(held: boolean): void;
 }
 
 /**
@@ -168,7 +194,7 @@ function signalNameOf(signal: number | string): string {
 // replaying stderr into its own closed IPC-backed stream (write EBADF).
 function parentProcess(token: ProcessToken | null) {
   return token !== null ? __runFor(token)?.process
-    : (globalThis as unknown as { process?: { cwd?: () => string; stdout?: { write(text: string): unknown }; stderr?: { write(text: string): unknown } } }).process;
+    : (globalThis as unknown as { process?: { cwd?: () => string; stdout?: { write(chunk: string | Uint8Array): unknown }; stderr?: { write(chunk: string | Uint8Array): unknown } } }).process;
 }
 
 function spawningDirectory(token: ProcessToken | null): string | undefined {
@@ -177,8 +203,13 @@ function spawningDirectory(token: ProcessToken | null): string | undefined {
   try { return realm.cwd(); } catch { return undefined; }
 }
 
-/** Where an `inherit` entry's bytes go: the spawning program's own stream. */
-function inheritedWriter(fd: number, token: ProcessToken | null): ((text: string) => void) | null {
+/**
+ * Where an `inherit` entry's bytes go: the spawning program's own stream. An entry that names a descriptor by
+ * number is the same thing said another way, and `stdio: 'inherit'` is said that way: Node's
+ * `stdioStringToArray` turns the string into `[0, 1, 2]`, which `getValidStdio` hands on as `{ type: 'fd' }`.
+ * The synchronous binding asks here too, so a child's bytes go where they go whichever call started it.
+ */
+export function inheritedWriter(fd: number, token: ProcessToken | null): DescriptorWriter | null {
   // a descriptor of the parent's own (a log file it opened) is written as the file
   if (fd !== 1 && fd !== 2) return descriptorWriter(fd);
   // Inherit the descriptor's original sink, not a guest replacement of
@@ -190,8 +221,8 @@ function inheritedWriter(fd: number, token: ProcessToken | null): ((text: string
   const realm = parentProcess(token);
   const stream = fd === 1 ? realm?.stdout : realm?.stderr;
   if (!stream || typeof stream.write !== 'function') return null;
-  return (text: string) => {
-    try { stream.write(text); } catch { /* a stream that refuses still lets the child run */ }
+  return (chunk: string | Uint8Array) => {
+    try { stream.write(chunk); } catch { /* a stream that refuses still lets the child run */ }
   };
 }
 
@@ -202,6 +233,8 @@ function inheritedWriter(fd: number, token: ProcessToken | null): ((text: string
  * so a parent waiting on a child is not idle: Node's loop holds a process
  * handle exactly that way, and `unref()` is how a program gives it up.
  */
+const credentialsByHandle = new WeakMap<object, Readonly<ProcessCredentials>>();
+
 export class Process implements OwnedHandle {
   /** Set by `internal/child_process.js`; the only way an end is reported. */
   onexit: ((exitCode: number, signalCode: string | null) => void) | null = null;
@@ -218,6 +251,10 @@ export class Process implements OwnedHandle {
   /** The stdio entries this run was started with, and their far ends. */
   private stdio: StdioEntry[] = [];
   private terminalEnds = new Map<number, TTY>();
+  /** Writers holding their own reference to a parent's description (fd stdio), released at the child's end. */
+  private heldDescriptions: DescriptorWriter[] = [];
+  /** The file this process was spawned from, for the instrument below. */
+  private spawned = '';
   private readonly asyncId = nextAsyncId++;
 
   constructor() {
@@ -229,15 +266,19 @@ export class Process implements OwnedHandle {
   }
 
   ref(): void {
+    if (!nodeHandleIsInitialized(this)) return;
     refHandle(this);
+    this.run?.setRef?.(true);
   }
 
   unref(): void {
+    if (!nodeHandleIsInitialized(this)) return;
     unrefHandle(this);
+    this.run?.setRef?.(false);
   }
 
   hasRef(): boolean {
-    return handleHasRef(this);
+    return nodeHandleHasRef(this);
   }
 
   /**
@@ -245,12 +286,27 @@ export class Process implements OwnedHandle {
    * one that could not, which is what `ChildProcess.prototype.spawn` turns
    * into an `error` event or a throw.
    */
-  spawn(options: ProcessSpawnOptions): number {
+  spawn(file: string, args: string[] | undefined, cwd: string | undefined,
+    envPairs: string[] | undefined, stdio: StdioEntry[], flags: number,
+    uid?: number, gid?: number): number {
+    const options: ProcessSpawnOptions = {
+      file, args, cwd, envPairs, stdio, uid, gid,
+      detached: (flags & constants.kProcessFlagDetached) !== 0,
+      windowsHide: (flags & constants.kProcessFlagWindowsHide) !== 0,
+    };
     if (!runner) return UV_ENOENT;
+    const parentCredentials = credentialsByHandle.get(this) ?? copyProcessCredentials();
+    let credentials: Readonly<ProcessCredentials>;
+    try { credentials = spawnedProcessCredentials(parentCredentials, uid, gid); }
+    catch (cause) { return (cause as { code?: string })?.code === 'EPERM' ? UV_EPERM : UV_EINVAL; }
     const env = environmentOf(options.envPairs);
     this.stdio = options.stdio ?? [];
+    this.spawned = options.file;
 
     const request: RunRequest = {
+      credentials,
+      ...(uid != null || gid != null ? { runAs: credentials } : {}),
+      owner: ownerOfInstance(this),
       file: options.file,
       args: options.args ?? [options.file],
       cwd: options.cwd ?? spawningDirectory(ownerOf(this)),
@@ -279,8 +335,8 @@ export class Process implements OwnedHandle {
           this.terminalEnds.set(index, inherited);
           request.terminal = inherited.terminal;
           if (index === 0) { stdinFar = inherited; request.stdinIsPipe = true; }
-          else if (index === 1) request.stdout = text => this.toPipe(index, text);
-          else request.stderr = text => this.toPipe(index, text);
+          else if (index === 1) request.stdout = chunk => this.toPipe(index, chunk);
+          else request.stderr = chunk => this.toPipe(index, chunk);
           continue;
         }
       }
@@ -308,7 +364,7 @@ export class Process implements OwnedHandle {
       }
       if (far) {
         const to = index;
-        const write = (text: string): void => { this.toPipe(to, text); };
+        const write = (chunk: string | Uint8Array): void => { this.toPipe(to, chunk); };
         if (index === 1) request.stdout = write;
         else {
           request.stderr = write;
@@ -316,20 +372,39 @@ export class Process implements OwnedHandle {
         }
       } else if (entry.type === 'inherit' || entry.type === 'fd') {
         const inherited = inheritedWriter(entry.fd ?? index, ownerOf(this));
+        // A descriptor the caller names and does not hold fails the spawn (`spawn EBADF`), as libuv's does.
+        if (inherited === null && (entry.fd ?? index) > 2) {
+          for (const held of this.heldDescriptions.splice(0)) held.release?.();
+          this.closeFarEnds();
+          return UV_EBADF;
+        }
+        if (inherited?.release) this.heldDescriptions.push(inherited);
         if (index === 1) request.stdout = inherited;
         else request.stderr = inherited;
       }
     }
 
+    // Node marks the process wrap initialized after the native spawn attempt,
+    // including ENOENT; ChildProcess closes it from its existing error turn.
+    observeNodeHandle(this);
     if (!runner.resolves(request)) {
       this.closeFarEnds();
       return UV_ENOENT;
     }
 
-    this.run = runner.start(request);
+    try { this.run = runner.start(request); }
+    catch (cause) {
+      this.closeFarEnds();
+      const code = (cause as { code?: string })?.code;
+      if (code === 'EPERM') return UV_EPERM;
+      if (code === 'EINVAL') return UV_EINVAL;
+      throw cause;
+    }
+    // Reference changes after initialization also govern the owned child run.
+    if (!handleHasRef(this)) this.run.setRef?.(false);
     // The number the parent reads off the handle is the child's own
-    // `process.pid`, as it is in Node; a runner that names none is given one.
-    this.pid = this.run.pid ?? mintPid();
+    // `process.pid`, made at its fork, as it is in Node.
+    this.pid = this.run.pid;
     if (stdinFar) this.readStdinFrom(stdinFar);
     return 0;
   }
@@ -348,9 +423,9 @@ export class Process implements OwnedHandle {
   close(callback?: () => void): void {
     if (!this.closed) {
       this.closed = true;
-      releaseHandle(this);
+      releaseHandle(this, true, 1);
     }
-    if (callback) queueMicrotask(callback);
+    if (callback) queueBindingTask(() => withGuestCallback(callback));
   }
 
   /**
@@ -373,6 +448,8 @@ export class Process implements OwnedHandle {
   }
 
   private closeFarEnds(): void {
+    // The child's own references to the parent's descriptions it wrote (fd stdio) end with it.
+    for (const writer of this.heldDescriptions.splice(0)) writer.release?.();
     for (let index = 0; index < this.stdio.length; index += 1) {
       const far = this.farEndAt(index);
       if (!far) continue;
@@ -381,10 +458,11 @@ export class Process implements OwnedHandle {
   }
 
   /** The child wrote to fd `index`; the parent's handle reads it. */
-  private toPipe(index: number, text: string): void {
+  private toPipe(index: number, chunk: string | Uint8Array): void {
     const far = this.farEndAt(index);
     if (!far || far.closed) return;
-    far.writeUtf8String(new WriteWrap(), text);
+    if (typeof chunk === 'string') far.writeUtf8String(new WriteWrap(), chunk);
+    else far.writeBuffer(new WriteWrap(), chunk);
   }
 
   /** Bytes the parent writes reach the child's fd 0; the parent's EOF ends it. */
@@ -418,10 +496,43 @@ export class Process implements OwnedHandle {
     if (this.ended) return;
     this.ended = true;
     this.closeFarEnds();
-    const report = this.onexit;
     this.run = null;
-    if (report) report(code, signal);
+    invokeOwned(this, 'onexit', code, signal);
+    this.sayLateClose();
+  }
+
+  /**
+   * An instrument. Node emits a child's `close` once it has exited and each of its piped stdio streams has closed
+   * (lib/internal/child_process.js `maybeClose`: `_closesGot === _closesNeeded`), which here follows the far ends
+   * closing above. A parent's pipe that has still not read end-of-file a moment after the exit is what keeps
+   * `close` back (a World's `up` waited 507 ms on a fallback timer for it, Cal run 49); this says which pipe, and
+   * what still holds its other end. It changes nothing.
+   */
+  private sayLateClose(): void {
+    const file = this.spawned;
+    const entries = this.stdio;
+    const timer = setTimeout(() => {
+      const late: unknown[] = [];
+      entries.forEach((entry, index) => {
+        if (index === 0 || (entry.type !== 'pipe' && entry.type !== 'overlapped') || !entry.handle) return;
+        const handle = entry.handle as unknown as { closed?: boolean; reading?: boolean; eofDelivered?: boolean; streamEndpoint?: { eof?: boolean; inbound?: unknown[]; peer?: { handles?: { size: number } } | null } };
+        if (handle.closed || handle.eofDelivered) return;
+        late.push({ fd: index, native: nativeStreamFor(entry.handle as never) !== undefined, reading: handle.reading === true, endOfFileQueued: handle.streamEndpoint?.eof === true,
+          unread: handle.streamEndpoint?.inbound?.length ?? null, otherEndHeldBy: handle.streamEndpoint?.peer ? handle.streamEndpoint.peer.handles?.size ?? null : 0 });
+      });
+      if (late.length > 0) traceOutput("[boot-trace]", { event: 'child-close-late', at: Date.now(), file, stdio: entries.map((entry) => entry.type), late });
+    }, 100);
+    (timer as { unref?: () => void }).unref?.();
   }
 }
 
-export default { Process };
+/** NodeLibScope supplies the parent even for a Runtime without a named run token. */
+export function createProcessBinding(parent: object): { Process: typeof Process; constants: typeof constants } {
+  class ScopedProcess extends Process {
+    constructor() { super(); credentialsByHandle.set(this, processCredentialsOf(parent)); }
+  }
+  Object.defineProperty(ScopedProcess, 'name', { value: Process.name, configurable: true });
+  return { Process: ScopedProcess, constants };
+}
+
+export default { Process, constants };

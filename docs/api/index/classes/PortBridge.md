@@ -580,3 +580,30 @@ Unregister a server
 #### Returns
 
 `void`
+
+***
+
+### waitForPrimaryPortMapping()
+
+> **waitForPrimaryPortMapping**(`port`, `options`): `Promise`\<`void`\>
+
+Wait until the controlling worker has installed this listening port as
+the origin's primary mapping. This exchanges metadata only: it never
+calls the application's HTTP handler. Cancellation belongs to the caller.
+An older worker must update before using this door; no HTTP probe substitutes.
+
+#### Parameters
+
+##### port
+
+`number`
+
+##### options
+
+###### signal
+
+`AbortSignal`
+
+#### Returns
+
+`Promise`\<`void`\>

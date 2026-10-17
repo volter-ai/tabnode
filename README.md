@@ -1,10 +1,22 @@
+<!-- node24-coverage:start -->
+tabnode is Node 24, except:
+
+- [Known limitations](LIMITATIONS.md): no Node 24 exceptions have been accepted yet.
+- and open defects not yet classified; the first full Node 24 measurement is pending, so their number is unknown.
+
+The exact behavior scope is 4,569 test files. The generated capability ledger
+records done / doing / todo / won't do and the four objective completion counts.
+See [the proof scope](scripts/NODE-TESTS.md). Host-run evidence does not establish
+browser-tab execution.
+<!-- node24-coverage:end -->
+
 <p align="center"><img src="https://brand.volter.ai/logo/tabnode/svg?size=96" alt="tabnode"></p>
 
 # tabnode
 
 **Node's own library, in a browser tab.**
 
-tabnode runs Node programs in the browser. Its builtins are Node's own files, vendored unmodified from Node v22.18.0, on a binding layer that answers what libuv and V8's C++ would have answered: sockets, children, files, TTYs, the HTTP parser, zlib. Node's own test suite measures each module, and the numbers are in [`BUILTINS.md`](BUILTINS.md). Where Node's own module is native and the tab has no twin, the module is the engine's, with the reason at its site.
+tabnode runs Node programs in the browser. Its builtins are Node's own files, vendored unmodified from Node v24.21.0, on a binding layer that answers what libuv and V8's C++ would have answered: sockets, children, files, TTYs, the HTTP parser, zlib. Node's own test suite measures each module, and the numbers are in [`BUILTINS.md`](BUILTINS.md). Where Node's own module is native and the tab has no twin, the module is the engine's, with the reason at its site.
 
 It is the Node engine of [`volter-ai/browser-substrate`](https://github.com/volter-ai/browser-substrate), the host it is built for, which installs it from npm by version.
 
@@ -51,6 +63,8 @@ container.vfs.writeFileSync('/hello.js', `
   console.log(fs.readFileSync('/out.txt', 'utf8'));
 `);
 const { stdout, exitCode } = await container.run('node /hello.js');
+// A host that already holds an argv vector starts Node with it, no shell between:
+await container.runNode(['node', '/hello.js'], { cwd: '/', env: { HOME: '/home/user' } });
 ```
 
 A guest server is reached through the bridge, at `/__virtual__/{port}/`, once the page has registered the service worker this package ships as `dist/__sw__.js`. A Vite host gets that route from the plugin:
@@ -68,11 +82,9 @@ export default { plugins: [tabnodePlugin()] };
 ```bash
 npm install
 npm run build:lib     # the bundle and its declarations, into dist/
-npm run type-check    # tsc over src and tests
-npm test              # the engine's own checks, vitest over tests/; some spawn a real node over dist/, so build first
 ```
 
-A fix is a source commit on `main` that states which Node behaviour it restores, general to every program, never a fix that recognises a package or a framework. What measures it is Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`) and, on every push to `main`, by the `measure` workflow, whose job summary carries the numbers; [`BUILTINS.md`](BUILTINS.md) holds each module's number and what its remainder is made of. [`CONTRIBUTING.md`](CONTRIBUTING.md) says how a change is made and [`RELEASING.md`](RELEASING.md) how a release is cut; what each release changed is in [`CHANGELOG.md`](CHANGELOG.md), and a vulnerability is reported the way [`SECURITY.md`](SECURITY.md) says.
+A fix is a source commit on `main` that states which Node behaviour it restores, general to every program, never a fix that recognises a package or a framework. What measures it is Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`) locally when measurement is the requested task; the manually dispatched `measure` workflow is available only when the user explicitly authorizes that remote run; [`BUILTINS.md`](BUILTINS.md) holds each module's number and what its remainder is made of. [`CONTRIBUTING.md`](CONTRIBUTING.md) says how a change is made and [`RELEASING.md`](RELEASING.md) how a release is cut; what each release changed is in [`CHANGELOG.md`](CHANGELOG.md), and a vulnerability is reported the way [`SECURITY.md`](SECURITY.md) says.
 
 ---
 
@@ -85,3 +97,52 @@ This repository began as `macaly/almostnode` at its version 0.2.14, a Node-in-th
 ## License
 
 MIT, [`LICENSE`](LICENSE). Node's own library files under `src/node-lib/` are Node's, under Node's MIT licence beside them; what else is carried from elsewhere is listed in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+### Process credentials
+
+A host can pass numeric identity as `credentials: { uid: 0, gid: 0, groups: [] }`
+to `Runtime`, `createProcess`, `createRuntime` (including worker runtimes), or
+`createContainer`. `container.run` and `container.runNode` can also name the
+credentials of one admitted process. Without the option, uid/gid are 1000 and
+groups are [1000]. Configuration is copied; ids must be unsigned 32-bit integers.
+`process.getuid/geteuid/getgid/getegid` and `os.userInfo().uid/gid` report that
+process's identity. `process.getgroups()` returns a fresh array containing its
+supplementary groups and effective gid. The OS account's existing username,
+home and shell fields are unchanged.
+
+Children inherit a process-owned record, even if guest code overwrites its
+getter methods. `processCredentialsOf(process)` gives a copied, immutable record
+for a host to pass into another realm. Node process-host launches and synchronous
+host requests carry `credentials`; the worker-thread host's `module` receives
+the record as its fourth argument to carry into the thread's Runtime options.
+The kernel owns image USER resolution, permission enforcement and retaining
+credentials across exec. Credential setters are unsupported.
+
+### Host-owned instrumentation
+
+The engine's own diagnostic traces pass raw, owned fields to the host function at
+`Symbol.for('tabnode.trace-output')` when installed. It receives prefix, payload and
+console level; ordinary guest console output is separate. Portable `value.v1`
+formatting instructions in `trace-values.ts` defer numeric rounding, sorting and
+summary construction to the host's JSON drain. Without that host, the engine prints
+the existing prefix/JSON text. Producer clocks and sampled counters are captured
+before later requests mutate them; the substrate owns transport and delivery after
+first HTTP. This restores the ordinary Node behavior that its server's response is
+not held by engine diagnostics. Buildability is verified separately from app-time
+qualification; no speed gain is established by this source change alone.
+Node child identity: `child_process.spawn` and `spawnSync` honour numeric `uid`/`gid` options using the actual parent record. A root parent clears supplementary groups before declaring its child; an unprivileged parent cannot select different ids. The host registry's optional third `allocate` argument carries the explicit child credential declaration for kernel admission. Ordinary fork inherits and exec retains its admitted credentials.
+The optional `TreeDescriptors.chown`/`fchown` filesystem capability answers ownership changes under the filesystem's own credential checks; trees that do not supply it still refuse the operation. A changed-identity synchronous Node child requires the kernel host child door; the parent-tree proxy fallback refuses it.
+
+The optional `Symbol.for('tabnode.trace-output-deferred')` host hook receives prefix, a local payload materializer and level. It owns when expensive diagnostic inputs are materialized, after first HTTP or before a normal realm terminal handoff; callbacks and source references remain in their producer, and only resulting scalar records cross trace ports. With no hook, evidence uses the existing direct output. Module-byte snapshots retain their exact body-prefix totals; `linkSplit.utf8DeferredMs` reports materialization work, excluded from subsequent live module-clock spans. Forced termination can lose unposted evidence.
+
+## Preview port mapping
+
+After attaching the service worker and selecting a listening primary port with
+`setPrimaryPort(port)`, await `waitForPrimaryPortMapping(port, { signal })`
+before navigating its preview. This door acknowledges registration on the
+controlling worker's initialized channel without sending an HTTP request to
+the app. The caller supplies cancellation and its existing deadline. Worker
+reconnects resend pending checks; superseded channels cannot acknowledge them.
+An older worker without `portMapping:1` needs an update and rejects explicitly.
+`document-response` events carry only metadata from actual browser document
+responses (port, method, URL, status and headers); no selection probe is made.

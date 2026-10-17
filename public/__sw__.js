@@ -167,7 +167,7 @@ self.addEventListener('message', (event) => {
     mainPort.onmessage = (message) => {
       if (hosts.get(host.id) === host && host.port === initializedPort) handleMainMessage(host, message);
     };
-    mainPort.postMessage({ type: 'sw-capabilities', data: { binaryChunks: 1 } });
+    mainPort.postMessage({ type: 'sw-capabilities', data: { binaryChunks: 1, portMapping: 1 } });
     if (data && Array.isArray(data.ownDocuments)) host.ownDocuments = new Set(data.ownDocuments.map((path) => ownPath(String(path))));
     // Markup a frame's document served from this host's servers starts with
     // (after its doctype): the page's first script, before the document's own.
@@ -198,9 +198,25 @@ function handleMainMessage(host, event) {
   const { type, id, data, error } = event.data;
   updateFlowControl(host, type, data);
 
+  // FIFO on this host's initialized channel proves the preceding registration
+  // and primary selection have been applied. Keep metadata ids outside HTTP.
+  if (type === 'port-mapping-check') {
+    host.port.postMessage({ type: 'port-mapping-ready', id, data: {
+      port: data?.port, registered: host.registeredPorts.has(data?.port), primary: host.primaryPort === data?.port,
+    } });
+    return;
+  }
+
   const controlled = pendingRequests.get(id);
   // A request is answered only by the host it was sent to.
   if (controlled && controlled.host !== host) return;
+  if (controlled && !error && (type === 'response' || type === 'stream-start')
+      && ['document', 'iframe', 'frame'].includes(controlled.destination)) {
+    host.port.postMessage({ type: 'document-response', data: {
+      port: controlled.port, method: controlled.method, url: controlled.url,
+      statusCode: data?.statusCode, headers: data?.headers ?? {},
+    } });
+  }
   if (controlled?.flowControl === 1) {
     controlled.message(type, data, error);
     return;
@@ -309,7 +325,7 @@ async function sendRequest(host, port, method, url, headers, body, destination =
   const id = ++requestId;
 
   return new Promise((resolve, reject) => {
-    pendingRequests.set(id, { host, resolve, reject });
+    pendingRequests.set(id, { host, resolve, reject, port, method, url, destination });
 
     // Set timeout for request
     setTimeout(() => {
@@ -350,7 +366,7 @@ async function sendStreamingRequest(host, port, method, url, headers, body, dest
 
       // Store in pending requests so handleMainMessage can find it
       pendingRequests.set(id, {
-        host,
+        host, port, method, url, destination,
         resolve: () => {},
         reject: (err) => controller.error(err),
         streamController: controller,
@@ -430,7 +446,7 @@ async function sendControlledRequest(host, port, method, url, headers, body, sig
     host,
     flowControl: 1,
     fail,
-    port,
+    port, method, url, destination,
     message(type, data, error) {
       try {
         if (type === 'stream-start' && !headed) {
@@ -753,6 +769,42 @@ async function withDocumentPrelude(event, response) {
 }
 
 /**
+ * The Referer a browser would give this server for a request one of ITS OWN pages made.
+ *
+ * A server may refuse a call that names no page of its own (MyIP gates every /api route on it and answered 403).
+ * Fetch never puts Referer in Request.headers, and a preview's documents are served with a no-referrer policy, so
+ * `request.referrer` is empty as well: a server in the tab was told nothing of who asked. The document that asked
+ * is known here, as the request's client.
+ *
+ * Every virtual server and the hosting page share ONE origin, so the origin says nothing of whose page it is: the
+ * asker is named only to the server it was itself served by, which is the port its address is rooted at (its
+ * /__virtual__/<port>/ prefix, or the port its root document was answered from). A page of the server on 3000
+ * calling the server on 4000 is not one of 4000's pages and is not named to it. Nor is a request that asks for no
+ * referrer (`referrerPolicy: 'no-referrer'`), one with no document behind it (a typed address), or one from a
+ * worker made of a blob, for which a browser gives none. The address is given without its fragment and with the
+ * virtual-server prefix taken off its path, which is the server's own root.
+ * Not read, and so not honoured: the application's own Referrer-Policy header, which the preview's replaces.
+ */
+async function refererFor(request, port) {
+  if (request.referrerPolicy === 'no-referrer') return undefined;
+  const event = requestEvents.get(request);
+  if (!event || !event.clientId) return undefined;
+  let client = null;
+  try { client = await self.clients.get(event.clientId); } catch (e) { return undefined; }
+  if (!client || !/^https?:/.test(client.url)) return undefined;
+  try {
+    const url = new URL(client.url);
+    if (url.origin !== new URL(request.url).origin) return undefined;
+    const prefix = url.pathname.match(/^\/__virtual__\/(\d+)(?=\/|$)/);
+    const askerPort = prefix ? parseInt(prefix[1], 10) : rootedClients.get(event.clientId);
+    if (askerPort !== port) return undefined;
+    url.pathname = url.pathname.replace(/^\/__virtual__\/\d+(?=\/|$)/, '') || '/';
+    url.hash = '';
+    return url.href;
+  } catch (e) { return undefined; }
+}
+
+/**
  * Handle a request to a virtual server
  */
 async function handleVirtualRequest(request, port, path, rooted = false) {
@@ -771,6 +823,10 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
     // the client's authority; server-generated resource identities must agree
     // with those the client computes from its own URL.
     if (headers.host === undefined) headers.host = new URL(request.url).host;
+    if (headers.referer === undefined) {
+      const referer = await refererFor(request, port);
+      if (referer !== undefined) headers.referer = referer;
+    }
 
     // Get body if present
     let body = null;

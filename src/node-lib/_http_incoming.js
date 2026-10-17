@@ -29,12 +29,20 @@ const {
 
 const { Readable, finished } = require('stream');
 
+const { AbortController } = require('internal/abort_controller');
+
 const kHeaders = Symbol('kHeaders');
 const kHeadersDistinct = Symbol('kHeadersDistinct');
 const kHeadersCount = Symbol('kHeadersCount');
 const kTrailers = Symbol('kTrailers');
 const kTrailersDistinct = Symbol('kTrailersDistinct');
 const kTrailersCount = Symbol('kTrailersCount');
+const kAbortController = Symbol('kAbortController');
+const kAbortSignalSocket = Symbol('kAbortSignalSocket');
+const kAbortSignalListener = Symbol('kAbortSignalListener');
+const kAbortSignalDetached = Symbol('kAbortSignalDetached');
+const kAttachAbortSignal = Symbol('kAttachAbortSignal');
+const kDetachAbortSignal = Symbol('kDetachAbortSignal');
 
 function readStart(socket) {
   if (socket && !socket._paused && socket.readable)
@@ -90,6 +98,10 @@ function IncomingMessage(socket) {
   // Flag for when we decide that this message cannot possibly be
   // read by the user, so there's no point continuing to handle it.
   this._dumped = false;
+  this[kAbortController] = null;
+  this[kAbortSignalSocket] = null;
+  this[kAbortSignalListener] = null;
+  this[kAbortSignalDetached] = false;
 }
 ObjectSetPrototypeOf(IncomingMessage.prototype, Readable.prototype);
 ObjectSetPrototypeOf(IncomingMessage, Readable);
@@ -128,7 +140,7 @@ ObjectDefineProperty(IncomingMessage.prototype, 'headersDistinct', {
   __proto__: null,
   get: function() {
     if (!this[kHeadersDistinct]) {
-      this[kHeadersDistinct] = {};
+      this[kHeadersDistinct] = { __proto__: null };
 
       const src = this.rawHeaders;
       const dst = this[kHeadersDistinct];
@@ -168,7 +180,7 @@ ObjectDefineProperty(IncomingMessage.prototype, 'trailersDistinct', {
   __proto__: null,
   get: function() {
     if (!this[kTrailersDistinct]) {
-      this[kTrailersDistinct] = {};
+      this[kTrailersDistinct] = { __proto__: null };
 
       const src = this.rawTrailers;
       const dst = this[kTrailersDistinct];
@@ -184,6 +196,58 @@ ObjectDefineProperty(IncomingMessage.prototype, 'trailersDistinct', {
   },
 });
 
+ObjectDefineProperty(IncomingMessage.prototype, 'signal', {
+  __proto__: null,
+  configurable: true,
+  get: function() {
+    if (this[kAbortController] === null) {
+      const ac = new AbortController();
+      this[kAbortController] = ac;
+      if (this.destroyed && (!this.readableEnded || !this.complete)) {
+        ac.abort();
+      } else {
+        this[kAttachAbortSignal]();
+      }
+    }
+    return this[kAbortController].signal;
+  },
+});
+
+IncomingMessage.prototype[kAttachAbortSignal] = function() {
+  if (this[kAbortController].signal.aborted ||
+      this[kAbortSignalDetached] ||
+      this[kAbortSignalListener] !== null) {
+    return;
+  }
+
+  const socket = this.socket;
+  if (!socket) {
+    return;
+  }
+
+  if (socket.destroyed) {
+    abortSignal(this);
+    return;
+  }
+
+  this[kAbortSignalSocket] = socket;
+  this[kAbortSignalListener] = () => {
+    abortSignal(this);
+  };
+  socket.once('close', this[kAbortSignalListener]);
+};
+
+IncomingMessage.prototype[kDetachAbortSignal] = function() {
+  const socket = this[kAbortSignalSocket];
+  const listener = this[kAbortSignalListener];
+  this[kAbortSignalDetached] = true;
+  this[kAbortSignalSocket] = null;
+  this[kAbortSignalListener] = null;
+  if (socket !== null && listener !== null) {
+    socket.removeListener('close', listener);
+  }
+};
+
 IncomingMessage.prototype.setTimeout = function setTimeout(msecs, callback) {
   if (callback)
     this.on('timeout', callback);
@@ -191,15 +255,7 @@ IncomingMessage.prototype.setTimeout = function setTimeout(msecs, callback) {
   return this;
 };
 
-// Argument n cannot be factored out due to the overhead of
-// argument adaptor frame creation inside V8 in case that number of actual
-// arguments is different from expected arguments.
-// Ref: https://bugs.chromium.org/p/v8/issues/detail?id=10201
-// NOTE: Argument adapt frame issue might be solved in V8 engine v8.9.
-// Refactoring `n` out might be possible when V8 is upgraded to that
-// version.
-// Ref: https://v8.dev/blog/v8-release-89
-IncomingMessage.prototype._read = function _read(n) {
+IncomingMessage.prototype._read = function _read() {
   if (!this._consuming) {
     this._readableState.readingMore = false;
     this._consuming = true;
@@ -219,6 +275,7 @@ IncomingMessage.prototype._destroy = function _destroy(err, cb) {
   if (!this.readableEnded || !this.complete) {
     this.aborted = true;
     this.emit('aborted');
+    abortSignal(this);
   }
 
   // If aborted and the underlying socket is not already destroyed,
@@ -239,6 +296,13 @@ IncomingMessage.prototype._destroy = function _destroy(err, cb) {
     process.nextTick(onError, this, err, cb);
   }
 };
+
+function abortSignal(self) {
+  self[kDetachAbortSignal]();
+  if (self[kAbortController] !== null) {
+    self[kAbortController].abort();
+  }
+}
 
 IncomingMessage.prototype._addHeaderLines = _addHeaderLines;
 function _addHeaderLines(headers, n) {
@@ -423,6 +487,15 @@ function _addHeaderLineDistinct(field, value, dest) {
   }
 }
 
+IncomingMessage.prototype._dumpAndCloseReadable = function _dumpAndCloseReadable() {
+  this._dumped = true;
+  this._readableState.ended = true;
+  this._readableState.endEmitted = true;
+  this._readableState.destroyed = true;
+  this._readableState.closed = true;
+  this._readableState.closeEmitted = true;
+};
+
 
 // Call this instead of resume() if we want to just
 // dump all the data to /dev/null
@@ -448,6 +521,7 @@ function onError(self, error, cb) {
 
 module.exports = {
   IncomingMessage,
+  kDetachAbortSignal,
   readStart,
   readStop,
 };
