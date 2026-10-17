@@ -2670,8 +2670,18 @@ type GuestProcess = Process & { getBuiltinModule?: (name: string) => unknown };
  * by the engine's own service for it, as is a package that is not installed.
  */
 // Whether the esbuild a file belongs to runs in a tab: its package directory
-// holds the wasm binary, as esbuild-wasm's does and esbuild's does not.
-function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string): boolean {
+// holds the wasm binary, as esbuild-wasm's does and esbuild's does not; or the
+// process names the binary esbuild's own API spawns, ESBUILD_BINARY_PATH (the
+// vendor's override), and the tab holds that file. The image an esbuild is
+// installed in sets it to a program answering esbuild's binary contract at the
+// installed version (browser-substrate ADR-0213: esbuild-wasm's own Node CLI),
+// so the vendor's API runs as itself, every sync and async call of it, where the
+// engine's shim would answer at its own version with what it implements.
+function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string, env?: Record<string, string | undefined>): boolean {
+  const binary = env?.ESBUILD_BINARY_PATH;
+  if (binary && binary !== '/usr/bin/esbuild' && binary.startsWith('/')) {
+    try { if (vfs.existsSync(binary)) return true; } catch { /* an unreadable path names nothing here */ }
+  }
   let dir = file;
   for (let hops = 0; hops < 6; hops += 1) {
     dir = dir.slice(0, dir.lastIndexOf("/"));
@@ -3065,7 +3075,7 @@ function createRequire(
     if (!shimmed) return false;
     try {
       const file = resolveModule(id, currentDir);
-      return shimmed !== 'esbuild' || __substrateEsbuildRunsHere(vfs, file);
+      return shimmed !== 'esbuild' || __substrateEsbuildRunsHere(vfs, file, process.env);
     } catch {
       return false;
     }
@@ -3929,7 +3939,7 @@ function createRequire(
       return __substrateGuestRollup(process);
     }
     if ((resolved.includes('/node_modules/esbuild/') ||
-        resolved.includes('/node_modules/@esbuild/')) && !__substrateEsbuildRunsHere(vfs, resolved)) {
+        resolved.includes('/node_modules/@esbuild/')) && !__substrateEsbuildRunsHere(vfs, resolved, process.env)) {
       return __substrateGuestEsbuild(process);
     }
     if (resolved.includes('/node_modules/prettier/')) {

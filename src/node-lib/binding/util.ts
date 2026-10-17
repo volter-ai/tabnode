@@ -35,6 +35,9 @@
  * every promise, settled or not. A program that needs to know awaits it.
  */
 import { guessHandleTypeOfFd } from './fds';
+
+/** internal/util's `handleTypes`, in its order: the binding answers an index into it, as Node's does. */
+const HANDLE_TYPES = ['TCP', 'TTY', 'UDP', 'FILE', 'PIPE', 'UNKNOWN'];
 import { stdioKindOf } from './tty_wrap';
 import { nodeLibInternalRequire } from '../load';
 
@@ -167,10 +170,13 @@ export const utilBinding = {
    * character device 'FILE', a pipe 'PIPE'. It agrees with `tty.isatty` and
    * `fstat` per fd.
    */
+  // Node's binding answers the type's index in internal/util's `handleTypes`, which maps it to the name. Answering
+  // the name made that lookup undefined, and `new net.Socket({ fd })` refused every descriptor it was given
+  // (ERR_INVALID_FD_TYPE: undefined): a program reading a pipe its parent passed at fd 3 could not open it.
   guessHandleType: (fd: number) => {
-    if (fd !== 0 && fd !== 1 && fd !== 2) return guessHandleTypeOfFd(fd);
-    const kind = stdioKindOf(fd);
-    return kind === 'tty' ? 'TTY' : kind === 'file' || kind === 'char' ? 'FILE' : guessHandleTypeOfFd(fd);
+    const type = fd !== 0 && fd !== 1 && fd !== 2 ? guessHandleTypeOfFd(fd)
+      : ((kind) => kind === 'tty' ? 'TTY' : kind === 'file' || kind === 'char' ? 'FILE' : guessHandleTypeOfFd(fd))(stdioKindOf(fd));
+    return HANDLE_TYPES.indexOf(type);
   },
 
   /**
