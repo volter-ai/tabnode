@@ -132,6 +132,21 @@ export interface NodeError extends Error {
   path?: string;
 }
 
+/**
+ * A time as Node's fs reads it (lib/internal/fs/utils.js toUnixTimestamp), in milliseconds: a numeric string and a
+ * finite number are seconds, a negative number is now, and a Date is its time, read by value so a Date from another
+ * realm (a confined realm's, a worker's) is not NaN; anything else is Node's ERR_INVALID_ARG_TYPE.
+ */
+export function unixMs(time: unknown, name: string): number {
+  // eslint-disable-next-line eqeqeq -- Node's own test: a string equal to its number
+  if (typeof time === 'string' && +time == (time as unknown as number)) return +time * 1000;
+  if (typeof time === 'number' && Number.isFinite(time)) return time < 0 ? Date.now() : time * 1000;
+  if (Object.prototype.toString.call(time) === '[object Date]') return Number(time);
+  const error = new TypeError(`The "${name}" argument must be an instance of Date or a time in seconds. Received ${time === null ? 'null' : typeof time}`) as TypeError & { code: string };
+  error.code = 'ERR_INVALID_ARG_TYPE';
+  throw error;
+}
+
 export function createNodeError(
   code: 'ENOENT' | 'ENOTDIR' | 'EISDIR' | 'EEXIST' | 'ENOTEMPTY' | 'ELOOP' | 'EINVAL' | 'EROFS',
   syscall: string,
@@ -588,12 +603,12 @@ export class VirtualFS {
     this.emitChanged(this.normalizePath(path));
   }
 
-  utimesSync(path: string, atime: number | Date, mtime: number | Date): void {
+  utimesSync(path: string, atime: number | string | Date, mtime: number | string | Date): void {
     this.assertWritable(path, 'utime');
     const node = this.getNode(path);
     if (!node) throw createNodeError('ENOENT', 'utimes', path);
-    node.atime = atime instanceof Date ? atime.getTime() : atime * 1000;
-    node.mtime = mtime instanceof Date ? mtime.getTime() : mtime * 1000;
+    node.atime = unixMs(atime, 'atime');
+    node.mtime = unixMs(mtime, 'mtime');
     this.emitChanged(this.normalizePath(path));
   }
 
