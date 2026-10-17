@@ -356,6 +356,41 @@ function readStdin(fd: number, buffer: Uint8Array, offset: number, length: numbe
 }
 
 /**
+ * AN ASYNCHRONOUS READ OF fd 0 WAITS FOR ITS BYTES. `fs.read(0, …, callback)` (and fs/promises') is a request the
+ * threadpool blocks on, and its callback runs when bytes or the end arrive: Go's WebAssembly runtime reads stdin that
+ * way (wasm_exec sets `globalThis.fs` to Node's fs), and esbuild-wasm's `--service` is its program. Answered like the
+ * synchronous read, it failed with ERR_STDIN_BLOCKING_READ whenever the pipe was still empty, so the service never read
+ * its first packet: esbuild's JS API, as wrangler uses it through ESBUILD_BINARY_PATH, waited for its ping forever
+ * (browser-substrate card t_d4b07ea8, Open Autonomy's `wrangler dev`). Here an asynchronous read with nothing yet and
+ * the writer open waits on the run's stdin stream (its `readable` or `end`), holds the run as an open request does,
+ * and then reads as before. A synchronous read, a ring and an O_NONBLOCK descriptor are unchanged.
+ */
+function stdinWait(fd: number, position: number, req: FSReq | undefined): Promise<void> | undefined {
+  const asynchronous = (req as unknown) === kUsePromises || (req !== undefined && typeof req === 'object' && typeof req.oncomplete === 'function');
+  if (!asynchronous || ownerOf(fd) !== undefined || handleForFd(fd) !== undefined || stdioOf(fd) !== 0 || nonblockingAliases.has(fd)) return undefined;
+  if (position !== null && position !== undefined && position >= 0) return undefined;
+  const owner = currentOwner();
+  const process = stdioProcess(owner);
+  const stdin = process?.stdin as (NonNullable<StdioStreams['stdin']> & { once?(event: string, listener: () => void): unknown; removeListener?(event: string, listener: () => void): unknown }) | undefined;
+  if (!stdin || typeof stdin.once !== 'function' || (process as Record<symbol, unknown>)[kStdinRing] !== undefined) return undefined;
+  if ((stdin.readableLength ?? 0) > 0 || stdin.readableEnded === true || stdin._readableState?.ended === true) return undefined;
+  return new Promise<void>((resolve) => {
+    // The process's end closes it: the read then asks again and finds the end, as a closed pipe answers.
+    const held = { close: (): void => settle() };
+    ownedRun(owner, () => registerHandle(held));
+    let settled = false;
+    function settle(): void {
+      if (settled) return;
+      settled = true;
+      stdin!.removeListener?.('readable', settle); stdin!.removeListener?.('end', settle); stdin!.removeListener?.('close', settle);
+      ownedRun(owner, () => releaseHandle(held));
+      resolve();
+    }
+    stdin.once!('readable', settle); stdin.once!('end', settle); stdin.once!('close', settle);
+  });
+}
+
+/**
  * Bytes on the asking run's fd 1 or 2: the run's own stream sink, which is
  * what its `process.stdout`/`stderr` writes into -- not a guest's replacement
  * of `process.stdout.write`, which a write to the descriptor never calls.
@@ -985,6 +1020,13 @@ const fsBinding = {
 
   // ---- reading ------------------------------------------------------------
   read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number, req?: FSReq): number | undefined {
+    const waiting = stdinWait(fd, position, req);
+    if (waiting) {
+      // Asked again once a byte or the end arrives, as libuv's threadpool read returns then; a promise's request answers
+      // with the asking promise.
+      const again = waiting.then(() => fsBinding.read(fd, buffer, offset, length, position, req));
+      return ((req as unknown) === kUsePromises ? again : undefined) as number | undefined;
+    }
     return answer(req, () => {
       const owner = ownerOf(fd);
       if (owner) return owner.read(fd, buffer, offset, length, positionOf(position));
