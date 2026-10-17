@@ -388,6 +388,9 @@ export class Process implements OwnedHandle {
     // including ENOENT; ChildProcess closes it from its existing error turn.
     observeNodeHandle(this);
     if (!runner.resolves(request)) {
+      // AN INSTRUMENT (Open Autonomy's wrangler, card t_d4b07ea8): a spawn the runner found nothing for, which Node
+      // reports as `spawn <file> ENOENT`; the runner's reason is its own (a missing cwd, no host, no such program).
+      if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-not-resolved', at: Date.now(), file: request.file, args: request.args?.slice(0, 4), cwd: request.cwd ?? null });
       this.closeFarEnds();
       return UV_ENOENT;
     }

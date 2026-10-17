@@ -1499,11 +1499,17 @@ export function initChildProcess(vfs: VirtualFS): void {
   });
   setProcessRunner({
     resolves: (request: RunRequest): boolean => {
-      if (!bashInstance) return false;
+      if (!bashInstance) {
+        if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-no-shell', at: Date.now(), file: request.file });
+        return false;
+      }
       // A directory that is not there is `ENOENT` before the program is even
       // looked for, as it is for `execve`: `spawn(cmd, { cwd: 'nope' })`
       // reports a child that never started, and `child.pid` is undefined.
-      if (typeof request.cwd === 'string' && request.cwd.length > 0 && !existsInTree(request.cwd)) return false;
+      if (typeof request.cwd === 'string' && request.cwd.length > 0 && !existsInTree(request.cwd)) {
+        if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-cwd-absent', at: Date.now(), file: request.file, cwd: request.cwd, tree: treeForRun() ? 'held' : 'none' });
+        return false;
+      }
       // A `{ shell: true }` spawn is `/bin/sh -c <line>`, and the shell is
       // always there; what the line names is the line's own business, as it
       // is on a machine.
@@ -1512,7 +1518,9 @@ export function initChildProcess(vfs: VirtualFS): void {
       // cannot enumerate -- a registered command, a WALI pack -- so the host
       // is asked by running it, and reports its own absence.
       if (hostExecutor() !== null) return true;
-      return programExists(request.file, request.cwd, request.env);
+      const exists = programExists(request.file, request.cwd, request.env);
+      if (!exists && traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-no-host-no-program', at: Date.now(), file: request.file, tree: treeForRun() ? 'held' : 'none', realmProcess: (globalThis as { process?: { pid?: unknown } }).process?.pid ?? null });
+      return exists;
     },
     start: startChildRun,
   });
