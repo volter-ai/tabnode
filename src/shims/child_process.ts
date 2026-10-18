@@ -1519,7 +1519,11 @@ export function initChildProcess(vfs: VirtualFS): void {
       // is asked by running it, and reports its own absence.
       if (hostExecutor() !== null) return true;
       const exists = programExists(request.file, request.cwd, request.env);
-      if (!exists && traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-no-host-no-program', at: Date.now(), file: request.file, tree: treeForRun() ? 'held' : 'none', realmProcess: (globalThis as { process?: { pid?: unknown } }).process?.pid ?? null });
+      if (!exists && traceReadingRequested()) {
+        const held = (globalThis as unknown as Record<symbol, unknown>)[__browserRuntimeChildProcessExecutorSymbol];
+        traceOutput('[boot-trace]', { event: 'spawn-no-host-no-program', at: Date.now(), file: request.file, tree: treeForRun() ? 'held' : 'none', realmProcess: (globalThis as { process?: { pid?: unknown } }).process?.pid ?? null,
+          executor: { has: Reflect.has(globalThis, __browserRuntimeChildProcessExecutorSymbol), type: typeof held, keys: held && typeof held === 'object' ? Object.keys(held) : null, symbolFor: Symbol.for === Symbol.for.bind(Symbol) ? 'unbound' : String(Symbol.for).slice(0, 60), sameSymbol: Symbol.for('@volter/browser-runtime/child-process-executor') === __browserRuntimeChildProcessExecutorSymbol, symbols: Object.getOwnPropertySymbols(globalThis).map(String).filter((name) => name.includes('volter')).slice(0, 12) } });
+      }
       return exists;
     },
     start: startChildRun,

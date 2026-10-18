@@ -3361,7 +3361,10 @@ function createRequire(
         // file it names, not from the one the loader started with.
         source: urlFromHook === url ? defaultSource() : vfs.readFileSync(__hooks.sync.convertURLToCJSFilename(urlFromHook), 'utf8'),
         format: context.format,
-      }));
+        // Node's CJS loader checks the chain's result as a module's (cjs/loader.js: validateLoadStrict). Without it the
+        // chain's last step called undefined: tsx's load hook ended in "TypeError: validate is not a function" (RH2's
+        // wrangler build, card t_d4b07ea8).
+      }), __hooks.sync.validateLoadStrict);
       format = loaded.format;
       source = loaded.source;
     }
@@ -3826,7 +3829,7 @@ function createRequire(
     // how a program puts a file of its own in a builtin's place.
     if (moduleShim.isBuiltin(filename)) {
       if (hooks.hasSyncLoad) {
-        const loaded = hooks.sync.loadWithHooks(url, format || 'builtin', void 0, CJS_CONDITIONS, (_urlFromHook, context) => ({ source: null, format: context.format }));
+        const loaded = hooks.sync.loadWithHooks(url, format || 'builtin', void 0, CJS_CONDITIONS, (_urlFromHook, context) => ({ source: null, format: context.format }), hooks.sync.validateLoadSloppy);
         if (loaded.format && loaded.format !== 'builtin') {
           return loadModule(filename, { url, format: loaded.format, source: loaded.source }).exports;
         }
