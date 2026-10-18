@@ -6,6 +6,21 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **A CJS load chain is checked by Node's validators** (browser-substrate card t_d4b07ea8). `loadWithHooks` was called
+  without its `validateLoad`, so a registered hook chain's last step called `undefined`: tsx's load hook in RH2's
+  wrangler build ended in "TypeError: validate is not a function". A module load passes `validateLoadStrict` and a
+  builtin's `validateLoadSloppy`, as Node's cjs/loader.js does.
+- **A socket's type of service is kept, not refused** (browser-substrate card t_d4b07ea8). undici 7.29 sets it before
+  every request, and ENOTSUP threw out of Open Autonomy's wrangler on its first fetch. The byte is kept and read back,
+  as Linux keeps IP_TOS on any TCP socket.
+- **An asynchronous stdin read waits for its bytes** (browser-substrate card t_d4b07ea8). An async `fs.read` of fd 0
+  that finds nothing while the stream is open waits for it to be readable, end or close, as libuv's threadpool read
+  does, holding the loop open meanwhile; over a shared ring it waits without blocking the realm (workerd's control
+  fd, miniflare's config on stdin).
+- **The engine's `Symbol.for` lookups use the realm's own** (browser-substrate card t_d4b07ea8). miniflare replaces
+  `Symbol.for`; the engine's well-known symbols (trace output, the child-process executor, the process) are looked
+  up with the function captured before any guest runs.
+
 - **A host install's package bin named by a shell line runs under node** (browser-substrate card t_d4b07ea8). The
   engine's shell runs every file it finds on PATH as a shell script, whatever its `#!` line names, so a bin npm or bun
   linked to a `#!/usr/bin/env node` file was parsed as shell: videogame.ai's `npm run preview` ran `astro preview`, and
