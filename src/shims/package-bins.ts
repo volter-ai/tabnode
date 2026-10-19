@@ -103,6 +103,7 @@ export function routePackageBins(bash: Bash, tree: VirtualFS, registered: (name:
       const defined = new Set<string>();
       for (const node of nodesOf(ast)) if (node.type === 'FunctionDef' && typeof node.name === 'string') defined.add(node.name);
       const answers = new Map<string, string | null>();
+      const moves = nodesOf(ast).some((node) => node.type === 'SimpleCommand' && ['cd', 'pushd', 'popd'].includes(String((node.name as { parts?: Array<{ value?: unknown }> } | undefined)?.parts?.[0]?.value ?? '')));
       for (const node of nodesOf(ast)) {
         if (node.type !== 'SimpleCommand') continue;
         const word = node.name as { parts?: Array<{ type?: string; value?: unknown }> } | null;
@@ -115,6 +116,9 @@ export function routePackageBins(bash: Bash, tree: VirtualFS, registered: (name:
         const byPath = name.includes('/');
         if (byPath ? !/^[\w./@+-]+$/u.test(name) : (!/^[A-Za-z0-9_][\w.+-]*$/u.test(name) || SHELL_BUILTINS.has(name) || defined.has(name) || registered(name))) continue;
         if (!byPath && (node.assignments as Array<{ name?: unknown }> | undefined)?.some((assignment) => assignment.name === 'PATH')) continue;
+        // A relative name on a line that changes directory names a file from wherever the line has moved to, which
+        // this reading of the line does not follow: the shell runs it as it would.
+        if (byPath && !name.startsWith('/') && moves) continue;
         let script = answers.get(name);
         if (script === undefined) {
           const found = byPath ? atPath(tree, name, cwd) : onPath(tree, name, path, cwd);

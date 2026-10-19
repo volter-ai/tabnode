@@ -571,8 +571,11 @@ const ROOTED_WORKER_PRELUDE = `;(function(){if(typeof Worker!=='function'||self.
   `if(d.data.byteLength<bytes.byteLength)d.data.grow(bytes.byteLength);new Uint8Array(d.data).set(bytes);Atomics.store(c,1,bytes.byteLength);Atomics.store(c,0,1);}` +
   `catch(e){Atomics.store(c,0,2);}Atomics.notify(c,0);};` +
   `const W=function(u,o){const s=String(u),b=s.startsWith('blob:')&&typeof SharedArrayBuffer==='function'?held.get(s):undefined;` +
-  `const target=b&&(!o||o.type!=='module')?C(new Blob([child,b],{type:'text/javascript'})):s;` +
-  `const w=o===undefined?new N(target):new N(target,o);` +
+  // The blob's own directive prologue stays first, so its "use strict" still applies (read synchronously: a worker
+  // has FileReaderSync); the composed URL is revoked once the worker is constructed, which resolved it.
+  `const P=function(b){let h='';try{h=new TextDecoder('utf-8',{ignoreBOM:true}).decode(new FileReaderSync().readAsArrayBuffer(b.slice(0,64)));}catch(e){}const m=/^(?:\\uFEFF)?(?:\\s*(?:'use strict'|"use strict")\\s*;?)?/.exec(h)[0];const n=new TextEncoder().encode(m).byteLength;return [m,child,b.slice(n)];};` +
+  `const target=b&&(!o||o.type!=='module')?C(new Blob(P(b),{type:'text/javascript'})):s;` +
+  `const w=o===undefined?new N(target):new N(target,o);if(target!==s)R(target);` +
   `if(target!==s)w.addEventListener('message',function(e){const d=e.data;if(!d||typeof d.__browserRuntimeLoad!=='string')return;e.stopImmediatePropagation();void serve(d);});` +
   `return w;};W.prototype=N.prototype;self.Worker=W;})();\n`;
 
