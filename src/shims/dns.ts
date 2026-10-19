@@ -2,11 +2,25 @@
  * Host lookup for this engine's loopback. There is no outbound DNS service.
  * The World can wrap this door; a miss must never become a local wildcard.
  */
+import { heldWork } from '../host-globals';
 
 // DNS lookup callback type
 type LookupCallback = (err: Error | null, address?: string, family?: number) => void;
 type LookupAllCallback = (err: Error | null, addresses?: Array<{ address: string; family: number }>) => void;
 type LookupOptions = { family?: number | 'IPv4' | 'IPv6'; all?: boolean; order?: 'verbatim' | 'ipv4first' | 'ipv6first' };
+
+/**
+ * A lookup's answer, in a later turn, as work that holds the asking process's loop open until it is given. Node's
+ * lookup is a request its loop counts until the answer's callback runs; this answer is the engine's own immediate,
+ * which no run counts, so a program that asked and then had nothing else pending was ended between its ask and its
+ * answer. Volter Harness's page server called `server.listen(port, '127.0.0.1')` after an esbuild build, and its
+ * process ended with exit 0 before the lookup Node's `net` makes for the host answered (card t_d4b07ea8).
+ */
+function answerLater(answer: () => void): void {
+  const held = heldWork();
+  held.count += 1;
+  setImmediate(() => { try { answer(); } finally { held.count -= 1; } });
+}
 
 /**
  * The names that are this host besides `localhost`, as the host that owns the tab's loopback holds them (the
@@ -94,7 +108,7 @@ function lookupWithHosts(
   const requested = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family ?? 0;
   if (![0, 4, 6].includes(requested)) throw Object.assign(new TypeError(`Invalid address family: ${requested}`), { code: 'ERR_INVALID_ARG_VALUE' });
 
-  setImmediate(() => {
+  answerLater(() => {
     if (!hostname) {
       if (options.all) (cb as LookupAllCallback)(null, []);
       else (cb as LookupCallback)(null, undefined, requested === 6 ? 6 : 4);
@@ -152,7 +166,7 @@ export function resolve(
   hostname: string,
   callback: (err: Error | null, addresses?: string[]) => void
 ): void {
-  setImmediate(() => {
+  answerLater(() => {
     if (heldByHost(hostname)) callback(null, ['127.0.0.1']);
     else callback(notFound(hostname, 'queryA'));
   });
@@ -169,7 +183,7 @@ export function resolve6(
   hostname: string,
   callback: (err: Error | null, addresses?: string[]) => void
 ): void {
-  setImmediate(() => {
+  answerLater(() => {
     if (heldByHost(hostname)) callback(null, ['::1']);
     else callback(notFound(hostname, 'queryAaaa'));
   });
@@ -182,7 +196,7 @@ export function reverse(
   ip: string,
   callback: (err: Error | null, hostnames?: string[]) => void
 ): void {
-  setImmediate(() => {
+  answerLater(() => {
     callback(notFound(ip, 'getHostByAddr'));
   });
 }
