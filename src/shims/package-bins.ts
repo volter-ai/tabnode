@@ -13,8 +13,9 @@
  * So before a line runs (a transform of its syntax tree, the hook the shell does give), a simple command whose literal
  * name is found on the line's PATH as a plain Node script (`#!/usr/bin/env node`, `#!/usr/local/bin/node`) is that
  * script run by the shell's own `node`: `astro preview` becomes `node <path of the bin> preview`, which is what the
- * `#!` line asks execve to run. Nothing else is touched: a builtin, a registered command, a function the line defines,
- * a name with a `/`, a command whose own assignments set PATH, and a script whose `#!` line gives node arguments (a
+ * `#!` line asks execve to run, and so is a name with a `/` that names such a script (`./node_modules/.bin/x`, a bin
+ * spawned by its path). Nothing else is touched: a builtin, a registered command, a function the line defines, a
+ * command whose own assignments set PATH, and a script whose `#!` line gives node arguments (a
  * flag the line would have to carry) keep the shell's own lookup, as before. The PATH is the one the line is run with
  * (the caller's options, else the shell's own), read as its run begins.
  */
@@ -64,6 +65,12 @@ function onPath(tree: VirtualFS, name: string, path: string | undefined, cwd: st
   return undefined;
 }
 
+/** The file a name with a `/` names, from the line's directory when it is relative; undefined when it is not a file. */
+function atPath(tree: VirtualFS, name: string, cwd: string): string | undefined {
+  const file = name.startsWith('/') ? name : `${cwd.replace(/\/+$/u, '')}/${name}`;
+  try { return tree.existsSync(file) && !tree.statSync(file).isDirectory() ? file : undefined; } catch { return undefined; }
+}
+
 type Node = { type?: string; [key: string]: unknown };
 
 /** Every node of a syntax tree, depth first. */
@@ -102,11 +109,15 @@ export function routePackageBins(bash: Bash, tree: VirtualFS, registered: (name:
         const part = word?.parts?.length === 1 ? word.parts[0] : undefined;
         if (part?.type !== 'Literal' || typeof part.value !== 'string') continue;
         const name = part.value;
-        if (!/^[A-Za-z0-9_][\w.+-]*$/u.test(name) || SHELL_BUILTINS.has(name) || defined.has(name) || registered(name)) continue;
-        if ((node.assignments as Array<{ name?: unknown }> | undefined)?.some((assignment) => assignment.name === 'PATH')) continue;
+        // A name with a `/` is the file it names, as execve takes it: no PATH walk, the line's directory for a
+        // relative one. The harness SDK spawns node_modules/.bin/supercode by its path, and the shell parsed the
+        // package's `#!/usr/bin/env node` file as shell ("syntax error near unexpected token `('", exit 1).
+        const byPath = name.includes('/');
+        if (byPath ? !/^[\w./@+-]+$/u.test(name) : (!/^[A-Za-z0-9_][\w.+-]*$/u.test(name) || SHELL_BUILTINS.has(name) || defined.has(name) || registered(name))) continue;
+        if (!byPath && (node.assignments as Array<{ name?: unknown }> | undefined)?.some((assignment) => assignment.name === 'PATH')) continue;
         let script = answers.get(name);
         if (script === undefined) {
-          const found = onPath(tree, name, path, cwd);
+          const found = byPath ? atPath(tree, name, cwd) : onPath(tree, name, path, cwd);
           // Node runs its main script from the file's real path, as execve's path through a bin's link reaches it.
           let real = found;
           if (found !== undefined) try { real = tree.realpathSync(found); } catch { /* the path as found */ }
