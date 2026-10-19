@@ -89,6 +89,14 @@ export function routePackageBins(bash: Bash, tree: VirtualFS, registered: (name:
   let pending: { path?: string; cwd?: string } | undefined;
   const exec = bash.exec.bind(bash);
   bash.exec = ((line: string, options?: Parameters<Bash['exec']>[1]) => {
+    // just-bash resolves a given directory with an awaited realpath when the environment names no PWD, and another
+    // line's run could begin in that gap and take this one's PATH and directory. Resolved here, synchronously, and
+    // given as both, the run reaches its transform with no await between (the directory it ends in is the same).
+    if (options?.cwd !== undefined && options.env !== undefined && !('PWD' in options.env)) {
+      let real = options.cwd;
+      try { real = tree.realpathSync(options.cwd) as string; } catch { /* just-bash keeps the path as given too */ }
+      options = { ...options, cwd: real, env: { ...options.env, PWD: real } };
+    }
     pending = { ...(options?.env?.PATH !== undefined ? { path: options.env.PATH } : {}), ...(options?.cwd !== undefined ? { cwd: options.cwd } : {}) };
     return exec(line, options);
   }) as Bash['exec'];
