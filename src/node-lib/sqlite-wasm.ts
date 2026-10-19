@@ -10,9 +10,10 @@
  * databases are in-memory ones whose bytes ./sqlite.ts reads and writes.
  *
  * Where the bytes come from: `globalThis.__substrateSqliteWasm` (a WebAssembly.Module or its bytes) where the host put
- * it, else `globalThis.__substrateSqliteWasmUrl`, read synchronously (a worker's synchronous request), else, on a Node
- * host, the package installed beside the engine.
+ * it, else the build the engine carries inlined (@sqlite.org/sqlite-wasm's sqlite3.wasm, decoded at the first use: a
+ * tab's engine worker may make no request of its own, its policy's connect-src being 'none').
  */
+import SQLITE_WASM_DATA_URL from '@sqlite.org/sqlite-wasm/sqlite3.wasm?inline';
 
 const ENOSYS = 52;
 
@@ -37,28 +38,12 @@ function wasmBytes(): WebAssembly.Module | Uint8Array {
   const given = (globalThis as { __substrateSqliteWasm?: WebAssembly.Module | Uint8Array | ArrayBuffer }).__substrateSqliteWasm;
   if (given instanceof WebAssembly.Module || given instanceof Uint8Array) return given;
   if (given instanceof ArrayBuffer) return new Uint8Array(given);
-  const url = (globalThis as { __substrateSqliteWasmUrl?: string }).__substrateSqliteWasmUrl;
-  if (url && typeof XMLHttpRequest === 'function') {
-    const request = new XMLHttpRequest();
-    request.open('GET', url, false);
-    request.overrideMimeType?.('text/plain; charset=x-user-defined');
-    request.send();
-    if (request.status >= 200 && request.status < 300) {
-      const text = request.responseText;
-      const bytes = new Uint8Array(text.length);
-      for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i) & 0xff;
-      return bytes;
-    }
-  }
-  const host = typeof process !== 'undefined' ? (process as unknown as { getBuiltinModule?: (name: string) => any }).getBuiltinModule : undefined;
-  if (typeof host === 'function') {
-    try {
-      const { createRequire } = host('module');
-      const { readFileSync } = host('fs');
-      const { dirname, join } = host('path');
-      const entry = createRequire(import.meta.url).resolve('@sqlite.org/sqlite-wasm');
-      return new Uint8Array(readFileSync(join(dirname(entry), 'sqlite3.wasm')));
-    } catch { /* not installed beside the engine */ }
+  const comma = SQLITE_WASM_DATA_URL.indexOf(',');
+  if (SQLITE_WASM_DATA_URL.startsWith('data:') && comma > 0) {
+    const text = atob(SQLITE_WASM_DATA_URL.slice(comma + 1));
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+    return bytes;
   }
   throw Object.assign(new Error('No such built-in module: node:sqlite (this realm holds no SQLite build)'), { code: 'ERR_UNKNOWN_BUILTIN_MODULE' });
 }
