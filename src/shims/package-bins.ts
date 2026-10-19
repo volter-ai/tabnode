@@ -103,7 +103,7 @@ export function routePackageBins(bash: Bash, tree: VirtualFS, registered: (name:
       const defined = new Set<string>();
       for (const node of nodesOf(ast)) if (node.type === 'FunctionDef' && typeof node.name === 'string') defined.add(node.name);
       const answers = new Map<string, string | null>();
-      const moves = nodesOf(ast).some((node) => node.type === 'SimpleCommand' && ['cd', 'pushd', 'popd'].includes(String((node.name as { parts?: Array<{ value?: unknown }> } | undefined)?.parts?.[0]?.value ?? '')));
+      const moves = [...nodesOf(ast)].some((node) => node.type === 'SimpleCommand' && ['cd', 'pushd', 'popd'].includes(String((node.name as { parts?: Array<{ value?: unknown }> } | undefined)?.parts?.[0]?.value ?? '')));
       for (const node of nodesOf(ast)) {
         if (node.type !== 'SimpleCommand') continue;
         const word = node.name as { parts?: Array<{ type?: string; value?: unknown }> } | null;
