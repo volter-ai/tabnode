@@ -68,6 +68,8 @@ export const builtinModules = [
 ];
 
 export function isBuiltin(moduleName: string): boolean {
+  // Node's scheme-only builtins are builtins under their scheme alone (`sqlite` is an npm package).
+  if (moduleName === 'node:sqlite') return true;
   // Strip node: prefix if present
   const name = moduleName.startsWith('node:') ? moduleName.slice(5) : moduleName;
   return builtinModules.includes(name);

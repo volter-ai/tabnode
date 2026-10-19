@@ -80,6 +80,7 @@ import * as workerThreadsShim from './shims/worker_threads';
 import { guestMessageGlobals, guestMessageModule } from './guest-message-ports';
 import { validateTransferList } from './transfer-ownership';
 import * as esbuildShim from './shims/esbuild';
+import { createSqliteModule, type SqliteFs } from './node-lib/sqlite';
 import * as rollupShim from './shims/rollup';
 import * as v8Shim from './shims/v8';
 import * as tlsShim from './shims/tls';
@@ -2678,6 +2679,14 @@ type GuestProcess = Process & { getBuiltinModule?: (name: string) => unknown };
 // installed version (browser-substrate ADR-0213: esbuild-wasm's own Node CLI),
 // so the vendor's API runs as itself, every sync and async call of it, where the
 // engine's shim would answer at its own version with what it implements.
+/** Each process's `node:sqlite` (node-lib/sqlite.ts), over its own `fs`, made at its first ask. */
+const __substrateSqliteModules = new WeakMap<object, unknown>();
+function __substrateSqliteFor(process: object, fs: unknown): unknown {
+  let module = __substrateSqliteModules.get(process);
+  if (!module) { module = createSqliteModule(fs as SqliteFs); __substrateSqliteModules.set(process, module); }
+  return module;
+}
+
 function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string, env?: Record<string, string | undefined>): boolean {
   const binary = env?.ESBUILD_BINARY_PATH;
   if (binary && binary !== '/usr/bin/esbuild' && binary.startsWith('/')) {
@@ -3782,6 +3791,8 @@ function createRequire(
     // Node's ESM customization and does not apply to a `require` there
     // either, so a run that registered one alone resolves exactly as it did.
     const hooks = __substrateHooks();
+    // `node:sqlite` exists only under its scheme (Node's schemeOnlyModules): a bare `sqlite` is an npm package.
+    if (id === 'node:sqlite') return __substrateSqliteFor(process, fsShim);
     if (hooks && (hooks.hasSyncResolve || hooks.hasSyncLoad)) return requireHooked(id, hooks);
     // Handle node: protocol prefix (Node.js 16+)
     if (id.startsWith('node:')) {
