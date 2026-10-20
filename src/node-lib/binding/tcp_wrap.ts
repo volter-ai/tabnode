@@ -371,9 +371,15 @@ export class TCP extends LibuvStreamWrap {
     return 0;
   }
 
-  /** In-realm streams carry bytes, not IP packet headers. */
-  setTypeOfService(_tos: number): number { return UV_ENOTSUP; }
-  getTypeOfService(): number { return UV_ENOTSUP; }
+  /**
+   * In-realm streams carry bytes, not IP packet headers, so the byte is kept and read back, as Linux keeps IP_TOS on any
+   * TCP socket (loopback's included) and its packets carry it to no one. Refusing it with ENOTSUP threw out of every
+   * request undici 7.29 writes (`socket.setTypeOfService(request.typeOfService)` before each one): Open Autonomy's
+   * wrangler died on its first fetch in the tab (browser-substrate card t_d4b07ea8, 2026-10-17).
+   */
+  private typeOfService = 0;
+  setTypeOfService(tos: number): number { this.typeOfService = tos; return 0; }
+  getTypeOfService(): number { return this.typeOfService; }
 
   setSimultaneousAccepts(_enable: boolean): number {
     return 0;

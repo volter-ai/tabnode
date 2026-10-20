@@ -324,8 +324,28 @@ export function withOptionValues<T>(overrides: Record<string, unknown>, fn: () =
   try { return fn(); } finally { optionOverrides = previous; }
 }
 
+/**
+ * `--eval` as Node holds it: the code a `-e`/`--eval`/`-p`/`--print` run was given, and `""` for a run of a file. Node's
+ * `util.parseArgs()` reads its length to choose where the program's own arguments start (parse_args.js getMainArgs),
+ * and an option no run sets answered undefined: Volter Browsers' `lucarne serve` stopped at "Cannot read properties of
+ * undefined (reading 'length')" before its first line (card t_d4b07ea8). The run's own execArgv says which it is.
+ */
+function evalOption(): string {
+  const execArgv = (globalThis as { process?: { execArgv?: unknown } }).process?.execArgv;
+  if (!Array.isArray(execArgv)) return '';
+  for (let at = 0; at < execArgv.length; at++) {
+    const option = execArgv[at];
+    if (typeof option !== 'string') continue;
+    if (option === '-e' || option === '--eval' || option === '-p' || option === '--print' || option === '-pe') return String(execArgv[at + 1] ?? '');
+    const inline = /^--(?:eval|print)=(.*)$/su.exec(option);
+    if (inline) return inline[1]!;
+  }
+  return '';
+}
+
 export const internalOptions = {
-  getOptionValue: (name: string): unknown => (optionOverrides !== null && name in optionOverrides ? optionOverrides[name] : optionValues[name]),
+  getOptionValue: (name: string): unknown => (optionOverrides !== null && name in optionOverrides ? optionOverrides[name]
+    : name === '--eval' ? evalOption() : optionValues[name]),
   getEmbedderOptions: () => ({ shouldNotRegisterESMLoader: false, noGlobalSearchPaths: false, noBrowserGlobals: false }),
 };
 

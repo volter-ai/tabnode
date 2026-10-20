@@ -1,4 +1,5 @@
 import { traceReadingRequested, traceOutput } from '../trace-output';
+import { engineSymbolFor } from '../engine-symbol';
 import { copyProcessCredentials, type ProcessCredentials } from '../process-credentials';
 import { queueNativeFsTask } from '../native-fs-tasks';
 import { withGuestCallback } from '../guest-loop';
@@ -79,6 +80,7 @@ import { __nodeResolverFor } from '../node-resolver';
 import { resolve as __resolvePath } from './path';
 import { setSyncChildVfs, warmSyncChild } from './sync-child';
 import { installShellJobs } from './shell-jobs';
+import { routePackageBins } from './package-bins';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
 import { installedNpmVersion } from '../npm/version';
@@ -133,7 +135,7 @@ function treeForRun(): VirtualFS | null {
   // import the fs binding (that import put constantsBinding in the
   // consumer bundle's cycle with crypto).
   const realm = globalThis as unknown as { process?: Record<symbol, unknown> };
-  const found = realm.process?.[Symbol.for('tabnode.run.vfs')] as VirtualFS | undefined;
+  const found = realm.process?.[engineSymbolFor('tabnode.run.vfs')] as VirtualFS | undefined;
   return found ?? currentVfs;
 }
 
@@ -764,7 +766,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // What fds 0, 1 and 2 are, where the fs binding's fstat reads them (the
   // symbol is the binding's `kStdioKinds`, named here so this file does not
   // import the fs binding).
-  (proc as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.run.stdioKinds')] = stdioKinds;
+  (proc as unknown as Record<symbol, unknown>)[engineSymbolFor('tabnode.run.stdioKinds')] = stdioKinds;
   // This run's numbers, recorded under its name: a child it spawns reads
   // them for its own `ppid`, and `process.kill(pid, 0)` asks this registry
   // whether a pid is a live process.
@@ -1476,6 +1478,9 @@ export function initChildProcess(vfs: VirtualFS): void {
   // A statement ending in `&` runs in the background, with `$!`, `wait` and
   // `kill` over the engine's process table (`shell-jobs.ts` says how).
   installShellJobs(bashInstance, { runTokenOf, runStreamsFor, registerRunStreams, releaseRunStreams });
+  // A host install's package bin named by a line runs under node, as its `#!` line says (package-bins.ts).
+  const shellCommands = (bashInstance as unknown as { commands?: Map<string, unknown> }).commands;
+  routePackageBins(bashInstance, tree, (name) => shellCommands?.has(name) ?? false);
   shells.set(tree, { bash: bashInstance, adapter: vfsAdapter });
 
   if (processRunnerInstalled) return;
@@ -1494,11 +1499,17 @@ export function initChildProcess(vfs: VirtualFS): void {
   });
   setProcessRunner({
     resolves: (request: RunRequest): boolean => {
-      if (!bashInstance) return false;
+      if (!bashInstance) {
+        if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-no-shell', at: Date.now(), file: request.file });
+        return false;
+      }
       // A directory that is not there is `ENOENT` before the program is even
       // looked for, as it is for `execve`: `spawn(cmd, { cwd: 'nope' })`
       // reports a child that never started, and `child.pid` is undefined.
-      if (typeof request.cwd === 'string' && request.cwd.length > 0 && !existsInTree(request.cwd)) return false;
+      if (typeof request.cwd === 'string' && request.cwd.length > 0 && !existsInTree(request.cwd)) {
+        if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-cwd-absent', at: Date.now(), file: request.file, cwd: request.cwd, tree: treeForRun() ? 'held' : 'none' });
+        return false;
+      }
       // A `{ shell: true }` spawn is `/bin/sh -c <line>`, and the shell is
       // always there; what the line names is the line's own business, as it
       // is on a machine.
@@ -1507,7 +1518,13 @@ export function initChildProcess(vfs: VirtualFS): void {
       // cannot enumerate -- a registered command, a WALI pack -- so the host
       // is asked by running it, and reports its own absence.
       if (hostExecutor() !== null) return true;
-      return programExists(request.file, request.cwd, request.env);
+      const exists = programExists(request.file, request.cwd, request.env);
+      if (!exists && traceReadingRequested()) {
+        const held = (globalThis as unknown as Record<symbol, unknown>)[__browserRuntimeChildProcessExecutorSymbol];
+        traceOutput('[boot-trace]', { event: 'spawn-no-host-no-program', at: Date.now(), file: request.file, tree: treeForRun() ? 'held' : 'none', realmProcess: (globalThis as { process?: { pid?: unknown } }).process?.pid ?? null,
+          executor: { has: Reflect.has(globalThis, __browserRuntimeChildProcessExecutorSymbol), type: typeof held, keys: held && typeof held === 'object' ? Object.keys(held) : null, symbolFor: Symbol.for === Symbol.for.bind(Symbol) ? 'unbound' : String(Symbol.for).slice(0, 60), sameSymbol: Symbol.for('@volter/browser-runtime/child-process-executor') === __browserRuntimeChildProcessExecutorSymbol, symbols: Object.getOwnPropertySymbols(globalThis).map(String).filter((name) => name.includes('volter')).slice(0, 12) } });
+      }
+      return exists;
     },
     start: startChildRun,
   });
@@ -1953,7 +1970,7 @@ interface ChildProcessHost {
   parentSignal?: AbortSignal;
 }
 
-const __browserRuntimeChildProcessExecutorSymbol = Symbol.for("@volter/browser-runtime/child-process-executor");
+const __browserRuntimeChildProcessExecutorSymbol = engineSymbolFor("@volter/browser-runtime/child-process-executor");
 
 /** The host's executor, where one is published and has not bypassed this run. */
 function hostExecutor(): ChildProcessHost | null {

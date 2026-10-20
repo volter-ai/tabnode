@@ -6,6 +6,34 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **A CJS load chain is checked by Node's validators** (browser-substrate card t_d4b07ea8). `loadWithHooks` was called
+  without its `validateLoad`, so a registered hook chain's last step called `undefined`: tsx's load hook in RH2's
+  wrangler build ended in "TypeError: validate is not a function". A module load passes `validateLoadStrict` and a
+  builtin's `validateLoadSloppy`, as Node's cjs/loader.js does.
+- **A socket's type of service is kept, not refused** (browser-substrate card t_d4b07ea8). undici 7.29 sets it before
+  every request, and ENOTSUP threw out of Open Autonomy's wrangler on its first fetch. The byte is kept and read back,
+  as Linux keeps IP_TOS on any TCP socket.
+- **An asynchronous stdin read waits for its bytes** (browser-substrate card t_d4b07ea8). An async `fs.read` of fd 0
+  that finds nothing while the stream is open waits for it to be readable, end or close, as libuv's threadpool read
+  does, holding the loop open meanwhile; over a shared ring it waits without blocking the realm (workerd's control
+  fd, miniflare's config on stdin).
+- **The engine's `Symbol.for` lookups use the realm's own** (browser-substrate card t_d4b07ea8). miniflare replaces
+  `Symbol.for`; the engine's well-known symbols (trace output, the child-process executor, the process) are looked
+  up with the function captured before any guest runs.
+
+- **A host install's package bin named by a shell line runs under node** (browser-substrate card t_d4b07ea8). The
+  engine's shell runs every file it finds on PATH as a shell script, whatever its `#!` line names, so a bin npm or bun
+  linked to a `#!/usr/bin/env node` file was parsed as shell: videogame.ai's `npm run preview` ran `astro preview`, and
+  node_modules/.bin/astro ended "bash: line 14: unexpected EOF". Before a line runs, a simple command whose literal
+  name is found on the line's PATH as a plain Node script is run by the shell's own `node` with the script's real path
+  (src/shims/package-bins.ts); builtins, registered commands, functions the line defines, names with a `/`, commands
+  that set PATH themselves and scripts whose `#!` line gives node flags keep the shell's lookup.
+- **A `file:` request under a native-binding map resolves again** (browser-substrate card t_d4b07ea8). The map's
+  resolver read a `file:` specifier with the process's node-lib `url`, which the node-lib scope does not carry, so
+  every such request threw "node-lib: no builtin 'url' in this process": Tailwind v4's `module.register` of its loader,
+  in videogame.ai's Astro config, stopped the server. It is read with the url module's `fileURLToPath`, which now
+  refuses as Node's does: a host other than empty or `localhost` (ERR_INVALID_FILE_URL_HOST) and an encoded `/`
+  (ERR_INVALID_FILE_URL_PATH), and a scheme other than `file:` carries ERR_INVALID_URL_SCHEME.
 - **A realm compiles Node's own library once, and may do it ahead** (browser-substrate S2 AC-LC12). A builtin's file is
   compiled to a function once a realm and called into a module scope of its own at each load, as before. The new
   export `precompileNodeLib(name)` compiles one ahead of its first require, running none of it, so a realm waiting for

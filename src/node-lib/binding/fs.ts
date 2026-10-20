@@ -31,7 +31,7 @@ import { createNodeError as vfsError } from '../../virtual-fs';
 import { registerHandle, releaseHandle, refHandle, unrefHandle, currentOwner, ownedRun, ownerOfInstance, observeNodeHandle, forgetNodeHandle, observeNodeRequest, forgetNodeRequest, captureNodeResourceScope, nodeHandleHasRef, nodeHandleIsClosing } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
 import { queueBindingTask } from '../../guest-loop';
-import { kStdinRing, type StdinReader } from '../../stdin-ring';
+import { kStdinRing, stdinRingWaitsAsync, type StdinReader } from '../../stdin-ring';
 // The guest stdin stream's engine-side read (shims/process.ts `kEngineStdinRead`),
 // named here so this binding does not import the process shim.
 const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
@@ -353,6 +353,55 @@ function readStdin(fd: number, buffer: Uint8Array, offset: number, length: numbe
   buffer.set(bytes.subarray(0, count), offset);
   if (count < bytes.length) stdin.unshift(bytes.slice(count));
   return count;
+}
+
+/**
+ * AN ASYNCHRONOUS READ OF fd 0 WAITS FOR ITS BYTES. `fs.read(0, …, callback)` (and fs/promises') is a request the
+ * threadpool blocks on, and its callback runs when bytes or the end arrive: Go's WebAssembly runtime reads stdin that
+ * way (wasm_exec sets `globalThis.fs` to Node's fs), and esbuild-wasm's `--service` is its program. Answered like the
+ * synchronous read, it failed with ERR_STDIN_BLOCKING_READ whenever the pipe was still empty, so the service never read
+ * its first packet: esbuild's JS API, as wrangler uses it through ESBUILD_BINARY_PATH, waited for its ping forever
+ * (browser-substrate card t_d4b07ea8, Open Autonomy's `wrangler dev`). Here an asynchronous read with nothing yet and
+ * the writer open waits on the run's stdin stream (its `readable` or `end`), holds the run as an open request does,
+ * and then reads as before. A synchronous read, a ring and an O_NONBLOCK descriptor are unchanged.
+ */
+function stdinWait(fd: number, position: number, req: FSReq | undefined): Promise<void> | undefined {
+  const asynchronous = (req as unknown) === kUsePromises || (req !== undefined && typeof req === 'object' && typeof req.oncomplete === 'function');
+  if (!asynchronous || ownerOf(fd) !== undefined || handleForFd(fd) !== undefined || stdioOf(fd) !== 0 || nonblockingAliases.has(fd)) return undefined;
+  if (position !== null && position !== undefined && position >= 0) return undefined;
+  const owner = currentOwner();
+  const process = stdioProcess(owner);
+  const stdin = process?.stdin as (NonNullable<StdioStreams['stdin']> & { once?(event: string, listener: () => void): unknown; removeListener?(event: string, listener: () => void): unknown }) | undefined;
+  if (!stdin || typeof stdin.once !== 'function') return undefined;
+  if ((stdin.readableLength ?? 0) > 0 || stdin.readableEnded === true || stdin._readableState?.ended === true) return undefined;
+  // A run given a shared ring (stdinShared) blocked this read in takeBlocking: the bytes do come from another thread,
+  // but its own pending writes wait on this loop. esbuild's service wrote its answer with process.stdout.write and then
+  // blocked in its next stdin read, so the answer never left and its parent never wrote again. The asynchronous read
+  // waits on the ring without blocking (Atomics.waitAsync), and the loop flushes meanwhile.
+  const ring = (process as Record<symbol, unknown>)[kStdinRing] as (StdinReader & { available?(): number; closed?(): boolean }) | undefined;
+  if (ring) {
+    if (!stdinRingWaitsAsync() || typeof ring.available !== 'function' || ring.available() > 0 || ring.closed?.() === true) return undefined;
+    if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'stdin-ring-read-waits', at: Date.now(), pid: (process as { pid?: unknown } | undefined)?.pid ?? null });
+    const held = { close: (): void => undefined };
+    ownedRun(owner, () => registerHandle(held));
+    return ring.whenWritten().finally(() => { ownedRun(owner, () => releaseHandle(held)); });
+  }
+  if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'stdin-read-waits', at: Date.now(), pid: (process as { pid?: unknown } | undefined)?.pid ?? null });
+  return new Promise<void>((resolve) => {
+    // The process's end closes it: the read then asks again and finds the end, as a closed pipe answers.
+    const held = { close: (): void => settle() };
+    ownedRun(owner, () => registerHandle(held));
+    let settled = false;
+    function settle(): void {
+      if (settled) return;
+      settled = true;
+      stdin!.removeListener?.('readable', settle); stdin!.removeListener?.('end', settle); stdin!.removeListener?.('close', settle);
+      ownedRun(owner, () => releaseHandle(held));
+      if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'stdin-read-woke', at: Date.now(), pid: (process as { pid?: unknown } | undefined)?.pid ?? null, buffered: stdin!.readableLength ?? null });
+      resolve();
+    }
+    stdin.once!('readable', settle); stdin.once!('end', settle); stdin.once!('close', settle);
+  });
 }
 
 /**
@@ -985,6 +1034,13 @@ const fsBinding = {
 
   // ---- reading ------------------------------------------------------------
   read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number, req?: FSReq): number | undefined {
+    const waiting = stdinWait(fd, position, req);
+    if (waiting) {
+      // Asked again once a byte or the end arrives, as libuv's threadpool read returns then; a promise's request answers
+      // with the asking promise.
+      const again = waiting.then(() => fsBinding.read(fd, buffer, offset, length, position, req));
+      return ((req as unknown) === kUsePromises ? again : undefined) as number | undefined;
+    }
     return answer(req, () => {
       const owner = ownerOf(fd);
       if (owner) return owner.read(fd, buffer, offset, length, positionOf(position));

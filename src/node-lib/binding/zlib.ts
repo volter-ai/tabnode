@@ -27,6 +27,7 @@
  * itself, and compiling `deps/zlib` here would mean running a C toolchain,
  * which this product does not do. The row in BUILTINS.md says the same.
  */
+import { heldWork } from '../../host-globals';
 import { zstream, inflateModule, deflateModule, zlibConstants } from './zlib-pako';
 // @ts-expect-error `brotli` ships no types; its decoder takes and returns bytes.
 import brotliDecompressUntyped from 'brotli/decompress';
@@ -248,6 +249,15 @@ function absentCodec(name: string, reason: string): new (...args: unknown[]) => 
  * pre-compressed file through `createBrotliDecompress` is the case it serves.
  */
 const BROTLI_OPERATION_FINISH = 2;
+/** Whether this realm's DecompressionStream decodes Brotli: asked once, by making one. */
+let nativeBrotliAnswer: boolean | undefined;
+function nativeBrotli(): boolean {
+  if (nativeBrotliAnswer === undefined) {
+    try { nativeBrotliAnswer = typeof DecompressionStream === 'function' && typeof Response === 'function' && (new DecompressionStream('brotli' as CompressionFormat), true); }
+    catch { nativeBrotliAnswer = false; }
+  }
+  return nativeBrotliAnswer;
+}
 class BrotliDecoderHandle {
   #writeState: Uint32Array | null = null;
   #callback: ProcessCallback | null = null;
@@ -295,6 +305,27 @@ class BrotliDecoderHandle {
   write(flush: number, inBuf: Uint8Array | null, inOff: number, inLen: number, outBuf: Uint8Array, outOff: number, outLen: number): void {
     const tick = (globalThis as { process?: { nextTick?: (fn: () => void) => void } }).process?.nextTick
       ?? ((fn: () => void) => { queueMicrotask(fn); });
+    // AN ASYNCHRONOUS DECODE IS THE BROWSER'S, WHERE IT HAS ONE (card t_d4b07ea8): the pure-JavaScript decoder held
+    // the Volter Editor's server 3.0 s of CPU inflating Blender's pre-compressed artifacts (editor-prof profile 53,
+    // BrotliDecompress). The browser's DecompressionStream decodes off the realm's thread; a format it refuses, or a
+    // stream it cannot finish, is decoded here as before.
+    if (flush === BROTLI_OPERATION_FINISH && this.#output === null && nativeBrotli()) {
+      if (inBuf && inLen > 0) this.#input.push(inBuf.slice(inOff, inOff + inLen));
+      const parts = this.#input;
+      this.#input = [];
+      // Work the host does for the guest, counted while in flight, as a build's is: the run waits for it.
+      const held = heldWork();
+      held.count += 1;
+      void new Response(new Blob(parts as BlobPart[]).stream().pipeThrough(new DecompressionStream('brotli' as CompressionFormat))).arrayBuffer().then(
+        (bytes) => { this.#output = new Uint8Array(bytes); this.#outputAt = 0; },
+        () => { this.#input = parts; },
+      ).then(() => {
+        held.count -= 1;
+        this.#run(flush, null, 0, 0, outBuf, outOff, outLen);
+        this.#callback?.();
+      });
+      return;
+    }
     tick(() => {
       this.#run(flush, inBuf, inOff, inLen, outBuf, outOff, outLen);
       this.#callback?.();
