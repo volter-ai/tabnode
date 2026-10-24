@@ -16,6 +16,7 @@
 import type { ProcessToken } from '../../process-tokens';
 import { currentOwner } from './handles';
 import { nativeInheritedFdType } from '../../native-stream-binding';
+import { treeDescriptorsOf, type TreeDescriptors } from '../../tree-descriptors';
 
 /** What libuv answers for a descriptor. */
 export type HandleType = 'TCP' | 'TTY' | 'UDP' | 'FILE' | 'PIPE' | 'UNKNOWN';
@@ -37,8 +38,28 @@ const runFds = new Map<ProcessToken, Map<number, { type: HandleType; handle: unk
 
 let nextFd = 20;
 
-/** Files and streams occupy one descriptor namespace, as on the OS. */
+/** Numbers a tree that owns its descriptions handed out for the engine's own handles, by owner. */
+const reservedFds = new Map<number, TreeDescriptors>();
+
+/** The descriptor owner of the run asking, where its tree owns its descriptions. */
+function askingOwner(): TreeDescriptors | undefined {
+  const realm = globalThis as unknown as { process?: Record<symbol, unknown> };
+  return treeDescriptorsOf(realm.process?.[Symbol.for('tabnode.run.vfs')]);
+}
+
+/**
+ * Files and streams occupy one descriptor namespace, as on the OS. Where the
+ * run's tree owns its descriptions (`tree-descriptors.ts`), the namespace is
+ * the tree's: a pipe or a socket of the engine's takes its number from the
+ * owner, so it never names a file the owner opened.
+ */
 export function allocateFd(): number {
+  const owner = askingOwner();
+  if (owner) {
+    const fd = owner.reserve();
+    reservedFds.set(fd, owner);
+    return fd;
+  }
   // The host can inherit any descriptor number, not just the usual IPC fd 3.
   // Files allocated locally must not shadow one owned by the native channel.
   while (nativeInheritedFdType(nextFd) !== undefined) nextFd += 1;
@@ -84,6 +105,8 @@ export function handleForFd(fd: number): unknown {
 /** Give a descriptor back; a handle that closes stops answering for one. */
 export function releaseFd(fd: number): void {
   openFds.delete(fd);
+  const owner = reservedFds.get(fd);
+  if (owner) { reservedFds.delete(fd); owner.release(fd); }
 }
 
 /** libuv's `uv_guess_handle`. */

@@ -1,48 +1,136 @@
 /**
  * Service Worker for Mini WebContainers
  * Intercepts fetch requests and routes them to virtual servers
- * Version: 15 - cleanup: extract helpers, gate debug logs, remove test endpoints
+ * Version: 17 - a host's document prelude: its frames' documents start with it
  */
 
 const DEBUG = false;
 
-// Communication port with main thread
-let mainPort = null;
+// Every page that holds a container's servers is a host of its own: its own
+// channel, its own servers, its own preview. Two pages of one origin, each
+// with its container, share this worker and never each other's ports. A host
+// is keyed by the id of the window that sent `init`.
+const hosts = new Map();
+let latestHost = null;
+// An `init` whose sender is unknown replaces the previous such channel.
+const UNNAMED_HOST = 'unnamed-host';
+// The documents and workers a host's servers made, by client id, so their
+// requests reach the host that served them.
+const clientHosts = new Map();
+// The event a request arrived with, so every route to a server can ask which
+// host it is for without the event being passed along.
+const requestEvents = new WeakMap();
+
+function openHost(id, channel) {
+  const previous = hosts.get(id);
+  if (previous) {
+    for (const pending of pendingRequests.values()) {
+      if (pending.host === previous && pending.flowControl === 1) pending.fail(new Error('Host connection replaced'));
+    }
+    for (const upload of controlledUploads) {
+      if (upload.host === previous) upload.controller.abort(new Error('Host connection replaced'));
+    }
+    previous.port.onmessage = null;
+    previous.port.close();
+  }
+  const host = {
+    id,
+    port: channel,
+    registeredPorts: new Set(),
+    flowControlledPorts: new Map(),
+    primaryPort: null,
+    ownDocuments: new Set(),
+  };
+  hosts.set(id, host);
+  latestHost = host;
+  // Clients that are gone are forgotten; a prune that fails forgets nothing.
+  void pruneClients().catch(() => {});
+  return host;
+}
+
+/** The host a client belongs to: a host's own window, or a document or worker one of its servers made. */
+function ownerOf(clientId) {
+  if (!clientId) return null;
+  return hosts.get(clientId) ?? hosts.get(clientHosts.get(clientId)) ?? null;
+}
+
+/**
+ * The host a request is for. One host is the answer while there is one. With
+ * more, the requesting client's own host; else the host that owns the
+ * document named by the referrer, which is how a frame's navigation carries
+ * its parent; else the only host holding the port; else the latest host.
+ */
+async function hostForEvent(event, port) {
+  if (hosts.size === 0) return null;
+  if (hosts.size === 1) return hosts.values().next().value;
+  const direct = ownerOf(event.clientId);
+  if (direct) return direct;
+  const referrer = event.request.referrer;
+  if (referrer) {
+    const all = await self.clients.matchAll({ type: 'all', includeUncontrolled: true });
+    const owners = new Set(all.filter((client) => client.url === referrer).map((client) => ownerOf(client.id)).filter(Boolean));
+    if (owners.size === 1) return owners.values().next().value;
+  }
+  if (port !== undefined) {
+    const holding = [...hosts.values()].filter((host) => host.registeredPorts.has(port));
+    if (holding.length === 1) return holding[0];
+  }
+  return latestHost;
+}
+
+/** The host a request is for, found through the event it arrived with; remembers the clients it makes. */
+async function hostForRequest(request, port) {
+  const event = requestEvents.get(request);
+  const host = event ? await hostForEvent(event, port) : latestHost;
+  if (host && event) {
+    if (event.resultingClientId) clientHosts.set(event.resultingClientId, host.id);
+    if (event.clientId && !hosts.has(event.clientId)) clientHosts.set(event.clientId, host.id);
+  }
+  return host;
+}
 
 // Pending requests waiting for response
 const pendingRequests = new Map();
 let requestId = 0;
 
-// Registered virtual server ports
-const registeredPorts = new Set();
 // HTTP response flow control is a transport property, never a path/package
-// heuristic. Legacy ports keep their existing protocol until their host opts in.
-const flowControlledPorts = new Map();
+// heuristic. Legacy ports keep their existing protocol until their host opts
+// in; each host's `flowControlledPorts` holds what its ports negotiated.
 const controlledUploads = new Set();
 const MAX_STREAM_CHUNK_BYTES = 65536;
 
-function updateFlowControl(type, data) {
+// A response chunk as the host sent it: its bytes, transferred, from a bridge this worker told it
+// takes them (`sw-capabilities`), or base64 from one that predates that. Base64 cost the page's
+// own thread an encode of every byte a virtual server sent (5.4 s of 46 while a 307 MB document
+// crossed, measured in the hosted model editor) and left a third more garbage than the bytes.
+function chunkBytes(data) {
+  if (data?.chunk instanceof Uint8Array) return data.chunk;
+  if (typeof data?.chunkBase64 === 'string') return base64ToBytes(data.chunkBase64);
+  return null;
+}
+
+function updateFlowControl(host, type, data) {
   if (type === 'server-registered' || type === 'server-unregistered') {
     for (const upload of controlledUploads) {
-      if (upload.port === data?.port) upload.controller.abort(new Error('Virtual server registration changed'));
+      if (upload.host === host && upload.port === data?.port) upload.controller.abort(new Error('Virtual server registration changed'));
     }
     // A port number is not a listener identity. Rebinding must terminate the
     // old connection, even when the replacement advertises identical limits.
     // Otherwise an already-headed response can wait forever on its old owner.
     for (const pending of pendingRequests.values()) {
-      if (pending.flowControl === 1 && pending.port === data?.port)
+      if (pending.host === host && pending.flowControl === 1 && pending.port === data?.port)
         pending.fail(new Error(type === 'server-unregistered'
           ? 'Virtual server closed' : 'Virtual server registration changed'));
     }
   }
   if (type === 'server-unregistered') {
-    flowControlledPorts.delete(data?.port);
+    host.flowControlledPorts.delete(data?.port);
   }
   if (type !== 'server-registered' || !data) return;
   if (data.flowControl === 1 && Number.isSafeInteger(data.maxRequestBytes)
       && data.maxRequestBytes > 0 && data.maxChunkBytes === MAX_STREAM_CHUNK_BYTES) {
-    flowControlledPorts.set(data.port, { maxRequestBytes: data.maxRequestBytes, channel: mainPort });
-  } else flowControlledPorts.delete(data.port);
+    host.flowControlledPorts.set(data.port, { maxRequestBytes: data.maxRequestBytes, channel: host.port });
+  } else host.flowControlledPorts.delete(data.port);
 }
 
 /**
@@ -66,42 +154,39 @@ self.addEventListener('message', (event) => {
   DEBUG && console.log('[SW] Received message:', type, 'hasPort in event.ports:', event.ports?.length > 0);
 
   // When a MessagePort is transferred, it's in event.ports[0], not event.data.port
+  const source = event.source && event.source.id ? hosts.get(event.source.id) : null;
+
   if (type === 'init' && event.ports && event.ports[0]) {
-    // Initialize communication channel
-    for (const pending of pendingRequests.values()) {
-      if (pending.flowControl === 1) pending.fail(new Error('Host connection replaced'));
-    }
-    for (const upload of controlledUploads) upload.controller.abort(new Error('Host connection replaced'));
-    if (mainPort) {
-      mainPort.onmessage = null;
-      mainPort.close();
-    }
-    registeredPorts.clear();
-    flowControlledPorts.clear();
-    primaryPort = null;
-    // Existing preview documents/workers retain their virtual origin identity;
-    // a channel reconnect must not send their root-relative requests to network.
-    mainPort = event.ports[0];
+    // A page's channel replaces only that page's: another page's requests
+    // and servers are its own. Existing preview documents/workers retain
+    // their virtual origin identity; a channel reconnect must not send their
+    // root-relative requests to network.
+    const mainPort = event.ports[0];
+    const host = openHost(event.source && event.source.id ? event.source.id : UNNAMED_HOST, mainPort);
     const initializedPort = mainPort;
     mainPort.onmessage = (message) => {
-      if (mainPort === initializedPort) handleMainMessage(message);
+      if (hosts.get(host.id) === host && host.port === initializedPort) handleMainMessage(host, message);
     };
-    if (data && Array.isArray(data.ownDocuments)) ownDocuments = new Set(data.ownDocuments.map((path) => ownPath(String(path))));
+    mainPort.postMessage({ type: 'sw-capabilities', data: { binaryChunks: 1 } });
+    if (data && Array.isArray(data.ownDocuments)) host.ownDocuments = new Set(data.ownDocuments.map((path) => ownPath(String(path))));
+    // Markup a frame's document served from this host's servers starts with
+    // (after its doctype): the page's first script, before the document's own.
+    host.documentPrelude = data && typeof data.documentPrelude === 'string' && data.documentPrelude ? data.documentPrelude : null;
     DEBUG && console.log('[SW] Initialized communication channel with transferred port');
     // Re-claim clients so that pages opened after SW activation get controlled.
     // Without this, controllerchange never fires for late-arriving pages.
     self.clients.claim();
   }
 
-  if (type === 'server-registered' && data) {
-    registeredPorts.add(data.port);
-    if (data.primary) primaryPort = data.port;
+  if (type === 'server-registered' && data && source) {
+    source.registeredPorts.add(data.port);
+    if (data.primary) source.primaryPort = data.port;
     DEBUG && console.log(`[SW] Server registered on port ${data.port}`);
   }
 
-  if (type === 'server-unregistered' && data) {
-    registeredPorts.delete(data.port);
-    if (primaryPort === data.port) primaryPort = null;
+  if (type === 'server-unregistered' && data && source) {
+    source.registeredPorts.delete(data.port);
+    if (source.primaryPort === data.port) source.primaryPort = null;
     DEBUG && console.log(`[SW] Server unregistered from port ${data.port}`);
   }
 });
@@ -109,11 +194,13 @@ self.addEventListener('message', (event) => {
 /**
  * Handle response messages from main thread
  */
-function handleMainMessage(event) {
+function handleMainMessage(host, event) {
   const { type, id, data, error } = event.data;
-  updateFlowControl(type, data);
+  updateFlowControl(host, type, data);
 
   const controlled = pendingRequests.get(id);
+  // A request is answered only by the host it was sent to.
+  if (controlled && controlled.host !== host) return;
   if (controlled?.flowControl === 1) {
     controlled.message(type, data, error);
     return;
@@ -122,18 +209,18 @@ function handleMainMessage(event) {
   // The page's bridge speaks over this port: which servers it holds, which
   // is the preview's, and which documents are the page's own frames.
   if (type === 'server-registered' && data) {
-    registeredPorts.add(data.port);
-    if (data.primary) primaryPort = data.port;
-    else if (primaryPort === data.port) primaryPort = null;
+    host.registeredPorts.add(data.port);
+    if (data.primary) host.primaryPort = data.port;
+    else if (host.primaryPort === data.port) host.primaryPort = null;
     return;
   }
   if (type === 'server-unregistered' && data) {
-    registeredPorts.delete(data.port);
-    if (primaryPort === data.port) primaryPort = null;
+    host.registeredPorts.delete(data.port);
+    if (host.primaryPort === data.port) host.primaryPort = null;
     return;
   }
   if (type === 'own-documents' && data && Array.isArray(data.paths)) {
-    ownDocuments = new Set(data.paths.map((path) => ownPath(String(path))));
+    host.ownDocuments = new Set(data.paths.map((path) => ownPath(String(path))));
     return;
   }
 
@@ -181,9 +268,8 @@ function handleMainMessage(event) {
     const pending = pendingRequests.get(id);
     if (pending && pending.streamController) {
       try {
-        // Decode base64 chunk and enqueue
-        if (data.chunkBase64) {
-          const bytes = base64ToBytes(data.chunkBase64);
+        const bytes = chunkBytes(data);
+        if (bytes && bytes.byteLength > 0) {
           pending.streamController.enqueue(bytes);
           DEBUG && console.log('[SW] chunk enqueued, bytes:', bytes.length);
         }
@@ -213,30 +299,17 @@ function handleMainMessage(event) {
 /**
  * Send request to main thread and wait for response
  */
-async function sendRequest(port, method, url, headers, body) {
-  DEBUG && console.log('[SW] sendRequest called, mainPort:', !!mainPort, 'url:', url);
+async function sendRequest(host, port, method, url, headers, body, destination = '') {
+  DEBUG && console.log('[SW] sendRequest called, host:', !!host, 'url:', url);
 
-  if (!mainPort) {
-    // Ask all clients to re-send the init message
-    const allClients = await self.clients.matchAll({ type: 'window' });
-    for (const client of allClients) {
-      client.postMessage({ type: 'sw-needs-init' });
-    }
-    // Wait up to 5s for a client to re-initialize the port
-    // (main thread may be busy with heavy operations like CLI execution)
-    await new Promise(resolve => {
-      const check = setInterval(() => { if (mainPort) { clearInterval(check); resolve(); } }, 50);
-      setTimeout(() => { clearInterval(check); resolve(); }, 5000);
-    });
-    if (!mainPort) {
-      throw new Error('Service Worker not initialized - no connection to main thread');
-    }
+  if (!host) {
+    throw new Error('Service Worker not initialized - no connection to main thread');
   }
 
   const id = ++requestId;
 
   return new Promise((resolve, reject) => {
-    pendingRequests.set(id, { resolve, reject });
+    pendingRequests.set(id, { host, resolve, reject });
 
     // Set timeout for request
     setTimeout(() => {
@@ -246,10 +319,10 @@ async function sendRequest(port, method, url, headers, body) {
       }
     }, 30000);
 
-    mainPort.postMessage({
+    host.port.postMessage({
       type: 'request',
       id,
-      data: { port, method, url, headers, body },
+      data: { port, method, url, headers, body, destination },
     });
   });
 }
@@ -258,22 +331,11 @@ async function sendRequest(port, method, url, headers, body) {
  * Send streaming request to main thread
  * Returns a ReadableStream that receives chunks from main thread
  */
-async function sendStreamingRequest(port, method, url, headers, body) {
+async function sendStreamingRequest(host, port, method, url, headers, body, destination = '') {
   DEBUG && console.log('[SW] sendStreamingRequest called, url:', url);
 
-  if (!mainPort) {
-    // Ask all clients to re-send the init message
-    const allClients = await self.clients.matchAll({ type: 'window' });
-    for (const client of allClients) {
-      client.postMessage({ type: 'sw-needs-init' });
-    }
-    await new Promise(resolve => {
-      const check = setInterval(() => { if (mainPort) { clearInterval(check); resolve(); } }, 50);
-      setTimeout(() => { clearInterval(check); resolve(); }, 5000);
-    });
-    if (!mainPort) {
-      throw new Error('Service Worker not initialized');
-    }
+  if (!host) {
+    throw new Error('Service Worker not initialized');
   }
 
   const id = ++requestId;
@@ -288,6 +350,7 @@ async function sendStreamingRequest(port, method, url, headers, body) {
 
       // Store in pending requests so handleMainMessage can find it
       pendingRequests.set(id, {
+        host,
         resolve: () => {},
         reject: (err) => controller.error(err),
         streamController: controller,
@@ -295,10 +358,10 @@ async function sendStreamingRequest(port, method, url, headers, body) {
       });
 
       // Send request to main thread with streaming flag
-      mainPort.postMessage({
+      host.port.postMessage({
         type: 'request',
         id,
-        data: { port, method, url, headers, body, streaming: true },
+        data: { port, method, url, headers, body, streaming: true, destination },
       });
     },
     cancel() {
@@ -312,10 +375,10 @@ async function sendStreamingRequest(port, method, url, headers, body) {
 // A Node HTTP producer must stop when its consumer stops reading and must
 // observe disconnect. One pull credit bounds the service-worker response queue;
 // this protocol requires a paired host bridge and is negotiated per port.
-async function sendControlledRequest(port, method, url, headers, body, signal) {
-  if (!mainPort) throw new Error('Service Worker not initialized');
+async function sendControlledRequest(host, port, method, url, headers, body, signal, destination = '') {
+  if (!host) throw new Error('Service Worker not initialized');
   if (signal.aborted) throw signal.reason;
-  const channel = mainPort;
+  const channel = host.port;
   const id = ++requestId;
   let controller, resolveHeaders, rejectHeaders, resolvePull;
   let headed = false, credited = false, ended = false;
@@ -364,6 +427,7 @@ async function sendControlledRequest(port, method, url, headers, body, signal) {
     },
   }, { highWaterMark: 0 });
   pendingRequests.set(id, {
+    host,
     flowControl: 1,
     fail,
     port,
@@ -374,10 +438,11 @@ async function sendControlledRequest(port, method, url, headers, body, signal) {
           clearTimeout(headerTimeout);
           resolveHeaders(data);
         } else if (type === 'stream-chunk' && headed && credited) {
-          if (typeof data?.chunkBase64 !== 'string'
-              || data.chunkBase64.length > Math.ceil(MAX_STREAM_CHUNK_BYTES / 3) * 4)
+          if (typeof data?.chunkBase64 === 'string'
+              && data.chunkBase64.length > Math.ceil(MAX_STREAM_CHUNK_BYTES / 3) * 4)
             throw new Error('Stream chunk exceeds transport limit');
-          const bytes = base64ToBytes(data.chunkBase64);
+          const bytes = chunkBytes(data);
+          if (!bytes) throw new Error('Stream chunk carries no bytes');
           if (bytes.byteLength > MAX_STREAM_CHUNK_BYTES)
             throw new Error('Stream chunk exceeds transport limit');
           credited = false;
@@ -396,7 +461,7 @@ async function sendControlledRequest(port, method, url, headers, body, signal) {
   signal.addEventListener('abort', abort, { once: true });
   try {
     channel.postMessage({ type: 'request', id,
-      data: { port, method, url, headers, body, streaming: true, flowControl: 1 } });
+      data: { port, method, url, headers, body, streaming: true, flowControl: 1, destination } });
     if (signal.aborted) abort();
     const head = await headersPromise;
     const noBody = method === 'HEAD' || [204, 205, 304].includes(head.statusCode);
@@ -457,10 +522,9 @@ async function readRequestBody(request, limit, registrationSignal) {
 // they would be at their own origin: an app reads its routes from
 // `location.pathname`, and a document under /__virtual__/<port>/ is not at
 // the path its router expects.
-let primaryPort = null;
-// The page's own documents that are frames of it, told by `init`, so a
-// nested document at one of these paths is the page's and not the preview's.
-let ownDocuments = new Set();
+// Each host's `primaryPort`. The page's own documents that are frames of it,
+// told by `init`, are each host's `ownDocuments`, so a nested document at one
+// of these paths is the page's and not the preview's.
 // The documents and workers served from a virtual server at the root, by
 // client id, so their requests reach that server without a prefix to read.
 const rootedClients = new Map();
@@ -480,21 +544,23 @@ async function blobWorkerContext(client, requestUrl) {
         url: requestUrl, referrer: owner.url, mode: 'cors', destination: '',
       } });
       if (!context) return null;
+      const host = ownerOf(owner.id);
       return new Promise((resolve) => {
         const channel = new MessageChannel();
         const finish = (value) => { clearTimeout(timer); channel.port1.close(); resolve(value); };
         const timer = setTimeout(() => finish(null), 1000);
-        channel.port1.onmessage = (event) => finish(event.data === true ? context : null);
+        channel.port1.onmessage = (event) => finish(event.data === true ? { context, host } : null);
         try { owner.postMessage({ type: 'virtual-blob-owner', url: client.url }, [channel.port2]); }
         catch { finish(null); }
       });
     }));
     const owners = candidates.filter(Boolean);
     if (owners.length === 0) return null;
-    if (owners.some(owner => owner.port !== owners[0].port)) throw new Error('Ambiguous virtual blob owner');
-    rootedClients.set(client.id, owners[0].port);
-    if (rootedClients.size > 256) pruneRootedClients();
-    return owners[0];
+    if (owners.some(owner => owner.context.port !== owners[0].context.port || owner.host !== owners[0].host)) throw new Error('Ambiguous virtual blob owner');
+    rootedClients.set(client.id, owners[0].context.port);
+    if (owners[0].host) clientHosts.set(client.id, owners[0].host.id);
+    if (rootedClients.size > 256) void pruneClients().catch(() => {});
+    return owners[0].context;
   })();
   pendingBlobContexts.set(client.id, pending);
   try { return await pending; } finally { pendingBlobContexts.delete(client.id); }
@@ -522,8 +588,8 @@ async function virtualContext(event) {
   // or a frame's navigation, asks the page for its registrations first, as a
   // virtual request asks for its port, so a restart does not send the
   // preview's own requests to the network.
-  if (primaryPort === null && !mainPort && ((client && client.frameType === 'nested') || (event.request.mode === 'navigate' && (event.request.destination === 'iframe' || event.request.destination === 'frame')))) {
-    await askForInit();
+  if (hosts.size === 0 && ((client && client.frameType === 'nested') || (event.request.mode === 'navigate' && (event.request.destination === 'iframe' || event.request.destination === 'frame')))) {
+    await askForInit(event.clientId);
   }
   const contextUrl = event.request.referrer || (client ? client.url : '');
   if (contextUrl) {
@@ -536,13 +602,14 @@ async function virtualContext(event) {
   if (client && (client.type === 'worker' || client.type === 'sharedworker') && client.url.startsWith('blob:')) {
     return blobWorkerContext(client, event.request.url);
   }
-  if (primaryPort === null) return null;
+  const host = await hostForEvent(event);
+  if (!host || host.primaryPort === null) return null;
   if (event.request.mode === 'navigate') {
     if (event.request.destination !== 'iframe' && event.request.destination !== 'frame') return null;
-    if (ownDocuments.has(ownPath(url.pathname))) return null;
-    return { prefix: null, port: primaryPort };
+    if (host.ownDocuments.has(ownPath(url.pathname))) return null;
+    return { prefix: null, port: host.primaryPort };
   }
-  if (client && client.frameType === 'nested' && !ownDocuments.has(ownPath(new URL(client.url).pathname))) return { prefix: null, port: primaryPort };
+  if (client && client.frameType === 'nested' && !host.ownDocuments.has(ownPath(new URL(client.url).pathname))) return { prefix: null, port: host.primaryPort };
   return null;
 }
 
@@ -551,12 +618,19 @@ function ownPath(pathname) {
   return pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
 }
 
-/** Asks every window for the page's registrations and waits for them, as a request waits for its port. */
-async function askForInit() {
-  const allClients = await self.clients.matchAll({ type: 'window' });
+/**
+ * Asks every window for the page's registrations and waits for them, as a
+ * request waits for its port. Only another window can answer: a page's own
+ * document and scripts come before its `init`, and a frame being opened is no
+ * window yet, so with no other window each waited out the whole ask (a page
+ * opened on an origin whose worker had restarted took 5 s per request).
+ */
+async function askForInit(requesterId) {
+  const allClients = (await self.clients.matchAll({ type: 'window' })).filter((client) => client.id !== requesterId);
+  if (allClients.length === 0) return;
   for (const client of allClients) client.postMessage({ type: 'sw-needs-init' });
   await new Promise((resolve) => {
-    const check = setInterval(() => { if (mainPort) { clearInterval(check); resolve(); } }, 50);
+    const check = setInterval(() => { if (hosts.size > 0) { clearInterval(check); resolve(); } }, 50);
     setTimeout(() => { clearInterval(check); resolve(); }, 5000);
   });
 }
@@ -565,15 +639,23 @@ async function askForInit() {
 function handleRootedRequest(event, port, path) {
   if (event.resultingClientId) {
     rootedClients.set(event.resultingClientId, port);
-    if (rootedClients.size > 256) pruneRootedClients();
+    if (rootedClients.size > 256) void pruneClients().catch(() => {});
   }
   return handleVirtualRequest(event.request, port, path, true);
 }
 
-/** Forgets the documents and workers that are gone. */
-async function pruneRootedClients() {
-  const alive = new Set((await self.clients.matchAll({ type: 'all' })).map((client) => client.id));
+/** Forgets the documents, workers and hosts that are gone. */
+async function pruneClients() {
+  const alive = new Set((await self.clients.matchAll({ type: 'all', includeUncontrolled: true })).map((client) => client.id));
   for (const id of [...rootedClients.keys()]) if (!alive.has(id)) rootedClients.delete(id);
+  for (const [id, host] of [...clientHosts]) if (!alive.has(id) || !hosts.has(host)) clientHosts.delete(id);
+  for (const [id, host] of [...hosts]) {
+    if (alive.has(id) || id === UNNAMED_HOST) continue;
+    hosts.delete(id);
+    host.port.onmessage = null;
+    host.port.close();
+    if (latestHost === host) latestHost = [...hosts.values()].pop() ?? null;
+  }
 }
 
 /**
@@ -581,8 +663,9 @@ async function pruneRootedClients() {
  */
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
+  requestEvents.set(event.request, event);
 
-  DEBUG && console.log('[SW] Fetch:', url.pathname, 'mainPort:', !!mainPort);
+  DEBUG && console.log('[SW] Fetch:', url.pathname, 'hosts:', hosts.size);
 
   // Check if this is a virtual server request
   const match = url.pathname.match(/^\/__virtual__\/(\d+)(\/.*)?$/);
@@ -595,14 +678,14 @@ self.addEventListener('fetch', (event) => {
     // the referrer, which a document sent with no referrer never has, is
     // the fallback. A document at the root is the preview's server's, and
     // its own requests are that server's with it.
-    if (event.request.referrer || event.clientId || (event.request.mode === 'navigate' && primaryPort !== null)) {
+    if (event.request.referrer || event.clientId || (event.request.mode === 'navigate' && [...hosts.values()].some((host) => host.primaryPort !== null))) {
       event.respondWith((async () => {
         const context = await virtualContext(event);
         if (!context) return fetch(event.request);
         const targetPath = url.pathname + url.search;
         if (context.prefix === null) {
           DEBUG && console.log('[SW] Answering a root request from the virtual server:', url.pathname);
-          return handleRootedRequest(event, context.port, targetPath);
+          return withDocumentPrelude(event, await handleRootedRequest(event, context.port, targetPath));
         }
         if (event.request.mode === 'navigate') {
           DEBUG && console.log('[SW] Redirecting navigation from virtual context:', url.pathname);
@@ -621,15 +704,62 @@ self.addEventListener('fetch', (event) => {
   const port = parseInt(match[1], 10);
   const path = match[2] || '/';
 
-  event.respondWith(handleVirtualRequest(event.request, port, path + url.search));
+  event.respondWith(handleVirtualRequest(event.request, port, path + url.search).then((response) => withDocumentPrelude(event, response)));
 });
+
+/**
+ * A frame's HTML document from a host's servers, with the host's prelude
+ * first: after a leading doctype (so the document keeps its mode), else at
+ * the very start, where the parser puts a script into the head it makes.
+ */
+async function withDocumentPrelude(event, response) {
+  const request = event.request;
+  if (request.mode !== 'navigate' || (request.destination !== 'iframe' && request.destination !== 'frame')) return response;
+  if (!response.body || !/text\/html/i.test(response.headers.get('content-type') || '')) return response;
+  let host = null;
+  try { host = await hostForEvent(event); } catch (e) { /* no host */ }
+  const prelude = host && host.documentPrelude;
+  if (!prelude) return response;
+  const encoder = new TextEncoder();
+  const inserted = encoder.encode(prelude);
+  let pending = new Uint8Array(0);
+  let done = false;
+  const release = (controller, cut) => {
+    controller.enqueue(pending.subarray(0, cut));
+    controller.enqueue(inserted);
+    controller.enqueue(pending.subarray(cut));
+    pending = new Uint8Array(0);
+    done = true;
+  };
+  const body = response.body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      if (done) { controller.enqueue(chunk); return; }
+      const joined = new Uint8Array(pending.length + chunk.length);
+      joined.set(pending); joined.set(chunk, pending.length);
+      pending = joined;
+      const head = new TextDecoder().decode(pending.subarray(0, 2048));
+      const doctype = /^\uFEFF?\s*<!doctype[^>]*>/i.exec(head);
+      if (doctype) { release(controller, encoder.encode(doctype[0]).length); return; }
+      // A doctype still arriving waits for its end; anything else is no doctype.
+      const start = head.replace(/^\uFEFF?\s*/, '');
+      if (pending.length < 2048 && ('<!doctype'.startsWith(start.toLowerCase()) || /^<!doctype/i.test(start))) return;
+      release(controller, 0);
+    },
+    flush(controller) { if (!done) release(controller, 0); },
+  }));
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
+}
 
 /**
  * Handle a request to a virtual server
  */
 async function handleVirtualRequest(request, port, path, rooted = false) {
   try {
-    const registration = flowControlledPorts.get(port);
+    if (hosts.size === 0) await askForInit(requestEvents.get(request)?.clientId);
+    const host = await hostForRequest(request, port);
+    const registration = host ? host.flowControlledPorts.get(port) : undefined;
     // Build headers object
     const headers = {};
     request.headers.forEach((value, key) => {
@@ -646,7 +776,7 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
     let body = null;
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       if (registration) {
-        const upload = { port, controller: new AbortController() };
+        const upload = { host, port, controller: new AbortController() };
         controlledUploads.add(upload);
         try {
           body = await readRequestBody(request, registration.maxRequestBytes, upload.controller.signal);
@@ -661,9 +791,9 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
     }
 
     if (registration) {
-      if (flowControlledPorts.get(port) !== registration || mainPort !== registration.channel)
+      if (host.flowControlledPorts.get(port) !== registration || host.port !== registration.channel || hosts.get(host.id) !== host)
         throw new Error('Virtual server registration changed during upload');
-      return await sendControlledRequest(port, request.method, path, headers, body, request.signal);
+      return await sendControlledRequest(host, port, request.method, path, headers, body, request.signal, request.destination);
     }
 
     // Legacy peers retain their old selection until they negotiate flow control.
@@ -671,18 +801,28 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
 
     if (isStreamingCandidate) {
       DEBUG && console.log('[SW] Using streaming mode for:', path);
-      return handleStreamingRequest(port, request.method, path, headers, body);
+      return handleStreamingRequest(host, port, request.method, path, headers, body, request.destination);
     }
     DEBUG && console.log('[SW] Using non-streaming mode for:', request.method, path);
 
     // Send to main thread
-    const response = await sendRequest(port, request.method, path, headers, body);
+    const response = await sendRequest(host, port, request.method, path, headers, body, request.destination);
 
     DEBUG && console.log('[SW] Got response from main thread:', {
       statusCode: response.statusCode,
       headersKeys: response.headers ? Object.keys(response.headers) : [],
       bodyBase64Length: response.bodyBase64?.length,
     });
+
+    // The frame's embedding policy goes on every answer, an empty one too:
+    // the page is cross-origin isolated, and a document without these
+    // headers is blocked in its frame (an empty 200 lost the preview).
+    const respHeaders = new Headers(response.headers);
+    respHeaders.set('Cross-Origin-Embedder-Policy', 'credentialless');
+    respHeaders.set('Cross-Origin-Opener-Policy', 'same-origin');
+    respHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    // Remove any headers that might block iframe loading
+    respHeaders.delete('X-Frame-Options');
 
     // Decode base64 body and create response
     let finalResponse;
@@ -691,18 +831,12 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
         const bytes = base64ToBytes(response.bodyBase64);
         DEBUG && console.log('[SW] Decoded body length:', bytes.length);
 
-        // Use Blob to ensure proper body handling
-        const blob = new Blob([bytes], { type: response.headers['Content-Type'] || 'application/octet-stream' });
+        // Use Blob to ensure proper body handling. Its type is the server's,
+        // or none: a document the server gave no type is the browser's to
+        // sniff, and an invented octet-stream made a page a download.
+        const declared = new Headers(response.headers).get('content-type');
+        const blob = new Blob([bytes], declared ? { type: declared } : {});
         DEBUG && console.log('[SW] Created blob size:', blob.size);
-
-        // Merge response headers with CORP/COEP headers to allow iframe embedding
-        // The parent page has COEP: credentialless, so we need matching headers
-        const respHeaders = new Headers(response.headers);
-        respHeaders.set('Cross-Origin-Embedder-Policy', 'credentialless');
-        respHeaders.set('Cross-Origin-Opener-Policy', 'same-origin');
-        respHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
-        // Remove any headers that might block iframe loading
-        respHeaders.delete('X-Frame-Options');
 
         finalResponse = new Response(blob, {
           status: response.statusCode,
@@ -720,7 +854,7 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
       finalResponse = new Response(null, {
         status: response.statusCode,
         statusText: response.statusMessage,
-        headers: response.headers,
+        headers: respHeaders,
       });
     }
 
@@ -741,8 +875,8 @@ async function handleVirtualRequest(request, port, path, rooted = false) {
 /**
  * Handle a streaming request
  */
-async function handleStreamingRequest(port, method, path, headers, body) {
-  const { stream, headersPromise, id } = await sendStreamingRequest(port, method, path, headers, body);
+async function handleStreamingRequest(host, port, method, path, headers, body, destination = '') {
+  const { stream, headersPromise, id } = await sendStreamingRequest(host, port, method, path, headers, body, destination);
 
   // Wait for headers to arrive
   const responseData = await headersPromise;

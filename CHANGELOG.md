@@ -2,8 +2,1016 @@
 
 What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## Unreleased
+
+- Where a process's start went: one `[boot-trace] {"event":"load-account"}`
+  line per process, when its loading has been quiet two seconds and at its
+  exit. Files, bytes, prepared bodies taken and missed, and the milliseconds
+  of each loading phase (resolve, read, digest, bodyRead, transform, compile,
+  evaluate, builtin, loader) as the phase's own time, with the twenty
+  packages that took longest to evaluate (`src/load-account.ts` states each
+  field and what the account cannot see).
+- To follow, not yet changed: four optional members added in v0.9.0 and before
+  are second paths that only an embedder without them takes (the stream
+  transport's `post`, a started run's `setRef`, the host request's
+  `hold.changed`, the tree's `contentDigest`). Once browser-substrate
+  implements all four they become required, and the paths without them go.
+
+## v0.9.0 — 2026-10-08
+
+The engine answers more of Node 24.21.0's surface and several things every
+guest meets changed. The exported surface changed and one export answers
+differently for the same input, hence a minor release.
+
+**Breaking for a consumer that keeps prepared module bodies.**
+`preparedModuleKey` names the same file differently: the format id moved from
+`tabnode-prepared-3` to `tabnode-prepared-4` (e86c6e2). The key was a hash the
+engine computed over each source in JavaScript; it is now text made of the
+format id, the kind and the plain SHA-256 of the file's bytes, so a tree that
+already holds a file's digest gives the key with no read and no hash (Rallly
+spent 1.78 s of a 4.4 s start hashing sources, and 0.45 s reading them only to
+hash them). Bodies prepared under `tabnode-prepared-3` are not found by this
+engine. Nothing fails: each module is prepared again in the tab on first use,
+which is slow and silent. A consumer rebuilds its images when it moves the pin.
+
+Added
+
+- A second entry point, `@volter/tabnode/prepared-key`: the prepared body's
+  key derivation with no import of the engine, for a host that builds an image
+  and a page that reads one. From the index too: `preparedModuleKeyOf`,
+  `preparedModuleKind`, `isPreparedModuleKey`, `PREPARED_MODULES_FORMAT`,
+  `PREPARED_MODULES_KEPT`.
+- `VirtualFS` may answer `contentDigest(path)`; a tree that does lets a
+  prepared body be taken without reading its source.
+- `NativeStreamTransport` gains an optional `post(operation)`: a read grant and
+  a shutdown are sent without waiting for the stream owner's thread where the
+  transport offers it; a refusal arrives as the handle's failed read or the
+  shutdown's completion. A stream that stops reading takes an outstanding grant
+  back with a `readStop` call, so an owner never reads ahead for a socket its
+  realm has paused. Without `post` every operation is a call, as before.
+- `dist/surface.json`, made by `npm run build:surface`: every builtin's exports
+  against Node 24.21.0's (same, differs, wrong type, missing) and the binding
+  members Node's library asks for, measured from the built engine.
+- A runtime dependency, `@noble/curves` 2.3.0, for the curves below.
+- `node:crypto`: every export name Node 24.21.0 has is present; `hkdf`,
+  `hkdfSync`, `scrypt`, `scryptSync` and synchronous EC (P-256, P-384, P-521)
+  and Ed25519 key pairs, their PEM, DER and JWK encodings, `sign` and `verify`
+  are implemented; what is not implemented throws by name at the call.
+  `createPrivateKey` and `createPublicKey` refuse what is not a key.
+  No option of a key's encoding is dropped: each is read or refused by name.
+  A private key asked for with `cipher` and `passphrase` (from
+  `KeyObject.export`, `generateKeyPair` or `generateKeyPairSync`) is refused,
+  `ERR_CRYPTO_UNSUPPORTED_OPERATION`: this engine encrypts no key, and it does
+  not hand back the clear one. An encrypted key on the way in is refused as
+  encrypted (`ERR_MISSING_PASSPHRASE` with no passphrase, unsupported with
+  one). See "Where node:crypto's keys differ from Node's" below.
+- `navigator.locks` (one process's lock manager), `buffer.transcode`,
+  `process.release`, `process.getuid`/`geteuid`/`getgid`/`getegid`/`getgroups`,
+  `process.versions.acorn`, `process.features.typescript`.
+- Instrument lines on the realm's console, each one line of JSON:
+  `[boot-trace] node-line`, `[boot-trace] stat-window`, the resolver's probe
+  counts on the `prepared-bodies` counts line, `[stream-calls]` and
+  `[rows-used]` at a process's end.
+- `installHostNames(names)`: a host supplies the names that are this host
+  besides `localhost` (ADR-0002). `dns.lookup` resolves a held name to the
+  loopback in the caller's family, and `dns.resolve4`/`resolve6` answer its
+  loopback records. With no host table installed nothing changes.
+
+Changed, for every guest
+
+- `process.version` is the `NODE_VERSION` its environment names; the library is
+  Node 24.21.0's whatever it says. On line 20 an `import()` that first runs an
+  ES module settles after a loop turn, as Node 20's does (ADR-0005).
+- A process whose loop drains emits `exit`, with `process.exitCode || 0`; only
+  `process.exit()` did. `beforeExit` is still not emitted. A listener that
+  calls `process.exit(n)` while `exit` is being emitted ends the process with
+  `n`, as Node does, whether the process was draining or exiting (the code was
+  dropped: a test runner that reports its failures that way read as passed).
+- Resolution asks the tree what Node asks: an entry's body runs at require
+  depth 0 (`Module._load` no longer counts as a `require` call), so the stat
+  cache Node keeps for that body exists; a level with no `node_modules`
+  directory is one probe; a path is asked once in one resolution; a package's
+  self-reference reads the nearest `package.json` only, as Node's does (an
+  outer package of the same name with `exports` no longer answers).
+- `fs.watchFile`'s listener gets the new stat and the old one (it got the same
+  one twice). `os.release()` and `os.version()` are no longer swapped;
+  `os.networkInterfaces()` gives `family` as `IPv4`/`IPv6`; `fs.statfs` has its
+  eight fields in Node's order.
+- `process.features.typescript` follows the line: absent for a guest told it
+  is Node 20 (Node 20.20.2 has no such property), `"strip"` otherwise.
+- `process.memoryUsage()` is the realm's own heap where the realm reports one
+  (`performance.memory`); elsewhere the fixed figures it always gave.
+- `--enable-source-maps` and `process.setSourceMapsEnabled` keep the switch and
+  warn once (`TABNODE_SOURCE_MAPS_NOT_APPLIED`): stacks are not remapped.
+- `Function.prototype.toString` makes a function's written source once.
+
+Where node:crypto's keys differ from Node's
+
+Measured with one script of 131 cases (`scripts/crypto-keys-compare.mjs`),
+hostile inputs among them, on Node v24.21.0 and in a guest: 85 answer the
+same, and in 20 more both refuse with different error codes (OpenSSL's own
+codes are not reproduced). The rest:
+
+- Not carried, refused by name where Node does it: encrypting a private key on
+  export; reading an encrypted key (with a passphrase offered the answer is
+  "unsupported" whatever the passphrase, right or wrong: none is tried);
+  `paramEncoding: 'explicit'`; curves other
+  than P-256, P-384 and P-521 (secp256k1 among them); signing or hashing with
+  SHA-512/224, SHA-512/256 or SHA-3 (`sha512-256` was read as SHA-512).
+- Stricter than Node, which accepts each of these and this engine refuses: a
+  DER length not in its shortest form, and bytes after the key; a SEC1 key
+  whose version is not 1; a public key's bit string with unused bits; a
+  private key whose stated public half is not its own (OpenSSL keeps the
+  stated one: it signs with one key and exports another's public half); a
+  private value of zero or beyond the curve's order; a PKCS#8 key that names
+  one curve outside and another inside; a JWK whose `d` is not the private
+  value of its `x` and `y` (EC) or `x` (Ed25519). None of these depends on a
+  key's value, and no tool writes them; one that does is the finding.
+- Read as Node reads them, because a correct tool writes them for some keys:
+  a JWK member without its leading zero bytes (one key in 128 a coordinate),
+  or with one more, or in the standard base64 alphabet; an EC public point in
+  compressed or hybrid form (`openssl ec -conv_form`), written back in the
+  form it was read; a private value shorter than its curve's width; the first
+  key among several PEM blocks, the `EC PARAMETERS` block that `openssl
+  ecparam -genkey` writes before the key among them.
+- The same as Node, and not the curve library's default: Ed25519 verification
+  without the cofactor, refusing small-order keys and `R`; of the twelve
+  vectors of "Taming the many EdDSAs" both accept one. Against Node at volume
+  (`scripts/crypto-ed25519-volume.mjs`): 3,000 generated keys and messages,
+  both directions, with flipped bits in signature, message and key, and RFC
+  8032's first three vectors: 18,018 checks, none differing.
+- A caller's DER is copied when a key is read; zeroing the buffer afterwards
+  does not change the key.
+
+Known cost
+
+- A stream that stops reading while a read grant is with its owner makes one
+  synchronous call to take it back. Under heavy back-pressure (a reader that
+  pauses and resumes at every chunk) that is a call per pause; how often it
+  happens in a real server is not measured, and the `[stream-calls]` line
+  counts it (`readStop`).
+
+Known differences from Node, for a synchronous child's `stdio`
+(`scripts/sync-child-stdio-differences.cjs`, each line read under Node
+v24.21.0 and as a guest)
+
+- The child's fd 0 given as a descriptor of the caller's (a file opened for
+  reading, or `'inherit'`): the child reads an empty stdin and ends; Node's
+  reads the file (`"child read \"from a file\""`, here `"child read \"\""`).
+  Only `input` reaches a synchronous child's stdin.
+- An entry past fd 2 (`stdio[3]` as `'pipe'` or as a file's descriptor): the
+  child has no fd 3 and its write fails with `EBADF`; `output[3]` is `null`
+  and the file stays empty. Node gives the child the descriptor and answers
+  `output[3]`.
+- `process.stdout` or `process.stderr` itself as an entry throws
+  `ERR_INVALID_ARG_VALUE` from Node's own `getValidStdio`: the guest's stream
+  carries neither a descriptor nor a handle Node recognises. Node passes it
+  on. A stream that carries a descriptor (`fs.createWriteStream`) is passed on
+  here as there.
+
+Fixed
+
+- A default export's expression keeps its parentheses when lowered.
+- `node`'s refusals go where its stderr goes when fd 2 is taken as bytes.
+- A synchronous child's output goes to the caller's own descriptor when
+  `stdio` names one by number, which is what `stdio: 'inherit'` is by the time
+  it reaches the binding: `spawnSync`/`execSync` with `'inherit'` printed
+  nothing and returned the bytes as `stdout`/`stderr` instead, a descriptor of
+  an open file stayed empty, and passed-on bytes counted toward `maxBuffer`.
+  Both paths (a child the engine runs, a child the host runs) go by the rule an
+  asynchronous child's stdio goes by (`scripts/sync-child-stdio.cjs`).
+- crypto: a base64 signature verifies; the legacy names `pseudoRandomBytes`,
+  `prng` and `rng` are accessors as in Node.
+
+## v0.8.0 — 2026-10-07
+
+One process table (browser-substrate ADR-0129 step 1): a host whose kernel
+owns its processes gives each run that kernel's numbers, and tabnode keeps no
+second table for it. The exported surface changed, hence a minor release.
+
+- A run can carry its own process registry (`RunOptions.registry`, for
+  `runNode` and `container.run`): a run whose process has a kernel connection
+  of its own takes its pid, its children, `kill`, liveness and group lookups
+  from that registry, in the run's own pid namespace. Every other run, and the
+  realm's own process, use the realm's registry as before.
+- `ProcessRegistry` gains `exec`, `exit` and `reap`, and `allocate` takes the
+  parent pid and whether the child leads a session of its own. A pid is made
+  only at a fork. An image that starts in a process another forked (a
+  kernel's shell exec'ing `node`) is an `exec` and keeps its pid, so it is no
+  longer refused with "Process identifier is already held." An embedder that
+  implements `ProcessRegistry` adds the three methods (one on the old
+  interface fails at its first child's exit, not only at an exec); tabnode's
+  own registry stays the standalone implementation, where `exec` is the claim
+  it was.
+- `runNode` and `container.run` given `process` in a realm that is a registry
+  client no longer throw "This realm is a process registry client": the run is
+  an exec in its registry. A `container.run` line given `process` or
+  `registry` is a kernel's shell process: each `node` it runs is that shell's
+  child, numbered through its registry, and the line gives its pid back when it
+  ends.
+- A child's end is the status its zombie holds, which its parent's wait reaps;
+  a run the runtime failed to run is killed (`SIGKILL`) rather than given an
+  exit code it never passed, and a killed run ends with its signal and no exit
+  code, libuv's pair.
+- A run is attributed by its scope, never by which run launched last: a
+  binding's callbacks run inside the run that owns the binding, as Node's
+  MakeCallback runs them, and a throw from a timer, immediate or microtask is
+  the uncaught exception of the run that scheduled it. A child's parent is the
+  run whose `Process` handle spawned it.
+
+## v0.7.4 — 2026-10-07
+
+## Unreleased
+
+- `kill()` on a child the host runs (a program pack, a WALI image) sends the
+  signal and lets the host's result end the run: 'exit' and 'close' fire when
+  the program exits, with the signal it ended by, as Linux keeps a signalled
+  child live until it exits. Children the engine runs itself are unchanged.
+  Ships with browser-substrate's host-child identity (the abort carries the
+  signal number); neither is consistent alone.
+
+## v0.7.3 — 2026-10-07
+
+- A spawn tells a file's kind from its first 256 bytes, not the whole file:
+  a Node script's `#!` line and a binary image's first bytes are read
+  through the tree's own descriptors where it offers them, so spawning a
+  multi-megabyte binary by path no longer reads all of it.
+- `process.dlopen` of a missing file fails as Node's does, with
+  `ERR_DLOPEN_FAILED` and the dynamic linker's message, not require's
+  `MODULE_NOT_FOUND`; loaders such as Prisma's report on that code.
+- A child's fd stdio holds its own reference to the parent's description
+  (`TreeDescriptors.dup`), as fork and dup2 give it on Linux: a parent that
+  hands a log file to a long-lived child and closes its fd (twin-world's
+  pgliteUp) no longer cuts the child's output.
+
+## v0.7.0 — 2026-10-06
+
+The container's processes and a kernel's are one pid space. A minor
+release: the exported surface gained `installProcessIdAllocator` and
+`RunOptions.process`.
+
+- `installProcessIdAllocator(allocate)` (container owner): every process
+  number is taken from the host's own pid counter from then on, so a guest's
+  `process.pid`, its child's `process.ppid` and the kernel's
+  `/proc/<pid>/stat` name one process, and no number is given twice. A number
+  still held is passed over.
+- `RunOptions.process` (for `runNode`): `{ pid, ppid }` a host already gave
+  the run, a kernel's for a `node` its shell exec'd. The run is that process,
+  its parent the host's, which the registry need not hold.
+
+## v0.6.1
+
+A host's tree may own a run's open file descriptions and stand in for the
+container's tree in one run (ADR-0005 steps 1 and 2); with `VirtualFS`
+nothing changes. Released as v0.6.1; the workflow dates this section when it
+publishes.
+
+- `RunOptions.filesystem` (for `runNode`): the tree one run's Node reads and
+  writes, in place of the container's, while it keeps the container's port
+  space and process table (ADR-0005 step 2). A synchronous child reads its
+  parent run's tree.
+- A stat keeps an entry's full file type: the type bits a tree's mode
+  carries, else every kind its stat answers (a character or block device, a
+  FIFO, a socket as well as a directory or a link). A host tree's
+  `/dev/null` stat'ed by path is a character device, as its fstat says;
+  `VirtualFS` answers no device kinds and is unchanged.
+- A tree a host supplies may own its open file descriptions: one that offers
+  `TREE_DESCRIPTORS` (`open`, `close`, `read`, `write`, `fstat`, `ftruncate`,
+  `fsync`, `fchmod`, `futimes`, `reserve`, `release`) is asked for every
+  descriptor operation on a file it opened, with its own fd numbers, offsets
+  and `O_APPEND`, and gives the numbers of the engine's own pipes and sockets.
+  A tree without it, every `VirtualFS`, keeps the engine's descriptor table
+  as before (ADR-0005 step 1). `TreeDescriptorStats` may answer
+  `isCharacterDevice`, `isBlockDevice`, `isFIFO` and `isSocket`.
+
+## v0.6.0 — 2026-10-06
+
+The host API gains an argv entry for the engine's Node, per-fd standard
+streams (kind, terminal, bytes) and a shared-memory stdin, and a guest's
+processes and files carry bytes and modes as Linux does. Released as v0.6.0
+(the exported surface changed); the workflow dates this section when it
+publishes.
+
+### New API
+
+- `container.runNode(argv, options)`: the engine's Node started from an
+  `execve`-style vector (`argv[0]` is `process.argv0`), with `run`'s options
+  and answer, through the same launch the shell's `node` uses; no command line
+  is built and no shell runs. `env` is the whole environment; `cwd` defaults
+  to `/`.
+- `RunOptions` (for `run` and `runNode`):
+  - `stdioKind: ['tty'|'pipe'|'file'|'char', x3]` says what each of fds 0, 1,
+    2 is ('char' is a character device that is not a terminal, `/dev/null`);
+    `stdioIsTTY: [b, b, b]` says only which is a terminal (used where
+    `stdioKind` is absent). Each fd is a terminal or not on its own.
+  - `onStdoutBytes` / `onStderrBytes(Uint8Array)` take fd 1 / fd 2 as the
+    bytes the program wrote, before any decode.
+  - `stdinShared: SharedArrayBuffer` gives fd 0 as a ring a host writes from
+    its own thread; `STDIN_RING` (the layout), `createStdinRing`,
+    `stdinRingProblem` and the producer `StdinRingWriter` (`write(bytes)`
+    waits with `Atomics.waitAsync` when the ring is full; `close()` is EOF)
+    are exported. The header is eight Int32 words (32 bytes): `WRITE_INDEX`,
+    `READ_INDEX`, `CLOSED`, `CAPACITY` and `SIGNAL`, which the producer bumps
+    and notifies after every write and at close, and on which readers wait,
+    so a close between a reader's look and its wait still wakes it; three
+    words are reserved. A host writes the ring only through `StdinRingWriter`.
+  - `stdin` accepts bytes.
+- `@volter/tabnode/stdin-ring`: the ring's layout, producer and helpers alone,
+  a module that imports nothing, for a page that writes a run's stdin without
+  loading the engine. The engine's reader is the same module.
+- Types `StdioKind` exported. The host-executor request a page publishes
+  (`Symbol.for('@volter/browser-runtime/child-process-executor')`) is offered
+  `onStdoutBytes` / `onStderrBytes`; `NodeProcessLaunch.stdin` may be bytes.
+- Declarations say what the implementation already took: the engine's process
+  streams' `write` and a WASI host process's `write` accept `Uint8Array` as
+  well as strings, and the guest stdin's `read()` answers
+  `string | Uint8Array | null`, as `Readable`'s does.
+- `NodeProcessLaunch.argv0`: the process's own name, `argv[0]` of the vector
+  it was started with. A Node process host starts the process with it as
+  `argv[0]`; `argv` stays the words after it. A host that rebuilt the vector
+  as `["node", ...argv]` gave every hosted process `process.argv0 === 'node'`
+  (a kernel's exec of a renamed executable reported `node`); it must use
+  `argv0`.
+
+### Behaviour changes a consumer must know
+
+- `VirtualFS` emits an event for every mutation: `change` for an entry created
+  or changed (bytes, mode, times, a directory, a link; a file's carries its
+  text, others none) and `delete` for one that went. `chmodSync`, `utimesSync`,
+  `symlinkSync`, `mkdirSync` (and the directories a write or a rename makes),
+  `rmdirSync` and `renameSync` emitted nothing; a rename now reports every
+  path of the moved subtree gone at the old name and made at the new.
+
+- File modes are real. The shell's filesystem reports each file's own mode and
+  its `chmod` sets it; the `/node_modules/.bin/` rule that made only those
+  files executable is gone. A host that writes an executable must write it
+  0755 (or `chmodSync` it); a 0644 file is not found on PATH or run by path.
+  The engine's own writers set modes: npm install keeps each archive entry's
+  mode (`(mode | 0666) & ~022`, directories `| 0777`), makes each bin target
+  and its `.bin` stub executable.
+- The engine writes nothing into a tree a host supplied (`createContainer({ vfs })`):
+  the `/usr/local/bin/node` (`process.execPath`) file it used to create in any
+  tree that lacked one is created, 0755, only in a tree the engine made itself.
+  A host's tree carries its own program at `process.execPath` (any file there
+  named `node` runs the engine's `node` from the shell); without one, a shell
+  line naming the path gets "No such file or directory".
+- A guest's `node` child (`spawn`/`execFile`/`fork` of `node` or of
+  `process.execPath`, and `spawnSync`/`execFileSync` of them) starts from its
+  argv through the Node launch, not as a line for the engine's shell. It is one
+  process whose pid is the one its parent's handle holds (there is no shell
+  process between), and its environment is exactly the one it was spawned with
+  (the shell's own HOME/USER/PATH defaults are not added). A shell line
+  (`exec`, `execSync`, `{ shell: true }`) is unchanged.
+- Child stdio carries bytes: a Node child's fd 0/1/2 reach the parent's pipe,
+  inherited stdio or descriptor as bytes, and Node's `child_process` returns a
+  Buffer or a string by its encoding option, as on Linux. Output that was
+  invalid UTF-8 used to arrive with replacement characters.
+- A run given `onStdoutBytes`/`onStderrBytes` gets that fd only as bytes:
+  `onStdout`/`onStderr` are not called for it and `RunResult.stdout`/`stderr`
+  is empty for it. Text callbacks now decode with one streaming decoder per fd,
+  so a character split across two writes arrives whole.
+- `process.stdout.write(string, encoding)` writes the string in that encoding
+  (`'ff', 'hex'` is one byte); the encoding was ignored. `fs.writeSync(fd,
+  string, pos, encoding)` likewise (every non-UTF-8 encoding was latin1).
+- fd 0, 1 and 2 are descriptors of every run. `fs.writeSync(1|2)` and writes to
+  `/dev/stdout`, `/dev/stderr`, `/dev/fd/1|2`, `/proc/self/fd/1|2` go to the
+  run's stdout/stderr in order with `process.stdout` (they were EBADF);
+  `fs.readSync(0)` and `/dev/stdin` read the run's stdin in order with
+  `process.stdin` (EBADF before). A blocking read with the writer open and
+  nothing buffered waits on `stdinShared` where the run has one, and is
+  otherwise refused as `ERR_STDIN_BLOCKING_READ`; an `O_NONBLOCK` descriptor
+  gets EAGAIN. `fs.fstat(0|1|2)` is a terminal (pts), a FIFO, a regular file
+  or a non-terminal character device (0666, device 1,3) by the fd's kind.
+  `tty.isatty(fd)` and `guessHandleType(fd)` answer from the asking run's own
+  streams, as libuv does: a terminal fd is `'TTY'` (so `new net.Socket({ fd })`
+  on it fails as in Node), a file or character device `'FILE'`, a pipe
+  `'PIPE'`; it was `'PIPE'` for all three.
+- A run's life and its stdin, as in Node. A program that reads fd 0 with
+  `fs.readSync(0)` or `/dev/stdin` and returns ends when its loop is empty,
+  whether or not the stdin writer has closed: those reads take what
+  `process.stdin` already holds and then read the ring, without starting the
+  stream (the run used to live until the ring closed, and forever if it never
+  did). A run whose program consumes `process.stdin` (a `'data'` or
+  `'readable'` listener, flowing mode, or its own `read()` call) is kept alive
+  until the stream ends; a bare `process.stdin.read()` used to let it end early.
+- A WASI guest's stdout/stderr are written as its bytes, not decoded text.
+- A background job (`cmd &`) writes its parent's byte sinks where the parent
+  has them; its output was dropped when the parent took bytes only.
+- A host's totals: an fd a host executor or a Node process host streamed
+  through its byte sink has an empty total, and is never replayed through the
+  text callbacks. A host that streamed no bytes is read as before. The Node
+  process host is handed a view of the run's streams (its fields read through
+  to the run's own object), not the object itself.
+- A Node entry whose top-level `await` fails prints its error on stderr (it was
+  only appended to the result); a run's idle detection counts what was
+  printed, by length, in either form.
+
+## v0.5.70 — 2026-10-05
+
+- Development prohibits incidental verification locally and remotely. Requested
+  measurements run locally; GitHub Actions requires explicit authorization for
+  the remote run and no longer starts measurements automatically on a push.
+
+## v0.5.69 — 2026-10-05
+
+- Replace the partial historical fixture measure with the complete Node v24.21.0
+  parallel/WASI file list. Retain raw failures, native-read inventory, recursive
+  public export comparisons, four completion counts, and an objective capability
+  ledger with done / doing / todo / won't do states. Missing evidence stays open;
+  no browser-parity or finalized scope claim is made before the baseline.
+
+## v0.5.68 — 2026-10-05
+
+- Move the unchanged vendored library and primordials to Node24.21.0; adapt
+  Buffer allocation/encoding and transfer ownership, actual timer/context
+  accounting, diagnostics links, packed child spawn flags and TTY/TCP
+  contracts. Preserve DNS and detached process groups. Default JSON IPC
+  works; unavailable V8 binary IPC serialization fails explicitly at use.
+  Page readings qualify these contracts; no full Node24 suite score or
+  Twenty application startup is claimed.
+
+
+## v0.5.67 — 2026-10-05
+
+- Move the unchanged vendored library to Node v24.5.0 with its filesystem removal, TypeScript cache-disabled binding and readline history contracts; report the implemented library version by default, preserving host-name and POSIX process-group semantics (ADR-0003).
+
+- Restore perf_hooks GC-kind constants and event-loop utilization from monotonic guest execution intervals, including idle and snapshot differences, without inventing native CPU/GC observations (ADR-0003).
+
+## v0.5.66 — 2026-10-05
+
+- Browser worker messaging globals stay guest-local; trusted host transports retain their native methods. File entries use the normal image-prepared module loader and keep Node main-module identity (ADR-0004).
+
+- A thread whose native Worker authority is withheld can initialize the child_process builtin; speculative synchronous-child warming no longer aborts its entry. An actual synchronous spawn retains the original constructor refusal.
+- Give global and worker_threads MessagePorts real per-process loop references: the first message listener refs/starts its real transport, unref releases its hold, and close/process teardown releases and closes it (ADR-0004).
+
+## v0.5.65 — 2026-10-05
+
+### Fixed
+
+- Spawned `env` wrappers preserve host package-bin dispatch, cwd and environment instead of losing their executable in the engine-private shell.
+
+## v0.5.64 — 2026-10-05
+
+- Host lookup retains IP literals and resolves the engine’s loopback; names without a host route now report asynchronous ENOTFOUND instead of 0.0.0.0, which could connect to an unrelated local listener. Callback and Promise lookup share the behavior; unsupported DNS record and reverse queries also fail explicitly (ADR-0002, substrate Article 6).
+
+## v0.5.63 — 2026-10-05
+
+- Detached children start private POSIX process groups; ordinary descendants inherit them, and negative-PID liveness and signals resolve every live member across worker realms, including after the leader exits. Older embedding hosts retain their existing PID operations. World teardown previously saw a live group while its SIGTERM and SIGKILL deliveries were refused.
+
+## v0.5.62 — 2026-10-05
+
+- Guest-created `Worker` and `self` globals are process-local bare bindings in module wrappers and guest eval/Function scopes; browser worker authority stays hidden. Sharp's upstream pthread glue assigns `global.Worker` then calls bare `new Worker`, and assigns `globalThis.self` then reads bare `self`.
+
+## v0.5.61 — 2026-10-05
+
+- `node` takes the first word after its options as the script, as Node does, with value-taking options (`-r`, `--import`, `--conditions`, ...) consuming their value: it used to run the first later word that named a file, so `node <next-bin> start apps/web` ran the directory `apps/web` (EISDIR) when the bin did not resolve.
+
+## v0.5.60 — 2026-10-05
+
+- `crypto.webcrypto` and `crypto.subtle` exist, as in Node (the page's Web Crypto): Tailwind's oxide and lightningcss native hooks read `require('crypto').webcrypto` and found `undefined`.
+
+## v0.5.59 — 2026-10-05
+
+- `dns.lookup` answers an IP literal with itself in its own family, as Node does: `::` stayed IPv4 `0.0.0.0`, so `listen({ host: '::', ipv6Only: true })` bound IPv4 and collided with the IPv4 listener on the same port (measured in the tab with `NODE_DEBUG=net`: `setupListenHandle 0.0.0.0 … 4`).
+
+## v0.5.58 — 2026-10-05
+
+- An `ipv6Only` listener can share a port number with an IPv4 one, and a dual-stack IPv6 bind holds both families, as on a host: the engine kept one port space, so a probe that binds `0.0.0.0` and then `::` with `ipv6Only` on the same port got `EADDRINUSE` every time (Volter World's port allocator gave up after 32 attempts in the tab).
+
+## v0.5.57 — 2026-10-02
+
+## v0.5.56 — 2026-10-02
+
+## v0.5.55 — 2026-09-30
+
+- Carry Node's nonthrowing stat option to the filesystem and module resolver, avoiding error allocation for ordinary absent candidates and manifests (t_94bcd252, t_41f48f39; substrate Article 6). Published timing awaits independent review; no test numbers are changed.
+
+## v0.5.54 — 2026-09-30
+
+- Share successful module path resolutions across a process’s sibling modules with filesystem/process identities and bounded string payload; use one stat probe per candidate, matching Node’s loader approach (ADR-0001, t_9360174c / t_83018b53; substrate Article6).
+
+## v0.5.53 — 2026-09-29
+
+- Prepare extensionless JavaScript executable modules using the same image cache as `.js` files, matching Node loading them as JavaScript. Dub’s Next CLI was the last measured preparation miss (t_9360174c / t_92ec0dc2; Article 6).
+
+## v0.5.52 — 2026-09-29
+
+- Assemble module-source replacements in one pass over source spans, retaining edit ordering and overlap semantics, instead of copying the whole module once per edit (t_9360174c / t_e24fccae; substrate Article 6).
+
+## v0.5.51 — 2026-09-29
+
+## v0.5.50 — 2026-09-29
+
+- `crypto.createCipheriv` and `createDecipheriv`, which were missing, for AES
+  in GCM, CBC, CTR and ECB (128, 192 and 256-bit keys): synchronous as Node's,
+  over `@noble/ciphers`' AES block and GHASH, streaming as OpenSSL does, with
+  GCM's `setAAD`, `getAuthTag`, `setAuthTag` and `authTagLength`, CBC and ECB's
+  PKCS#7 padding and `setAutoPadding`, and Node's errors for an unknown cipher,
+  a wrong key or IV length, bad padding and a tag that does not authenticate.
+  NextAuth seals its session cookie with jose's AES-GCM, so every sign-in in a
+  tab failed with "createCipheriv is not a function" (Dub). `getCiphers` lists
+  exactly what `createCipheriv` accepts; it listed four ciphers it did not.
+  The ciphers are not `stream.Transform`s yet.
+
+## v0.5.49 — 2026-09-28
+
+- A `Request` or `Response` body may be any async iterable, as Node's fetch
+  (undici) reads it: a Node stream, an `http.IncomingMessage`, an async
+  generator, each chunk taken through `Buffer.from` as Node's is, an empty one
+  passed over, and a stream already read or locked refused with undici's
+  TypeError. The browser's constructors took such an object for a string
+  ("[object Object]"). Next's App Router builds each route handler's request
+  with the Node request as its body, so every POST a route handler read in a
+  tab was that string: Dub's NextAuth credentials callback found no CSRF token
+  and sent sign-in back to the login. A request with such a body and no
+  `duplex` now throws, as Node's does, where the tab accepted it. `fetch` reads
+  such a body the same way whichever transport answers it.
+- A start script runs whole under a hosted program. A `node` on any line of
+  a script (`sh start.sh`, `sh -c 'a && node b'`) is a process of its own
+  under the script's pid, where it was admitted under the shell's identity
+  and its exit ended the script. `sh` and `bash` carry the run's name into
+  the script they run, so its `node` is no longer refused for want of a
+  named run, and pass over their own options (`sh -e file`). A shell a
+  hosted program spawns runs at the host when there is one, where the
+  page's programs (`npx`) are found. `exec command` runs the command with
+  the script's environment.
+
+## v0.5.48 — 2026-09-28
+
+- A web `Response` keeps the `Set-Cookie` and `Set-Cookie2` headers it is
+  built with, as Node's (undici's) does: `getSetCookie()` lists each, `get`
+  joins them with ", ", iteration yields one entry per cookie, and a later
+  `append` or `set` keeps them too. The guest's `Response` was the browser's,
+  whose response guard drops both silently, so a server that answers with a web
+  Response lost every cookie it set before its answer reached the socket; in a
+  tab, Dub's `/api/auth/csrf` (NextAuth under `next start`) answered with none.
+  The realm's `Response` is still the browser's class but for its constructor,
+  which shares the browser's prototype: a fetch's answer, `Response.error()` and
+  a subclass are `instanceof Response` with `Response` as their `constructor`.
+  `Response.json` and `clone()` keep the cookies; `formData()` and `blob()` read
+  a content type changed after construction, as Node's do. A response a host
+  transport builds in the realm keeps the cookies of what it relays too. An init
+  is read as the platform reads it, inherited `status` included, so
+  `new Response(body, otherResponse)` (Next's `NextResponse.json`) keeps its status.
+
+## v0.5.47 — 2026-09-28
+
+- esbuild-wasm moves from 0.20.0 to 0.28.2. 0.20.0 is built with Go 1.20,
+  whose wasm `IndexByte` sign-extends the address it finds (golang/go#65571):
+  once esbuild's heap passes 2 GiB of linear memory, a search of a buffer above
+  that line answers about -4294967295 and esbuild panics slicing with it
+  (`slice bounds out of range [:-4294967295]` while printing a number). A long
+  shared instance reaches 2 GiB: Rallly's host pack build panicked in 13 to 19
+  modules a run, each run after the heap crossed 2 GiB, and once outside the
+  linker's recover, which ended the service and the build. On 0.28.2 (Go 1.26)
+  the same build ran to the end without a panic, its heap under 1.4 GiB.
+
+## v0.5.46 — 2026-09-28
+
+- A positioned write costs its own bytes. `fs.writeSync` at a position that is
+  not the file's end copied the whole file and wrote it all back; the binding
+  now calls the tree's `writeAtSync`, which `VirtualFS` answers in place in a
+  buffer the file owns and nobody holds (a copy or a read's result is never
+  changed by a later write). Postgres in a tab, whose commits rewrite a page of
+  its 16 MB write-ahead log, went from 44 ms a commit to under 1 ms with
+  browser-substrate's store answering `writeAtSync` too.
+- `require.resolve(id, { paths })` honours `paths` as Node does: each entry,
+  relative ones against the working directory, is where the lookup starts; a
+  non-array or a non-string entry is refused with Node's codes. A World's
+  injector found a Prisma adapter the application installs this way.
+
+## v0.5.45 — 2026-09-28
+
+## v0.5.44 — 2026-09-28
+
+- Prepared module bodies are keyed `tabnode-prepared-3`: v0.5.42 changed what
+  the await pass writes, and a body an image or a tab's store kept under the old
+  key was the broken one, served again for the file it was made from.
+
+## v0.5.43 — 2026-09-28
+
+## v0.5.42 — 2026-09-28
+
+- The pass that follows an async function's frame across its awaits lands
+  what closes a node before what opens the next one at the same offset.
+  `for await(x of y)await a;await b`, as minified code writes it, ended the
+  loop where the next statement's `await` began, and the resume opened there
+  landed inside the loop's brace: "SyntaxError: Unexpected token '}'" in two of
+  Dub's 2003 Next server chunks, while Next collected page data in a tab.
+
+## v0.5.41 — 2026-09-28
+
+## v0.5.40 — 2026-09-28
+
+## v0.5.39 — 2026-09-25
+
+- A module that awaits at its top level while its imports are lowered runs
+  as an async body. Its import markers made it a generator, where
+  `await (x)` is a call of an identifier named `await`: it compiled, ran, and
+  threw "await is not defined" (chrome-devtools-mcp's bundle,
+  `const HOST_RUNTIME = await (async () => ...)()`, never started).
+
+## v0.5.38 — 2026-09-25
+
+- `Buffer`'s base64 is the engine's own (`Uint8Array.prototype.toBase64`
+  where it exists) and a UTF-8 length is counted, not encoded. Built a
+  character at a time, a Vite session's sourcemap base64 was 600 MB of its
+  1.4 GB allocated in its first 20 s in a tab.
+- A string hashed as UTF-8 is encoded by `TextEncoder`: the `buffer`
+  package's own path built an array of numbers per string, and a Vite
+  session hashes every module it serves.
+
+## v0.5.37 — 2026-09-25
+
+- The service worker asks the page for its init only when another window of
+  its origin can answer. A page's own document and scripts come before its
+  init, and a frame being opened is no window yet: on an origin whose worker
+  had restarted, each such request waited out the whole 5 s ask.
+- `PREPARED_MODULES_DIR` is `/opt/.tabnode/prepared`, under a root a tab's
+  store keeps, so a host links an image's prepared bodies once from a shared
+  store instead of writing each into memory on every open.
+- An async function or block that opens with an `await`
+  (`async function f(){await g()}`, `finally{await h()}`) is rewritten to
+  valid code: the frame's take and restore landed inside the await's resume,
+  a syntax error that made Code-OSS's forked children exit 1.
+- A package with an `exports` map resolves its subpaths through the map
+  alone, as Node does: `require.resolve('<pkg>/package.json')` throws where
+  the map does not name it.
+
+## v0.5.36 — 2026-09-25
+
+- A buffered answer carries the frame's embedding headers (COEP, COOP, CORP)
+  even when its body is empty: an empty document was blocked in a cross-origin
+  isolated page and the frame showed Chrome's error page. A body the server
+  gave no Content-Type keeps none, for the browser to sniff; it was typed
+  application/octet-stream, which made a document a download.
+
+## v0.5.35 — 2026-09-24
+
+- The service worker passes each request's Fetch `destination` to the page
+  that answers it, so an embedding can report and route a page's documents,
+  frames and subresources apart from its fetches.
+
+## v0.5.34 — 2026-09-24
+
+- A write at a file's end is an append that costs what it adds. A descriptor's
+  write rebuilt the whole file for every chunk, so a 50 MB file written in 1 KB
+  stream chunks copied about a terabyte; `VirtualFS.appendFileSync` takes the
+  added bytes (in memory, in a buffer with room to grow), and an embedding's
+  tree can answer appends itself. Read in a tab: 20 MB in 1 KB chunks, 4.6 s.
+
+## v0.5.33 — 2026-09-24
+
+- A module body the loader keeps is written under its name in one step. In
+  0.5.32 it was written under a half name and renamed, and the rename failed
+  in a forked process's realm (Playwright's test workers), so those bodies
+  were left half-named and never kept.
+
+## v0.5.32 — 2026-09-24
+
+- A module body the loader prepares for a file the image carries none for
+  (a package installed in the tab) is kept in `/.tabnode/prepared` under the
+  file's content key, as the image's bodies are, so the next process takes
+  it instead of parsing again: `require('@playwright/test')` in a new process
+  went from 20 s to 0.4 s, measured in a tab.
+
+## v0.5.31 — 2026-09-24
+
+- `zlib`'s handle returns nothing from `write` and `writeSync`, as Node's
+  binding does. pngjs's synchronous inflate reads `writeSync(...) ||
+  this._writeState`, so a returned handle stood in for the shared pair and
+  every `PNG.sync.read` threw `have should not go down`.
+
+## v0.5.30 — 2026-09-24
+
+- A host can start the frame documents its servers serve with a prelude:
+  `init`'s `documentPrelude` is markup the service worker puts first in a
+  frame's HTML document (after its doctype), streamed through, so an
+  embedding's script runs before the document's own. Browser Substrate's
+  sandbox uses it to prepare each preview document for its inspector (init
+  scripts, bindings, the Worker wrapper) before the page's scripts run.
+
+## v0.5.29 — 2026-09-24
+
+- `AsyncLocalStorage` follows an `await`, as Node's does. A module body the
+  engine compiles takes its async function's context on entry and puts it
+  back where the function resumes (after an `await`, in a `catch` or
+  `finally`, around a `for await`), and `run` restores the previous context
+  when its callback returns instead of holding its store until the
+  callback's promise settles. Two overlapping async runs saw whichever store
+  was entered last: Playwright found another call's zone and dropped its
+  `locator.click:` error prefix. `AsyncResource` runs its callbacks in the
+  context it was made in. Prepared module bodies change format
+  (`tabnode-prepared-2`), so an image prepares them again.
+
+## v0.5.28 — 2026-09-24
+
+- `import.meta.resolve(specifier)` exists, as Node's synchronous one has since
+  20.6: a relative or URL specifier resolves against the module's URL, a
+  builtin to `node:<name>`, a bare one through the module's resolver. Pi's
+  extension loader resolves its own packages with it, and every Pi extension
+  failed to load with "import_meta.resolve is not a function".
+- A `.cjs` module's dynamic `import()` is rewritten from its syntax tree, as
+  every other CommonJS module's is. The text rewrite also renamed a method
+  called `import`, so jiti's `async import(e, t)` became `__dynamicImport` and
+  `jiti.import` was undefined.
+- `vm.runInThisContext` (and a `vm.Script`'s) runs in the calling process's
+  global scope, so a script sees Node's timers: jiti evaluates every module it
+  loads this way, and a module's `setInterval(...).unref()` threw.
+- `npm run` takes npm's options before the script's name (`npm run --silent
+  vgai -- mcp .` looked up `--silent` as the script), passes the arguments
+  after the name and after `--` to the script, which it dropped, suppresses
+  its banner under `--silent`, succeeds under `--if-present` when the script is
+  missing, and hands the script its standard input.
+
+## v0.5.27 — 2026-09-24
+
+- `@volter/tabnode/port-bridge` is the page's side of the service worker
+  alone: the servers a host registered, by port, and the protocol the worker
+  speaks to reach them, flow control and streaming included, in 26 KB with
+  none of Node's library. A page whose engine runs in a worker imports it and
+  loads no engine; before, the page's bridge was the engine's, and a page
+  serving a worker's ports carried the whole engine (3 MB) to do it.
+  `ServerBridge` extends `PortBridge` with the servers the engine's guests
+  listen on, and is unchanged for them.
+
+## v0.5.26 — 2026-09-24
+
+- A module body can be prepared where the image is built.
+  `prepareModuleForImage` makes the body the loader would compile for a file
+  (ES-module lowering, the `import()` rewrite, global-call scoping), and
+  `preparedModuleKey` names it by the hash of the file. A body placed in
+  `/.tabnode/prepared` under that key is loaded in place of those passes, for a
+  file loaded with no load hooks and no type stripping. The passes were most of
+  a `require` in a tab: with bodies for playwright-core 1.63.0, its require
+  took 2.6 to 4.1 s in a Browser Substrate tab against 7.5 to 8.8 s without.
+
+## v0.5.25 — 2026-09-24
+
+- The worker's pruning of gone clients never leaves a rejected promise
+  unhandled where `clients.matchAll` is unavailable.
+
+## v0.5.24 — 2026-09-24
+
+- An `init` whose sender the worker cannot name replaces the previous such
+  channel, as every `init` did before 0.5.23, and a replaced host's channel
+  is never answered from again.
+
+## v0.5.23 — 2026-09-24
+
+- The service worker holds a host per page. Each page that sends `init` keeps
+  its own channel, servers, preview port and own documents, and a request goes
+  to the page whose document or worker made it (the requesting client, the
+  document its referrer names, or the only page holding the port). Before,
+  the worker had one channel for the whole origin: a second page's `init`
+  replaced the first's, failed its requests in flight, and every preview of
+  the first page was answered by the second page's servers.
+
+## v0.5.22 — 2026-09-24
+
+- `crypto.generateKeyPair` exists, done by WebCrypto for `ec` (P-256, P-384,
+  P-521), `rsa`, `rsa-pss`, `ed25519` and `x25519`, returning `KeyObject`s or
+  `spki`/`pkcs8` PEM and DER, with Node's custom promisify resolving
+  `{ publicKey, privateKey }`. jose's Node build promisifies it when it loads,
+  so any module importing jose (Dub's middleware among them) failed at import.
+  `generateKeyPairSync` stays absent: a browser has no synchronous key generation.
+
+## v0.5.21 — 2026-09-24
+
+- A child writing to its parent's file descriptor shares one offset with every
+  other writer of that open file, as a dup'd descriptor does: stdout and
+  stderr handed the same file no longer overwrite each other from one
+  position, and the parent's own writes after the spawn follow the child's.
+- `npm init -y --scope @x` (or `-w pkg`, `--init-license MIT`) writes the
+  package instead of refusing a flag's value as an initializer, and a scope
+  names the package `@x/<folder>`.
+
+## v0.5.20 — 2026-09-24
+
+- `https.createServer` serves. Node's own `https.js` calls `tls.Server` on its
+  instance, and the stub was a class, so the call threw `Class constructor
+  Server cannot be invoked without 'new'`; Playwright's own test suite starts
+  an https test server in every worker and failed there. A TLS server is now a
+  net server on the tab's loopback that hands each connection on as secure
+  (`socket.encrypted`), and a TLS connect or `https` request to a loopback
+  port pairs with it. The bytes cross unencrypted: nothing lies between the
+  two ends, and the browser holds TLS wherever there is a wire. A TLS connect
+  to any other host still fails with `ERR_TLS_UNAVAILABLE`.
+
+## v0.5.19 — 2026-09-24
+
+- `require('stream/web').ReadableStream` is `globalThis.ReadableStream` again,
+  as in Node. The module copied the globals when the engine loaded, and 0.5.17
+  then wrapped the global `ReadableStream` for Node's closed-promise tracking,
+  so the module held the unwrapped constructor and `instanceof` across the two
+  names failed. The module now reads the globals when a property is used.
+
+## v0.5.18 — 2026-09-24
+
+- A `.ts`, `.mts` or `.cts` program runs with its types erased, as Node runs
+  one: the entry a `node` command names and every module it requires or
+  imports. A realm with no stripper registered (the engine under Node) ran
+  such a file as JavaScript and died on its first type (`Unexpected
+  identifier 'SlackReply'`), and an entry was never stripped anywhere. Where
+  the page registers no stripper, the engine uses Node's own
+  `internal/modules/typescript.js` (v22.18.0, vendored) over amaro 1.1.0, the
+  release v22.18.0 carries, now a dependency: strip-only, lines and columns
+  kept, `enum`, value namespaces and parameter properties refused with
+  `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`, files under `node_modules` refused,
+  and `--experimental-transform-types` transforming instead.
+  `process.versions.amaro` is reported.
+- An ES module's stack frames name the file's own lines; they were one line
+  below, under the lowering's `"use strict"` line.
+- The engine's shell runs a statement ending in `&` in the background. `$!`
+  is the job's pid in the engine's process table (a `node` job's own
+  `process.pid`), `wait` (all, `-n`, or pids) waits and returns the job's
+  status or 128 + the signal that ended it, `kill` (`-s`, `-n`, `-SIG`, `-l`)
+  signals any process of the engine by pid, `disown` forgets a job. The
+  shell parsed `&` and ran the statement to its end first, `$!` was 0,
+  `wait` answered 0 at once, and `kill` was not a command.
+- A spawned child whose command line mixed builtins with a streaming `node`
+  no longer loses the builtins' output at its end.
+
+## v0.5.17 — 2026-09-24
+
+- `http.maxHeaderSize` is Node's default, 16 KiB, and `internal/options`
+  answers `--max-http-header-size`, `--insecure-http-parser` and
+  `--enable-source-maps` with Node's defaults. undici 8 reads the size when
+  its `Client` is made, and every fetch through an undici a program installed
+  (Pi's) failed with `http module not available`.
+- `tls.getCACertificates(type)` answers the same empty store
+  `tls.rootCertificates` does, and refuses an unknown type as Node does. VS
+  Code's proxy agent calls it on every fetch it patches, so the extension
+  host's first fetch threw.
+- A web stream a guest constructs carries Node's closed promise
+  (`nodejs.webstream.isClosedPromise`), settled by its own controller's
+  `close`, `error`, a failing `pull` or `cancel`. undici's fetch waits for a
+  response body's end with `stream.finished()`, which read that promise off
+  the browser's stream and threw, so every fetch body stalled after its head.
+  The constructor stays the browser's, so a platform stream is still
+  `instanceof ReadableStream`.
+- `StringDecoder.write` returns a string argument as it is given, as Node's
+  does. readline decodes every chunk, and an input stream with an encoding
+  hands it strings: Pi resuming a session read its JSONL through
+  `createReadStream(path, 'utf8')` and died on the first line.
+- `worker_threads.markAsUncloneable` and `isMarkedAsUncloneable` exist, as in
+  Node 22. undici 7 and 8 mark their WebIDL objects at construction and a
+  program loading them died before its first line. The mark is recorded; the
+  engine's channels do not yet refuse a marked object.
+- `performance.markResourceTiming` exists and records nothing. undici calls it
+  after every response it reads, and the browser's `performance` has no such
+  method.
+- `zlib.createBrotliDecompress` decodes, over `brotli`'s pure-JavaScript
+  decoder, the whole stream at its finish. A server serving a pre-compressed
+  artifact to a client that did not ask for Brotli inflates it instead of
+  refusing. Brotli compression is still refused by name.
+- ESM lowered for Node calls the realm's `Object` and `Symbol` by names a
+  module cannot declare (`__browserRuntimeObject`, `__browserRuntimeSymbol`).
+  The lowering's `Object.defineProperty` ran before the module's body, and a
+  module that imports a binding called `Object` (typebox's object type) read
+  it in its dead zone. An `export * as X from` no longer has its exported
+  name rewritten as a reference: typebox's `export * as Guard` became
+  `__substrateImport1`.
+- A guest global the host holds read-only is still the guest's to replace, as
+  Node's globals are: the guest gets its own binding and the host's is
+  untouched. undici's `install()` assigns `globalThis.WebSocket`, and Pi died
+  on the refusal.
+- A child whose fd 0 is a pipe and which the host runs (a program pack, not a
+  builtin of the engine's shell) reads its input as the parent writes it.
+  Before, it was handed what had been written when it began and then EOF, so
+  a JSON-RPC server over stdio (`supercode harness serve`) exited before its
+  client's first request.
+- The hard minute that ends a run whose work the engine cannot see also waits
+  for work the host holds for it (a build, a pre-bundle): a dev server whose
+  start passed a minute mid pre-bundle was ended with exit 0.
+- esbuild-wasm runs its compiler on the calling thread (`worker: false`) in a
+  realm that withholds `Worker`, where its start threw `Worker is not a
+  constructor`.
+
+## v0.5.16 — 2026-09-23
+
+- A child spawned with a descriptor of the parent's as its stdio
+  (`stdio: ['ignore', fd, fd]`, `fd` from `fs.openSync`) writes its output to
+  that file, as its own duplicate of the descriptor: appending where the
+  descriptor appends, and on after the parent closes its copy. Before, only
+  descriptors 1 and 2 were inherited, and a program that logs its children to
+  a file (Workbench's installs) got an empty log.
+- `npm init -y` writes npm's defaults to package.json, keeping the fields one
+  already has, and prints it as npm does. `npm init` without `-y` (its
+  questions need a prompt) and with an initializer package are refused by
+  name. Before, `init` was an unknown command, and a recipe that begins with
+  `npm init -y` stopped there.
+
+## v0.5.15 — 2026-09-23
+
+- A guest's listener registered as its request adapter (no longer the `null`
+  sentinel) is streamed off its connection again, by `handleStreamingRequest`
+  and by the service worker's stream: an event-stream answer reaches the page
+  as it is written instead of whole at its end.
+
+## v0.5.14 — 2026-09-23
+
+- A registered server's `handleStreamingRequest` is handed the same flow as a
+  guest's loopback, as its eighth argument: the reader's going away (`signal`)
+  and the pause and resume of its producer (`control`). A server that proxies
+  another thread's port (a worker's) can carry the page's credit and cancel
+  across to where the bytes are made. `LoopbackStreamFlow` is exported.
+
+## v0.5.13 — 2026-09-23
+
+- The page bridge speaks the service worker's flow-controlled stream on every
+  port it registers: a response goes to the reader one chunk (at most 64 KiB)
+  per pull, the server's connection is paused while chunks wait for credit,
+  and a reader that goes away closes it. A guest server's streaming answer
+  (server-sent events, a long download) now reaches the page as it is
+  written; before, the page never announced flow control, so every GET to a
+  guest port was buffered until the server ended it, and an event stream
+  never arrived.
+
+## v0.5.12 — 2026-09-23
+
+- `container.streamHandles()` lists every native stream handle the
+  processes of other workers hold through this engine, with the pid each
+  scope serves, its kind and whether it listens: the descriptors a
+  container's `/proc/<pid>/fd` lists, so a process that reaches its
+  `maxHandles` can be read before it refuses (`accept EMFILE`).
+
+## v0.5.11 — 2026-09-23
+
+- Plain HTTP through the host exchange no longer refuses as "custom TLS
+  options": Node's Agent gives every connection a `servername` (empty for an
+  IP address), so a guest's `http.request('http://127.0.0.1:…')` to a
+  host-served port failed before it was sent. TLS options are checked for
+  `https:` only.
+
+## v0.5.10 — 2026-09-23
+
+- `installHttpClientTransport(factory, { hostPorts })`: plain HTTP to a
+  loopback port the host names as its own goes through the host exchange
+  instead of the engine's loopback, so a guest's `http.request` reaches a
+  service the page serves (browser-substrate's Host Fetch services) as its
+  `fetch` already does. Every other loopback port is still the engine's.
+- `process.stdout.write(chunk, callback)` and `stderr`'s run the callback, as
+  Node's do when it is the second argument; `end(chunk)` writes its chunk, and
+  a plain `Uint8Array` chunk is written as its UTF-8 text, not its byte values.
+  Playwright's test runner waits on `stdout.write('', done)` before it exits
+  with the run's status, so a failed `npx playwright test` in the tab exited 0.
+  Measured in the tab: `process.stdout.write('x', cb)` never ran `cb`.
+
+## v0.5.9 — 2026-09-23
+
+- A parent's `child.kill(signal)` reaches a child running in a realm of its own
+  as a machine's process takes it: the child's listeners run, else its default
+  action ends it, and a process a signal's default action ended reports that
+  signal (`container.run` answers `signal`, a `NodeProcessHost` may answer it,
+  and the child's `exit` event gets `(null, signal)`).
+
+## v0.5.8 — 2026-09-23
+
+- `os.homedir()` returns `HOME` when the environment sets it, as Node's does;
+  `os.userInfo().homedir` stays the account's directory.
+- A function a module defines keeps working when its source is sent elsewhere
+  and run there (`String(fn)` evaluated in a browser page, as Playwright's
+  `page.evaluate` and its injected scripts are): a `new X(...)` in it no longer
+  names a helper that exists only inside the engine's module wrapper. Measured
+  in the tab: `expect(locator).toContainText` failed with
+  `ReferenceError: __substrateGuestConstructor is not defined` in the page.
+- 0.5.7's fix was incomplete: the sending side duplicates a passed socket
+  first, and a native stream's `duplicate` (and a child's descriptor
+  inheritance) still refused one whose other end had closed, so `child.send`
+  of such a socket still answered `write ENOTSUP` (measured on production with
+  0.5.7). Any connection is now duplicated and inherited; a listening server is
+  not.
+
+## v0.5.7 — 2026-09-23
+
+- A registered-program stub a host places on a path (`#!/bin/sh`, then
+  `# <name>: runtime-registered program`) is relayed to the host when spawned,
+  as an unresolved name is, instead of run as a script of the engine's.
+- A socket whose other end has closed can still be sent to another process
+  (`child.send(message, socket)`), as Node allows; the receiver reads its EOF.
+  Across native streams the write failed with `ENOTSUP`, which closed the IPC
+  channel: VS Code's extension host died when a reconnecting client had already
+  gone. Measured in the tab: a half-open server socket whose client was
+  destroyed, sent 300 ms later, answered `write ENOTSUP`.
+
+## v0.5.6 — 2026-09-23
+
+- An `import()` inside source a module hands to a direct `eval` loads through
+  the engine, as a module's own does: Playwright's test runner loads an ES
+  config with ``eval(`import(...)`)``.
+- A listener the engine holds for another worker's process (a
+  `NativeStreamScope`'s) names that process: `container.portPid` answers the
+  scope's `ownerPid`, which the embedder gives the scope. Measured in the tab:
+  a server a Node process opened listed no owner in `/proc/<pid>/fd`, because
+  a process's sockets are the owner's handles.
+
 ## v0.5.5 — 2026-09-23
 
+- A host delivers another process's `kill(pid, signal)` to a named run with
+  `signalProcess(token, signal)`: the guest's listeners for it run, else its
+  default action ends the run, as on a machine. A confined realm ended its
+  process without running them.
 - The filesystem mounts a read-only tree at a directory (`vfs.mount(path,
   tree)`), as Linux mounts `/proc`: reads below it are the tree's answers,
   made when they are read, links in it are followed as any link, writes fail
@@ -12,9 +1020,7 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   when (`argv`, `cwd`, `startedAt`), and the container owner reads every live
   process of the container (`ownerProcessTable()`), for a `/proc` to list.
 - `container.portPid(port)` names the process listening on a port of the
-  engine, for the socket owner `/proc/<pid>/fd` shows: a guest's own listener,
-  or one a `NativeStreamScope` holds for another worker's process, named by
-  the scope's new `ownerPid`.
+  engine, for the socket owner `/proc/<pid>/fd` shows.
 
 ## v0.5.4 — 2026-09-23
 

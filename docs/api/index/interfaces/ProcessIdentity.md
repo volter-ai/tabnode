@@ -10,6 +10,30 @@ Native process identity shared by the container's worker realms.
 
 ## Properties
 
+### argv?
+
+> `readonly` `optional` **argv?**: readonly `string`[]
+
+What the process was started as, where its starter said: `/proc/<pid>/cmdline`.
+
+***
+
+### cwd?
+
+> `readonly` `optional` **cwd?**: `string`
+
+The directory it was started in: `/proc/<pid>/cwd`.
+
+***
+
+### pgid?
+
+> `readonly` `optional` **pgid?**: `number`
+
+POSIX process group; optional for hosts predating group support.
+
+***
+
 ### pid
 
 > `readonly` **pid**: `number`
@@ -19,3 +43,11 @@ Native process identity shared by the container's worker realms.
 ### ppid
 
 > `readonly` **ppid**: `number`
+
+***
+
+### startedAt?
+
+> `readonly` `optional` **startedAt?**: `number`
+
+When it started, in milliseconds since the epoch.

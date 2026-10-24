@@ -34,6 +34,13 @@ export interface NativeStreamReply { status: number; handle?: NativeStreamDescri
 export interface NativeStreamTransport {
   readonly limits: Readonly<NativeStreamLimits>;
   call(operation: NativeStreamOperation): NativeStreamReply;
+  /**
+   * An operation whose answer nothing waits for, sent without waiting for
+   * the owner: the owner takes it in order with every call after it, and one
+   * it refuses completes with its status: a read grant as the handle's failed
+   * read, a shutdown as its completion. Optional; without it each is a call.
+   */
+  post?(operation: { operation: 'readStart'; id: number } | { operation: 'shutdown'; id: number; request: number }): void;
   write(id: number, bytes: Uint8Array, handle?: number): Promise<number>;
   onEvent(listener: (event: NativeStreamEvent) => void): () => void;
 }
@@ -41,6 +48,12 @@ export interface NativeStreamTransport {
 type NativeHandle = TCP | Pipe;
 interface Entry { handle: NativeHandle; descriptor: NativeStreamDescriptor; buffer?: Uint8Array }
 const scopes = new WeakMap<LibuvStreamWrap, NativeStreamScope>();
+// Every scope not yet disposed: what the container's /proc lists as each
+// process's descriptors.
+const liveScopes = new Set<NativeStreamScope>();
+
+/** One open stream handle, as a process's descriptor table shows it. */
+export interface NativeStreamHandleView { pid?: number; id: number; kind: 'tcp' | 'pipe'; listening: boolean }
 
 /**
  * One capability namespace per worker. Only the trusted host can inherit a
@@ -66,6 +79,16 @@ export class NativeStreamScope {
       || limits.maxReadChunkBytes > limits.maxQueuedBytes
       || limits.maxReadChunkBytes > limits.maxPendingWriteBytes) throw new Error('Invalid native stream resource limits.');
     this.limits = Object.freeze({ ...limits });
+    liveScopes.add(this);
+  }
+
+  /** This scope's open handles, with the process it serves. */
+  handles(): NativeStreamHandleView[] {
+    if (this.disposed) return [];
+    const pid = this.ownerPid?.();
+    return [...this.entries.values()].map(({ handle, descriptor }) => ({
+      ...(pid !== undefined ? { pid } : {}), id: descriptor.id, kind: descriptor.kind, listening: !!handle.listening,
+    }));
   }
 
   private entry(id: number): Entry | undefined {
@@ -142,7 +165,9 @@ export class NativeStreamScope {
     const handle = entry.handle;
     switch (operation.operation) {
       case 'duplicate': {
-        if (!handle.peer || handle.listening) return { status: UV_ENOTSUP };
+        // A connection is duplicated whether or not its other end is still
+        // there (the copy reads its EOF); a listening server is not one.
+        if (handle.listening) return { status: UV_ENOTSUP };
         if (this.entries.size >= this.limits.maxHandles) return { status: UV_EMFILE };
         const copy = handle.duplicate();
         const descriptor = this.claim(copy);
@@ -240,7 +265,11 @@ export class NativeStreamScope {
       || this.pendingWriteBytes + bytes.byteLength > this.limits.maxPendingWriteBytes) return Promise.resolve(UV_ENOBUFS);
     const sent = sentId === undefined ? undefined : this.entry(sentId)?.handle;
     if (sentId !== undefined && !sent) return Promise.resolve(UV_EBADF);
-    if (sent && (!(handle instanceof Pipe) || !sent.peer || sent.listening || bytes.byteLength === 0)) return Promise.resolve(UV_ENOTSUP);
+    // A connection crosses whether or not its other end is still there: Node
+    // passes a socket whose peer has closed, and the receiver reads its EOF.
+    // Refusing it failed the whole channel write (`write ENOTSUP`), which ended
+    // VS Code's extension host when a reconnecting client had already gone.
+    if (sent && (!(handle instanceof Pipe) || sent.listening || bytes.byteLength === 0)) return Promise.resolve(UV_ENOTSUP);
     // Retain the descriptor while capacity is unavailable; the sender can close
     // its original after submitting the write without invalidating this copy.
     const owned = new Uint8Array(bytes.byteLength);
@@ -285,7 +314,7 @@ export class NativeStreamScope {
     if (this.entries.size >= this.limits.maxHandles) return { status: UV_EMFILE };
     const handle = source.entry(id)?.handle;
     if (!handle) return { status: UV_EBADF };
-    if (handle.listening || !handle.peer) return { status: UV_ENOTSUP };
+    if (handle.listening) return { status: UV_ENOTSUP };
     const copy = handle.duplicate();
     const descriptor = this.claim(copy);
     if (!descriptor) { copy.close(); return { status: UV_EMFILE }; }
@@ -312,6 +341,7 @@ export class NativeStreamScope {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    liveScopes.delete(this);
     const failures: unknown[] = [];
     for (const id of [...this.entries.keys()]) {
       try { this.close(id); } catch (cause) { failures.push(cause); }
@@ -323,4 +353,9 @@ export class NativeStreamScope {
 /** The process a handle opened for another worker's process belongs to, where a scope holds it. */
 export function nativeStreamOwnerPid(handle: object): number | undefined {
   return scopes.get(handle as NativeHandle)?.ownerPid?.();
+}
+
+/** Every open native stream handle in this worker, by the process each scope serves. */
+export function nativeStreamHandles(): NativeStreamHandleView[] {
+  return [...liveScopes].flatMap(scope => scope.handles());
 }

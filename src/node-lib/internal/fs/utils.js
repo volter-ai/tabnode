@@ -13,10 +13,8 @@ const {
   Number,
   NumberIsFinite,
   ObjectDefineProperties,
-  ObjectDefineProperty,
   ObjectIs,
   ObjectSetPrototypeOf,
-  ReflectApply,
   ReflectOwnKeys,
   RegExpPrototypeSymbolReplace,
   StringPrototypeEndsWith,
@@ -27,11 +25,11 @@ const {
 } = primordials;
 
 const { Buffer } = require('buffer');
+const { isBuffer: BufferIsBuffer } = Buffer;
 const {
   UVException,
   codes: {
     ERR_FS_EISDIR,
-    ERR_FS_INVALID_SYMLINK_TYPE,
     ERR_INCOMPATIBLE_OPTION_PAIR,
     ERR_INVALID_ARG_TYPE,
     ERR_INVALID_ARG_VALUE,
@@ -50,11 +48,13 @@ const {
   once,
   deprecate,
   isWindows,
+  setOwnProperty,
 } = require('internal/util');
 const { toPathIfFileURL } = require('internal/url');
 const {
   validateAbortSignal,
   validateBoolean,
+  validateBuffer,
   validateFunction,
   validateInt32,
   validateInteger,
@@ -162,7 +162,6 @@ class Dirent {
   constructor(name, type, path) {
     this.name = name;
     this.parentPath = path;
-    this.path = path;
     this[kType] = type;
   }
 
@@ -303,7 +302,7 @@ function getDirent(path, name, type, callback) {
           callback(err);
           return;
         }
-        callback(null, new DirentFromStats(name, stats, filepath));
+        callback(null, new DirentFromStats(name, stats, path));
       });
     } else {
       callback(null, new Dirent(name, type, path));
@@ -452,10 +451,10 @@ const lazyDateFields = {
     enumerable: true,
     configurable: true,
     get() {
-      return this.atime = dateFromMs(this.atimeMs);
+      return setOwnProperty(this, 'atime', dateFromMs(this.atimeMs));
     },
     set(value) {
-      ObjectDefineProperty(this, 'atime', { __proto__: null, value, writable: true });
+      setOwnProperty(this, 'atime', value);
     },
   },
   mtime: {
@@ -463,10 +462,10 @@ const lazyDateFields = {
     enumerable: true,
     configurable: true,
     get() {
-      return this.mtime = dateFromMs(this.mtimeMs);
+      return setOwnProperty(this, 'mtime', dateFromMs(this.mtimeMs));
     },
     set(value) {
-      ObjectDefineProperty(this, 'mtime', { __proto__: null, value, writable: true });
+      setOwnProperty(this, 'mtime', value);
     },
   },
   ctime: {
@@ -474,10 +473,10 @@ const lazyDateFields = {
     enumerable: true,
     configurable: true,
     get() {
-      return this.ctime = dateFromMs(this.ctimeMs);
+      return setOwnProperty(this, 'ctime', dateFromMs(this.ctimeMs));
     },
     set(value) {
-      ObjectDefineProperty(this, 'ctime', { __proto__: null, value, writable: true });
+      setOwnProperty(this, 'ctime', value);
     },
   },
   birthtime: {
@@ -485,10 +484,10 @@ const lazyDateFields = {
     enumerable: true,
     configurable: true,
     get() {
-      return this.birthtime = dateFromMs(this.birthtimeMs);
+      return setOwnProperty(this, 'birthtime', dateFromMs(this.birthtimeMs));
     },
     set(value) {
-      ObjectDefineProperty(this, 'birthtime', { __proto__: null, value, writable: true });
+      setOwnProperty(this, 'birthtime', value);
     },
   },
 };
@@ -496,8 +495,7 @@ const lazyDateFields = {
 function BigIntStats(dev, mode, nlink, uid, gid, rdev, blksize,
                      ino, size, blocks,
                      atimeNs, mtimeNs, ctimeNs, birthtimeNs) {
-  ReflectApply(StatsBase, this, [dev, mode, nlink, uid, gid, rdev, blksize,
-                                 ino, size, blocks]);
+  FunctionPrototypeCall(StatsBase, this, dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks);
 
   this.atimeMs = atimeNs / kNsPerMsBigInt;
   this.mtimeMs = mtimeNs / kNsPerMsBigInt;
@@ -575,9 +573,10 @@ function getStatsFromBinding(stats, offset = 0) {
 }
 
 class StatFs {
-  constructor(type, bsize, blocks, bfree, bavail, files, ffree) {
+  constructor(type, bsize, frsize, blocks, bfree, bavail, files, ffree) {
     this.type = type;
     this.bsize = bsize;
+    this.frsize = frsize;
     this.blocks = blocks;
     this.bfree = bfree;
     this.bavail = bavail;
@@ -588,14 +587,15 @@ class StatFs {
 
 function getStatFsFromBinding(stats) {
   return new StatFs(
-    stats[0], stats[1], stats[2], stats[3], stats[4], stats[5], stats[6],
+    stats[0], stats[1], stats[2], stats[3], stats[4], stats[5], stats[6], stats[7],
   );
 }
 
 function stringToFlags(flags, name = 'flags') {
   if (typeof flags === 'number') {
     validateInt32(flags, name);
-    return flags;
+    // Coerce -0 to +0.
+    return flags + 0;
   }
 
   if (flags == null) {
@@ -635,22 +635,16 @@ function stringToFlags(flags, name = 'flags') {
 }
 
 const stringToSymlinkType = hideStackFrames((type) => {
-  let flags = 0;
-  if (typeof type === 'string') {
-    switch (type) {
-      case 'dir':
-        flags |= UV_FS_SYMLINK_DIR;
-        break;
-      case 'junction':
-        flags |= UV_FS_SYMLINK_JUNCTION;
-        break;
-      case 'file':
-        break;
-      default:
-        throw new ERR_FS_INVALID_SYMLINK_TYPE(type);
-    }
+  switch (type) {
+    case undefined:
+    case null:
+    case 'file':
+      return 0;
+    case 'dir':
+      return UV_FS_SYMLINK_DIR;
+    case 'junction':
+      return UV_FS_SYMLINK_JUNCTION;
   }
-  return flags;
 });
 
 // converts Date or number to a fractional UNIX timestamp
@@ -930,6 +924,60 @@ const validateStringAfterArrayBufferView = hideStackFrames((buffer, name) => {
   }
 });
 
+const validateReadFileBufferOptions = hideStackFrames((options) => {
+  const { buffer } = options;
+
+  if (buffer !== undefined && typeof buffer !== 'function' &&
+      !isArrayBufferView(buffer)) {
+    throw new ERR_INVALID_ARG_TYPE.HideStackFramesError(
+      'options.buffer',
+      ['Buffer', 'TypedArray', 'DataView', 'Function'],
+      buffer,
+    );
+  }
+});
+
+function getReadFileBufferByteLengthName(options) {
+  return typeof options.buffer === 'function' ?
+    'options.buffer().byteLength' :
+    'options.buffer.byteLength';
+}
+
+const getReadFileBuffer = hideStackFrames((options, size) => {
+  let { buffer } = options;
+
+  if (typeof buffer === 'function') {
+    buffer = options.buffer(size);
+    validateBuffer.withoutStackTrace(buffer, 'options.buffer()');
+  }
+
+  if (buffer === undefined) {
+    return undefined;
+  }
+
+  if (!BufferIsBuffer(buffer)) {
+    buffer = Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  }
+
+  if (size > buffer.byteLength) {
+    throw new ERR_INVALID_ARG_VALUE.HideStackFramesError(
+      getReadFileBufferByteLengthName(options),
+      buffer.byteLength,
+      `is smaller than the file size of ${size} bytes`,
+    );
+  }
+
+  return buffer;
+});
+
+const createReadFileBufferTooSmallError = hideStackFrames((name, byteLength) => {
+  return new ERR_INVALID_ARG_VALUE.HideStackFramesError(
+    name,
+    byteLength,
+    'is too small to contain the entire file',
+  );
+});
+
 const validatePosition = hideStackFrames((position, name, length) => {
   if (typeof position === 'number') {
     validateInteger.withoutStackTrace(position, name, -1);
@@ -979,6 +1027,10 @@ module.exports = {
   validateOffsetLengthWrite,
   validatePath,
   validatePosition,
+  validateReadFileBufferOptions,
+  getReadFileBuffer,
+  getReadFileBufferByteLengthName,
+  createReadFileBufferTooSmallError,
   validateRmOptions,
   validateRmOptionsSync,
   validateRmdirOptions,

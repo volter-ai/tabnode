@@ -7,10 +7,11 @@ const {
   ArrayIsArray,
   Promise,
   SymbolAsyncIterator,
+  SymbolDispose,
 } = primordials;
 
-const eos = require('internal/streams/end-of-stream');
-const { SymbolDispose, once } = require('internal/util');
+const { eos } = require('internal/streams/end-of-stream');
+const { once } = require('internal/util');
 const destroyImpl = require('internal/streams/destroy');
 const Duplex = require('internal/streams/duplex');
 const {
@@ -22,6 +23,7 @@ const {
     ERR_MISSING_ARGS,
     ERR_STREAM_DESTROYED,
     ERR_STREAM_PREMATURE_CLOSE,
+    ERR_STREAM_UNABLE_TO_PIPE,
   },
 } = require('internal/errors');
 
@@ -225,7 +227,7 @@ function pipelineImpl(streams, callback, opts) {
   }
 
   function finishImpl(err, final) {
-    if (err && (!error || error.code === 'ERR_STREAM_PREMATURE_CLOSE')) {
+    if (err && (!error || error.code === 'ERR_STREAM_PREMATURE_CLOSE' || error.name === 'AbortError')) {
       error = err;
     }
 
@@ -253,10 +255,15 @@ function pipelineImpl(streams, callback, opts) {
     const stream = streams[i];
     const reading = i < streams.length - 1;
     const writing = i > 0;
+    const next = i + 1 < streams.length ? streams[i + 1] : null;
     const end = reading || opts?.end !== false;
     const isLastStream = i === streams.length - 1;
 
     if (isNodeStream(stream)) {
+      if (next !== null && (next?.closed || next?.destroyed)) {
+        throw new ERR_STREAM_UNABLE_TO_PIPE();
+      }
+
       if (end) {
         const { destroy, cleanup } = destroyer(stream, reading, writing);
         destroys.push(destroy);

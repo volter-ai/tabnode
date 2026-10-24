@@ -1,7 +1,8 @@
+import FAST_UTF8_STREAM from './internal/streams/fast-utf8-stream.js?raw';
 /**
  * The vendored Node files, by the name Node's own `require` calls each one.
  *
- * Every file here is `nodejs/node` v22.18.0's, byte for byte. None is edited,
+ * Every file here is `nodejs/node` v24.21.0's, byte for byte. None is edited,
  * ever: a bug in one is fixed by moving the file to a newer Node, and a thing
  * one needs that the engine lacks is supplied by the binding or by a
  * hand-bound internal, never by a change here. Vite's `?raw` reads each as
@@ -43,6 +44,7 @@ import INTERNAL_VALIDATORS from './internal/validators.js?raw';
 import INTERNAL_ABORT_LISTENER from './internal/events/abort_listener.js?raw';
 import INTERNAL_CHILD_PROCESS_SERIALIZATION from './internal/child_process/serialization.js?raw';
 import INTERNAL_MODULES_CUSTOMIZATION_HOOKS from './internal/modules/customization_hooks.js?raw';
+import INTERNAL_MODULES_TYPESCRIPT from './internal/modules/typescript.js?raw';
 import EVENTS from './events.js?raw';
 import INTERNAL_CONSTANTS from './internal/constants.js?raw';
 import INTERNAL_MIME from './internal/mime.js?raw';
@@ -102,11 +104,52 @@ import INTERNAL_UTIL_DEBUGLOG from './internal/util/debuglog.js?raw';
 import INTERNAL_UTIL_COLORS from './internal/util/colors.js?raw';
 import INTERNAL_FIXED_QUEUE from './internal/fixed_queue.js?raw';
 import INTERNAL_EVENTS_SYMBOLS from './internal/events/symbols.js?raw';
+import INTERNAL_REPL_HISTORY from './internal/repl/history.js?raw';
+
+import INTERNAL_STREAMS_ITER_TYPES from './internal/streams/iter/types.js?raw';
+
+import INTERNAL_STREAMS_ITER_CONSUMERS from './internal/streams/iter/consumers.js?raw';
+
+import INTERNAL_STREAMS_ITER_RINGBUFFER from './internal/streams/iter/ringbuffer.js?raw';
+
+import INTERNAL_STREAMS_ITER_PULL from './internal/streams/iter/pull.js?raw';
+
+import INTERNAL_STREAMS_ITER_BROADCAST from './internal/streams/iter/broadcast.js?raw';
+
+import INTERNAL_STREAMS_ITER_FROM from './internal/streams/iter/from.js?raw';
+
+import INTERNAL_STREAMS_ITER_PUSH from './internal/streams/iter/push.js?raw';
+
+import INTERNAL_STREAMS_ITER_UTILS from './internal/streams/iter/utils.js?raw';
+
+import INTERNAL_STREAMS_ITER_TRANSFORM from './internal/streams/iter/transform.js?raw';
+
+import INTERNAL_STREAMS_ITER_DUPLEX from './internal/streams/iter/duplex.js?raw';
+
+import INTERNAL_STREAMS_ITER_CLASSIC from './internal/streams/iter/classic.js?raw';
+
+import INTERNAL_STREAMS_ITER_SHARE from './internal/streams/iter/share.js?raw';
+
+import INTERNAL_ERRORS_ERROR_SOURCE from './internal/errors/error_source.js?raw';
 
 /** The Node the vendored files come from, reported in `BUILTINS.md`. */
-export const NODE_LIB_VERSION = 'v22.18.0';
+export const NODE_LIB_VERSION = 'v24.21.0';
 
 export const NODE_LIB_SOURCES: Record<string, string> = {
+  'internal/streams/fast-utf8-stream': FAST_UTF8_STREAM,
+  'internal/errors/error_source': INTERNAL_ERRORS_ERROR_SOURCE,
+  'internal/streams/iter/share': INTERNAL_STREAMS_ITER_SHARE,
+  'internal/streams/iter/classic': INTERNAL_STREAMS_ITER_CLASSIC,
+  'internal/streams/iter/duplex': INTERNAL_STREAMS_ITER_DUPLEX,
+  'internal/streams/iter/transform': INTERNAL_STREAMS_ITER_TRANSFORM,
+  'internal/streams/iter/utils': INTERNAL_STREAMS_ITER_UTILS,
+  'internal/streams/iter/push': INTERNAL_STREAMS_ITER_PUSH,
+  'internal/streams/iter/from': INTERNAL_STREAMS_ITER_FROM,
+  'internal/streams/iter/broadcast': INTERNAL_STREAMS_ITER_BROADCAST,
+  'internal/streams/iter/pull': INTERNAL_STREAMS_ITER_PULL,
+  'internal/streams/iter/ringbuffer': INTERNAL_STREAMS_ITER_RINGBUFFER,
+  'internal/streams/iter/consumers': INTERNAL_STREAMS_ITER_CONSUMERS,
+  'internal/streams/iter/types': INTERNAL_STREAMS_ITER_TYPES,
   'internal/navigator': NAVIGATOR,
   path: PATH,
   'net': NET,
@@ -142,6 +185,7 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/events/abort_listener': INTERNAL_ABORT_LISTENER,
   'internal/child_process/serialization': INTERNAL_CHILD_PROCESS_SERIALIZATION,
   'internal/modules/customization_hooks': INTERNAL_MODULES_CUSTOMIZATION_HOOKS,
+  'internal/modules/typescript': INTERNAL_MODULES_TYPESCRIPT,
   'events': EVENTS,
   'internal/constants': INTERNAL_CONSTANTS,
   'internal/mime': INTERNAL_MIME,
@@ -201,4 +245,5 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/util/colors': INTERNAL_UTIL_COLORS,
   'internal/fixed_queue': INTERNAL_FIXED_QUEUE,
   'internal/events/symbols': INTERNAL_EVENTS_SYMBOLS,
+  'internal/repl/history': INTERNAL_REPL_HISTORY,
 };

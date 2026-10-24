@@ -48,6 +48,8 @@
  * spin where it may not), as uvwasi blocks on its loop.
  */
 import NODE_WASI_SOURCE from '../node-lib/wasi.js?raw';
+// The guest stdin stream's engine-side read (process.ts `kEngineStdinRead`).
+const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
 import {
   ERR_INVALID_ARG_TYPE,
   ERR_INVALID_ARG_VALUE,
@@ -118,8 +120,9 @@ export interface WasiHostFs {
 /** The process members the binding reaches: the guest's own. */
 export interface WasiHostProcess {
   pid: number;
-  stdout: { write(data: string): unknown };
-  stderr: { write(data: string): unknown };
+  /** The guest's fd 1 and 2, which take the bytes it wrote (the engine's process streams do). */
+  stdout: { write(data: string | Uint8Array): unknown };
+  stderr: { write(data: string | Uint8Array): unknown };
   stdin: { read?: (size?: number) => string | Uint8Array | null };
   exit(code?: number): never;
   kill(pid: number, signal?: string | number): boolean;
@@ -317,8 +320,6 @@ interface Descriptor {
   fdflags: number;
   /** The file cursor, kept here since the engine's descriptor has no lseek. */
   position: number;
-  /** A stream's decoder, so a multi-byte character split across two writes arrives whole. */
-  decoder?: TextDecoder;
 }
 
 interface Filestat {
@@ -516,7 +517,6 @@ function bindingClassFor(fs: WasiHostFs, process: WasiHostProcess): BindingClass
     preopen: false,
     fdflags: 0,
     position: 0,
-    decoder: stream === 'stdin' ? undefined : new TextDecoder(),
   });
 
   /** uvwasi__get_rights */
@@ -622,7 +622,11 @@ function bindingClassFor(fs: WasiHostFs, process: WasiHostProcess): BindingClass
   /** What the guest's stdin has to give: whatever its stream yields now; then EOF. */
   const readStdin = (state: WrapState, into: Uint8Array): number => {
     if (state.stdinPending.length === 0 && !state.stdinEnded) {
-      const chunk = typeof process.stdin.read === 'function' ? process.stdin.read() : null;
+      // The guest's fd 0 read, which is not the stream's reader: taken with
+      // the engine's own read, so it does not keep the process alive.
+      const engineRead = (process.stdin as { [kEngineStdinRead]?: () => unknown })[kEngineStdinRead];
+      const chunk = (typeof engineRead === 'function' ? engineRead.call(process.stdin)
+        : typeof process.stdin.read === 'function' ? process.stdin.read() : null) as string | Uint8Array | null | undefined;
       if (chunk === null || chunk === undefined) state.stdinEnded = true;
       else state.stdinPending = typeof chunk === 'string' ? encoder.encode(chunk) : new Uint8Array(chunk);
     }
@@ -633,9 +637,12 @@ function bindingClassFor(fs: WasiHostFs, process: WasiHostProcess): BindingClass
   };
 
   const writeStream = (descriptor: Descriptor, bytes: Uint8Array): void => {
-    const text = descriptor.decoder!.decode(bytes, { stream: true });
-    if (text.length === 0) return;
-    (descriptor.stream === 'stderr' ? process.stderr : process.stdout).write(text);
+    // A guest's fd 1 and 2 carry the bytes it wrote, as uvwasi writes them to
+    // the host fd: decoded here, binary output came out with every invalid
+    // sequence replaced. The process stream takes bytes, and a host that
+    // reads text decodes them itself. Copied, as the guest's memory moves on.
+    if (bytes.length === 0) return;
+    (descriptor.stream === 'stderr' ? process.stderr : process.stdout).write(bytes.slice());
   };
 
   /** uvwasi__get_filestat_set_times: the seconds to set, from the flags and the times given. */

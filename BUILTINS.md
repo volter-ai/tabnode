@@ -1,3 +1,15 @@
+<!-- node24-coverage:start -->
+tabnode is Node 24, except:
+
+- [Known limitations](LIMITATIONS.md): no Node 24 exceptions have been accepted yet.
+- and open defects not yet classified; the first full Node 24 measurement is pending, so their number is unknown.
+
+The exact behavior scope is 4,569 test files. The generated capability ledger
+records done / doing / todo / won't do and the four objective completion counts.
+See [the proof scope](scripts/NODE-TESTS.md). Host-run evidence does not establish
+browser-tab execution.
+<!-- node24-coverage:end -->
+
 # The engine's builtins, by kind
 
 The rule is the substrate's ADR-0021: a builtin is Node's own file unless
@@ -12,8 +24,7 @@ or the module is the engine itself.
 
 A number is not a score. Each row says what its remainder is made of; a third
 of it across the estate is the harness's own (`--expose-internals`, `node:test`,
-`process.getuid`) rather than the engine's. The `measure` workflow prints every
-row's number on each push to `main`.
+`process.getuid`) rather than the engine's. Local measurement prints every row's number when measurement is the requested task. The `measure` workflow may run only with explicit authorization for that remote run.
 
 A number measured before `v0.2.14-volter.49` counted some tests that were
 failing: the hand-written `EventEmitter` caught every listener's throw and
@@ -27,7 +38,7 @@ from .58.
 |---|---|---|---|
 | `path` | no tests of its own here | none; it is pure | |
 | `net` | 109 of 151 | `tcp_wrap`, `pipe_wrap`, `stream_wrap`: the engine's loopback pairing and its port registry | a third are the harness's (`internal/test/binding`, `node:test`, `process.send`, `process.getuid`, `--expose-internals`); the rest are the binding's synchronous writes, which queue nothing, so `bufferSize`, `bytesWritten` mid-write, `drain` and cork batching read 0, and the `autoSelectFamily` timing tests, which need a second address family to race |
-| `child_process` | 63 of 109 | `process_wrap`, `spawn_sync`, `tty_wrap`, the IPC flavour of `pipe_wrap` | signals, timeouts and buffer limits on synchronous children, which run on a thread with no process to kill (`ROADMAP.md`); the harness's `node:test` and `--expose-internals` |
+| `child_process` | 72 of 109 | `process_wrap`, `spawn_sync`, `tty_wrap`, the IPC flavour of `pipe_wrap` | signals, timeouts and buffer limits on synchronous children, which run on a thread with no process to kill (`ROADMAP.md`); the harness's `node:test` and `--expose-internals` |
 | `stream` | 158 of 171 | none; eighteen `internal/streams/*` files over `events`, `buffer` and `string_decoder` | the harness's `node:test` |
 | `buffer` | 50 of 64 | `buffer`: encode, decode, compare, search, fill, copy, swap over `TextEncoder` and `TextDecoder` | the harness's `--expose-internals`; a few `inspect` details |
 | `events` | 2 of 9 | none; `internal/event_target`'s two questions are answered over the realm's `EventTarget` | four are the harness's (`--expose-internals` for `internal/event_target`, `node:test`); two need an `EventTarget` whose listeners can be enumerated, which the DOM does not allow; one reads a stack shape |
@@ -42,12 +53,14 @@ from .58.
 | `tty` | 2 of 3 | `tty_wrap` | a real terminal's window size |
 | `http`, `https` | 315 of 377 | `http_parser`: llhttp's own WebAssembly build, undici's, vendored with its sha256 | the `--expose-internals` harness tests; llhttp's own version differs from the one Node 22.18 links, so two error codes read as that build names them; `http2` is not ported |
 | `fs`, `fs/promises` | 127 of 246 | `fs`, `fs_dir`, `fs_event_wrap`: forty operations over the run's virtual filesystem; link and symlink answer EPERM | a third are the harness's (`--expose-internals`, `node:test`, `process.getuid`); the rest are a tree with no kernel behind it, no uid or gid, no permission bits to refuse a read, and link and symlink answering EPERM, and the tests that measure exactly those |
-| `zlib` | 23 of 59 | `zlib`: zlib's own inflate and deflate, as pako ports them, driven through `z_stream`. Brotli and Zstandard are codecs of their own and are refused by name, with what the engine does carry in the message. | 11 are Brotli and Zstd, separate codecs with their own bindings, not ported; 8 are the harness's `node:test`. Not a wasm build, and measured rather than assumed: pako's public `Inflate`/`Deflate` replace the caller's output buffer the instant it fills, so they cannot answer Node's contract; `pako/lib/zlib/*` is zlib's `inflate.c` and `deflate.c` ported line for line, honouring `next_out`/`avail_out` as the C does, which is the interface Node's own binding sits on. No zlib wasm build exists to vendor, and compiling `deps/zlib` would mean running a C toolchain, which this project does not do |
+| `zlib` | 23 of 59 | `zlib`: zlib's own inflate and deflate, as pako ports them, driven through `z_stream`. Brotli and Zstandard are codecs of their own: Brotli decompression is answered by `brotli`'s pure-JavaScript decoder over the whole stream (a pre-compressed file read through `createBrotliDecompress`), and Brotli compression and Zstandard are refused by name, with what the engine does carry in the message. | 11 are Brotli and Zstd, separate codecs with their own bindings, not ported; 8 are the harness's `node:test`. Not a wasm build, and measured rather than assumed: pako's public `Inflate`/`Deflate` replace the caller's output buffer the instant it fills, so they cannot answer Node's contract; `pako/lib/zlib/*` is zlib's `inflate.c` and `deflate.c` ported line for line, honouring `next_out`/`avail_out` as the C does, which is the interface Node's own binding sits on. No zlib wasm build exists to vendor, and compiling `deps/zlib` would mean running a C toolchain, which this project does not do |
 | `module`'s hooks | 34 of 38 | none; `internal/modules/customization_hooks.js`, one instance per run | two require builtins the engine does not have (`node:sea`, `node:sqlite`, `node:test`); one has a load hook answer with a WebAssembly module, which the loader does not compile; one spawns `node --require <hooks> <file.cts>` with `--experimental-strip-types`, a command line the engine's `node` does not take. Where the evidence stops: the row measures `module.registerHooks`; Node's suite has no in-process test of `module.register` (its six spawn a Node with `--loader`), so the asynchronous half is measured on the shape that asked for it, openvscode-server 1.109.5's extension host hook, run through the engine |
-| `wasi` | not measured here | the engine's own preview-1 host | 7 of 12 in `test/wasi` (`ROADMAP.md`) |
+| `wasi` | not measured here | the engine's own preview-1 host | 7 of 12 in `test/wasi` |
 
 `os`'s file is Node's own, and its two real defects, `tmpdir()` ignoring
 `TMPDIR` and `setPriority` not round-tripping, are fixed.
+
+The library now comes from Node v24.21.0 (ADR-0003). Existing suite numbers above describe their recorded Node22.18 fixture runs; no Node24 suite score is claimed by this migration.
 
 ## Kind 2 -- the engine's own, with the reason
 
@@ -55,17 +68,20 @@ from .58.
 |---|---|
 | `domain` | a consumer of the async-hooks machinery: Node's `domain.js` installs a trampoline the C++ layer calls to enter and leave a domain around every async callback. The engine has no such layer, so the vendored file loads and then catches nothing. Measured: it fails at `useDomainTrampoline is not a function`. |
 | `async_hooks` | the same machinery seen from the other side -- an async id stack V8 and libuv maintain per resource. The engine's `AsyncLocalStorage` is the realm's, per run. |
+| `perf_hooks` | Browser Performance plus actual guest-loop execution intervals for eventLoopUtilization (ADR-0003). The realm loop is shared by its virtual processes; this is not OS CPU/native GC accounting. GC enum constants are Node's; native GC observer events are unavailable. |
 | `timers` | Node's timer wheel over libuv's loop. The engine's timers are the realm's, counted per run by the run's own loop, which is what decides when a run is idle. |
 | `string_decoder` | Node's current file needs a stateful binding -- the carry-over bytes of a half-read code point, held across calls in C++. The realm's `TextDecoder` does not expose that state, so Node's older pure-JavaScript file is what runs. |
 | `url` | Node's `url.js` reaches `internal/url`, which is the C++ URL parser's own state machine. The realm's `URL` answers the WHATWG API but not that binding's contract. |
-| `crypto` | Node's is OpenSSL; synchronous hashing has no WebCrypto twin, so the engine binds `@noble/hashes` and `sha.js` |
-| `tls` | the page's TLS relay is the transport (Article 4) |
-| `dns` | a tab resolves nothing; the World answers |
+| `crypto` | Node's is OpenSSL; synchronous hashing has no WebCrypto twin, so the engine binds `@noble/hashes` and `sha.js`; synchronous elliptic-curve keys and signatures (P-256, P-384, P-521, Ed25519) have none either, so it binds `@noble/curves` 2.3.0, the release that shares that `@noble/hashes`. Every export of Node's is accounted in `src/shims/crypto-exports.ts`. Reading old run logs: before 9c644ae `createVerify(...).verify(key, signature, 'base64')` decoded the signature wrongly (every byte above 0x7f became two), so no base64-encoded signature ever verified here, and `createPrivateKey`/`createPublicKey` accepted any bytes as a key, which made jsonwebtoken refuse an HS256 secret |
+| `tls` | the page's TLS relay is the transport (Article 4); on the loopback a TLS server listens as a net server and a TLS connect pairs with it, with no wire to protect |
+| `dns` | IP literals and local loopback; the World owns routed names. No external resolver or DNS record service. |
 | `vm` | V8 contexts; the engine's guest-global scoping is the tab's `vm` |
-| `worker_threads` | Web Workers |
+| `worker_threads` | Node’s ports are native. Runtime guests use the real host or installed thread transport with per-process listener/ref/unref/close lifetime (ADR-0004); unsupported worker execution still refuses |
 | `module` | the loader itself, entangled with the engine's transforms and its ESM lowering. Its customization hooks are Node's own file, above. |
 | `process` | the bootstrap, one per run |
-| `dgram`, `cluster`, `http2`, `inspector`, `v8`, `trace_events`, `repl` | refusing stubs: no UDP, no fork-and-share, no nghttp2, no inspector in a tab. Each refusal names why at its site. |
+| `dgram`, `cluster`, `http2`, `inspector`, `v8`, `trace_events` | refusing stubs: no UDP, no fork-and-share, no nghttp2, no inspector in a tab. Each refusal names why at its site. |
+| `repl` | a stand-in (`src/shims/repl.ts`): Node 24's exported names, with `Recoverable`, `writer` and the mode symbols as Node has them, so a program that loads `repl` for a name starts (ts-node does on every run). `start()` and `new REPLServer()` refuse by name. Node's `lib/repl.js` is not carried: it requires Node's own CommonJS and ESM loaders, `internal/vm` over the `contextify` binding, `internal/repl/await`, `internal/process/execution` and `domain`, about a hundred internal files the engine does not have, the loaders among them. |
+| `sys` | Node's own meaning: the `util` module itself (`lib/sys.js`), without the DEP0025 warning. |
 | `esbuild`, `rollup` | not builtins: the engine's doors to the bundlers' own wasm builds |
 
 ## What used to be here
@@ -90,3 +106,14 @@ What remains of `src/shims/fs.ts` is sixty lines and is not an `fs`: it is
 `createFsShim`, which names a tree for the length of a call so that a caller
 with a tree but no run -- WASI, the substrate's rolldown build -- can use
 Node's own `fs` over it.
+
+The 24.21 native-contract migration keeps the advanced IPC mode explicit:
+V8 binary serialization is unavailable and throws ERR_UNSUPPORTED_OPERATION
+(capability ipc.v8-serialization) at use; default JSON IPC remains supported.
+Opaque native-key comparison has the same named capability refusal. Virtual
+TCP streams have no IP TOS or keepalive probe packets; TOS returns ENOTSUP.
+TTY mode changes remain ADR-0023's gap. Buffer pooled ArrayBuffers cannot be
+transferred through the engine's guest transfer doors; unsafe allocations
+are zeroed by the browser. Error-source expressions use actual captured
+frames and compiled script text, without source-map remapping. These are
+qualified browser-engine boundaries, not a full Node24 compatibility score.

@@ -11,6 +11,8 @@
  * are `net.js`'s and `child_process.js`'s, and both are vendored.
  */
 import uvBinding from './uv';
+import ipcSerdesBinding from './ipc_serdes';
+import { createDiagnosticsChannelBinding } from './diagnostics_channel';
 import streamWrapBinding from './stream_wrap';
 import tcpWrapBinding from './tcp_wrap';
 import pipeWrapBinding from './pipe_wrap';
@@ -26,6 +28,7 @@ import utilBinding from './util';
 import fsBinding, { fsDirBinding, fsEventWrapBinding } from './fs';
 import blobBinding from './blob';
 import zlibBinding from './zlib';
+import modulesBinding from './modules';
 import { AsyncResource } from '../internals/runtime';
 
 /**
@@ -41,6 +44,8 @@ var __table: Record<string, () => unknown> | undefined;
 export function nodeLibBinding(name: string): (() => unknown) | undefined {
   __table ??= {
   uv: () => uvBinding,
+  ipc_serdes: () => ipcSerdesBinding,
+  diagnostics_channel: () => createDiagnosticsChannelBinding(),
   stream_wrap: () => streamWrapBinding,
   tcp_wrap: () => tcpWrapBinding,
   pipe_wrap: () => pipeWrapBinding,
@@ -66,6 +71,7 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   blob: () => blobBinding,
   async_wrap: () => ({ AsyncResource }),
   zlib: () => zlibBinding,
+  modules: () => modulesBinding,
   fs_dir: () => fsDirBinding,
   fs_event_wrap: () => fsEventWrapBinding,
 };;

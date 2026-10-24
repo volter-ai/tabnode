@@ -31,13 +31,19 @@ const {
 
 const { triggerUncaughtException } = internalBinding('errors');
 
+// The subscriber buffer is replaced when native channel storage grows, so it
+// must always be accessed through the binding instead of cached.
+const dc_binding = internalBinding('diagnostics_channel');
+
 const { WeakReference } = require('internal/util');
 
 // Can't delete when weakref count reaches 0 as it could increment again.
 // Only GC can be used as a valid time to clean up the channels map.
 class WeakRefMap extends SafeMap {
   #finalizers = new SafeFinalizationRegistry((key) => {
-    this.delete(key);
+    // Check that the key doesn't have any value before deleting, as the WeakRef for the key
+    // may have been replaced since finalization callbacks aren't synchronous with GC.
+    if (!this.has(key)) this.delete(key);
   });
 
   set(key, value) {
@@ -47,6 +53,10 @@ class WeakRefMap extends SafeMap {
 
   get(key) {
     return super.get(key)?.get();
+  }
+
+  has(key) {
+    return !!this.get(key);
   }
 
   incRef(key) {
@@ -102,6 +112,7 @@ class ActiveChannel {
     this._subscribers = ArrayPrototypeSlice(this._subscribers);
     ArrayPrototypePush(this._subscribers, subscription);
     channels.incRef(this.name);
+    if (this._index !== undefined) dc_binding.subscribers[this._index]++;
   }
 
   unsubscribe(subscription) {
@@ -114,6 +125,7 @@ class ActiveChannel {
     ArrayPrototypePushApply(this._subscribers, after);
 
     channels.decRef(this.name);
+    if (this._index !== undefined) dc_binding.subscribers[this._index]--;
     maybeMarkInactive(this);
 
     return true;
@@ -121,7 +133,10 @@ class ActiveChannel {
 
   bindStore(store, transform) {
     const replacing = this._stores.has(store);
-    if (!replacing) channels.incRef(this.name);
+    if (!replacing) {
+      channels.incRef(this.name);
+      if (this._index !== undefined) dc_binding.subscribers[this._index]++;
+    }
     this._stores.set(store, transform);
   }
 
@@ -133,6 +148,7 @@ class ActiveChannel {
     this._stores.delete(store);
 
     channels.decRef(this.name);
+    if (this._index !== undefined) dc_binding.subscribers[this._index]--;
     maybeMarkInactive(this);
 
     return true;
@@ -177,6 +193,7 @@ class Channel {
     this._subscribers = undefined;
     this._stores = undefined;
     this.name = name;
+    this._index = undefined;
 
     channels.set(name, this);
   }
@@ -188,6 +205,7 @@ class Channel {
   }
 
   subscribe(subscription) {
+    validateFunction(subscription, 'subscription');
     markActive(this);
     this.subscribe(subscription);
   }
@@ -427,6 +445,16 @@ class TracingChannel {
 function tracingChannel(nameOrChannels) {
   return new TracingChannel(nameOrChannels);
 }
+
+// Keep in sync with setupDiagnosticsChannel() in pre_execution.js.
+dc_binding.linkNativeChannel((name, index) => {
+  const linkedChannel = channel(name);
+  linkedChannel._index = index;
+  dc_binding.subscribers[index] =
+    (linkedChannel._subscribers?.length || 0) +
+    (linkedChannel._stores?.size || 0);
+  return linkedChannel;
+});
 
 module.exports = {
   channel,

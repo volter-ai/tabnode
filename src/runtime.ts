@@ -6,12 +6,19 @@
  */
 
 import { VirtualFS } from './virtual-fs';
+import { rememberCompiledSource } from './error-source';
+import { startGuestLoop, withGuestExecution } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { guestFetch, rememberRequestBodySource } from './fetch-transport';
+import { installNodeResponse } from './node-response';
+import { withNodeRequestBody } from './node-body';
 import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork } from './host-globals';
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
 import { simpleHash } from './utils/hash';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
+import { PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey } from './prepared-key';
 import { uint8ToBase64, uint8ToHex } from './utils/binary-encoding';
 import { createFsShim, FsShim } from './shims/fs';
 import * as pathShim from './shims/path';
@@ -48,10 +55,19 @@ import {
 } from './node-lib/small-modules';
 import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
+import { sayNativeStreamCounts } from './native-stream-binding';
+import { nodeLibBindingsAsked } from './node-lib/load';
+import type { ResolutionKept } from './node-resolution';
+import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
+import { LoadPhase, countLoadedFile, enterLoadPhase, leaveLoadPhase, loadAccountFor, loadPackageOf, sayLoadAccount } from './load-account';
+import { setSourceMapsSupportOf, sourceMapsSupportOf } from './node-lib/internals/events-util';
+import { ERR_INVALID_ARG_TYPE } from './node-internals';
 import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
 import { PUNYCODE_SOURCE } from './punycode-source';
 import * as perfHooksShim from './shims/perf_hooks';
 import * as workerThreadsShim from './shims/worker_threads';
+import { guestMessageGlobals, guestMessageModule } from './guest-message-ports';
+import { validateTransferList } from './transfer-ownership';
 import * as esbuildShim from './shims/esbuild';
 import * as rollupShim from './shims/rollup';
 import * as v8Shim from './shims/v8';
@@ -59,6 +75,7 @@ import * as tlsShim from './shims/tls';
 import * as http2Shim from './shims/http2';
 import * as clusterShim from './shims/cluster';
 import * as dgramShim from './shims/dgram';
+import * as replShim from './shims/repl';
 import * as vmShim from './shims/vm';
 import * as inspectorShim from './shims/inspector';
 import * as asyncHooksShim from './shims/async_hooks';
@@ -66,8 +83,9 @@ import * as domainShim from './shims/domain';
 import { createWasiModule, type WasiHostFs, type WasiModule } from './shims/wasi';
 
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
-import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __substrateHasEsmSyntax } from './code-transforms';
+import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __cjsObject, __substrateHasEsmSyntax } from './code-transforms';
 import { applySourceEdits } from './source-edits';
+import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typescript-module';
 import * as acorn from 'acorn';
 
 /**
@@ -115,6 +133,54 @@ function __substrateGuestConstructor(Constructor: unknown, process: Process): un
   } });
 }
 /**
+ * `vm.runInThisContext` runs its script in the calling process's global scope,
+ * as Node's does. The shim evaluated it in the host's, so a script saw the
+ * worker's own timers: jiti evaluates every module it loads this way, and
+ * pi-mcp-adapter's `setInterval(...).unref()` threw "unref is not a function"
+ * because the browser's `setInterval` returns a number. The script runs inside
+ * the process's guest global, as a guest `Function` does
+ * (`__substrateGuestConstructor`).
+ */
+const __substrateScriptScope = Function("__substrateScriptGlobals", "__substrateScriptSource", "with (__substrateScriptGlobals) { return eval(__substrateScriptSource); }");
+const __substrateGuestVms = new WeakMap<Process, unknown>();
+function __substrateGuestVm(process: Process): unknown {
+  let vm = __substrateGuestVms.get(process);
+  if (vm) return vm;
+  const run = (code: string): unknown => __substrateScriptScope(__substrateGuestGlobal(process), String(code));
+  class Script extends vmShim.Script {
+    override runInThisContext(_options?: object): unknown { return run((this as unknown as { code: string }).code); }
+  }
+  vm = { ...vmShim, Script, runInThisContext: (code: string, _options?: object) => run(code), default: undefined };
+  (vm as { default: unknown }).default = vm;
+  __substrateGuestVms.set(process, vm);
+  return vm;
+}
+/**
+ * A `.ts`, `.mts` or `.cts` file runs with its types stripped, as Node runs
+ * one since 22.18, before the module's imports are read -- the entry a `node`
+ * command names and every module it loads alike. A page that loaded a
+ * stripper into the realm supplies it; elsewhere the engine erases the types
+ * itself, through Node's own `typescript.js` over amaro
+ * (`node-lib/typescript-module.ts`): strip-only, positions kept, the syntax
+ * Node refuses refused with Node's error. Before this, a realm with no stripper
+ * registered -- the engine under Node -- ran the file as JavaScript and died on
+ * its first type (`Unexpected identifier 'SlackReply'`), and an entry was never
+ * stripped anywhere. A realm that can load neither runs the file as it is.
+ *
+ * `format` is what a load hook named, and it decides instead of the extension
+ * where a hook gave one.
+ */
+function __substrateModuleTypes(code: string, resolvedPath: string, format: string | undefined, process: unknown): string {
+  const typescript = format === undefined
+    ? /[.](?:ts|mts|cts)$/u.test(resolvedPath) && !resolvedPath.endsWith('.d.ts')
+    : format === 'typescript' || format === 'commonjs-typescript' || format === 'module-typescript';
+  if (!typescript) return code;
+  const registered = (globalThis as { __substrateStripTypes?: (code: string, filename: string) => string }).__substrateStripTypes;
+  if (typeof registered === 'function') return registered(code, resolvedPath);
+  if (!canStripTypes()) return code;
+  return stripModuleTypes(code, resolvedPath, process as object);
+}
+/**
  * The name the script of a module's body carries.
  *
  * Node compiles a module from its file, so every frame of its body names the
@@ -142,7 +208,13 @@ function __substrateScopeGlobalCalls(code: string): string {
   catch { return code; }
   const positions: Array<[number, number, string]> = [];
   walkAst(ast, node => {
-    if (node.type === "NewExpression" && node.callee.type === "Identifier") positions.push([node.callee.start, node.callee.end, "(__substrateGuestConstructor(" + code.slice(node.callee.start, node.callee.end) + ",$process))"]);
+    // A function's source is also data: a program sends `String(fn)` to be
+    // run elsewhere (a browser page, a worker), where the module wrapper's
+    // names do not exist. The rewrite is the original `new` there.
+    if (node.type === "NewExpression" && node.callee.type === "Identifier") {
+      const callee = code.slice(node.callee.start, node.callee.end);
+      positions.push([node.callee.start, node.callee.end, "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + ",$process):" + callee + ")"]);
+    }
     // The narrow with-scope below keeps global replacements dynamic.
     // Remove its object receiver for ordinary calls (including local
     // bindings, whose bare-call receiver was already undefined).
@@ -183,6 +255,8 @@ const __substrateHeldNamespaces: Record<string, readonly string[]> = {
   WebAssembly: ['compile', 'compileStreaming', 'instantiate', 'instantiateStreaming'],
 };
 
+/** The names `for (const name in globalThis)` gives in Node v24.21.0, measured (`node -e` of that loop), less the module wrapper's five. */
+const NODE_ENUMERABLE_GLOBALS = new Set(['global', 'clearImmediate', 'setImmediate', 'clearInterval', 'clearTimeout', 'setInterval', 'setTimeout', 'queueMicrotask', 'structuredClone', 'atob', 'btoa', 'performance', 'fetch', 'crypto', 'navigator']);
 function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   let guest = __substrateGuestGlobals.get(process);
   if (guest) return guest;
@@ -193,11 +267,13 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   // this file stands for the class until the loader has built it, and a guest
   // that compared the two found two objects.
   let buffer: unknown;
+  let performance: unknown, performanceSet = false;
   const boundGlobals = new Map<string | symbol, { original: unknown; bound: unknown }>();
   // A key the guest defined that the host would not take (a name the host
   // holds non-configurable, `navigator` under a worker's authority) lives on
   // the proxy's own target, and is this guest's from then on.
   const shadowed = (target: object, key: string | symbol): boolean => Reflect.getOwnPropertyDescriptor(target, key) !== undefined;
+  const hostAtStart = new Set<string | symbol>(Reflect.ownKeys(host));
   const localGlobals = Object.create(null);
   Object.defineProperty(localGlobals, "Promise", { value: intrinsicPromise, writable: true, configurable: true, enumerable: false });
   // Node's own navigator, scoped to this process; never expose WorkerNavigator.
@@ -210,17 +286,46 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
         value, writable: true, configurable: true, enumerable: false,
       }) },
   });
-  const isLocalGlobal = (key: string | symbol) => key === 'Promise' || key === 'navigator' || key === 'Navigator';
+  // Guest-written globals are process-local, including absent Node globals.
+  // Assigning global.Worker/globalThis.self must create the corresponding
+  // bare binding without exposing or mutating the browser worker authority.
+  Object.defineProperties(localGlobals, {
+    Worker: { value: undefined, writable: true, configurable: true, enumerable: false },
+    self: { value: undefined, writable: true, configurable: true, enumerable: false },
+  });
+  // These stand-ins are how the realm's own names are kept from a guest, and are no globals of Node's: they are not
+  // enumerated. One a guest assigns becomes its global and is enumerated from then on (the `set` trap below).
+  const guestAssigned = new Set<string | symbol>();
+  // Browser worker messaging is host authority, not a Node global. A guest's
+  // adapter may define its own names without hijacking the host transport.
+  const browserTransportGlobals = ['postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent'];
+  for (const key of browserTransportGlobals) Object.defineProperty(localGlobals, key, {
+    value: undefined, writable: true, configurable: true, enumerable: false,
+  });
+  const isLocalGlobal = (key: string | symbol) => ['Promise', 'navigator', 'Navigator', 'Worker', 'self', ...browserTransportGlobals].includes(key as string);
   guest = new Proxy(localGlobals, {
     get(target, key) {
-      if (["document", "window", "location", "self"].includes(key as string)) return undefined;
+      if (["document", "window", "location"].includes(key as string)) return undefined;
       if (key === "fetch") return fetch;
       if (key === "Buffer") return buffer ?? loadNodeLibFor(process, 'buffer').Buffer;
       if (key === "process") return process;
       if (isLocalGlobal(key)) return Reflect.get(target, key, guest);
       if (key === "globalThis" || key === "global") return guest;
       if (shadowed(target, key)) return Reflect.get(target, key, guest);
+      if (key === "MessageChannel" || key === "MessagePort") return guestMessageGlobals(process)[key];
+      // `perf_hooks`'s own object, until the guest assigns another: the name is writable in Node (an accessor with a setter).
+      if (key === "performance") return performanceSet ? performance : perfHooksShim.performance;
       const value = Reflect.get(host, key, host);
+      if (key === "structuredClone" && typeof value === "function") {
+        if (boundGlobals.get(key)?.original !== value) boundGlobals.set(key, {
+          original: value,
+          bound: (input: unknown, options?: { transfer?: unknown[] }) => {
+            validateTransferList(options?.transfer);
+            return value.call(host, input, options);
+          },
+        });
+        return boundGlobals.get(key)!.bound;
+      }
       if (["setTimeout", "clearTimeout", "setInterval", "clearInterval"].includes(key as string) && typeof value === "function") {
         // The guest's timers, counted for it; rebuilt if the host's own change.
         if (boundGlobals.get(key)?.original !== value) {
@@ -246,18 +351,31 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
         }
         return boundGlobals.get(key)!.bound;
       }
-      if (["atob", "btoa", "structuredClone", "queueMicrotask"].includes(key as string) && typeof value === "function") {
+      // `atob` and `btoa` are the `buffer` module's own, as in Node, where the global IS `require('buffer').atob`:
+      // a program that compares the two (Node's test/common does, to know its globals) found two functions.
+      if ((key === "atob" || key === "btoa") && !shadowed(target, key)) return (loadNodeLibFor(process, 'buffer') as Record<string, unknown>)[key];
+      if (["structuredClone", "queueMicrotask"].includes(key as string) && typeof value === "function") {
         if (boundGlobals.get(key)?.original !== value) boundGlobals.set(key, { original: value, bound: value.bind(host) });
         return boundGlobals.get(key)!.bound;
       }
       return value;
     },
     set(target, key, value) {
+      if (isLocalGlobal(key) && !guestAssigned.has(key) && (key === 'Worker' || key === 'self' || browserTransportGlobals.includes(key as string))) {
+        guestAssigned.add(key);
+        return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
+      }
       if (isLocalGlobal(key)) return Reflect.set(target, key, value, target);
       if (key === "fetch") { fetch = value; return true; }
       if (key === "Buffer") { buffer = value; return true; }
+      if (key === "performance") { performance = value; performanceSet = true; return true; }
       if (shadowed(target, key)) return Reflect.set(target, key, value, target);
-      return Reflect.set(host, key, value, host);
+      if (Reflect.set(host, key, value, host)) return true;
+      // A global the host holds read-only (a confined realm's \`WebSocket\`) is
+      // still the guest's to replace, as Node's globals are: undici's
+      // \`install()\` assigns \`globalThis.WebSocket\` and Pi died on the refusal.
+      // The value becomes the guest's own binding; the host's is untouched.
+      return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
     },
     has(target, key) { return isLocalGlobal(key) ? Reflect.has(target, key) : key === "global" || shadowed(target, key) || key in host; },
     ownKeys(target) {
@@ -268,13 +386,22 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     getOwnPropertyDescriptor(target, key) {
       if (isLocalGlobal(key)) return Reflect.getOwnPropertyDescriptor(target, key);
       if (key === "fetch") return { value: fetch, writable: true, configurable: true, enumerable: true };
-      if (key === "Buffer") return { value: buffer ?? loadNodeLibFor(process, 'buffer').Buffer, writable: true, configurable: true, enumerable: true };
+      if (key === "performance") return { get: () => (performanceSet ? performance : perfHooksShim.performance), set: (value: unknown) => { performance = value; performanceSet = true; }, configurable: true, enumerable: true };
+      // An accessor and not enumerable, as Node's own `Buffer` global is.
+      if (key === "Buffer") return { get: () => buffer ?? loadNodeLibFor(process, 'buffer').Buffer, set: (value: unknown) => { buffer = value; }, configurable: true, enumerable: false };
+      if (key === "atob" || key === "btoa") return { value: (loadNodeLibFor(process, 'buffer') as Record<string, unknown>)[key], writable: true, configurable: true, enumerable: true };
       // A key the guest defined non-configurable lives on the proxy's own
       // target as well, and is reported from there, as the proxy's
       // invariants require.
       const own = Reflect.getOwnPropertyDescriptor(target, key);
       if (own) return own;
       const descriptor = Reflect.getOwnPropertyDescriptor(host, key);
+      // What the realm had before this guest (a worker's `self`, `postMessage`, `onmessage`, the engine's own names)
+      // is reachable and is not ENUMERATED unless Node enumerates that name: `for (const name in global)` in a
+      // guest gave Node's fifteen names and eleven of the realm's. A program that walks its globals to find what it
+      // leaked found those (Node's own test/common does at every exit: 186 of its files failed on that alone once
+      // `exit` was emitted when a loop drains). A global the guest itself adds is enumerable as it defined it.
+      if (descriptor && descriptor.enumerable && hostAtStart.has(key) && !(typeof key === 'string' && NODE_ENUMERABLE_GLOBALS.has(key))) return { ...descriptor, configurable: true, enumerable: false };
       return descriptor ? { ...descriptor, configurable: true } : undefined;
     },
     defineProperty(target, key, descriptor) {
@@ -310,6 +437,10 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
 // compiled through this alias, which is an indirect eval: global scope, sloppy.
 // The guest helpers are then out of scope by name, so they are arguments.
 const __substrateSloppyEval = eval;
+function __substrateCompileBody(source: string, owner: object): any {
+  rememberCompiledSource(owner, source);
+  return __substrateSloppyEval(source);
+}
 // An ES module stays strict, as Node keeps one: the lowering marks its output.
 const __substrateModuleMarker = '/*__substrate_module__*/';
 
@@ -343,23 +474,357 @@ function transformDynamicImportsRegex(code: string): string {
  * saw no import at all.
  */
 function __substrateRewriteDynamicImportsInScript(code: string): string {
-  if (!/(?<![.$\w#])import\s*\(/.test(code)) return code;
+  if (!/(?<![.$\w#])(?:import|eval)\s*\(/.test(code)) return code;
   let ast;
   try {
     ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true, allowHashBang: true, allowAwaitOutsideFunction: true });
   } catch {
     return code;
   }
-  const replacements: Array<[number, number]> = [];
+  const replacements: Array<[number, number, string]> = [];
   walkAst(ast, (node: any) => {
-    if (node.type === "ImportExpression") replacements.push([node.start, node.start + 6]);
+    if (node.type === "ImportExpression") replacements.push([node.start, node.start + 6, "__dynamicImport"]);
+    collectDirectEval(node, replacements);
   });
   if (replacements.length === 0) return code;
-  replacements.sort((a, b) => b[0] - a[0]);
-  let out = code;
-  for (const [start, end] of replacements) out = out.slice(0, start) + "__dynamicImport" + out.slice(end);
-  return out;
+  return applyReplacements(code, replacements);
 }
+
+/**
+ * A direct `eval` runs source the module builds at run time, and Node runs an
+ * `import()` in it through the module's loader: Playwright loads an ES config
+ * with ``eval(`import(${url})`)``. The call stays a direct eval, so the
+ * source keeps the module's scope, `__dynamicImport` included; only the
+ * source it is given is rewritten the way the module's own was.
+ */
+function collectDirectEval(node: any, replacements: Array<[number, number, string]>): void {
+  if (node.type !== "CallExpression" || node.optional || node.callee?.type !== "Identifier" || node.callee.name !== "eval") return;
+  const source = node.arguments?.[0];
+  if (!source || source.type === "SpreadElement") return;
+  replacements.push([source.start, source.start, "__substrateEvalSource("]);
+  replacements.push([source.end, source.end, ")"]);
+}
+
+/**
+ * Node's AsyncLocalStorage context follows an `await`; in a tab nothing can
+ * observe one (see shims/async_hooks), so the body follows it itself. An async
+ * function takes its frame on entry and puts it back wherever it resumes:
+ * after each `await`, at the start of a `catch` or `finally` (a rejected
+ * `await` resumes there), and in and after a `for await`. An async arrow with
+ * an expression body takes the frame at each `await`, which is the same
+ * frame. Playwright names each API call from a zone it keeps in one; a zone
+ * left over from another call made its errors lose `locator.click:`. Only
+ * insertions, and no line breaks, so a stack frame keeps its line.
+ */
+const ASYNC_FRAME = '__substrateAsyncFrame';
+// Every fragment the pass inserts is one of these strings or ends in the
+// marker, so a function's source can be given back as it was written (below).
+const FOLLOW_MARK = '/*substrate*/';
+const FOLLOW_TAKE = `const ${ASYNC_FRAME}=__substrateContext();`;
+const FOLLOW_RESTORE = `__substrateRestore(${ASYNC_FRAME});`;
+const FOLLOW_RESUME_FRAMED = `__substrateResume(${ASYNC_FRAME},`;
+const FOLLOW_RESUME_TAKEN = '__substrateResume(__substrateContext(),';
+function __substrateFollowAwaits(code: string): string {
+  if (!/\bawait\b/.test(code)) return code;
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true, allowHashBang: true, allowAwaitOutsideFunction: true });
+  } catch {
+    return code;
+  }
+  const edits: Array<[number, number, string]> = [];
+  const insert = (at: number, text: string): void => { edits.push([at, at, text]); };
+  // What closes a node goes before what opens the next one at the same offset: a node that ends where another starts
+  // never holds it, so its closing lands first. `for await(x of y)await a;await b` ends the loop's body and starts the
+  // next statement's `await` at one offset, and the resume opened there landed inside the loop's brace: a SyntaxError
+  // in a 7 MB server chunk of Dub's (its web-stream pipe). Closings are kept apart and applied after, so they land first.
+  const closings: Array<[number, number, string]> = [];
+  const close = (at: number, text: string): void => { closings.push([at, at, text]); };
+  const isFunction = (node: any): boolean => node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression';
+  // `framed`: the nearest function is async and holds the frame in ASYNC_FRAME.
+  const visit = (node: any, framed: boolean, parent: any): void => {
+    // What opens a block (the frame's take in an async body, the restore
+    // at the start of a catch, a finally or a for-await body) goes before
+    // anything in it: where the block's first statement is an `await`
+    // (`async function f(){await g()}`, `finally{await h()}`, as minified code
+    // writes them), both share an offset, and edits at one offset land in
+    // reverse of the order they were made. So these are made after the
+    // block's own edits, and land first.
+    const leading: Array<[number, string]> = [];
+    if (isFunction(node)) {
+      framed = node.async && node.body.type === 'BlockStatement';
+      if (framed) {
+        const directives = node.body.body.filter((statement: any) => statement.directive !== undefined);
+        leading.push([directives.length ? directives[directives.length - 1].end : node.body.start + 1, FOLLOW_TAKE]);
+      }
+    } else if (node.type === 'AwaitExpression') {
+      insert(node.start, framed ? FOLLOW_RESUME_FRAMED : FOLLOW_RESUME_TAKEN);
+      close(node.end, `${FOLLOW_MARK})`);
+    } else if (framed && node.type === 'CatchClause') {
+      leading.push([node.body.start + 1, FOLLOW_RESTORE]);
+    } else if (framed && node.type === 'TryStatement' && node.finalizer) {
+      leading.push([node.finalizer.start + 1, FOLLOW_RESTORE]);
+    } else if (framed && node.type === 'ForOfStatement' && node.await) {
+      // The loop's own wrap first: where its end is the body's, an insertion
+      // made later lands before it, so the body's brace closes inside.
+      const whole = parent?.type === 'LabeledStatement' ? parent : node;
+      insert(whole.start, `{${FOLLOW_MARK}`);
+      close(whole.end, `;${FOLLOW_RESTORE}${FOLLOW_MARK}}`);
+      if (node.body.type === 'BlockStatement') leading.push([node.body.start + 1, FOLLOW_RESTORE]);
+      else { leading.push([node.body.start, `{${FOLLOW_MARK}${FOLLOW_RESTORE}`]); close(node.body.end, `${FOLLOW_MARK}}`); }
+    }
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
+      const child = node[key];
+      if (!child || typeof child !== 'object') continue;
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item, framed, node);
+      } else if (typeof child.type === 'string') visit(child, framed, node);
+    }
+    for (const [at, text] of leading) insert(at, text);
+  };
+  visit(ast, false, undefined);
+  // applyReplacements' sort is stable and lands edits at one offset in reverse of their order: closings after openings
+  const followed = edits.length || closings.length ? applyReplacements(code, [...edits, ...closings]) : code;
+  return __substrateTopLevelAwait(ast) ? `${followed}\n${__substrateTopLevelAwaitMarker}` : followed;
+}
+
+/**
+ * Whether a module body awaits outside every function of its own. Its
+ * import markers make it a generator, and in a generator `await (x)` is a
+ * call of an identifier named `await`: chrome-devtools-mcp's bundle
+ * (`const HOST_RUNTIME = await (async () => ...)()`) compiled, ran, and
+ * threw "await is not defined". Such a body runs as an async function.
+ */
+const __substrateTopLevelAwaitMarker = '/*__substrate_top_level_await__*/';
+function __substrateTopLevelAwait(ast: any): boolean {
+  const isFunction = (node: any): boolean => node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression';
+  const stack: any[] = [ast];
+  while (stack.length) {
+    const node = stack.pop();
+    if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await)) return true;
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
+      const child = node[key];
+      if (!child || typeof child !== 'object') continue;
+      for (const item of Array.isArray(child) ? child : [child]) {
+        if (item && typeof item.type === 'string' && !isFunction(item)) stack.push(item);
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * A function's source as it was written. Playwright sends the source of the
+ * function a test evaluates to the browser, where the pass's calls do not
+ * exist; the pass only inserts, so removing its fragments gives the text back.
+ */
+function __substrateUnfollowAwaits(source: string): string {
+  if (!source.includes('__substrate')) return source;
+  return source
+    .replaceAll(`;${FOLLOW_RESTORE}${FOLLOW_MARK}}`, '')
+    .replaceAll(`{${FOLLOW_MARK}${FOLLOW_RESTORE}`, '')
+    .replaceAll(`{${FOLLOW_MARK}`, '')
+    .replaceAll(`${FOLLOW_MARK}}`, '')
+    .replaceAll(`${FOLLOW_MARK})`, '')
+    .replaceAll(FOLLOW_TAKE, '')
+    .replaceAll(FOLLOW_RESTORE, '')
+    .replaceAll(FOLLOW_RESUME_FRAMED, '')
+    .replaceAll(FOLLOW_RESUME_TAKEN, '');
+}
+forGuestRealm(() => {
+  const native = Function.prototype.toString;
+  // A function's source never changes, so its written text is made once: Nest and TypeORM read the same classes'
+  // sources over and over (1.55 s of Twenty's boot was this pass re-scanning them).
+  const written = new WeakMap<object, string>();
+  takeFromHost(Function.prototype, 'toString', function toString(this: unknown): string {
+    const held = typeof this === 'function' ? written.get(this) : undefined;
+    if (held !== undefined) return held;
+    const text = __substrateUnfollowAwaits(native.call(this));
+    if (typeof this === 'function') written.set(this, text);
+    return text;
+  });
+});
+
+/** Applies edits in source coordinates, preserving reverse insertion order at a shared offset. */
+function applyReplacements(code: string, replacements: Array<[number, number, string]>): string {
+  replacements.sort((a, b) => b[0] - a[0] || b[1] - a[1]);
+  // Rebuilding the whole module per insertion made loading a large generated
+  // module quadratic. Node accepts these modules without that copying cost.
+  // Keep the original descending order (including stable ties), collecting
+  // each untouched span once, then assemble once. Current passes emit disjoint
+  // ranges; retain the old semantics if a future pass supplies overlaps.
+  const parts: string[] = [];
+  let cursor = code.length;
+  for (const [start, end, text] of replacements) {
+    if (end > cursor) {
+      let out = code;
+      for (const [from, to, replacement] of replacements) out = out.slice(0, from) + replacement + out.slice(to);
+      return out;
+    }
+    parts.push(code.slice(end, cursor), text);
+    cursor = start;
+  }
+  parts.push(code.slice(0, cursor));
+  return parts.reverse().join('');
+}
+
+Object.defineProperty(globalThis, "__substrateEvalSource", {
+  configurable: true,
+  value: (source: unknown): unknown => typeof source === "string" ? __substrateRewriteDynamicImportsInScript(source) : source,
+});
+/** A file's source made a body: shebang stripped, types stripped, ESM lowered, dynamic imports rewritten, awaits followed. */
+function __substratePrepareBody(rawCode: string, resolvedPath: string, format: string | undefined, process: unknown): string {
+  let code = rawCode;
+
+  // Strip shebang line if present (e.g. #!/usr/bin/env node)
+  if (code.startsWith('#!')) {
+    code = code.slice(code.indexOf('\n') + 1);
+  }
+
+  code = __substrateModuleTypes(code, resolvedPath, format, process);
+
+  // Transform ESM to CJS if needed (for .mjs files or ESM that wasn't pre-transformed)
+  // transformEsmToCjs uses AST to handle import/export, import.meta, and dynamic imports
+  // It also handles already-CJS files safely (AST finds no ESM nodes → no-op)
+  const __commonjs = format === 'commonjs' || format === 'commonjs-typescript'
+    ? true
+    : format === 'module' || format === 'module-typescript'
+      ? false
+      : resolvedPath.endsWith('.cjs') || resolvedPath.endsWith('.cts');
+  if (!__commonjs) {
+    // An ES module is strict wherever it runs; the mark says so to the
+    // compile below, which is otherwise sloppy as a CommonJS body is.
+    // The directive shares the body's first line, as Node's one-line
+    // wrapper does, so a frame of an ES module counts the file's own lines;
+    // on a line of its own it put every frame one line below the file's.
+    const lowered = transformEsmToCjs(code, resolvedPath);
+    code = lowered === code ? code : `${__substrateModuleMarker}"use strict";${lowered}`;
+  } else {
+    // A `.cjs` module skips the ESM transform, and with it the rewrite of
+    // `import(...)` to the engine's dynamic import, so its
+    // `import("fs/promises")` reached the browser's own import and failed on
+    // the bare specifier. The dynamic-import rewrite applies to `.cjs` too,
+    // from the syntax tree as for every other CommonJS module: the text
+    // rewrite also renamed a method called `import`, and jiti's
+    // `async import(e,t){...}` became `__dynamicImport`, so `jiti.import` was
+    // undefined and every Pi extension failed to load.
+    code = __substrateRewriteDynamicImportsInScript(code);
+  }
+
+  return __substrateFollowAwaits(code);
+}
+
+/**
+ * Module bodies prepared where the image is built. Parsing a package's files
+ * for the passes above is most of a `require` in a tab: 36 of 45 s for
+ * playwright-core's, measured in a tab, against 0.9 s under Node on the same
+ * machine. The image carries each body under the hash of the file it was made
+ * from, in this directory of the tab's filesystem, and the loader takes it in
+ * place of the passes when the file it read hashes to one. A body the loader
+ * prepares for a file the image has none for is kept there the same way.
+ * Under `/opt`, a root a tab's store keeps, so a host can link the image's
+ * bodies there once from a store they share instead of writing each into
+ * every process's memory.
+ */
+export const PREPARED_MODULES_DIR = '/opt/.tabnode/prepared';
+export { PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey };
+/** The name a prepared body goes under, for a caller that has the file's text: its bytes are hashed here. Undefined for a file no body is prepared for. */
+export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
+  const kind = preparedModuleKind(resolvedPath);
+  return kind ? preparedModuleKeyOf(kind, bytesToHex(sha256(new TextEncoder().encode(rawCode)))) : undefined;
+}
+/** The body the loader would compile for this file, with no load hooks and no type stripping: what the image carries. */
+export function prepareModuleForImage(rawCode: string, resolvedPath: string): string {
+  return __substrateScopeGlobalCalls(__substratePrepareBody(rawCode, resolvedPath, undefined, { execArgv: [], env: {} }));
+}
+
+/**
+ * An instrument: the terms that decide whether a compile takes a prepared
+ * body, said for a realm's first compile and for its first compile of a file
+ * under no `node_modules` (an application's own built output).
+ */
+const __substratePreparedGateSaid = new WeakMap<object, { first: boolean; own: boolean }>();
+function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }, process: unknown, compiling: { raw: string; format: string | undefined } | undefined, content: string, resolvedPath: string): void {
+  const said = __substratePreparedGateSaid.get(process as object) ?? { first: false, own: false };
+  __substratePreparedGateSaid.set(process as object, said);
+  const own = !resolvedPath.includes('/node_modules/') && !resolvedPath.includes('/.browser-runtime-node-entry-');
+  const which = !said.first ? 'first' : own && !said.own ? 'own' : undefined;
+  if (!which) return;
+  said.first = true;
+  if (own) said.own = true;
+  const exists = (path: string): boolean | string => { try { return vfs.existsSync(path); } catch (cause) { return cause instanceof Error ? cause.message : String(cause); } };
+  const key = preparedModuleKey(content, resolvedPath);
+  console.log('[boot-trace]', JSON.stringify({
+    event: 'prepared-bodies', where: 'compile', which, at: Date.now(), file: resolvedPath, bytes: content.length,
+    rawIsOwn: compiling?.raw === content, handedRaw: compiling !== undefined, format: compiling?.format ?? null,
+    transformsTypes: transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }),
+    directory: exists(PREPARED_MODULES_DIR), key: key ?? null, body: key ? exists(`${PREPARED_MODULES_DIR}/${key}`) : false,
+  }));
+}
+
+/**
+ * An instrument: how each of a process's compiles came by its body, said when its loading has been quiet for two
+ * seconds and when it exits. `digest`: named by the tree's digest, the source never read. `hash`: named by hashing
+ * the source read. `kept`: prepared here and kept. The rest prepared here, by why no body could be taken.
+ * `stats`: the resolver's stat probes for the same process (node-resolution.ts `ResolutionKept.probes`).
+ */
+type PreparedCounts = { digest: number; hash: number; kept: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
+const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
+function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
+  if (counts.timer !== undefined) { clearTimeout(counts.timer); counts.timer = undefined; }
+  const totals = { digest: counts.digest, hash: counts.hash, kept: counts.kept, noDirectory: counts.noDirectory, notOwnText: counts.notOwnText, format: counts.format, types: counts.types, notJavaScript: counts.notJavaScript };
+  const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
+  if (total === counts.said) return;
+  counts.said = total;
+  console.log('[boot-trace]', JSON.stringify({ event: 'prepared-bodies', where: 'counts', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null, ...totals, stats: __substrateResolutionKept.get(process)?.probes ?? null }));
+}
+function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCounts, 'said' | 'timer'>): void {
+  let counts = __substratePreparedCounts.get(process);
+  if (!counts) {
+    counts = { digest: 0, hash: 0, kept: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
+    __substratePreparedCounts.set(process, counts);
+  }
+  counts[how] += 1;
+  if (counts.timer !== undefined) clearTimeout(counts.timer);
+  const mine = counts;
+  counts.timer = setTimeout(() => { mine.timer = undefined; __substrateSayPrepared(process, mine, 'quiet'); }, 2000);
+  (counts.timer as { unref?: () => void }).unref?.();
+}
+/**
+ * An instrument: what this process used of the engine, in the capability ledger's own row ids, one line at its exit:
+ * `engine.<builtin>` for each builtin it loaded (Node's `process.moduleLoadList`, which the engine keeps) and
+ * `engine.binding.<name>` for each binding Node's lib asked for. The count is 1: loaded, not how often called.
+ * Bindings are the realm's, and a realm is one process wherever processes are separate realms.
+ */
+const __substrateRowsSaid = new WeakSet<object>();
+function __substrateSayRowsUsed(process: object): void {
+  if (__substrateRowsSaid.has(process)) return;
+  __substrateRowsSaid.add(process);
+  const view = process as { pid?: number; argv0?: string; moduleLoadList?: string[] };
+  const rows: Record<string, number> = {};
+  for (const entry of view.moduleLoadList ?? []) if (entry.startsWith('NativeModule ')) rows[`engine.${entry.slice(13)}`] = 1;
+  for (const name of nodeLibBindingsAsked()) rows[`engine.binding.${name}`] = 1;
+  const program = String(view.argv0 ?? 'node').split('/').pop() || 'node';
+  console.log('[rows-used]', JSON.stringify({ pid: view.pid ?? null, program, rows }));
+}
+Object.defineProperty(globalThis, '__substratePreparedExit', {
+  configurable: true,
+  value: (process: object): void => {
+    const counts = __substratePreparedCounts.get(process);
+    if (counts) __substrateSayPrepared(process, counts, 'exit');
+    sayLoadAccount(process, 'exit');
+    sayNativeStreamCounts((process as { pid?: number }).pid ?? null, 'exit');
+    __substrateSayRowsUsed(process);
+  },
+});
+/** A prepared body's text, or undefined where the tree holds none by that name: the read's own miss is the answer. */
+function __substrateReadPrepared(vfs: { readFileSync(path: string, encoding: 'utf8'): string }, key: string): string | undefined {
+  try { return vfs.readFileSync(`${PREPARED_MODULES_DIR}/${key}`, 'utf8'); }
+  catch { return undefined; }
+}
+
 function transformEsmToCjs(code: string, filename: string): string {
   // Quick check: does the code have any ESM-like patterns?
   const maybeEsm = __substrateHasEsmSyntax(code);
@@ -401,6 +866,7 @@ function transformEsmToCjsAst(code: string, filename: string): string {
       // Replace just the 'import' keyword, preserving the (...) part
       deepReplacements.push([node.start, node.start + 6, '__dynamicImport']);
     }
+    collectDirectEval(node, deepReplacements);
   });
 
   // Check for actual import/export declarations
@@ -408,18 +874,14 @@ function transformEsmToCjsAst(code: string, filename: string): string {
   const hasExportDecl = ast.body.some((n: any) => n.type?.startsWith('Export'));
 
   // Apply deep replacements from end to start (preserves earlier positions)
-  let transformed = code;
-  deepReplacements.sort((a, b) => b[0] - a[0]);
-  for (const [start, end, replacement] of deepReplacements) {
-    transformed = transformed.slice(0, start) + replacement + transformed.slice(end);
-  }
+  let transformed = applyReplacements(code, deepReplacements);
 
   // Transform import/export declarations (re-parses the modified code)
   if (hasImportDecl || hasExportDecl) {
     transformed = transformEsmToCjsSimple(transformed);
 
     if (hasExportDecl) {
-      transformed = `Object.defineProperty(${__cjsExports()}, "__esModule", { value: true });\n` + transformed;
+      transformed = `${__cjsObject()}.defineProperty(${__cjsExports()}, "__esModule", { value: true });\n` + transformed;
     }
   }
 
@@ -429,14 +891,14 @@ function transformEsmToCjsAst(code: string, filename: string): string {
 /**
  * Regex-based fallback for ESM to CJS transform (when acorn can't parse).
  */
-function transformEsmToCjsRegexFallback(code: string, filename: string): string {
+function transformEsmToCjsRegexFallback(code: string, _filename: string): string {
   let transformed = code;
 
-  // Replace import.meta (regex — may match in strings, but this is the fallback)
-  transformed = transformed.replace(/\bimport\.meta\.url\b/g, `"file://${filename}"`);
-  transformed = transformed.replace(/\bimport\.meta\.dirname\b/g, `"${pathShim.dirname(filename)}"`);
-  transformed = transformed.replace(/\bimport\.meta\.filename\b/g, `"${filename}"`);
-  transformed = transformed.replace(/\bimport\.meta\b/g, `({ url: "file://${filename}", dirname: "${pathShim.dirname(filename)}", filename: "${filename}" })`);
+  // Replace import.meta (regex — may match in strings, but this is the fallback) with the variable the module's
+  // wrapper supplies when the body runs, as the syntax-tree lowering does. A body holds nothing of the path it was
+  // made at: bodies are named by content and shared by every file with that content, and this wrote the path in
+  // (`"file://<path>"`), so a file lowered here would have answered another file's `import.meta`.
+  transformed = transformed.replace(/\bimport\.meta\b/g, 'import_meta');
 
   // Replace dynamic imports
   transformed = transformDynamicImportsRegex(transformed);
@@ -447,7 +909,7 @@ function transformEsmToCjsRegexFallback(code: string, filename: string): string 
   if (hasImport || hasExport) {
     transformed = transformEsmToCjsSimple(transformed);
     if (hasExport) {
-      transformed = `Object.defineProperty(${__cjsExports()}, "__esModule", { value: true });\n` + transformed;
+      transformed = `${__cjsObject()}.defineProperty(${__cjsExports()}, "__esModule", { value: true });\n` + transformed;
     }
   }
 
@@ -538,15 +1000,15 @@ function __substrateDriveBody(kind: 'sync' | 'generator' | 'async', body: unknow
   if (kind === 'sync') return undefined;
   if (kind === 'async') return (module as { __substrateBodyDone?: boolean }).__substrateBodyDone ? undefined : body as Promise<unknown>;
   const iterator = body as Iterator<unknown>;
-  let step: IteratorResult<unknown> = iterator.next();
-  while (!step.done && !step.value) step = iterator.next();
+  let step: IteratorResult<unknown> = withGuestExecution(() => iterator.next());
+  while (!step.done && !step.value) step = withGuestExecution(() => iterator.next());
   if (step.done) return undefined;
   return (async () => {
     let current: IteratorResult<unknown> = step;
     while (!current.done) {
       await current.value;
-      current = iterator.next();
-      while (!current.done && !current.value) current = iterator.next();
+      current = withGuestExecution(() => iterator.next());
+      while (!current.done && !current.value) current = withGuestExecution(() => iterator.next());
     }
   })();
 }
@@ -604,9 +1066,38 @@ async function __substrateImportChain(
   return doors.__loadFromURL(resolved.url, loaded.format ?? resolved.format, loaded.source ?? void 0);
 }
 
+/**
+ * A module's `import.meta`: `url`, `dirname`, `filename` and Node's synchronous
+ * `resolve` (Node 20.6+). Pi's extension loader resolves its own packages with
+ * `import.meta.resolve(specifier)`, and without it every Pi extension failed to
+ * load with "import_meta.resolve is not a function". A relative or URL specifier
+ * resolves against the module's URL, a builtin to `node:<name>`, and a bare one
+ * through the module's own resolver, the one `import()` uses here. Unlike Node,
+ * a relative specifier naming a missing file resolves instead of throwing.
+ */
+function createImportMeta(moduleRequire: RequireFunction, url: string, dirname: string, filename: string): Record<string, unknown> {
+  const resolve = (specifier: unknown, parent?: unknown): string => {
+    const id = typeof specifier === 'string' ? specifier : String(specifier);
+    const base = parent === undefined ? url : String(parent);
+    if (id.startsWith('./') || id.startsWith('../') || id.startsWith('/')) return new URL(id, base).href;
+    if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(id)) return id.startsWith('node:') ? id : new URL(id).href;
+    if (Object.prototype.hasOwnProperty.call(builtinModules, id)) return `node:${id}`;
+    return 'file://' + moduleRequire.resolve(id);
+  };
+  return { url, dirname, filename, resolve };
+}
+
+/** ES module bodies a process has run: an import that raises it ran one for the first time. */
+const __substrateEsBodiesRun = new WeakMap<object, number>();
+function __substrateEsBodyRuns(process: object): void { __substrateEsBodiesRun.set(process, (__substrateEsBodiesRun.get(process) ?? 0) + 1); }
+/** One turn of the loop a guest's own `setImmediate` waits on. */
+const __substrateLoopTurn = (): Promise<void> => new Promise<void>(resolve => { setImmediate(resolve); });
 function createDynamicImport(moduleRequire: RequireFunction, process: Process, parentURL?: string): (specifier: unknown) => Promise<unknown> {
   return async (specifier: unknown): Promise<unknown> => {
     try {
+      // What the guest's Node line does when an import runs an ES module for the first time (node-line.ts).
+      const turns = freshEsModuleImportTurns(nodeLineOf((process as { version?: unknown }).version));
+      const esBodiesBefore = turns > 0 ? __substrateEsBodiesRun.get(process) ?? 0 : 0;
       // The specifier of `import()` undergoes ToString, as Node's does. ESLint's
       // `loadFormatter` imports `pathToFileURL(formatterPath)` — a URL object —
       // and the engine handed the object to require untouched, so the
@@ -626,6 +1117,7 @@ function createDynamicImport(moduleRequire: RequireFunction, process: Process, p
       // A module still settling settles the import, as Node's does.
       const pending = __substratePendingOf(mod);
       if (pending) await pending;
+      if (turns > 0 && (__substrateEsBodiesRun.get(process) ?? 0) > esBodiesBefore) for (let turn = 0; turn < turns; turn += 1) await __substrateLoopTurn();
 
       // A lowered ES module already carries its named exports and `__esModule`.
       // A CommonJS builtin does not: Node's ESM namespace is built from the
@@ -660,12 +1152,15 @@ export interface RuntimeOptions {
   onConsole?: (method: string, args: unknown[]) => void;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
+  /** fd 1 and fd 2 as the bytes the program wrote; where given, the text sink of that fd is not called. */
+  onStdoutBytes?: (bytes: Uint8Array) => void;
+  onStderrBytes?: (bytes: Uint8Array) => void;
   /** What is on the guest's fd 0, the way a shell puts the left of a pipe there. */
-  stdin?: string;
+  stdin?: string | Uint8Array;
   /** The runner can still write to fd 0, so standard input has not ended. */
   stdinHeld?: boolean;
-  /** The run was given a TTY; a pipe child is not one. */
-  tty?: boolean;
+  /** The run was given a TTY, on all three fds or per fd as `[stdin, stdout, stderr]`; a pipe child is not one. */
+  tty?: boolean | readonly [boolean, boolean, boolean];
   /** This run's process number and its parent's; minted where neither is given. */
   pid?: number;
   ppid?: number;
@@ -760,9 +1255,14 @@ function __substratePackageIdentity(vfs: VirtualFS, file: string): string | unde
 }
 
 function __webStreamsModule(): Record<string, unknown> {
+  // Read when used, not when the engine loads: the engine later wraps the
+  // global ReadableStream (Node's closed-promise tracking), and a copy taken
+  // here was the unwrapped one, so require('stream/web').ReadableStream was
+  // not globalThis.ReadableStream, as it is in Node.
   const module: Record<string, unknown> = {};
   for (const name of ["ReadableStream", "ReadableStreamDefaultReader", "ReadableStreamBYOBReader", "ReadableStreamBYOBRequest", "ReadableByteStreamController", "ReadableStreamDefaultController", "TransformStream", "TransformStreamDefaultController", "WritableStream", "WritableStreamDefaultWriter", "WritableStreamDefaultController", "ByteLengthQueuingStrategy", "CountQueuingStrategy", "TextEncoderStream", "TextDecoderStream", "CompressionStream", "DecompressionStream"]) {
-    if (typeof (globalThis as Record<string, unknown>)[name] !== "undefined") module[name] = (globalThis as Record<string, unknown>)[name];
+    if (typeof (globalThis as Record<string, unknown>)[name] === "undefined") continue;
+    Object.defineProperty(module, name, { enumerable: true, configurable: true, get: () => (globalThis as Record<string, unknown>)[name] });
   }
   return module;
 }
@@ -818,6 +1318,10 @@ const builtinModules: Record<string, unknown> = {
   http2: http2Shim,
   cluster: clusterShim,
   dgram: dgramShim,
+  // A stand-in for Node's surface that refuses the REPL by name (shims/repl.ts says why it is not Node's file).
+  repl: replShim,
+  // Node's `sys` is `util` itself (lib/sys.js: `module.exports = require('util')`), deprecated (DEP0025).
+  sys: utilShim,
   vm: vmShim,
   inspector: inspectorShim,
   'inspector/promises': inspectorShim,
@@ -896,6 +1400,16 @@ Object.defineProperty(builtinModules, 'assert/strict', {
   enumerable: true,
   get(): unknown { return (assertModule as { strict: unknown }).strict; },
 });
+// A builtin NAME is a promise that `require` of it loads a module. Every name the engine lists
+// (`shims/module.ts`, which is what `module.builtinModules` and `isBuiltin` answer from) has a module in this table,
+// or is one of the three made per guest (`fs`, `process`, `wasi`, each answered where a guest's require is built).
+// A listed name with neither resolved to its bare id and was then opened as a FILE of that name: `require('repl')`
+// answered "ENOENT: open 'repl'" (ts-node, which loads `repl` on every start). The engine does not load with one.
+{
+  const __perGuest = new Set(['fs', 'process', 'wasi']);
+  const __unanswered = moduleShim.builtinModules.filter((name: string) => !__perGuest.has(name) && !Object.prototype.hasOwnProperty.call(builtinModules, name));
+  if (__unanswered.length > 0) throw new Error(`tabnode: builtin name${__unanswered.length === 1 ? '' : 's'} listed with no module: ${__unanswered.join(', ')}. Give each a module in runtime.ts's table or take it off shims/module.ts's list.`);
+}
 // Node's builtin module objects are ordinary mutable objects: a program can
 // patch `vm.runInContext` or `crypto.randomUUID`, and Next's environment
 // extensions and its error inspector do. Most shims are frozen module
@@ -1379,6 +1893,71 @@ function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string): boolean {
  * consults it before its own path.
  */
 const __substrateModuleClasses = new WeakMap<Record<string, Module>, any>();
+/** What a module being loaded carries past its extension's handler, whose signature has no room for it. */
+const __substrateLoading = new WeakMap<object, { resolvedAs?: { url?: string; format?: string; source?: string | ArrayBuffer | ArrayBufferView | null }; compiling?: { raw: string; format: string | undefined } }>();
+/** Node's `findLongestRegisteredExtension`: the longest registered extension the file's name ends with, else `.js`. */
+function __substrateRegisteredExtension(filename: string, extensions: Record<string, unknown>): string {
+  const name = filename.slice(filename.lastIndexOf('/') + 1);
+  for (let index = name.indexOf('.'); index !== -1; index = name.indexOf('.', index + 1)) {
+    if (index === 0) continue;
+    const extension = name.slice(index);
+    if (extensions[extension]) return extension;
+  }
+  return '.js';
+}
+// Node shares successful path resolutions between a process's modules
+// (Module._pathCache). A cache per require repeated sibling imports' tree
+// probes: 0.863 s inclusive resolveModule in Dub's retained World host.
+// Keep failures local and separate filesystems/process module caches. The
+// payload estimate bounds retained strings, not JavaScript heap overhead.
+/**
+ * What a process keeps between its resolutions (node-resolution.ts `ResolutionKept`), and the depth of its `require`
+ * calls in flight: Node's `requireDepth`, which decides when its stat cache exists.
+ */
+const __substrateResolutionKept = new WeakMap<object, ResolutionKept & { depth: number }>();
+function __substrateKeptFor(process: object): ResolutionKept & { depth: number } {
+  let kept = __substrateResolutionKept.get(process);
+  if (!kept) { kept = { manifests: new Map(), realPaths: new Map(), depth: 0, probes: { file: 0, directory: 0, absent: 0, held: 0, outside: 0, windows: 0 } }; __substrateResolutionKept.set(process, kept); }
+  return kept;
+}
+/**
+ * Node's stat cache exists while a module compiled at require depth 0 executes, and not otherwise
+ * (`Module.prototype._compile`: `if (requireDepth === 0) { statCache = new SafeMap(); }`, unset when the body returns).
+ */
+const __substrateWindowSaid = new WeakSet<object>();
+function __substrateInStatWindow<T>(process: object, run: () => T): T {
+  const keeping = __substrateKeptFor(process);
+  // An instrument: at a process's first module body, whether its stat window opens and the require depth it saw.
+  if (!__substrateWindowSaid.has(process)) {
+    __substrateWindowSaid.add(process);
+    console.log('[boot-trace]', JSON.stringify({ event: 'stat-window', at: Date.now(), pid: (process as { pid?: number }).pid ?? null, opened: keeping.depth === 0 && keeping.stats === undefined, depth: keeping.depth }));
+  }
+  if (keeping.depth !== 0 || keeping.stats !== undefined) return run();
+  keeping.stats = new Map();
+  if (keeping.probes) keeping.probes.windows += 1;
+  try { return run(); } finally { keeping.stats = undefined; }
+}
+const __substrateResolvedPaths = new WeakMap<Record<string, Module>, WeakMap<VirtualFS, { paths: Map<string, string>; bytes: number }>>();
+function __substratePathsFor(cache: Record<string, Module>, fs: VirtualFS) {
+  let filesystems = __substrateResolvedPaths.get(cache);
+  if (!filesystems) { filesystems = new WeakMap(); __substrateResolvedPaths.set(cache, filesystems); }
+  let paths = filesystems.get(fs);
+  if (!paths) { paths = { paths: new Map(), bytes: 0 }; filesystems.set(fs, paths); }
+  return paths;
+}
+function __substrateKeepPath(cache: { paths: Map<string, string>; bytes: number }, key: string, path: string): void {
+  const bytes = 2 * (key.length + path.length);
+  if (bytes > 8 * 1024 * 1024) return;
+  const old = cache.paths.get(key);
+  if (old !== undefined) { cache.paths.delete(key); cache.bytes -= 2 * (key.length + old.length); }
+  while (cache.paths.size >= 8192 || cache.bytes + bytes > 8 * 1024 * 1024) {
+    const first = cache.paths.entries().next().value!;
+    cache.paths.delete(first[0]);
+    cache.bytes -= 2 * (first[0].length + first[1].length);
+  }
+  cache.paths.set(key, path);
+  cache.bytes += bytes;
+}
 // The directory a module resolves from: its file's, or, for the stand-in
 // parent a require without a module names, the directory itself, which it
 // carries with a trailing slash that dirname would otherwise climb out of.
@@ -1401,7 +1980,13 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   // the engine's require went straight to its own loader, so every such patch
   // was installed and never called. Measured in the tab: after
   // `module._load = fn`, a `require('fs')` never reached `fn`.
-  Module.prototype.require = function (this: any, id: string) { return Module._load(id, this, false); };
+  // The calls in flight are counted here and nowhere below, as Node counts them (`requireDepth` in
+  // `Module.prototype.require`): `_load` does not count, so an entry started through it runs its body at depth 0.
+  Module.prototype.require = function (this: any, id: string) {
+    const keeping = __substrateKeptFor(process);
+    keeping.depth += 1;
+    try { return Module._load(id, this, false); } finally { keeping.depth -= 1; }
+  };
   Module.__substrateRequire = Module.prototype.require;
   // `Module.prototype._compile(content, filename)` is the seam every loader
   // that transpiles a file uses: require.extensions hooks, ts-node, and
@@ -1412,9 +1997,12 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     const file = typeof filename === 'string' && filename ? filename : (this.filename || this.id || '');
     this.filename = file;
     if (!Array.isArray(this.paths) || this.paths.length === 0) this.paths = Module._nodeModulePaths(pathShim.dirname(file));
-    requireFor(this).__compileRaw(this, String(content), file, pathShim.dirname(file));
+    (Module.__substrateCompileRaw ?? ((module: any, text: string, name: string, dir: string) => requireFor(module).__compileRaw(module, text, name, dir)))(this, String(content), file, pathShim.dirname(file));
     return this.exports;
   };
+  // The engine's own compile, by identity: a load takes a body by the tree's digest only where this is what the
+  // module would be compiled by, since a program's own `_compile` is handed the source's text.
+  Module.__substrateOwnCompile = Module.prototype._compile;
   Module._resolveFilename = function (request: string, parent: any) { return requireFor(parent).__resolveRaw(request); };
   Module.__substrateResolveFilename = Module._resolveFilename;
   // `Module._load(request, null, true)` runs a module as the main module, the
@@ -1423,17 +2011,25 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
   Module._load = function (request: string, parent: any, isMain: boolean) {
     const from = parent || new Module();
     if (isMain) (process as any).__substrateMainPending = Module._resolveFilename(request, from, true, void 0);
-    return requireFor(from).__requireRaw(request);
+    return requireFor(from).__loadRaw(request);
   };
   Module.__substrateLoad = Module._load;
   Module._cache = moduleCache;
-  // Node's extension loaders, what require.extensions names. A loader here
-  // runs the file through the engine; the engine's own loader does not yet
-  // consult these, so a program that wraps one to transpile is honored only
-  // where it calls the loader itself.
+  // Node's extension loaders, what `require.extensions` names, and the loader's one path: it loads every file by
+  // calling the entry for the file's extension. The built-in ones are the engine's load step, which compiles through
+  // `module._compile` as Node's do; a program that registers one (ts-node's `.ts`, @babel/register's `.js`) replaces
+  // the entry and is called in its place, and usually chains to the one it replaced. `.ts`, `.mts` and `.cts` are
+  // built in as in Node 24, where they strip types; a registered `.ts` handler replaces that, as it does there.
+  const builtinHandler = (module: any, filename: string) => {
+    // Before this run has loaded any file (a program calling a handler itself), the load step is a loader's made here.
+    (Module.__substrateBuiltinLoad ?? ((loading: any, name: string) => requireFor(loading).__builtinLoad(loading, name)))(module, filename);
+  };
   Module._extensions = Object.assign(Object.create(null), {
-    ".js": (module: any, filename: string) => { module.exports = requireFor(module).__requireRaw(filename); module.loaded = true; },
-    ".json": (module: any, filename: string) => { module.exports = requireFor(module).__requireRaw(filename); module.loaded = true; },
+    ".js": builtinHandler,
+    ".json": builtinHandler,
+    ".ts": builtinHandler,
+    ".mts": builtinHandler,
+    ".cts": builtinHandler,
     ".node": (module: any, filename: string) => { throw Object.assign(new Error(`Cannot load native addon ${filename} in a tab.`), { code: "ERR_DLOPEN_FAILED" }); },
   });
   Module._pathCache = Object.create(null);
@@ -1449,6 +2045,31 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
       current = current.slice(0, current.lastIndexOf("/")) || "/";
     }
   };
+  // The rest of Node's CommonJS surface that is a few lines over what is here (lib/internal/modules/cjs/loader.js,
+  // run_main.js). Each was absent, and a program that reads one found `undefined` where Node has a function.
+  // `Module.runMain(main)`: run a file as the entry, which is what ts-node does once it has registered itself.
+  Module.runMain = (main: string = (process as any).argv[1]) => Module._load(main, null, true);
+  // `Module._resolveLookupPaths(request, parent)`: where a lookup would search; `require.resolve.paths` is over it.
+  Module._resolveLookupPaths = (request: string, parent: any) => requireFor(parent || new Module()).resolve.paths(request);
+  // `Module._findPath(request, paths)`: the file `request` is under the first of `paths` that has it, or false.
+  Module._findPath = (request: string, paths: string[]) => {
+    for (const from of pathShim.isAbsolute(request) ? [""] : paths ?? []) {
+      try { return requireFor(new Module()).__resolveRaw(pathShim.resolve(from || "/", request)); } catch { /* the next directory */ }
+    }
+    return false;
+  };
+  // Node recomputes its global folders from HOME and NODE_PATH here; this engine's are fixed (`globalPaths`).
+  Module._initPaths = () => undefined;
+  Module._preloadModules = (requests: string[] | undefined) => { for (const request of requests ?? []) Module._load(request, new Module("internal/preload"), false); };
+  Module._debug = () => undefined;
+  // `module.load(filename)`: Node's own body, the extension's handler run on this module.
+  Module.prototype.load = function (this: any, filename: string) {
+    this.filename = filename;
+    this.paths = Module._nodeModulePaths(pathShim.dirname(filename));
+    const extension = pathShim.extname(filename);
+    (Module._extensions[extension] ?? Module._extensions[".js"])(this, filename);
+    this.loaded = true;
+  };
   Module.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
   Module.wrap = (code: string) => Module.wrapper[0] + code + Module.wrapper[1];
   Module.createRequire = (filenameOrUrl: string) => {
@@ -1462,6 +2083,15 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     return made;
   };
   Module.findSourceMap = () => undefined;
+  // The same switch `process.setSourceMapsEnabled` sets, by Node's two module functions.
+  Module.getSourceMapsSupport = () => Object.freeze({ ...sourceMapsSupportOf(process) });
+  Module.setSourceMapsSupport = (enabled: unknown, options: { nodeModules?: unknown; generatedCode?: unknown } = {}) => {
+    if (typeof enabled !== 'boolean') throw new ERR_INVALID_ARG_TYPE('enabled', 'boolean', enabled);
+    for (const key of ['nodeModules', 'generatedCode'] as const) {
+      if (options[key] !== undefined && typeof options[key] !== 'boolean') throw new ERR_INVALID_ARG_TYPE(`options.${key}`, 'boolean', options[key]);
+    }
+    setSourceMapsSupportOf(process, enabled, { nodeModules: options.nodeModules === true, generatedCode: options.generatedCode === true });
+  };
   // The module-customization hooks of this run, built on the first call and
   // nowhere else: a run that registers none never pays for the chain, which is
   // the fast path Node keeps too. They hang off the Module class because that
@@ -1516,14 +2146,20 @@ function createRequire(
   const __substrateModule = () => __substrateModuleClassFor(moduleCache, (parent: any) => createRequire(vfs, fsShim, process, __substrateModuleDir(parent, currentDir), moduleCache, options, processedCodeCache, parent));
   /** The hooks this run has registered, and undefined while it has registered none. */
   const __substrateHooks = (): RunModuleHooks | undefined => __substrateModule().__substrateHooks as RunModuleHooks | undefined;
+  // Where this process's loading goes (load-account.ts): each phase below is entered and left around its own work.
+  const loadAccount = loadAccountFor(process);
   const __substrateResolve = (id: string): string => {
     const Module = __substrateModule();
-    return Module._resolveFilename === Module.__substrateResolveFilename
-      ? resolveModule(id, currentDir)
-      : Module._resolveFilename(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false, undefined);
+    enterLoadPhase(loadAccount, LoadPhase.Resolve);
+    try {
+      return Module._resolveFilename === Module.__substrateResolveFilename
+        ? resolveModule(id, currentDir)
+        : Module._resolveFilename(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false, undefined);
+    } finally { leaveLoadPhase(loadAccount); }
   };
   // Module resolution cache for faster repeated imports
   const resolutionCache: Map<string, string | null> = new Map();
+  const successfulPaths = __substratePathsFor(moduleCache, vfs);
 
   // Package.json parsing cache
   const packageJsonCache: Map<string, PackageJson | null> = new Map();
@@ -1574,11 +2210,11 @@ function createRequire(
     // so a root package's imports map never answered; the shared resolver takes
     // the `#` names too.
     if (id.startsWith('#')) {
-      const __resolvedImport = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir);
+      const __resolvedImport = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir, __substrateKeptFor(process));
       if (__resolvedImport) return __resolvedImport;
       throw Object.assign(new Error(`Cannot find module '${id}'`), { code: 'MODULE_NOT_FOUND' });
     }
-    const cacheKey = `${fromDir}|${id}`;
+    const cacheKey = `${fromDir}\0${id}`;
     const cached = resolutionCache.get(cacheKey);
     if (cached !== undefined) {
       if (cached === null) {
@@ -1586,6 +2222,8 @@ function createRequire(
       }
       return cached;
     }
+    const successful = successfulPaths.paths.get(cacheKey);
+    if (successful !== undefined) return successful;
 
     // One resolver for every name the engine resolves: this require, the simple
     // loader's, and the bundler's plugin. Each had a hand-rolled subset of
@@ -1593,9 +2231,9 @@ function createRequire(
     // app found a new gap. This site keeps only its edges — the cache, the
     // builtins, the stand-ins — and calls the shared resolver.
     {
-      const __resolved = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir);
+      const __resolved = __nodeResolverFor(vfs, 'runtime').resolve(id, fromDir, __substrateKeptFor(process));
       if (__resolved) {
-        resolutionCache.set(cacheKey, __resolved);
+        __substrateKeepPath(successfulPaths, cacheKey, __resolved);
         return __resolved;
       }
     }
@@ -1672,6 +2310,12 @@ function createRequire(
       paths: [],
       parent: parentModule || null,
     };
+    // A module is an instance of Module, as Node's is: `module.require`, `module._compile` and `module.load` are the
+    // class's, `module.path` is its directory and `module.paths` where its own requires look. Made as a bare object
+    // it had none of them ("mod.require is not a function": source-map-support's `dynamicRequire(module, 'fs')`).
+    Object.setPrototypeOf(module, __substrateModule().prototype);
+    (module as Module & { path: string }).path = pathShim.dirname(resolvedPath);
+    module.paths = __substrateModule()._nodeModulePaths(pathShim.dirname(resolvedPath));
     if (parentModule && Array.isArray(parentModule.children)) parentModule.children.push(module);
 
     // Cache before loading to handle circular dependencies
@@ -1692,14 +2336,43 @@ function createRequire(
     // second time: two live copies of a module that holds state, such as Next's
     // request store, and the second copy empty.
 
+    // Node's `Module.prototype.load`: the handler registered for the file's extension loads it, and that is the one
+    // path. The built-in handlers are the engine's own load step (`builtinLoad`, below) and compile through
+    // `module._compile`; a handler a program registered (ts-node, @babel/register, pirates) is called here because
+    // it is the one in the table, and the `_compile` it replaced on the module is called because the handler it
+    // chains to calls it.
+    if (resolvedAs) __substrateLoading.set(module, { resolvedAs });
+    const Mod = __substrateModule();
+    Mod.__substrateBuiltinLoad = builtinLoad;
+    Mod.__substrateCompileRaw = compileRaw;
+    enterLoadPhase(loadAccount, LoadPhase.Loader);
+    try { Mod._extensions[__substrateRegisteredExtension(resolvedPath, Mod._extensions)](module, resolvedPath); }
+    finally { leaveLoadPhase(loadAccount); __substrateLoading.delete(module); }
+    return module;
+  };
+
+  /**
+   * The built-in handlers' load step (Node's `Module._extensions['.js']`, `['.json']` and, since Node 24, `['.ts']`):
+   * the file's source and format, through the run's load hooks where it has any; JSON parsed; anything else
+   * compiled through `module._compile`, which a program may have replaced on this module.
+   */
+  const builtinLoad = (module: Module, resolvedPath: string): void => {
+    const Mod = __substrateModule();
+    const resolvedAs = __substrateLoading.get(module)?.resolvedAs;
     // A module's source, and the format it is compiled in, are the load step.
     // Where a run has registered load hooks the chain answers both and this
     // read is its last link, which is where Node's `loadSource` calls
     // `loadWithHooks`; where it has none, nothing here changes.
     const __hooks = __substrateHooks();
-    const defaultSource = (): string => resolvedPath.startsWith('data:')
-      ? __substrateDataModuleSource(resolvedPath)!
-      : vfs.readFileSync(resolvedPath, 'utf8');
+    const defaultSource = (): string => {
+      if (resolvedPath.startsWith('data:')) return __substrateDataModuleSource(resolvedPath)!;
+      enterLoadPhase(loadAccount, LoadPhase.Read);
+      try {
+        const text = vfs.readFileSync(resolvedPath, 'utf8');
+        loadAccount.sourceBytes += text.length;
+        return text;
+      } finally { leaveLoadPhase(loadAccount); }
+    };
     let format = resolvedAs?.format;
     let source = resolvedAs?.source;
     if (__hooks && __hooks.hasSyncLoad && source === undefined) {
@@ -1717,15 +2390,96 @@ function createRequire(
     if (format === 'json' || (format === undefined && resolvedPath.endsWith('.json'))) {
       module.exports = JSON.parse(source === undefined || source === null ? vfs.readFileSync(resolvedPath, 'utf8') : String(source));
       module.loaded = true;
-      return module;
+      return;
+    }
+
+    // A body named by the tree's own digest of the file, where the source would reach the engine's compile as the
+    // file's own text and nothing else: no load hook is registered (a hook may answer other text or a format), no
+    // resolve step named a source or format, the module's `_compile` is the engine's (a program's own is handed the
+    // text, so it must be read), and types are not stripped. Then the text is never read and never hashed. A tree
+    // with no digest for the file's current content, or no body by that name, leaves the load to the read below.
+    if (source === undefined && format === undefined && !(__hooks && __hooks.hasSyncLoad) && !resolvedPath.startsWith('data:')
+      && (module as Module & { _compile?: unknown })._compile === Mod.__substrateOwnCompile
+      && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> })) {
+      const kind = preparedModuleKind(resolvedPath);
+      enterLoadPhase(loadAccount, LoadPhase.Digest);
+      let digest: string | undefined;
+      try { digest = kind ? vfs.contentDigest(resolvedPath) : undefined; } finally { leaveLoadPhase(loadAccount); }
+      let body: string | undefined;
+      if (kind && digest) {
+        enterLoadPhase(loadAccount, LoadPhase.BodyRead);
+        try { body = __substrateReadPrepared(vfs, preparedModuleKeyOf(kind, digest)); } finally { leaveLoadPhase(loadAccount); }
+      }
+      if (body !== undefined) {
+        loadAccount.preparedHit += 1;
+        loadAccount.preparedBytes += body.length;
+        __substrateCountPrepared(process, 'digest');
+        (module as Module & { filename?: string }).filename = resolvedPath;
+        if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
+        runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), true);
+        return;
+      }
     }
 
     // Read and execute JS file; a data: URL carries its own source.
     const rawCode = source === undefined || source === null ? defaultSource() : String(source);
-    const dirname = resolvedPath.startsWith('data:') ? currentDir : pathShim.dirname(resolvedPath);
+    // A data: URL is no file: it has no extension's handler to answer to and no directory of its own.
+    if (resolvedPath.startsWith('data:')) { runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, currentDir); return; }
+    // What `_compile` is handed, kept beside the module so the engine's own compile knows the format a hook named
+    // and whether the text is still the file's own (a body the image prepared is taken only for that).
+    __substrateLoading.set(module, { ...(resolvedAs ? { resolvedAs } : {}), compiling: { raw: rawCode, format } });
+    (module as Module & { _compile(content: string, filename: string): unknown })._compile(rawCode, resolvedPath);
+  };
 
+  /** `Module.prototype._compile`'s own work: the engine's pipeline over `content`, as the module at `filename`. */
+  const compileRaw = (module: Module, content: string, filename: string, dirname: string): void => {
+    const compiling = __substrateLoading.get(module)?.compiling;
+    const format = compiling?.format;
+    const rawCode = content;
+    const resolvedPath = filename;
+    __substrateTracePreparedGate(vfs, process, compiling, content, resolvedPath);
+    // A body prepared for the file's own text; a program's `_compile` that handed on other text compiles that text.
+    const strips = transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> });
+    enterLoadPhase(loadAccount, LoadPhase.Digest);
+    let key: string | undefined;
+    try { key = compiling?.raw === content && format === undefined && !strips ? preparedModuleKey(rawCode, resolvedPath) : undefined; } finally { leaveLoadPhase(loadAccount); }
+    let taken: string | undefined;
+    if (key) {
+      enterLoadPhase(loadAccount, LoadPhase.BodyRead);
+      try { taken = __substrateReadPrepared(vfs, key); } finally { leaveLoadPhase(loadAccount); }
+    }
+    if (taken === undefined) loadAccount.preparedMiss += 1;
+    else loadAccount.preparedBytes += taken.length;
+    if (key) {
+      if (taken !== undefined) {
+        loadAccount.preparedHit += 1;
+        __substrateCountPrepared(process, 'hash');
+        runModuleBody(module, taken, resolvedPath, dirname, true);
+        return;
+      }
+      // A file the image carries no body for (a package installed in the
+      // tab) is prepared here once and kept under the same name, so the next
+      // process takes it: every Playwright test worker required
+      // playwright-core afresh, 28 s each, measured in a tab. Only where the
+      // tree has the directory bodies are kept in; asked once the body's own
+      // read has missed, so a taken body costs no question about it.
+      if (vfs.existsSync(PREPARED_MODULES_DIR)) {
+        const body = __substrateScopeGlobalCalls(prepareModuleCode(rawCode, resolvedPath));
+        // One write is one step of the tab's filesystem, so no reader sees
+        // half a body; a rename after it failed in a forked process's realm
+        // and left the half-named file behind.
+        // What was kept is also said, one key a line, in a list beside the bodies: a reader that wants the bodies
+        // made in the tab (a dry run's capture) reads the list, where telling them from an image's own tens of
+        // thousands meant listing the directory.
+        try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${key}`, body); vfs.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${key}\n`); }
+        catch { /* a process that may not write there prepares its own */ }
+        __substrateCountPrepared(process, 'kept');
+        runModuleBody(module, body, resolvedPath, dirname, true);
+        return;
+      }
+    }
+    __substrateCountPrepared(process, key ? 'noDirectory' : compiling?.raw !== content ? 'notOwnText' : format !== undefined ? 'format' : strips ? 'types' : 'notJavaScript');
     runModuleBody(module, prepareModuleCode(rawCode, resolvedPath, format), resolvedPath, dirname);
-    return module;
   };
 
   /**
@@ -1741,53 +2495,14 @@ function createRequire(
   const prepareModuleCode = (rawCode: string, resolvedPath: string, format?: string): string => {
     // Check processed code cache (useful for HMR when module cache is cleared but code hasn't changed)
     // Use a simple hash of the content for cache key to handle content changes
-    const codeCacheKey = `${resolvedPath}|${format ?? ''}|${simpleHash(rawCode)}`;
+    const codeCacheKey = `${resolvedPath}|${format ?? ''}|${transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> }) ? 'transform-types|' : ''}${simpleHash(rawCode)}`;
     let code = processedCodeCache?.get(codeCacheKey);
-
     if (!code) {
-      code = rawCode;
-
-      // Strip shebang line if present (e.g. #!/usr/bin/env node)
-      if (code.startsWith('#!')) {
-        code = code.slice(code.indexOf('\n') + 1);
-      }
-
-      // A `.ts`, `.mts` or `.cts` file runs with its types stripped, as Node
-      // runs one since 22.18: the source goes to the type stripper the realm
-      // loaded, amaro, before the module's imports are read. A realm without one
-      // runs the file as it is.
-      const __typescript = format === undefined
-        ? /[.](?:ts|mts|cts)$/u.test(resolvedPath) && !resolvedPath.endsWith('.d.ts')
-        : format === 'typescript' || format === 'commonjs-typescript' || format === 'module-typescript';
-      if (__typescript && typeof (globalThis as any).__substrateStripTypes === 'function') {
-        code = (globalThis as any).__substrateStripTypes(code, resolvedPath) as string;
-      }
-
-      // Transform ESM to CJS if needed (for .mjs files or ESM that wasn't pre-transformed)
-      // transformEsmToCjs uses AST to handle import/export, import.meta, and dynamic imports
-      // It also handles already-CJS files safely (AST finds no ESM nodes → no-op)
-      const __commonjs = format === 'commonjs' || format === 'commonjs-typescript'
-        ? true
-        : format === 'module' || format === 'module-typescript'
-          ? false
-          : resolvedPath.endsWith('.cjs');
-      if (!__commonjs) {
-        // An ES module is strict wherever it runs; the mark says so to the
-        // compile below, which is otherwise sloppy as a CommonJS body is.
-        const lowered = transformEsmToCjs(code, resolvedPath);
-        code = lowered === code ? code : `${__substrateModuleMarker}"use strict";\n${lowered}`;
-      } else {
-        // A `.cjs` module skips the ESM transform, and with it the rewrite of
-        // `import(...)` to the engine's dynamic import, so its
-        // `import("fs/promises")` reached the browser's own import and failed on
-        // the bare specifier. The dynamic-import rewrite applies to `.cjs` too.
-        code = transformDynamicImportsRegex(code);
-      }
-
-      // Cache the processed code
+      enterLoadPhase(loadAccount, LoadPhase.Transform);
+      try { code = __substratePrepareBody(rawCode, resolvedPath, format, process); }
+      finally { leaveLoadPhase(loadAccount); }
       processedCodeCache?.set(codeCacheKey, code);
     }
-
     return code;
   };
 
@@ -1799,7 +2514,7 @@ function createRequire(
    * hands the result to it; the engine's own pipeline is what makes the
    * body Node-shaped here.
    */
-  const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string): void => {
+  const runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, scoped = false): void => {
     let code = prepared;
     // Create require for this module
     const moduleRequire = createRequire(
@@ -1825,7 +2540,11 @@ function createRequire(
     try {
       const importMetaUrl = resolvedPath.startsWith('data:') ? resolvedPath : 'file://' + resolvedPath;
       const strictBody = code.startsWith(__substrateModuleMarker);
-      code = __substrateScopeGlobalCalls(code);
+      if (strictBody) __substrateEsBodyRuns(process);
+      if (!scoped) {
+        enterLoadPhase(loadAccount, LoadPhase.Transform);
+        try { code = __substrateScopeGlobalCalls(code); } finally { leaveLoadPhase(loadAccount); }
+      }
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
@@ -1833,7 +2552,7 @@ function createRequire(
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0, self = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${__substrateSourceURL(resolvedPath)}`;
 
@@ -1841,11 +2560,16 @@ function createRequire(
       // still settling; a body that must wait, on a top-level `await` of its
       // own, runs as an async function. Either way its settling is what its
       // importers await.
-      let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
+      let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
       let fn;
+      const loadOwner = loadPackageOf(loadAccount, resolvedPath);
+      countLoadedFile(process, loadAccount, loadOwner, code.length);
+      enterLoadPhase(loadAccount, LoadPhase.Compile);
       try {
-        fn = __substrateSloppyEval(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : wrappedCode);
+        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, process);
+        leaveLoadPhase(loadAccount);
       } catch (evalError) {
+        leaveLoadPhase(loadAccount);
         const msg = evalError instanceof Error ? evalError.message : String(evalError);
       // A module with top-level await runs. Node runs a `.js` file of a package
       // with `"type": "module"` as a module, where `await` is valid at the top;
@@ -1854,27 +2578,37 @@ function createRequire(
       // an async function body instead.
         if (!(evalError instanceof SyntaxError)) throw evalError;
         bodyKind = 'async';
-        try { fn = __substrateSloppyEval(__substrateAsyncBody(wrappedCode)); }
+        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), process); }
         catch { throw new SyntaxError(`${msg} (in ${resolvedPath})`); }
       }
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(moduleRequire, process, importMetaUrl);
 
-      const body = fn(
-        module.exports,
-        moduleRequire,
-        module,
-        resolvedPath,
-        dirname,
-        process,
-        consoleWrapper,
-        { url: importMetaUrl, dirname, filename: resolvedPath },
-        dynamicImport,
-        __substrateGuestGlobal,
-        __substrateGuestConstructor
-      );
+      enterLoadPhase(loadAccount, LoadPhase.Evaluate, loadOwner);
+      let body;
+      try {
+        body = __substrateInStatWindow(process, () => withGuestExecution(() => fn(
+          module.exports,
+          moduleRequire,
+          module,
+          resolvedPath,
+          dirname,
+          process,
+          consoleWrapper,
+          createImportMeta(moduleRequire, importMetaUrl, dirname, resolvedPath),
+          dynamicImport,
+          __substrateGuestGlobal,
+          __substrateGuestConstructor
+        )));
+      } finally { leaveLoadPhase(loadAccount); }
 
-      const settling = __substrateDriveBody(bodyKind, body, module);
+      // A body that yields is driven here as far as it goes without waiting: that is the module's own running too.
+      let settling;
+      if (bodyKind === 'sync') settling = __substrateDriveBody(bodyKind, body, module);
+      else {
+        enterLoadPhase(loadAccount, LoadPhase.Evaluate, loadOwner);
+        try { settling = __substrateDriveBody(bodyKind, body, module); } finally { leaveLoadPhase(loadAccount); }
+      }
       if (settling) __substrateKeepPending(module, settling, () => { delete moduleCache[resolvedPath]; });
       else module.loaded = true;
     } catch (error) {
@@ -1902,7 +2636,9 @@ function createRequire(
     // as it would in Node; with the engine's own still in place, the fast
     // path below is the whole of a require, as it is for `_resolveFilename`.
     if (Module._load !== Module.__substrateLoad) {
-      return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false);
+      const keeping = __substrateKeptFor(process);
+      keeping.depth += 1;
+      try { return Module._load(id, parentModule || { id: currentDir, filename: currentDir + '/', paths: [] }, false); } finally { keeping.depth -= 1; }
     }
     return requireRaw(id);
   };
@@ -1917,7 +2653,13 @@ function createRequire(
    * case and so does this: with no hook registered, `requirePlain` is the
    * whole of a require and nothing below it runs.
    */
+  // Node's `Module.prototype.require` counts the calls in flight (`requireDepth`); the count is the process's.
   const requireRaw = (id: string): unknown => {
+    const keeping = __substrateKeptFor(process);
+    keeping.depth += 1;
+    try { return requireCounted(id); } finally { keeping.depth -= 1; }
+  };
+  const requireCounted = (id: string): unknown => {
     // A data: URL is a module of its own, loaded at that URL.
     if (id.startsWith('data:')) return loadModule(id).exports;
     // A hook is handed the specifier as it was written, `node:` prefix and
@@ -2008,6 +2750,13 @@ function createRequire(
     if (id.startsWith('node:')) {
       id = id.slice(5);
     }
+    loadAccount.requires += 1;
+    // One of the engine's own modules: its answer is the `builtin` phase (a file it turns out to name is its own).
+    if (!(moduleShim.isBuiltin(id) || Object.prototype.hasOwnProperty.call(builtinModules, id))) return requireNamed(id);
+    enterLoadPhase(loadAccount, LoadPhase.Builtin);
+    try { return requireNamed(id); } finally { leaveLoadPhase(loadAccount); }
+  };
+  const requireNamed = (id: string): unknown => {
     // A data: URL is a module of its own, loaded at that URL.
     if (id.startsWith('data:')) return loadModule(id).exports;
     if (moduleShim.isBuiltin(id)) __substrateRecordBuiltin(id);
@@ -2031,10 +2780,15 @@ function createRequire(
     if (id === 'worker_threads') {
       const bridge = (globalThis as Record<symbol, unknown>)[Symbol.for("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown) => unknown } | undefined;
       const module = bridge && typeof bridge.module === "function" ? bridge.module(vfs, process, builtinModules.worker_threads) : undefined;
-      if (module) return module;
+      return guestMessageModule(process, (module ?? workerThreadsShim) as Record<string, unknown>, !module);
     }
     if (id === 'module') {
       return __substrateModule();
+    }
+    // Ahead of the per-process builtin table: node-lib's own modules require
+    // `vm` first and that table keeps the first answer for the process.
+    if (id === 'vm') {
+      return __substrateGuestVm(process);
     }
     if (id === 'wasi') {
       return __substrateGuestWasi(fsShim, process);
@@ -2112,16 +2866,50 @@ function createRequire(
     return loadModule(resolved).exports;
   };
 
-  require.resolve = (id: string): string => {
+  require.resolve = (id: string, options?: { paths?: unknown }): string => {
     if (id === 'fs' || id === 'process' || id.startsWith('node:') || moduleShim.builtinModules.includes(id)) {
       return id;
     }
+    // Node's `options.paths`: each directory, in order, is where the lookup starts, as if the request came from a
+    // module there, and the first that resolves wins. The option was ignored and every lookup started at the caller,
+    // so a module installed in one tree could not find a package another tree holds (a World's injector resolving
+    // the application's own Prisma adapter from the application's directory). Node 12.
+    if (options && options.paths !== undefined) {
+      if (!Array.isArray(options.paths)) {
+        throw Object.assign(new TypeError(`The property 'options.paths' must be an Array. Received ${String(options.paths)}`), { code: 'ERR_INVALID_ARG_VALUE' });
+      }
+      options.paths.forEach((from, index) => {
+        if (typeof from !== 'string') throw Object.assign(new TypeError(`The "paths[${index}]" argument must be of type string. Received ${typeof from}`), { code: 'ERR_INVALID_ARG_TYPE' });
+      });
+      // A relative entry is the process's working directory's, as Node's Module._resolveFilename makes it.
+      const requireStack = parentModule && typeof parentModule.filename === 'string' ? [parentModule.filename] : [];
+      for (const from of options.paths as string[]) {
+        try { return resolveModule(id, pathShim.resolve(process.cwd(), from)); } catch { /* the next directory */ }
+      }
+      throw Object.assign(new Error(`Cannot find module '${id}'${requireStack.length ? `\nRequire stack:\n- ${requireStack.join('\n- ')}` : ''}`), { code: 'MODULE_NOT_FOUND', requireStack });
+    }
     return resolveModule(id, currentDir);
+  };
+  // Node's `require.resolve.paths(request)` (lib/internal/modules/helpers.js makeRequireFunction, over
+  // Module._resolveLookupPaths): the directories a lookup of `request` from this module would search. Null for a
+  // builtin; for a relative request the requiring module's own directory; otherwise each node_modules above it.
+  // Every require the engine makes is made here (a module's own, `createRequire`'s), so each has it: ts-node reads
+  // it on a require from `createRequire` before it resolves anything ("req.resolve.paths is not a function").
+  (require.resolve as unknown as { paths: (request: string) => string[] | null }).paths = (request: string): string[] | null => {
+    if (typeof request !== 'string') throw Object.assign(new TypeError(`The "request" argument must be of type string. Received ${request === null ? 'null' : typeof request}`), { code: 'ERR_INVALID_ARG_TYPE' });
+    if (request === 'fs' || request === 'process' || request.startsWith('node:') || moduleShim.builtinModules.includes(request)) return null;
+    const second = request.charAt(1);
+    const relative = request.charAt(0) === '.' && (request.length === 1 || second === '/' || (second === '.' && (request.length === 2 || request.charAt(2) === '/')));
+    if (relative) return [currentDir];
+    return __substrateModule()._nodeModulePaths(currentDir);
   };
 
   require.cache = moduleCache;
   (require as any).__requireRaw = requireRaw;
-  (require as any).__compileRaw = (module: Module, content: string, filename: string, dir: string): void => runModuleBody(module, prepareModuleCode(content, filename), filename, dir);
+  // What `Module._load` is: a load that is not a `require` call and so is not counted as one.
+  (require as any).__loadRaw = requireCounted;
+  (require as any).__compileRaw = compileRaw;
+  (require as any).__builtinLoad = builtinLoad;
   (require as any).__resolveRaw = (id: string) => resolveModule(id, currentDir);
   // The doors `module.register`'s chain reaches this loader through: the run's
   // hooks, the engine's own resolution in the URL terms a hook speaks, the
@@ -2239,9 +3027,11 @@ export class Runtime {
       env: options.env,
       onStdout: options.onStdout,
       onStderr: options.onStderr,
-      ...(typeof options.stdin === 'string' ? { stdin: options.stdin } : {}),
+      ...(options.onStdoutBytes ? { onStdoutBytes: options.onStdoutBytes } : {}),
+      ...(options.onStderrBytes ? { onStderrBytes: options.onStderrBytes } : {}),
+      ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
       ...(options.stdinHeld ? { stdinHeld: true } : {}),
-      ...(options.tty ? { tty: true } : {}),
+      ...(options.tty ? { tty: options.tty } : {}),
       ...(typeof options.pid === 'number' ? { pid: options.pid } : {}),
       ...(typeof options.ppid === 'number' ? { ppid: options.ppid } : {}),
     });
@@ -2250,9 +3040,48 @@ export class Runtime {
     // so the binding reads the tree off the process whose code is executing --
     // the same door every vendored file gets its `process` through.
     (this.process as unknown as Record<symbol, unknown>)[kRunFilesystem] = vfs;
+    // The Node line this process answers as, and where it came from (node-line.ts).
+    const namedVersion = options.env?.NODE_VERSION;
+    console.log('[boot-trace]', JSON.stringify({ event: 'node-line', at: Date.now(), pid: this.process.pid ?? null, version: this.process.version,
+      line: nodeLineOf(this.process.version), from: this.process.version === `v${String(namedVersion ?? '').replace(/^v/, '')}` ? 'NODE_VERSION of the image' : 'default',
+      // The variable as this process was given it, so a reader need not infer it: null when it has none.
+      env: typeof namedVersion === 'string' ? namedVersion : null }));
     // Create fs shim with cwd getter for relative path resolution
     this.fsShim = createFsShim(vfs, () => this.process.cwd());
     this.options = options;
+    // Node's `process.dlopen(module, filename[, flags])`, which a loader calls
+    // in place of `require` when it wants its own flags: Prisma's library
+    // engine loads `libquery_engine-*.node` this way. A tab runs no native
+    // code, so the load is the one a `require` of that path makes: through
+    // the run's resolve hooks, where an image's binding map answers the
+    // addon with its prepared export, and otherwise to ERR_DLOPEN_FAILED as
+    // Node's dlopen fails. The flags name dynamic-linker modes and have
+    // nothing to act on here.
+    Object.defineProperty(this.process, 'dlopen', {
+      configurable: true, enumerable: true, writable: true,
+      value: (target: { exports?: unknown }, filename: string, _flags?: number): void => {
+        if (target === null || typeof target !== 'object') {
+          throw Object.assign(new TypeError('The "module" argument must be of type object'), { code: 'ERR_INVALID_ARG_TYPE' });
+        }
+        if (typeof filename !== 'string') {
+          throw Object.assign(new TypeError('The "filename" argument must be of type string'), { code: 'ERR_INVALID_ARG_TYPE' });
+        }
+        const file = pathShim.resolve(this.process.cwd(), filename);
+        const load = createRequire(this.vfs, this.fsShim, this.process, pathShim.dirname(file), this.moduleCache, this.options, this.processedCodeCache);
+        try {
+          target.exports = load(file);
+        } catch (error) {
+          // Node's dlopen of a missing file fails as the dynamic linker
+          // reports it (the engine is linux to its guests), under
+          // ERR_DLOPEN_FAILED, which loaders read; require's MODULE_NOT_FOUND
+          // is a different failure. An addon that exists and cannot load
+          // already fails as ERR_DLOPEN_FAILED, and a prepared refusal keeps
+          // its own named reason.
+          if ((error as { code?: unknown } | null)?.code !== 'MODULE_NOT_FOUND') throw error;
+          throw Object.assign(new Error(file + ': cannot open shared object file: No such file or directory'), { code: 'ERR_DLOPEN_FAILED' });
+        }
+      },
+    });
 
     // Initialize child_process with VFS for bash command support
     initChildProcess(vfs);
@@ -2267,6 +3096,7 @@ export class Runtime {
     // not when this module is loaded. Importing the engine into someone
     // else's Node process leaves that process's globals alone;
     // `restoreHostGlobals()` hands back what a runtime took.
+    startGuestLoop();
     installGuestRealm();
   }
 
@@ -2319,6 +3149,11 @@ export class Runtime {
       children: [],
       paths: [],
     };
+    // The entry is an instance of Module too (see loadModule).
+    const moduleClass = require('module') as { prototype: object; _nodeModulePaths(directory: string): string[] };
+    Object.setPrototypeOf(module, moduleClass.prototype);
+    (module as Module & { path: string }).path = dirname;
+    module.paths = moduleClass._nodeModulePaths(dirname);
 
     // Cache the module
     this.moduleCache[filename] = module;
@@ -2340,16 +3175,23 @@ export class Runtime {
       code = code.slice(code.indexOf('\n') + 1);
     }
 
+    code = __substrateModuleTypes(code, filename, undefined, this.process);
+
     // Transform ESM to CJS if needed (AST-based, handles import.meta and dynamic imports too)
-    if (!filename.endsWith('.cjs')) {
+    if (!filename.endsWith('.cjs') && !filename.endsWith('.cts')) {
       const lowered = transformEsmToCjs(code, filename);
-      code = lowered === code ? code : `${__substrateModuleMarker}"use strict";\n${lowered}`;
+      // The directive shares the body's first line, as `prepareModuleCode`'s does.
+      code = lowered === code ? code : `${__substrateModuleMarker}"use strict";${lowered}`;
     } else {
       // A `.cjs` module skips the ESM transform, and with it the rewrite of
       // `import(...)` to the engine's dynamic import, so its
       // `import("fs/promises")` reached the browser's own import and failed on
-      // the bare specifier. The dynamic-import rewrite applies to `.cjs` too.
-      code = transformDynamicImportsRegex(code);
+      // the bare specifier. The dynamic-import rewrite applies to `.cjs` too,
+      // from the syntax tree as for every other CommonJS module: the text
+      // rewrite also renamed a method called `import`, and jiti's
+      // `async import(e,t){...}` became `__dynamicImport`, so `jiti.import` was
+      // undefined and every Pi extension failed to load.
+      code = __substrateRewriteDynamicImportsInScript(code);
     }
 
     // Execute code
@@ -2365,7 +3207,7 @@ export class Runtime {
       // `global` among them for code that reads the process off them
       // directly; the inner function is what lets the body's own `let` and
       // `const` shadow that scope. `__substrateSourceURL` names the script.
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0, self = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; } }) { return (function() {${code}
+      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport, __substrateGuestGlobal, __substrateGuestConstructor) { var exports = $exports; var require = $require; var module = $module; var __filename = $filename; var __dirname = $dirname; var process = $process; var console = $console; var import_meta = $importMeta; var __dynamicImport = $dynamicImport; var document = void 0, window = void 0, location = void 0; var globalThis = __substrateGuestGlobal($process); var global = globalThis; var Buffer = globalThis.Buffer; var queueMicrotask = globalThis.queueMicrotask, atob = globalThis.atob, btoa = globalThis.btoa, structuredClone = globalThis.structuredClone, setTimeout = globalThis.setTimeout, clearTimeout = globalThis.clearTimeout, setInterval = globalThis.setInterval, clearInterval = globalThis.clearInterval; globalThis.process = $process; global.process = $process; with ({ __proto__: null, get MessageChannel() { return globalThis.MessageChannel; }, set MessageChannel(value) { globalThis.MessageChannel = value; }, get MessagePort() { return globalThis.MessagePort; }, set MessagePort(value) { globalThis.MessagePort = value; }, get Worker() { return globalThis.Worker; }, set Worker(value) { globalThis.Worker = value; }, get self() { return globalThis.self; }, set self(value) { globalThis.self = value; }, get postMessage() { return globalThis.postMessage; }, set postMessage(value) { globalThis.postMessage = value; }, get onmessage() { return globalThis.onmessage; }, set onmessage(value) { globalThis.onmessage = value; }, get onmessageerror() { return globalThis.onmessageerror; }, set onmessageerror(value) { globalThis.onmessageerror = value; }, get close() { return globalThis.close; }, set close(value) { globalThis.close = value; }, get addEventListener() { return globalThis.addEventListener; }, set addEventListener(value) { globalThis.addEventListener = value; }, get removeEventListener() { return globalThis.removeEventListener; }, set removeEventListener(value) { globalThis.removeEventListener = value; }, get dispatchEvent() { return globalThis.dispatchEvent; }, set dispatchEvent(value) { globalThis.dispatchEvent = value; }, get navigator() { return globalThis.navigator; }, set navigator(value) { globalThis.navigator = value; }, get Navigator() { return globalThis.Navigator; }, set Navigator(value) { globalThis.Navigator = value; }, get Promise() { return globalThis.Promise; }, set Promise(value) { globalThis.Promise = value; }, get fetch() { return globalThis.fetch; }, set fetch(value) { globalThis.fetch = value; }, get performance() { return globalThis.performance; }, set performance(value) { globalThis.performance = value; } }) { return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${__substrateSourceURL(filename)}`;
 
@@ -2377,17 +3219,17 @@ export class Runtime {
       // a module lowered to a function body made V8 refuse vue3-ssr's server at
       // its first top-level `await`. A body V8 refuses for that reason runs as
       // an async function body instead.
-      let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
+      let bodyKind: 'sync' | 'generator' | 'async' = code.includes(__substrateTopLevelAwaitMarker) ? 'async' : code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
       let fn;
       try {
-        fn = __substrateSloppyEval(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : wrappedCode);
+        fn = __substrateCompileBody(bodyKind === 'generator' ? __substrateGeneratorBody(wrappedCode) : bodyKind === 'async' ? __substrateAsyncBody(wrappedCode) : wrappedCode, this.process);
       } catch (syntaxError) {
         if (!(syntaxError instanceof SyntaxError)) throw syntaxError;
         bodyKind = 'async';
-        try { fn = __substrateSloppyEval(__substrateAsyncBody(wrappedCode)); }
+        try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), this.process); }
         catch { throw syntaxError; }
       }
-      const body = fn(
+      const body = __substrateInStatWindow(this.process, () => withGuestExecution(() => fn(
         module.exports,
         require,
         module,
@@ -2395,11 +3237,11 @@ export class Runtime {
         dirname,
         this.process,
         consoleWrapper,
-        { url: importMetaUrl, dirname, filename },
+        createImportMeta(require, importMetaUrl, dirname, filename),
         dynamicImport,
         __substrateGuestGlobal,
         __substrateGuestConstructor
-      );
+      )));
 
       const settling = __substrateDriveBody(bodyKind, body, module);
       if (settling) __substrateKeepPending(module, settling, () => { delete this.moduleCache[filename]; });
@@ -2442,8 +3284,14 @@ export class Runtime {
     // `.bin` entry resolved `../lib` beside `.bin` and found nothing.
     let real = filename;
     try { real = this.vfs.realpathSync(filename) as string; } catch { /* the read below reports it */ }
-    const code = this.vfs.readFileSync(real, 'utf8');
-    return this.execute(code, real);
+    // File entries take the same prepared-body and main-module path as require.
+    // Evaluating raw source here recompiled worker dependencies in the tab.
+    const require = createRequire(this.vfs, this.fsShim, this.process,
+      pathShim.dirname(real), this.moduleCache, this.options, this.processedCodeCache);
+    if (!(this.process as any).mainModule) (this.process as any).__substrateMainPending = real;
+    // Node starts its entry through `Module._load`, not through a `require` call, so the entry's body runs at depth 0.
+    const exports = (require as unknown as { __loadRaw(id: string): unknown }).__loadRaw(real);
+    return { exports, module: this.moduleCache[real] };
   }
 
   /**
@@ -2629,6 +3477,8 @@ forGuestRealm(() => {
     const kept = new WeakMap<object, Headers>();
     class NodeRequest extends Native {
       constructor(input: RequestInfo | URL, init?: RequestInit) {
+        // An async-iterable body (a Node stream) is read as undici reads it.
+        init = withNodeRequestBody(init);
         super(input as RequestInfo, init);
         rememberRequestBodySource(this, input, init);
         const asked = new Headers(init?.headers ?? (input instanceof Native ? (input as Request).headers : undefined));
@@ -2649,6 +3499,62 @@ forGuestRealm(() => {
     Object.defineProperty(NodeRequest, 'name', { value: 'Request', configurable: true });
     takeFromHost(globalThis, 'Request', NodeRequest);
   }
+});
+
+forGuestRealm(() => {
+  // A response keeps the Set-Cookie headers it was built with, as Node's
+  // does; the browser's response guard drops them (see node-response.ts).
+  installNodeResponse(globalThis);
+});
+
+forGuestRealm(() => {
+  // Node's `stream.finished()` on a web stream waits on a promise Node's own
+  // web streams carry (`nodejs.webstream.isClosedPromise`), settled when the
+  // stream closes or errors, and undici's fetch finalizes every response that
+  // way. The worker's streams are the browser's and carry none, so a stream a
+  // guest constructs is given one, settled by its own controller. The
+  // constructor stays the browser's (a proxy of it), so a stream the platform
+  // made is still `instanceof ReadableStream`.
+  const kIsClosedPromise = Symbol.for('nodejs.webstream.isClosedPromise');
+  const Native = globalThis.ReadableStream;
+  if (typeof Native !== 'function' || (Native as unknown as { __substrateClosedPromise?: boolean }).__substrateClosedPromise) return;
+  type Source = { start?: (controller: unknown) => unknown; pull?: (controller: unknown) => unknown; cancel?: (reason: unknown) => unknown };
+  const Tracked: typeof ReadableStream = new Proxy(Native, {
+    construct(target, args, newTarget): object {
+      let resolve!: () => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+      promise.then(undefined, () => {});
+      const source = args[0] as Source | null | undefined;
+      const track = (controller: { close?: (...rest: unknown[]) => unknown; error?: (...rest: unknown[]) => unknown }): void => {
+        const close = controller.close;
+        const error = controller.error;
+        if (typeof close === 'function') controller.close = function (this: unknown, ...rest: unknown[]) { const result = close.apply(this, rest); resolve(); return result; };
+        if (typeof error === 'function') controller.error = function (this: unknown, ...rest: unknown[]) { reject(rest[0]); return error.apply(this, rest); };
+      };
+      const failed = (cause: unknown): never => { reject(cause); throw cause; };
+      const wrapped: Source = Object.create(source ?? null);
+      wrapped.start = (controller) => {
+        track(controller as Parameters<typeof track>[0]);
+        try { return source?.start?.call(source, controller); } catch (cause) { return failed(cause); }
+      };
+      if (typeof source?.pull === 'function') {
+        const pull = source.pull;
+        wrapped.pull = (controller) => {
+          try { return Promise.resolve(pull.call(source, controller)).catch(failed); } catch (cause) { return failed(cause); }
+        };
+      }
+      wrapped.cancel = (reason) => {
+        resolve();
+        return source?.cancel?.call(source, reason);
+      };
+      const stream: object = Reflect.construct(target, [wrapped, ...args.slice(1)], newTarget === Tracked ? target : newTarget);
+      Object.defineProperty(stream, kIsClosedPromise, { value: { promise, resolve, reject }, configurable: true });
+      return stream;
+    },
+  });
+  Object.defineProperty(Tracked, '__substrateClosedPromise', { value: true });
+  takeFromHost(globalThis, 'ReadableStream', Tracked);
 });
 
 // Polyfill Error.captureStackTrace/prepareStackTrace for Safari/WebKit

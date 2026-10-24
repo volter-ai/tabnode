@@ -126,6 +126,22 @@ The run whose guest code is executing, for a caller attributing a child.
 
 `number`
 
+### portPid
+
+> **portPid**: (`port`) => `number` \| `undefined`
+
+The pid of the process listening on a port of this engine, where a guest process is: `/proc`'s socket owner.
+
+#### Parameters
+
+##### port
+
+`number`
+
+#### Returns
+
+`number` \| `undefined`
+
 ### processByPid
 
 > **processByPid**: (`pid`) => \{ `pid`: `number`; `ppid`: `number`; \} \| `undefined`
@@ -192,6 +208,30 @@ The numbers a live process carries, looked up by its own pid.
 
 > **exports**: `unknown`
 
+### runNode
+
+> **runNode**: (`argv`, `options?`) => `Promise`\<[`RunResult`](../interfaces/RunResult.md)\>
+
+Start the engine's Node from an argv vector, as `execve` starts a program:
+`argv[0]` is the program's name (`process.argv0`), then Node's options,
+the script or `-e` source, and its arguments. No command line is built and
+no shell runs; `env` is the whole environment. The options and the answer
+are `run`'s.
+
+#### Parameters
+
+##### argv
+
+readonly `string`[]
+
+##### options?
+
+[`RunOptions`](../interfaces/RunOptions.md)
+
+#### Returns
+
+`Promise`\<[`RunResult`](../interfaces/RunResult.md)\>
+
 ### runPid
 
 > **runPid**: (`token?`) => \{ `pid`: `number`; `ppid`: `number`; \} \| `undefined`
@@ -237,6 +277,26 @@ recently started held run, which is the prompt a person is typing to.
 
 > **serverBridge**: [`ServerBridge`](../classes/ServerBridge.md)
 
+### signalProcess
+
+> **signalProcess**: (`token`, `signal`) => `boolean`
+
+Deliver a signal to the named run as another process's `kill(pid)` does; false when the run is gone.
+
+#### Parameters
+
+##### token
+
+`string`
+
+##### signal
+
+`string`
+
+#### Returns
+
+`boolean`
+
 ### stopProcess
 
 > **stopProcess**: (`token`) => `boolean`
@@ -250,6 +310,16 @@ recently started held run, which is the prompt a person is typing to.
 #### Returns
 
 `boolean`
+
+### streamHandles
+
+> **streamHandles**: () => [`NativeStreamHandleView`](../interfaces/NativeStreamHandleView.md)[]
+
+The stream handles the processes of other workers hold through this engine: `/proc/<pid>/fd`.
+
+#### Returns
+
+[`NativeStreamHandleView`](../interfaces/NativeStreamHandleView.md)[]
 
 ### vfs
 

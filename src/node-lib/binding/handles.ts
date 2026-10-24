@@ -15,7 +15,8 @@
  * with the run that made it when it is constructed, `ref`/`unref` toggle it,
  * and closing it gives it up.
  */
-import { __currentProcessToken, __lastLaunchedToken, type ProcessToken } from '../../process-tokens';
+import { __currentProcessToken, __runFor, enterRun, type ProcessToken } from '../../process-tokens';
+import { withGuestCallback } from '../../guest-loop';
 
 /** What the count needs of a handle: a way to close it when its run ends. */
 export interface OwnedHandle {
@@ -39,9 +40,37 @@ const refHeld = new WeakSet<OwnedHandle>();
  */
 const activeHandles = new WeakSet<OwnedHandle>();
 
-/** The run a handle opened in, where a host named one. */
+/** The run a binding call is made in: its scope's process (a scoped binding runs inside its owner's run). */
 export function currentOwner(): ProcessToken | null {
-  return __currentProcessToken() ?? __lastLaunchedToken;
+  return __currentProcessToken();
+}
+
+/** The process each binding instance belongs to: its NodeLibScope's, recorded when the instance was made. */
+const instanceOwners = new WeakMap<object, ProcessToken | null>();
+export function setInstanceOwner(instance: object, owner: ProcessToken | null): void { instanceOwners.set(instance, owner); }
+export function ownerOfInstance(instance: object): ProcessToken | null {
+  return instanceOwners.get(instance) ?? heldBy.get(instance as OwnedHandle) ?? null;
+}
+
+/**
+ * `fn` inside `owner`'s run (enterRun), unless that run is current already. A guest callback's throw is its owner's
+ * uncaught exception, as Node's MakeCallback reports one to the process the wrap belongs to.
+ */
+export function ownedRun<T>(owner: ProcessToken | null, fn: () => T, callback = false): T | undefined {
+  const call = (): T | undefined => {
+    if (!callback) return fn();
+    // Drain ticks before leaving the owning run, as MakeCallback does.
+    try { return withGuestCallback(fn); }
+    catch (error) { if (owner !== null && __runFor(owner)?.reportUncaught(error)) return undefined; throw error; }
+  };
+  return owner === null || __currentProcessToken() === owner ? call() : enterRun(owner, call);
+}
+
+/** A wrap's callback (`onread`, `oncomplete`, `onconnection`, `onexit`, …) run as MakeCallback runs it: in its owner's run. */
+export function invokeOwned(target: object, name: string, ...args: unknown[]): unknown {
+  const fn = (target as Record<string, unknown>)[name];
+  if (typeof fn !== 'function') return undefined;
+  return ownedRun(ownerOfInstance(target), () => (fn as (...values: unknown[]) => unknown).apply(target, args), true);
 }
 
 function hold(handle: OwnedHandle): void {
@@ -129,6 +158,19 @@ export function releaseHandle(handle: OwnedHandle): void {
  */
 export function __ownedHandleCount(token: ProcessToken): number {
   return owners.get(token)?.size ?? 0;
+}
+
+/**
+ * The ref'd handles the named run holds, counted by kind (the handle's class): what a run's end-of-run line says
+ * was still holding its loop.
+ */
+export function __ownedHandleKinds(token: ProcessToken): Record<string, number> {
+  const kinds: Record<string, number> = {};
+  for (const handle of owners.get(token) ?? []) {
+    const kind = (handle as object).constructor?.name || 'handle';
+    kinds[kind] = (kinds[kind] ?? 0) + 1;
+  }
+  return kinds;
 }
 
 /**

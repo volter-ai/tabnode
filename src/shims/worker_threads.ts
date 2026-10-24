@@ -4,6 +4,7 @@
  */
 
 import { EventEmitter } from '../node-lib/events-module';
+import { markUntransferable, isUntransferable } from '../transfer-ownership';
 
 export const isMainThread = true;
 export const parentPort = null;
@@ -85,7 +86,26 @@ export function receiveMessageOnPort(port: MessagePort): { message: unknown } | 
 export const SHARE_ENV = Symbol.for('nodejs.worker_threads.SHARE_ENV');
 
 export function markAsUntransferable(object: unknown): void {
-  // No-op
+  markUntransferable(object);
+}
+
+export const isMarkedAsUntransferable = isUntransferable;
+
+/**
+ * Node 22's `markAsUncloneable` and its query: an object so marked is refused
+ * by `structuredClone` and `postMessage`. undici's WebIDL layer marks every
+ * `CacheStorage`, `Request` and `Response` it makes, at construction, so a
+ * program that loads undici 7.x+ or 8.x died on `markAsUncloneable is not a
+ * function` before its first line. The mark is kept; this engine's message
+ * channels do not yet read it, so a marked object that is posted is copied
+ * rather than refused.
+ */
+const uncloneable = new WeakSet<object>();
+export function markAsUncloneable(object: unknown): void {
+  if (object !== null && (typeof object === 'object' || typeof object === 'function')) uncloneable.add(object as object);
+}
+export function isMarkedAsUncloneable(object: unknown): boolean {
+  return object !== null && (typeof object === 'object' || typeof object === 'function') && uncloneable.has(object as object);
 }
 
 export function getEnvironmentData(key: unknown): unknown {
@@ -109,6 +129,9 @@ export default {
   receiveMessageOnPort,
   SHARE_ENV,
   markAsUntransferable,
+  isMarkedAsUntransferable,
+  markAsUncloneable,
+  isMarkedAsUncloneable,
   getEnvironmentData,
   setEnvironmentData,
 };

@@ -82,4 +82,8 @@ export interface VFSFileEntry {
   path: string;
   type: 'file' | 'directory';
   content?: string; // base64 encoded for binary files
+  /** Permission bits (`mode & 0o7777`), when the entry has them. */
+  mode?: number;
+  /** The modification time, in milliseconds. */
+  mtimeMs?: number;
 }

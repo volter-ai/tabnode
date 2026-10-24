@@ -43,6 +43,7 @@ const {
   StringPrototypeIncludes,
   StringPrototypeSlice,
   StringPrototypeToUpperCase,
+  SymbolDispose,
 } = primordials;
 
 const {
@@ -51,7 +52,6 @@ const {
   getSystemErrorName,
   kEmptyObject,
   promisify,
-  SymbolDispose,
 } = require('internal/util');
 const { isArrayBufferView } = require('internal/util/types');
 let debug = require('internal/util/debuglog').debuglog(
@@ -547,9 +547,26 @@ function getPermissionModelFlagsToCopy() {
   return permissionModelFlagsToCopy;
 }
 
+function hasPermissionFlagInEnv(nodeOptions) {
+  // Parse NODE_OPTIONS into individual tokens and check if any token
+  // is an actual --permission or --permission-audit flag. We use exact
+  // token matching rather than substring matching to avoid false positives
+  // when unrelated option values contain '--permission' (e.g.,
+  // --title=--permission).
+  if (!nodeOptions) return false;
+  const tokens = nodeOptions.split(/\s+/);
+  return tokens.some((token) =>
+    token === '--permission' ||
+    token.startsWith('--permission=') ||
+    token === '--permission-audit' ||
+    token.startsWith('--permission-audit='),
+  );
+}
+
 function copyPermissionModelFlagsToEnv(env, key, args) {
   // Do not override if permission was already passed to file
-  if (args.includes('--permission') || (env[key] && env[key].indexOf('--permission') !== -1)) {
+  if (args.includes('--permission') || args.includes('--permission-audit') ||
+      hasPermissionFlagInEnv(env[key])) {
     return;
   }
 
@@ -563,6 +580,7 @@ function copyPermissionModelFlagsToEnv(env, key, args) {
   }
 }
 
+let emittedDEP0190Already = false;
 function normalizeSpawnArguments(file, args, options) {
   validateString(file, 'file');
   validateArgumentNullCheck(file, 'file');
@@ -639,7 +657,16 @@ function normalizeSpawnArguments(file, args, options) {
 
   if (options.shell) {
     validateArgumentNullCheck(options.shell, 'options.shell');
-    const command = ArrayPrototypeJoin([file, ...args], ' ');
+    if (args.length > 0 && !emittedDEP0190Already) {
+      process.emitWarning(
+        'Passing args to a child process with shell option true can lead to security ' +
+        'vulnerabilities, as the arguments are not escaped, only concatenated.',
+        'DeprecationWarning',
+        'DEP0190');
+      emittedDEP0190Already = true;
+    }
+
+    const command = args.length > 0 ? `${file} ${ArrayPrototypeJoin(args, ' ')}` : file;
     // Set the shell, switches, and commands.
     if (process.platform === 'win32') {
       if (typeof options.shell === 'string')

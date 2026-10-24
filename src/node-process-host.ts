@@ -7,20 +7,31 @@ import type { VirtualFS } from './virtual-fs';
 export interface NodeProcessLaunch {
   token: string;
   identity: ProcessIdentity;
+  /** The process's own name, `argv[0]` as `execve` was given it: what `process.argv0` reports. */
+  argv0: string;
   /** Arguments after the Node executable, preserving each parsed word. */
   argv: readonly string[];
   cwd: string;
   /** This entry's filesystem view, including any host-prepared entry wrapper. */
   filesystem: VirtualFS;
   env: Record<string, string>;
-  stdin?: string;
+  /** Bytes already on fd 0 when the process begins; a parent's pipe carries bytes. */
+  stdin?: string | Uint8Array;
   stdinStream?: AsyncIterable<Uint8Array>;
   streams?: RunStreams;
   inherited: readonly { fd: number; handle: NativeStreamDescriptor }[];
 }
 
 export interface NodeProcessHost {
-  run(launch: NodeProcessLaunch): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /**
+   * `signal` names the signal whose default action ended the process, as
+   * Node's exit event does. Where `launch.streams` carries `onStdoutBytes` /
+   * `onStderrBytes`, the host writes that fd's output there as bytes, and the
+   * fd's total in the answer is empty: the engine never replays or decodes an
+   * fd that streamed bytes. A text-only host writes `onStdout`/`onStderr` and
+   * answers text totals, as before.
+   */
+  run(launch: NodeProcessLaunch): Promise<{ stdout: string; stderr: string; exitCode: number; signal?: string }>;
 }
 
 let host: NodeProcessHost | undefined;

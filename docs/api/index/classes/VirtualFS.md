@@ -114,6 +114,33 @@ Access check - in our VFS, always succeeds if file exists
 
 ***
 
+### appendFileSync()
+
+> **appendFileSync**(`path`, `data`): `void`
+
+Adds bytes at a file's end, creating it. A file grown a piece at a time
+(a write stream's chunks) is kept in a buffer with room to grow, so an
+append copies only what it adds: writing the whole file again for each
+1 KB chunk of a 50 MB file copied about a terabyte. A tree that keeps its
+files elsewhere (its own writeFileSync) is appended to through its own
+read and write unless it answers appends itself.
+
+#### Parameters
+
+##### path
+
+`string`
+
+##### data
+
+`string` \| `Uint8Array`\<`ArrayBufferLike`\>
+
+#### Returns
+
+`void`
+
+***
+
 ### chmodSync()
 
 > **chmodSync**(`path`, `mode`): `void`
@@ -304,19 +331,65 @@ Async lstat
 
 ### lstatSync()
 
+#### Call Signature
+
 > **lstatSync**(`path`): [`Stats`](../interfaces/Stats.md)
 
 lstatSync - same as statSync for our virtual FS (no symlinks)
 
-#### Parameters
+##### Parameters
 
-##### path
+###### path
 
 `string`
 
-#### Returns
+##### Returns
 
 [`Stats`](../interfaces/Stats.md)
+
+#### Call Signature
+
+> **lstatSync**(`path`, `options`): [`Stats`](../interfaces/Stats.md) \| `undefined`
+
+lstatSync - same as statSync for our virtual FS (no symlinks)
+
+##### Parameters
+
+###### path
+
+`string`
+
+###### options
+
+###### throwIfNoEntry
+
+`false`
+
+##### Returns
+
+[`Stats`](../interfaces/Stats.md) \| `undefined`
+
+#### Call Signature
+
+> **lstatSync**(`path`, `options?`): [`Stats`](../interfaces/Stats.md) \| `undefined`
+
+lstatSync - same as statSync for our virtual FS (no symlinks)
+
+##### Parameters
+
+###### path
+
+`string`
+
+###### options?
+
+###### throwIfNoEntry?
+
+`boolean`
+
+##### Returns
+
+[`Stats`](../interfaces/Stats.md) \| `undefined`
 
 ***
 
@@ -341,6 +414,30 @@ Create directory, optionally with recursive parent creation
 #### Returns
 
 `void`
+
+***
+
+### mount()
+
+> **mount**(`path`, `tree`): () => `void`
+
+Mount a read-only tree at a directory, as Linux mounts `/proc`: reads
+below it are the tree's answers, writes fail with `EROFS`, and a snapshot
+leaves it out. Answers the unmount.
+
+#### Parameters
+
+##### path
+
+`string`
+
+##### tree
+
+[`MountedTree`](../interfaces/MountedTree.md)
+
+#### Returns
+
+() => `void`
 
 ***
 
@@ -534,7 +631,7 @@ Read file contents as Uint8Array
 
 ###### encoding
 
-`"utf8"` \| `"utf-8"`
+`"utf-8"` \| `"utf8"`
 
 ##### Returns
 
@@ -662,17 +759,59 @@ Async stat
 
 ### statSync()
 
+#### Call Signature
+
 > **statSync**(`path`): [`Stats`](../interfaces/Stats.md)
 
-#### Parameters
+##### Parameters
 
-##### path
+###### path
 
 `string`
 
-#### Returns
+##### Returns
 
 [`Stats`](../interfaces/Stats.md)
+
+#### Call Signature
+
+> **statSync**(`path`, `options`): [`Stats`](../interfaces/Stats.md) \| `undefined`
+
+##### Parameters
+
+###### path
+
+`string`
+
+###### options
+
+###### throwIfNoEntry
+
+`false`
+
+##### Returns
+
+[`Stats`](../interfaces/Stats.md) \| `undefined`
+
+#### Call Signature
+
+> **statSync**(`path`, `options?`): [`Stats`](../interfaces/Stats.md) \| `undefined`
+
+##### Parameters
+
+###### path
+
+`string`
+
+###### options?
+
+###### throwIfNoEntry?
+
+`boolean`
+
+##### Returns
+
+[`Stats`](../interfaces/Stats.md) \| `undefined`
 
 ***
 
@@ -773,6 +912,38 @@ Watch for file changes
 #### Returns
 
 [`FSWatcher`](../interfaces/FSWatcher.md)
+
+***
+
+### writeAtSync()
+
+> **writeAtSync**(`path`, `data`, `position`): `void`
+
+Bytes written into a file at `position`, as a disk takes them: a gap past
+the end reads as zeros, and the file grows in its own buffer as an append
+grows it. A database rewrites its log and its pages a page at a time;
+writing the whole file again for each page copied Postgres's 16 MB
+write-ahead log at every commit. A tree that keeps its files elsewhere
+(its own writeFileSync) is written through its own read and write unless
+it answers this itself.
+
+#### Parameters
+
+##### path
+
+`string`
+
+##### data
+
+`Uint8Array`
+
+##### position
+
+`number`
+
+#### Returns
+
+`void`
 
 ***
 

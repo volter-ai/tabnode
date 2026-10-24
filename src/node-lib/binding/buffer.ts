@@ -10,11 +10,10 @@
  * the realm's own base64, and nothing above it.
  *
  * Every function here has the shape Node's own files call it with: the
- * `*Slice` family is installed as a method and reads `this`; `base64Write`,
- * `base64urlWrite`, `hexWrite` and `ucs2Write` likewise; `asciiWriteStatic`,
- * `latin1WriteStatic` and `utf8WriteStatic` take the buffer as their first
- * argument, which is how `internal/buffer.js` wraps them.
+ * encoding slices and writes take the buffer explicitly, as Node24.21
+ * passes it from both buffer.js and internal/buffer.js.
  */
+import { markUntransferable } from '../../transfer-ownership';
 
 /** libuv has no say here: these are V8's, and the engine's realm is V8's. */
 export const kMaxLength = 4294967296 - 1;
@@ -82,27 +81,27 @@ export function latin1WriteStatic(buf: Uint8Array, string: string, offset = 0, l
 }
 
 /** Node's `StringWrite<UCS2>`: whole 16-bit units, little-endian. */
-export function ucs2Write(this: Uint8Array, string: string, offset = 0, length = this.byteLength - offset): number {
-  const room = Math.min(length, this.byteLength - offset);
+export function ucs2Write(buf: Uint8Array, string: string, offset = 0, length = buf.byteLength - offset): number {
+  const room = Math.min(length, buf.byteLength - offset);
   const units = Math.min(string.length, Math.floor(room / 2));
   for (let index = 0; index < units; index += 1) {
     const code = string.charCodeAt(index);
-    this[offset + index * 2] = code & 0xff;
-    this[offset + index * 2 + 1] = code >>> 8;
+    buf[offset + index * 2] = code & 0xff;
+    buf[offset + index * 2 + 1] = code >>> 8;
   }
   return units * 2;
 }
 
 /** Node's `StringWrite<HEX>`: whole byte pairs, stopping at the first that is not one. */
-export function hexWrite(this: Uint8Array, string: string, offset = 0, length = this.byteLength - offset): number {
-  const room = Math.min(length, this.byteLength - offset);
+export function hexWrite(buf: Uint8Array, string: string, offset = 0, length = buf.byteLength - offset): number {
+  const room = Math.min(length, buf.byteLength - offset);
   const pairs = Math.min(Math.floor(string.length / 2), room);
   let written = 0;
   for (let index = 0; index < pairs; index += 1) {
     const high = hexValue(string.charCodeAt(index * 2));
     const low = hexValue(string.charCodeAt(index * 2 + 1));
     if (high < 0 || low < 0) break;
-    this[offset + index] = (high << 4) | low;
+    buf[offset + index] = (high << 4) | low;
     written += 1;
   }
   return written;
@@ -148,64 +147,73 @@ function base64Bytes(string: string): Uint8Array {
 }
 
 /** Node's `StringWrite<BASE64>`. */
-export function base64Write(this: Uint8Array, string: string, offset = 0, length = this.byteLength - offset): number {
+export function base64Write(buf: Uint8Array, string: string, offset = 0, length = buf.byteLength - offset): number {
   const bytes = base64Bytes(string);
-  const room = Math.min(length, this.byteLength - offset, bytes.length);
+  const room = Math.min(length, buf.byteLength - offset, bytes.length);
   if (room <= 0) return 0;
-  this.set(bytes.subarray(0, room), offset);
+  buf.set(bytes.subarray(0, room), offset);
   return room;
 }
 
 /** Node's `StringWrite<BASE64URL>`. */
-export function base64urlWrite(this: Uint8Array, string: string, offset = 0, length = this.byteLength - offset): number {
+export function base64urlWrite(buf: Uint8Array, string: string, offset = 0, length = buf.byteLength - offset): number {
   const bytes = base64Bytes(string);
-  const room = Math.min(length, this.byteLength - offset, bytes.length);
+  const room = Math.min(length, buf.byteLength - offset, bytes.length);
   if (room <= 0) return 0;
-  this.set(bytes.subarray(0, room), offset);
+  buf.set(bytes.subarray(0, room), offset);
   return room;
 }
 
 // ── Decoding a buffer into a string ────────────────────────────────────────
 
-export function utf8Slice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
-  return utf8Decoder.decode(this.subarray(from, to));
+export function utf8Slice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
+  return utf8Decoder.decode(buf.subarray(from, to));
 }
 
-export function asciiSlice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
+export function asciiSlice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
   let out = '';
-  for (let index = from; index < to; index += 1) out += String.fromCharCode((this[index] as number) & 0x7f);
+  for (let index = from; index < to; index += 1) out += String.fromCharCode((buf[index] as number) & 0x7f);
   return out;
 }
 
-export function latin1Slice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
-  return latin1Decoder.decode(this.subarray(from, to));
+export function latin1Slice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
+  return latin1Decoder.decode(buf.subarray(from, to));
 }
 
-export function ucs2Slice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
+export function ucs2Slice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
   // A trailing odd byte is dropped, as Node drops it.
   const whole = to - ((to - from) % 2);
-  const bytes = this.subarray(from, whole);
+  const bytes = buf.subarray(from, whole);
   // A view whose offset is odd cannot be a `Uint16Array`; copy that one.
   const aligned = (bytes.byteOffset % 2) === 0 ? bytes : new Uint8Array(bytes);
   return ucs2Decoder.decode(aligned);
 }
 
-export function hexSlice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
+export function hexSlice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
   let out = '';
   for (let index = from; index < to; index += 1) {
-    const byte = this[index] as number;
+    const byte = buf[index] as number;
     out += HEX_DIGITS[byte >>> 4] as string;
     out += HEX_DIGITS[byte & 0x0f] as string;
   }
   return out;
 }
 
+/** The engine's own encoder where it has one (`Uint8Array.prototype.toBase64`): one string, no garbage. */
+const nativeBase64 = typeof (Uint8Array.prototype as { toBase64?: unknown }).toBase64 === 'function';
+
 function base64Text(bytes: Uint8Array, url: boolean): string {
+  // Built a character at a time, a sourcemap's base64 was ropes of garbage:
+  // 600 MB of a Vite session's 1.4 GB allocated in its first 20 s in a tab.
+  if (nativeBase64) {
+    return (bytes as Uint8Array & { toBase64(options: { alphabet: string; omitPadding: boolean }): string })
+      .toBase64({ alphabet: url ? 'base64url' : 'base64', omitPadding: url });
+  }
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   let out = '';
   for (let index = 0; index < bytes.length; index += 3) {
@@ -221,21 +229,33 @@ function base64Text(bytes: Uint8Array, url: boolean): string {
   return out.replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 }
 
-export function base64Slice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
-  return base64Text(this.subarray(from, to), false);
+export function base64Slice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
+  return base64Text(buf.subarray(from, to), false);
 }
 
-export function base64urlSlice(this: Uint8Array, start?: number, end?: number): string {
-  const [from, to] = clamp(this, start as number, end as number);
-  return base64Text(this.subarray(from, to), true);
+export function base64urlSlice(buf: Uint8Array, start?: number, end?: number): string {
+  const [from, to] = clamp(buf, start as number, end as number);
+  return base64Text(buf.subarray(from, to), true);
 }
 
 // ── The rest of what `buffer.js` asks for ──────────────────────────────────
 
 /** Node's `ByteLengthUtf8`. */
 export function byteLengthUtf8(string: string): number {
-  return encoder.encode(string).length;
+  // Counted, not encoded: encoding the whole string to read its length
+  // allocated every Buffer.from(string) twice.
+  let length = 0;
+  for (let index = 0; index < string.length; index += 1) {
+    const code = string.charCodeAt(index);
+    if (code < 0x80) length += 1;
+    else if (code < 0x800) length += 2;
+    else if (code >= 0xd800 && code < 0xdc00 && index + 1 < string.length) {
+      const next = string.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next < 0xe000) { length += 4; index += 1; } else length += 3;
+    } else length += 3;
+  }
+  return length;
 }
 
 /** Node's `Compare`: two buffers whole, as `memcmp` orders them. */
@@ -309,10 +329,10 @@ export function bytesOfString(value: string, encoding: string): Uint8Array {
     case 'latin1': case 'binary': { const out = new Uint8Array(value.length); latin1WriteStatic(out, value, 0, out.length); return out; }
     case 'ucs2': case 'ucs-2': case 'utf16le': case 'utf-16le': {
       const out = new Uint8Array(value.length * 2);
-      ucs2Write.call(out, value, 0, out.length);
+      ucs2Write(out, value, 0, out.length);
       return out;
     }
-    case 'hex': { const out = new Uint8Array(Math.floor(value.length / 2)); const written = hexWrite.call(out, value, 0, out.length); return out.subarray(0, written); }
+    case 'hex': { const out = new Uint8Array(Math.floor(value.length / 2)); const written = hexWrite(out, value, 0, out.length); return out.subarray(0, written); }
     case 'base64': case 'base64url': return base64Bytes(value);
     default: return encoder.encode(value);
   }
@@ -435,6 +455,16 @@ export function getZeroFillToggle(): Uint32Array {
   return zeroFillToggle;
 }
 
+/** Browser allocations are genuinely zeroed, even for Node's unsafe path. */
+export function createUnsafeArrayBuffer(size: number): ArrayBuffer {
+  return new ArrayBuffer(size);
+}
+
+/** Native V8 detach keys are enforced at this engine's guest transfer doors. */
+export function setDetachKey(buffer: ArrayBuffer, _key: unknown): void {
+  markUntransferable(buffer);
+}
+
 /**
  * Node's `DetachArrayBuffer` and `CopyArrayBuffer`, which `Blob` and the
  * worker's message port use. A realm can detach through `structuredClone`'s
@@ -461,5 +491,5 @@ export default {
   swap16, swap32, swap64, kMaxLength, kStringMaxLength, atob, btoa,
   asciiSlice, base64Slice, base64urlSlice, latin1Slice, hexSlice, ucs2Slice, utf8Slice,
   asciiWriteStatic, base64Write, base64urlWrite, latin1WriteStatic, hexWrite, ucs2Write, utf8WriteStatic,
-  getZeroFillToggle, detachArrayBuffer, copyArrayBuffer, setBufferPrototype, createFromString,
+  getZeroFillToggle, createUnsafeArrayBuffer, setDetachKey, detachArrayBuffer, copyArrayBuffer, setBufferPrototype, createFromString,
 };

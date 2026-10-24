@@ -38,6 +38,16 @@ apart). Absent until something sets it, which is the write time.
 
 ***
 
+### mount?
+
+> `optional` **mount?**: [`MountedTree`](MountedTree.md)
+
+A tree mounted here: the paths below this node are the tree's, answered
+when they are read, and never this filesystem's to write. Linux's
+`/proc` is one.
+
+***
+
 ### mtime
 
 > **mtime**: `number`

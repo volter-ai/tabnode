@@ -1,8 +1,9 @@
 'use strict';
 
 const {
+  ObjectFreeze,
   SymbolDispose,
-} = require('internal/util');
+} = primordials;
 const {
   validateAbortSignal,
   validateFunction,
@@ -15,6 +16,7 @@ const {
 
 let queueMicrotask;
 let kResistStopPropagation;
+let abortListenerOptions;
 
 /**
  * @param {AbortSignal} signal
@@ -34,8 +36,9 @@ function addAbortListener(signal, listener) {
     queueMicrotask(() => listener());
   } else {
     kResistStopPropagation ??= require('internal/event_target').kResistStopPropagation;
+    abortListenerOptions ??= ObjectFreeze({ __proto__: null, once: true, [kResistStopPropagation]: true });
     // TODO(atlowChemi) add { subscription: true } and return directly
-    signal.addEventListener('abort', listener, { __proto__: null, once: true, [kResistStopPropagation]: true });
+    signal.addEventListener('abort', listener, abortListenerOptions);
     removeEventListener = () => {
       signal.removeEventListener('abort', listener);
     };

@@ -16,6 +16,7 @@
 ## Variables
 
 - [isMainThread](variables/isMainThread.md)
+- [isMarkedAsUntransferable](variables/isMarkedAsUntransferable.md)
 - [parentPort](variables/parentPort.md)
 - [SHARE\_ENV](variables/SHARE_ENV.md)
 - [threadId](variables/threadId.md)
@@ -24,6 +25,8 @@
 ## Functions
 
 - [getEnvironmentData](functions/getEnvironmentData.md)
+- [isMarkedAsUncloneable](functions/isMarkedAsUncloneable.md)
+- [markAsUncloneable](functions/markAsUncloneable.md)
 - [markAsUntransferable](functions/markAsUntransferable.md)
 - [moveMessagePortToContext](functions/moveMessagePortToContext.md)
 - [receiveMessageOnPort](functions/receiveMessageOnPort.md)

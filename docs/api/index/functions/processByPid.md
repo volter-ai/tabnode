@@ -6,15 +6,19 @@
 
 # Function: processByPid()
 
-> **processByPid**(`pid`): \{ `pid`: `number`; `ppid`: `number`; \} \| `undefined`
+> **processByPid**(`pid`, `caller?`): \{ `pid`: `number`; `ppid`: `number`; \} \| `undefined`
 
-The numbers a live process carries, looked up by its own pid.
+The numbers a live process carries, as `caller`'s namespace numbers it.
 
 ## Parameters
 
 ### pid
 
 `number`
+
+### caller?
+
+`string` \| `null`
 
 ## Returns
 

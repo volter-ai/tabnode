@@ -20,8 +20,10 @@
 ## Classes
 
 - [NativeStreamScope](classes/NativeStreamScope.md)
+- [PortBridge](classes/PortBridge.md)
 - [Runtime](classes/Runtime.md)
 - [ServerBridge](classes/ServerBridge.md)
+- [StdinRingWriter](classes/StdinRingWriter.md)
 - [VirtualFS](classes/VirtualFS.md)
 - [WorkerRuntime](classes/WorkerRuntime.md)
 
@@ -36,13 +38,17 @@
 - [FSWatcher](interfaces/FSWatcher.md)
 - [HttpClientExchangeRequest](interfaces/HttpClientExchangeRequest.md)
 - [HttpClientExchangeResponse](interfaces/HttpClientExchangeResponse.md)
+- [HttpClientTransportOptions](interfaces/HttpClientTransportOptions.md)
 - [IExecuteResult](interfaces/IExecuteResult.md)
 - [InitialProcessRegistration](interfaces/InitialProcessRegistration.md)
 - [InitServiceWorkerOptions](interfaces/InitServiceWorkerOptions.md)
 - [IRuntime](interfaces/IRuntime.md)
 - [IRuntimeOptions](interfaces/IRuntimeOptions.md)
+- [LoopbackStreamFlow](interfaces/LoopbackStreamFlow.md)
 - [Module](interfaces/Module.md)
+- [MountedTree](interfaces/MountedTree.md)
 - [NativeStreamDescriptor](interfaces/NativeStreamDescriptor.md)
+- [NativeStreamHandleView](interfaces/NativeStreamHandleView.md)
 - [NativeStreamLimits](interfaces/NativeStreamLimits.md)
 - [NativeStreamReply](interfaces/NativeStreamReply.md)
 - [NativeStreamTransport](interfaces/NativeStreamTransport.md)
@@ -62,6 +68,8 @@
 - [RunResult](interfaces/RunResult.md)
 - [RuntimeOptions](interfaces/RuntimeOptions.md)
 - [Stats](interfaces/Stats.md)
+- [TreeDescriptors](interfaces/TreeDescriptors.md)
+- [TreeDescriptorStats](interfaces/TreeDescriptorStats.md)
 - [VFSSnapshot](interfaces/VFSSnapshot.md)
 
 ## Type Aliases
@@ -72,6 +80,7 @@
 - [HttpClientTransportFactory](type-aliases/HttpClientTransportFactory.md)
 - [NativeStreamEvent](type-aliases/NativeStreamEvent.md)
 - [NativeStreamOperation](type-aliases/NativeStreamOperation.md)
+- [StdioKind](type-aliases/StdioKind.md)
 - [WatchEventType](type-aliases/WatchEventType.md)
 - [WatchListener](type-aliases/WatchListener.md)
 
@@ -82,7 +91,10 @@
 - [http](variables/http.md)
 - [https](variables/https.md)
 - [net](variables/net.md)
+- [PREPARED\_MODULES\_DIR](variables/PREPARED_MODULES_DIR.md)
+- [STDIN\_RING](variables/STDIN_RING.md)
 - [stream](variables/stream.md)
+- [TREE\_DESCRIPTORS](variables/TREE_DESCRIPTORS.md)
 - [util](variables/util.md)
 
 ## Functions
@@ -93,22 +105,29 @@
 - [createProcess](functions/createProcess.md)
 - [createProcessRegistryScope](functions/createProcessRegistryScope.md)
 - [createRuntime](functions/createRuntime.md)
+- [createStdinRing](functions/createStdinRing.md)
 - [execute](functions/execute.md)
+- [getPortBridge](functions/getPortBridge.md)
 - [getServerBridge](functions/getServerBridge.md)
 - [guestRealmInstalled](functions/guestRealmInstalled.md)
 - [installFetchTransport](functions/installFetchTransport.md)
 - [installHttpClientTransport](functions/installHttpClientTransport.md)
 - [installNativeStreamTransport](functions/installNativeStreamTransport.md)
 - [installNodeProcessHost](functions/installNodeProcessHost.md)
+- [installProcessIdAllocator](functions/installProcessIdAllocator.md)
 - [installProcessRegistry](functions/installProcessRegistry.md)
 - [nativeStreamDescriptor](functions/nativeStreamDescriptor.md)
 - [nodeProcessHostInstalled](functions/nodeProcessHostInstalled.md)
 - [ownerProcessRegistryScope](functions/ownerProcessRegistryScope.md)
+- [ownerProcessTable](functions/ownerProcessTable.md)
+- [preparedModuleKey](functions/preparedModuleKey.md)
+- [prepareModuleForImage](functions/prepareModuleForImage.md)
 - [processByPid](functions/processByPid.md)
 - [requestHasStaticBody](functions/requestHasStaticBody.md)
 - [resetServerBridge](functions/resetServerBridge.md)
 - [restoreHostGlobals](functions/restoreHostGlobals.md)
 - [runPid](functions/runPid.md)
+- [stdinRingProblem](functions/stdinRingProblem.md)
 
 ## References
 

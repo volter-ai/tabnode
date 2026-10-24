@@ -30,3 +30,26 @@ describe('a define the host refuses', () => {
     expect((globalThis as { navigator?: unknown }).navigator).toBe(hostValue);
   }, 20_000);
 });
+
+// Node makes a guest-created global visible as a bare name in other modules
+// and Function bodies; it does not replace the browser's worker constructor.
+describe('guest-created global bindings', () => {
+  it('shares bindings within one process and leaves the host unchanged', async () => {
+    const hostWorker = Reflect.get(globalThis, 'Worker');
+    const hostSelf = Reflect.get(globalThis, 'self');
+    const vfs = new VirtualFS();
+    vfs.mkdirSync('/work', { recursive: true });
+    vfs.writeFileSync('/work/reader.js', "module.exports = () => new Worker().value + ':' + self.value;\n");
+    vfs.writeFileSync('/work/main.js',
+      "global.Worker = class { constructor() { this.value = 'thread'; } };\n"
+      + "globalThis.self = { value: 'guest' };\n"
+      + "console.log(require('./reader')());\n"
+      + "console.log(Function('return new Worker().value + \":\" + self.value')());\n");
+    const seen = await createContainer({ vfs }).run('node /work/main.js', { cwd: '/work' });
+    expect(seen.exitCode).toBe(0);
+    expect(seen.stderr).toBe('');
+    expect(seen.stdout).toBe('thread:guest\nthread:guest\n');
+    expect(Reflect.get(globalThis, 'Worker')).toBe(hostWorker);
+    expect(Reflect.get(globalThis, 'self')).toBe(hostSelf);
+  });
+});

@@ -1,3 +1,4 @@
+import { withGuestExecution } from '../guest-loop';
 /**
  * One loader for Node's own files.
  *
@@ -29,8 +30,15 @@ import { nodeLibBinding } from './binding';
 import { nodeLibPublic } from './public-modules';
 import { setLibRequire } from './require-hook';
 import { NODE_LTS_VERSION, nodeVersions } from './node-versions';
+import { transcodeFor } from './binding/transcode';
 import { createUtilBinding } from './binding/util';
+import { ownedRun, ownerOfInstance, setInstanceOwner } from './binding/handles';
+import { __tokenForProcess, type ProcessToken } from '../process-tokens';
+import type { Process } from '../shims/process';
 import { createFsBindings } from './binding/fs';
+import { createDiagnosticsChannelBinding } from './binding/diagnostics_channel';
+import { errorsBinding } from './binding/misc';
+import { errorSourcePositions } from '../error-source';
 import { stackOverrideMap } from '../stack-overrides';
 
 /**
@@ -75,7 +83,11 @@ var builtBindings: Map<string, unknown> | undefined;
 /* eslint-enable no-var, vars-on-top */
 
 /** The libuv-shaped surface, built once per name, on the first file that asks. */
+/** An instrument: the binding names Node's lib has asked this realm for, for the run's record of what it used. */
+const bindingsAsked = new Set<string>();
+export function nodeLibBindingsAsked(): readonly string[] { return [...bindingsAsked]; }
 function internalBinding(name: string): unknown {
+  bindingsAsked.add(name);
   builtBindings ??= new Map<string, unknown>();
   if (builtBindings.has(name)) return builtBindings.get(name);
   const build = nodeLibBinding(name);
@@ -294,15 +306,37 @@ export function moduleSurface(value: any, seen = new Map<object, any>()): any {
 }
 
 /** Native class implementation and OS registries are shared, JS prototypes are not. */
-function bindingSurface(value: unknown): unknown {
+/**
+ * A binding as one process's NodeLibScope hands it out: that process's (ADR-0129: a run is attributed by its scope).
+ * Every instance it makes is owned by the scope's process and constructed in its run; every method and function runs
+ * in its owner's run, so what the binding attributes (a handle, a stdio write, a spawn's parent) is that process's,
+ * whatever frame the call came from (a native await in Node's own library included). `owner` is the scope's run.
+ */
+function bindingSurface(value: unknown, owner: () => ProcessToken | null): unknown {
   const surface = moduleSurface(value);
   for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(surface))) {
     const implementation = descriptor.value;
-    // ECMAScript classes have a non-writable own prototype. Ordinary native
-    // functions stay callable functions; class facades retain their static API.
-    if (typeof implementation !== 'function'
-      || Object.getOwnPropertyDescriptor(implementation, 'prototype')?.writable !== false) continue;
+    if (typeof implementation !== 'function') continue;
+    // ECMAScript classes have a non-writable own prototype. Ordinary functions run in the owner's run, called or
+    // constructed.
+    if (Object.getOwnPropertyDescriptor(implementation, 'prototype')?.writable !== false) {
+      Object.defineProperty(surface, key, { ...descriptor, value: new Proxy(implementation, {
+        apply: (target, self, args) => ownedRun(owner(), () => Reflect.apply(target, self, args)),
+        construct: (target, args, newTarget) => ownedRun(owner(), () => Reflect.construct(target, args, newTarget)) as object,
+      }) });
+      continue;
+    }
     const ScopedBinding = class extends implementation {};
+    // Its methods run in the instance's owner's run (a handle received over IPC keeps the process that made it).
+    for (let prototype = implementation.prototype; prototype && prototype !== Object.prototype; prototype = Object.getPrototypeOf(prototype)) {
+      for (const [name, method] of Object.entries(Object.getOwnPropertyDescriptors(prototype))) {
+        if (name === 'constructor' || typeof method.value !== 'function' || Object.prototype.hasOwnProperty.call(ScopedBinding.prototype, name)) continue;
+        const call = method.value as (...values: unknown[]) => unknown;
+        Object.defineProperty(ScopedBinding.prototype, name, { ...method, value: function (this: object, ...args: unknown[]) {
+          return ownedRun(ownerOfInstance(this), () => call.apply(this, args));
+        } });
+      }
+    }
     Object.defineProperty(ScopedBinding, 'name', { value: implementation.name, configurable: true });
     // IPC transfers native handles within the shared OS. Node's native-brand
     // checks must recognize the received handle even when its JS facade was
@@ -310,7 +344,16 @@ function bindingSurface(value: unknown): unknown {
     Object.defineProperty(ScopedBinding, Symbol.hasInstance, {
       value: (instance: unknown) => Function.prototype[Symbol.hasInstance].call(implementation, instance),
     });
-    Object.defineProperty(surface, key, { ...descriptor, value: ScopedBinding });
+    // Made in its owner's run and owned by it, a subclass Node's library derives from it included (newTarget).
+    const Owned = new Proxy(ScopedBinding, {
+      construct: (target, args, newTarget) => {
+        const token = owner();
+        const instance = ownedRun(token, () => Reflect.construct(target, args, newTarget)) as object;
+        setInstanceOwner(instance, token);
+        return instance;
+      },
+    });
+    Object.defineProperty(surface, key, { ...descriptor, value: Owned });
   }
   return surface;
 }
@@ -321,6 +364,8 @@ class NodeLibScope {
   private readonly bindings = new Map<string, unknown>();
   private readonly surfaces = new Map<string, unknown>();
   constructor(readonly process: object) {}
+  /** The run this scope's process is (a guest's own runtime has none: the realm process's). */
+  private readonly owner = (): ProcessToken | null => __tokenForProcess(this.process as Process);
 
   readonly require: NodeLibRequire = (specifier) => {
     const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
@@ -354,11 +399,15 @@ class NodeLibScope {
         // Exported handles and encoded names belong to this graph; the fd
         // allocator, open-file descriptions and filesystem remain shared OS state.
         const fs = createFsBindings(() => this.require('buffer').Buffer);
-        this.bindings.set('fs', fs.fsBinding);
-        this.bindings.set('fs_dir', fs.fsDirBinding);
-        this.bindings.set('fs_event_wrap', fs.fsEventWrapBinding);
+        this.bindings.set('fs', bindingSurface(fs.fsBinding, this.owner));
+        this.bindings.set('fs_dir', bindingSurface(fs.fsDirBinding, this.owner));
+        this.bindings.set('fs_event_wrap', bindingSurface(fs.fsEventWrapBinding, this.owner));
+      } else if (name === 'errors') {
+        this.bindings.set(name, { ...errorsBinding, getErrorSourcePositions: (error: object) => errorSourcePositions(this.process, error) });
+      } else if (name === 'diagnostics_channel') {
+        this.bindings.set(name, createDiagnosticsChannelBinding());
       } else {
-        this.bindings.set(name, name === 'util' ? createUtilBinding(this.require) : bindingSurface(internalBinding(name)));
+        this.bindings.set(name, name === 'util' ? createUtilBinding(this.require) : bindingSurface(internalBinding(name), this.owner));
       }
     }
     return this.bindings.get(name);
@@ -412,6 +461,12 @@ function compileNodeLib(name: string, record: NodeLibModule, require: NodeLibReq
     `${NODE_LIB_SOURCES[name]}\n//# sourceURL=node:${name}`,
   );
   compiled(record.exports, require, record, process, binding, primordialsOf());
+  // lib/buffer.js defines `transcode` only where Node is built with ICU, which this engine is not; the one
+  // function is bound here (binding/transcode.ts) rather than left undefined.
+  if (name === 'buffer') {
+    const made = record.exports as { transcode?: unknown; Buffer: { from(bytes: Uint8Array): unknown } };
+    if (made.transcode === undefined) made.transcode = transcodeFor((bytes) => made.Buffer.from(bytes));
+  }
   record.loaded = true;
   bootstrapNodeLib(name, record.exports, process);
 }
@@ -436,6 +491,13 @@ function bootstrapNodeLib(name: string, exports: unknown, process: object): void
       kMaxEventTargetListeners: symbol;
       defaultMaxListeners: number;
       getMaxListeners: (target: any) => number;
+    };
+    // Node's library owns listener semantics; the engine owns the native
+    // event-loop boundary that invokes those listeners. Nested emits count once.
+    const prototype = (exports as { prototype: { emit: (...args: unknown[]) => unknown } }).prototype;
+    const emit = prototype.emit;
+    prototype.emit = function(this: unknown, ...args: unknown[]) {
+      return withGuestExecution(() => emit.apply(this, args));
     };
     const original = events.getMaxListeners;
     events.getMaxListeners = (target) => {
@@ -464,35 +526,8 @@ function bootstrapNodeLib(name: string, exports: unknown, process: object): void
     (exports as { initializeDebugEnv?: (value: string) => void }).initializeDebugEnv?.(env?.NODE_DEBUG ?? '');
     return;
   }
-  if (name === 'assert') {
-    // Node 23 hangs `Assert` off the module; the vendored 22.18 file does not.
-    const assert = exports as { Assert?: unknown; strictEqual?: (a: unknown, b: unknown) => void };
-    if (typeof assert.Assert !== 'function') {
-      class Assert {
-        diff: string;
-        constructor(options?: { diff?: string }) { this.diff = options?.diff ?? 'simple'; }
-        strictEqual(a: unknown, b: unknown): void { assert.strictEqual?.(a, b); }
-      }
-      (assert as { Assert: unknown }).Assert = Assert;
-    }
-    return;
-  }
-  if (name === 'fs') {
-    // Node 23 hangs `mkdtempDisposableSync` off `fs`; the vendored 22.18
-    // file does not, and `openAsBlob`'s neighbour in the gate calls it.
-    const fs = exports as {
-      mkdtempSync?: (prefix: string, options?: unknown) => string;
-      mkdtempDisposableSync?: unknown;
-      rmSync?: (path: string, options?: { recursive?: boolean; force?: boolean }) => void;
-    };
-    if (typeof fs.mkdtempDisposableSync !== 'function' && typeof fs.mkdtempSync === 'function') {
-      fs.mkdtempDisposableSync = (prefix: string, options?: unknown) => {
-        const tempPath = fs.mkdtempSync!(prefix, options);
-        const remove = (): void => { try { fs.rmSync?.(tempPath, { recursive: true, force: true }); } catch { /* gone */ } };
-        return { path: tempPath, remove, [Symbol.dispose]: remove };
-      };
-    }
-  }
+
+
 }
 
 /**

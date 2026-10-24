@@ -195,11 +195,23 @@ export function __requestOverLoopback(
  * the server writes, then the end. This is what the service worker streams
  * to the page.
  */
+/**
+ * How a caller paces a streamed answer: `signal` ends the connection (the
+ * reader went away), and `control` is handed the connection's pause and
+ * resume, so a reader that holds no credit holds the server back instead of
+ * a queue growing without bound.
+ */
+export interface LoopbackStreamFlow {
+  signal?: AbortSignal;
+  control?(pause: () => void, resume: () => void): void;
+}
+
 export function __streamOverLoopback(
   port: number, method: string, url: string, headers: Record<string, string>, body: Buffer | undefined,
   onStart: (statusCode: number, statusMessage: string, headers: Record<string, string>) => void,
   onChunk: (chunk: Uint8Array) => void,
   onEnd: () => void,
+  flow?: LoopbackStreamFlow,
 ): Promise<void> {
   if (!__listening(port)) {
     onStart(503, 'Service Unavailable', { 'Content-Type': 'text/plain' });
@@ -217,6 +229,11 @@ export function __streamOverLoopback(
       (chunk) => onChunk(chunk),
     );
     const socket = netModule.connect({ port, host: '127.0.0.1' }) as unknown as Socket;
+    flow?.control?.(() => socket.pause(), () => socket.resume());
+    if (flow?.signal) {
+      if (flow.signal.aborted) { socket.destroy(); finish(); return; }
+      flow.signal.addEventListener('abort', () => { socket.destroy(); finish(); }, { once: true });
+    }
     socket.on('data', (chunk: Uint8Array) => {
       if (ended) return;
       const read = parser.execute(chunk);
