@@ -6,6 +6,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **The retained engine has its own candidate identity** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
+  Articles 6/9). The full-stack artifact candidate is prepared as `0.15.2`; published `0.15.1` is a different source.
+  Package metadata, lockfile and generated surface now identify the candidate distinctly. Publication remains a
+  separate, explicitly authorized act.
 - **Required surface metadata carries inline WebAssembly** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
   Articles 6/9). The registry inventory's standalone esbuild bundle lacked a Wasm loader, so the SQLite binding's
   inline import stopped `build:surface` before `dist/surface.json` could be written. Its Wasm imports now retain the
