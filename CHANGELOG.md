@@ -6,6 +6,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **Required surface metadata carries inline WebAssembly** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
+  Articles 6/9). The registry inventory's standalone esbuild bundle lacked a Wasm loader, so the SQLite binding's
+  inline import stopped `build:surface` before `dist/surface.json` could be written. Its Wasm imports now retain the
+  data URL representation the library's Vite build supplies; runtime and database behavior are unchanged.
 - **A CJS load chain is checked by Node's validators** (browser-substrate card t_d4b07ea8). `loadWithHooks` was called
   without its `validateLoad`, so a registered hook chain's last step called `undefined`: tsx's load hook in RH2's
   wrangler build ended in "TypeError: validate is not a function". A module load passes `validateLoadStrict` and a
