@@ -546,6 +546,63 @@ async function readRequestBody(request, limit, registrationSignal) {
 const rootedClients = new Map();
 const pendingBlobContexts = new Map();
 
+/**
+ * A prelude must follow the complete directive prologue, including comments, or a worker's own "use strict" stops
+ * being a directive. Scan full string tokens and trivia, without interpreting their escapes. Ambiguous automatic
+ * semicolon insertion is left to the browser's parser: undefined means serve the original source unchanged.
+ * This function is also serialized into the rooted worker, so its blob children use precisely the same boundary.
+ */
+function workerPreludePosition(text) {
+  const trivia = start => {
+    let at = start;
+    if ((at === 0 || (at === 1 && text[0] === '\uFEFF')) && text.startsWith('#!', at)) {
+      while (at < text.length && !/[\r\n\u2028\u2029]/u.test(text[at])) at++;
+    }
+    for (;;) {
+      if (at < text.length && /\s/u.test(text[at])) { at++; continue; }
+      // Classic scripts also admit Annex B's HTML line comments; module scripts with them remain invalid.
+      if (text.startsWith('//', at) || text.startsWith('<!--', at) || text.startsWith('-->', at)) {
+        at += text.startsWith('<!--', at) ? 4 : text.startsWith('-->', at) ? 3 : 2;
+        while (at < text.length && !/[\r\n\u2028\u2029]/u.test(text[at])) at++;
+        continue;
+      }
+      if (text.startsWith('/*', at)) {
+        const end = text.indexOf('*/', at + 2);
+        if (end < 0) return undefined;
+        at = end + 2;
+        continue;
+      }
+      return at;
+    }
+  };
+  let at = trivia(text[0] === '\uFEFF' ? 1 : 0);
+  while (at !== undefined) {
+    const start = at, quote = text[at];
+    if (quote !== '"' && quote !== "'") return at;
+    at++;
+    let closed = false;
+    while (at < text.length) {
+      const char = text[at++];
+      if (char === quote) { closed = true; break; }
+      if (char === '\\') {
+        if (at === text.length) return undefined;
+        if (text[at++] === '\r' && text[at] === '\n') at++;
+      } else if (/[\r\n\u2028\u2029]/u.test(char)) return undefined;
+    }
+    if (!closed) return undefined;
+    const stringEnd = at, next = trivia(at);
+    if (next === undefined) return undefined;
+    if (text[next] === ';') { at = trivia(next + 1); continue; }
+    if (next === text.length) return next;
+    // A same-line continuation makes this an ordinary expression, not a directive. Inserting before it preserves
+    // that expression. With a line break, decline when a following token might continue it rather than assume ASI.
+    if (!/[\r\n\u2028\u2029]/u.test(text.slice(stringEnd, next))) return start;
+    if (/[\[.(`+*/%<>=!&|^?,:\\-]/u.test(text[next]) || /^(?:in|instanceof)\b/u.test(text.slice(next))) return undefined;
+    at = next;
+  }
+  return undefined;
+}
+
 // BLOB WORKERS A PREVIEW'S WORKER STARTS. A worker that a worker creates is not this service worker's client, whatever
 // its URL, so every request it makes goes past the preview to the page's own server: Cyclotron's Blender worker starts
 // Blender's Emscripten loader and its pthreads as blob workers, and their importScripts of the session's
@@ -563,7 +620,7 @@ const CHILD_WORKER_PRELUDE = `;(function(){if(self.__browserRuntimeChildWorker||
   `self.importScripts=function(){const urls=Array.prototype.map.call(arguments,function(u){const url=new URL(String(u),location.origin+'/');` +
   `return url.origin===location.origin?load(url.href):String(u);});return I.apply(self,urls);};})();\n`;
 const ROOTED_WORKER_PRELUDE = `;(function(){if(typeof Worker!=='function'||self.__browserRuntimeRootedWorker)return;self.__browserRuntimeRootedWorker=true;` +
-  `const N=Worker,C=URL.createObjectURL.bind(URL),R=URL.revokeObjectURL.bind(URL),held=new Map(),scripts=new Map(),child=${JSON.stringify(CHILD_WORKER_PRELUDE)};` +
+  `const N=Worker,C=URL.createObjectURL.bind(URL),R=URL.revokeObjectURL.bind(URL),held=new Map(),scripts=new Map(),child=${JSON.stringify(CHILD_WORKER_PRELUDE)},position=${workerPreludePosition.toString()};` +
   `URL.createObjectURL=function(o){const u=C(o);if(o instanceof Blob)held.set(u,o);return u;};` +
   `URL.revokeObjectURL=function(u){held.delete(String(u));return R(u);};` +
   `const serve=async function(d){const c=new Int32Array(d.control);try{let bytes=scripts.get(d.__browserRuntimeLoad);` +
@@ -571,10 +628,10 @@ const ROOTED_WORKER_PRELUDE = `;(function(){if(typeof Worker!=='function'||self.
   `if(d.data.byteLength<bytes.byteLength)d.data.grow(bytes.byteLength);new Uint8Array(d.data).set(bytes);Atomics.store(c,1,bytes.byteLength);Atomics.store(c,0,1);}` +
   `catch(e){Atomics.store(c,0,2);}Atomics.notify(c,0);};` +
   `const W=function(u,o){const s=String(u),b=s.startsWith('blob:')&&typeof SharedArrayBuffer==='function'?held.get(s):undefined;` +
-  // The blob's own directive prologue stays first, so its "use strict" still applies (read synchronously: a worker
-  // has FileReaderSync); the composed URL is revoked once the worker is constructed, which resolved it.
-  `const P=function(b){let h='';try{h=new TextDecoder('utf-8',{ignoreBOM:true}).decode(new FileReaderSync().readAsArrayBuffer(b.slice(0,64)));}catch(e){}const m=/^(?:\\uFEFF)?(?:\\s*(?:'use strict'|"use strict")\\s*;?)?/.exec(h)[0];const n=new TextEncoder().encode(m).byteLength;return [m,child,b.slice(n)];};` +
-  `const target=b&&(!o||o.type!=='module')?C(new Blob(P(b),{type:'text/javascript'})):s;` +
+  // Read the complete blob, preserving its decoded source and directive prologue. A failed or ambiguous read keeps
+  // its original URL. The composed URL is revoked once the worker is constructed, which resolved it.
+  `const P=function(b){try{const text=new TextDecoder('utf-8',{ignoreBOM:true}).decode(new FileReaderSync().readAsArrayBuffer(b));const at=position(text);if(at!==undefined)return [text.slice(0,at),'\\n',child,text.slice(at)];}catch(e){}};` +
+  `const parts=b&&(!o||o.type!=='module')?P(b):undefined,target=parts?C(new Blob(parts,{type:'text/javascript'})):s;` +
   `const w=o===undefined?new N(target):new N(target,o);if(target!==s)R(target);` +
   `if(target!==s)w.addEventListener('message',function(e){const d=e.data;if(!d||typeof d.__browserRuntimeLoad!=='string')return;e.stopImmediatePropagation();void serve(d);});` +
   `return w;};W.prototype=N.prototype;self.Worker=W;})();\n`;
@@ -585,11 +642,12 @@ async function withWorkerPrelude(event, response) {
   const destination = event.request.destination;
   if (destination !== 'worker' && destination !== 'sharedworker') return response;
   if (!response.ok || !/javascript|ecmascript/i.test(response.headers.get('content-type') || '')) return response;
-  const text = await response.text();
-  const prologue = /^(?:﻿)?(?:\s*(?:'use strict'|"use strict")\s*;?)?/.exec(text)[0];
+  const original = response.clone();
+  const text = await response.text(), at = workerPreludePosition(text);
+  if (at === undefined) return original;
   const headers = new Headers(response.headers);
   headers.delete('content-length');
-  return new Response(prologue + ROOTED_WORKER_PRELUDE + text.slice(prologue.length), { status: response.status, statusText: response.statusText, headers });
+  return new Response(text.slice(0, at) + '\n' + ROOTED_WORKER_PRELUDE + text.slice(at), { status: response.status, statusText: response.statusText, headers });
 }
 
 // Blob workers have no script fetch at which to remember resultingClientId,

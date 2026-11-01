@@ -6,6 +6,10 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **Worker routing preserves a script's directive prologue** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
+  Articles 6/9). Rooted and blob workers retain leading comments and every directive before the routing prelude.
+  Blob source is read completely instead of through a 64-byte prefix; ambiguous statement boundaries keep the
+  original script, preserving its strict-mode semantics.
 - **The retained engine has its own candidate identity** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
   Articles 6/9). The full-stack artifact candidate is prepared as `0.15.2`; published `0.15.1` is a different source.
   Package metadata, lockfile and generated surface now identify the candidate distinctly. Publication remains a
