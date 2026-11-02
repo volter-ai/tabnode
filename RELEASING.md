@@ -60,6 +60,10 @@ branch. Its source must match the reviewed build, apart from existing
 `.github/releases/<run>.json` receipt commits. Advance it only to the authorized
 source. Set the exact current remote publish head; the command refuses a changed
 head and never fetches a replacement head or rebases older bytes onto new source.
+The reviewed publisher can be invoked by absolute path from its own checkout
+while the working directory remains that authorized publish source. This keeps
+an existing archive's original source identity when only the publisher changes;
+never restamp it with the publisher's newer commit.
 
 ```sh
 export RELEASE_ARCHIVES=/absolute/path/to/retained-engine-archives
