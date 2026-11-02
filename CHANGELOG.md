@@ -6,6 +6,14 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## 0.16.0 — Unreleased
 
+- SQLite binds JavaScript Numbers as doubles and rejects BigInts outside signed 64-bit range with
+  `ERR_INVALID_ARG_VALUE`, matching Node. Native cleanup state permits collection during a live process while
+  statements retain their database and original-process exit still destroys outstanding resources
+  (VO-3806 t_c18be7a7/t_bdadb8ea; Articles 6/9).
+- Asynchronous Brotli decompression uses the browser's native decoder and reports failure without retry;
+  synchronous calls retain their separate decoder. Active shell guidance states only the current host-owned
+  dispatch boundary (VO-3806 t_87e87919/t_dc3c168e; Articles 6/9).
+
 - Consume exact retained engine archives through a separately authorized,
   head-fenced publish/verify/checkpoint command. Remove the build-and-publish
   workflow and autorelease producer; preserve original uncertain outcomes and
