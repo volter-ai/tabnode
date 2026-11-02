@@ -1,15 +1,11 @@
-## CI duration: preserve complete measurement with parallel partitions
+## Retained engine publication qualification
 
-Substrate Articles 8 and 9. The authorized goal is shorter CI, with no suite or
-workflow executed while coding. Historical manual run37854345231 spent29m02s
-in its complete Node-file step:4569files share one four-process runner. Split
-that same pinned denominator over16independent runners, build the bundle once,
-retain source/bundle identities and reject partial or mixed report unions.
-Surface snapshots use distinct host/engine processes and filenames, so four
-module pairs can overlap while comparison order stays deterministic. Publishing
-uses the same pinned Node24.21.0 throughout instead of changing Node twice and
-installing npm twice. No measured speedup is claimed without a future authorized
-run. All original file outcomes, timeout semantics and surface requirements stay.
+VO-3806 t_757ceb01; substrate Articles 6, 8 and 9. Qualify the source-only
+retained-archive route in `RELEASING.md` against the exact approved candidate:
+original archive/source identity, clean keys sweep and manager authorization,
+receipt-only publish checkpoints, uncertain upload retention and exact registry
+archive comparison. No install/build, workflow, upload, tag or publication was
+performed to prepare this source. Candidate and product acceptance remain open.
 
 ## S1: Synchronous children keep their declared process owner
 

@@ -2,9 +2,15 @@
 
 Container hostname review correction: Node lookup uses the caller's mounted /etc/hosts, Docker image Hostname is ignored, and container domain defaults to (none). Admission requires a trusted identity; missing UTS transport returns ENOSYS; standalone DNS aliases stay outside identified containers. Older-engine adapters are guarded and the0.9.0 pin stays. Changed production outputs and full engine declarations emit; independent re-read and cycle execution remain.
 
-What each release changed, newest first. A release is a tag `v<version>` on `main` and the npm package `@volter/tabnode` at the same version, published from the tag by the `publish` workflow. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
+What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
 ## Unreleased
+
+- Consume exact retained engine archives through a separately authorized,
+  head-fenced publish/verify/checkpoint command. Remove the build-and-publish
+  workflow and autorelease producer; preserve original uncertain outcomes and
+  require same-byte registry comparison. Local publication claims no GitHub
+  OIDC/npm provenance attestation (VO-3806 t_757ceb01; Articles 6/8/9).
 
 - **SQLite preserves the kernel's file ownership** (browser-substrate card t_c656e6fd, V1-02
   t_54301ff8/t_ed393c2c/t_9567d5e9/t_7a220000/t_e497afc1/t_9e6677b2/t_fc801f45; Articles 6/9).
