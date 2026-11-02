@@ -10,11 +10,9 @@ type LookupAllCallback = (err: Error | null, addresses?: Array<{ address: string
 type LookupOptions = { family?: number | 'IPv4' | 'IPv6'; all?: boolean; order?: 'verbatim' | 'ipv4first' | 'ipv6first' };
 
 /**
- * A lookup's answer, in a later turn, as work that holds the asking process's loop open until it is given. Node's
- * lookup is a request its loop counts until the answer's callback runs; this answer is the engine's own immediate,
- * which no run counts, so a program that asked and then had nothing else pending was ended between its ask and its
- * answer. Volter Harness's page server called `server.listen(port, '127.0.0.1')` after an esbuild build, and its
- * process ended with exit 0 before the lookup Node's `net` makes for the host answered (card t_d4b07ea8).
+ * Node counts a lookup request until its callback runs. This answer uses the engine's own immediate, which a
+ * guest run does not count. Hold the asking process's work through the callback so a lookup stays pending until
+ * its answer is delivered.
  */
 function answerLater(answer: () => void): void {
   const held = heldWork();

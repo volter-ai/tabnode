@@ -60,11 +60,11 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   Execution policy stays with the caller.
 
 - **Executable selection stays with the supplied host** (browser-substrate card t_c656e6fd,
-  V1-02 t_b67e1a68; Articles 6/9). Retire the AST pre-resolution transform and unpublished supplier `ScriptExecutor`
-  integration; retain upstream `just-bash` 2.14.5. Where an embedding supplies the existing executable/shell host,
-  that host owns non-Node executable selection and execution. ADR-0007 records the retired fork route and the
-  current Step 3 boundary. The legacy BrowserShell fallback's executable-selection gap remains in that step's
-  contract reading; the catalog Bash/kernel target remains later work under Substrate ADR-0215.
+  V1-02 t_b67e1a68; Articles 6/9). Remove the AST pre-resolution transform and unpublished supplier `ScriptExecutor`
+  integration. Step 3 requires image commands and Node shell requests to use the image's selected real GNU Bash
+  and BusyBox on WALI through the kernel. The host resolves programs with live PATH and cwd; a missing selected
+  program refuses, with no JavaScript fallback. The engine archive still bundles upstream `just-bash` 2.14.5;
+  that dependency does not authorize its use for Step 3 commands. ADR-0007 states the current host-owned requirement.
 - **A `file:` request under a native-binding map resolves again** (browser-substrate card t_d4b07ea8). The map's
   resolver read a `file:` specifier with the process's node-lib `url`, which the node-lib scope does not carry, so
   every such request threw "node-lib: no builtin 'url' in this process": Tailwind v4's `module.register` of its loader,

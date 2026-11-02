@@ -3122,10 +3122,8 @@ function createRequire(
     const latest = maps[0]!;
     const underRoot = (addons: SubstrateAddons, path: string): boolean => addons.roots.some(root => path === root || path.startsWith(root + '/'));
     const named = id.startsWith('file:') || id.includes('.node') || /(^|\/)\.\.?\/*$/.test(id);
-    // A file: URL is read by the url module's fileURLToPath, which is Node's (shims/url.ts): an encoded '/' and a host
-    // other than localhost still throw. It was asked of the process's node-lib scope, which carries no 'url' (Node's
-    // public url.js is not one of its vendored files), so every file: request under a native-binding map threw "node-lib:
-    // no builtin 'url' in this process": Tailwind v4's module.register of its loader, in videogame.ai's astro config.
+    // Read file: URLs with the engine's fileURLToPath outside the process's vendored node-lib scope, which contains
+    // no public url module. Validate the scheme, host and encoded separators before native-binding lookup.
     const requested = !named ? void 0 : id.startsWith('file:') ? urlShim.fileURLToPath(id)
       : id.startsWith('/') ? pathShim.resolve(id) : id.startsWith('.') ? pathShim.resolve(currentDir, id) : void 0;
     if (requested?.endsWith('.node')) for (const addons of maps) {
@@ -3389,9 +3387,8 @@ function createRequire(
         // file it names, not from the one the loader started with.
         source: urlFromHook === url ? defaultSource() : vfs.readFileSync(__hooks.sync.convertURLToCJSFilename(urlFromHook), 'utf8'),
         format: context.format,
-        // Node's CJS loader checks the chain's result as a module's (cjs/loader.js: validateLoadStrict). Without it the
-        // chain's last step called undefined: tsx's load hook ended in "TypeError: validate is not a function" (RH2's
-        // wrangler build, card t_d4b07ea8).
+        // Node's CJS loader checks the chain's result with validateLoadStrict (cjs/loader.js). Supply that same
+        // validator to loadWithHooks so the final source and format are checked.
       }), __hooks.sync.validateLoadStrict);
       format = loaded.format;
       source = loaded.source;
