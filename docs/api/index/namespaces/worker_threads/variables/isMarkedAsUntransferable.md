@@ -6,14 +6,4 @@
 
 # Variable: isMarkedAsUntransferable
 
-> `const` **isMarkedAsUntransferable**: (`value`) => `boolean` = `isUntransferable`
-
-## Parameters
-
-### value
-
-`unknown`
-
-## Returns
-
-`boolean`
+> `const` **isMarkedAsUntransferable**: *typeof* `isUntransferable`

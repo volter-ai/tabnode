@@ -20,7 +20,7 @@ Transform ESM to CJS
 
 #### loader?
 
-`"json"` \| `"js"` \| `"jsx"` \| `"ts"` \| `"tsx"` \| `"css"`
+`"js"` \| `"jsx"` \| `"ts"` \| `"tsx"` \| `"json"` \| `"css"`
 
 ## Returns
 

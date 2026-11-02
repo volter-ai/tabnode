@@ -16,6 +16,10 @@
 - [TransformOptions](interfaces/TransformOptions.md)
 - [TransformResult](interfaces/TransformResult.md)
 
+## Variables
+
+- [default](variables/default.md)
+
 ## Functions
 
 - [\_\_flattenTsconfig](functions/flattenTsconfig.md)

@@ -132,6 +132,7 @@
 - [keptResolutions](functions/keptResolutions.md)
 - [nativeStreamDescriptor](functions/nativeStreamDescriptor.md)
 - [nodeProcessHostInstalled](functions/nodeProcessHostInstalled.md)
+- [precompileNodeLib](functions/precompileNodeLib.md)
 - [preparedModuleKey](functions/preparedModuleKey.md)
 - [preparedModuleKeyOf](functions/preparedModuleKeyOf.md)
 - [preparedModuleKind](functions/preparedModuleKind.md)

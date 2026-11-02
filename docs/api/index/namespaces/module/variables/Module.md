@@ -28,36 +28,12 @@
 
 ### createRequire
 
-> **createRequire**: (`filename`) => (`id`) => `unknown`
-
-#### Parameters
-
-##### filename
-
-`string`
-
-#### Returns
-
-(`id`) => `unknown`
+> **createRequire**: *typeof* [`createRequire`](../functions/createRequire.md)
 
 ### isBuiltin
 
-> **isBuiltin**: (`moduleName`) => `boolean`
-
-#### Parameters
-
-##### moduleName
-
-`string`
-
-#### Returns
-
-`boolean`
+> **isBuiltin**: *typeof* [`isBuiltin`](../functions/isBuiltin.md)
 
 ### syncBuiltinESMExports
 
-> **syncBuiltinESMExports**: () => `void`
-
-#### Returns
-
-`void`
+> **syncBuiltinESMExports**: *typeof* [`syncBuiltinESMExports`](../functions/syncBuiltinESMExports.md)

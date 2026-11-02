@@ -6,7 +6,7 @@
 
 # Variable: extname
 
-> `const` **extname**: (`path`) => `string` = `nodePath.extname`
+> `const` **extname**: (`path`) => `string`
 
 ## Parameters
 

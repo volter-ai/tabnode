@@ -20,25 +20,25 @@
 
 ### exceeds
 
-> **exceeds**: `number` = `0`
+> **exceeds**: `number`
 
 ***
 
 ### max
 
-> **max**: `number` = `0`
+> **max**: `number`
 
 ***
 
 ### mean
 
-> **mean**: `number` = `0`
+> **mean**: `number`
 
 ***
 
 ### min
 
-> **min**: `number` = `0`
+> **min**: `number`
 
 ***
 
@@ -50,7 +50,7 @@
 
 ### stddev
 
-> **stddev**: `number` = `0`
+> **stddev**: `number`
 
 ## Methods
 

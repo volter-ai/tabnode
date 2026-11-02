@@ -19,7 +19,7 @@ requests to the service worker path and serves the file from the correct locatio
 
 ### options?
 
-[`TabnodePluginOptions`](../interfaces/TabnodePluginOptions.md) = `{}`
+[`TabnodePluginOptions`](../interfaces/TabnodePluginOptions.md)
 
 ## Returns
 

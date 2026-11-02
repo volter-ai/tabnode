@@ -8,6 +8,9 @@
 
 > **createRequire**(`filename`): (`id`) => `unknown`
 
+Node.js module shim
+Provides basic module system functionality
+
 ## Parameters
 
 ### filename

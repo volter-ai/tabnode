@@ -18,7 +18,7 @@ Host-only installation; guest modules receive Node's normal exports.
 
 ### transportOptions?
 
-[`HttpClientTransportOptions`](../interfaces/HttpClientTransportOptions.md) = `{}`
+[`HttpClientTransportOptions`](../interfaces/HttpClientTransportOptions.md)
 
 ## Returns
 

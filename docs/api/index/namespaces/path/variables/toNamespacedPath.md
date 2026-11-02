@@ -6,7 +6,7 @@
 
 # Variable: toNamespacedPath
 
-> `const` **toNamespacedPath**: \<`T`\>(`path`) => `T` = `nodePath.toNamespacedPath`
+> `const` **toNamespacedPath**: \<`T`\>(`path`) => `T`
 
 ## Type Parameters
 

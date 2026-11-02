@@ -6,7 +6,7 @@
 
 # Function: getEsbuildInstance()
 
-> **getEsbuildInstance**(): `__module` \| `null`
+> **getEsbuildInstance**(): `any`
 
 The instance, for the lanes outside this module that need it: the module
 transformer and the dev servers. Exporting the `let` itself put a live
@@ -16,4 +16,4 @@ function rather than a value that changes under the guest.
 
 ## Returns
 
-`__module` \| `null`
+`any`

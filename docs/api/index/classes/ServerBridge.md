@@ -22,7 +22,7 @@ Server Bridge manages virtual HTTP servers and routes requests
 
 ##### options?
 
-`BridgeOptions` = `{}`
+`BridgeOptions`
 
 #### Returns
 
@@ -46,7 +46,7 @@ Server Bridge manages virtual HTTP servers and routes requests
 
 ### DEBUG
 
-> `static` **DEBUG**: `boolean` = `false`
+> `static` **DEBUG**: `boolean`
 
 #### Inherited from
 
@@ -444,7 +444,7 @@ Register a server on a port
 
 ##### hostname?
 
-`string` = `'0.0.0.0'`
+`string`
 
 #### Returns
 

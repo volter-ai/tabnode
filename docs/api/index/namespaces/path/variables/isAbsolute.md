@@ -6,7 +6,7 @@
 
 # Variable: isAbsolute
 
-> `const` **isAbsolute**: (`path`) => `boolean` = `nodePath.isAbsolute`
+> `const` **isAbsolute**: (`path`) => `boolean`
 
 ## Parameters
 

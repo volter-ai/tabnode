@@ -6,7 +6,7 @@
 
 # Variable: basename
 
-> `const` **basename**: (`path`, `suffix?`) => `string` = `nodePath.basename`
+> `const` **basename**: (`path`, `suffix?`) => `string`
 
 ## Parameters
 

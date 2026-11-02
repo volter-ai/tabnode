@@ -6,4 +6,4 @@
 
 # Variable: \_pathCache
 
-> `const` **\_pathCache**: `Record`\<`string`, `string`\> = `{}`
+> `const` **\_pathCache**: `Record`\<`string`, `string`\>

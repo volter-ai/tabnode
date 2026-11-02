@@ -911,11 +911,11 @@ Remove file
 
 ##### atime
 
-`number` \| `Date`
+`string` \| `number` \| `Date`
 
 ##### mtime
 
-`number` \| `Date`
+`string` \| `number` \| `Date`
 
 #### Returns
 

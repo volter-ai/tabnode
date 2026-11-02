@@ -40,13 +40,13 @@
 
 ### resourceLimits
 
-> **resourceLimits**: `object` = `{}`
+> **resourceLimits**: `object`
 
 ***
 
 ### threadId
 
-> **threadId**: `number` = `0`
+> **threadId**: `number`
 
 ## Methods
 

@@ -6,4 +6,4 @@
 
 # Variable: SHARE\_ENV
 
-> `const` **SHARE\_ENV**: *typeof* `SHARE_ENV`
+> `const` **SHARE\_ENV**: unique `symbol`

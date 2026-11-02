@@ -15,6 +15,7 @@
 
 ## Variables
 
+- [default](variables/default.md)
 - [VERSION](variables/VERSION.md)
 
 ## Functions

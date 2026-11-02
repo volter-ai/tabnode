@@ -20,7 +20,7 @@
 
 ### seen?
 
-`Set`\<`string`\> = `...`
+`Set`\<`string`\>
 
 ## Returns
 

@@ -22,7 +22,7 @@ npm Package Manager for VirtualFS
 
 ##### options?
 
-`object` & [`RegistryOptions`](../interfaces/RegistryOptions.md) = `{}`
+`object` & [`RegistryOptions`](../interfaces/RegistryOptions.md)
 
 #### Returns
 
@@ -44,7 +44,7 @@ Install a package and its dependencies
 
 ##### options?
 
-[`InstallOptions`](../interfaces/InstallOptions.md) = `{}`
+[`InstallOptions`](../interfaces/InstallOptions.md)
 
 #### Returns
 
@@ -62,7 +62,7 @@ Install all dependencies from package.json
 
 ##### options?
 
-[`InstallOptions`](../interfaces/InstallOptions.md) = `{}`
+[`InstallOptions`](../interfaces/InstallOptions.md)
 
 #### Returns
 

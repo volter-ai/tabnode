@@ -12,6 +12,7 @@
 
 ## Variables
 
+- [default](variables/default.md)
 - [URL](variables/URL.md)
 - [URLPattern](variables/URLPattern.md)
 - [URLSearchParams](variables/URLSearchParams.md)

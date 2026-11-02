@@ -16,7 +16,7 @@
 
 ##### options?
 
-[`RegistryOptions`](../interfaces/RegistryOptions.md) = `{}`
+[`RegistryOptions`](../interfaces/RegistryOptions.md)
 
 #### Returns
 

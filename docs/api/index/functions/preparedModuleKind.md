@@ -6,7 +6,7 @@
 
 # Function: preparedModuleKind()
 
-> **preparedModuleKind**(`resolvedPath`): `"cjs"` \| `"js"` \| `undefined`
+> **preparedModuleKind**(`resolvedPath`): `"js"` \| `"cjs"` \| `undefined`
 
 How a file is compiled, which is part of its body's name: undefined for a file no body is prepared for.
 
@@ -18,4 +18,4 @@ How a file is compiled, which is part of its body's name: undefined for a file n
 
 ## Returns
 
-`"cjs"` \| `"js"` \| `undefined`
+`"js"` \| `"cjs"` \| `undefined`

@@ -50,32 +50,32 @@ The layout, which producer and consumer both read from here:
 
 ### CAPACITY
 
-> `readonly` **CAPACITY**: `3` = `3`
+> `readonly` **CAPACITY**: `3`
 
 ### CLOSED
 
-> `readonly` **CLOSED**: `2` = `2`
+> `readonly` **CLOSED**: `2`
 
 ### HEADER\_BYTES
 
-> `readonly` **HEADER\_BYTES**: `32` = `32`
+> `readonly` **HEADER\_BYTES**: `32`
 
 Where the data area begins, in bytes.
 
 ### HEADER\_WORDS
 
-> `readonly` **HEADER\_WORDS**: `8` = `8`
+> `readonly` **HEADER\_WORDS**: `8`
 
 The header's words, used and reserved.
 
 ### READ\_INDEX
 
-> `readonly` **READ\_INDEX**: `1` = `1`
+> `readonly` **READ\_INDEX**: `1`
 
 ### SIGNAL
 
-> `readonly` **SIGNAL**: `4` = `4`
+> `readonly` **SIGNAL**: `4`
 
 ### WRITE\_INDEX
 
-> `readonly` **WRITE\_INDEX**: `0` = `0`
+> `readonly` **WRITE\_INDEX**: `0`

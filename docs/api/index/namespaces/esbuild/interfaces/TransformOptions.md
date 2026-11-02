@@ -34,7 +34,7 @@
 
 ### loader?
 
-> `optional` **loader?**: `"json"` \| `"js"` \| `"jsx"` \| `"ts"` \| `"tsx"` \| `"css"`
+> `optional` **loader?**: `"js"` \| `"jsx"` \| `"ts"` \| `"tsx"` \| `"json"` \| `"css"`
 
 ***
 
@@ -46,7 +46,7 @@
 
 ### sourcemap?
 
-> `optional` **sourcemap?**: `boolean` \| `"external"` \| `"inline"`
+> `optional` **sourcemap?**: `boolean` \| `"inline"` \| `"external"`
 
 ***
 

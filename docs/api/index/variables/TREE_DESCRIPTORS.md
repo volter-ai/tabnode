@@ -6,7 +6,7 @@
 
 # Variable: TREE\_DESCRIPTORS
 
-> `const` **TREE\_DESCRIPTORS**: *typeof* `TREE_DESCRIPTORS`
+> `const` **TREE\_DESCRIPTORS**: unique `symbol`
 
 A tree that owns its open file descriptions.
 

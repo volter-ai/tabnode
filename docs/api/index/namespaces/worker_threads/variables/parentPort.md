@@ -6,4 +6,4 @@
 
 # Variable: parentPort
 
-> `const` **parentPort**: `null` = `null`
+> `const` **parentPort**: `null`

@@ -22,7 +22,7 @@ thread behind the same asynchronous interface.
 
 ### options?
 
-[`CreateRuntimeOptions`](../interfaces/CreateRuntimeOptions.md) = `{}`
+[`CreateRuntimeOptions`](../interfaces/CreateRuntimeOptions.md)
 
 ## Returns
 

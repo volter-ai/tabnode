@@ -6,7 +6,7 @@
 
 # Variable: URLSearchParams
 
-> `const` **URLSearchParams**: \{(`init?`): `URLSearchParams`; `prototype`: `URLSearchParams`; \} = `globalThis.URLSearchParams`
+> `const` **URLSearchParams**: \{(`init?`): `URLSearchParams`; `prototype`: `URLSearchParams`; \}
 
 ## Type Declaration
 
