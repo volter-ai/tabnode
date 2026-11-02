@@ -22,24 +22,29 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   without its `validateLoad`, so a registered hook chain's last step called `undefined`: tsx's load hook in RH2's
   wrangler build ended in "TypeError: validate is not a function". A module load passes `validateLoadStrict` and a
   builtin's `validateLoadSloppy`, as Node's cjs/loader.js does.
-- **A socket's type of service is kept, not refused** (browser-substrate card t_d4b07ea8). undici 7.29 sets it before
-  every request, and ENOTSUP threw out of Open Autonomy's wrangler on its first fetch. The byte is kept and read back,
-  as Linux keeps IP_TOS on any TCP socket.
+- **Virtual TCP streams refuse IP type of service** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
+  Articles 6/9). `setTypeOfService` and `getTypeOfService` return `UV_ENOTSUP` again, as ADR-0003 requires for streams
+  without IP packet headers. A caller requiring IP_TOS needs a transport that owns those headers.
 - **An asynchronous stdin read waits for its bytes** (browser-substrate card t_d4b07ea8). An async `fs.read` of fd 0
   that finds nothing while the stream is open waits for it to be readable, end or close, as libuv's threadpool read
   does, holding the loop open meanwhile; over a shared ring it waits without blocking the realm (workerd's control
   fd, miniflare's config on stdin).
 - **The engine's `Symbol.for` lookups use the realm's own** (browser-substrate card t_d4b07ea8). miniflare replaces
   `Symbol.for`; the engine's well-known symbols (trace output, the child-process executor, the process) are looked
-  up with the function captured before any guest runs.
+  up with the function captured before any guest runs. The spawn diagnostic uses that same captured lookup and
+  reports the current function's type without calling guest-writable `Symbol.for`.
+- **Executable classification reads one bounded header** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
+  Articles 6/9). Shell-bin and spawn routing share a 256-byte read through the explicitly selected tree's descriptor
+  owner and one Node-shebang classifier. Callers retain their own policy for interpreter arguments and env options.
 
 - **A host install's package bin named by a shell line runs under node** (browser-substrate card t_d4b07ea8). The
   engine's shell runs every file it finds on PATH as a shell script, whatever its `#!` line names, so a bin npm or bun
   linked to a `#!/usr/bin/env node` file was parsed as shell: videogame.ai's `npm run preview` ran `astro preview`, and
   node_modules/.bin/astro ended "bash: line 14: unexpected EOF". Before a line runs, a simple command whose literal
   name is found on the line's PATH as a plain Node script is run by the shell's own `node` with the script's real path
-  (src/shims/package-bins.ts); builtins, registered commands, functions the line defines, names with a `/`, commands
-  that set PATH themselves and scripts whose `#!` line gives node flags keep the shell's lookup.
+  (src/shims/package-bins.ts), including eligible executable paths containing `/`. Builtins, registered commands,
+  functions the line defines, commands that set PATH themselves and scripts whose `#!` line gives node flags keep
+  the shell's lookup. Execution-time routing after a PATH or directory change is pending ADR-0007.
 - **A `file:` request under a native-binding map resolves again** (browser-substrate card t_d4b07ea8). The map's
   resolver read a `file:` specifier with the process's node-lib `url`, which the node-lib scope does not carry, so
   every such request threw "node-lib: no builtin 'url' in this process": Tailwind v4's `module.register` of its loader,

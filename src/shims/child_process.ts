@@ -45,7 +45,7 @@ import { EventEmitter } from '../node-lib/events-module';
 import { __substrateExitCode, __substrateProcessEnding, __substrateUncaughtCapture } from './process';
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
-import { treeDescriptorsOf } from '../tree-descriptors';
+import { executableHeader, EXECUTABLE_HEADER_BYTES, nodeShebang } from './executable-header';
 import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
 import { stackFormedBy } from '../stack-overrides';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
@@ -1522,7 +1522,7 @@ export function initChildProcess(vfs: VirtualFS): void {
       if (!exists && traceReadingRequested()) {
         const held = (globalThis as unknown as Record<symbol, unknown>)[__browserRuntimeChildProcessExecutorSymbol];
         traceOutput('[boot-trace]', { event: 'spawn-no-host-no-program', at: Date.now(), file: request.file, tree: treeForRun() ? 'held' : 'none', realmProcess: (globalThis as { process?: { pid?: unknown } }).process?.pid ?? null,
-          executor: { has: Reflect.has(globalThis, __browserRuntimeChildProcessExecutorSymbol), type: typeof held, keys: held && typeof held === 'object' ? Object.keys(held) : null, symbolFor: Symbol.for === Symbol.for.bind(Symbol) ? 'unbound' : String(Symbol.for).slice(0, 60), sameSymbol: Symbol.for('@volter/browser-runtime/child-process-executor') === __browserRuntimeChildProcessExecutorSymbol, symbols: Object.getOwnPropertySymbols(globalThis).map(String).filter((name) => name.includes('volter')).slice(0, 12) } });
+          executor: { has: Reflect.has(globalThis, __browserRuntimeChildProcessExecutorSymbol), type: typeof held, keys: held && typeof held === 'object' ? Object.keys(held) : null, symbolForType: typeof Symbol.for, sameSymbol: engineSymbolFor('@volter/browser-runtime/child-process-executor') === __browserRuntimeChildProcessExecutorSymbol, symbols: Object.getOwnPropertySymbols(globalThis).map(String).filter((name) => name.includes('volter')).slice(0, 12) } });
       }
       return exists;
     },
@@ -2236,7 +2236,7 @@ function shellReadsProgram(path: string, tree: VirtualFS): string | undefined {
   let head: Uint8Array;
   try {
     if (!tree.statSync(path).isFile()) return undefined;
-    head = (tree.readFileSync(path) as Uint8Array).subarray(0, FILE_HEAD_BYTES);
+    head = executableHeader(tree, path);
   } catch { return undefined; }
   const text = new TextDecoder().decode(head);
   const kind = HOST_EXECUTABLE.test(text) ? "a host program's handle" : PROGRAM_STUB.test(text) ? "a registered program's stub" : isBinaryImage(head) ? 'a binary image' : undefined;
@@ -2513,38 +2513,12 @@ function runsInEngine(path: string): boolean {
   return isNodeScript(path);
 }
 
-/** A script whose `#!` line names node (directly, or through env): what npm's bins are. */
-const NODE_INTERPRETER = /^#![ \t]*(?:\S*\/)?(?:env[ \t]+(?:-S[ \t]+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*)?node(?:[ \t]|$)/u;
 function isNodeScript(path: string): boolean {
   if (!currentVfs) return false;
   try {
     if (!currentVfs.statSync(path).isFile()) return false;
-    const bytes = fileHead(path);
-    const end = bytes.indexOf(10);
-    return NODE_INTERPRETER.test(new TextDecoder().decode(end < 0 ? bytes : bytes.subarray(0, end)));
+    return nodeShebang(executableHeader(currentVfs, path)) !== undefined;
   } catch { return false; }
-}
-
-/** What a spawn reads to tell a file's kind (Linux's binfmt reads a bounded first block too). */
-const FILE_HEAD_BYTES = 256;
-
-/**
- * A file's first bytes, and no more: through the tree's own descriptors where
- * it has them (the kernel's tree, where a whole read is a read of every
- * byte), otherwise from the tree's file, which an in-memory tree holds whole.
- * Reading the whole file to see its first line read a multi-megabyte binary
- * on every spawn by path.
- */
-function fileHead(path: string): Uint8Array {
-  const door = treeDescriptorsOf(currentVfs);
-  if (door) {
-    const fd = door.open(path, 0, 0);
-    try {
-      const head = new Uint8Array(FILE_HEAD_BYTES);
-      return head.subarray(0, door.read(fd, head, 0, FILE_HEAD_BYTES, 0));
-    } finally { door.close(fd); }
-  }
-  return (currentVfs!.readFileSync(path) as Uint8Array).subarray(0, FILE_HEAD_BYTES);
 }
 
 /**
@@ -2564,8 +2538,8 @@ function isRegisteredProgramStub(path: string): boolean {
   try {
     const stat = currentVfs.statSync(path);
     if (!stat.isFile()) return false;
-    const head = fileHead(path);
-    if (stat.size <= FILE_HEAD_BYTES && REGISTERED_PROGRAM_STUB.test(new TextDecoder().decode(head))) return true;
+    const head = executableHeader(currentVfs, path);
+    if (stat.size <= EXECUTABLE_HEADER_BYTES && REGISTERED_PROGRAM_STUB.test(new TextDecoder().decode(head))) return true;
     return isBinaryImage(head);
   } catch { return false; }
 }
