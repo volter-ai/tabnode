@@ -21,7 +21,7 @@
  */
 import type { Bash } from 'just-bash';
 import type { VirtualFS } from '../virtual-fs';
-import { treeDescriptorsOf } from '../tree-descriptors';
+import { executableHeader, nodeShebang } from './executable-header';
 
 /** The shell's own builtins: the shell answers these names itself, and a file of the same name never runs for them. */
 const SHELL_BUILTINS = new Set(['.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen',
@@ -30,11 +30,6 @@ const SHELL_BUILTINS = new Set(['.', ':', '[', 'alias', 'bg', 'bind', 'break', '
   'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true',
   'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait']);
 
-/** A script whose `#!` line runs node and nothing else, directly or through env: what npm's and bun's bins are. */
-const PLAIN_NODE = /^#![ \t]*(?:\S*\/env[ \t]+node|\S*\/node)[ \t]*\r?$/u;
-/** Linux's binfmt_script reads a bounded first block. */
-const HEAD_BYTES = 256;
-
 function nodeScript(tree: VirtualFS, path: string): boolean {
   try {
     const stat = tree.statSync(path);
@@ -42,15 +37,7 @@ function nodeScript(tree: VirtualFS, path: string): boolean {
     // A PATH walk passes by a file it cannot execute, as execvp does.
     const mode = (stat as { mode?: number }).mode;
     if (mode !== undefined && (mode & 0o111) === 0) return false;
-    const door = treeDescriptorsOf(tree);
-    let head: Uint8Array;
-    if (door) {
-      const fd = door.open(path, 0, 0);
-      try { const bytes = new Uint8Array(HEAD_BYTES); head = bytes.subarray(0, door.read(fd, bytes, 0, HEAD_BYTES, 0)); }
-      finally { door.close(fd); }
-    } else head = (tree.readFileSync(path) as Uint8Array).subarray(0, HEAD_BYTES);
-    const end = head.indexOf(10);
-    return PLAIN_NODE.test(new TextDecoder().decode(end < 0 ? head : head.subarray(0, end)));
+    return nodeShebang(executableHeader(tree, path))?.plain ?? false;
   } catch { return false; }
 }
 
