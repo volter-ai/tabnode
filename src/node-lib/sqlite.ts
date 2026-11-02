@@ -17,6 +17,7 @@ const SQLITE_OK = 0, SQLITE_ROW = 100, SQLITE_DONE = 101;
 const SQLITE_INTEGER = 1, SQLITE_FLOAT = 2, SQLITE_TEXT = 3, SQLITE_BLOB = 4, SQLITE_NULL = 5;
 const SQLITE_OPEN_READWRITE = 0x2, SQLITE_OPEN_CREATE = 0x4;
 const SQLITE_TRANSIENT = -1;
+const SQLITE_INT64_MIN = -(1n << 63n), SQLITE_INT64_MAX = (1n << 63n) - 1n;
 
 function sqliteError(message: string, errcode?: number): Error {
   return Object.assign(new Error(message), { code: 'ERR_SQLITE_ERROR', ...(errcode !== undefined ? { errcode, errstr: message } : {}) });
@@ -28,16 +29,95 @@ function argType(message: string): TypeError {
   return Object.assign(new TypeError(message), { code: 'ERR_INVALID_ARG_TYPE' });
 }
 
+/** Native cleanup state never references the public wrappers or their process. */
+class DatabaseState {
+  db = 0;
+  readonly statements = new Set<StatementState>();
+  release: (() => void) | undefined;
+
+  constructor(readonly c: SqliteC) {}
+
+  connect(): void {
+    const c = this.c, cell = c.cell();
+    let name = 0;
+    try {
+      name = c.cString(':memory:');
+      const rc = c.exports.sqlite3_open_v2(name, cell, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, 0);
+      this.db = new DataView(c.memory.buffer).getUint32(cell, true);
+      if (rc !== SQLITE_OK) throw sqliteError(this.errmsg(), rc);
+    } finally { c.free(cell); c.free(name); }
+  }
+
+  errmsg(): string { return this.c.string(this.c.exports.sqlite3_errmsg(this.db)) ?? 'unknown error'; }
+
+  exec(sql: string): void {
+    const c = this.c, text = c.cString(sql);
+    let error = 0;
+    try {
+      error = c.cell();
+      const rc = c.exports.sqlite3_exec(this.db, text, 0, 0, error);
+      if (rc !== SQLITE_OK) {
+        const pointer = new DataView(c.memory.buffer).getUint32(error, true);
+        const message = c.string(pointer) ?? this.errmsg();
+        c.free(pointer);
+        throw sqliteError(message, rc);
+      }
+    } finally { c.free(text); c.free(error); }
+  }
+
+  close(): void {
+    const failures: unknown[] = [];
+    for (const statement of this.statements) {
+      try { statement.close(); } catch (cause) { failures.push(cause); }
+    }
+    this.statements.clear();
+    if (this.db) {
+      // Close and process exit roll back; neither is a commit or a writer.
+      if (this.c.exports.sqlite3_get_autocommit(this.db) === 0) {
+        try { this.exec('ROLLBACK'); } catch (cause) { failures.push(cause); }
+      }
+      const rc = this.c.exports.sqlite3_close_v2(this.db);
+      if (rc === SQLITE_OK) this.db = 0;
+      else failures.push(sqliteError(this.errmsg(), rc));
+    }
+    if (!this.db) {
+      this.release?.();
+      this.release = undefined;
+      collectedDatabases.unregister(this);
+    }
+    if (failures.length) throw new AggregateError(failures, 'SQLite destruction failed');
+  }
+}
+
+class StatementState {
+  constructor(readonly database: DatabaseState, public stmt: number) {
+    database.statements.add(this);
+  }
+
+  close(): void {
+    const stmt = this.stmt;
+    this.stmt = 0;
+    if (stmt) {
+      // Finalization destroys the statement even when it reports its last
+      // evaluation error, which has already belonged to step().
+      this.database.c.exports.sqlite3_finalize(stmt);
+    }
+    this.database.statements.delete(this);
+    collectedStatements.unregister(this);
+  }
+}
+
+const collectedDatabases = new FinalizationRegistry<DatabaseState>(database => database.close());
+const collectedStatements = new FinalizationRegistry<StatementState>(statement => statement.close());
+
 export function createSqliteModule(host: SqliteHost) {
+  const connections = new WeakMap<DatabaseSync, DatabaseState>();
+
   class DatabaseSync {
     #path: string;
     #readOnly: boolean;
     #foreignKeys: boolean;
-    #c: SqliteC | null = null;
-    #db = 0;
     #location: string | null = null;
-    #release: (() => void) | undefined;
-    #statements = new Set<StatementSync>();
 
     constructor(path: unknown, options: { open?: boolean; readOnly?: boolean; enableForeignKeyConstraints?: boolean } = {}) {
       if (typeof path !== 'string' && !(path instanceof Uint8Array) && !(path instanceof URL)) {
@@ -50,71 +130,50 @@ export function createSqliteModule(host: SqliteHost) {
       if (options?.open !== false) this.open();
     }
 
-    get isOpen(): boolean { return this.#db !== 0; }
-    get isTransaction(): boolean { return this.#db !== 0 && this.#c!.exports.sqlite3_get_autocommit(this.#db) === 0; }
+    get isOpen(): boolean { return (connections.get(this)?.db ?? 0) !== 0; }
+    get isTransaction(): boolean {
+      const state = connections.get(this);
+      return !!state?.db && state.c.exports.sqlite3_get_autocommit(state.db) === 0;
+    }
     location(): string | null { return this.#location; }
 
     open(): void {
-      if (this.#db) throw invalidState('database is already open');
+      if (this.isOpen) throw invalidState('database is already open');
       // Resolve once at open, using the owning process's cwd. Never follow a
       // later chdir, and never interpret a URL differently from the fs door.
       this.#location = this.#path === ':memory:' || this.#path === '' ? null : host.resolvePath(this.#path);
       if (this.#location !== null) {
         throw Object.assign(new Error('File-backed node:sqlite is unavailable: the descriptor owner must provide SQLite VFS and coherent file locks. Use :memory: for a private database.'), { code: 'ERR_NOT_SUPPORTED' });
       }
-      this.#c = sqliteC();
-      this.#release = host.own({ close: () => this.#destroy() });
+      const state = new DatabaseState(sqliteC());
+      connections.set(this, state);
+      collectedDatabases.register(this, state, state);
       try {
-        this.#connect();
-        if (this.#foreignKeys) this.#execRaw('PRAGMA foreign_keys = ON');
-        if (this.#readOnly) this.#execRaw('PRAGMA query_only = ON');
+        state.release = host.own(state);
+        state.connect();
+        if (this.#foreignKeys) state.exec('PRAGMA foreign_keys = ON');
+        if (this.#readOnly) state.exec('PRAGMA query_only = ON');
       } catch (cause) {
-        try { this.#destroy(); } catch (cleanup) { throw new AggregateError([cause, cleanup], 'SQLite open failed and cleanup failed'); }
+        try { state.close(); } catch (cleanup) { throw new AggregateError([cause, cleanup], 'SQLite open failed and cleanup failed'); }
         throw cause;
       }
     }
 
-    #connect(): void {
-      const c = this.#c!, cell = c.cell();
-      let name = 0;
-      try {
-        name = c.cString(':memory:');
-        const rc = c.exports.sqlite3_open_v2(name, cell, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, 0);
-        this.#db = new DataView(c.memory.buffer).getUint32(cell, true);
-        if (rc !== SQLITE_OK) throw sqliteError(this.#errmsg(), rc);
-      } finally { c.free(cell); c.free(name); }
-    }
-
-    #errmsg(): string { return this.#c!.string(this.#c!.exports.sqlite3_errmsg(this.#db)) ?? 'unknown error'; }
-
-    #execRaw(sql: string): void {
-      const c = this.#c!, text = c.cString(sql);
-      let error = 0;
-      try {
-        error = c.cell();
-        const rc = c.exports.sqlite3_exec(this.#db, text, 0, 0, error);
-        if (rc !== SQLITE_OK) {
-          const pointer = new DataView(c.memory.buffer).getUint32(error, true);
-          const message = c.string(pointer) ?? this.#errmsg();
-          c.free(pointer);
-          throw sqliteError(message, rc);
-        }
-      } finally { c.free(text); c.free(error); }
-    }
-
-    #require(): number {
-      if (!this.#db) throw invalidState('database is not open');
-      return this.#db;
+    #require(): DatabaseState {
+      const state = connections.get(this);
+      if (!state?.db) throw invalidState('database is not open');
+      return state;
     }
 
     /** The open connection and SQLite, for a statement (internal). */
-    connection(): { c: SqliteC; db: number } { return { c: this.#c!, db: this.#require() }; }
-    track(statement: StatementSync): void { this.#statements.add(statement); }
+    connection(): { c: SqliteC; db: number } {
+      const { c, db } = this.#require();
+      return { c, db };
+    }
 
     exec(sql: string): void {
       if (typeof sql !== 'string') throw argType('The "sql" argument must be a string.');
-      this.#require();
-      this.#execRaw(sql);
+      this.#require().exec(sql);
     }
 
     prepare(sql: string): StatementSync {
@@ -125,53 +184,25 @@ export function createSqliteModule(host: SqliteHost) {
 
     function(): never { throw sqliteError('DatabaseSync.function() is not available in this engine\'s node:sqlite'); }
 
-    #destroy(): void {
-      const failures: unknown[] = [];
-      for (const statement of this.#statements) {
-        try { statement.release(); } catch (cause) { failures.push(cause); }
-      }
-      this.#statements.clear();
-      if (this.#db) {
-        // Close and process exit roll back; neither is a commit or a writer.
-        if (this.isTransaction) {
-          try { this.#execRaw('ROLLBACK'); } catch (cause) { failures.push(cause); }
-        }
-        const rc = this.#c!.exports.sqlite3_close_v2(this.#db);
-        if (rc === SQLITE_OK) this.#db = 0;
-        else failures.push(sqliteError(this.#errmsg(), rc));
-      }
-      if (!this.#db) { this.#release?.(); this.#release = undefined; }
-      if (failures.length) throw new AggregateError(failures, 'SQLite destruction failed');
-    }
-
-    close(): void { this.#require(); this.#destroy(); }
-    [Symbol.dispose](): void { if (this.#db) this.#destroy(); }
+    close(): void { this.#require().close(); }
+    [Symbol.dispose](): void { connections.get(this)?.close(); }
   }
 
   class StatementSync {
     #database: DatabaseSync;
     #sql: string;
-    #stmt = 0;
-    #db = 0;
+    #state: StatementState;
     #readBigInts = false;
     #returnArrays = false;
     #allowBareNames = true;
     #allowUnknownNames = false;
     #busy = false;
-    #released = false;
 
     constructor(database: DatabaseSync, sql: string) {
       this.#database = database;
       this.#sql = sql;
-      this.#compile();
-      database.track(this);
-    }
-
-    #compile(): { c: SqliteC; stmt: number; db: number } {
-      if (this.#released) throw invalidState('statement has been finalized');
-      const { c, db } = this.#database.connection();
-      if (this.#stmt && this.#db === db) return { c, stmt: this.#stmt, db };
-      const text = c.cString(this.#sql);
+      const { c, db } = database.connection();
+      const text = c.cString(sql);
       let cell = 0;
       try {
         cell = c.cell();
@@ -182,29 +213,20 @@ export function createSqliteModule(host: SqliteHost) {
           throw sqliteError(c.string(c.exports.sqlite3_errmsg(db)) ?? 'prepare failed', rc);
         }
         if (!prepared) throw sqliteError('SQL does not contain a statement');
-        this.#stmt = prepared;
-        this.#db = db;
+        this.#state = new StatementState(connections.get(database)!, prepared);
+        collectedStatements.register(this, this.#state, this.#state);
       } finally { c.free(text); c.free(cell); }
-      return { c, stmt: this.#stmt, db };
     }
 
-    /** Destroyed by the original database owner, including process exit. */
-    release(): void {
-      this.#released = true;
-      if (this.#stmt) {
-        const stmt = this.#stmt;
-        this.#stmt = 0;
-        this.#db = 0;
-        const { c } = this.#database.connection();
-        // sqlite3_finalize destroys the statement even when returning its last
-        // evaluation error; that error has already belonged to step().
-        c.exports.sqlite3_finalize(stmt);
-      }
+    #require(): { c: SqliteC; stmt: number; db: number } {
+      if (!this.#state.stmt) throw invalidState('statement has been finalized');
+      const { c, db } = this.#database.connection();
+      return { c, stmt: this.#state.stmt, db };
     }
 
     get sourceSQL(): string { return this.#sql; }
     get expandedSQL(): string {
-      const { c, stmt } = this.#compile();
+      const { c, stmt } = this.#require();
       const pointer = c.exports.sqlite3_expanded_sql(stmt) as number;
       const text = c.string(pointer) ?? this.#sql;
       c.free(pointer);
@@ -223,7 +245,7 @@ export function createSqliteModule(host: SqliteHost) {
     }
 
     columns(): Array<{ column: string | null; database: string | null; name: string; table: string | null; type: string | null }> {
-      const { c, stmt } = this.#compile();
+      const { c, stmt } = this.#require();
       const x = c.exports, count = x.sqlite3_column_count(stmt) as number;
       return Array.from({ length: count }, (_, index) => ({
         column: c.string(x.sqlite3_column_origin_name(stmt, index)),
@@ -238,8 +260,12 @@ export function createSqliteModule(host: SqliteHost) {
       const x = c.exports;
       let rc: number;
       if (value === null) rc = x.sqlite3_bind_null(stmt, index);
-      else if (typeof value === 'bigint') rc = x.sqlite3_bind_int64(stmt, index, value);
-      else if (typeof value === 'number') rc = Number.isSafeInteger(value) ? x.sqlite3_bind_int64(stmt, index, BigInt(value)) : x.sqlite3_bind_double(stmt, index, value);
+      else if (typeof value === 'bigint') {
+        if (value < SQLITE_INT64_MIN || value > SQLITE_INT64_MAX) {
+          throw Object.assign(new TypeError('BigInt value is too large to bind.'), { code: 'ERR_INVALID_ARG_VALUE' });
+        }
+        rc = x.sqlite3_bind_int64(stmt, index, value);
+      } else if (typeof value === 'number') rc = x.sqlite3_bind_double(stmt, index, value);
       else if (typeof value === 'string') {
         const bytes = new TextEncoder().encode(value), pointer = c.alloc(bytes);
         try { rc = x.sqlite3_bind_text(stmt, index, pointer, bytes.length, SQLITE_TRANSIENT); } finally { c.free(pointer); }
@@ -247,13 +273,13 @@ export function createSqliteModule(host: SqliteHost) {
         const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength), pointer = c.alloc(bytes);
         try { rc = x.sqlite3_bind_blob(stmt, index, pointer, bytes.length, SQLITE_TRANSIENT); } finally { c.free(pointer); }
       } else throw argType(`Provided value cannot be bound to SQLite parameter ${index}.`);
-      if (rc !== SQLITE_OK) throw sqliteError(c.string(x.sqlite3_errmsg(this.#db)) ?? 'bind failed', rc);
+      if (rc !== SQLITE_OK) throw sqliteError(c.string(x.sqlite3_errmsg(this.#state.database.db)) ?? 'bind failed', rc);
     }
 
     /** Node's binding: a leading plain object names parameters, the rest bind by position to the anonymous ones. */
     #bind(params: unknown[]): { c: SqliteC; stmt: number } {
       if (this.#busy) throw invalidState('statement is already executing');
-      const { c, stmt } = this.#compile();
+      const { c, stmt } = this.#require();
       const x = c.exports;
       x.sqlite3_reset(stmt);
       x.sqlite3_clear_bindings(stmt);
@@ -287,11 +313,11 @@ export function createSqliteModule(host: SqliteHost) {
     }
 
     #step(c: SqliteC, stmt: number): boolean {
-      if (this.#released || this.#stmt !== stmt) throw invalidState('statement has been finalized');
+      if (this.#state.stmt !== stmt) throw invalidState('statement has been finalized');
       const rc = c.exports.sqlite3_step(stmt);
       if (rc === SQLITE_ROW) return true;
       if (rc === SQLITE_DONE) return false;
-      throw sqliteError(c.string(c.exports.sqlite3_errmsg(this.#db)) ?? `step failed (${rc})`, rc);
+      throw sqliteError(c.string(c.exports.sqlite3_errmsg(this.#state.database.db)) ?? `step failed (${rc})`, rc);
     }
 
     #row(c: SqliteC, stmt: number): unknown {
@@ -322,15 +348,15 @@ export function createSqliteModule(host: SqliteHost) {
     }
 
     #finish(c: SqliteC, stmt: number): void {
-      if (this.#stmt === stmt) c.exports.sqlite3_reset(stmt);
+      if (this.#state.stmt === stmt) c.exports.sqlite3_reset(stmt);
     }
 
     run(...params: unknown[]): { changes: number | bigint; lastInsertRowid: number | bigint } {
       const { c, stmt } = this.#bind(params);
       try {
         while (this.#step(c, stmt)) { /* a run's rows are not read */ }
-        const changes = BigInt(c.exports.sqlite3_changes64(this.#db));
-        const last = BigInt(c.exports.sqlite3_last_insert_rowid(this.#db));
+        const changes = BigInt(c.exports.sqlite3_changes64(this.#state.database.db));
+        const last = BigInt(c.exports.sqlite3_last_insert_rowid(this.#state.database.db));
         return this.#readBigInts ? { changes, lastInsertRowid: last } : { changes: Number(changes), lastInsertRowid: Number(last) };
       } finally { this.#finish(c, stmt); }
     }

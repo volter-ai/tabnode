@@ -2688,15 +2688,15 @@ function __substrateSqliteFor(process: Process): unknown {
     module = createSqliteModule({
       resolvePath: path => pathShim.resolve(process.cwd(), path),
       own(resource) {
-        // The original run's existing handle owner closes SQLite on every exit.
-        // Unreferenced ownership does not keep an otherwise finished CLI alive.
+        // The original run owns native cleanup state, without retaining the
+        // public database wrapper or keeping an otherwise finished CLI alive.
         const token = __tokenForProcess(process);
         if (token !== null && !__runFor(token)) throw Object.assign(new Error('SQLite process has ended'), { code: 'ERR_INVALID_STATE' });
         ownedRun(token, () => {
           registerHandle(resource);
           unrefHandle(resource);
         });
-        return () => releaseHandle(resource);
+        return releaseHandle.bind(undefined, resource);
       },
     });
     __substrateSqliteModules.set(process, module);
