@@ -41,13 +41,14 @@
  *
  * What the engine cannot serve, and answers as uvwasi answers a host that
  * cannot: `path_link` is ENOSYS (the tree keeps no hard links); the process and
- * thread CPU-time clocks answer the monotonic clock (a tab has no CPU clock);
+ * thread CPU-time clocks are ENOSYS (the host has no process CPU accounting);
  * `fd_read` on descriptor 0 answers what the guest's stdin stream has already
  * buffered, then EOF (a syscall cannot wait); `poll_oneoff` sleeps the calling
  * thread for a clock subscription (Atomics.wait where the thread may, a timed
  * spin where it may not), as uvwasi blocks on its loop.
  */
 import NODE_WASI_SOURCE from '../node-lib/wasi.js?raw';
+import { hostRealtimeMilliseconds } from '../host-time';
 // The guest stdin stream's engine-side read (process.ts `kEngineStdinRead`).
 const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
 import {
@@ -434,12 +435,14 @@ function nanosSince(ms: number): bigint {
   return BigInt(whole) * 1_000_000n + BigInt(Math.round((ms - whole) * 1e6));
 }
 
-function realtimeNanos(): bigint {
-  return nanosSince(performance.timeOrigin + performance.now());
-}
-
 function monotonicNanos(): bigint {
   return nanosSince(performance.now());
+}
+
+function clockError(clock: number): Errno | undefined {
+  if (clock === CLOCK.PROCESS_CPUTIME_ID || clock === CLOCK.THREAD_CPUTIME_ID) return ERRNO.ENOSYS;
+  if (clock !== CLOCK.REALTIME && clock !== CLOCK.MONOTONIC) return ERRNO.EINVAL;
+  return undefined;
 }
 
 /**
@@ -493,7 +496,8 @@ function isWasmMemory(value: unknown): value is WebAssembly.Memory {
   return value !== null && typeof value === 'object' && Object.prototype.toString.call(value) === '[object WebAssembly.Memory]';
 }
 
-function bindingClassFor(fs: WasiHostFs, process: WasiHostProcess): BindingClass {
+function bindingClassFor(fs: WasiHostFs, process: WasiHostProcess, realtime?: () => number): BindingClass {
+  const realtimeNanos = (): bigint => nanosSince((realtime ?? hostRealtimeMilliseconds)());
   const states = new WeakMap<object, WrapState>();
   const encoder = new TextEncoder();
 
@@ -786,27 +790,24 @@ function bindingClassFor(fs: WasiHostFs, process: WasiHostProcess): BindingClass
 
   define('clock_res_get', 'ii', (_state, memory, clockId, resolutionPtr) => {
     if (!memory.fits(resolutionPtr as number, 8)) return ERRNO.EOVERFLOW;
-    switch (clockId) {
-      case CLOCK.REALTIME: case CLOCK.MONOTONIC: case CLOCK.PROCESS_CPUTIME_ID: case CLOCK.THREAD_CPUTIME_ID:
-        memory.setU64(resolutionPtr as number, 1n);
-        return;
-      default:
-        return ERRNO.EINVAL;
-    }
+    const error = clockError(clockId as number);
+    if (error !== undefined) return error;
+    memory.setU64(resolutionPtr as number, 1n);
   });
 
   define('clock_time_get', 'iLi', (_state, memory, clockId, _precision, timePtr) => {
     if (!memory.fits(timePtr as number, 8)) return ERRNO.EOVERFLOW;
+    const error = clockError(clockId as number);
+    if (error !== undefined) return error;
     switch (clockId) {
-      case CLOCK.REALTIME:
-        memory.setU64(timePtr as number, realtimeNanos());
+      case CLOCK.REALTIME: {
+        // WASI timestamps are unsigned nanoseconds; a selected epoch outside that range cannot wrap.
+        const now = realtimeNanos();
+        if (now < 0n || now > 0xffff_ffff_ffff_ffffn) return ERRNO.EOVERFLOW;
+        memory.setU64(timePtr as number, now);
         return;
+      }
       case CLOCK.MONOTONIC:
-      // A tab has no CPU clock; the process and thread CPU clocks answer the
-      // time the program has run, which is what a guest measuring its own
-      // progress against them needs to see advance.
-      case CLOCK.PROCESS_CPUTIME_ID:
-      case CLOCK.THREAD_CPUTIME_ID:
         memory.setU64(timePtr as number, monotonicNanos());
         return;
       default:
@@ -1259,9 +1260,21 @@ function bindingClassFor(fs: WasiHostFs, process: WasiHostProcess): BindingClass
       const userdata = memory.u64(at);
       const type = memory.u8(at + 8);
       if (type === EVENTTYPE.CLOCK) {
+        const clock = memory.u32(at + 16);
+        const error = clockError(clock);
+        if (error !== undefined) return error;
         const clockTimeout = memory.u64(at + 24);
         const flags = memory.u16(at + 40);
-        const relative = flags === SUBSCRIPTION_CLOCK_ABSTIME ? clockTimeout - realtimeNanos() : clockTimeout;
+        if ((flags & ~SUBSCRIPTION_CLOCK_ABSTIME) !== 0) return ERRNO.EINVAL;
+        if (flags === SUBSCRIPTION_CLOCK_ABSTIME && clock === CLOCK.REALTIME && realtime !== undefined) {
+          // A callback reads the clock but cannot wake this synchronous wait on revision or revocation.
+          // Refuse before sleeping or reporting an event; a private elapsed wait cannot stand in for it.
+          process.emitWarning('node:wasi poll_oneoff cannot wait for absolute CLOCK_REALTIME with an embedding-selected application clock: no revision-aware wait door is delegated.',
+            'UnsupportedWarning', 'WASI_CLOCK_REALTIME_WAIT_UNSUPPORTED');
+          return ERRNO.ENOTSUP;
+        }
+        const relative = flags === SUBSCRIPTION_CLOCK_ABSTIME
+          ? clockTimeout - (clock === CLOCK.REALTIME ? realtimeNanos() : monotonicNanos()) : clockTimeout;
         if (timeout === undefined || relative < timeout) {
           timeout = relative;
           timerUserdata = userdata;
@@ -1408,8 +1421,8 @@ export interface WasiModule {
 
 const experimentalWarnings = new WeakMap<WasiHostProcess, Set<string>>();
 
-export function createWasiModule(fs: WasiHostFs, process: WasiHostProcess): WasiModule {
-  const binding = { WASI: bindingClassFor(fs, process) };
+export function createWasiModule(fs: WasiHostFs, process: WasiHostProcess, realtime?: () => number): WasiModule {
+  const binding = { WASI: bindingClassFor(fs, process, realtime) };
   // internal/util's emitExperimentalWarning: once per feature per process.
   const emitExperimentalWarning = (feature: string): void => {
     let warned = experimentalWarnings.get(process);

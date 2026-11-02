@@ -6,6 +6,8 @@ run streams. Each Node child inherits its run's callback; an embedding that
 starts a worker Runtime passes the same source. Explicit dates retain native
 parsing/construction. Host Date, performance, hrtime, relative timers, uptime
 and child idle budgets retain their host elapsed timeline.
+WASI consumes the same process callback; its current clock capabilities and
+explicit unsupported-wait boundary are recorded in `BUILTINS.md`.
 
 Source implementation awaits independent review and the substrate's real
 PostgreSQL/Node World-clock proof under ADR-0215 decision 10. The prepared

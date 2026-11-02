@@ -2603,7 +2603,7 @@ const __substrateGuestWasis = new WeakMap<Process, WasiModule>();
 function __substrateGuestWasi(fsShim: FsShim, process: Process): WasiModule {
   let module = __substrateGuestWasis.get(process);
   if (module === undefined) {
-    module = createWasiModule(fsShim as unknown as WasiHostFs, process);
+    module = createWasiModule(fsShim as unknown as WasiHostFs, process, __substrateRealtime.get(process));
     __substrateGuestWasis.set(process, module);
   }
   return module;
