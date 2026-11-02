@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "run": "4414",
+  "source": "80c4c3293c5189d4802c4844c485318a7a5de6d2",
+  "packages": [
+    {
+      "name": "@volter/tabnode",
+      "version": "0.16.0",
+      "archive": "volter-tabnode-0.16.0.tgz",
+      "integrity": "sha512-nY5Z9YDSvF5F5w5CkZyLRFOFBJRSK4E4bgUxH37mGWaUsFvYbNyqEpbqGxJOp/xVagM3s5LlRAjujTKE39slKw==",
+      "status": "prepared"
+    }
+  ],
+  "registry": "https://registry.npmjs.org/",
+  "distTag": "latest",
+  "authorizationReference": "VO-3806 manager167932; independent review29221 at80c4c329; exact-head mergebe4bc6d7",
+  "keysSweepReference": "VO-3806 attachments29213-29214; merged shared sweep29dc567d; exact archive1ed686f2"
+}
