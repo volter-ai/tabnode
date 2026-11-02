@@ -169,16 +169,26 @@ export const URL = globalThis.URL;
 export const URLSearchParams = globalThis.URLSearchParams;
 
 /**
- * Convert a file:// URL to a file path
+ * Convert a file:// URL to a file path, as Node's own does on Linux (lib/internal/url.js getPathFromURLPosix): a host
+ * other than empty or localhost (which the URL parser makes empty) is ERR_INVALID_FILE_URL_HOST, and an encoded '/'
+ * in the path is ERR_INVALID_FILE_URL_PATH, never decoded into a separator the URL did not have.
  * Node.js: url.fileURLToPath('file:///home/user/file.txt') -> '/home/user/file.txt'
  */
 export function fileURLToPath(url: string | URL): string {
   const urlObj = typeof url === 'string' ? new globalThis.URL(url) : url;
   if (urlObj.protocol !== 'file:') {
-    throw new TypeError('The URL must be of scheme file');
+    throw Object.assign(new TypeError('The URL must be of scheme file'), { code: 'ERR_INVALID_URL_SCHEME' });
   }
-  // Decode percent-encoded characters and return pathname
-  return decodeURIComponent(urlObj.pathname);
+  if (urlObj.hostname !== '') {
+    throw Object.assign(new TypeError('File URL host must be "localhost" or empty on linux'), { code: 'ERR_INVALID_FILE_URL_HOST' });
+  }
+  const pathname = urlObj.pathname;
+  for (let at = 0; at < pathname.length; at++) {
+    if (pathname[at] === '%' && pathname[at + 1] === '2' && ((pathname.codePointAt(at + 2) ?? 0) | 0x20) === 0x66) {
+      throw Object.assign(new TypeError('File URL path must not include encoded / characters'), { code: 'ERR_INVALID_FILE_URL_PATH' });
+    }
+  }
+  return decodeURIComponent(pathname);
 }
 
 /**

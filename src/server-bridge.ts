@@ -63,7 +63,11 @@ interface UpgradeEntry {
 
 /** A partly read frame stream: bytes not yet a whole frame, and a fragmented message in progress. */
 interface FrameState {
-  pending: Uint8Array;
+  /** The bytes after the last whole frame, as they came: joined once a frame they hold can be whole (`need`). */
+  pending: Uint8Array[];
+  pendingBytes: number;
+  /** How many bytes the frame at the front needs before it can be read; 0 when unknown (a header still short). */
+  need: number;
   fragments: { opcode: number; parts: Uint8Array[] } | null;
 }
 
@@ -123,8 +127,24 @@ function __substrateFrame(opcode: number, payload: Uint8Array, masked: boolean):
   for (let index = 0; index < length; index += 1) out[header.length + mask.length + index] = masked ? payload[index] ^ mask[index & 3] : payload[index];
   return out;
 }
+/**
+ * A WebSocket's frames from the bytes it is sent. A frame longer than one chunk was kept by joining every chunk to
+ * the bytes before it through a spread into a plain array: the Volter Editor's launcher spent 1.9 s of CPU here on
+ * its workbench's socket (card t_d4b07ea8, editor-prof profile 51, __substrateParseFrames). The chunks are kept as
+ * they come and joined once, when the frame at the front can be whole.
+ */
 function __substrateParseFrames(state: FrameState, chunk: Uint8Array, onFrame: (opcode: number, payload: Uint8Array) => void): void {
-  const joined = state.pending.length ? new Uint8Array([...state.pending, ...chunk]) : chunk;
+  state.pending.push(chunk);
+  state.pendingBytes += chunk.length;
+  if (state.need > state.pendingBytes) return;
+  let joined: Uint8Array;
+  if (state.pending.length === 1) joined = state.pending[0]!;
+  else {
+    joined = new Uint8Array(state.pendingBytes);
+    let at = 0;
+    for (const part of state.pending) { joined.set(part, at); at += part.length; }
+  }
+  state.need = 0;
   let offset = 0;
   for (;;) {
     if (joined.length - offset < 2) break;
@@ -135,7 +155,7 @@ function __substrateParseFrames(state: FrameState, chunk: Uint8Array, onFrame: (
     else if (length === 127) { if (joined.length - at < 8) break; length = 0; for (let index = 0; index < 8; index += 1) length = length * 256 + joined[at + index]; at += 8; }
     let mask: Uint8Array | undefined;
     if (masked) { if (joined.length - at < 4) break; mask = joined.subarray(at, at + 4); at += 4; }
-    if (joined.length - at < length) break;
+    if (joined.length - at < length) { state.need = at + length - offset; break; }
     const payload = joined.slice(at, at + length);
     if (mask) for (let index = 0; index < length; index += 1) payload[index] ^= mask[index & 3];
     offset = at + length;
@@ -143,7 +163,9 @@ function __substrateParseFrames(state: FrameState, chunk: Uint8Array, onFrame: (
     else if (!fin && (opcode === 1 || opcode === 2)) state.fragments = { opcode, parts: [payload] };
     else onFrame(opcode, payload);
   }
-  state.pending = joined.slice(offset);
+  const rest = joined.slice(offset);
+  state.pending = rest.length ? [rest] : [];
+  state.pendingBytes = rest.length;
 }
 /**
  * The socket an `upgrade` listener is handed for a connect that carries
@@ -179,7 +201,7 @@ function __substrateUpgradeSocket(entry: UpgradeEntry, socket: Socket): UpgradeS
   };
   let closed = false;
   const headed = true;
-  const state: FrameState = { pending: new Uint8Array(0), fragments: null };
+  const state: FrameState = { pending: [], pendingBytes: 0, need: 0, fragments: null };
   const decoder = new TextDecoder();
   const finish = (code: number, reason: string): void => {
     if (closed) return;

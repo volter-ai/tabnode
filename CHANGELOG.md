@@ -6,6 +6,56 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **SQLite preserves the kernel's file ownership** (browser-substrate card t_c656e6fd, V1-02
+  t_54301ff8/t_ed393c2c/t_9567d5e9/t_7a220000/t_e497afc1/t_9e6677b2/t_fc801f45; Articles 6/9).
+  `node:sqlite` supports private in-memory databases; file-backed opens refuse before touching files because
+  no descriptor-owned SQLite VFS is available. Close and original-process exit roll back and destroy native
+  connections and statements without holding the loop open. Named parameters reject unknown keys by default,
+  independently of bare-name matching; iteration advances a cursor lazily. The shared builtin loader preserves
+  its scheme-only identity through synchronous/asynchronous hooks and `process.getBuiltinModule`.
+
+- **Worker routing preserves a script's directive prologue** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
+  Articles 6/9). Rooted and blob workers retain leading comments and every directive before the routing prelude.
+  Blob source is read completely instead of through a 64-byte prefix; ambiguous statement boundaries keep the
+  original script, preserving its strict-mode semantics.
+- **The retained engine has its own candidate identity** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
+  Articles 6/9). The full-stack artifact candidate is prepared as `0.15.2`; published `0.15.1` is a different source.
+  Package metadata, lockfile and generated surface now identify the candidate distinctly. Publication remains a
+  separate, explicitly authorized act.
+- **Required surface metadata carries inline WebAssembly** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
+  Articles 6/9). The registry inventory's standalone esbuild bundle lacked a Wasm loader, so the SQLite binding's
+  inline import stopped `build:surface` before `dist/surface.json` could be written. Its Wasm imports now retain the
+  data URL representation the library's Vite build supplies; runtime and database behavior are unchanged.
+- **A CJS load chain is checked by Node's validators** (browser-substrate card t_d4b07ea8). `loadWithHooks` was called
+  without its `validateLoad`, so a registered hook chain's last step called `undefined`: tsx's load hook in RH2's
+  wrangler build ended in "TypeError: validate is not a function". A module load passes `validateLoadStrict` and a
+  builtin's `validateLoadSloppy`, as Node's cjs/loader.js does.
+- **Virtual TCP streams refuse IP type of service** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
+  Articles 6/9). `setTypeOfService` and `getTypeOfService` return `UV_ENOTSUP` again, as ADR-0003 requires for streams
+  without IP packet headers. A caller requiring IP_TOS needs a transport that owns those headers.
+- **An asynchronous stdin read waits for its bytes** (browser-substrate card t_d4b07ea8). An async `fs.read` of fd 0
+  that finds nothing while the stream is open waits for it to be readable, end or close, as libuv's threadpool read
+  does, holding the loop open meanwhile; over a shared ring it waits without blocking the realm (workerd's control
+  fd, miniflare's config on stdin).
+- **The engine's `Symbol.for` lookups use the realm's own** (browser-substrate card t_d4b07ea8). miniflare replaces
+  `Symbol.for`; the engine's well-known symbols (trace output, the child-process executor, the process) are looked
+  up with the function captured before any guest runs. The spawn diagnostic uses that same captured lookup and
+  reports the current function's type without calling guest-writable `Symbol.for`.
+- **Executable classification reads one bounded header** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
+  Articles 6/9). Shell-bin and spawn routing share a 256-byte read through the explicitly selected tree's descriptor
+  owner and one Node-shebang classifier. Callers retain their own policy for interpreter arguments and env options.
+
+- **Executable Node scripts use the shell's execution-time selection** (browser-substrate card t_c656e6fd,
+  V1-02 t_07fc0d39; Articles 6/9). The supplier's script callback classifies the already-resolved executable's bounded
+  header and passes its real path and literal argv to the same Node launch owner as the shell's `node` command.
+  Earlier PATH/cwd changes, command assignments, computed names and ordinary shell precedence stay with the supplier.
+  `source`, redirection, shell scripts and unsupported shebang options retain their existing execution paths.
+- **A `file:` request under a native-binding map resolves again** (browser-substrate card t_d4b07ea8). The map's
+  resolver read a `file:` specifier with the process's node-lib `url`, which the node-lib scope does not carry, so
+  every such request threw "node-lib: no builtin 'url' in this process": Tailwind v4's `module.register` of its loader,
+  in videogame.ai's Astro config, stopped the server. It is read with the url module's `fileURLToPath`, which now
+  refuses as Node's does: a host other than empty or `localhost` (ERR_INVALID_FILE_URL_HOST) and an encoded `/`
+  (ERR_INVALID_FILE_URL_PATH), and a scheme other than `file:` carries ERR_INVALID_URL_SCHEME.
 - **A realm compiles Node's own library once, and may do it ahead** (browser-substrate S2 AC-LC12). A builtin's file is
   compiled to a function once a realm and called into a module scope of its own at each load, as before. The new
   export `precompileNodeLib(name)` compiles one ahead of its first require, running none of it, so a realm waiting for

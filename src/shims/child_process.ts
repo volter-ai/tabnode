@@ -1,4 +1,5 @@
 import { traceReadingRequested, traceOutput } from '../trace-output';
+import { engineSymbolFor } from '../engine-symbol';
 import { copyProcessCredentials, type ProcessCredentials } from '../process-credentials';
 import { queueNativeFsTask } from '../native-fs-tasks';
 import { withGuestCallback } from '../guest-loop';
@@ -44,7 +45,7 @@ import { EventEmitter } from '../node-lib/events-module';
 import { __substrateExitCode, __substrateProcessEnding, __substrateUncaughtCapture } from './process';
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
-import { treeDescriptorsOf } from '../tree-descriptors';
+import { executableHeader, EXECUTABLE_HEADER_BYTES, nodeShebang } from './executable-header';
 import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
 import { stackFormedBy } from '../stack-overrides';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
@@ -79,6 +80,7 @@ import { __nodeResolverFor } from '../node-resolver';
 import { resolve as __resolvePath } from './path';
 import { setSyncChildVfs, warmSyncChild } from './sync-child';
 import { installShellJobs } from './shell-jobs';
+import { nodeScriptExecutor } from './package-bins';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
 import { installedNpmVersion } from '../npm/version';
@@ -133,7 +135,7 @@ function treeForRun(): VirtualFS | null {
   // import the fs binding (that import put constantsBinding in the
   // consumer bundle's cycle with crypto).
   const realm = globalThis as unknown as { process?: Record<symbol, unknown> };
-  const found = realm.process?.[Symbol.for('tabnode.run.vfs')] as VirtualFS | undefined;
+  const found = realm.process?.[engineSymbolFor('tabnode.run.vfs')] as VirtualFS | undefined;
   return found ?? currentVfs;
 }
 
@@ -764,7 +766,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // What fds 0, 1 and 2 are, where the fs binding's fstat reads them (the
   // symbol is the binding's `kStdioKinds`, named here so this file does not
   // import the fs binding).
-  (proc as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.run.stdioKinds')] = stdioKinds;
+  (proc as unknown as Record<symbol, unknown>)[engineSymbolFor('tabnode.run.stdioKinds')] = stdioKinds;
   // This run's numbers, recorded under its name: a child it spawns reads
   // them for its own `ppid`, and `process.kill(pid, 0)` asks this registry
   // whether a pid is a live process.
@@ -1405,13 +1407,14 @@ export function initChildProcess(vfs: VirtualFS): void {
 
   // The shell's `node` is the engine's Node started from the words the shell
   // parsed; `launchNode` is the one start, which `container.runNode` shares.
-  const nodeCommand = defineCommand('node', (args, ctx) => launchNode(tree, {
+  const launchShellNode = (args: string[], ctx: CommandContext) => launchNode(tree, {
     argv: ['node', ...args],
     cwd: ctx.cwd,
     env: guestEnvironmentOf(ctx),
     ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}),
     token: runTokenOf(ctx),
-  }));
+  });
+  const nodeCommand = defineCommand('node', launchShellNode);
 
   // Create custom 'npm' command that runs scripts from package.json
   const npmCommand = defineCommand('npm', async (args, ctx) => {
@@ -1472,6 +1475,7 @@ export function initChildProcess(vfs: VirtualFS): void {
       PATH: '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin',
     },
     customCommands: [nodeCommand, npmCommand],
+    scriptExecutor: nodeScriptExecutor(tree, launchShellNode),
   });
   // A statement ending in `&` runs in the background, with `$!`, `wait` and
   // `kill` over the engine's process table (`shell-jobs.ts` says how).
@@ -1494,11 +1498,17 @@ export function initChildProcess(vfs: VirtualFS): void {
   });
   setProcessRunner({
     resolves: (request: RunRequest): boolean => {
-      if (!bashInstance) return false;
+      if (!bashInstance) {
+        if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-no-shell', at: Date.now(), file: request.file });
+        return false;
+      }
       // A directory that is not there is `ENOENT` before the program is even
       // looked for, as it is for `execve`: `spawn(cmd, { cwd: 'nope' })`
       // reports a child that never started, and `child.pid` is undefined.
-      if (typeof request.cwd === 'string' && request.cwd.length > 0 && !existsInTree(request.cwd)) return false;
+      if (typeof request.cwd === 'string' && request.cwd.length > 0 && !existsInTree(request.cwd)) {
+        if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-cwd-absent', at: Date.now(), file: request.file, cwd: request.cwd, tree: treeForRun() ? 'held' : 'none' });
+        return false;
+      }
       // A `{ shell: true }` spawn is `/bin/sh -c <line>`, and the shell is
       // always there; what the line names is the line's own business, as it
       // is on a machine.
@@ -1507,7 +1517,13 @@ export function initChildProcess(vfs: VirtualFS): void {
       // cannot enumerate -- a registered command, a WALI pack -- so the host
       // is asked by running it, and reports its own absence.
       if (hostExecutor() !== null) return true;
-      return programExists(request.file, request.cwd, request.env);
+      const exists = programExists(request.file, request.cwd, request.env);
+      if (!exists && traceReadingRequested()) {
+        const held = (globalThis as unknown as Record<symbol, unknown>)[__browserRuntimeChildProcessExecutorSymbol];
+        traceOutput('[boot-trace]', { event: 'spawn-no-host-no-program', at: Date.now(), file: request.file, tree: treeForRun() ? 'held' : 'none', realmProcess: (globalThis as { process?: { pid?: unknown } }).process?.pid ?? null,
+          executor: { has: Reflect.has(globalThis, __browserRuntimeChildProcessExecutorSymbol), type: typeof held, keys: held && typeof held === 'object' ? Object.keys(held) : null, symbolForType: typeof Symbol.for, sameSymbol: engineSymbolFor('@volter/browser-runtime/child-process-executor') === __browserRuntimeChildProcessExecutorSymbol, symbols: Object.getOwnPropertySymbols(globalThis).map(String).filter((name) => name.includes('volter')).slice(0, 12) } });
+      }
+      return exists;
     },
     start: startChildRun,
   });
@@ -1953,7 +1969,7 @@ interface ChildProcessHost {
   parentSignal?: AbortSignal;
 }
 
-const __browserRuntimeChildProcessExecutorSymbol = Symbol.for("@volter/browser-runtime/child-process-executor");
+const __browserRuntimeChildProcessExecutorSymbol = engineSymbolFor("@volter/browser-runtime/child-process-executor");
 
 /** The host's executor, where one is published and has not bypassed this run. */
 function hostExecutor(): ChildProcessHost | null {
@@ -2219,7 +2235,7 @@ function shellReadsProgram(path: string, tree: VirtualFS): string | undefined {
   let head: Uint8Array;
   try {
     if (!tree.statSync(path).isFile()) return undefined;
-    head = (tree.readFileSync(path) as Uint8Array).subarray(0, FILE_HEAD_BYTES);
+    head = executableHeader(tree, path);
   } catch { return undefined; }
   const text = new TextDecoder().decode(head);
   const kind = HOST_EXECUTABLE.test(text) ? "a host program's handle" : PROGRAM_STUB.test(text) ? "a registered program's stub" : isBinaryImage(head) ? 'a binary image' : undefined;
@@ -2496,38 +2512,12 @@ function runsInEngine(path: string): boolean {
   return isNodeScript(path);
 }
 
-/** A script whose `#!` line names node (directly, or through env): what npm's bins are. */
-const NODE_INTERPRETER = /^#![ \t]*(?:\S*\/)?(?:env[ \t]+(?:-S[ \t]+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*)?node(?:[ \t]|$)/u;
 function isNodeScript(path: string): boolean {
   if (!currentVfs) return false;
   try {
     if (!currentVfs.statSync(path).isFile()) return false;
-    const bytes = fileHead(path);
-    const end = bytes.indexOf(10);
-    return NODE_INTERPRETER.test(new TextDecoder().decode(end < 0 ? bytes : bytes.subarray(0, end)));
+    return nodeShebang(executableHeader(currentVfs, path)) !== undefined;
   } catch { return false; }
-}
-
-/** What a spawn reads to tell a file's kind (Linux's binfmt reads a bounded first block too). */
-const FILE_HEAD_BYTES = 256;
-
-/**
- * A file's first bytes, and no more: through the tree's own descriptors where
- * it has them (the kernel's tree, where a whole read is a read of every
- * byte), otherwise from the tree's file, which an in-memory tree holds whole.
- * Reading the whole file to see its first line read a multi-megabyte binary
- * on every spawn by path.
- */
-function fileHead(path: string): Uint8Array {
-  const door = treeDescriptorsOf(currentVfs);
-  if (door) {
-    const fd = door.open(path, 0, 0);
-    try {
-      const head = new Uint8Array(FILE_HEAD_BYTES);
-      return head.subarray(0, door.read(fd, head, 0, FILE_HEAD_BYTES, 0));
-    } finally { door.close(fd); }
-  }
-  return (currentVfs!.readFileSync(path) as Uint8Array).subarray(0, FILE_HEAD_BYTES);
 }
 
 /**
@@ -2547,8 +2537,8 @@ function isRegisteredProgramStub(path: string): boolean {
   try {
     const stat = currentVfs.statSync(path);
     if (!stat.isFile()) return false;
-    const head = fileHead(path);
-    if (stat.size <= FILE_HEAD_BYTES && REGISTERED_PROGRAM_STUB.test(new TextDecoder().decode(head))) return true;
+    const head = executableHeader(currentVfs, path);
+    if (stat.size <= EXECUTABLE_HEADER_BYTES && REGISTERED_PROGRAM_STUB.test(new TextDecoder().decode(head))) return true;
     return isBinaryImage(head);
   } catch { return false; }
 }

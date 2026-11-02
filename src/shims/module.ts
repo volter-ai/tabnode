@@ -67,10 +67,15 @@ export const builtinModules = [
   'zlib',
 ];
 
-export function isBuiltin(moduleName: string): boolean {
-  // Strip node: prefix if present
+/** Canonical loader identity; scheme-only builtins keep their scheme. */
+export function normalizeBuiltin(moduleName: string): string | undefined {
+  if (moduleName === 'node:sqlite') return moduleName;
   const name = moduleName.startsWith('node:') ? moduleName.slice(5) : moduleName;
-  return builtinModules.includes(name);
+  return builtinModules.includes(name) ? name : undefined;
+}
+
+export function isBuiltin(moduleName: string): boolean {
+  return normalizeBuiltin(moduleName) !== undefined;
 }
 
 export const _cache: Record<string, unknown> = {};

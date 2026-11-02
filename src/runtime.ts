@@ -1,4 +1,5 @@
 import { traceRound, traceRoundFields } from './trace-values';
+import { engineSymbolFor } from './engine-symbol';
 import { captureTraceConsoleLine, deferredTraceOutput, traceOutput, traceReadingRequested, traceCostsRequested, retainTraceInput, releaseTraceInput } from './trace-output';
 import { recordProcessHostname, recordProcessHosts } from './process-hostname';
 import { processCredentialsOf } from './process-credentials';
@@ -79,6 +80,8 @@ import * as workerThreadsShim from './shims/worker_threads';
 import { guestMessageGlobals, guestMessageModule } from './guest-message-ports';
 import { validateTransferList } from './transfer-ownership';
 import * as esbuildShim from './shims/esbuild';
+import { createSqliteModule } from './node-lib/sqlite';
+import { registerHandle, unrefHandle, releaseHandle, ownedRun } from './node-lib/binding/handles';
 import * as rollupShim from './shims/rollup';
 import * as v8Shim from './shims/v8';
 import * as tlsShim from './shims/tls';
@@ -996,7 +999,7 @@ function __substrateTranspileKey(process: unknown, module: object, ownCompile: u
   try { wrapperText = Function.prototype.toString.call(wrapper); } catch { return undefined; }
   if (!wrapperText.includes('.compile(')) return undefined;
   const host = process as { env?: Record<string, string | undefined>; execArgv?: string[] } & Record<symbol, unknown>;
-  const service = host[Symbol.for('ts-node.register.instance')] as { options?: Record<string, unknown>; config?: { options?: unknown }; ts?: { version?: unknown };
+  const service = host[engineSymbolFor('ts-node.register.instance')] as { options?: Record<string, unknown>; config?: { options?: unknown }; ts?: { version?: unknown };
     enabled?: () => boolean; ignored?: (fileName: string) => boolean } | undefined;
   if (!service || typeof service !== 'object') return undefined;
   const options = service.options ?? {};
@@ -1680,7 +1683,7 @@ function __substrateDataModuleSource(url: string): string | undefined {
     : decodeURIComponent(payload);
 }
 
-const __substratePending = Symbol.for('substrate.pending');
+const __substratePending = engineSymbolFor('substrate.pending');
 // Loading state belongs to the module, not to properties of a guest's arbitrary exports object.
 const __substratePendingModules = new WeakMap<Module, object>();
 export function __substratePendingOf(value: unknown): Promise<void> | undefined {
@@ -1839,7 +1842,7 @@ async function __substrateImportChain(
   if (!hooks.hasAsyncLoad) return doors.__loadFromURL(resolved.url, resolved.format);
   const loaded = await hooks.load(resolved.url, resolved.format, void 0, (url: string, context: { format?: string }) => ({
     source: doors.__readFromURL(url),
-    format: context.format,
+    format: context.format ?? (url.startsWith('node:') ? 'builtin' : undefined),
   }));
   return doors.__loadFromURL(resolved.url, loaded.format ?? resolved.format, loaded.source ?? void 0);
 }
@@ -2020,7 +2023,7 @@ const __browserRuntimePunycode = (() => { const module = { exports: {} }; new Fu
  * the resolved file would have produced, and only on the filesystem it was made
  * for.
  */
-const __substrateNativeModules = Symbol.for("@volter/browser-node/rolldown-modules");
+const __substrateNativeModules = engineSymbolFor("@volter/browser-node/rolldown-modules");
 /** `pkg:<name>@<version>/<path within the package>` for a file, from the nearest package.json above it; undefined outside a package. */
 const __substrateIdentityCache = new WeakMap<object, Map<string, string | null>>();
 function __substratePackageIdentity(vfs: VirtualFS, file: string): string | undefined {
@@ -2670,8 +2673,42 @@ type GuestProcess = Process & { getBuiltinModule?: (name: string) => unknown };
  * by the engine's own service for it, as is a package that is not installed.
  */
 // Whether the esbuild a file belongs to runs in a tab: its package directory
-// holds the wasm binary, as esbuild-wasm's does and esbuild's does not.
-function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string): boolean {
+// holds the wasm binary, as esbuild-wasm's does and esbuild's does not; or the
+// process names the binary esbuild's own API spawns, ESBUILD_BINARY_PATH (the
+// vendor's override), and the tab holds that file. The image an esbuild is
+// installed in sets it to a program answering esbuild's binary contract at the
+// installed version (browser-substrate ADR-0213: esbuild-wasm's own Node CLI),
+// so the vendor's API runs as itself, every sync and async call of it, where the
+// engine's shim would answer at its own version with what it implements.
+/** Each process's native SQLite module, made at its first builtin load. */
+const __substrateSqliteModules = new WeakMap<object, unknown>();
+function __substrateSqliteFor(process: Process): unknown {
+  let module = __substrateSqliteModules.get(process);
+  if (!module) {
+    module = createSqliteModule({
+      resolvePath: path => pathShim.resolve(process.cwd(), path),
+      own(resource) {
+        // The original run's existing handle owner closes SQLite on every exit.
+        // Unreferenced ownership does not keep an otherwise finished CLI alive.
+        const token = __tokenForProcess(process);
+        if (token !== null && !__runFor(token)) throw Object.assign(new Error('SQLite process has ended'), { code: 'ERR_INVALID_STATE' });
+        ownedRun(token, () => {
+          registerHandle(resource);
+          unrefHandle(resource);
+        });
+        return () => releaseHandle(resource);
+      },
+    });
+    __substrateSqliteModules.set(process, module);
+  }
+  return module;
+}
+
+function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string, env?: Record<string, string | undefined>): boolean {
+  const binary = env?.ESBUILD_BINARY_PATH;
+  if (binary && binary !== '/usr/bin/esbuild' && binary.startsWith('/')) {
+    try { if (vfs.existsSync(binary)) return true; } catch { /* an unreadable path names nothing here */ }
+  }
   let dir = file;
   for (let hops = 0; hops < 6; hops += 1) {
     dir = dir.slice(0, dir.lastIndexOf("/"));
@@ -3065,7 +3102,7 @@ function createRequire(
     if (!shimmed) return false;
     try {
       const file = resolveModule(id, currentDir);
-      return shimmed !== 'esbuild' || __substrateEsbuildRunsHere(vfs, file);
+      return shimmed !== 'esbuild' || __substrateEsbuildRunsHere(vfs, file, process.env);
     } catch {
       return false;
     }
@@ -3085,9 +3122,11 @@ function createRequire(
     const latest = maps[0]!;
     const underRoot = (addons: SubstrateAddons, path: string): boolean => addons.roots.some(root => path === root || path.startsWith(root + '/'));
     const named = id.startsWith('file:') || id.includes('.node') || /(^|\/)\.\.?\/*$/.test(id);
-    // A file: URL is read by Node's own fileURLToPath, as the prelude's hook read it: an encoded '/' and a host other
-    // than localhost still throw.
-    const requested = !named ? void 0 : id.startsWith('file:') ? (loadNodeLibFor(process, 'url') as { fileURLToPath(url: string): string }).fileURLToPath(id)
+    // A file: URL is read by the url module's fileURLToPath, which is Node's (shims/url.ts): an encoded '/' and a host
+    // other than localhost still throw. It was asked of the process's node-lib scope, which carries no 'url' (Node's
+    // public url.js is not one of its vendored files), so every file: request under a native-binding map threw "node-lib:
+    // no builtin 'url' in this process": Tailwind v4's module.register of its loader, in videogame.ai's astro config.
+    const requested = !named ? void 0 : id.startsWith('file:') ? urlShim.fileURLToPath(id)
       : id.startsWith('/') ? pathShim.resolve(id) : id.startsWith('.') ? pathShim.resolve(currentDir, id) : void 0;
     if (requested?.endsWith('.node')) for (const addons of maps) {
       if (underRoot(addons, requested)) addons.refuse(requested);
@@ -3133,6 +3172,8 @@ function createRequire(
     // A digest the last resolution carried is for the load that follows that resolution alone: one answered from a
     // cache below asks no stat, so the load after it must ask the tree (a file rewritten since is loaded as it is).
     __substrateKeptFor(process).carried = undefined;
+    const builtin = moduleShim.normalizeBuiltin(id);
+    if (builtin !== undefined) return builtin;
     // Handle node: protocol prefix (Node.js 16+)
     if (id.startsWith('node:')) {
       id = id.slice(5);
@@ -3348,7 +3389,10 @@ function createRequire(
         // file it names, not from the one the loader started with.
         source: urlFromHook === url ? defaultSource() : vfs.readFileSync(__hooks.sync.convertURLToCJSFilename(urlFromHook), 'utf8'),
         format: context.format,
-      }));
+        // Node's CJS loader checks the chain's result as a module's (cjs/loader.js: validateLoadStrict). Without it the
+        // chain's last step called undefined: tsx's load hook ended in "TypeError: validate is not a function" (RH2's
+        // wrangler build, card t_d4b07ea8).
+      }), __hooks.sync.validateLoadStrict);
       format = loaded.format;
       source = loaded.source;
     }
@@ -3541,7 +3585,7 @@ function createRequire(
       if (bodySource === 'prepared') loadClock.preparedBodies += 1;
       else loadClock.sourceBodies += 1;
       // K5's turn-order reading: the count so far, where the process's own http server can say it beside a request.
-      (process as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.k5.bodies')] = loadClock.bodies;
+      (process as unknown as Record<symbol, unknown>)[engineSymbolFor('tabnode.k5.bodies')] = loadClock.bodies;
     }
     let code = prepared;
     // Create require for this module
@@ -3767,10 +3811,6 @@ function createRequire(
     // either, so a run that registered one alone resolves exactly as it did.
     const hooks = __substrateHooks();
     if (hooks && (hooks.hasSyncResolve || hooks.hasSyncLoad)) return requireHooked(id, hooks);
-    // Handle node: protocol prefix (Node.js 16+)
-    if (id.startsWith('node:')) {
-      id = id.slice(5);
-    }
     return requirePlain(id);
   };
 
@@ -3780,8 +3820,9 @@ function createRequire(
    * to the file resolver would look for a file that is not there.
    */
   const __substrateNamedModule = (specifier: string): string | undefined => {
+    const builtin = moduleShim.normalizeBuiltin(specifier);
+    if (builtin !== undefined) return builtin;
     const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
-    if (moduleShim.isBuiltin(name) || name === 'fs/promises') return name;
     if (Object.prototype.hasOwnProperty.call(builtinModules, name) && !__substrateInstalledWins(name)) return name;
     return void 0;
   };
@@ -3813,7 +3854,7 @@ function createRequire(
     // how a program puts a file of its own in a builtin's place.
     if (moduleShim.isBuiltin(filename)) {
       if (hooks.hasSyncLoad) {
-        const loaded = hooks.sync.loadWithHooks(url, format || 'builtin', void 0, CJS_CONDITIONS, (_urlFromHook, context) => ({ source: null, format: context.format }));
+        const loaded = hooks.sync.loadWithHooks(url, format || 'builtin', void 0, CJS_CONDITIONS, (_urlFromHook, context) => ({ source: null, format: context.format }), hooks.sync.validateLoadSloppy);
         if (loaded.format && loaded.format !== 'builtin') {
           return loadModule(filename, { url, format: loaded.format, source: loaded.source }).exports;
         }
@@ -3841,14 +3882,13 @@ function createRequire(
   };
 
   const requirePlain = (id: string): unknown => {
-    // Handle node: protocol prefix (Node.js 16+)
-    if (id.startsWith('node:')) {
-      id = id.slice(5);
-    }
+    id = moduleShim.normalizeBuiltin(id) ?? (id.startsWith('node:') ? id.slice(5) : id);
     // A data: URL is a module of its own, loaded at that URL.
     if (id.startsWith('data:')) return loadModule(id).exports;
     if (moduleShim.isBuiltin(id)) __substrateRecordBuiltin(id);
 
+    // Per-process native builtins use the same resolve/load hook path as fs.
+    if (id === 'node:sqlite') return __substrateSqliteFor(process);
     // Built-in modules
     if (id === 'fs') {
       return fsModuleFor(process);
@@ -3867,7 +3907,7 @@ function createRequire(
     // registers itself under this symbol and answers the module for a guest. Its fourth argument is the
     // process-owned credential snapshot to pass through thread admission into RuntimeOptions.credentials.
     if (id === 'worker_threads') {
-      const bridge = (globalThis as Record<symbol, unknown>)[Symbol.for("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown, credentials?: Readonly<ProcessCredentials>) => unknown } | undefined;
+      const bridge = (globalThis as Record<symbol, unknown>)[engineSymbolFor("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown, credentials?: Readonly<ProcessCredentials>) => unknown } | undefined;
       const module = bridge && typeof bridge.module === "function" ? bridge.module(vfs, process, builtinModules.worker_threads, processCredentialsOf(process)) : undefined;
       return guestMessageModule(process, (module ?? workerThreadsShim) as Record<string, unknown>, !module);
     }
@@ -3927,7 +3967,7 @@ function createRequire(
       return __substrateGuestRollup(process);
     }
     if ((resolved.includes('/node_modules/esbuild/') ||
-        resolved.includes('/node_modules/@esbuild/')) && !__substrateEsbuildRunsHere(vfs, resolved)) {
+        resolved.includes('/node_modules/@esbuild/')) && !__substrateEsbuildRunsHere(vfs, resolved, process.env)) {
       return __substrateGuestEsbuild(process);
     }
     if (resolved.includes('/node_modules/prettier/')) {
@@ -4044,7 +4084,7 @@ function createRequire(
   (require as any).__loadFromURL = (url: string, format?: string, source?: string | ArrayBuffer | ArrayBufferView | null): unknown => {
     if (url.startsWith('data:')) return loadModule(url, { url, format, source }).exports;
     const filename = __substrateHooks()!.sync.convertURLToCJSFilename(url);
-    if (source === undefined && moduleShim.isBuiltin(filename)) return requirePlain(filename);
+    if (moduleShim.isBuiltin(filename) && (format === undefined || format === 'builtin')) return requirePlain(filename);
     return loadModule(filename, { url, format, source }).exports;
   };
   (require as any).extensions = __substrateModule()._extensions;
@@ -4059,9 +4099,10 @@ function createRequire(
   if (process && typeof process === 'object' && typeof (process as GuestProcess).getBuiltinModule !== 'function') {
     (process as GuestProcess).getBuiltinModule = (name: string) => {
       if (typeof name !== 'string') return void 0;
-      const id = name.startsWith('node:') ? name.slice(5) : name;
-      if (id !== 'fs' && id !== 'fs/promises' && id !== 'process' && id !== 'module' && id !== 'wasi' && !Object.prototype.hasOwnProperty.call(builtinModules, id)) return void 0;
-      try { return require(id); } catch (error) { return void 0; }
+      const id = moduleShim.normalizeBuiltin(name);
+      if (id === undefined) return void 0;
+      // Node's direct builtin door does not invoke customization hooks.
+      return requirePlain(id);
     };
   }
 
@@ -4664,7 +4705,7 @@ forGuestRealm(() => {
   // guest constructs is given one, settled by its own controller. The
   // constructor stays the browser's (a proxy of it), so a stream the platform
   // made is still `instanceof ReadableStream`.
-  const kIsClosedPromise = Symbol.for('nodejs.webstream.isClosedPromise');
+  const kIsClosedPromise = engineSymbolFor('nodejs.webstream.isClosedPromise');
   const Native = globalThis.ReadableStream;
   if (typeof Native !== 'function' || (Native as unknown as { __substrateClosedPromise?: boolean }).__substrateClosedPromise) return;
   type Source = { start?: (controller: unknown) => unknown; pull?: (controller: unknown) => unknown; cancel?: (reason: unknown) => unknown };
