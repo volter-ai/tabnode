@@ -118,7 +118,7 @@ function checkpoint() {
   save(receipt);
   // A private index changes only the receipt on the exact parent, without
   // checking out, rebuilding or rebasing any source.
-  const index = join(root, 'checkpoint-' + process.pid + '-' + sequence++ + '.index');
+  const index = join(mkdtempSync(join(root, 'checkpoint-')), 'index');
   const env = { ...process.env, GIT_INDEX_FILE: index };
   run('git', ['read-tree', parent], { env });
   const body = readFileSync(file);
@@ -212,7 +212,8 @@ function verify() {
   try { registryArchive(pkg, '.comparison-'); }
   catch (cause) {
     pkg.lastAvailabilityAttempt = { at: now(), outcome: 'pending-or-failed', detail: String(cause.message ?? cause) };
-    save(receipt); throw cause;
+    try { save(receipt); } catch (saving) { throw new AggregateError([cause, saving], 'Registry observation and receipt save failed'); }
+    throw cause;
   }
   pkg.status = 'verified'; pkg.verifiedAt = now();
   pkg.publication ??= { basis: 'registry-archive', integrity: pkg.integrity };
