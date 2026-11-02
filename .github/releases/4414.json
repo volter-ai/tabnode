@@ -8,14 +8,18 @@
       "version": "0.16.0",
       "archive": "volter-tabnode-0.16.0.tgz",
       "integrity": "sha512-nY5Z9YDSvF5F5w5CkZyLRFOFBJRSK4E4bgUxH37mGWaUsFvYbNyqEpbqGxJOp/xVagM3s5LlRAjujTKE39slKw==",
-      "status": "accepted",
+      "status": "verified",
       "uploadStartedAt": "2026-11-02T07:47:39.507Z",
       "uploadArchive": "/Volumes/PeakSSD/offload/volter/relocated/.card-preparations/browser-substrate-v1-engine-r4283/r4361/final-candidate-r4414/upload-4414-qfwlgi/volter-tabnode-0.16.0.tgz",
       "acceptedAt": "2026-11-02T07:47:46.530Z",
       "lastAvailabilityAttempt": {
-        "at": "2026-11-02T07:54:43.138Z",
-        "outcome": "pending-or-failed",
-        "detail": "Command failed: npm pack @volter/tabnode@0.16.0 --ignore-scripts --json --registry https://registry.npmjs.org/ --prefer-online --fetch-retries=0 --fetch-timeout=7000 --pack-destination /Volumes/PeakSSD/offload/volter/relocated/.card-preparations/browser-substrate-v1-engine-r4283/r4361/final-candidate-r4414/volter-tabnode-0.16.0.tgz.comparison-bAnqY5\nnpm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/@volter/tabnode/-/tabnode-0.16.0.tgz - Not found\nnpm error 404\nnpm error 404  The requested resource 'https://registry.npmjs.org/@volter/tabnode/-/tabnode-0.16.0.tgz' could not be found or you do not have permission to access it.\nnpm error 404 This package name is not valid, because \nnpm error 404  1. name can only contain URL-friendly characters\nnpm error 404\nnpm error 404 Note that you can also install from a\nnpm error 404 tarball, folder, http url, or git url.\nnpm error A complete log of this run can be found in: /Volumes/PeakSSD/offload/volter/relocated/.card-preparations/browser-substrate-v1-engine-r4283/cache/_logs/2026-11-02T07_54_42_460Z-debug-0.log\n"
+        "at": "2026-11-02T08:06:47.216Z",
+        "outcome": "verified"
+      },
+      "verifiedAt": "2026-11-02T08:06:47.216Z",
+      "publication": {
+        "basis": "registry-archive",
+        "integrity": "sha512-nY5Z9YDSvF5F5w5CkZyLRFOFBJRSK4E4bgUxH37mGWaUsFvYbNyqEpbqGxJOp/xVagM3s5LlRAjujTKE39slKw=="
       }
     }
   ],
