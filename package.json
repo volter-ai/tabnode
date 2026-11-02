@@ -74,7 +74,7 @@
     "brotli-wasm": "^3.0.1",
     "buffer": "6.0.3",
     "comlink": "^4.4.2",
-    "just-bash": "^2.14.5",
+    "just-bash": "2.14.5",
     "pako": "^2.1.0",
     "resolve.exports": "^2.0.3",
     "sha.js": "2.4.12",
