@@ -1,11 +1,30 @@
 # ADR-0007: Dispatch script interpreters after shell resolution
 
-Status: Proposed.
+Status: Superseded for current work by Substrate ADR-0215 and its Step 3.
 
 Card: VO-3806 `t_c656e6fd`, V1-02 `t_b67e1a68`; independent PR17 finding F6.
 Substrate Articles 6 and 9. Proposed 2026-11-01.
 
-## Cause and supplier boundary
+## Current disposition
+
+The accepted [Substrate ADR-0215](https://github.com/volter-ai/browser-substrate/blob/07f317f3/docs/adr/0215-the-v1-target-shape.md)
+and [Step 3](https://github.com/volter-ai/browser-substrate/blob/07f317f3/ROADMAP.md#step-3-the-five-references-run-from-main-with-nothing-overlaid)
+replace this proposal's supplier-fork and callback route for the current work. Step 3 first runs the five
+references from reviewed main. It records legacy just-bash behavior rather than completing the shell contract,
+unless a correction is needed to meet that step's application bar.
+
+The engine retains upstream `just-bash` 2.14.5 and retires the AST pre-resolution transform and unpublished
+`ScriptExecutor` integration. When an embedding supplies the existing executable/shell host, that host owns
+non-Node executable selection and execution. This route requires no supplier fork or supplier publication.
+Executable selection in the legacy BrowserShell fallback remains a gap for Step 3's contract reading.
+
+ADR-0215's final target is catalog GNU Bash and BusyBox through the kernel; this disposition does not claim
+that target is implemented or that shell compatibility is complete. Its Python lane is Pyodide. Supplier
+CPython replacement work is outside the current step.
+
+## Historical proposal
+
+### Cause and supplier boundary
 
 Linux executes an executable script through its shebang interpreter. The engine delegates shell parsing,
 function/builtin precedence, expansion, executable permissions, PATH lookup and command hashing to `just-bash`.
@@ -39,7 +58,7 @@ Source receipt, read directly from npm's publication provenance and the supplier
 The npm provenance resolves that source commit; npm's package metadata supplies no `gitHead`. On this reading,
 the `volter-ai` organization has no existing `just-bash` fork. No installed bundle has been edited.
 
-## Decision and component owners
+### Decision and component owners
 
 Maintain the small generic correction in a Volter-owned source fork, proposed repository
 `volter-ai/just-bash`, starting at the exact supplier commit above. Retain upstream's source and licence history;
@@ -87,7 +106,7 @@ The shell has already chosen which executable to run using its normal function/b
 current PATH, cwd and command-hash policy. Registered commands keep the supplier's existing resolution behavior.
 No copied filesystem, alternate command registry or parallel process owner is introduced.
 
-## Distribution and integration sequence
+### Distribution and integration sequence
 
 1. Review this plan on the engine's work branch. F6 remains open. Commit the independent bounded-header,
    diagnostic and ADR-0003 corrections separately; they do not establish F6's completion.
@@ -117,7 +136,7 @@ implementation and product observations pass review. Unrecognized shebangs and u
 return `undefined` to retain the supplier's existing script behavior. Supporting additional interpreters or
 argument forms requires their own implemented launch policy, rather than package-name recognition.
 
-## Existing decisions and owner instructions
+### Existing decisions and owner instructions
 
 | Existing decision | Disposition |
 |---|---|
@@ -133,7 +152,7 @@ argument forms requires their own implemented launch policy, rather than package
 
 No owner-locked decision is contradicted or amended by this proposal.
 
-## Proof through the substrate's existing shell door
+### Proof through the substrate's existing shell door
 
 The root implementer records the exact engine and supplier source/distribution identities on the take. In the
 substrate's real terminal/child-process door, use ordinary executable Node scripts in two directories to observe:

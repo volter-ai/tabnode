@@ -4,7 +4,7 @@ Container hostname review correction: Node lookup uses the caller's mounted /etc
 
 What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## Unreleased
+## 0.16.0 — Unreleased
 
 - Consume exact retained engine archives through a separately authorized,
   head-fenced publish/verify/checkpoint command. Remove the build-and-publish
@@ -25,7 +25,7 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   Blob source is read completely instead of through a 64-byte prefix; ambiguous statement boundaries keep the
   original script, preserving its strict-mode semantics.
 - **The retained engine has its own candidate identity** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
-  Articles 6/9). The full-stack artifact candidate is prepared as `0.15.2`; published `0.15.1` is a different source.
+  Articles 6/9). The full-stack artifact candidate is prepared as `0.16.0`; published `0.15.1` is a different source.
   Package metadata, lockfile and generated surface now identify the candidate distinctly. Publication remains a
   separate, explicitly authorized act.
 - **Required surface metadata carries inline WebAssembly** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
@@ -47,15 +47,16 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   `Symbol.for`; the engine's well-known symbols (trace output, the child-process executor, the process) are looked
   up with the function captured before any guest runs. The spawn diagnostic uses that same captured lookup and
   reports the current function's type without calling guest-writable `Symbol.for`.
-- **Executable classification reads one bounded header** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
-  Articles 6/9). Shell-bin and spawn routing share a 256-byte read through the explicitly selected tree's descriptor
-  owner and one Node-shebang classifier. Callers retain their own policy for interpreter arguments and env options.
+- **Executable inspection reads one bounded header** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
+  Articles 6/9). Spawn routing reads at most 256 bytes through the explicitly selected tree's descriptor owner.
+  Execution policy stays with the caller.
 
-- **Executable Node scripts use the shell's execution-time selection** (browser-substrate card t_c656e6fd,
-  V1-02 t_07fc0d39; Articles 6/9). The supplier's script callback classifies the already-resolved executable's bounded
-  header and passes its real path and literal argv to the same Node launch owner as the shell's `node` command.
-  Earlier PATH/cwd changes, command assignments, computed names and ordinary shell precedence stay with the supplier.
-  `source`, redirection, shell scripts and unsupported shebang options retain their existing execution paths.
+- **Executable selection stays with the supplied host** (browser-substrate card t_c656e6fd,
+  V1-02 t_b67e1a68; Articles 6/9). Retire the AST pre-resolution transform and unpublished supplier `ScriptExecutor`
+  integration; retain upstream `just-bash` 2.14.5. Where an embedding supplies the existing executable/shell host,
+  that host owns non-Node executable selection and execution. ADR-0007 records the retired fork route and the
+  current Step 3 boundary. The legacy BrowserShell fallback's executable-selection gap remains in that step's
+  contract reading; the catalog Bash/kernel target remains later work under Substrate ADR-0215.
 - **A `file:` request under a native-binding map resolves again** (browser-substrate card t_d4b07ea8). The map's
   resolver read a `file:` specifier with the process's node-lib `url`, which the node-lib scope does not carry, so
   every such request threw "node-lib: no builtin 'url' in this process": Tailwind v4's `module.register` of its loader,
