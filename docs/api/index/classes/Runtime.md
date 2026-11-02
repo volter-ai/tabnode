@@ -24,7 +24,7 @@ Use createRuntime() factory for IRuntime interface compliance.
 
 ##### options?
 
-[`RuntimeOptions`](../interfaces/RuntimeOptions.md) = `{}`
+[`RuntimeOptions`](../interfaces/RuntimeOptions.md)
 
 #### Returns
 
@@ -34,12 +34,10 @@ Use createRuntime() factory for IRuntime interface compliance.
 
 ### executeSync
 
-> **executeSync**: (`code`, `filename`) => `object`
+> **executeSync**: (`code`, `filename?`) => `object`
 
 Execute code as a module (async version for IRuntime interface)
 Alias: executeSync() is the same as execute() for backward compatibility
-
-Execute code as a module (synchronous - backward compatible)
 
 #### Parameters
 
@@ -49,7 +47,7 @@ Execute code as a module (synchronous - backward compatible)
 
 ##### filename?
 
-`string` = `'/index.js'`
+`string`
 
 #### Returns
 
@@ -70,8 +68,6 @@ Execute code as a module (synchronous - backward compatible)
 > **runFileSync**: (`filename`) => `object`
 
 Alias for runFile (backward compatibility)
-
-Run a file from the virtual file system (synchronous - backward compatible)
 
 #### Parameters
 
@@ -191,7 +187,7 @@ Execute code as a module (synchronous - backward compatible)
 
 ##### filename?
 
-`string` = `'/index.js'`
+`string`
 
 #### Returns
 
@@ -221,7 +217,7 @@ Execute code as a module (async - for IRuntime interface)
 
 ##### filename?
 
-`string` = `'/index.js'`
+`string`
 
 #### Returns
 

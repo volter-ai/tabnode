@@ -324,8 +324,27 @@ export function withOptionValues<T>(overrides: Record<string, unknown>, fn: () =
   try { return fn(); } finally { optionOverrides = previous; }
 }
 
+/**
+ * `--eval` is the code passed to `-e`/`--eval`/`-p`/`--print`, or `""` for a
+ * file run. Node's `util.parseArgs()` uses its length to locate program arguments;
+ * the run's own execArgv identifies the evaluation mode and source.
+ */
+function evalOption(): string {
+  const execArgv = (globalThis as { process?: { execArgv?: unknown } }).process?.execArgv;
+  if (!Array.isArray(execArgv)) return '';
+  for (let at = 0; at < execArgv.length; at++) {
+    const option = execArgv[at];
+    if (typeof option !== 'string') continue;
+    if (option === '-e' || option === '--eval' || option === '-p' || option === '--print' || option === '-pe') return String(execArgv[at + 1] ?? '');
+    const inline = /^--(?:eval|print)=(.*)$/su.exec(option);
+    if (inline) return inline[1]!;
+  }
+  return '';
+}
+
 export const internalOptions = {
-  getOptionValue: (name: string): unknown => (optionOverrides !== null && name in optionOverrides ? optionOverrides[name] : optionValues[name]),
+  getOptionValue: (name: string): unknown => (optionOverrides !== null && name in optionOverrides ? optionOverrides[name]
+    : name === '--eval' ? evalOption() : optionValues[name]),
   getEmbedderOptions: () => ({ shouldNotRegisterESMLoader: false, noGlobalSearchPaths: false, noBrowserGlobals: false }),
 };
 

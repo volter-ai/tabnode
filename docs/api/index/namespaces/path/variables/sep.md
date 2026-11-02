@@ -6,4 +6,4 @@
 
 # Variable: sep
 
-> `const` **sep**: `string` = `nodePath.sep`
+> `const` **sep**: `string`

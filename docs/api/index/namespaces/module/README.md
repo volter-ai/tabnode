@@ -18,6 +18,7 @@
 
 - [createRequire](functions/createRequire.md)
 - [isBuiltin](functions/isBuiltin.md)
+- [normalizeBuiltin](functions/normalizeBuiltin.md)
 - [syncBuiltinESMExports](functions/syncBuiltinESMExports.md)
 
 ## References

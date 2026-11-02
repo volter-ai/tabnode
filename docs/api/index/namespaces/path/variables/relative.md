@@ -6,7 +6,7 @@
 
 # Variable: relative
 
-> `const` **relative**: (`from`, `to`) => `string` = `nodePath.relative`
+> `const` **relative**: (`from`, `to`) => `string`
 
 ## Parameters
 

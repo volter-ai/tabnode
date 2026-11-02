@@ -34,8 +34,7 @@ export const internalBootstrapRealm = {
      */
     normalizeRequirableId(id: string): string | undefined {
       if (typeof id !== 'string') return void 0;
-      const name = id.startsWith('node:') ? id.slice(5) : id;
-      return moduleShim.builtinModules.includes(name) ? name : void 0;
+      return moduleShim.normalizeBuiltin(id);
     },
     /**
      * Whether `id` is a compiled builtin, which `internal/util/inspect`

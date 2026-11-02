@@ -1,4 +1,5 @@
 import { traceReadingRequested, traceOutput } from '../trace-output';
+import { engineSymbolFor } from '../engine-symbol';
 import { copyProcessCredentials, type ProcessCredentials } from '../process-credentials';
 import { queueNativeFsTask } from '../native-fs-tasks';
 import { withGuestCallback } from '../guest-loop';
@@ -44,7 +45,7 @@ import { EventEmitter } from '../node-lib/events-module';
 import { __substrateExitCode, __substrateProcessEnding, __substrateUncaughtCapture } from './process';
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
-import { treeDescriptorsOf } from '../tree-descriptors';
+import { executableHeader, EXECUTABLE_HEADER_BYTES } from './executable-header';
 import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
 import { stackFormedBy } from '../stack-overrides';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
@@ -133,7 +134,7 @@ function treeForRun(): VirtualFS | null {
   // import the fs binding (that import put constantsBinding in the
   // consumer bundle's cycle with crypto).
   const realm = globalThis as unknown as { process?: Record<symbol, unknown> };
-  const found = realm.process?.[Symbol.for('tabnode.run.vfs')] as VirtualFS | undefined;
+  const found = realm.process?.[engineSymbolFor('tabnode.run.vfs')] as VirtualFS | undefined;
   return found ?? currentVfs;
 }
 
@@ -764,7 +765,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // What fds 0, 1 and 2 are, where the fs binding's fstat reads them (the
   // symbol is the binding's `kStdioKinds`, named here so this file does not
   // import the fs binding).
-  (proc as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.run.stdioKinds')] = stdioKinds;
+  (proc as unknown as Record<symbol, unknown>)[engineSymbolFor('tabnode.run.stdioKinds')] = stdioKinds;
   // This run's numbers, recorded under its name: a child it spawns reads
   // them for its own `ppid`, and `process.kill(pid, 0)` asks this registry
   // whether a pid is a live process.
@@ -1405,13 +1406,14 @@ export function initChildProcess(vfs: VirtualFS): void {
 
   // The shell's `node` is the engine's Node started from the words the shell
   // parsed; `launchNode` is the one start, which `container.runNode` shares.
-  const nodeCommand = defineCommand('node', (args, ctx) => launchNode(tree, {
+  const launchShellNode = (args: string[], ctx: CommandContext) => launchNode(tree, {
     argv: ['node', ...args],
     cwd: ctx.cwd,
     env: guestEnvironmentOf(ctx),
     ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}),
     token: runTokenOf(ctx),
-  }));
+  });
+  const nodeCommand = defineCommand('node', launchShellNode);
 
   // Create custom 'npm' command that runs scripts from package.json
   const npmCommand = defineCommand('npm', async (args, ctx) => {
@@ -1484,21 +1486,23 @@ export function initChildProcess(vfs: VirtualFS): void {
   // What a `Process` handle runs. Node's own `child_process.js` starts, ends
   // and pipes a child through the binding; the binding asks this.
   setProgramResolver(engineProgramFor);
-  // The rule `startChildRun` applies below, as one answer for a synchronous child (the spawn_sync binding): with a
-  // host published, a shell and `env` are the host's, the engine's Node is the engine's, and any other program is
-  // the host's unless the engine carries it.
-  setHostRunsProgram((file, cwd, env) => {
-    if (hostExecutor() === null || __substrateRunsNode(file, cwd)) return false;
-    const program = engineProgramFor(file, cwd);
-    return SHELL_PROGRAMS.has(program) || program === 'env' || !programExists(file, cwd, env);
-  });
+  // The host owns executable lookup, including Node shebangs, with the
+  // child's actual PATH and cwd. Only the engine's Node executable bypasses
+  // that owner; a file whose shebang names Node is still the host's file.
+  setHostRunsProgram(hostRunsProgram);
   setProcessRunner({
     resolves: (request: RunRequest): boolean => {
-      if (!bashInstance) return false;
+      if (!bashInstance) {
+        if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-no-shell', at: Date.now(), file: request.file });
+        return false;
+      }
       // A directory that is not there is `ENOENT` before the program is even
       // looked for, as it is for `execve`: `spawn(cmd, { cwd: 'nope' })`
       // reports a child that never started, and `child.pid` is undefined.
-      if (typeof request.cwd === 'string' && request.cwd.length > 0 && !existsInTree(request.cwd)) return false;
+      if (typeof request.cwd === 'string' && request.cwd.length > 0 && !existsInTree(request.cwd)) {
+        if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-cwd-absent', at: Date.now(), file: request.file, cwd: request.cwd, tree: treeForRun() ? 'held' : 'none' });
+        return false;
+      }
       // A `{ shell: true }` spawn is `/bin/sh -c <line>`, and the shell is
       // always there; what the line names is the line's own business, as it
       // is on a machine.
@@ -1507,7 +1511,13 @@ export function initChildProcess(vfs: VirtualFS): void {
       // cannot enumerate -- a registered command, a WALI pack -- so the host
       // is asked by running it, and reports its own absence.
       if (hostExecutor() !== null) return true;
-      return programExists(request.file, request.cwd, request.env);
+      const exists = programExists(request.file, request.cwd, request.env);
+      if (!exists && traceReadingRequested()) {
+        const held = (globalThis as unknown as Record<symbol, unknown>)[__browserRuntimeChildProcessExecutorSymbol];
+        traceOutput('[boot-trace]', { event: 'spawn-no-host-no-program', at: Date.now(), file: request.file, tree: treeForRun() ? 'held' : 'none', realmProcess: (globalThis as { process?: { pid?: unknown } }).process?.pid ?? null,
+          executor: { has: Reflect.has(globalThis, __browserRuntimeChildProcessExecutorSymbol), type: typeof held, keys: held && typeof held === 'object' ? Object.keys(held) : null, symbolForType: typeof Symbol.for, sameSymbol: engineSymbolFor('@volter/browser-runtime/child-process-executor') === __browserRuntimeChildProcessExecutorSymbol, symbols: Object.getOwnPropertySymbols(globalThis).map(String).filter((name) => name.includes('volter')).slice(0, 12) } });
+      }
+      return exists;
     },
     start: startChildRun,
   });
@@ -1919,6 +1929,8 @@ interface ChildProcessHostRequest {
    * beside it says the same run for a host that has only a shell.
    */
   argv?: readonly string[];
+  /** The executable to resolve independently of the caller's argv[0]. */
+  executablePath?: string;
   cwd?: string;
   env?: Record<string, string>;
   /** Bytes already on fd 0 when the command begins, as Node delivers them. */
@@ -1953,7 +1965,7 @@ interface ChildProcessHost {
   parentSignal?: AbortSignal;
 }
 
-const __browserRuntimeChildProcessExecutorSymbol = Symbol.for("@volter/browser-runtime/child-process-executor");
+const __browserRuntimeChildProcessExecutorSymbol = engineSymbolFor("@volter/browser-runtime/child-process-executor");
 
 /** The host's executor, where one is published and has not bypassed this run. */
 function hostExecutor(): ChildProcessHost | null {
@@ -1977,17 +1989,9 @@ interface CommandRun {
   command: string;
   /** The same run as its words, where the caller had a list (`ChildProcessHostRequest.argv`). */
   argv?: readonly string[];
-  /**
-   * Whether the engine's own shell answers for this command before the host's
-   * process host is asked. A run the HOST asked for is the host's first: that
-   * is how a page-registered program and a WALI pack are reached. A child a
-   * GUEST spawned is the engine's first, because the engine has a command for
-   * it and because a host that takes the child over reports it as a run of its
-   * own -- which is why every line a forked child printed reached the tab's
-   * terminal twice, once as the child's run and once down its parent's
-   * inherited stdout. The host is still asked for what the engine does not
-   * carry.
-   */
+  /** The executable to resolve independently of the caller's argv[0]. */
+  executablePath?: string;
+  /** Use the private compatibility shell only where no host owns this run. */
   engineFirst?: boolean;
   cwd?: string;
   env?: Record<string, string>;
@@ -2073,6 +2077,7 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
       try {
         result = await bridge.run(run.command, {
           ...(run.argv ? { argv: [...run.argv] } : {}),
+          ...(run.executablePath !== undefined ? { executablePath: run.executablePath } : {}),
           cwd: run.cwd,
           env: hostEnv,
           ...(run.credentials ? { credentials: run.credentials } : {}),
@@ -2219,7 +2224,7 @@ function shellReadsProgram(path: string, tree: VirtualFS): string | undefined {
   let head: Uint8Array;
   try {
     if (!tree.statSync(path).isFile()) return undefined;
-    head = (tree.readFileSync(path) as Uint8Array).subarray(0, FILE_HEAD_BYTES);
+    head = executableHeader(tree, path);
   } catch { return undefined; }
   const text = new TextDecoder().decode(head);
   const kind = HOST_EXECUTABLE.test(text) ? "a host program's handle" : PROGRAM_STUB.test(text) ? "a registered program's stub" : isBinaryImage(head) ? 'a binary image' : undefined;
@@ -2449,9 +2454,6 @@ function existsInTree(path: string): boolean {
  * a program the engine can run; the engine's own `node`, written to
  * `/usr/local/bin/node` when the shim is initialized, is one of those.
  */
-/** The shells a script or a `-c` line runs under; a child of these goes to the host when there is one. */
-const SHELL_PROGRAMS = new Set(['sh', 'bash', 'dash', '/bin/sh', '/bin/bash', '/usr/bin/sh', '/usr/bin/bash']);
-
 function engineProgramFor(file: string, cwd?: string): string {
   const name = __substrateProgramName(file);
   if (!name.includes('/')) return name;
@@ -2480,54 +2482,14 @@ function programExists(file: string, cwd: string | undefined, env: Record<string
   return false;
 }
 
-/**
- * Whether a file in the tree is this engine's to run when a host could run it.
- * Linux's execve runs a script through the interpreter its `#!` line names and
- * a binary through its loader. This engine's own interpreters are Node (its
- * `node` command) and just-bash; a Node script stays here, where its `node` is
- * the engine's. Any other file goes to the host, whose kernel execs it: a shell
- * script spawned by path (Prisma's execa spawning a wrapper) ran in just-bash,
- * whose `exec node` found the host's `node` stub on PATH and ran the stub as
- * a script ("bash: \0Volter-host-executable-v1: command not found"). With no
- * host, every file but a registered stub stays here, as before.
- */
+/** A published host resolves every executable except the engine's Node. */
+function hostRunsProgram(file: string, cwd?: string): boolean {
+  return hostExecutor() !== null && !__substrateRunsNode(file, cwd);
+}
+
+/** Files the private compatibility shell can read when no host is present. */
 function runsInEngine(path: string): boolean {
-  if (hostExecutor() === null) return !isRegisteredProgramStub(path);
-  return isNodeScript(path);
-}
-
-/** A script whose `#!` line names node (directly, or through env): what npm's bins are. */
-const NODE_INTERPRETER = /^#![ \t]*(?:\S*\/)?(?:env[ \t]+(?:-S[ \t]+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*)?node(?:[ \t]|$)/u;
-function isNodeScript(path: string): boolean {
-  if (!currentVfs) return false;
-  try {
-    if (!currentVfs.statSync(path).isFile()) return false;
-    const bytes = fileHead(path);
-    const end = bytes.indexOf(10);
-    return NODE_INTERPRETER.test(new TextDecoder().decode(end < 0 ? bytes : bytes.subarray(0, end)));
-  } catch { return false; }
-}
-
-/** What a spawn reads to tell a file's kind (Linux's binfmt reads a bounded first block too). */
-const FILE_HEAD_BYTES = 256;
-
-/**
- * A file's first bytes, and no more: through the tree's own descriptors where
- * it has them (the kernel's tree, where a whole read is a read of every
- * byte), otherwise from the tree's file, which an in-memory tree holds whole.
- * Reading the whole file to see its first line read a multi-megabyte binary
- * on every spawn by path.
- */
-function fileHead(path: string): Uint8Array {
-  const door = treeDescriptorsOf(currentVfs);
-  if (door) {
-    const fd = door.open(path, 0, 0);
-    try {
-      const head = new Uint8Array(FILE_HEAD_BYTES);
-      return head.subarray(0, door.read(fd, head, 0, FILE_HEAD_BYTES, 0));
-    } finally { door.close(fd); }
-  }
-  return (currentVfs!.readFileSync(path) as Uint8Array).subarray(0, FILE_HEAD_BYTES);
+  return !isRegisteredProgramStub(path);
 }
 
 /**
@@ -2547,8 +2509,8 @@ function isRegisteredProgramStub(path: string): boolean {
   try {
     const stat = currentVfs.statSync(path);
     if (!stat.isFile()) return false;
-    const head = fileHead(path);
-    if (stat.size <= FILE_HEAD_BYTES && REGISTERED_PROGRAM_STUB.test(new TextDecoder().decode(head))) return true;
+    const head = executableHeader(currentVfs, path);
+    if (stat.size <= EXECUTABLE_HEADER_BYTES && REGISTERED_PROGRAM_STUB.test(new TextDecoder().decode(head))) return true;
     return isBinaryImage(head);
   } catch { return false; }
 }
@@ -2733,20 +2695,8 @@ function startChildRun(request: RunRequest): StartedRun {
   const begin = (): void => {
     if (started || finished) return;
     started = true;
-    // A shell a hosted program spawns (`sh start.sh`, `sh -c '…'`) runs at
-    // the host when there is one, not in this worker's own bash: the host is
-    // where the programs the page registered live (`npx` under /usr/bin),
-    // and where a `node` inside the script is given a named run. Run here,
-    // the script's `node` found no name and was refused, and its `npx` was
-    // not found at all.
-    const shellChild = SHELL_PROGRAMS.has(engineProgramFor(request.file, request.cwd)) && hostExecutor() !== null;
-    // env executes another program. The host owns installed package-bin
-    // resolution, just as it owns shell dispatch; treating this wrapper as
-    // an engine-only utility strands its operand in the private shell and
-    // bypasses the admitted child-process door. Keep env's own interpreter
-    // and options in the host, with the original cwd and environment.
-    const environmentChild = engineProgramFor(request.file, request.cwd) === 'env' && hostExecutor() !== null;
-    const engineFirst = !hostTerminal && !shellChild && !environmentChild && programExists(request.file, request.cwd, request.env);
+    const hostOwnsExecutable = hostRunsProgram(request.file, request.cwd);
+    const engineFirst = !hostTerminal && !hostOwnsExecutable && programExists(request.file, request.cwd, request.env);
     liveInput = !hostTerminal && !admittedNode && !directNode && request.stdinIsPipe && !engineFirst;
     if (liveInput) {
       pendingStdin.unshift(...initialStdin);
@@ -2775,7 +2725,10 @@ function startChildRun(request: RunRequest): StartedRun {
           token,
         })) : await enterRun(token, () => routeCommand({
           command: __substrateLineFor(request.file, request.args, request.cwd),
-          ...(((argv) => argv ? { argv } : {})(__substrateArgvFor(request.file, request.args, request.cwd))),
+          ...(hostOwnsExecutable ? {
+            executablePath: request.file,
+            argv: request.args.length > 0 ? [...request.args] : [request.file],
+          } : ((argv) => argv ? { argv } : {})(__substrateArgvFor(request.file, request.args, request.cwd))),
           engineFirst,
           credentials: request.credentials,
           cwd: request.cwd,

@@ -1,4 +1,5 @@
 import { traceReadingRequested, traceOutput } from '../trace-output';
+import { engineSymbolFor } from '../engine-symbol';
 /**
  * Node.js process shim
  * Provides minimal process object for browser environment
@@ -110,7 +111,7 @@ interface ProcessWritableStream extends ProcessStream {
  * a WASI guest's fd 0): it takes what the stream holds and is not the program
  * asking its stream for bytes, so it does not keep the process alive.
  */
-export const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
+export const kEngineStdinRead = engineSymbolFor('tabnode.stdin.engineRead');
 
 export interface ProcessStdin extends Readable {
   readonly fd: number;
@@ -712,7 +713,7 @@ export function createProcess(options?: {
       // A run whose tree is its kernel process's has its working directory there (chdir(2)): the kernel resolves
       // and checks the path, a child forked afterwards is born in it, and its own answer is what `cwd()` then says.
       // A tree with no process of its own keeps the directory here, as before.
-      const tree = (this as Record<symbol, unknown> | null | undefined)?.[Symbol.for('tabnode.run.vfs')] as { chdir?: (path: string) => void; currentWorkingDirectory?: () => string } | undefined;
+      const tree = (this as Record<symbol, unknown> | null | undefined)?.[engineSymbolFor('tabnode.run.vfs')] as { chdir?: (path: string) => void; currentWorkingDirectory?: () => string } | undefined;
       if (tree && typeof tree.chdir === 'function') {
         tree.chdir(directory);
         currentDir = typeof tree.currentWorkingDirectory === 'function' ? tree.currentWorkingDirectory() : directory;
@@ -757,7 +758,7 @@ export function createProcess(options?: {
       getReport(): Record<string, unknown> {
         let glibc: string | undefined;
         try {
-          const tree = (proc as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.run.vfs')] as { readFileSync?: (path: string, encoding: 'utf8') => string } | undefined;
+          const tree = (proc as unknown as Record<symbol, unknown>)[engineSymbolFor('tabnode.run.vfs')] as { readFileSync?: (path: string, encoding: 'utf8') => string } | undefined;
           const ldd = tree?.readFileSync?.('/usr/bin/ldd', 'utf8');
           if (ldd !== undefined && ldd.includes('GNU C Library')) glibc = /LIBC[a-z0-9 \-).]*?(\d+\.\d+)/iu.exec(ldd)?.[1];
         } catch { /* a tree with no ldd states no libc */ }

@@ -53,3 +53,12 @@ declare module '*?raw' {
   const content: string;
   export default content;
 }
+
+/**
+ * Vite's `?inline` import of a binary asset: a `data:` URL of its bytes, base64. The engine carries SQLite's
+ * WebAssembly build this way (node-lib/sqlite-wasm.ts), so `node:sqlite` needs no request at its first use.
+ */
+declare module '*?inline' {
+  const content: string;
+  export default content;
+}

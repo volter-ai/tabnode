@@ -6,7 +6,7 @@
 
 # Variable: parse
 
-> `const` **parse**: (`path`) => [`ParsedPath`](../interfaces/ParsedPath.md) = `nodePath.parse`
+> `const` **parse**: (`path`) => [`ParsedPath`](../interfaces/ParsedPath.md)
 
 ## Parameters
 

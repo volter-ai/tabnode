@@ -6,7 +6,7 @@
 
 # Variable: PREPARED\_MODULES\_DIR
 
-> `const` **PREPARED\_MODULES\_DIR**: `"/opt/.tabnode/prepared"` = `'/opt/.tabnode/prepared'`
+> `const` **PREPARED\_MODULES\_DIR**: `"/opt/.tabnode/prepared"` = `"/opt/.tabnode/prepared"`
 
 Module bodies prepared where the image is built. Parsing a package's files
 for the passes above is most of a `require` in a tab: 36 of 45 s for

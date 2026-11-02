@@ -6,7 +6,7 @@
 
 # Variable: resolve
 
-> `const` **resolve**: (...`paths`) => `string` = `nodePath.resolve`
+> `const` **resolve**: (...`paths`) => `string`
 
 ## Parameters
 

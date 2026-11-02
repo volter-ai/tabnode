@@ -26,7 +26,7 @@ WorkerRuntime - Executes code in a Web Worker
 
 ##### options?
 
-[`IRuntimeOptions`](../interfaces/IRuntimeOptions.md) = `{}`
+[`IRuntimeOptions`](../interfaces/IRuntimeOptions.md)
 
 #### Returns
 

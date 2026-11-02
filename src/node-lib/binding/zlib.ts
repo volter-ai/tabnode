@@ -27,6 +27,7 @@
  * itself, and compiling `deps/zlib` here would mean running a C toolchain,
  * which this product does not do. The row in BUILTINS.md says the same.
  */
+import { heldWork } from '../../host-globals';
 import { zstream, inflateModule, deflateModule, zlibConstants } from './zlib-pako';
 // @ts-expect-error `brotli` ships no types; its decoder takes and returns bytes.
 import brotliDecompressUntyped from 'brotli/decompress';
@@ -240,12 +241,11 @@ function absentCodec(name: string, reason: string): new (...args: unknown[]) => 
 }
 
 /**
- * `BrotliDecoder`, over the engine's own Brotli decoder (`brotli`'s, pure
- * JavaScript). That decoder takes a whole stream, so this handle collects
- * the input it is given and decodes when `zlib.js` sends the finishing
- * flush, then hands the output back as the caller's buffers take it: a
- * stream is inflated, it is not inflated incrementally. A server reading a
- * pre-compressed file through `createBrotliDecompress` is the case it serves.
+ * `BrotliDecoder` collects a whole stream at the finishing flush and returns
+ * its output through the caller's buffers. Asynchronous decoding uses the
+ * browser's DecompressionStream so decoding does not block the realm's event
+ * loop. Synchronous decoding uses `brotli` because that API must return before
+ * the event loop can run. A decoder error is reported without retrying it.
  */
 const BROTLI_OPERATION_FINISH = 2;
 class BrotliDecoderHandle {
@@ -264,7 +264,11 @@ class BrotliDecoderHandle {
     return true;
   }
 
-  #run(flush: number, inBuf: Uint8Array | null, inOff: number, inLen: number, outBuf: Uint8Array, outOff: number, outLen: number): void {
+  #fail(error: unknown): void {
+    this.onerror?.(`Decompression failed: ${error instanceof Error ? error.message : String(error)}`, -1, 'ERR_BROTLI_DECOMPRESSION_FAILED');
+  }
+
+  #runSync(flush: number, inBuf: Uint8Array | null, inOff: number, inLen: number, outBuf: Uint8Array, outOff: number, outLen: number): void {
     if (inBuf && inLen > 0) this.#input.push(inBuf.slice(inOff, inOff + inLen));
     if (flush === BROTLI_OPERATION_FINISH && this.#output === null) {
       const total = this.#input.reduce((sum, part) => sum + part.byteLength, 0);
@@ -275,11 +279,15 @@ class BrotliDecoderHandle {
       try {
         this.#output = brotliDecompress(whole);
       } catch (error) {
-        this.onerror?.(`Decompression failed: ${error instanceof Error ? error.message : String(error)}`, -1, 'ERR_BROTLI_DECOMPRESSION_FAILED');
+        this.#fail(error);
         return;
       }
       this.#outputAt = 0;
     }
+    this.#readOutput(outBuf, outOff, outLen);
+  }
+
+  #readOutput(outBuf: Uint8Array, outOff: number, outLen: number): void {
     let written = 0;
     if (this.#output) {
       written = Math.min(outLen, this.#output.byteLength - this.#outputAt);
@@ -296,13 +304,35 @@ class BrotliDecoderHandle {
     const tick = (globalThis as { process?: { nextTick?: (fn: () => void) => void } }).process?.nextTick
       ?? ((fn: () => void) => { queueMicrotask(fn); });
     tick(() => {
-      this.#run(flush, inBuf, inOff, inLen, outBuf, outOff, outLen);
-      this.#callback?.();
+      if (inBuf && inLen > 0) this.#input.push(inBuf.slice(inOff, inOff + inLen));
+      if (flush !== BROTLI_OPERATION_FINISH || this.#output !== null) {
+        this.#readOutput(outBuf, outOff, outLen);
+        this.#callback?.();
+        return;
+      }
+      const parts = this.#input;
+      this.#input = [];
+      // Native decoding keeps the guest's run alive until its callback completes.
+      const held = heldWork();
+      held.count += 1;
+      void (async () => {
+        try {
+          const bytes = await new Response(new Blob(parts as BlobPart[]).stream().pipeThrough(new DecompressionStream('brotli' as CompressionFormat))).arrayBuffer();
+          this.#output = new Uint8Array(bytes);
+          this.#outputAt = 0;
+          this.#readOutput(outBuf, outOff, outLen);
+        } catch (error) {
+          this.#fail(error);
+        } finally {
+          held.count -= 1;
+          this.#callback?.();
+        }
+      })();
     });
   }
 
   writeSync(flush: number, inBuf: Uint8Array | null, inOff: number, inLen: number, outBuf: Uint8Array, outOff: number, outLen: number): void {
-    this.#run(flush, inBuf, inOff, inLen, outBuf, outOff, outLen);
+    this.#runSync(flush, inBuf, inOff, inLen, outBuf, outOff, outLen);
   }
 
   params(): void {}
@@ -312,7 +342,7 @@ class BrotliDecoderHandle {
 }
 
 const BROTLI_REASON =
-  'Brotli is a codec of its own, not zlib; the engine decodes it (`brotli`, pure JavaScript) but has no ' +
+  'Brotli is a codec of its own, not zlib; the engine decodes it but has no ' +
   'encoder for Node\'s Brotli handle yet. `zlib.gzip`, `deflate` and `inflate` are Node\'s own here.';
 const ZSTD_REASON =
   'Zstandard is a codec of its own and this engine has no implementation of it at all. ' +

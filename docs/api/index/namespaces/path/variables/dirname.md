@@ -6,7 +6,7 @@
 
 # Variable: dirname
 
-> `const` **dirname**: (`path`) => `string` = `nodePath.dirname`
+> `const` **dirname**: (`path`) => `string`
 
 ## Parameters
 

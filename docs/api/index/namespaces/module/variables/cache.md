@@ -6,4 +6,4 @@
 
 # Variable: \_cache
 
-> `const` **\_cache**: `Record`\<`string`, `unknown`\> = `{}`
+> `const` **\_cache**: `Record`\<`string`, `unknown`\>

@@ -6,7 +6,7 @@
 
 # Variable: join
 
-> `const` **join**: (...`paths`) => `string` = `nodePath.join`
+> `const` **join**: (...`paths`) => `string`
 
 ## Parameters
 

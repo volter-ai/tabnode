@@ -6,7 +6,7 @@
 
 # Variable: normalize
 
-> `const` **normalize**: (`path`) => `string` = `nodePath.normalize`
+> `const` **normalize**: (`path`) => `string`
 
 ## Parameters
 

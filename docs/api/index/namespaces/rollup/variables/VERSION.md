@@ -6,4 +6,4 @@
 
 # Variable: VERSION
 
-> `const` **VERSION**: `"4.63.1"` = `ROLLUP_BROWSER_VERSION`
+> `const` **VERSION**: `"4.63.1"` = `"4.63.1"`

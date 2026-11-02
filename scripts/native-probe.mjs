@@ -25,6 +25,9 @@ const bundle = resolve(fs.mkdtempSync(resolve(tmpdir(), 'native-probe-')), 'regi
 await build({
   stdin: { contents: `import ${JSON.stringify(resolve(root, 'src/index.ts'))};\nexport { nodeLibBinding } from ${JSON.stringify(resolve(root, 'src/node-lib/binding/index.ts'))};\nexport { nodeLibInternal } from ${JSON.stringify(resolve(root, 'src/node-lib/internals/index.ts'))};\n`, resolveDir: root, loader: 'ts' },
   bundle: true, format: 'esm', platform: 'node', outfile: bundle, logLevel: 'silent', plugins: [raw],
+  // Inline Wasm imports carry the same data URL as Vite's library build. The binding reads those bytes, not a path
+  // to fetch, and the source registry bundle must preserve that representation too.
+  loader: { '.wasm': 'dataurl' },
   // A dependency's compiled addon is not part of what is probed: left as the require it was, which nothing here runs.
   // (A clean install builds @mongodb-js/zstd's, and bundling it failed: no loader for `.node`.)
   external: ['*.node'],

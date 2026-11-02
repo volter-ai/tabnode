@@ -16,6 +16,10 @@
 
 > **new MessagePort**(`options?`): `MessagePort`
 
+The class itself, named before the loader can build it: the engine's own
+files construct and subclass it, and `./lazy.ts` says why a name here
+stands for the thing rather than being it.
+
 #### Parameters
 
 ##### options?

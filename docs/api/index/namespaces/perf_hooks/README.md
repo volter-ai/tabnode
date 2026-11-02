@@ -20,6 +20,7 @@
 ## Variables
 
 - [constants](variables/constants.md)
+- [default](variables/default.md)
 - [performance](variables/performance.md)
 
 ## Functions

@@ -371,7 +371,7 @@ export class TCP extends LibuvStreamWrap {
     return 0;
   }
 
-  /** In-realm streams carry bytes, not IP packet headers. */
+  /** In-realm streams carry bytes, not IP packet headers (ADR-0003). */
   setTypeOfService(_tos: number): number { return UV_ENOTSUP; }
   getTypeOfService(): number { return UV_ENOTSUP; }
 

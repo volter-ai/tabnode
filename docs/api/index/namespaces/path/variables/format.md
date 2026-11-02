@@ -6,7 +6,7 @@
 
 # Variable: format
 
-> `const` **format**: (`pathObject`) => `string` = `nodePath.format`
+> `const` **format**: (`pathObject`) => `string`
 
 ## Parameters
 

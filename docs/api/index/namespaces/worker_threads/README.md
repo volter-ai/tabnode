@@ -15,6 +15,7 @@
 
 ## Variables
 
+- [default](variables/default.md)
 - [isMainThread](variables/isMainThread.md)
 - [isMarkedAsUntransferable](variables/isMarkedAsUntransferable.md)
 - [parentPort](variables/parentPort.md)

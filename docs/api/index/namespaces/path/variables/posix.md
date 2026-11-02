@@ -6,4 +6,4 @@
 
 # Variable: posix
 
-> `const` **posix**: [`PlatformPath`](../interfaces/PlatformPath.md) = `nodePath.posix`
+> `const` **posix**: [`PlatformPath`](../interfaces/PlatformPath.md)

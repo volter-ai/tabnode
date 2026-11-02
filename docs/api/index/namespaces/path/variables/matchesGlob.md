@@ -6,7 +6,7 @@
 
 # Variable: matchesGlob
 
-> `const` **matchesGlob**: (`path`, `pattern`) => `boolean` = `nodePath.matchesGlob`
+> `const` **matchesGlob**: (`path`, `pattern`) => `boolean`
 
 ## Parameters
 

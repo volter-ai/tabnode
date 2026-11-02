@@ -6,26 +6,10 @@
 
 # Variable: performance
 
-> `const` **performance**: `Performance` & `object`
+> `const` **performance**: *typeof* `hostPerformance` & `object`
 
 ## Type Declaration
 
 ### eventLoopUtilization
 
-> **eventLoopUtilization**: (`first?`, `second?`) => [`EventLoopUtilization`](../interfaces/EventLoopUtilization.md)
-
-Node's current/previous and explicit two-snapshot subtraction forms.
-
-#### Parameters
-
-##### first?
-
-[`EventLoopUtilization`](../interfaces/EventLoopUtilization.md)
-
-##### second?
-
-[`EventLoopUtilization`](../interfaces/EventLoopUtilization.md)
-
-#### Returns
-
-[`EventLoopUtilization`](../interfaces/EventLoopUtilization.md)
+> **eventLoopUtilization**: *typeof* `eventLoopUtilization`

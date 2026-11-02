@@ -31,7 +31,7 @@ import { createNodeError as vfsError } from '../../virtual-fs';
 import { registerHandle, releaseHandle, refHandle, unrefHandle, currentOwner, ownedRun, ownerOfInstance, observeNodeHandle, forgetNodeHandle, observeNodeRequest, forgetNodeRequest, captureNodeResourceScope, nodeHandleHasRef, nodeHandleIsClosing } from './handles';
 import { __runFor, type ProcessToken } from '../../process-tokens';
 import { queueBindingTask } from '../../guest-loop';
-import { kStdinRing, type StdinReader } from '../../stdin-ring';
+import { kStdinRing, stdinRingWaitsAsync, type StdinReader } from '../../stdin-ring';
 // The guest stdin stream's engine-side read (shims/process.ts `kEngineStdinRead`),
 // named here so this binding does not import the process shim.
 const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
@@ -353,6 +353,48 @@ function readStdin(fd: number, buffer: Uint8Array, offset: number, length: numbe
   buffer.set(bytes.subarray(0, count), offset);
   if (count < bytes.length) stdin.unshift(bytes.slice(count));
   return count;
+}
+
+/**
+ * An asynchronous read of fd 0 waits for bytes or the end while the writer is
+ * open. Holding the run's request preserves Node's threadpool-read lifetime
+ * without blocking the realm's event loop. Nonblocking descriptors do not wait.
+ */
+function stdinWait(fd: number, position: number, req: FSReq | undefined): Promise<void> | undefined {
+  const asynchronous = (req as unknown) === kUsePromises || (req !== undefined && typeof req === 'object' && typeof req.oncomplete === 'function');
+  if (!asynchronous || ownerOf(fd) !== undefined || handleForFd(fd) !== undefined || stdioOf(fd) !== 0 || nonblockingAliases.has(fd)) return undefined;
+  if (position !== null && position !== undefined && position >= 0) return undefined;
+  const owner = currentOwner();
+  const process = stdioProcess(owner);
+  const stdin = process?.stdin as (NonNullable<StdioStreams['stdin']> & { once?(event: string, listener: () => void): unknown; removeListener?(event: string, listener: () => void): unknown }) | undefined;
+  if (!stdin || typeof stdin.once !== 'function') return undefined;
+  if ((stdin.readableLength ?? 0) > 0 || stdin.readableEnded === true || stdin._readableState?.ended === true) return undefined;
+  // Ring input can arrive from another thread, but this run's pending output
+  // still needs its event loop. An asynchronous ring wait lets that output flush.
+  const ring = (process as Record<symbol, unknown>)[kStdinRing] as (StdinReader & { available?(): number; closed?(): boolean }) | undefined;
+  if (ring) {
+    if (!stdinRingWaitsAsync() || typeof ring.available !== 'function' || ring.available() > 0 || ring.closed?.() === true) return undefined;
+    if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'stdin-ring-read-waits', at: Date.now(), pid: (process as { pid?: unknown } | undefined)?.pid ?? null });
+    const held = { close: (): void => undefined };
+    ownedRun(owner, () => registerHandle(held));
+    return ring.whenWritten().finally(() => { ownedRun(owner, () => releaseHandle(held)); });
+  }
+  if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'stdin-read-waits', at: Date.now(), pid: (process as { pid?: unknown } | undefined)?.pid ?? null });
+  return new Promise<void>((resolve) => {
+    // The process's end closes it: the read then asks again and finds the end, as a closed pipe answers.
+    const held = { close: (): void => settle() };
+    ownedRun(owner, () => registerHandle(held));
+    let settled = false;
+    function settle(): void {
+      if (settled) return;
+      settled = true;
+      stdin!.removeListener?.('readable', settle); stdin!.removeListener?.('end', settle); stdin!.removeListener?.('close', settle);
+      ownedRun(owner, () => releaseHandle(held));
+      if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'stdin-read-woke', at: Date.now(), pid: (process as { pid?: unknown } | undefined)?.pid ?? null, buffered: stdin!.readableLength ?? null });
+      resolve();
+    }
+    stdin.once!('readable', settle); stdin.once!('end', settle); stdin.once!('close', settle);
+  });
 }
 
 /**
@@ -985,6 +1027,13 @@ const fsBinding = {
 
   // ---- reading ------------------------------------------------------------
   read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number, req?: FSReq): number | undefined {
+    const waiting = stdinWait(fd, position, req);
+    if (waiting) {
+      // Asked again once a byte or the end arrives, as libuv's threadpool read returns then; a promise's request answers
+      // with the asking promise.
+      const again = waiting.then(() => fsBinding.read(fd, buffer, offset, length, position, req));
+      return ((req as unknown) === kUsePromises ? again : undefined) as number | undefined;
+    }
     return answer(req, () => {
       const owner = ownerOf(fd);
       if (owner) return owner.read(fd, buffer, offset, length, positionOf(position));

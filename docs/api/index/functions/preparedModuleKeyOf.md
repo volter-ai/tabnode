@@ -16,7 +16,7 @@ the file being read; where the image is built and in the tab it is this one func
 
 ### kind
 
-`"cjs"` \| `"js"`
+`"js"` \| `"cjs"`
 
 ### contentSha256
 

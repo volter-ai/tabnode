@@ -24,11 +24,11 @@ path, search and hash, as Node does.
 
 ### parseQueryString?
 
-`boolean` = `false`
+`boolean`
 
 ### slashesDenoteHost?
 
-`boolean` = `false`
+`boolean`
 
 ## Returns
 

@@ -6,4 +6,4 @@
 
 # Variable: delimiter
 
-> `const` **delimiter**: `string` = `nodePath.delimiter`
+> `const` **delimiter**: `string`

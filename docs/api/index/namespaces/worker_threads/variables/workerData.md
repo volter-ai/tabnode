@@ -6,4 +6,4 @@
 
 # Variable: workerData
 
-> `const` **workerData**: `null` = `null`
+> `const` **workerData**: `null`

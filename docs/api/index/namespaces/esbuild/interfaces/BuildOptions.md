@@ -22,7 +22,7 @@
 
 ### entryPoints?
 
-> `optional` **entryPoints?**: `string`[] \| `Record`\<`string`, `string`\>
+> `optional` **entryPoints?**: `Record`\<`string`, `string`\> \| `string`[]
 
 esbuild's two entry forms: a list of files, and the named form
 `{ out: "in.ts" }` that gives each output its own name. Only the list is
@@ -83,7 +83,7 @@ back as `neighbors` on the result.
 
 ### platform?
 
-> `optional` **platform?**: `"node"` \| `"browser"` \| `"neutral"`
+> `optional` **platform?**: `"browser"` \| `"node"` \| `"neutral"`
 
 ***
 
@@ -95,7 +95,7 @@ back as `neighbors` on the result.
 
 ### sourcemap?
 
-> `optional` **sourcemap?**: `boolean` \| `"external"` \| `"inline"`
+> `optional` **sourcemap?**: `boolean` \| `"inline"` \| `"external"`
 
 ***
 
@@ -109,7 +109,7 @@ back as `neighbors` on the result.
 
 #### loader?
 
-> `optional` **loader?**: `"json"` \| `"js"` \| `"jsx"` \| `"ts"` \| `"tsx"` \| `"css"`
+> `optional` **loader?**: `"js"` \| `"jsx"` \| `"ts"` \| `"tsx"` \| `"json"` \| `"css"`
 
 #### resolveDir?
 

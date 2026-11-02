@@ -68,7 +68,11 @@ interface CustomizationHooks {
   loadWithHooks(
     url: string, format: string | undefined, importAttributes: Record<string, string> | undefined,
     conditions: string[], defaultLoad: (url: string, context: LoadContext) => LoadResult,
+    validateLoad: (url: string, context: LoadContext, result: LoadResult) => LoadResult,
   ): LoadResult;
+  /** Node's checks of a load chain's result: a module's (source required) and a builtin's (source may be null). */
+  validateLoadStrict(url: string, context: LoadContext, result: LoadResult): LoadResult;
+  validateLoadSloppy(url: string, context: LoadContext, result: LoadResult): LoadResult;
   convertCJSFilenameToURL(filename: string): string;
   convertURLToCJSFilename(url: string): string;
 }

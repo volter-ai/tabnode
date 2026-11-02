@@ -6,4 +6,4 @@
 
 # Variable: win32
 
-> `const` **win32**: [`PlatformPath`](../interfaces/PlatformPath.md) = `nodePath.win32`
+> `const` **win32**: [`PlatformPath`](../interfaces/PlatformPath.md)
