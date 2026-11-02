@@ -1,20 +1,126 @@
 # Releasing
 
-Main merges never publish. Only an explicitly owner-authorized push to the separate `publish` branch releases a tag `v<version>` on `publish`, and the npm package `@volter/tabnode` at that version, published by this repository's `publish` workflow with provenance.
+Main merges integrate source. Publication is a separate, explicitly authorized
+act on `publish`, consuming an existing source-built tarball. No workflow runs
+on main, tags or publish, and the publisher installs, builds and versions nothing.
+This is the retained-output route in Browser Substrate ADR-0214/V1-08 and
+ADR-0102; `scripts/release.sh` wraps its receipt command.
 
-The workflow authenticates with the repository secret `NPM_TOKEN`, a granular token that expires 2026-12-20, until npm's trusted publisher is confirmed for it. Confirming is one command by a session signed in with the account's own second factor, which a bypass token may not do:
+## Prepare and authorize the exact bytes
 
-    npm trust github @volter/tabnode --file publish.yml --repo volter-ai/tabnode --allow-publish
+Prepare the chosen semver, lockfile, changelog and API documentation in an owned
+source tree. Keep the fork's semver rule: a fix is a patch; an exported-surface
+or prepared-format change is a minor release. Select a version beyond registry
+versions and every retained receipt, including unknown uploads. A failed lookup
+does not establish an unused version.
 
-After that the secret is deleted, the `NODE_AUTH_TOKEN` line leaves the workflow, and no publish credential exists anywhere.
+Build the library, declarations and required `dist/surface.json` from the
+recorded source outside CI. Surface production retains its pinned Node 24.21.0
+and its original native/public/probe inputs; an absent or failed surface is a
+preparation failure. Generate `docs/api/` from the selected declarations. Keep
+the original preparation/build evidence, notices and exact source identity.
+The publisher consumes these outputs; it never reruns their producers.
 
-1. A change lands on `main` with its entry under `## Unreleased` in `CHANGELOG.md`.
-2. After the owner authorizes publication of the exact prepared source, promote it to `publish`. The workflow on that branch moves the version to its next patch, turns `## Unreleased` into that version's `## v<version> — <date>` section, regenerates `docs/api/`, builds, publishes with `--provenance`, commits `release v<version>` to `publish`, tags it, and creates the GitHub release with the section as its notes (or the commits since the last tag, when the section is empty). `npm view @volter/tabnode@<version>` says when it is there.
-3. A minor release (the exported surface changed) is cut by hand: `bash scripts/release.sh <version>` on a clean `publish`, with the version's changelog section already written; the workflow publishes that version as it is.
-4. The consumer moves its pin to the version and records what the tab gained.
+Retain the exact `npm pack --ignore-scripts` archive and its version-1
+`receipt.json` in an external directory. The receipt uses the same envelope as
+Browser Substrate's retained-archive publisher, with one engine package:
 
-The workflow builds `dist/surface.json` before it publishes (`npm run build:surface`, under the same pinned Node 24.21.0 used for the build and npm publication, which the comparison with Node's own surface requires). That is a choice: every release, a patch included, now depends on those four scripts passing, and the package always carries a surface measured from the code it ships. When one fails the release stops before npm: nothing is published, `publish` has the change and no version for it. Fix the script or engine on main; prepare another exact source and obtain publication authorization before advancing publish. Do not skip the step to get a release out: a package without the file is read by its consumers as "packed without build:surface", not as an empty surface.
+```json
+{
+  "version": 1,
+  "run": "12345",
+  "source": "<full reviewed source commit>",
+  "packages": [{
+    "name": "@volter/tabnode",
+    "version": "<selected version>",
+    "archive": "volter-tabnode-<selected version>.tgz",
+    "integrity": "sha512-<base64 digest of the exact tarball>",
+    "status": "prepared"
+  }]
+}
+```
 
-The version is semver over the fork's own line, which began at `0.3.0`: a patch bump for a fix, a minor bump when the exported surface changes. The `dist/` directory is never committed; what npm serves is what the workflow built from `publish`.
+Before publication, sweep that exact tarball with the required gitleaks rules,
+custody values and `@volter/teams/redact`; retain the clean result against its
+digest. Ask the manager to authorize the exact package, registry, npm distribution tag, source and
+archive identity, including advancement of `publish` and its receipt commits.
+Use the existing credential selected for that act. A custody-only credential
+or missing sign-in is recorded as the exact required act; no new login or
+credential setup is implicit in this procedure. Public website publication
+remains a distinct authorization.
 
-The remote measure workflow is removed: no CI tests or merge gates. Its source helpers remain for an explicitly requested local measurement. All retained workflows must finish within 60 seconds end to end; a job timeout is not proof of successful completion.
+The archive/source receipt records identity and custody. It is not an npm/SLSA
+attestation. Local publication does not claim GitHub OIDC provenance.
+
+## Publish once, then compare
+
+After authorization, select clean committed source on the separate `publish`
+branch. Its source must match the reviewed build, apart from existing
+`.github/releases/<run>.json` receipt commits. Advance it only to the authorized
+source. Set the exact current remote publish head; the command refuses a changed
+head and never fetches a replacement head or rebases older bytes onto new source.
+The reviewed publisher can be invoked by absolute path from its own checkout
+while the working directory remains that authorized publish source. This keeps
+an existing archive's original source identity when only the publisher changes;
+never restamp it with the publisher's newer commit.
+
+```sh
+export RELEASE_ARCHIVES=/absolute/path/to/retained-engine-archives
+export RELEASE_SOURCE=<full-reviewed-source-commit>
+export RELEASE_PUBLISH_HEAD=<full-current-remote-publish-commit>
+export RELEASE_REGISTRY=https://registry.npmjs.org/
+export RELEASE_DIST_TAG=latest
+export RELEASE_AUTHORIZATION='<manager approval reference for this exact act>'
+export RELEASE_KEYS_SWEEP='<clean exact-tarball sweep evidence reference>'
+bash scripts/release.sh checkpoint
+```
+
+The references are retained pointers to the actual approval and clean sweep;
+setting environment variables grants neither. Checkpoint records them and the
+registry with the receipt. Preserve those references on later invocations.
+Use each successful command's printed `Next RELEASE_PUBLISH_HEAD` for the next
+invocation. Run publication tooling in the background and retain its PID/log.
+
+```sh
+bash scripts/release.sh publish
+# Set RELEASE_PUBLISH_HEAD to the confirmed checkpoint printed above.
+bash scripts/release.sh verify
+```
+
+Publication first checks accepted exact-byte receipts. Otherwise it makes one
+registry observation and compares an existing tarball to the retained SHA-512
+identity. Only a structured explicit absent-version response permits a new
+upload; a missing credential, failed lookup or earlier unknown upload refuses.
+The archive's metadata, declared entrypoints, notices and required surface must
+be present. A private copy of the authenticated tarball is uploaded with scripts
+disabled; no pack/build producer runs in the publication command.
+
+The command durably records and checkpoints `uploading` before one npm request.
+A successful request records `accepted`; a failed or interrupted request stays
+`unknown` or `uploading`. Neither means registry availability. The command never
+retries an attempted upload, even if a later lookup says the version is absent.
+Keep that version reserved; verification can resolve its original exact bytes.
+
+`verify` makes one comparison with the registry tarball under a nine-second
+invocation budget. Absence, transient failure, conflict or budget exhaustion
+leaves the command unsuccessful, with its original receipt state and observation
+retained. Available identical gzip bytes become `verified`; unpacked equivalence
+is insufficient. Invoke verification again later against the same archives;
+do not rebuild or republish. A verification/checkpoint failure never authorizes
+another upload.
+
+Receipt saves flush before replacement. Each checkpoint creates one receipt-only
+commit over the pinned publish head and attempts one compare-and-swap push.
+Retain the private index, partials and checkpoint outcome records. An uncertain
+push retains its exact candidate commit and expected parent; read the remote
+head and that commit before selecting the next explicit head. Never automatically
+retry the checkpoint or discard an unknown publication lock by PID or age.
+
+Tags and GitHub release notes are separate closing acts naming the reviewed
+source; they trigger no upload. Move the consumer pin only to the same verified
+archive, and record its exact source and observed tab behavior. Archive equality
+and registry availability establish no application acceptance.
+
+There are no CI tests, merge gates or publication workflows. Any workflow
+must actually finish within 60 seconds end to end;
+a timeout, cancellation or skipped run is not successful compliance.

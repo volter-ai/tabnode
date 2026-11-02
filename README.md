@@ -84,7 +84,7 @@ npm install
 npm run build:lib     # the bundle and its declarations, into dist/
 ```
 
-A fix is a source commit on `main` that states which Node behaviour it restores, general to every program, never a fix that recognises a package or a framework. What measures it is Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`) locally when measurement is the requested task; the manually dispatched `measure` workflow is available only when the user explicitly authorizes that remote run; [`BUILTINS.md`](BUILTINS.md) holds each module's number and what its remainder is made of. [`CONTRIBUTING.md`](CONTRIBUTING.md) says how a change is made and [`RELEASING.md`](RELEASING.md) how a release is cut; what each release changed is in [`CHANGELOG.md`](CHANGELOG.md), and a vulnerability is reported the way [`SECURITY.md`](SECURITY.md) says.
+A fix is a source commit on `main` that states which Node behaviour it restores, general to every program, never a fix that recognises a package or a framework. What measures it is Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`) locally when measurement is the requested task; measurements use the local source helpers, with no CI workflow. [`BUILTINS.md`](BUILTINS.md) holds each module's number and what its remainder is made of. [`CONTRIBUTING.md`](CONTRIBUTING.md) says how a change is made and [`RELEASING.md`](RELEASING.md) how a retained archive is published; what each release changed is in [`CHANGELOG.md`](CHANGELOG.md), and a vulnerability is reported the way [`SECURITY.md`](SECURITY.md) says.
 
 ---
 
