@@ -792,7 +792,8 @@ function bindingClassFor(fs: WasiHostFs, process: WasiHostProcess, realtime?: ()
     if (!memory.fits(resolutionPtr as number, 8)) return ERRNO.EOVERFLOW;
     const error = clockError(clockId as number);
     if (error !== undefined) return error;
-    memory.setU64(resolutionPtr as number, 1n);
+    // Process realtime is supplied in milliseconds, as captured Date.now is; converting units adds no precision.
+    memory.setU64(resolutionPtr as number, clockId === CLOCK.REALTIME ? 1_000_000n : 1n);
   });
 
   define('clock_time_get', 'iLi', (_state, memory, clockId, _precision, timePtr) => {
