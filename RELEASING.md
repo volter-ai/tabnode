@@ -50,8 +50,7 @@ credential setup is implicit in this procedure. Public website publication
 remains a distinct authorization.
 
 The archive/source receipt records identity and custody. It is not an npm/SLSA
-attestation. Local publication does not claim GitHub OIDC provenance; the old
-workflow and its trusted-publisher setup instruction are retired.
+attestation. Local publication does not claim GitHub OIDC provenance.
 
 ## Publish once, then compare
 
@@ -122,6 +121,6 @@ source; they trigger no upload. Move the consumer pin only to the same verified
 archive, and record its exact source and observed tab behavior. Archive equality
 and registry availability establish no application acceptance.
 
-There are no CI tests or merge gates. The former build-and-publish workflow is
-removed. Any future workflow must actually finish within 60 seconds end to end;
+There are no CI tests, merge gates or publication workflows. Any workflow
+must actually finish within 60 seconds end to end;
 a timeout, cancellation or skipped run is not successful compliance.

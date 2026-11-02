@@ -32,7 +32,7 @@ There is no dev server, no demo page and no end-to-end suite here: this reposito
 
 ## Measurement
 
-Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`), is what measures a module. `BUILTINS.md` carries each module's number and what each remainder is made of. No incidental tests, suites, typechecks, lints, probes, or reviews run during development, locally or remotely; CI and another machine are not exceptions. When the user's task is a measurement, baseline, harness, or capability ledger, building and running that measurement is the deliverable. Run it locally, keep its objective evidence, and add no unrelated checks or subjective scores. Remote tests or measurements require explicit authorization for that remote run; a measurement request alone does not authorize remote execution. The measurement workflow is retired.
+Node's own suite, run against a build by `scripts/node-tests.mjs` (`scripts/NODE-TESTS.md`), is what measures a module. `BUILTINS.md` carries each module's number and what each remainder is made of. No incidental tests, suites, typechecks, lints, probes, or reviews run during development, locally or remotely; CI and another machine are not exceptions. When the user's task is a measurement, baseline, harness, or capability ledger, building and running that measurement is the deliverable. Run it locally, keep its objective evidence, and add no unrelated checks or subjective scores. Remote tests or measurements require explicit authorization for that remote run; a measurement request alone does not authorize remote execution. Measurements use the local source helpers, with no CI workflow.
 
 ## Where to find more
 

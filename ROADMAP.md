@@ -4,8 +4,8 @@ VO-3806 t_757ceb01; substrate Articles 6, 8 and 9. Qualify the source-only
 retained-archive route in `RELEASING.md` against the exact approved candidate:
 original archive/source identity, clean keys sweep and manager authorization,
 receipt-only publish checkpoints, uncertain upload retention and exact registry
-archive comparison. No install/build, workflow, upload, tag or publication was
-performed to prepare this source. Candidate and product acceptance remain open.
+archive comparison. Record the command's original outcomes and product
+observations before closing candidate and release acceptance.
 
 ## S1: Synchronous children keep their declared process owner
 
