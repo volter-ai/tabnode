@@ -2847,3 +2847,115 @@ Original file SHA-256: `8a8bac543fccf52a64708ff3315ca2be90e3e4c270634df1e4e4b51f
 
 MIT
 ```
+
+## Vendored punycode and llhttp notices
+
+The embedded punycode source is byte-identical to `punycode.js` from the
+`punycode` 2.3.1 npm archive. Its source commit is
+[`9e1b2cda98d215d3a73fcbfe93c62e021f4ba768`](https://github.com/mathiasbynens/punycode.js/tree/9e1b2cda98d215d3a73fcbfe93c62e021f4ba768).
+The original source file has SHA-256 `6052a80eac47e46bd4de17ae0095e0192c336d3d7c387d292ad2176ebfc53d04`.
+
+The embedded llhttp WebAssembly is byte-identical to the non-SIMD payload in
+Undici 6.28.0's `lib/llhttp/llhttp-wasm.js`: 48,615 bytes, SHA-256
+`b96063c7ce14045f91f17489d8b30a2bf5129308bd801d7dde715579d16d0e21`.
+The Undici source commit is
+[`01a912e49a50c48009ed2639d2a457a6ec26752a`](https://github.com/nodejs/undici/tree/01a912e49a50c48009ed2639d2a457a6ec26752a).
+Its vendored header identifies llhttp 8.1.0. The llhttp licence below is from
+that release's generated-source commit
+[`a294239338eff8bffd4c709265ab8f5a11e57e41`](https://github.com/nodejs/llhttp/tree/a294239338eff8bffd4c709265ab8f5a11e57e41).
+
+Both published npm archives were read without installation and matched their
+registry SHA-512 integrity. These input receipts identify the original notices;
+they do not claim a rebuild of either upstream artifact.
+
+| Original npm input | Archive SHA-256 | Registry integrity |
+|---|---|---|
+| punycode 2.3.1 | `e4ce59f9fbac44349abab87279ab658f6b4614916bec5e088ae3be9323e193bb` | `sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==` |
+| undici 6.28.0 | `32a86c6fa28fd48b915555048c05bbd37ad35457d9e945953831a4374c886a9c` | `sha512-LIY910g9TI13YS95lrMFrs8Rm/u/irgHeTWoKCoteeJ04CUJ92eEfj0rVn+7VKMPBpUPiUoBKfhNyLI23EE/KA==` |
+
+### punycode 2.3.1
+
+Source: <https://cdn.jsdelivr.net/npm/punycode@2.3.1/LICENSE-MIT.txt>
+Original licence SHA-256: `483acb265f182907d1caf6cff9c16c96f31325ed23792832cc5d8b12d5f88c8a`.
+
+```text
+Copyright Mathias Bynens <https://mathiasbynens.be/>
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### undici 6.28.0
+
+Source: <https://cdn.jsdelivr.net/npm/undici@6.28.0/LICENSE>
+Original licence SHA-256: `a6db8096b2707bc0102d256917d4d33f298ba36d8c3f25de067a2b5bb379db27`.
+
+```text
+MIT License
+
+Copyright (c) Matteo Collina and Undici contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### llhttp 8.1.0
+
+Source: <https://raw.githubusercontent.com/nodejs/llhttp/a294239338eff8bffd4c709265ab8f5a11e57e41/LICENSE-MIT>
+Original licence SHA-256: `ebca854e0134cd256d673627c20499f42577eb74bacf08b9f25b626a73c91277`.
+
+```text
+This software is licensed under the MIT License.
+
+Copyright Fedor Indutny, 2018.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to permit
+persons to whom the Software is furnished to do so, subject to the
+following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
