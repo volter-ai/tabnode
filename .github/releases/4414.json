@@ -8,9 +8,10 @@
       "version": "0.16.0",
       "archive": "volter-tabnode-0.16.0.tgz",
       "integrity": "sha512-nY5Z9YDSvF5F5w5CkZyLRFOFBJRSK4E4bgUxH37mGWaUsFvYbNyqEpbqGxJOp/xVagM3s5LlRAjujTKE39slKw==",
-      "status": "uploading",
+      "status": "accepted",
       "uploadStartedAt": "2026-11-02T07:47:39.507Z",
-      "uploadArchive": "/Volumes/PeakSSD/offload/volter/relocated/.card-preparations/browser-substrate-v1-engine-r4283/r4361/final-candidate-r4414/upload-4414-qfwlgi/volter-tabnode-0.16.0.tgz"
+      "uploadArchive": "/Volumes/PeakSSD/offload/volter/relocated/.card-preparations/browser-substrate-v1-engine-r4283/r4361/final-candidate-r4414/upload-4414-qfwlgi/volter-tabnode-0.16.0.tgz",
+      "acceptedAt": "2026-11-02T07:47:46.530Z"
     }
   ],
   "registry": "https://registry.npmjs.org/",
