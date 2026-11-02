@@ -6,6 +6,14 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
 
 ## Unreleased
 
+- **SQLite preserves the kernel's file ownership** (browser-substrate card t_c656e6fd, V1-02
+  t_54301ff8/t_ed393c2c/t_9567d5e9/t_7a220000/t_e497afc1/t_9e6677b2/t_fc801f45; Articles 6/9).
+  `node:sqlite` supports private in-memory databases; file-backed opens refuse before touching files because
+  no descriptor-owned SQLite VFS is available. Close and original-process exit roll back and destroy native
+  connections and statements without holding the loop open. Named parameters reject unknown keys by default,
+  independently of bare-name matching; iteration advances a cursor lazily. The shared builtin loader preserves
+  its scheme-only identity through synchronous/asynchronous hooks and `process.getBuiltinModule`.
+
 - **Worker routing preserves a script's directive prologue** (browser-substrate card t_c656e6fd, V1-02 t_b67e1a68;
   Articles 6/9). Rooted and blob workers retain leading comments and every directive before the routing prelude.
   Blob source is read completely instead of through a 64-byte prefix; ambiguous statement boundaries keep the

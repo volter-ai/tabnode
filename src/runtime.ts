@@ -80,7 +80,8 @@ import * as workerThreadsShim from './shims/worker_threads';
 import { guestMessageGlobals, guestMessageModule } from './guest-message-ports';
 import { validateTransferList } from './transfer-ownership';
 import * as esbuildShim from './shims/esbuild';
-import { createSqliteModule, type SqliteFs } from './node-lib/sqlite';
+import { createSqliteModule } from './node-lib/sqlite';
+import { registerHandle, unrefHandle, releaseHandle, ownedRun } from './node-lib/binding/handles';
 import * as rollupShim from './shims/rollup';
 import * as v8Shim from './shims/v8';
 import * as tlsShim from './shims/tls';
@@ -1841,7 +1842,7 @@ async function __substrateImportChain(
   if (!hooks.hasAsyncLoad) return doors.__loadFromURL(resolved.url, resolved.format);
   const loaded = await hooks.load(resolved.url, resolved.format, void 0, (url: string, context: { format?: string }) => ({
     source: doors.__readFromURL(url),
-    format: context.format,
+    format: context.format ?? (url.startsWith('node:') ? 'builtin' : undefined),
   }));
   return doors.__loadFromURL(resolved.url, loaded.format ?? resolved.format, loaded.source ?? void 0);
 }
@@ -2679,11 +2680,27 @@ type GuestProcess = Process & { getBuiltinModule?: (name: string) => unknown };
 // installed version (browser-substrate ADR-0213: esbuild-wasm's own Node CLI),
 // so the vendor's API runs as itself, every sync and async call of it, where the
 // engine's shim would answer at its own version with what it implements.
-/** Each process's `node:sqlite` (node-lib/sqlite.ts), over its own `fs`, made at its first ask. */
+/** Each process's native SQLite module, made at its first builtin load. */
 const __substrateSqliteModules = new WeakMap<object, unknown>();
-function __substrateSqliteFor(process: object, fs: unknown): unknown {
+function __substrateSqliteFor(process: Process): unknown {
   let module = __substrateSqliteModules.get(process);
-  if (!module) { module = createSqliteModule(fs as SqliteFs); __substrateSqliteModules.set(process, module); }
+  if (!module) {
+    module = createSqliteModule({
+      resolvePath: path => pathShim.resolve(process.cwd(), path),
+      own(resource) {
+        // The original run's existing handle owner closes SQLite on every exit.
+        // Unreferenced ownership does not keep an otherwise finished CLI alive.
+        const token = __tokenForProcess(process);
+        if (token !== null && !__runFor(token)) throw Object.assign(new Error('SQLite process has ended'), { code: 'ERR_INVALID_STATE' });
+        ownedRun(token, () => {
+          registerHandle(resource);
+          unrefHandle(resource);
+        });
+        return () => releaseHandle(resource);
+      },
+    });
+    __substrateSqliteModules.set(process, module);
+  }
   return module;
 }
 
@@ -3155,6 +3172,8 @@ function createRequire(
     // A digest the last resolution carried is for the load that follows that resolution alone: one answered from a
     // cache below asks no stat, so the load after it must ask the tree (a file rewritten since is loaded as it is).
     __substrateKeptFor(process).carried = undefined;
+    const builtin = moduleShim.normalizeBuiltin(id);
+    if (builtin !== undefined) return builtin;
     // Handle node: protocol prefix (Node.js 16+)
     if (id.startsWith('node:')) {
       id = id.slice(5);
@@ -3791,13 +3810,7 @@ function createRequire(
     // Node's ESM customization and does not apply to a `require` there
     // either, so a run that registered one alone resolves exactly as it did.
     const hooks = __substrateHooks();
-    // `node:sqlite` exists only under its scheme (Node's schemeOnlyModules): a bare `sqlite` is an npm package.
-    if (id === 'node:sqlite') return __substrateSqliteFor(process, fsShim);
     if (hooks && (hooks.hasSyncResolve || hooks.hasSyncLoad)) return requireHooked(id, hooks);
-    // Handle node: protocol prefix (Node.js 16+)
-    if (id.startsWith('node:')) {
-      id = id.slice(5);
-    }
     return requirePlain(id);
   };
 
@@ -3807,8 +3820,9 @@ function createRequire(
    * to the file resolver would look for a file that is not there.
    */
   const __substrateNamedModule = (specifier: string): string | undefined => {
+    const builtin = moduleShim.normalizeBuiltin(specifier);
+    if (builtin !== undefined) return builtin;
     const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
-    if (moduleShim.isBuiltin(name) || name === 'fs/promises') return name;
     if (Object.prototype.hasOwnProperty.call(builtinModules, name) && !__substrateInstalledWins(name)) return name;
     return void 0;
   };
@@ -3868,14 +3882,13 @@ function createRequire(
   };
 
   const requirePlain = (id: string): unknown => {
-    // Handle node: protocol prefix (Node.js 16+)
-    if (id.startsWith('node:')) {
-      id = id.slice(5);
-    }
+    id = moduleShim.normalizeBuiltin(id) ?? (id.startsWith('node:') ? id.slice(5) : id);
     // A data: URL is a module of its own, loaded at that URL.
     if (id.startsWith('data:')) return loadModule(id).exports;
     if (moduleShim.isBuiltin(id)) __substrateRecordBuiltin(id);
 
+    // Per-process native builtins use the same resolve/load hook path as fs.
+    if (id === 'node:sqlite') return __substrateSqliteFor(process);
     // Built-in modules
     if (id === 'fs') {
       return fsModuleFor(process);
@@ -4071,7 +4084,7 @@ function createRequire(
   (require as any).__loadFromURL = (url: string, format?: string, source?: string | ArrayBuffer | ArrayBufferView | null): unknown => {
     if (url.startsWith('data:')) return loadModule(url, { url, format, source }).exports;
     const filename = __substrateHooks()!.sync.convertURLToCJSFilename(url);
-    if (source === undefined && moduleShim.isBuiltin(filename)) return requirePlain(filename);
+    if (moduleShim.isBuiltin(filename) && (format === undefined || format === 'builtin')) return requirePlain(filename);
     return loadModule(filename, { url, format, source }).exports;
   };
   (require as any).extensions = __substrateModule()._extensions;
@@ -4086,9 +4099,10 @@ function createRequire(
   if (process && typeof process === 'object' && typeof (process as GuestProcess).getBuiltinModule !== 'function') {
     (process as GuestProcess).getBuiltinModule = (name: string) => {
       if (typeof name !== 'string') return void 0;
-      const id = name.startsWith('node:') ? name.slice(5) : name;
-      if (id !== 'fs' && id !== 'fs/promises' && id !== 'process' && id !== 'module' && id !== 'wasi' && !Object.prototype.hasOwnProperty.call(builtinModules, id)) return void 0;
-      try { return require(id); } catch (error) { return void 0; }
+      const id = moduleShim.normalizeBuiltin(name);
+      if (id === undefined) return void 0;
+      // Node's direct builtin door does not invoke customization hooks.
+      return requirePlain(id);
     };
   }
 

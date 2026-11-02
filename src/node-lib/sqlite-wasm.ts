@@ -7,11 +7,10 @@
  * SQLite through promises; its WebAssembly module itself needs nothing asynchronous. So the module is compiled and
  * instantiated here synchronously (a worker may), with the imports SQLite calls for an in-memory database: the clock,
  * the time zone, the heap's growth and stderr. The file syscalls its unix VFS imports answer ENOSYS: this engine's
- * databases are in-memory ones whose bytes ./sqlite.ts reads and writes.
+ * databases are private in-memory ones; file-backed opens are refused.
  *
- * Where the bytes come from: `globalThis.__substrateSqliteWasm` (a WebAssembly.Module or its bytes) where the host put
- * it, else the build the engine carries inlined (@sqlite.org/sqlite-wasm's sqlite3.wasm, decoded at the first use: a
- * tab's engine worker may make no request of its own, its policy's connect-src being 'none').
+ * The build carries its exact sqlite3.wasm inline, so the guest worker makes
+ * no network request and has no alternate host-injected binary route.
  */
 import SQLITE_WASM_DATA_URL from '@sqlite.org/sqlite-wasm/sqlite3.wasm?inline';
 
@@ -34,10 +33,7 @@ export interface SqliteC {
 
 let instance: SqliteC | undefined;
 
-function wasmBytes(): WebAssembly.Module | Uint8Array {
-  const given = (globalThis as { __substrateSqliteWasm?: WebAssembly.Module | Uint8Array | ArrayBuffer }).__substrateSqliteWasm;
-  if (given instanceof WebAssembly.Module || given instanceof Uint8Array) return given;
-  if (given instanceof ArrayBuffer) return new Uint8Array(given);
+function wasmBytes(): Uint8Array {
   const comma = SQLITE_WASM_DATA_URL.indexOf(',');
   if (SQLITE_WASM_DATA_URL.startsWith('data:') && comma > 0) {
     const text = atob(SQLITE_WASM_DATA_URL.slice(comma + 1));
@@ -51,8 +47,7 @@ function wasmBytes(): WebAssembly.Module | Uint8Array {
 /** SQLite, instantiated once per realm at its first use. */
 export function sqliteC(): SqliteC {
   if (instance) return instance;
-  const source = wasmBytes();
-  const module = source instanceof WebAssembly.Module ? source : new WebAssembly.Module(source as Uint8Array<ArrayBuffer>);
+  const module = new WebAssembly.Module(wasmBytes() as Uint8Array<ArrayBuffer>);
   const memory = new WebAssembly.Memory({ initial: 8388608 / 65536, maximum: 32768 });
   const view = (): DataView => new DataView(memory.buffer);
   const decoder = new TextDecoder(), encoder = new TextEncoder();
@@ -112,11 +107,16 @@ export function sqliteC(): SqliteC {
   exports.__wasm_call_ctors?.();
   const rc = exports.sqlite3_initialize();
   if (rc !== 0) throw Object.assign(new Error(`SQLite did not initialize (${rc})`), { code: 'ERR_SQLITE_ERROR' });
+  const allocate = (size: number): number => {
+    const pointer = Number(exports.sqlite3_malloc64(BigInt(Math.max(1, size))));
+    if (!pointer) throw Object.assign(new Error('SQLite could not allocate memory'), { code: 'ERR_SQLITE_ERROR', errcode: 7 });
+    return pointer;
+  };
   instance = {
     exports, memory,
     cString(text) {
       const bytes = encoder.encode(text);
-      const pointer = exports.sqlite3_malloc(bytes.length + 1) as number;
+      const pointer = allocate(bytes.length + 1);
       const target = new Uint8Array(memory.buffer, pointer, bytes.length + 1);
       target.set(bytes); target[bytes.length] = 0;
       return pointer;
@@ -130,12 +130,12 @@ export function sqliteC(): SqliteC {
     },
     bytes(pointer, length) { return new Uint8Array(memory.buffer, pointer, length).slice(); },
     alloc(bytes) {
-      const pointer = Number(exports.sqlite3_malloc64(BigInt(Math.max(1, bytes.length))));
+      const pointer = allocate(bytes.length);
       new Uint8Array(memory.buffer, pointer, bytes.length).set(bytes);
       return pointer;
     },
     cell(size = 8) {
-      const pointer = exports.sqlite3_malloc(size) as number;
+      const pointer = allocate(size);
       new Uint8Array(memory.buffer, pointer, size).fill(0);
       return pointer;
     },
