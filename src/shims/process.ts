@@ -8,6 +8,7 @@ import { engineSymbolFor } from '../engine-symbol';
 
 import { queueGuestNextTick } from '../guest-loop';
 import { EventEmitter } from '../node-lib/events-module';
+import { hostMonotonicMilliseconds } from '../host-time';
 import type { EventListener } from '../node-lib/events-module';
 import { Readable } from '../node-lib/stream-module';
 import { loadNodeLibFor, nodeLibBindingFor } from '../node-lib/load';
@@ -643,7 +644,7 @@ export function createProcess(options?: {
   // `__substrateProcessEnding`. A program that emits 'exit' itself has called its own listeners and is still running,
   // as in Node; its ticks run.
   let exiting = false;
-  const startTime = Date.now();
+  const startTime = hostMonotonicMilliseconds();
   // The guest's fd 0: the bytes the runner put there, then the end of them.
   // Nothing more can arrive unless the runner says it holds the input open.
   let stdinStream: ProcessStdin | undefined;
@@ -1028,7 +1029,7 @@ export function createProcess(options?: {
     },
 
     uptime() {
-      return (Date.now() - startTime) / 1000;
+      return (hostMonotonicMilliseconds() - startTime) / 1000;
     },
 
     cpuUsage() {

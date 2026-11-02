@@ -146,3 +146,14 @@ reconnects resend pending checks; superseded channels cannot acknowledge them.
 An older worker without `portMapping:1` needs an update and rejects explicitly.
 `document-response` events carry only metadata from actual browser document
 responses (port, method, URL, status and headers); no selection probe is made.
+
+### Guest realtime
+
+`RuntimeOptions.realtime` and `RunOptions.realtime` are trusted host callbacks
+returning epoch milliseconds. They select application `Date.now()`, `Date()`
+and no-argument `new Date()` for that process and its Node children. An embedding
+starts each worker Runtime with the same callback. Explicit date arguments,
+`performance`, `hrtime`, relative timers and process lifetime budgets keep their
+normal clocks. Each process owns its Date constructor and mutable statics;
+changing them does not change the embedding realm's Date.
+`NODE_REALTIME_VERSION === 1` identifies this host seam.

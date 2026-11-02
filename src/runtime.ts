@@ -40,6 +40,8 @@ import { netModule as netShim } from './node-lib/net-module';
 import { errname as __uvErrname } from './node-lib/binding/uv';
 import { createTimersModule } from './node-lib/timers';
 import { guestTimerFunctions } from './guest-timers';
+import { guestDate } from './guest-date';
+import { hostRealtimeMilliseconds } from './host-time';
 import { noteStackFormed, stackOverrides } from './stack-overrides';
 export { pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers } from './guest-timers';
 import eventsShim from './node-lib/events-module';
@@ -159,6 +161,7 @@ function walkAst(node: any, callback: (node: any) => void): void {
  * answers for them.
  */
 const __substrateGuestGlobals = new WeakMap<Process, Record<string, unknown>>();
+const __substrateRealtime = new WeakMap<Process, () => number>();
 const __substrateAsyncFunction = (async function() {}).constructor;
 const __substrateFunctionScope = Function("__substrateFunctionGlobals", "__substrateFunctionSource", "__dynamicImport", "with (__substrateFunctionGlobals) { return eval('(' + __substrateFunctionSource + ')'); }");
 /**
@@ -286,7 +289,7 @@ function __substrateScriptName(resolvedPath: string): string | undefined {
 }
 /** A body whose guest names are rewritten where free (`__substrateGuestNameEdits`): it runs in Node's own wrapper form, no `with`. */
 const __substrateGuestScopedMarker = '/*__substrate_guest_scoped__*/';
-const __substrateGuestNamePattern = new RegExp(`\\b(?:new|eval|with|${['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'window', 'document', 'location', 'performance'].join('|')})\\b`, 'u');
+const __substrateGuestNamePattern = new RegExp(`\\b(?:new|eval|with|${['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'Date', 'fetch', 'window', 'document', 'location', 'performance'].join('|')})\\b`, 'u');
 /** Whether a prepared body carries the mark, after an ES module's own mark where it has one. */
 function __substrateGuestScoped(code: string): boolean {
   return code.startsWith(__substrateGuestScopedMarker) || (code.startsWith(__substrateModuleMarker) && code.startsWith(__substrateGuestScopedMarker, __substrateModuleMarker.length));
@@ -407,6 +410,12 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   const shadowed = (target: object, key: string | symbol): boolean => Reflect.getOwnPropertyDescriptor(target, key) !== undefined;
   const hostAtStart = new Set<string | symbol>(Reflect.ownKeys(host));
   const localGlobals = Object.create(null);
+  Object.defineProperty(localGlobals, 'Date', { value: guestDate(__substrateRealtime.get(process)), writable: true, configurable: true });
+  // An embedder-provided coherent clock occupies the injector's existing guest-only seam. Its file cache must
+  // neither apply the offset twice nor mutate the native constructor the Host uses.
+  if (__substrateRealtime.has(process)) Object.defineProperty(localGlobals, Symbol.for('volter.machineDateNow'), {
+    value: hostRealtimeMilliseconds, configurable: true,
+  });
   Object.defineProperty(localGlobals, "Promise", { value: intrinsicPromise, writable: true, configurable: true, enumerable: false });
   // Node's own navigator, scoped to this process; never expose WorkerNavigator.
   Object.defineProperties(localGlobals, {
@@ -446,7 +455,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       configurable: true, enumerable: shape!.enumerable,
     });
   }
-  const isLocalGlobal = (key: string | symbol) => ['Promise', 'navigator', 'Navigator', 'Worker', 'self', ...browserTransportGlobals].includes(key as string);
+  const isLocalGlobal = (key: string | symbol) => ['Promise', 'Date', 'navigator', 'Navigator', 'Worker', 'self', ...browserTransportGlobals].includes(key as string);
   /** What stands behind a name the guest has not made its own. */
   const standing = (key: string | symbol): unknown => {
       if (key === "global" || key === "globalThis") return guest;
@@ -623,7 +632,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
  * configurable: one body's `delete window` used to remove the name from that body's own scope alone, and on a
  * shared scope it would remove it from every later body's, so the delete is refused (false, as sloppy code sees it).
  */
-const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'window', 'document', 'location', 'performance'] as const;
+const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'Date', 'fetch', 'window', 'document', 'location', 'performance'] as const;
 const __substrateGuestScopes = new WeakMap<Process, object>();
 function __substrateGuestScope(process: Process): object {
   let scope = __substrateGuestScopes.get(process);
@@ -1939,6 +1948,8 @@ export interface ModuleEvaluationObserver {
 export interface ModuleEvaluationEvidence { sourceSha256: string; exportsReplaced: boolean }
 
 export interface RuntimeOptions {
+  /** Trusted host realtime for this process; relative timers, hrtime and performance remain native. */
+  realtime?: () => number;
   /** Host-configured numeric identity; absent preserves uid/gid 1000 and groups [1000]. */
   credentials?: ProcessCredentials;
   cwd?: string;
@@ -4213,6 +4224,7 @@ export class Runtime {
     // so the binding reads the tree off the process whose code is executing --
     // the same door every vendored file gets its `process` through.
     (this.process as unknown as Record<symbol, unknown>)[kRunFilesystem] = vfs;
+    if (options.realtime) __substrateRealtime.set(this.process, options.realtime);
     // Capture the host method before guest code executes, but read its mutable kernel UTS afresh on each call.
     const hostnameReader = vfs.processHostname?.bind(vfs);
     recordProcessHostname(this.process, hostnameReader ?? (() => 'localhost'));

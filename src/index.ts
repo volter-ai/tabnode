@@ -16,6 +16,8 @@ export type { ProcessCredentials } from './process-credentials';
 // hands the host's own globals back. See `host-globals.ts`.
 export { restoreHostGlobals, guestRealmInstalled } from './host-globals';
 export { VirtualFS } from './virtual-fs';
+/** A process-local host realtime callback, including direct Runtime and runNode starts. */
+export const NODE_REALTIME_VERSION = 1;
 export type { FSNode, MountedTree, Stats, FSWatcher, WatchListener, WatchEventType } from './virtual-fs';
 export { Runtime, execute, seedKeptResolutions, keptResolutions, prepareModuleForImage, preparedModuleKey, preparedModuleKeyOf, preparedModuleKind, isPreparedModuleKey, PREPARED_MODULES_DIR, PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT } from './runtime';
 export type { Module, RuntimeOptions, RequireFunction, ModuleEvaluationObserver, ModuleEvaluationEvidence } from './runtime';
@@ -96,6 +98,7 @@ export interface RunResult {
 }
 
 export interface RunOptions {
+  realtime?: () => number;
   /** Private host evidence selection; it is not a guest Node global or inherited child option. */
   moduleEvaluationObserver?: RuntimeOptions['moduleEvaluationObserver'];
   /** The host's numeric credentials for this process; otherwise inherit the container's configured identity. */
@@ -298,8 +301,10 @@ export function createContainer(options?: ContainerOptions): {
     const processToken = typeof runOptions?.processToken === 'string' && runOptions.processToken.length > 0
       ? runOptions.processToken
       : `run-${__nextRunName++}`;
+    const realtime = runOptions?.realtime ?? options?.realtime;
     const credentials = copyProcessCredentials(runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()));
     registerRunStreams(processToken, {
+      ...(realtime ? { realtime } : {}),
       credentials,
       onStdout: runOptions?.onStdout,
       onStderr: runOptions?.onStderr,

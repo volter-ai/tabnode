@@ -38,6 +38,7 @@ if (typeof globalThis.process === 'undefined') {
 }
 
 import { forGuestRealm, heldWork } from '../host-globals';
+import { hostMonotonicMilliseconds } from '../host-time';
 import { promiseOwner } from '../promise-ownership';
 import { Bash, defineCommand } from 'just-bash';
 import type { CommandContext, ExecResult as JustBashExecResult } from 'just-bash';
@@ -192,6 +193,7 @@ const NODE_VALUE_OPTIONS = new Set([
 export type StdioKind = 'tty' | 'pipe' | 'file' | 'char';
 
 export interface RunStreams {
+  realtime?: () => number;
   /** Credentials inherited by this run and every Node image it starts. */
   credentials?: ProcessCredentials;
   stdinStream?: AsyncIterable<Uint8Array>;
@@ -475,6 +477,7 @@ const __listenForUnhandledRejections = (owner: object, report: (reason: unknown,
 
 /** One start of the engine's Node, however it was asked for. */
 export interface NodeLaunch {
+  realtime?: () => number;
   /** Requested local host evidence only; never sent to a child's process host or exposed through Node. */
   moduleEvaluationObserver?: import('../runtime').ModuleEvaluationObserver;
   /** Credentials inherited by this run and every Node image it starts. */
@@ -668,7 +671,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // lines are not writes of the program and are not counted here or in `printed`.
   const lastWrite = { at: 0, fd: 0, bytes: 0, head: '', writes: 0 };
   const noteWrite = (fd: 1 | 2, data: string | Uint8Array): void => {
-    lastWrite.at = Date.now(); lastWrite.fd = fd; lastWrite.bytes = data.length; lastWrite.writes += 1;
+    lastWrite.at = hostMonotonicMilliseconds(); lastWrite.fd = fd; lastWrite.bytes = data.length; lastWrite.writes += 1;
     lastWrite.head = typeof data === 'string' ? data.slice(0, 80) : '';
   };
   const stdinRing: StdinReader | undefined = streams?.stdinReader ?? (streams?.stdinShared ? new StdinRingReader(streams.stdinShared) : undefined);
@@ -726,7 +729,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const reaper: ProcessToken | null | undefined = nested ? parentToken : forkedHere ? null : undefined;
   let runEnd: number | undefined;
   // Create a runtime with output capture for both console.log AND process.stdout.write
+  const realtime = launch.realtime ?? streams?.realtime;
   const runtime = new Runtime(tree, {
+    ...(realtime ? { realtime } : {}),
     ...(launch.moduleEvaluationObserver ? { moduleEvaluationObserver: launch.moduleEvaluationObserver } : {}),
     cwd: launch.cwd,
     env: guestEnv,
@@ -1144,7 +1149,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     const MAX_TOTAL_MS = 60000;
     const SILENT_IDLE_TIMEOUT_MS = 2000;
     const CHECK_MS = 50;
-    const startTime = Date.now();
+    const startTime = hostMonotonicMilliseconds();
     let lastOutputLen = printed;
     let idleMs = 0;
     // A timer the guest still holds is work in Node's loop, whether or not
@@ -1236,9 +1241,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
           const by = [...(printed > lastOutputLen ? ['output'] : []), ...(input ? ['input'] : []), ...(timers > 0 ? ['timer'] : []),
             ...(ports > 0 ? ['port'] : []), ...(handles > 0 ? ['handle'] : []), ...(held > 0 ? ['held work'] : [])];
           emptyLook = by.length === 0;
-          if (emptyLook) { emptyLooks += 1; emptyAt ??= Date.now(); }
+          if (emptyLook) { emptyLooks += 1; emptyAt ??= hostMonotonicMilliseconds(); }
           else if (emptyAt !== undefined) {
-            if (wokeAfterEmpty.length < 8) wokeAfterEmpty.push({ afterEmptyMs: Date.now() - emptyAt, by });
+            if (wokeAfterEmpty.length < 8) wokeAfterEmpty.push({ afterEmptyMs: hostMonotonicMilliseconds() - emptyAt, by });
             emptyAt = undefined;
           }
         }
@@ -1271,7 +1276,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         // a server, which is every extension host and every pty host. Work the
         // host holds for it (a build, a pre-bundle) is seen work too: a dev
         // server whose start passed a minute mid pre-bundle was cut with exit 0.
-        if (!isLongRunning && !stillWorking() && heldWork().count === 0 && Date.now() - startTime >= MAX_TOTAL_MS) { endedBy = `the ${MAX_TOTAL_MS} ms bound`; break; }
+        if (!isLongRunning && !stillWorking() && heldWork().count === 0 && hostMonotonicMilliseconds() - startTime >= MAX_TOTAL_MS) { endedBy = `the ${MAX_TOTAL_MS} ms bound`; break; }
       } finally {
         const worked = hostNow() - workBegan;
         checkWork.totalMs += worked; checkWork.maxMs = Math.max(checkWork.maxMs, worked);
@@ -1292,10 +1297,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       if (typeof proc.exitCode === 'number') exitCode = proc.exitCode;
     }
     // Keep D1 evidence when the new first-empty decision is shorter than the old trace threshold.
-    if (endedBy === 'the referenced loop is empty' || emptyLooks > 0 || Date.now() - startTime >= 200) {
-      if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: { ...heldBy }, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
-        entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null,
-        emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt,
+    if (endedBy === 'the referenced loop is empty' || emptyLooks > 0 || hostMonotonicMilliseconds() - startTime >= 200) {
+      if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: hostMonotonicMilliseconds() - startTime, endedBy, heldByMs: { ...heldBy }, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
+        entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: hostMonotonicMilliseconds() - lastWrite.at } : null,
+        emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : hostMonotonicMilliseconds() - emptyAt,
         lookTimer: { realm: isWorkerRealm || nodeProcessRealmToken() !== null ? 'worker' : typeof window === 'undefined' ? 'host' : 'window',
           source: globalThis.__browserRuntimeNativeSetTimeout ? 'host-captured setTimeout' : 'realm.setTimeout', requestedMs: CHECK_MS, ...checkWait },
         lookWorkMs: { ...checkWork }, entryCheckpointMs: { ...checkpoints } });
@@ -2352,6 +2357,7 @@ export function runCommand(command: string, options: ExecOptions, callback?: Exe
 
 /** What a host gives one argv start of the engine's Node. */
 export interface NodeRunOptions {
+  realtime?: () => number;
   moduleEvaluationObserver?: import('../runtime').ModuleEvaluationObserver;
   /** Credentials inherited by this run and every Node image it starts. */
   credentials?: ProcessCredentials;
@@ -2414,6 +2420,7 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
   if (options.registry) installRunRegistry(options.processToken, options.registry);
   if (options.process) claimRunPid(options.processToken, options.process.pid, options.process.ppid, { argv: [...argv], cwd: options.cwd ?? '/' });
   return launchNode(tree, {
+    ...(options.realtime ? { realtime: options.realtime } : {}),
     ...(options.moduleEvaluationObserver ? { moduleEvaluationObserver: options.moduleEvaluationObserver } : {}),
     argv: [...argv],
     cwd: options.cwd ?? '/',
@@ -2632,7 +2639,9 @@ function startChildRun(request: RunRequest): StartedRun {
   // A Node child's fd 1 and 2 reach the parent's pipe as the bytes it wrote,
   // with no text kept of them; a program that writes text (a shell builtin,
   // a host program) still arrives through the text sinks.
+  const realtime = runStreamsFor(request.owner)?.realtime;
   const streams: RunStreams = {
+    ...(realtime ? { realtime } : {}),
     credentials: request.credentials,
     onStdout: (data: string) => { streamedOut.push(data); request.stdout?.(data); },
     onStderr: (data: string) => { streamedErr.push(data); request.stderr?.(data); },

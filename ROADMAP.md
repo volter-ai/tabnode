@@ -1,3 +1,17 @@
+## VO-3806 application realtime — t_7bb8aeed
+
+Substrate Articles 3, 5, 6 and 9. Restore process-local Date ownership and
+expose the trusted host realtime callback through RuntimeOptions and named
+run streams. Each Node child inherits its run's callback; an embedding that
+starts a worker Runtime passes the same source. Explicit dates retain native
+parsing/construction. Host Date, performance, hrtime, relative timers, uptime
+and child idle budgets retain their host elapsed timeline.
+
+Source implementation awaits independent review and the substrate's real
+PostgreSQL/Node World-clock proof under ADR-0215 decision 10. The prepared
+module format invalidates bodies compiled before bare Date was process-local.
+This source is a new candidate; it does not amend the published 0.16.0 archive.
+
 ## Retained engine publication qualification
 
 VO-3806 t_757ceb01; substrate Articles 6, 8 and 9. Qualify the source-only
