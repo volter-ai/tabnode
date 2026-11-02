@@ -603,14 +603,10 @@ function workerPreludePosition(text) {
   return undefined;
 }
 
-// BLOB WORKERS A PREVIEW'S WORKER STARTS. A worker that a worker creates is not this service worker's client, whatever
-// its URL, so every request it makes goes past the preview to the page's own server: Cyclotron's Blender worker starts
-// Blender's Emscripten loader and its pthreads as blob workers, and their importScripts of the session's
-// /__editor/blender-wasm/blender_browser.js answered 404 from the page's host (measured: 24 such workers, none of whose
-// requests reached this worker). A worker this worker serves at the root carries ROOTED_WORKER_PRELUDE: a blob worker
-// it starts runs CHILD_WORKER_PRELUDE before the blob's own code, whose importScripts of this origin asks the creator
-// (a client of this worker, so its fetch reaches the preview) for the script's bytes, waiting on shared memory as
-// importScripts waits on the network. Without cross-origin isolation (no SharedArrayBuffer) nothing is changed.
+// A nested blob worker is not this service worker's client. ROOTED_WORKER_PRELUDE
+// gives it CHILD_WORKER_PRELUDE, which requests same-origin importScripts bytes
+// through its creator, whose fetch reaches the preview. Shared memory preserves
+// importScripts' synchronous contract; this route requires cross-origin isolation.
 const CHILD_WORKER_PRELUDE = `;(function(){if(self.__browserRuntimeChildWorker||typeof SharedArrayBuffer!=='function'||typeof Atomics!=='object')return;` +
   `self.__browserRuntimeChildWorker=true;const I=self.importScripts.bind(self),C=URL.createObjectURL.bind(URL);` +
   `const load=function(href){const control=new SharedArrayBuffer(8),data=new SharedArrayBuffer(0,{maxByteLength:268435456}),c=new Int32Array(control);` +

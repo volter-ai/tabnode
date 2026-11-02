@@ -325,10 +325,9 @@ export function withOptionValues<T>(overrides: Record<string, unknown>, fn: () =
 }
 
 /**
- * `--eval` as Node holds it: the code a `-e`/`--eval`/`-p`/`--print` run was given, and `""` for a run of a file. Node's
- * `util.parseArgs()` reads its length to choose where the program's own arguments start (parse_args.js getMainArgs),
- * and an option no run sets answered undefined: Volter Browsers' `lucarne serve` stopped at "Cannot read properties of
- * undefined (reading 'length')" before its first line (card t_d4b07ea8). The run's own execArgv says which it is.
+ * `--eval` is the code passed to `-e`/`--eval`/`-p`/`--print`, or `""` for a
+ * file run. Node's `util.parseArgs()` uses its length to locate program arguments;
+ * the run's own execArgv identifies the evaluation mode and source.
  */
 function evalOption(): string {
   const execArgv = (globalThis as { process?: { execArgv?: unknown } }).process?.execArgv;

@@ -356,14 +356,9 @@ function readStdin(fd: number, buffer: Uint8Array, offset: number, length: numbe
 }
 
 /**
- * AN ASYNCHRONOUS READ OF fd 0 WAITS FOR ITS BYTES. `fs.read(0, …, callback)` (and fs/promises') is a request the
- * threadpool blocks on, and its callback runs when bytes or the end arrive: Go's WebAssembly runtime reads stdin that
- * way (wasm_exec sets `globalThis.fs` to Node's fs), and esbuild-wasm's `--service` is its program. Answered like the
- * synchronous read, it failed with ERR_STDIN_BLOCKING_READ whenever the pipe was still empty, so the service never read
- * its first packet: esbuild's JS API, as wrangler uses it through ESBUILD_BINARY_PATH, waited for its ping forever
- * (browser-substrate card t_d4b07ea8, Open Autonomy's `wrangler dev`). Here an asynchronous read with nothing yet and
- * the writer open waits on the run's stdin stream (its `readable` or `end`), holds the run as an open request does,
- * and then reads as before. A synchronous read, a ring and an O_NONBLOCK descriptor are unchanged.
+ * An asynchronous read of fd 0 waits for bytes or the end while the writer is
+ * open. Holding the run's request preserves Node's threadpool-read lifetime
+ * without blocking the realm's event loop. Nonblocking descriptors do not wait.
  */
 function stdinWait(fd: number, position: number, req: FSReq | undefined): Promise<void> | undefined {
   const asynchronous = (req as unknown) === kUsePromises || (req !== undefined && typeof req === 'object' && typeof req.oncomplete === 'function');
@@ -374,10 +369,8 @@ function stdinWait(fd: number, position: number, req: FSReq | undefined): Promis
   const stdin = process?.stdin as (NonNullable<StdioStreams['stdin']> & { once?(event: string, listener: () => void): unknown; removeListener?(event: string, listener: () => void): unknown }) | undefined;
   if (!stdin || typeof stdin.once !== 'function') return undefined;
   if ((stdin.readableLength ?? 0) > 0 || stdin.readableEnded === true || stdin._readableState?.ended === true) return undefined;
-  // A run given a shared ring (stdinShared) blocked this read in takeBlocking: the bytes do come from another thread,
-  // but its own pending writes wait on this loop. esbuild's service wrote its answer with process.stdout.write and then
-  // blocked in its next stdin read, so the answer never left and its parent never wrote again. The asynchronous read
-  // waits on the ring without blocking (Atomics.waitAsync), and the loop flushes meanwhile.
+  // Ring input can arrive from another thread, but this run's pending output
+  // still needs its event loop. An asynchronous ring wait lets that output flush.
   const ring = (process as Record<symbol, unknown>)[kStdinRing] as (StdinReader & { available?(): number; closed?(): boolean }) | undefined;
   if (ring) {
     if (!stdinRingWaitsAsync() || typeof ring.available !== 'function' || ring.available() > 0 || ring.closed?.() === true) return undefined;

@@ -388,8 +388,7 @@ export class Process implements OwnedHandle {
     // including ENOENT; ChildProcess closes it from its existing error turn.
     observeNodeHandle(this);
     if (!runner.resolves(request)) {
-      // AN INSTRUMENT (Open Autonomy's wrangler, card t_d4b07ea8): a spawn the runner found nothing for, which Node
-      // reports as `spawn <file> ENOENT`; the runner's reason is its own (a missing cwd, no host, no such program).
+      // An unresolved spawn reports ENOENT; tracing retains the original request.
       if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-not-resolved', at: Date.now(), file: request.file, args: request.args?.slice(0, 4), cwd: request.cwd ?? null });
       this.closeFarEnds();
       return UV_ENOENT;
@@ -399,9 +398,7 @@ export class Process implements OwnedHandle {
     catch (cause) {
       this.closeFarEnds();
       const code = (cause as { code?: string })?.code;
-      // AN INSTRUMENT (Workbench in a tab, browser-substrate card t_d4b07ea8: `execFile('git', ['-C', root, 'add', '-A'], cb)`
-      // from an earlier git's exit callback threw "spawn EINVAL", and the server ended): the start's own refusal, which
-      // the errno alone does not say.
+      // Keep the runner's refusal detail in the trace before mapping its errno.
       if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-start-refused', at: Date.now(), file: request.file, args: request.args?.slice(0, 6), cwd: request.cwd ?? null, code: code ?? null, message: cause instanceof Error ? cause.message.slice(0, 300) : String(cause).slice(0, 300), stack: cause instanceof Error ? (cause.stack ?? '').split('\n').slice(0, 8).join(' | ') : null });
       if (code === 'EPERM') return UV_EPERM;
       if (code === 'EINVAL') return UV_EINVAL;

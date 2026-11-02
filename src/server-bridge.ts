@@ -128,10 +128,8 @@ function __substrateFrame(opcode: number, payload: Uint8Array, masked: boolean):
   return out;
 }
 /**
- * A WebSocket's frames from the bytes it is sent. A frame longer than one chunk was kept by joining every chunk to
- * the bytes before it through a spread into a plain array: the Volter Editor's launcher spent 1.9 s of CPU here on
- * its workbench's socket (card t_d4b07ea8, editor-prof profile 51, __substrateParseFrames). The chunks are kept as
- * they come and joined once, when the frame at the front can be whole.
+ * Incoming WebSocket chunks are kept separately and joined once the front frame
+ * can be whole, avoiding repeated copying while a large frame is incomplete.
  */
 function __substrateParseFrames(state: FrameState, chunk: Uint8Array, onFrame: (opcode: number, payload: Uint8Array) => void): void {
   state.pending.push(chunk);
