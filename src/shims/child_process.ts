@@ -45,7 +45,7 @@ import { EventEmitter } from '../node-lib/events-module';
 import { __substrateExitCode, __substrateProcessEnding, __substrateUncaughtCapture } from './process';
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
-import { executableHeader, EXECUTABLE_HEADER_BYTES, nodeShebang } from './executable-header';
+import { executableHeader, EXECUTABLE_HEADER_BYTES } from './executable-header';
 import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
 import { stackFormedBy } from '../stack-overrides';
 import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
@@ -80,7 +80,6 @@ import { __nodeResolverFor } from '../node-resolver';
 import { resolve as __resolvePath } from './path';
 import { setSyncChildVfs, warmSyncChild } from './sync-child';
 import { installShellJobs } from './shell-jobs';
-import { nodeScriptExecutor } from './package-bins';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
 import { installedNpmVersion } from '../npm/version';
@@ -1475,7 +1474,6 @@ export function initChildProcess(vfs: VirtualFS): void {
       PATH: '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin',
     },
     customCommands: [nodeCommand, npmCommand],
-    scriptExecutor: nodeScriptExecutor(tree, launchShellNode),
   });
   // A statement ending in `&` runs in the background, with `$!`, `wait` and
   // `kill` over the engine's process table (`shell-jobs.ts` says how).
@@ -1488,14 +1486,10 @@ export function initChildProcess(vfs: VirtualFS): void {
   // What a `Process` handle runs. Node's own `child_process.js` starts, ends
   // and pipes a child through the binding; the binding asks this.
   setProgramResolver(engineProgramFor);
-  // The rule `startChildRun` applies below, as one answer for a synchronous child (the spawn_sync binding): with a
-  // host published, a shell and `env` are the host's, the engine's Node is the engine's, and any other program is
-  // the host's unless the engine carries it.
-  setHostRunsProgram((file, cwd, env) => {
-    if (hostExecutor() === null || __substrateRunsNode(file, cwd)) return false;
-    const program = engineProgramFor(file, cwd);
-    return SHELL_PROGRAMS.has(program) || program === 'env' || !programExists(file, cwd, env);
-  });
+  // The host owns executable lookup, including Node shebangs, with the
+  // child's actual PATH and cwd. Only the engine's Node executable bypasses
+  // that owner; a file whose shebang names Node is still the host's file.
+  setHostRunsProgram(hostRunsProgram);
   setProcessRunner({
     resolves: (request: RunRequest): boolean => {
       if (!bashInstance) {
@@ -1935,6 +1929,8 @@ interface ChildProcessHostRequest {
    * beside it says the same run for a host that has only a shell.
    */
   argv?: readonly string[];
+  /** The executable to resolve independently of the caller's argv[0]. */
+  executablePath?: string;
   cwd?: string;
   env?: Record<string, string>;
   /** Bytes already on fd 0 when the command begins, as Node delivers them. */
@@ -1993,17 +1989,9 @@ interface CommandRun {
   command: string;
   /** The same run as its words, where the caller had a list (`ChildProcessHostRequest.argv`). */
   argv?: readonly string[];
-  /**
-   * Whether the engine's own shell answers for this command before the host's
-   * process host is asked. A run the HOST asked for is the host's first: that
-   * is how a page-registered program and a WALI pack are reached. A child a
-   * GUEST spawned is the engine's first, because the engine has a command for
-   * it and because a host that takes the child over reports it as a run of its
-   * own -- which is why every line a forked child printed reached the tab's
-   * terminal twice, once as the child's run and once down its parent's
-   * inherited stdout. The host is still asked for what the engine does not
-   * carry.
-   */
+  /** The executable to resolve independently of the caller's argv[0]. */
+  executablePath?: string;
+  /** Use the private compatibility shell only where no host owns this run. */
   engineFirst?: boolean;
   cwd?: string;
   env?: Record<string, string>;
@@ -2089,6 +2077,7 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
       try {
         result = await bridge.run(run.command, {
           ...(run.argv ? { argv: [...run.argv] } : {}),
+          ...(run.executablePath !== undefined ? { executablePath: run.executablePath } : {}),
           cwd: run.cwd,
           env: hostEnv,
           ...(run.credentials ? { credentials: run.credentials } : {}),
@@ -2465,9 +2454,6 @@ function existsInTree(path: string): boolean {
  * a program the engine can run; the engine's own `node`, written to
  * `/usr/local/bin/node` when the shim is initialized, is one of those.
  */
-/** The shells a script or a `-c` line runs under; a child of these goes to the host when there is one. */
-const SHELL_PROGRAMS = new Set(['sh', 'bash', 'dash', '/bin/sh', '/bin/bash', '/usr/bin/sh', '/usr/bin/bash']);
-
 function engineProgramFor(file: string, cwd?: string): string {
   const name = __substrateProgramName(file);
   if (!name.includes('/')) return name;
@@ -2496,28 +2482,14 @@ function programExists(file: string, cwd: string | undefined, env: Record<string
   return false;
 }
 
-/**
- * Whether a file in the tree is this engine's to run when a host could run it.
- * Linux's execve runs a script through the interpreter its `#!` line names and
- * a binary through its loader. This engine's own interpreters are Node (its
- * `node` command) and just-bash; a Node script stays here, where its `node` is
- * the engine's. Any other file goes to the host, whose kernel execs it: a shell
- * script spawned by path (Prisma's execa spawning a wrapper) ran in just-bash,
- * whose `exec node` found the host's `node` stub on PATH and ran the stub as
- * a script ("bash: \0Volter-host-executable-v1: command not found"). With no
- * host, every file but a registered stub stays here, as before.
- */
-function runsInEngine(path: string): boolean {
-  if (hostExecutor() === null) return !isRegisteredProgramStub(path);
-  return isNodeScript(path);
+/** A published host resolves every executable except the engine's Node. */
+function hostRunsProgram(file: string, cwd?: string): boolean {
+  return hostExecutor() !== null && !__substrateRunsNode(file, cwd);
 }
 
-function isNodeScript(path: string): boolean {
-  if (!currentVfs) return false;
-  try {
-    if (!currentVfs.statSync(path).isFile()) return false;
-    return nodeShebang(executableHeader(currentVfs, path)) !== undefined;
-  } catch { return false; }
+/** Files the private compatibility shell can read when no host is present. */
+function runsInEngine(path: string): boolean {
+  return !isRegisteredProgramStub(path);
 }
 
 /**
@@ -2723,20 +2695,8 @@ function startChildRun(request: RunRequest): StartedRun {
   const begin = (): void => {
     if (started || finished) return;
     started = true;
-    // A shell a hosted program spawns (`sh start.sh`, `sh -c '…'`) runs at
-    // the host when there is one, not in this worker's own bash: the host is
-    // where the programs the page registered live (`npx` under /usr/bin),
-    // and where a `node` inside the script is given a named run. Run here,
-    // the script's `node` found no name and was refused, and its `npx` was
-    // not found at all.
-    const shellChild = SHELL_PROGRAMS.has(engineProgramFor(request.file, request.cwd)) && hostExecutor() !== null;
-    // env executes another program. The host owns installed package-bin
-    // resolution, just as it owns shell dispatch; treating this wrapper as
-    // an engine-only utility strands its operand in the private shell and
-    // bypasses the admitted child-process door. Keep env's own interpreter
-    // and options in the host, with the original cwd and environment.
-    const environmentChild = engineProgramFor(request.file, request.cwd) === 'env' && hostExecutor() !== null;
-    const engineFirst = !hostTerminal && !shellChild && !environmentChild && programExists(request.file, request.cwd, request.env);
+    const hostOwnsExecutable = hostRunsProgram(request.file, request.cwd);
+    const engineFirst = !hostTerminal && !hostOwnsExecutable && programExists(request.file, request.cwd, request.env);
     liveInput = !hostTerminal && !admittedNode && !directNode && request.stdinIsPipe && !engineFirst;
     if (liveInput) {
       pendingStdin.unshift(...initialStdin);
@@ -2765,7 +2725,10 @@ function startChildRun(request: RunRequest): StartedRun {
           token,
         })) : await enterRun(token, () => routeCommand({
           command: __substrateLineFor(request.file, request.args, request.cwd),
-          ...(((argv) => argv ? { argv } : {})(__substrateArgvFor(request.file, request.args, request.cwd))),
+          ...(hostOwnsExecutable ? {
+            executablePath: request.file,
+            argv: request.args.length > 0 ? [...request.args] : [request.file],
+          } : ((argv) => argv ? { argv } : {})(__substrateArgvFor(request.file, request.args, request.cwd))),
           engineFirst,
           credentials: request.credentials,
           cwd: request.cwd,
