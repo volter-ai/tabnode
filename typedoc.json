@@ -1,9 +1,14 @@
 {
   "$schema": "https://typedoc.org/schema.json",
-  "entryPoints": ["src/index.ts", "src/vite-plugin.ts"],
-  "tsconfig": "tsconfig.build.json",
+  "entryPoints": [
+    "dist/index.d.ts",
+    "dist/vite-plugin.d.ts"
+  ],
+  "tsconfig": "tsconfig.docs.json",
   "out": "docs/api",
-  "plugin": ["typedoc-plugin-markdown"],
+  "plugin": [
+    "typedoc-plugin-markdown"
+  ],
   "readme": "none",
   "excludePrivate": true,
   "excludeInternal": true,
