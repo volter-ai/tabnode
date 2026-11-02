@@ -80,7 +80,7 @@ import { __nodeResolverFor } from '../node-resolver';
 import { resolve as __resolvePath } from './path';
 import { setSyncChildVfs, warmSyncChild } from './sync-child';
 import { installShellJobs } from './shell-jobs';
-import { routePackageBins } from './package-bins';
+import { nodeScriptExecutor } from './package-bins';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
 import { installedNpmVersion } from '../npm/version';
@@ -1407,13 +1407,14 @@ export function initChildProcess(vfs: VirtualFS): void {
 
   // The shell's `node` is the engine's Node started from the words the shell
   // parsed; `launchNode` is the one start, which `container.runNode` shares.
-  const nodeCommand = defineCommand('node', (args, ctx) => launchNode(tree, {
+  const launchShellNode = (args: string[], ctx: CommandContext) => launchNode(tree, {
     argv: ['node', ...args],
     cwd: ctx.cwd,
     env: guestEnvironmentOf(ctx),
     ...(typeof ctx.stdin === 'string' ? { stdin: ctx.stdin } : {}),
     token: runTokenOf(ctx),
-  }));
+  });
+  const nodeCommand = defineCommand('node', launchShellNode);
 
   // Create custom 'npm' command that runs scripts from package.json
   const npmCommand = defineCommand('npm', async (args, ctx) => {
@@ -1474,13 +1475,11 @@ export function initChildProcess(vfs: VirtualFS): void {
       PATH: '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin',
     },
     customCommands: [nodeCommand, npmCommand],
+    scriptExecutor: nodeScriptExecutor(tree, launchShellNode),
   });
   // A statement ending in `&` runs in the background, with `$!`, `wait` and
   // `kill` over the engine's process table (`shell-jobs.ts` says how).
   installShellJobs(bashInstance, { runTokenOf, runStreamsFor, registerRunStreams, releaseRunStreams });
-  // A host install's package bin named by a line runs under node, as its `#!` line says (package-bins.ts).
-  const shellCommands = (bashInstance as unknown as { commands?: Map<string, unknown> }).commands;
-  routePackageBins(bashInstance, tree, (name) => shellCommands?.has(name) ?? false);
   shells.set(tree, { bash: bashInstance, adapter: vfsAdapter });
 
   if (processRunnerInstalled) return;

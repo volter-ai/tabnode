@@ -45,14 +45,11 @@ What each release changed, newest first. A release is a tag `v<version>` on `mai
   Articles 6/9). Shell-bin and spawn routing share a 256-byte read through the explicitly selected tree's descriptor
   owner and one Node-shebang classifier. Callers retain their own policy for interpreter arguments and env options.
 
-- **A host install's package bin named by a shell line runs under node** (browser-substrate card t_d4b07ea8). The
-  engine's shell runs every file it finds on PATH as a shell script, whatever its `#!` line names, so a bin npm or bun
-  linked to a `#!/usr/bin/env node` file was parsed as shell: videogame.ai's `npm run preview` ran `astro preview`, and
-  node_modules/.bin/astro ended "bash: line 14: unexpected EOF". Before a line runs, a simple command whose literal
-  name is found on the line's PATH as a plain Node script is run by the shell's own `node` with the script's real path
-  (src/shims/package-bins.ts), including eligible executable paths containing `/`. Builtins, registered commands,
-  functions the line defines, commands that set PATH themselves and scripts whose `#!` line gives node flags keep
-  the shell's lookup. Execution-time routing after a PATH or directory change is pending ADR-0007.
+- **Executable Node scripts use the shell's execution-time selection** (browser-substrate card t_c656e6fd,
+  V1-02 t_07fc0d39; Articles 6/9). The supplier's script callback classifies the already-resolved executable's bounded
+  header and passes its real path and literal argv to the same Node launch owner as the shell's `node` command.
+  Earlier PATH/cwd changes, command assignments, computed names and ordinary shell precedence stay with the supplier.
+  `source`, redirection, shell scripts and unsupported shebang options retain their existing execution paths.
 - **A `file:` request under a native-binding map resolves again** (browser-substrate card t_d4b07ea8). The map's
   resolver read a `file:` specifier with the process's node-lib `url`, which the node-lib scope does not carry, so
   every such request threw "node-lib: no builtin 'url' in this process": Tailwind v4's `module.register` of its loader,
