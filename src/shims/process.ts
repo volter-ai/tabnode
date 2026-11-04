@@ -26,7 +26,7 @@ import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
 import { freemem as osFreemem } from './os';
 import { copyProcessCredentials, recordProcessCredentials, type ProcessCredentials } from '../process-credentials';
 import { version as acornVersion } from 'acorn';
-import { ERR_INVALID_ARG_TYPE } from '../node-internals';
+import { ERR_INVALID_ARG_TYPE, ERR_OUT_OF_RANGE } from '../node-internals';
 import { setSourceMapsSupportOf, sourceMapsSupportOf } from '../node-lib/internals/events-util';
 
 export interface ProcessEnv {
@@ -636,13 +636,15 @@ export function createProcess(options?: {
   };
   emitter.on('newListener', (name: string | symbol) => publishDisposition(name, true));
   emitter.on('removeListener', (name: string | symbol) => publishDisposition(name, false));
-  // Once the process is ending, nothing it queued, before or from an `exit` listener, runs afterwards. Node exits
-  // when the listeners return; here the realm goes on, so a queued tick would otherwise run in a process that has
-  // already said its last (Node's own test-next-tick queues one from `exit` and requires that it never be called).
-  // The mark is set where the engine ends the process and nowhere else: `exit()` below, and the launcher through
-  // `__substrateProcessEnding`. A program that emits 'exit' itself has called its own listeners and is still running,
+  // Once the process is exiting (Node's `process._exiting`), `nextTick` queues nothing: Node's own test-next-tick
+  // queues one from `exit` and requires that it never be called. Once it has ended, a tick queued before does not run
+  // either: Node exits when the listeners return, and here the realm goes on. Between the two (a listener's throw left
+  // `process.exit` and the program handled it) the ticks queued before run, as Node's do. The marks are set where the
+  // engine ends the process and nowhere else: `exit()` below, and the launcher through `__substrateProcessEnding` and
+  // `__substrateProcessEnded`. A program that emits 'exit' itself has called its own listeners and is still running,
   // as in Node; its ticks run.
   let exiting = false;
+  let ended = false;
   const startTime = Date.now();
   // The guest's fd 0: the bytes the runner put there, then the end of them.
   // Nothing more can arrive unless the runner says it holds the input open.
@@ -819,6 +821,7 @@ export function createProcess(options?: {
     exit(code: number | string | null | undefined = 0) {
       code = __substrateExitCode(code);
       exiting = true;
+      ended = true;
       proc.emit('exit', code);
       (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
       if (options?.onExit) {
@@ -924,8 +927,10 @@ export function createProcess(options?: {
       // A throw from a tick callback is this process's uncaught exception in
       // Node. Out of a microtask it would be the realm's instead, and in the
       // tab the worker's, which the substrate takes for a dead host.
+      // Node's nextTick queues nothing once the process is exiting (task_queues.js: `if (process._exiting) return`).
+      if (exiting) return;
       queueGuestNextTick(() => {
-        if (exiting) return;
+        if (ended) return;
         try { run(...args); }
         catch (error) { if (!__reportUncaughtException(proc, error)) throw error; }
       });
@@ -1077,8 +1082,12 @@ export function createProcess(options?: {
       const listeners = emitter.rawListeners(event) as (EventListener & { listener?: EventListener })[];
       if (listeners.length === 0) return emitter.emit(event, ...args);
       for (const raw of listeners) {
-        if (typeof raw.listener === 'function') { emitter.removeListener(event, raw); raw.listener.apply(proc, args); }
-        else raw.apply(proc, args);
+        if (typeof raw.listener !== 'function') { raw.apply(proc, args); continue; }
+        // A `once` listener runs once, even when its own emit re-enters this one (events.js onceWrapper's `fired`).
+        if (firedOnce.has(raw)) continue;
+        firedOnce.add(raw);
+        emitter.removeListener(event, raw);
+        raw.listener.apply(proc, args);
       }
       return true;
     },
@@ -1130,18 +1139,45 @@ export function createProcess(options?: {
     },
   };
 
-  processEndings.set(proc, (ending) => { exiting = ending; });
+  processEndings.set(proc, { exiting() { exiting = true; }, ended() { exiting = true; ended = true; } });
+  // Node's `process._exiting`: true from the first `exit` on, read by programs and settable by them, as Node's is.
+  Object.defineProperty(proc, '_exiting', { get: () => exiting, set: (value: unknown) => { exiting = Boolean(value); }, enumerable: true, configurable: true });
+  // Node's `process.exitCode` (bootstrap/node.js): undefined until set; undefined or null clears it; a string that is a
+  // number becomes that number; anything else must be a safe integer (validateInteger: ERR_INVALID_ARG_TYPE for a
+  // non-number, ERR_OUT_OF_RANGE otherwise). `process.exit(code)` assigns it whenever it is given a code.
+  let exitCodeValue: number | undefined;
+  Object.defineProperty(proc, 'exitCode', {
+    get: () => exitCodeValue,
+    set: (code: unknown) => {
+      if (code === null || code === undefined) { exitCodeValue = undefined; return; }
+      let value: unknown = code;
+      if (typeof code === 'string' && code !== '' && Number.isNaN((value = Number(code)))) value = code;
+      if (typeof value !== 'number') throw new ERR_INVALID_ARG_TYPE('code', 'number', value);
+      if (!Number.isInteger(value)) throw new ERR_OUT_OF_RANGE('code', 'an integer', value);
+      if (value < Number.MIN_SAFE_INTEGER || value > Number.MAX_SAFE_INTEGER) {
+        throw new ERR_OUT_OF_RANGE('code', `>= ${Number.MIN_SAFE_INTEGER} && <= ${Number.MAX_SAFE_INTEGER}`, value);
+      }
+      exitCodeValue = value;
+    },
+    enumerable: true,
+    configurable: false,
+  });
   recordProcessCredentials(proc, credentials);
   return proc;
 }
 
+/** The `once` wrappers that have run (Node's onceWrapper keeps this as its own `fired`). */
+const firedOnce = new WeakSet<object>();
+
 /** Each process's own mark that it is ending, kept here and not on the process, where a guest could reach it. */
-const processEndings = new WeakMap<object, (ending: boolean) => void>();
+const processEndings = new WeakMap<object, { exiting(): void; ended(): void }>();
 /**
- * The launcher says a process is ending, before it emits that process's `exit`; or, with `false`, that it is not
- * after all: a listener's throw left `process.exit` before the end, and the process runs on, as Node's does.
+ * The launcher says a process is ending, before it emits that process's `exit`. It stays ending, as Node's
+ * `process._exiting` does, even when a listener's throw leaves `process.exit` and the process runs on.
  */
-export function __substrateProcessEnding(process: object, ending = true): void { processEndings.get(process)?.(ending); }
+export function __substrateProcessEnding(process: object): void { processEndings.get(process)?.exiting(); }
+/** The launcher says a process has ended: nothing it queued runs from here. */
+export function __substrateProcessEnded(process: object): void { processEndings.get(process)?.ended(); }
 /** Processes a signal's default action is ending: Node's dies of the signal, and nothing an `exit` listener throws stops that. */
 const terminating = new WeakSet<object>();
 export function __substrateTerminating(process: object): boolean { return terminating.has(process); }

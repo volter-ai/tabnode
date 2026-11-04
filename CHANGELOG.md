@@ -2,6 +2,22 @@
 
 What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## 0.17.1 — 2026-11-04
+
+- **Exit and `once` as Node's, in the cases 0.17.0's review left** (Article 6; measured on Node v26.12.0). A `once`
+  listener re-entered by its own emit runs once, as events.js onceWrapper's `fired` keeps it. `process.exitCode` is
+  Node's accessor (bootstrap/node.js): undefined or null clears it, an integer string becomes its number, and anything
+  else that is not a safe integer throws `ERR_INVALID_ARG_TYPE` or `ERR_OUT_OF_RANGE`. `process.exit(code)` assigns it
+  whenever a code is given, and the process ends with `process.exitCode || 0`: `process.exitCode = 5;
+  process.exit(undefined)` exits 0, `process.exit('7')` exits 7, and a listener's `process.exitCode = n` or
+  `process.exit()` sets the status. `process._exiting` is Node's: true from the first `exit` on; while it is,
+  `process.exit` emits no `exit` and `process.nextTick` queues nothing (task_queues.js), so a program whose `exit`
+  listener's throw left `process.exit` and was handled runs on without new ticks, while the ticks it queued before
+  still run. The host's `ended <n>` line is written when the process ends, with the status it ends with.
+- **A TLS socket over a socket it was given takes that socket's peer and its end** (Article 6). `remoteAddress` and
+  `remotePort` are the wrapped socket's, and the failure that ends it (`ERR_TLS_UNAVAILABLE`) destroys the wrapped
+  socket when it closes, as a failed handshake does in Node: still open in the `error` listener, destroyed by `close`.
+
 ## 0.17.0 — 2026-11-04
 
 - **A realm lives in the network namespace its host gives it** (#19; ADR-0008; Article 6). A host passes a
