@@ -68,6 +68,23 @@ const wrappedUnavailable = (wrapped: unknown): Error => {
 // Agent assigns its socket on nextTick after connect returns, so failure
 // follows that assignment and reaches ClientRequest's error listener.
 const failLater = (socket: Socket, error: Error): void => { queueMicrotask(() => queueMicrotask(() => socket.destroy(error))); };
+type Wrapped = { remoteAddress?: unknown; remotePort?: unknown; remoteFamily?: unknown; destroy?: () => unknown };
+/**
+ * The socket a TLS socket was given to run over (`new tls.TLSSocket(socket)`, `tls.connect({ socket })`). Node's
+ * TLSSocket runs on that socket's handle: its peer is that socket's (`remoteAddress`, `remotePort`), and a failed
+ * handshake destroys that socket with it (v26.12.0: after the error both are `destroyed`).
+ */
+const wrappedBy = new WeakMap<object, Wrapped>();
+/** A TLS socket over a socket it was given fails, and the wrapped socket goes with it. */
+const failWrapped = (socket: Socket, wrapped: object): void => {
+  wrappedBy.set(socket, wrapped as Wrapped);
+  socket.connecting = true;
+  const error = wrappedUnavailable(wrapped);
+  queueMicrotask(() => queueMicrotask(() => {
+    socket.destroy(error);
+    try { (wrapped as Wrapped).destroy?.(); } catch { /* the wrapped socket's own teardown cannot undo this one's */ }
+  }));
+};
 
 class TLSSocket extends NetSocket {
   authorized = false;
@@ -86,7 +103,17 @@ class TLSSocket extends NetSocket {
     super({ allowHalfOpen: false });
     // Given a socket to run over, it fails as `tls.connect({ socket })` does, asynchronously, rather than leaving its
     // caller waiting for a handshake that never begins.
-    if (socket !== null && typeof socket === 'object') { this.connecting = true; failLater(this, wrappedUnavailable(socket)); }
+    if (socket !== null && typeof socket === 'object') failWrapped(this, socket);
+  }
+
+  /** net.js reads `remoteAddress`, `remotePort` and `remoteFamily` from here: over a wrapped socket, that socket's peer. */
+  _getpeername(): { address?: unknown; port?: unknown; family?: unknown } {
+    const wrapped = wrappedBy.get(this);
+    if (wrapped) {
+      try { return { address: wrapped.remoteAddress, port: wrapped.remotePort, family: wrapped.remoteFamily }; }
+      catch { return {}; }
+    }
+    return (NetSocket.prototype as unknown as { _getpeername: (this: TLSSocket) => object })._getpeername.call(this);
   }
 
   connect(...args: unknown[]): this {
@@ -104,7 +131,11 @@ class TLSSocket extends NetSocket {
     };
     const fail = (error: Error): void => failLater(this, error);
     if (!options || typeof options !== 'object') { this.connecting = true; fail(unavailable(undefined, undefined)); return this; }
-    if (options.socket !== undefined) { this.connecting = true; fail(wrappedUnavailable(options.socket)); return this; }
+    if (options.socket !== undefined) {
+      if (options.socket !== null && typeof options.socket === 'object') failWrapped(this, options.socket);
+      else { this.connecting = true; fail(unavailable(undefined, undefined)); }
+      return this;
+    }
     const held = namespaceHolds(currentNetworkNamespace(), host);
     if (held === true) return pair();
     this.connecting = true;
