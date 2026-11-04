@@ -4,9 +4,9 @@ Container hostname review correction: Node lookup uses the caller's mounted /etc
 
 What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## 0.16.0 — Unreleased
+## 0.17.0 — 2026-11-04
 
-- **A realm lives in the network namespace its host gives it** (ADR-0008; Article 6). A host passes a
+- **A realm lives in the network namespace its host gives it** (#19; ADR-0008; Article 6). A host passes a
   `NetworkNamespace` (`addresses`, `connect`, `listen`, `resolve`) to `createContainer({ network })` and to
   `new NativeStreamScope(limits, emit, ownerPid, network)`. Each namespace has its own loopback and port space.
   A bind to an address the namespace does not hold is `EADDRNOTAVAIL`. A listen is told to the host, which may
@@ -25,6 +25,27 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   leaves through the exchange; `HttpClientTransportOptions.hostPorts` is replaced by `hostService`. `tls.connect`
   reads the same decision. Lookups fail `EAI_AGAIN` (queries `ESERVFAIL` / `ETIMEOUT`) when the resolver fails or is
   silent; `getServers()` reads `/etc/resolv.conf`. Binds, connects and listeners follow Linux's families.
+
+- **A process ends as Node's does** (#20, #21; Article 6; measured on Node v26.12.0). A program's `exit` listeners
+  write to its stdout and stderr: npm prints its last lines from one ("A complete log of this run can be found in"),
+  and they were dropped. After a drained loop the microtasks those listeners queue run and write, and the process ends
+  after them; `process.exit` ends at once, after its listeners, and a microtask they queue writes nothing.
+  `process.exit(n)` inside a listener ends the process there with status `n`, and nothing written after it is written.
+  A process's status settles even when a host hook at its end throws. The engine's handling of a throw out of an
+  `exit` listener (reported as the process's uncaught exception: exit 1 when printed after a drained loop unless
+  `process.exitCode` is set, the status unchanged when the program's `uncaughtException` listener or capture callback
+  takes it, and the given status after `process.exit`) does not take effect yet: the process object's own `emit`
+  catches a listener's throw and prints it on the host console, so the status stays as it was and the listeners after
+  it still run. It takes effect once `process.emit` lets a listener's throw out, as Node's EventEmitter does.
+- **A TLS socket is `secureConnecting` until it is secure, and an unavailable TLS connection names its destination**
+  (#22; Article 6). `secureConnecting` is true from construction until `secureConnect`, and a server's socket clears it
+  before `secureConnection`: npm's `@npmcli/agent` waits for `secureConnect` only while it is true, took the socket
+  for connected and missed its `error`, and `npx` exited 1 with no message. `ERR_TLS_UNAVAILABLE` names the `host`
+  and `port` it was asked for; over a socket it was given, the wrapped socket's `remoteAddress` and `remotePort`, or
+  none when the wrapped socket has no peer. `new tls.TLSSocket(socket)` fails asynchronously with
+  `ERR_TLS_UNAVAILABLE`, as `tls.connect({ socket })` does, instead of waiting for a handshake that never begins.
+
+## 0.16.0 — 2026-11-02
 
 - SQLite binds JavaScript Numbers as doubles and rejects BigInts outside signed 64-bit range with
   `ERR_INVALID_ARG_VALUE`, matching Node. Native cleanup state permits collection during a live process while

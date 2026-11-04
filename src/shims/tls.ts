@@ -44,6 +44,31 @@ const NetSocket = require ? require('net').Socket as new (options?: object) => S
     : lazyExport<new (options?: object) => Socket>('net', 'Socket');
 const netServer = (): any => (require ? require('net') : nodeLibInternalRequire('net') as any).Server;
 
+/**
+ * The failure of a TLS connection this engine cannot make, named by the destination it was asked for (`host`,
+ * `port`), as Node's network errors are; a destination nobody named is left out rather than invented.
+ */
+const unavailable = (host: string | undefined, port: unknown): Error => Object.assign(
+  new Error(`TLS transport is unavailable in this runtime${host === undefined ? '' : ` for ${host}:${String(port ?? 443)}`}; HTTPS requires an admitted HTTP transport.`),
+  { code: 'ERR_TLS_UNAVAILABLE' },
+  host === undefined ? {} : { host, port: port ?? 443 },
+);
+/**
+ * A TLS socket over a socket it was given (Node's `new tls.TLSSocket(socket)`, `tls.connect({ socket })`) would run
+ * TLS over that socket's bytes, and this engine has no TLS to run there. Its destination is the wrapped socket's
+ * peer, which is what Node's wrapping TLSSocket reports as its own `remoteAddress` and `remotePort` (v26.12.0).
+ */
+const wrappedUnavailable = (wrapped: unknown): Error => {
+  let host: unknown; let port: unknown;
+  try { ({ remoteAddress: host, remotePort: port } = wrapped as { remoteAddress?: unknown; remotePort?: unknown }); }
+  catch { /* a peer that cannot be read is not named */ }
+  return typeof host === 'string' && host !== '' && typeof port === 'number' ? unavailable(host, port) : unavailable(undefined, undefined);
+};
+// Never inherit a plain TCP connect while advertising an encrypted socket.
+// Agent assigns its socket on nextTick after connect returns, so failure
+// follows that assignment and reaches ClientRequest's error listener.
+const failLater = (socket: Socket, error: Error): void => { queueMicrotask(() => queueMicrotask(() => socket.destroy(error))); };
+
 class TLSSocket extends NetSocket {
   authorized = false;
   encrypted = true;
@@ -57,8 +82,11 @@ class TLSSocket extends NetSocket {
    */
   secureConnecting = true;
 
-  constructor(_socket?: unknown, _options?: unknown) {
+  constructor(socket?: unknown, _options?: unknown) {
     super({ allowHalfOpen: false });
+    // Given a socket to run over, it fails as `tls.connect({ socket })` does, asynchronously, rather than leaving its
+    // caller waiting for a handshake that never begins.
+    if (socket !== null && typeof socket === 'object') { this.connecting = true; failLater(this, wrappedUnavailable(socket)); }
   }
 
   connect(...args: unknown[]): this {
@@ -74,24 +102,16 @@ class TLSSocket extends NetSocket {
       return (NetSocket.prototype as unknown as { connect: (this: TLSSocket, options: object) => TLSSocket })
         .connect.call(this, { port: options!.port, host }) as this;
     };
-    // Never inherit a plain TCP connect while advertising an encrypted socket.
-    // Agent assigns its socket on nextTick after connect returns, so failure
-    // follows that assignment and reaches ClientRequest's error listener.
-    const fail = (error: Error): void => { queueMicrotask(() => queueMicrotask(() => this.destroy(error))); };
-    // Named by the destination it was asked for, as Node's network errors are (`host`, `port`).
-    const port = options && typeof options === 'object' ? options.port : undefined;
-    const unavailable = (): Error => Object.assign(
-      new Error(`TLS transport is unavailable in this runtime for ${host}:${String(port ?? 443)}; HTTPS requires an admitted HTTP transport.`),
-      { code: 'ERR_TLS_UNAVAILABLE', host, port: port ?? 443 },
-    );
-    if (!options || typeof options !== 'object' || options.socket !== undefined) { this.connecting = true; fail(unavailable()); return this; }
+    const fail = (error: Error): void => failLater(this, error);
+    if (!options || typeof options !== 'object') { this.connecting = true; fail(unavailable(undefined, undefined)); return this; }
+    if (options.socket !== undefined) { this.connecting = true; fail(wrappedUnavailable(options.socket)); return this; }
     const held = namespaceHolds(currentNetworkNamespace(), host);
     if (held === true) return pair();
     this.connecting = true;
-    if (held === false) { fail(unavailable()); return this; }
+    if (held === false) { fail(unavailable(host, options.port)); return this; }
     // The connection is made when the resolver has answered, on the engine's loop: in the connecting call's context.
     const within = captureNetworkContext();
-    held.then(own => within(() => { if (own) pair(); else fail(unavailable()); }),
+    held.then(own => within(() => { if (own) pair(); else fail(unavailable(host, options.port)); }),
       (cause: unknown) => within(() => fail(cause instanceof Error ? cause : new Error(String(cause)))));
     return this;
   }
