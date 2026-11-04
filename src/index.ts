@@ -266,7 +266,8 @@ export function createContainer(options?: ContainerOptions): {
   on: (event: string, listener: (...args: unknown[]) => void) => void;
   /**
    * The container is done: its namespace is no longer the owner a host-held scope given none defaults to, and its page
-   * bridge registers no new ports. Its runs, sockets and the ports it already serves keep going.
+   * bridge stops following its guests' ports and ends the WebSocket and raw upgraded sockets it carries (1001, going
+   * away). Plain HTTP to the ports it already serves is still answered; its runs and their own sockets keep going.
    */
   dispose: () => void;
 } {

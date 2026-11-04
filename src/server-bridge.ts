@@ -115,6 +115,8 @@ type UpgradeSocket = Socket & UpgradeEnd & { cork(): void; uncork(): void };
 // library writes is parsed into messages for the client, what the client
 // sends is framed, masked as a client must, for the library to read.
 const __substrateUpgradeSockets = new Map<string, UpgradeEnd>();
+/** The upgraded sockets each bridge's channel carries, by client, so a bridge that closes ends its own. */
+const __substrateChannelSockets = new WeakMap<BroadcastChannel, Set<string>>();
 function __substrateFrame(opcode: number, payload: Uint8Array, masked: boolean): Uint8Array {
   const length = payload.length;
   const header = [0x80 | opcode];
@@ -206,6 +208,7 @@ function __substrateUpgradeSocket(entry: UpgradeEntry, socket: Socket): UpgradeS
     if (closed) return;
     closed = true;
     __substrateUpgradeSockets.delete(entry.clientId);
+    __substrateChannelSockets.get(entry.channel)?.delete(entry.clientId);
     entry.channel.postMessage({ type: "close", targetClient: entry.clientId, code, reason });
   };
   /** What the client says, framed for the server's library, as the socket's own inbound bytes. */
@@ -268,6 +271,7 @@ function __substrateRawUpgradeSocket(entry: UpgradeEntry, socket: Socket): Socke
     if (closed) return;
     closed = true;
     __substrateUpgradeSockets.delete(entry.clientId);
+    __substrateChannelSockets.get(entry.channel)?.delete(entry.clientId);
     entry.channel.postMessage({ type: "close", targetClient: entry.clientId, code, reason });
   };
   bridge.onData((chunk) => {
@@ -306,6 +310,7 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
   if (typeof BroadcastChannel === "undefined") return null;
   const channel = new BroadcastChannel("vite-ws-channel");
   (channel as unknown as { unref?: () => void }).unref?.();
+  __substrateChannelSockets.set(channel, new Set());
   channel.addEventListener("message", (event) => {
     const data2 = event.data as UpgradeSignal;
     if (!data2 || typeof data2 !== "object") return;
@@ -335,6 +340,8 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
         // check of it is how it refuses sockets from pages it did not serve.
         ...(typeof data2.origin === "string" && /^https?:\/\/[^/]+$/u.test(data2.origin) ? { Origin: data2.origin } : {}),
       }).then((result) => {
+        // A bridge closed while the upgrade was in flight has no channel left to answer on: the socket is ended.
+        if (!__substrateChannelSockets.has(channel)) { result.socket?.destroy(); return; }
         if (result.statusCode !== 101 || !result.socket) {
           channel.postMessage({ type: "close", targetClient: data2.clientId, code: 1006, reason: "upgrade refused" });
           return;
@@ -343,6 +350,7 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
           ? __substrateRawUpgradeSocket(record, result.socket)
           : __substrateUpgradeSocket(record, result.socket);
         __substrateUpgradeSockets.set(data2.clientId, socket);
+        __substrateChannelSockets.get(channel)?.add(data2.clientId);
         channel.postMessage({
           type: "connected",
           targetClient: data2.clientId,
@@ -411,6 +419,9 @@ export class ServerBridge extends PortBridge {
     this.stopWatching?.();
     this.stopWatching = null;
     if (this.upgradeChannel) {
+      // Its upgraded sockets end as a server going away ends them (1001), while their channel can still say so.
+      for (const client of [...(__substrateChannelSockets.get(this.upgradeChannel) ?? [])]) __substrateUpgradeSockets.get(client)?.disconnect(1001, "going away");
+      __substrateChannelSockets.delete(this.upgradeChannel);
       try { this.upgradeChannel.close(); } catch { /* a channel the realm already closed is closed */ }
       this.upgradeChannel = null;
     }
