@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "run": "4416",
+  "source": "caf4b027c4b26a2d5cfd6b388dfbcd45de13caee",
+  "packages": [
+    {
+      "name": "@volter/tabnode",
+      "version": "0.17.1",
+      "archive": "volter-tabnode-0.17.1.tgz",
+      "integrity": "sha512-GSEUX2LVx3yPIqjNsxOgXlAKwu3SBKYYsqwjtx8r3x3H+C+w3x8bIecUK973yZ4tuPqlGmIwTwlBNVVw0gwwFw==",
+      "status": "prepared"
+    }
+  ],
+  "registry": "https://registry.npmjs.org/",
+  "distTag": "latest",
+  "authorizationReference": "volter-org decisions.md 146a505c3: manager npm permission for @volter/tabnode 0.17.1 at sha256 0df870f96a2e3ee7b9708be5afd5e3c26e3350cd6d630073b3cec03551e4930f, under the owner ruling of 2026-10-21T03:02:37Z (manager transcript 1f059d53, uuid 025ebc2b)",
+  "keysSweepReference": "/Volumes/PeakSSD/peak-floor/state/prod-ops/releases/tabnode-0.17.1/keys-sweep-df45d41.txt sha256 50a3b1bd708138f69c8d4abab4db5a1ef69ef255f4dc4a33263ccfd5f669452d: clean, supercode main df45d416ff075c440b271f663ac7de1ad2dfcddb"
+}
