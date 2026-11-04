@@ -8,7 +8,9 @@
       "version": "0.17.1",
       "archive": "volter-tabnode-0.17.1.tgz",
       "integrity": "sha512-GSEUX2LVx3yPIqjNsxOgXlAKwu3SBKYYsqwjtx8r3x3H+C+w3x8bIecUK973yZ4tuPqlGmIwTwlBNVVw0gwwFw==",
-      "status": "prepared"
+      "status": "uploading",
+      "uploadStartedAt": "2026-11-04T19:46:06.518Z",
+      "uploadArchive": "/Volumes/PeakSSD/peak-floor/state/prod-ops/releases/tabnode-0.17.1/upload-4416-93bg01/volter-tabnode-0.17.1.tgz"
     }
   ],
   "registry": "https://registry.npmjs.org/",
