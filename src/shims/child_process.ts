@@ -42,7 +42,7 @@ import { promiseOwner } from '../promise-ownership';
 import { Bash, defineCommand } from 'just-bash';
 import type { CommandContext, ExecResult as JustBashExecResult } from 'just-bash';
 import { EventEmitter } from '../node-lib/events-module';
-import { __substrateExitCode, __substrateProcessEnding, __substrateTerminating, __substrateUncaughtCapture } from './process';
+import { __substrateProcessEnded, __substrateProcessEnding, __substrateTerminating, __substrateUncaughtCapture } from './process';
 import { Buffer } from '../node-lib/buffer-module';
 import type { VirtualFS } from '../virtual-fs';
 import { executableHeader, EXECUTABLE_HEADER_BYTES } from './executable-header';
@@ -666,8 +666,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   let fatalExit = false;
   /** True when a throw out of the program's own uncaught-exception handler ends it: Node exits 7 and emits no `exit`. */
   let silentExit = false;
-  /** Node's `process._exiting`: `exit` has been emitted once, and `process.exit` and `_fatalException` emit it no more. */
-  let exitEmitted = false;
+  /** Node's `process._exiting`, the process's own accessor: once true, `process.exit` and `_fatalException` emit no `exit`. */
+  const exitingNow = (): boolean => (proc as { _exiting?: unknown })._exiting === true;
+  /** True when a `process.exit` inside a listener (or after a drained loop) ended the process with its status. */
+  let nestedEnd = false;
   let exitCode = 0;
   let syncExecution = true;
   let exitResolve: ((code: number) => void) | null = null;
@@ -683,6 +685,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   let exitEnding: Promise<number> | undefined;
   const endExit = (): Promise<number> => exitEnding ??= settleEntry().catch(() => undefined).then(() => {
     exitEnded = true;
+    __substrateProcessEnded(proc);
     exitResolve!(exitCode);
     return exitCode;
   });
@@ -843,18 +846,20 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     writePipedEndReceipt(proc.pid, proc.argv0 || 'node', proc.argv[1] ?? '', kind, error);
   };
   proc.exit = ((...given: [code?: number | string | null]) => {
-    // Without a status, the one the program set (per_thread.js exit: `process.exitCode || 0`).
-    let code = given.length !== 0 ? given[0] ?? 0 : (proc as { exitCode?: number }).exitCode ?? 0;
+    // Node's exit (per_thread.js): `if (arguments.length !== 0) process.exitCode = code`, through the setter that clears
+    // it for undefined and null, takes an integer string as its number and throws for anything else; the status is
+    // `process.exitCode || 0`. After the end nothing changes it.
+    if (given.length !== 0 && !exitEnded) (proc as { exitCode?: unknown }).exitCode = given[0];
+    let code = proc.exitCode || 0;
     // Called again while `exit` is being emitted (a listener that ends the process with its own status, which is how
     // a test runner reports failures): Node takes the new code and does not emit again
     // (`if (arguments.length) process.exitCode = code; if (!process._exiting) …; reallyExit(process.exitCode || 0)`).
     // The code was dropped here, so a run that ended by draining, or by `process.exit(0)`, kept its first status.
     if (exitCalled) {
       // A continuation that runs on after the end (a caught stop, below) changes no status: the process has ended.
-      if (given.length !== 0 && given[0] !== undefined && !exitEnded) {
-        exitCode = __substrateExitCode(given[0]);
-        (proc as { exitCode?: number }).exitCode = exitCode;
-      }
+      // Without a status it ends with the one the program set, as `reallyExit(process.exitCode || 0)` does (v26.12.0:
+      // `process.exitCode = 5; process.exit()` inside a listener of `process.exit(2)` exits 5).
+      if (!exitEnded) exitCode = code;
       code = exitCode;
       // Inside an `exit` listener, or a microtask one queued after the loop drained, Node's process.exit ends the
       // process there (reallyExit), with or without a status: nothing after it runs. Its end here is exitEnded, so
@@ -864,19 +869,14 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       // stop would need the realm itself to stop here, which this engine has no door for.
       if (!exitEnded) {
         exitEnded = true;
+        nestedEnd = true;
+        __substrateProcessEnded(proc);
         if (emittingExit) throw new Error(`Process exited with code ${code}`);
       }
     }
     if (!exitCalled) {
       exitCalled = true;
-      // As Node takes one: a string from a command line becomes its number.
-      exitCode = __substrateExitCode(code);
-      code = exitCode;
-      // A handled uncaught that then `process.exit(1)` is a normal exit
-      // with code 1. The receipt still names the error the handler saw:
-      // VS Code's host installs `uncaughtException` and exits 1, and the
-      // previous line was `ended 1` with no reason.
-      if (exitCode !== 0) writeHostReceipt(exitCode, lastUncaught);
+      exitCode = code;
       // Node runs a program's `exit` listeners while everything it holds is
       // still open, and closes the loop's handles after them. Releasing
       // first closed a forked child's IPC channel before its own exit
@@ -896,20 +896,32 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       // throw) or a signal's default action (Node's process dies of the signal) nothing a listener throws keeps it.
       let escaped: { error: unknown } | undefined;
       try {
+        // `if (!process._exiting) { process._exiting = true; process.emit('exit', …) }`: a process already exiting (a
+        // program may set `process._exiting` itself) emits nothing. A process a signal's default action ends emits
+        // none either: Node's dies of the signal.
+        const emits = !silentExit && !exitingNow() && !__substrateTerminating(proc);
         __substrateProcessEnding(proc);
-        // A process a signal's default action ends emits none either: Node's dies of the signal.
-        try { if (!silentExit && !exitEmitted && !__substrateTerminating(proc)) { exitEmitted = true; proc.emit('exit', code); } }
+        try { if (emits) proc.emit('exit', code); }
         catch (error) { if (!exitThrow(error) && !fatalExit && !__substrateTerminating(proc)) escaped = { error }; }
       } finally {
         emittingExit = false;
-        if (escaped) {
-          exitCalled = false;
-          __substrateProcessEnding(proc, false);
-          if (given.length !== 0 && given[0] !== undefined) (proc as { exitCode?: number }).exitCode = exitCode;
-        } else {
+        // Escaped, the process runs on, and stays exiting as Node's does (`process._exiting`): `process.nextTick`
+        // queues nothing from here (task_queues.js; v26.12.0 runs no tick queued after it).
+        if (escaped) exitCalled = false;
+        else {
           exitEnded = true;
-          // A listener may have ended the process with another status (above); that is the status it ends with.
+          __substrateProcessEnded(proc);
+          // `reallyExit(process.exitCode || 0)`: a listener may have set another status, cleared it, or ended the
+          // process with one (above).
+          if (!nestedEnd) exitCode = proc.exitCode || 0;
           code = exitCode;
+          // A handled uncaught that then `process.exit(1)` is a normal exit
+          // with code 1. The receipt still names the error the handler saw:
+          // VS Code's host installs `uncaughtException` and exits 1, and the
+          // previous line was `ended 1` with no reason. It is written at the
+          // end, with the status the process ends with: written when exit was
+          // called, it named a status a listener or a later exit replaced.
+          if (code !== 0) writeHostReceipt(code, lastUncaught);
           try { (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc); }
           finally { exitResolve!(code); }
         }
@@ -1002,7 +1014,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     appendStderr(`${thrown instanceof Error ? uncaughtText(thrown) : String(thrown)}\n`);
     writeHostReceipt('uncaught', thrown);
     if (exitCalled) {
-      if (!exitEnded) { exitCode = 7; (proc as { exitCode?: number }).exitCode = 7; exitEnded = true; }
+      if (!exitEnded) { exitCode = 7; (proc as { exitCode?: number }).exitCode = 7; exitEnded = true; __substrateProcessEnded(proc); }
       return;
     }
     const wasSync = syncExecution;
@@ -1048,8 +1060,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     const wasSync = syncExecution;
     syncExecution = false;
     // Node's `_fatalException`, as for an uncaught exception (below).
-    if (exitEmitted) silentExit = true; else fatalExit = true;
-    const status = exitEmitted && typeof proc.exitCode === 'number' ? proc.exitCode : 1;
+    const exiting = exitingNow();
+    if (exiting) silentExit = true; else fatalExit = true;
+    const status = exiting && typeof proc.exitCode === 'number' ? proc.exitCode : 1;
     try { proc.exit(status); } finally { syncExecution = wasSync; }
   };
   const detachRejections = __listenForUnhandledRejections(proc, onUnhandledRejection,
@@ -1095,8 +1108,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     syncExecution = false;
     // Node's `_fatalException` emits `exit` with status 1, unless the process is already exiting (an `exit`
     // listener's throw left process.exit): then it ends with the status it was given and emits nothing more.
-    if (exitEmitted) silentExit = true; else fatalExit = true;
-    const status = exitEmitted && typeof proc.exitCode === 'number' ? proc.exitCode : 1;
+    const exiting = exitingNow();
+    if (exiting) silentExit = true; else fatalExit = true;
+    const status = exiting && typeof proc.exitCode === 'number' ? proc.exitCode : 1;
     try { proc.exit(status); } finally { syncExecution = wasSync; }
   };
   const detachUncaught = __onUncaughtException(proc, onUncaughtException);
@@ -1429,7 +1443,6 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     if (typeof proc !== 'undefined' && !exitCalled && !streams?.signal?.aborted) {
       exitCalled = true;
       drainedExit = true;
-      exitEmitted = true;
       exitCode = typeof proc.exitCode === 'number' ? proc.exitCode : 0;
       emittingExit = true;
       __substrateProcessEnding(proc);
@@ -1440,7 +1453,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         // the program's own listener or capture callback it keeps its status, as Node's does.
         catch (error) { reportExitListenerError(error); }
       } finally { emittingExit = false; }
-      if (typeof proc.exitCode === 'number') exitCode = proc.exitCode;
+      // The status after the listeners: one a listener set, or the one `exit` was emitted with when a listener cleared
+      // it (v26.12.0: `process.exitCode = 5` and a listener's `process.exitCode = undefined` exits 5), unless a
+      // listener's `process.exit` ended it there.
+      if (!nestedEnd && typeof proc.exitCode === 'number') exitCode = proc.exitCode;
       // Then the microtasks its listeners queued, which Node runs after a drained `exit`, and its end.
       await endExit();
     }
