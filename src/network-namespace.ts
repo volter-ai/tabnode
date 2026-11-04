@@ -19,7 +19,7 @@
  */
 import type { Socket } from './node-lib/net-module';
 import { UV_ECONNREFUSED, UV_ENETUNREACH } from './node-lib/binding/uv';
-import { __currentProcessToken, runNetworkOf } from './process-tokens';
+import { __currentProcessToken, networkScope, runNetworkOf } from './process-tokens';
 import { AsyncLocalStorage } from './shims/async_hooks';
 
 /** One address an interface of the namespace holds (a container's address on one network it joined). */
@@ -123,12 +123,6 @@ export const RESOLVE_TIMEOUT_MS = 10_000;
 const unowned = loopbackOnlyNamespace();
 /** A namespace a host-held scope (NativeStreamScope, a container's own door) creates its handles in, while it creates them. */
 let creatingIn: NetworkNamespace | undefined;
-/**
- * The namespace code is running in, carried through every continuation the code makes (its timers, its promises), as
- * the engine's async context carries a run: a container's own code (`execute`, `runFile`) and an engine continuation
- * resumed in the namespace of the call that began it (captureNetworkContext).
- */
-const networkScope = new AsyncLocalStorage<NetworkNamespace>({ name: 'tabnode.network' });
 
 /** The namespace the calling code is in, where it is in one: a host scope's, its own scope's, or its run's. */
 export function contextNetworkNamespace(): NetworkNamespace | undefined {

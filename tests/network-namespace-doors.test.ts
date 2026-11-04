@@ -38,7 +38,7 @@ function program(vfs: VirtualFS, name: string, source: string): void {
   vfs.writeFileSync(`/work/${name}`, source);
 }
 
-describe('made({ network })', () => {
+describe('createContainer({ network })', () => {
   it('holds the namespace it was given, and a container given none has a fresh one, not another container\'s', () => {
     const front = containerNamespace('web', '172.18.0.2');
     const first = made({ network: front });
@@ -231,7 +231,9 @@ describe('new NativeStreamScope(limits, emit, ownerPid, network)', () => {
   });
 
   it('with no container, is in the run-less namespace a bare Runtime and a ServerBridge made outside a container use', () => {
-    expect(new NativeStreamScope(limits, () => undefined).network).toBe(new ServerBridge().network);
+    const bridge = new ServerBridge();
+    try { expect(new NativeStreamScope(limits, () => undefined).network).toBe(bridge.network); }
+    finally { bridge.close(); }
   });
 });
 

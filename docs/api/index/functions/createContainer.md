@@ -55,7 +55,7 @@ The run whose guest code is executing, for a caller attributing a child.
 > **dispose**: () => `void`
 
 The container is done: its namespace is no longer the owner a host-held scope given none defaults to, and its page
-bridge stops answering for it.
+bridge registers no new ports. Its runs, sockets and the ports it already serves keep going.
 
 #### Returns
 
