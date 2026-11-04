@@ -11,6 +11,7 @@ import { netModule } from './node-lib/net-module';
 import { streamModule } from './node-lib/stream-module';
 import { onNodeLibLoaded, type NodeLibRequire } from './node-lib/load';
 import { DuplexStreamHandle } from './node-lib/binding/duplex_stream';
+import { captureNetworkContext, currentNetworkNamespace, namespaceHolds, type NetworkNamespace } from './network-namespace';
 
 export interface HttpClientExchangeRequest {
   url: string;
@@ -31,16 +32,18 @@ export type HttpClientExchange = (request: HttpClientExchangeRequest) => Promise
 export type HttpClientTransportFactory = () => HttpClientExchange;
 
 const unsupported = (detail: string): Error => Object.assign(new Error(`HTTP transport does not support ${detail}.`), { code: 'ERR_HTTP_TRANSPORT_UNSUPPORTED' });
-const local = (host: string): boolean => host === 'localhost' || host === '::1' || host === '[::1]' || /^127\./u.test(host);
 const tlsOptions = ['ca', 'cert', 'key', 'pfx', 'passphrase', 'ciphers', 'secureContext', 'checkServerIdentity', 'minVersion', 'maxVersion', 'secureProtocol', 'secureOptions', 'session', 'ALPNProtocols', 'pskCallback'];
 
 export interface HttpClientTransportOptions {
   /**
-   * Loopback ports the host itself serves (a service of the page, not a
-   * guest's listener). Plain HTTP to one of them goes through the host
-   * exchange; every other loopback port stays the engine's own network.
+   * Whether `host`:`port`, as a process in `network` dials it, is a service its host serves itself rather than a
+   * listener of any namespace (a service of the page's): HTTP to it goes through the host exchange. The host answers by
+   * the namespace's routes, as its kernel would: the host's loopback is the host's namespace's alone, and a container
+   * reaches the host at its gateway. Every other destination the namespace holds (its loopback, a name its resolver
+   * answers, an address on one of its networks) is the namespace's own network; only what it does not hold leaves
+   * through the exchange.
    */
-  hostPorts?: () => ReadonlySet<number>;
+  hostService?: (network: NetworkNamespace, host: string, port: number) => boolean;
 }
 
 /** Host-only installation; guest modules receive Node's normal exports. */
@@ -55,24 +58,39 @@ export function installHttpClientTransport(factory: HttpClientTransportFactory, 
     const original = prototype.createConnection;
     const connect = function(this: unknown, options: Record<string, any>, callback: (error: Error | null, socket?: unknown) => void): unknown {
       const host = String(options.hostname ?? options.host ?? 'localhost').toLowerCase();
-      // Local HTTP, plain or TLS, is the engine's existing virtual network,
-      // except a port the host serves itself: a TLS connect to loopback pairs
-      // with the guest's listener, as `tls` does, with no wire to protect.
-      const hostPort = local(host) && !options.socketPath
-        && transportOptions.hostPorts?.().has(Number(options.port ?? (protocol === 'https:' ? 443 : 80)));
-      if (!hostPort && ((protocol === 'http:' && (local(host) || options.socketPath)) || (protocol === 'https:' && local(host) && !options.socketPath))) {
-        return original.call(this, options, callback);
+      const port = Number(options.port ?? (protocol === 'https:' ? 443 : 80));
+      // The process's namespace decides where the connection goes, as its routes do on a computer: a service its
+      // host serves itself takes the host exchange; what the namespace holds is its own network (a TLS connect there
+      // is `tls`'s); everything else leaves through the exchange. A socket path is the process's own filesystem.
+      // One routing decision (network-namespace.ts namespaceHolds), the one `tls` and `net` read.
+      const network = currentNetworkNamespace();
+      const hostService = !options.socketPath && transportOptions.hostService?.(network, host, port) === true;
+      const held: boolean | Promise<boolean> = hostService ? false : options.socketPath ? protocol === 'http:' : namespaceHolds(network, host);
+      if (held === true) return original.call(this, options, callback);
+      if (held instanceof Promise) {
+        // The socket is made when the resolver has answered, on the engine's loop: in the asking call's context.
+        const within = captureNetworkContext();
+        held.then(own => within(() => {
+          if (own) { callback(null, original.call(this, options)); return; }
+          let socket: unknown;
+          try { socket = exchanged(); } catch (cause) { callback(cause instanceof Error ? cause : new Error(String(cause))); return; }
+          callback(null, socket);
+        }), cause => within(() => callback(cause instanceof Error ? cause : new Error(String(cause)))));
+        return undefined;
       }
       try {
+        return exchanged();
+      } catch (cause) {
+        queueMicrotask(() => callback(cause instanceof Error ? cause : new Error(String(cause))));
+        return undefined;
+      }
+      function exchanged(): unknown {
         if (options.socketPath || options.localAddress || options.localPort || options.lookup || options.family) throw unsupported('custom socket routing');
         // Node's Agent names a servername for plain HTTP too ('' for an IP); TLS options are an https question.
         if (protocol === 'https:' && (tlsOptions.some(key => options[key] !== undefined) || options.rejectUnauthorized === false
           || (options.servername !== undefined && options.servername !== host))) throw unsupported('custom TLS options');
         const authority = new URL(`${protocol}//${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${options.port ?? (protocol === 'https:' ? 443 : 80)}`);
         return connection(authority, factory(), require);
-      } catch (cause) {
-        queueMicrotask(() => callback(cause instanceof Error ? cause : new Error(String(cause))));
-        return undefined;
       }
     };
     prototype.createConnection = connect;

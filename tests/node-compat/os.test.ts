@@ -33,6 +33,7 @@ import os, {
   devNull,
 } from '../../src/shims/os';
 import { assert } from './common';
+import { inNetworkNamespace, loopbackOnlyNamespace } from '../../src/network-namespace';
 
 describe('os module (Node.js compat)', () => {
   describe('os.hostname()', () => {
@@ -273,6 +274,24 @@ describe('os module (Node.js compat)', () => {
 
     it('should be accessible from default export', () => {
       expect(os.networkInterfaces()).toEqual(networkInterfaces());
+    });
+
+    it('lists the loopback (both families) and one interface per network, each with its addresses of both families', () => {
+      const network = { ...loopbackOnlyNamespace(), addresses: () => [
+        { address: '172.18.0.3', prefixLength: 16, mac: '02:42:ac:12:00:03', interface: 'front' },
+        { address: 'fd00:18::3', prefixLength: 64, interface: 'front' },
+        { address: 'fe80::42:acff:fe12:3', prefixLength: 64, interface: 'front' },
+        { address: '172.19.0.2', prefixLength: 16, mac: '02:42:ac:13:00:02', interface: 'back' },
+      ] };
+      const result = inNetworkNamespace(network, () => networkInterfaces());
+      expect(Object.keys(result)).toEqual(['lo', 'eth0', 'eth1']);
+      expect(result.lo!.map(row => row.address)).toEqual(['127.0.0.1', '::1']);
+      expect(result.eth0).toEqual([
+        { address: '172.18.0.3', netmask: '255.255.0.0', family: 'IPv4', mac: '02:42:ac:12:00:03', internal: false, cidr: '172.18.0.3/16' },
+        { address: 'fd00:18::3', netmask: 'ffff:ffff:ffff:ffff::', family: 'IPv6', mac: '02:42:ac:12:00:03', internal: false, cidr: 'fd00:18::3/64', scopeid: 0 },
+        { address: 'fe80::42:acff:fe12:3', netmask: 'ffff:ffff:ffff:ffff::', family: 'IPv6', mac: '02:42:ac:12:00:03', internal: false, cidr: 'fe80::42:acff:fe12:3/64', scopeid: 2 },
+      ]);
+      expect(result.eth1!.map(row => row.address)).toEqual(['172.19.0.2']);
     });
   });
 

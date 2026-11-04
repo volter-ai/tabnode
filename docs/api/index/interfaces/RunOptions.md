@@ -64,6 +64,15 @@ Private host evidence selection; it is not a guest Node global or inherited chil
 
 ***
 
+### network?
+
+> `optional` **network?**: [`NetworkNamespace`](NetworkNamespace.md)
+
+The run's network namespace, where it is not the container's: a process another run launched keeps its
+launcher's (`NodeProcessLaunch.network`), as fork(2) does.
+
+***
+
 ### onStderr?
 
 > `optional` **onStderr?**: (`data`) => `void`

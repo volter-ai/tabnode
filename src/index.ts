@@ -64,7 +64,7 @@ import { __adoptHandle, ownerOf, type OwnedHandle } from './node-lib/binding/han
 import { listenerOnPort } from './node-lib/binding/tcp_wrap';
 import { nativeStreamHandles, nativeStreamOwnerPid, type NativeStreamHandleView } from './native-stream-owner';
 
-import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid, installRunRegistry, claimRunPid, forgetRunPid } from './process-tokens';
+import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid, installRunRegistry, installRunNetwork, claimRunPid, forgetRunPid } from './process-tokens';
 export { runPid, processByPid };
 export { installProcessRegistry, installProcessIdAllocator } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
@@ -84,7 +84,9 @@ export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialPro
 import type { ProcessRegistry } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
-export { installHostNames } from './shims/dns';
+export { loopbackOnlyNamespace } from './network-namespace';
+export type { NetworkNamespace, NamespaceAddress, NamespaceConnection, NamespaceListener, ResolverAnswer } from './network-namespace';
+import { inNetworkNamespace, inNetworkScope, loopbackOnlyNamespace, recordContainerNamespace, type NetworkNamespace } from './network-namespace';
 export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport, NativeStreamHandleView, NativeStreamWriteTrace } from './native-stream-owner';
 
 export interface RunResult {
@@ -188,6 +190,11 @@ export interface RunOptions {
    */
   processToken?: string;
   /**
+   * The run's network namespace, where it is not the container's: a process another run launched keeps its
+   * launcher's (`NodeProcessLaunch.network`), as fork(2) does.
+   */
+  network?: NetworkNamespace;
+  /**
    * The host keeps this run open (a watch or an interactive shell); a run that
    * is not held ends when its loop has nothing left, as Node's does. A
    * `signal` alone is an abort handle, not a hold.
@@ -203,6 +210,14 @@ export interface ContainerOptions extends RuntimeOptions {
   vfs?: VirtualFS;
   baseUrl?: string;
   onServerReady?: (port: number, url: string) => void;
+  /**
+   * The network namespace the container's runs live in, as its host lays it out (`NetworkNamespace`): their
+   * loopback and port space, the addresses they hold, where their connections go and what their names resolve to.
+   * Each container has its own (two containers in one page are two namespaces, unless their host gives both the same); a
+   * host-held process elsewhere has its scope's (`NativeStreamScope`). Without one, the container's runs are in a fresh namespace of their loopback alone, the
+   * container's own.
+   */
+  network?: NetworkNamespace;
 }
 
 /**
@@ -211,6 +226,8 @@ export interface ContainerOptions extends RuntimeOptions {
 export function createContainer(options?: ContainerOptions): {
   vfs: VirtualFS;
   runtime: Runtime;
+  /** The container's network namespace: its runs', and its own doors'. */
+  network: NetworkNamespace;
   npm: PackageManager;
   serverBridge: ServerBridge;
   execute: (code: string, filename?: string) => { exports: unknown };
@@ -247,6 +264,12 @@ export function createContainer(options?: ContainerOptions): {
   listenNet: (port: number, onConnection: (socket: NetSocket) => void) => () => void;
   createREPL: () => { eval: (code: string) => unknown };
   on: (event: string, listener: (...args: unknown[]) => void) => void;
+  /**
+   * The container is done: its namespace is no longer the owner a host-held scope given none defaults to, and its page
+   * bridge stops following its guests' ports and ends the WebSocket and raw upgraded sockets it carries (1001, going
+   * away). Plain HTTP to the ports it already serves is still answered; its runs and their own sockets keep going.
+   */
+  dispose: () => void;
 } {
   // A container takes the filesystem it is given. Building its own in memory
   // with no way to hand it another left the worker that owns the origin's store
@@ -254,6 +277,10 @@ export function createContainer(options?: ContainerOptions): {
   // pack.
   // A tree the caller gives is the caller's; one made here is the engine's to furnish.
   const vfs = (options && options.vfs) || adoptEngineTree(new VirtualFS());
+  // The container's network namespace: every run it starts is in it, and every process a run forks (process-tokens.ts
+  // installRunNetwork, setRunPid); the container's own doors (listenNet, the page bridge) make their sockets in it.
+  // A container given none is a fresh namespace of its loopback alone, its own and no other container's.
+  const network: NetworkNamespace = options?.network ?? loopbackOnlyNamespace();
   const runtime = new Runtime(vfs, options);
   const npmManager = new PackageManager(vfs);
   // A container owns its servers. One process-wide bridge meant two runtimes in
@@ -264,6 +291,7 @@ export function createContainer(options?: ContainerOptions): {
   const serverBridge = new ServerBridge({
     baseUrl: options?.baseUrl,
     onServerReady: options?.onServerReady,
+    network,
   });
 
   /**
@@ -298,6 +326,10 @@ export function createContainer(options?: ContainerOptions): {
     const processToken = typeof runOptions?.processToken === 'string' && runOptions.processToken.length > 0
       ? runOptions.processToken
       : `run-${__nextRunName++}`;
+    // The run is in the namespace its host names (a process launched by another, which keeps its launcher's), else
+    // in the container's.
+    const runNetwork = runOptions?.network ?? network;
+    installRunNetwork(processToken, runNetwork);
     const credentials = copyProcessCredentials(runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()));
     registerRunStreams(processToken, {
       credentials,
@@ -318,7 +350,9 @@ export function createContainer(options?: ContainerOptions): {
     let outcome: { stdout: string; stderr: string; exitCode: number };
     let terminatedBy: string | undefined;
     try {
-      outcome = await start(processToken);
+      // The run begins in its own namespace, whatever namespace the frame that started it carried (a callback of
+      // another container's run, a page bridge's event): everything it does and continues is in its container's.
+      outcome = await inNetworkScope(runNetwork, () => start(processToken));
     } finally {
       releaseRunStreams(processToken);
       terminatedBy = __takeTermination(processToken);
@@ -331,13 +365,16 @@ export function createContainer(options?: ContainerOptions): {
     };
   };
 
-  return {
+  let disposed = false;
+  const container: ReturnType<typeof createContainer> = {
     vfs,
     runtime,
+    network,
     npm: npmManager,
     serverBridge,
-    execute: (code: string, filename?: string) => runtime.execute(code, filename),
-    runFile: (filename: string) => runtime.runFile(filename),
+    // The container's own code is in its namespace, and so is every continuation it makes.
+    execute: (code: string, filename?: string) => inNetworkScope(network, () => runtime.execute(code, filename)),
+    runFile: (filename: string) => inNetworkScope(network, () => runtime.runFile(filename)),
     run: (command: string, runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, async (processToken) => {
       const numbered = runOptions?.registry !== undefined || runOptions?.process !== undefined;
       try {
@@ -383,7 +420,7 @@ export function createContainer(options?: ContainerOptions): {
     /** The ports the servers the named run opened are listening on. */
     processPorts: (token: string): number[] => __ownedServerPorts(token),
     portPid: (port: number): number | undefined => {
-      const listener = listenerOnPort(port);
+      const listener = listenerOnPort(port, network)?.listener;
       if (!listener) return undefined;
       // a guest's own listener, or one this engine holds for another worker's process
       return runPid(ownerOf(listener as unknown as OwnedHandle))?.pid ?? nativeStreamOwnerPid(listener);
@@ -424,7 +461,8 @@ export function createContainer(options?: ContainerOptions): {
     // the guest (browser-substrate's FIN through the relay, S1). Each socket ends once both halves are done.
     listenNet: (port: number, onConnection: (socket: NetSocket) => void) => {
       const server = new NetServer({ allowHalfOpen: true }, onConnection);
-      server.listen(port);
+      // The page's listener is in the container's namespace, as the container's own loopback.
+      inNetworkNamespace(network, () => server.listen(port));
       __adoptHandle((server as unknown as { _handle?: OwnedHandle | null })._handle, null);
       return () => { server.close(); };
     },
@@ -432,7 +470,16 @@ export function createContainer(options?: ContainerOptions): {
     on: (event: string, listener: (...args: unknown[]) => void) => {
       serverBridge.on(event, listener);
     },
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      forgetContainer();
+      serverBridge.close();
+    },
   };
+  // The engine knows the container while it lives: a host-held scope given no namespace defaults to the one it has.
+  const forgetContainer = recordContainerNamespace(container, network);
+  return container;
 }
 
 export default createContainer;

@@ -36,6 +36,7 @@ The engine is a library, not an application, and its surface is what a host embe
 | `Runtime` | one guest realm: `require`, the module table of builtins, ESM lowered to CommonJS |
 | `createRuntime()` | the same on the caller's thread or on a worker of the engine's own |
 | `ServerBridge` | a page request answered by a guest's own `http` server, through the service worker |
+| `NetworkNamespace` | what a host gives a realm as its network namespace (its addresses, its routes, its listeners told to the host, its resolver; ADR-0008); `loopbackOnlyNamespace()` where it gives none |
 | `createNodeResolver()` | Node's module resolution as a function over any filesystem |
 | `esbuild`, `rollup` | the bundlers' own wasm builds, for a host that builds outside a run |
 

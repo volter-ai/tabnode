@@ -50,6 +50,18 @@ The run whose guest code is executing, for a caller attributing a child.
 
 `string` \| `null`
 
+### dispose
+
+> **dispose**: () => `void`
+
+The container is done: its namespace is no longer the owner a host-held scope given none defaults to, and its page
+bridge stops following its guests' ports and ends the WebSocket and raw upgraded sockets it carries (1001, going
+away). Plain HTTP to the ports it already serves is still answered; its runs and their own sockets keep going.
+
+#### Returns
+
+`void`
+
 ### execute
 
 > **execute**: (`code`, `filename?`) => `object`
@@ -89,6 +101,12 @@ The run whose guest code is executing, for a caller attributing a child.
 #### Returns
 
 () => `void`
+
+### network
+
+> **network**: [`NetworkNamespace`](../interfaces/NetworkNamespace.md)
+
+The container's network namespace: its runs', and its own doors'.
 
 ### npm
 

@@ -17,6 +17,7 @@ import type { ProcessCredentials } from './process-credentials';
  */
 
 import type { Process } from './shims/process';
+import type { NetworkNamespace } from './network-namespace';
 import { AsyncLocalStorage, routeUncaughtExceptions } from './shims/async_hooks';
 import { createProcessRegistryOwner, type ProcessRegistry, type InitialProcessRegistration } from './process-registry';
 
@@ -46,6 +47,21 @@ export interface OwnedRun {
 }
 
 const runs = new Map<ProcessToken, OwnedRun>();
+
+/**
+ * Each run's network namespace: its container's, given when the container starts it, or the one the run that forked
+ * it is in (setRunPid), as a forked process keeps its parent's namespace. Read by every socket, lookup and interface
+ * list the run makes (network-namespace.ts currentNetworkNamespace).
+ */
+const runNetworks = new Map<ProcessToken, NetworkNamespace>();
+/** Trusted host only: run `token` is in `network`. */
+export function installRunNetwork(token: ProcessToken, network: NetworkNamespace): void { runNetworks.set(token, network); }
+/** The network namespace run `token` is in, where one was given or inherited. */
+export function runNetworkOf(token: ProcessToken | null | undefined): NetworkNamespace | undefined {
+  return token === null || token === undefined ? undefined : runNetworks.get(token);
+}
+/** A run that has ended keeps no namespace. */
+export function forgetRunNetwork(token: ProcessToken): void { runNetworks.delete(token); }
 const tokensByProcess = new WeakMap<Process, ProcessToken>();
 
 /**
@@ -58,9 +74,23 @@ const tokensByProcess = new WeakMap<Process, ProcessToken>();
  */
 const executing = new AsyncLocalStorage<ProcessToken>();
 
-/** Run `fn` as this token's guest code, so the doors below name that run. */
+/**
+ * The namespace code is running in, carried through every continuation the code makes (its timers, its promises), as
+ * the engine's async context carries a run: a run entered with an installed namespace, a container's own code
+ * (`execute`, `runFile`) and an engine continuation resumed in the namespace of the call that began it
+ * (network-namespace.ts captureNetworkContext).
+ */
+export const networkScope = new AsyncLocalStorage<NetworkNamespace>({ name: 'tabnode.network' });
+
+/**
+ * Run `fn` as this token's guest code, so the doors below name that run. A run with an installed namespace is entered in
+ * it too, so a frame resumed from another run (a native `await`'s continuation, which the engine does not restore)
+ * cannot lend this run its namespace.
+ */
 export function enterRun<T>(token: ProcessToken, fn: () => T): T {
-  return executing.run(token, fn as (...args: unknown[]) => T);
+  const network = runNetworks.get(token);
+  const body = fn as (...args: unknown[]) => T;
+  return network === undefined ? executing.run(token, body) : executing.run(token, () => networkScope.run(network, body));
 }
 
 /**
@@ -269,6 +299,9 @@ export function setRunPid(token: ProcessToken, pid: number, ppid: number, starte
   registryUsed = true;
   const registry = registryFor(parent);
   if (registry !== processRegistry && !runRegistries.has(token)) runRegistries.set(token, registry);
+  // fork(2) keeps the parent's network namespace.
+  const parentNetwork = runNetworkOf(parent);
+  if (parentNetwork && !runNetworks.has(token)) runNetworks.set(token, parentNetwork);
   // Node's detached spawn starts a private group. Every other child inherits
   // its parent's, and a second publication preserves an adopted group.
   const pgid = pidsOfRuns.get(token)?.pgid ?? (started?.detached ? pid : registry.lookup(ppid)?.pgid ?? pid);

@@ -7,7 +7,8 @@ import {
   __requestOverLoopback, __streamOverLoopback, __upgradeOverLoopback, __listening,
   type ResponseData, type LoopbackStreamFlow,
 } from './node-lib/http-bridge';
-import { setPortWatchers } from './node-lib/net-module';
+import { watchNamespacePorts } from './node-lib/net-module';
+import { currentNetworkNamespace, type NetworkNamespace } from './network-namespace';
 import { __bridgeConnection } from './node-lib/net-module';
 import type { Socket } from './node-lib/net-module';
 import { Buffer } from './node-lib/buffer-module';
@@ -26,7 +27,7 @@ export type { IVirtualServer, VirtualServer, BridgeOptions, InitServiceWorkerOpt
  * while one with no host (openvscode-server's) could still reach the page
  * through a wrap that did not bind `handleRequest`.
  */
-function guestListeningServer(port: number, address: string): IVirtualServer {
+function guestListeningServer(network: NetworkNamespace, port: number, address: string): IVirtualServer {
   const hostname = address || '0.0.0.0';
   return {
     listening: true,
@@ -37,7 +38,7 @@ function guestListeningServer(port: number, address: string): IVirtualServer {
     }),
     handleRequest: (method, url, headers, body) =>
       // this engine's bridge hands its servers a Buffer (`bodyOf`)
-      __requestOverLoopback(port, method, url, headers, (typeof body === 'string' ? Buffer.from(body) : body) as Buffer | undefined),
+      __requestOverLoopback(network, port, method, url, headers, (typeof body === 'string' ? Buffer.from(body) : body) as Buffer | undefined),
   };
 }
 
@@ -113,7 +114,12 @@ type UpgradeSocket = Socket & UpgradeEnd & { cork(): void; uncork(): void };
 // RFC 6455 on the bridge's side of an upgraded socket: what the server's
 // library writes is parsed into messages for the client, what the client
 // sends is framed, masked as a client must, for the library to read.
-const __substrateUpgradeSockets = new Map<string, UpgradeEnd>();
+/**
+ * The upgraded sockets each bridge's channel carries, by client, and the connects still being answered on it. Every
+ * client's messages and its end are looked up in its own bridge's channel, so two bridges that both accepted one
+ * broadcast connect never reach each other's socket, and a bridge that closes ends exactly its own.
+ */
+const __substrateChannelSockets = new WeakMap<BroadcastChannel, { sockets: Map<string, UpgradeEnd>; pending: Set<string> }>();
 function __substrateFrame(opcode: number, payload: Uint8Array, masked: boolean): Uint8Array {
   const length = payload.length;
   const header = [0x80 | opcode];
@@ -204,7 +210,7 @@ function __substrateUpgradeSocket(entry: UpgradeEntry, socket: Socket): UpgradeS
   const finish = (code: number, reason: string): void => {
     if (closed) return;
     closed = true;
-    __substrateUpgradeSockets.delete(entry.clientId);
+    __substrateChannelSockets.get(entry.channel)?.sockets.delete(entry.clientId);
     entry.channel.postMessage({ type: "close", targetClient: entry.clientId, code, reason });
   };
   /** What the client says, framed for the server's library, as the socket's own inbound bytes. */
@@ -213,6 +219,7 @@ function __substrateUpgradeSocket(entry: UpgradeEntry, socket: Socket): UpgradeS
     const bytes = chunk;
     if (!headed) return;
     __substrateParseFrames(state, bytes, (opcode, payload) => {
+      if (closed) return;
       if (opcode === 1) entry.channel.postMessage({ type: "message", targetClient: entry.clientId, payload: decoder.decode(payload) });
       else if (opcode === 2) entry.channel.postMessage({ type: "message", targetClient: entry.clientId, payload: payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) });
       else if (opcode === 8) { const code = payload.length >= 2 ? (payload[0] << 8) | payload[1] : 1005; finish(code === 1005 ? 1000 : code, payload.length > 2 ? decoder.decode(payload.subarray(2)) : ""); end.destroy(); }
@@ -231,10 +238,12 @@ function __substrateUpgradeSocket(entry: UpgradeEntry, socket: Socket): UpgradeS
     if (closed || end.destroyed) return;
     const text = _encoder.encode(reason || "");
     const payload = new Uint8Array(2 + text.length); payload[0] = code >> 8; payload[1] = code & 255; payload.set(text, 2);
+    // The client is told at once, while its channel can carry it (a bridge closing sends this and then closes it); the
+    // library then answers the close frame with its own, which ends this end through the reader above, and a library
+    // that does not answer is ended here.
+    finish(code, reason || "");
     receive(__substrateFrame(8, payload, true));
-    // The library answers a close frame with its own, and that write ends this
-    // end through the reader above; a library that does not answer ends here.
-    setTimeout(() => { finish(code, reason || ""); end.destroy(); }, 50);
+    setTimeout(() => { end.destroy(); }, 50);
   };
   return end;
 }
@@ -266,7 +275,7 @@ function __substrateRawUpgradeSocket(entry: UpgradeEntry, socket: Socket): Socke
   const finish = (code: number, reason: string): void => {
     if (closed) return;
     closed = true;
-    __substrateUpgradeSockets.delete(entry.clientId);
+    __substrateChannelSockets.get(entry.channel)?.sockets.delete(entry.clientId);
     entry.channel.postMessage({ type: "close", targetClient: entry.clientId, code, reason });
   };
   bridge.onData((chunk) => {
@@ -305,6 +314,8 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
   if (typeof BroadcastChannel === "undefined") return null;
   const channel = new BroadcastChannel("vite-ws-channel");
   (channel as unknown as { unref?: () => void }).unref?.();
+  const carried = { sockets: new Map<string, UpgradeEnd>(), pending: new Set<string>() };
+  __substrateChannelSockets.set(channel, carried);
   channel.addEventListener("message", (event) => {
     const data2 = event.data as UpgradeSignal;
     if (!data2 || typeof data2 !== "object") return;
@@ -312,8 +323,9 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
       let url2: URL;
       try { url2 = new URL(data2.url!); } catch { return; }
       const port = Number(url2.port);
-      if (!__listening(port)) return;
+      if (!__listening(bridge.network, port)) return;
       const record = { clientId: data2.clientId, port, channel };
+      carried.pending.add(data2.clientId);
       // A client that asked for no frames is a byte pipe; anything else is a
       // WebSocket, and the bridge speaks RFC 6455 on its own end of it.
       const raw = data2.framing === "none";
@@ -323,7 +335,7 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
       // server answers it with its own code: Node's `http` emits `upgrade`
       // with the socket, which is what the real `ws` takes over. What comes
       // back here is the client's end of that same connection.
-      void __upgradeOverLoopback(port, "GET", url2.pathname + url2.search, {
+      void __upgradeOverLoopback(bridge.network, port, "GET", url2.pathname + url2.search, {
         // Host is the authority the client addressed, as an HTTP request's is
         Host: typeof data2.host === "string" && /^(?:\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::[0-9]{1,5})?$/iu.test(data2.host) ? data2.host : url2.host,
         Upgrade: "websocket",
@@ -334,6 +346,9 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
         // check of it is how it refuses sockets from pages it did not serve.
         ...(typeof data2.origin === "string" && /^https?:\/\/[^/]+$/u.test(data2.origin) ? { Origin: data2.origin } : {}),
       }).then((result) => {
+        // A bridge closed while the upgrade was in flight has no channel left to answer on: the socket is ended.
+        carried.pending.delete(data2.clientId);
+        if (!__substrateChannelSockets.has(channel)) { result.socket?.destroy(); return; }
         if (result.statusCode !== 101 || !result.socket) {
           channel.postMessage({ type: "close", targetClient: data2.clientId, code: 1006, reason: "upgrade refused" });
           return;
@@ -341,7 +356,7 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
         const socket = raw
           ? __substrateRawUpgradeSocket(record, result.socket)
           : __substrateUpgradeSocket(record, result.socket);
-        __substrateUpgradeSockets.set(data2.clientId, socket);
+        carried.sockets.set(data2.clientId, socket);
         channel.postMessage({
           type: "connected",
           targetClient: data2.clientId,
@@ -349,10 +364,10 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
         });
       });
     } else if (data2.type === "message") {
-      const socket = __substrateUpgradeSockets.get(data2.clientId);
+      const socket = carried.sockets.get(data2.clientId);
       if (socket) socket.deliver(data2.payload!);
     } else if (data2.type === "disconnect") {
-      const socket = __substrateUpgradeSockets.get(data2.clientId);
+      const socket = carried.sockets.get(data2.clientId);
       if (socket) socket.disconnect(typeof data2.code === "number" ? data2.code : 1000, typeof data2.reason === "string" ? data2.reason : "");
     }
   });
@@ -363,8 +378,14 @@ export class ServerBridge extends PortBridge {
   /** The upgrade channel this bridge opened, held so it can be given back. */
   private upgradeChannel: BroadcastChannel | null = null;
 
+  /** The namespace whose loopback this bridge answers for: its container's. */
+  readonly network: NetworkNamespace;
+  private stopWatching: (() => void) | null = null;
+
   constructor(options: BridgeOptions = {}) {
     super(options);
+    // A bridge no container made answers for the namespace it is made in: a run's, or that of the sockets no run made.
+    this.network = options.network ?? currentNetworkNamespace();
     // A guest's servers register themselves, from the port they take.
     this.watchGuestPorts();
     this.upgradeChannel = __substrateListenForUpgrades(this);
@@ -379,11 +400,11 @@ export class ServerBridge extends PortBridge {
   private readonly guestServers = new WeakSet<IVirtualServer>();
 
   private watchGuestPorts(): void {
-    setPortWatchers(
+    this.stopWatching = watchNamespacePorts(this.network,
       (port, address) => {
         if (this.servers.has(port)) return;
         const hostname = address || '0.0.0.0';
-        const server = guestListeningServer(port, hostname);
+        const server = guestListeningServer(this.network, port, hostname);
         this.guestServers.add(server);
         this.registerServer(server, port, hostname);
       },
@@ -401,7 +422,15 @@ export class ServerBridge extends PortBridge {
   }
 
   override close(): void {
+    this.stopWatching?.();
+    this.stopWatching = null;
     if (this.upgradeChannel) {
+      // Its upgraded sockets end as a server going away ends them (1001), while their channel can still say so.
+      const carried = __substrateChannelSockets.get(this.upgradeChannel);
+      for (const socket of [...(carried?.sockets.values() ?? [])]) socket.disconnect(1001, "going away");
+      // A connect still being answered is told too; its socket, should it arrive, is ended unanswered.
+      for (const client of carried?.pending ?? []) this.upgradeChannel.postMessage({ type: "close", targetClient: client, code: 1001, reason: "going away" });
+      __substrateChannelSockets.delete(this.upgradeChannel);
       try { this.upgradeChannel.close(); } catch { /* a channel the realm already closed is closed */ }
       this.upgradeChannel = null;
     }
@@ -414,7 +443,7 @@ export class ServerBridge extends PortBridge {
   }
 
   protected override requestGuest(port: number, method: string, url: string, headers: Record<string, string>, body: Uint8Array | undefined): Promise<ResponseData> {
-    return __requestOverLoopback(port, method, url, headers, body as Buffer | undefined);
+    return __requestOverLoopback(this.network, port, method, url, headers, body as Buffer | undefined);
   }
 
   protected override streamGuest(
@@ -424,7 +453,7 @@ export class ServerBridge extends PortBridge {
     onEnd: () => void,
     flow?: LoopbackStreamFlow,
   ): Promise<void> {
-    return __streamOverLoopback(port, method, url, headers, body as Buffer | undefined, onStart, onChunk, onEnd, flow);
+    return __streamOverLoopback(this.network, port, method, url, headers, body as Buffer | undefined, onStart, onChunk, onEnd, flow);
   }
 
   /** A server of this engine reads a request's body as Node's Buffer. */

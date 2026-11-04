@@ -34,6 +34,14 @@ Server Bridge manages virtual HTTP servers and routes requests
 
 ## Properties
 
+### network
+
+> `readonly` **network**: [`NetworkNamespace`](../interfaces/NetworkNamespace.md)
+
+The namespace whose loopback this bridge answers for: its container's.
+
+***
+
 ### servers
 
 > **servers**: `Map`\<`number`, `VirtualServer`\>
