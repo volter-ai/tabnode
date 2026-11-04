@@ -74,6 +74,18 @@ Observe only original completed synchronous bodies at these exact paths, when th
 
 ***
 
+### network?
+
+> `optional` **network?**: [`NetworkNamespace`](NetworkNamespace.md)
+
+The network namespace the container's runs live in, as its host lays it out (`NetworkNamespace`): their
+loopback and port space, the addresses they hold, where their connections go and what their names resolve to.
+Each container has its own (two containers in one page are two namespaces, unless their host gives both the same); a
+host-held process elsewhere has its scope's (`NativeStreamScope`). Without one, the container's runs are in a fresh namespace of their loopback alone, the
+container's own.
+
+***
+
 ### onConsole?
 
 > `optional` **onConsole?**: (`method`, `args`) => `void`

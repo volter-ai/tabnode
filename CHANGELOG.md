@@ -10,13 +10,18 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   `NetworkNamespace` (`addresses`, `connect`, `listen`, `resolve`) to `createContainer({ network })` and to
   `new NativeStreamScope(limits, emit, ownerPid, network)`. Each namespace has its own loopback and port space.
   A bind to an address the namespace does not hold is `EADDRNOTAVAIL`. A listen is told to the host, which may
-  refuse it. A connect outside the namespace is the host's to route or refuse (`EHOSTUNREACH`, `ENETUNREACH`).
+  refuse it. A connect outside the namespace is the host's to route or fail (`ECONNREFUSED`, `ETIMEDOUT` where the
+  route drops packets, as Docker's isolated bridges do, `ENETUNREACH`); a host failure, throw or silence fails that
+  one socket. A namespace is a container's (`container.network`) and each of its runs', inherited by forked processes
+  and handed to a launched `node` (`NodeProcessLaunch.network`); there is no engine-wide namespace.
   `dns.lookup` and `dns.resolve*` ask the namespace's resolver (`ENODATA` for a held name without the record type),
   and `os.networkInterfaces()` lists its addresses. A realm given none has its loopback alone
   (`loopbackOnlyNamespace()`). The `installHostNames` export is removed: a name a host holds is answered by its
   namespace's resolver. HTTP's Agent routes by the namespace too: what it holds is its own network, a host's own
   service is the exchange only where `hostService(network, host, port)` says the namespace reaches it, and the rest
-  leaves through the exchange; `HttpClientTransportOptions.hostPorts` is replaced by `hostService`.
+  leaves through the exchange; `HttpClientTransportOptions.hostPorts` is replaced by `hostService`. `tls.connect`
+  reads the same decision. Lookups fail `EAI_AGAIN` (queries `ESERVFAIL` / `ETIMEOUT`) when the resolver fails or is
+  silent; `getServers()` reads `/etc/resolv.conf`. Binds, connects and listeners follow Linux's families.
 
 - SQLite binds JavaScript Numbers as doubles and rejects BigInts outside signed 64-bit range with
   `ERR_INVALID_ARG_VALUE`, matching Node. Native cleanup state permits collection during a live process while

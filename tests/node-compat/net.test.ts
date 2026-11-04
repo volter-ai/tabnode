@@ -21,8 +21,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { netModule as net, Socket, Server, createServer, createConnection, connect, isIP, isIPv4, isIPv6 } from '../../src/node-lib/net-module';
 import { assert } from './common';
-import { getEngineNamespace, loopbackOnlyNamespace, setEngineNamespace, type NamespaceConnection, type NamespaceListener, type NetworkNamespace } from '../../src/network-namespace';
-import { UV_EADDRINUSE, UV_ECONNREFUSED, UV_EHOSTUNREACH, UV_ENETUNREACH } from '../../src/node-lib/binding/uv';
+import { loopbackOnlyNamespace, type NamespaceConnection, type NamespaceListener, type NetworkNamespace } from '../../src/network-namespace';
+import { UV_EADDRINUSE, UV_ECONNREFUSED, UV_ENETUNREACH, UV_ETIMEDOUT } from '../../src/node-lib/binding/uv';
+import { inside as asRunOf } from './namespace-run';
 
 /** A server listening on an engine-chosen port, and the port. */
 function listening(onConnection?: (socket: unknown) => void): Promise<{ server: ReturnType<typeof createServer>; port: number }> {
@@ -38,7 +39,8 @@ function listening(onConnection?: (socket: unknown) => void): Promise<{ server: 
 /**
  * A host as the substrate is one: two Docker networks, `front` (172.18.0.0/16, gateway .1) holding `web` (.2) and
  * `api` (.3), and `back` (172.19.0.0/16) holding `api` (.2) and `db` (.3). Each container is a namespace; a peer on a
- * shared network is reached from the connector's address there, one on no shared network is EHOSTUNREACH, and the
+ * shared network is reached from the connector's address there, one on no shared network times out (ETIMEDOUT: Docker drops
+ * the packets between isolated bridges, read 2026-11-04 on Docker through colima), and the
  * gateway's port 3128 is a listener the host holds (its egress proxy), answered a tick later.
  */
 function dockerHost() {
@@ -58,7 +60,7 @@ function dockerHost() {
       const mine = networks[name]!;
       for (const [network, gateway] of Object.entries(gateways)) {
         if (address !== gateway) continue;
-        if (!mine[network]) return UV_EHOSTUNREACH;
+        if (!mine[network]) return UV_ETIMEDOUT;
         if (port !== 3128) return UV_ECONNREFUSED;
         const source = mine[network]!;
         return new Promise(resolve => setTimeout(() => resolve({
@@ -69,7 +71,7 @@ function dockerHost() {
         const network = Object.keys(held).find(key => held[key] === address);
         if (!network) continue;
         if (peer === name) return UV_ECONNREFUSED;
-        return mine[network] ? { namespace: peer, source: mine[network]! } : UV_EHOSTUNREACH;
+        return mine[network] ? { namespace: peer, source: mine[network]! } : UV_ETIMEDOUT;
       }
       return UV_ENETUNREACH;
     },
@@ -89,9 +91,7 @@ function dockerHost() {
 
 /** Acts as a realm of `network` does: every socket made meanwhile is made in it, and keeps it. */
 async function inside<T>(network: NetworkNamespace, act: () => T | Promise<T>): Promise<T> {
-  const previous = getEngineNamespace();
-  setEngineNamespace(network);
-  try { return await act(); } finally { setEngineNamespace(previous); }
+  return asRunOf(network, act);
 }
 
 /** A server that answers each connection with `word` and the address it came from. */
@@ -482,12 +482,12 @@ describe('net module (Node.js compat)', () => {
       api.close();
     });
 
-    it('refuses a peer on no shared network with EHOSTUNREACH, as Docker isolates bridges', async () => {
+    it('times out a peer on no shared network (ETIMEDOUT), as Docker drops packets between isolated bridges', async () => {
       const host = dockerHost();
       const db = await inside(host.db, () => answering('db', 5432));
       const socket = await inside(host.web, () => createConnection(5432, '172.19.0.3'));
       const error = await failure(socket);
-      assert.strictEqual(error.code, 'EHOSTUNREACH');
+      assert.strictEqual(error.code, 'ETIMEDOUT');
       assert.strictEqual(error.syscall, 'connect');
       db.close();
     });

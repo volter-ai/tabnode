@@ -97,11 +97,12 @@ and the run ownership that keeps a run alive while it holds a handle.
   in the realm's network namespace (below): `bind`/`bind6` (a port of the
   namespace's own space, at a wildcard, a loopback address or one of the
   namespace's addresses, else `UV_EADDRNOTAVAIL`), `listen(backlog)` (tells
-  the namespace's host, which may refuse it, and, in the engine's own
-  namespace, the page bridge, so a preview reaches it), `connect`/`connect6`
+  the namespace's host, which may refuse it, and the page bridge of the
+  container whose namespace it is, so a preview reaches it), `connect`/`connect6`
   (the namespace's own loopback and addresses reach its own listener; every
-  other destination is routed by the host, or refused as the kernel refuses
-  it: `UV_ECONNREFUSED`, `UV_EHOSTUNREACH`, `UV_ENETUNREACH`),
+  other destination is routed by the host, or fails as the kernel fails it:
+  `UV_ECONNREFUSED`, `UV_ETIMEDOUT`, `UV_ENETUNREACH`; a host that throws,
+  rejects or never answers fails that socket alone),
   `onconnection(err, clientHandle)`, `getsockname(out)`, `getpeername(out)`,
   `setNoDelay`, `setKeepAlive`, `setSimultaneousAccepts` (0), `open(fd)`
   (`UV_ENOTSUP`), `reset()`.
@@ -158,16 +159,17 @@ calls:
 
 | The host's | Asked when | Answers |
 |---|---|---|
-| `addresses()` | a bind, a connect, `os.networkInterfaces()` | the addresses the namespace's interfaces hold besides loopback (`{ address, prefixLength, mac? }`, eth0 first) |
-| `connect(address, port, family)` | a connect no listener of the namespace in this engine takes | a libuv status (refused: `ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`); `{ namespace, source }` (a listener of another namespace this engine serves); `{ source, accept(socket) }` (a listener the host holds, handed the far end as a `net.Socket`); or a Promise of one |
+| `addresses()` | a bind, a connect, `os.networkInterfaces()`, the routing decision | the addresses the namespace's interfaces hold besides loopback (`{ address, prefixLength, interface?, mac? }`, eth0 first) |
+| `connect(address, port, family)` | a connect no listener of the namespace in this engine takes | a libuv status (failed: `ECONNREFUSED`, `ETIMEDOUT`, `ENETUNREACH`); `{ namespace, source }` (a listener of another namespace this engine serves); `{ source, accept(socket) }` (a listener the host holds, handed the far end as a `net.Socket`); or a Promise of one |
 | `listen(listener)` | a socket starts listening | a nonzero libuv status refuses it; else the function called when it stops. `listener.open(from, to)` is the host's connection to it |
-| `resolve(name, family)` | `dns.lookup` past `/etc/hosts` and `localhost`, `dns.resolve*` | the name's addresses of the family, `[]` when it holds none of the family, `undefined` when it holds no such name; or a Promise of one |
+| `resolve(name, family)` | `dns.lookup` past `/etc/hosts` and `localhost`, `dns.resolve*`, the routing decision for a name (`net`, HTTP's Agent, `tls`) | the name's addresses of the family, `[]` when it holds none of the family, `undefined` when it holds no such name; or a Promise of one |
 
 `id` names the namespace: realms given one id share one loopback and one port
-space. The engine's own runs are in the namespace `createContainer({ network })`
-gave. A process whose sockets the engine holds for another worker is in the one
-its `NativeStreamScope` was made with. A realm given none is in
-`loopbackOnlyNamespace()`: its loopback alone, no names, no routes.
+space. A container's runs are in the namespace `createContainer({ network })`
+gave it, and the processes a run forks in their parent's. A process whose
+sockets the engine holds for another worker is in the one its
+`NativeStreamScope` was made with. A container or scope given none is in a
+fresh `loopbackOnlyNamespace()`: its loopback alone, no names, no routes.
 
 ## Lanes and the measure
 

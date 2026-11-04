@@ -90,6 +90,12 @@ The run whose guest code is executing, for a caller attributing a child.
 
 () => `void`
 
+### network
+
+> **network**: [`NetworkNamespace`](../interfaces/NetworkNamespace.md)
+
+The container's network namespace: its runs', and its own doors'.
+
 ### npm
 
 > **npm**: [`PackageManager`](../namespaces/npm/classes/PackageManager.md)

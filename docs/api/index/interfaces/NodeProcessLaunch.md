@@ -66,6 +66,14 @@ This entry's filesystem view, including any host-prepared entry wrapper.
 
 ***
 
+### network
+
+> **network**: [`NetworkNamespace`](NetworkNamespace.md)
+
+The network namespace of the process that launched it, which the child is in, as fork(2) keeps its parent's.
+
+***
+
 ### stdin?
 
 > `optional` **stdin?**: `string` \| `Uint8Array`\<`ArrayBufferLike`\>

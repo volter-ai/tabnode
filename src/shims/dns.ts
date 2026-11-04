@@ -3,10 +3,12 @@
  * the process's own `/etc/hosts`, then the resolver its `/etc/resolv.conf` names; `dns.resolve*` is a query to that
  * resolver. The resolver here is the namespace's, which its host answers (a container's names, by the networks the
  * asker shares with it, as Docker's embedded resolver at 127.0.0.11 answers them). A name the resolver does not hold
- * is `ENOTFOUND`; it never becomes this host or a wildcard.
+ * is `ENOTFOUND`; it never becomes this host or a wildcard. A resolver that fails, or does not answer within
+ * resolv.conf's timeouts, is `EAI_AGAIN` to a lookup and `ESERVFAIL` / `ETIMEOUT` to a query, as glibc and c-ares
+ * report a server that fails or does not answer. `getServers()` is the process's `/etc/resolv.conf`'s nameservers.
  */
 import { heldWork } from '../host-globals';
-import { getEngineNamespace, type ResolverAnswer } from '../network-namespace';
+import { RESOLVE_TIMEOUT_MS, currentNetworkNamespace, settleResolver, type ResolverAnswer } from '../network-namespace';
 
 // DNS lookup callback type
 type LookupCallback = (err: Error | null, address?: string, family?: number) => void;
@@ -37,15 +39,37 @@ function answerLater(answer: () => void | Promise<void>): void {
 /** What a resolver's failure is to a callback: the error it threw, or one naming what it threw. */
 const asError = (cause: unknown): Error => cause instanceof Error ? cause : new Error(String(cause));
 
-/** The namespace's resolver, asked for one family: what it holds for the name, compared without case or a trailing dot. */
-async function ask(hostname: string, family: 4 | 6): Promise<ResolverAnswer> {
-  return getEngineNamespace().resolve(hostname.toLowerCase().replace(/\.$/, ''), family);
+/**
+ * The asking process's namespace's resolver, asked for one family: what it holds for the name, compared without case
+ * or a trailing dot. Read when the question is asked, in the asking run.
+ */
+function ask(hostname: string, family: 4 | 6): Promise<ResolverAnswer> {
+  const network = currentNetworkNamespace();
+  try { return Promise.resolve(network.resolve(hostname.toLowerCase().replace(/\.$/, ''), family)); }
+  catch (cause) { return Promise.reject(cause); }
 }
 
-/** getaddrinfo's EAI_NONAME, which Node names ENOTFOUND; a resolver query's ENOTFOUND (NXDOMAIN) or ENODATA. */
-function notFound(hostname: string, syscall = 'getaddrinfo', code: 'ENOTFOUND' | 'ENODATA' = 'ENOTFOUND'): Error {
+/**
+ * getaddrinfo's EAI_NONAME (-3008, a name nobody holds) or EAI_NODATA (-3007, a held name with no address of the asked
+ * family), both of which Node names ENOTFOUND; a resolver query's ENOTFOUND (NXDOMAIN) or ENODATA.
+ */
+function notFound(hostname: string, syscall = 'getaddrinfo', code: 'ENOTFOUND' | 'ENODATA' = 'ENOTFOUND', errno = -3008): Error {
   return Object.assign(new Error(`${syscall} ${code} ${hostname}`), {
-    code, ...(syscall === 'getaddrinfo' ? { errno: -3008 } : {}), syscall, hostname,
+    code, ...(syscall === 'getaddrinfo' ? { errno } : {}), syscall, hostname,
+  });
+}
+
+/** A query whose server failed (`ESERVFAIL`) or did not answer within resolv.conf's timeouts (`ETIMEOUT`), as c-ares reports it. */
+function queryFailed(hostname: string, syscall: string, code: 'ESERVFAIL' | 'ETIMEOUT'): Error {
+  return Object.assign(new Error(`${syscall} ${code} ${hostname}`), { code, syscall, hostname });
+}
+
+/** A query's answer, bounded by resolv.conf's timeouts: the records, the server's failure, or no answer. */
+function bounded(answer: Promise<ResolverAnswer>): Promise<{ held: ResolverAnswer } | { failed: 'ESERVFAIL' | 'ETIMEOUT' }> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({ failed: 'ETIMEOUT' }), RESOLVE_TIMEOUT_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    answer.then(held => { clearTimeout(timer); resolve({ held }); }, () => { clearTimeout(timer); resolve({ failed: 'ESERVFAIL' }); });
   });
 }
 
@@ -143,7 +167,7 @@ function lookupWithHosts(
         const first = options.order === 'ipv6first' ? 6 : 4;
         addresses = [...addresses.filter(row => row.family === first), ...addresses.filter(row => row.family !== first)];
       }
-      if (!addresses.length) { cb(notFound(hostname)); return; }
+      if (!addresses.length) { cb(notFound(hostname, 'getaddrinfo', 'ENOTFOUND', -3007)); return; }
       if (options.all) (cb as LookupAllCallback)(null, addresses);
       else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
       return;
@@ -158,14 +182,16 @@ function lookupWithHosts(
     }
     // The resolver: A, then AAAA (or as `order` puts them), as getaddrinfo asks for an unspecified family.
     const families: Array<4 | 6> = requested ? [requested as 4 | 6] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
-    const asked = Promise.all(families.map(family => ask(hostname, family)))
+    // A resolver that fails or does not answer in time is EAI_AGAIN (settleResolver).
+    const asked = Promise.all(families.map(family => settleResolver(ask(hostname, family), hostname)))
       .then(answers => ({ answers }), (cause: unknown) => ({ cause }));
     // The callback runs outside the resolver's settlement, so what it throws is its own (answerLater).
     return asked.then((outcome) => {
       if ('cause' in outcome) { cb(asError(outcome.cause)); return; }
       const addresses = outcome.answers.flatMap((answer, index) => (answer ?? []).map(address => ({ address, family: families[index]! })));
-      // A name with no address of the asked family is EAI_NODATA, which Node reports as ENOTFOUND too.
-      if (!addresses.length) { cb(notFound(hostname)); return; }
+      // A name nobody holds is EAI_NONAME; a held name with no address of the asked family EAI_NODATA. Node reports
+      // both as ENOTFOUND, with their own errno.
+      if (!addresses.length) { cb(notFound(hostname, 'getaddrinfo', 'ENOTFOUND', outcome.answers.some(answer => answer !== undefined) ? -3007 : -3008)); return; }
       if (options.all) (cb as LookupAllCallback)(null, addresses);
       else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
     });
@@ -182,21 +208,28 @@ const RECORD_FAMILIES: Record<string, 4 | 6> = { A: 4, AAAA: 6 };
 function query(hostname: string, rrtype: string, callback: ResolveCallback): void {
   const syscall = `query${rrtype.charAt(0)}${rrtype.slice(1).toLowerCase()}`;
   const family = RECORD_FAMILIES[rrtype];
-  answerLater(() => ask(hostname, family ?? 4)
-    .then(held => ({ held }), (cause: unknown) => ({ cause }))
+  answerLater(() => bounded(ask(hostname, family ?? 4))
     .then((outcome) => {
-      if ('cause' in outcome) callback(asError(outcome.cause));
+      if ('failed' in outcome) callback(queryFailed(hostname, syscall, outcome.failed));
       else if (outcome.held === undefined) callback(notFound(hostname, syscall));
       else if (family === undefined || outcome.held.length === 0) callback(notFound(hostname, syscall, 'ENODATA'));
       else callback(null, [...outcome.held]);
     }));
 }
 
+/** The record types Node's `dns.resolve` takes; any other is `ERR_INVALID_ARG_VALUE`, thrown as Node throws it. */
+const RRTYPES = new Set(['A', 'AAAA', 'ANY', 'CAA', 'CNAME', 'MX', 'NAPTR', 'NS', 'PTR', 'SOA', 'SRV', 'TLSA', 'TXT']);
+function checkedRrtype(rrtype: unknown): string {
+  if (typeof rrtype !== 'string') throw Object.assign(new TypeError(`The "rrtype" argument must be of type string. Received ${typeof rrtype}`), { code: 'ERR_INVALID_ARG_TYPE' });
+  if (!RRTYPES.has(rrtype)) throw Object.assign(new TypeError(`The argument 'rrtype' is invalid. Received '${rrtype}'`), { code: 'ERR_INVALID_ARG_VALUE' });
+  return rrtype;
+}
+
 export function resolve(hostname: string, callback: ResolveCallback): void;
 export function resolve(hostname: string, rrtype: string, callback: ResolveCallback): void;
 export function resolve(hostname: string, rrtypeOrCallback: string | ResolveCallback, callback?: ResolveCallback): void {
   if (typeof rrtypeOrCallback === 'function') query(hostname, 'A', rrtypeOrCallback);
-  else query(hostname, String(rrtypeOrCallback).toUpperCase(), callback as ResolveCallback);
+  else query(hostname, checkedRrtype(rrtypeOrCallback), callback as ResolveCallback);
 }
 
 export function resolve4(hostname: string, callback: ResolveCallback): void {
@@ -219,19 +252,33 @@ export function reverse(
   });
 }
 
-/**
- * Set servers - no-op in browser
- */
-export function setServers(_servers: string[]): void {
-  // No-op
+/** The nameservers a resolv.conf names, in its order, as c-ares reads them at its start. */
+function nameservers(content: string): string[] {
+  const servers: string[] = [];
+  for (const line of content.split(/\r?\n/)) {
+    const [keyword, address] = line.split(/[#;]/, 1)[0]!.trim().split(/\s+/);
+    if (keyword === 'nameserver' && address && literalFamily(address)) servers.push(address);
+  }
+  return servers;
 }
 
-/**
- * Get servers - return empty in browser
- */
-export function getServers(): string[] {
-  return [];
+/** The process's resolvers: those `setServers` gave it, else its `/etc/resolv.conf`'s, else none it can read. */
+function serversDoor(readEtc?: (path: '/etc/hosts' | '/etc/resolv.conf') => string): { get(): string[]; set(servers: string[]): void } {
+  let given: string[] | undefined;
+  return {
+    get: () => {
+      if (given) return [...given];
+      try { return readEtc ? nameservers(readEtc('/etc/resolv.conf')) : []; } catch { return []; }
+    },
+    set: (servers) => {
+      if (!Array.isArray(servers)) throw Object.assign(new TypeError('The "servers" argument must be an instance of Array.'), { code: 'ERR_INVALID_ARG_TYPE' });
+      given = servers.map(server => String(server));
+    },
+  };
 }
+const engineServers = serversDoor();
+export function setServers(servers: string[]): void { engineServers.set(servers); }
+export function getServers(): string[] { return engineServers.get(); }
 
 /**
  * Set default result order - no-op in browser
@@ -267,6 +314,7 @@ export const promises = {
     });
   },
   resolve: (hostname: string, rrtype = 'A') => {
+    checkedRrtype(rrtype);
     return new Promise<string[]>((promiseResolve, promiseReject) => {
       resolve(hostname, rrtype, (err, addresses) => {
         if (err) promiseReject(err);
@@ -285,8 +333,8 @@ export const promises = {
       reverse(ip, (err, hostnames) => { if (err) reject(err); else resolve(hostnames || []); });
     });
   },
-  setServers: (_servers: string[]) => {},
-  getServers: () => [] as string[],
+  setServers: (servers: string[]) => engineServers.set(servers),
+  getServers: () => engineServers.get(),
 };
 
 // Constants
@@ -319,11 +367,13 @@ const dnsCodes = {
   LOADIPHLPAPI: "ELOADIPHLPAPI", ADDRGETNETWORKPARAMS: "EADDRGETNETWORKPARAMS", CANCELLED: "ECANCELLED"
 };
 
-export function createDnsModule(readHosts?: () => string) {
+export function createDnsModule(readEtc?: (path: '/etc/hosts' | '/etc/resolv.conf') => string) {
+  const readHosts = readEtc ? () => readEtc('/etc/hosts') : undefined;
+  const servers = serversDoor(readEtc);
   const processLookup = ((hostname: string, optionsOrCallback: number | LookupOptions | LookupCallback, callback?: LookupCallback | LookupAllCallback) => {
     lookupWithHosts(readHosts, hostname, optionsOrCallback, callback);
   }) as typeof lookup;
-  const promiseModule = { ...promises, ...dnsCodes, lookup: (hostname: string, options?: number | LookupOptions) =>
+  const promiseModule = { ...promises, ...dnsCodes, getServers: servers.get, setServers: servers.set, lookup: (hostname: string, options?: number | LookupOptions) =>
     new Promise((resolve, reject) => {
       if (typeof options === 'object' && options?.all) {
         processLookup(hostname, options, (err: Error | null, addresses?: Array<{ address: string; family: number }>) => err ? reject(err) : resolve(addresses ?? []));
@@ -331,7 +381,7 @@ export function createDnsModule(readHosts?: () => string) {
         processLookup(hostname, options ?? {}, (err, address, family) => err ? reject(err) : resolve({ address, family }));
       }
     }) };
-  return { ...dnsModule, ...dnsCodes, lookup: processLookup, promises: promiseModule };
+  return { ...dnsModule, ...dnsCodes, getServers: servers.get, setServers: servers.set, lookup: processLookup, promises: promiseModule };
 }
 
 export default dnsModule;

@@ -21,6 +21,7 @@ import type { Socket } from './net-module';
 import { Buffer } from './buffer-module';
 import { HTTPParser } from './binding/http_parser';
 import { listenerOnPort } from './binding/tcp_wrap';
+import { inNetworkNamespace, type NetworkNamespace } from '../network-namespace';
 
 /** What a page request answers with, the shape the bridge has always answered. */
 export interface ResponseData {
@@ -33,9 +34,14 @@ export interface ResponseData {
   body?: Uint8Array;
 }
 
-/** Whether any guest is listening on this port right now. */
-export function __listening(port: number): boolean {
-  return listenerOnPort(port) !== undefined;
+/** Whether a guest is listening on this port of `network`'s loopback right now. */
+export function __listening(network: NetworkNamespace, port: number): boolean {
+  return listenerOnPort(port, network) !== undefined;
+}
+
+/** A connection to `port` on `network`'s loopback: the bridge's own socket, made in the namespace it serves. */
+function connectLoopback(network: NetworkNamespace, port: number): Socket {
+  return inNetworkNamespace(network, () => netModule.connect({ port, host: '127.0.0.1' }) as unknown as Socket);
 }
 
 /** The request head a server reads, from the parts the page gave. */
@@ -152,9 +158,9 @@ function serviceUnavailable(port: number): ResponseData {
  * the tab.
  */
 export function __requestOverLoopback(
-  port: number, method: string, url: string, headers: Record<string, string>, body?: Buffer,
+  network: NetworkNamespace, port: number, method: string, url: string, headers: Record<string, string>, body?: Buffer,
 ): Promise<ResponseData> {
-  if (!__listening(port)) return Promise.resolve(serviceUnavailable(port));
+  if (!__listening(network, port)) return Promise.resolve(serviceUnavailable(port));
   return new Promise<ResponseData>((resolve) => {
     const collected = emptyCollected();
     const parser = responseParser(collected);
@@ -170,7 +176,7 @@ export function __requestOverLoopback(
         body: ownedConcat(collected.chunks),
       });
     };
-    const socket = netModule.connect({ port, host: '127.0.0.1' }) as unknown as Socket;
+    const socket = connectLoopback(network, port);
     socket.on('data', (chunk: Uint8Array) => {
       if (settled) return;
       const read = parser.execute(chunk);
@@ -207,13 +213,13 @@ export interface LoopbackStreamFlow {
 }
 
 export function __streamOverLoopback(
-  port: number, method: string, url: string, headers: Record<string, string>, body: Buffer | undefined,
+  network: NetworkNamespace, port: number, method: string, url: string, headers: Record<string, string>, body: Buffer | undefined,
   onStart: (statusCode: number, statusMessage: string, headers: Record<string, string>) => void,
   onChunk: (chunk: Uint8Array) => void,
   onEnd: () => void,
   flow?: LoopbackStreamFlow,
 ): Promise<void> {
-  if (!__listening(port)) {
+  if (!__listening(network, port)) {
     onStart(503, 'Service Unavailable', { 'Content-Type': 'text/plain' });
     onEnd();
     return Promise.resolve();
@@ -228,7 +234,7 @@ export function __streamOverLoopback(
       () => { started = true; onStart(collected.statusCode, collected.statusMessage, collected.headers); },
       (chunk) => onChunk(chunk),
     );
-    const socket = netModule.connect({ port, host: '127.0.0.1' }) as unknown as Socket;
+    const socket = connectLoopback(network, port);
     flow?.control?.(() => socket.pause(), () => socket.resume());
     if (flow?.signal) {
       if (flow.signal.aborted) { socket.destroy(); finish(); return; }
@@ -269,16 +275,16 @@ export interface UpgradeResult {
  * onto this end, because they are the first frame.
  */
 export function __upgradeOverLoopback(
-  port: number, method: string, url: string, headers: Record<string, string>,
+  network: NetworkNamespace, port: number, method: string, url: string, headers: Record<string, string>,
 ): Promise<UpgradeResult> {
-  if (!__listening(port)) {
+  if (!__listening(network, port)) {
     return Promise.resolve({ statusCode: 503, statusMessage: 'Service Unavailable', headers: {}, socket: null });
   }
   return new Promise<UpgradeResult>((resolve) => {
     const collected = emptyCollected();
     let settled = false;
     const parser = responseParser(collected);
-    const socket = netModule.connect({ port, host: '127.0.0.1' }) as unknown as Socket;
+    const socket = connectLoopback(network, port);
     const fail = (): void => {
       if (settled) return;
       settled = true;

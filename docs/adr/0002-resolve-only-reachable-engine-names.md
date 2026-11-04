@@ -12,12 +12,14 @@ The reference is Node22.18's DNS contract:
 https://github.com/nodejs/node/blob/v22.18.0/doc/api/dns.md.
 
 The browser engine owns IP-literal and local-host lookup. Literals retain
-their address and family; localhost resolves to the engine's IPv4/IPv6
-loopback according to the caller's family/all selection. Other names fail
-asynchronously with ENOTFOUND, syscall getaddrinfo and the requested hostname
-in both callback and Promise doors. The engine has no outbound DNS service;
-resource-record queries and reverse lookup fail explicitly instead of
-fabricating wildcard, IPv6 loopback or localhost records.
+their address and family; localhost resolves to the caller's namespace's
+IPv4/IPv6 loopback according to the caller's family/all selection. Every
+other name is the caller's namespace's resolver's (below); a name it does not
+hold fails asynchronously with ENOTFOUND, syscall getaddrinfo and the
+requested hostname in both callback and Promise doors. The engine has no
+outbound DNS service of its own and fabricates no wildcard, IPv6 loopback or
+localhost record; reverse lookups fail, as the namespace's resolver holds no
+PTR records.
 
 The World owns vendor/name routing and its injector can wrap the process's
 DNS door. The engine contains no vendor table or World-specific names.

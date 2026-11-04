@@ -1,19 +1,23 @@
 /**
- * tls: a tab's loopback carries no wire to protect. A TLS server listens on
- * the engine's loopback as a net server does and hands its connections on as
- * secure; a TLS connect to a loopback port pairs with that listener the same
- * way. Bytes cross unencrypted because nothing lies between the two ends, and
- * the browser holds TLS wherever there is a wire: a page reaches a guest
- * server through the sandbox origin, and a request to another host goes out
- * through the page's HTTP transport. A TLS connect to any other host fails
- * asynchronously, rather than pretending to connect and leaving Node's HTTPS
- * client waiting forever.
+ * tls: a namespace's network inside the tab carries no wire to protect. A TLS
+ * server listens as a net server does and hands its connections on as secure;
+ * a TLS connect to a destination the caller's network namespace holds (its
+ * loopback, a peer on one of its networks, a name its resolver answers: the
+ * one routing decision, network-namespace.ts namespaceHolds, that `net` and
+ * HTTP's Agent read too) pairs with that listener the same way. Bytes cross
+ * unencrypted because nothing lies between the two ends, and the browser holds
+ * TLS wherever there is a wire: a page reaches a guest server through the
+ * sandbox origin, and a request to another host goes out through the page's
+ * HTTP transport. A TLS connect to a destination the namespace does not hold
+ * fails asynchronously (`ERR_TLS_UNAVAILABLE`), rather than pretending to
+ * connect and leaving Node's HTTPS client waiting forever.
  */
 
 import { lazyExport } from '../node-lib/lazy';
 import { nodeLibInternalRequire } from '../node-lib/load';
 import type { Socket } from '../node-lib/net-module';
 import type { EventEmitter } from '../node-lib/events-module';
+import { currentNetworkNamespace, namespaceHolds } from '../network-namespace';
 
 /** A TLS server as Node's module exposes it: constructed with or without `new`. */
 export interface TlsServer extends EventEmitter {
@@ -29,13 +33,6 @@ export interface TlsServerConstructor {
   new (options?: unknown, secureConnectionListener?: (socket: Socket) => void): TlsServer;
   (options?: unknown, secureConnectionListener?: (socket: Socket) => void): TlsServer;
   readonly prototype: TlsServer;
-}
-
-/** The names a loopback connect reaches, as the engine's tcp_wrap answers them. */
-function loopback(host: string): boolean {
-  const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
-  const name = bare.toLowerCase();
-  return name === '' || name === 'localhost' || name === '::1' || name.startsWith('127.');
 }
 
 // Keep the ordinary stream lifecycle (error, close, destroy) from Node's own
@@ -57,25 +54,31 @@ class TLSSocket extends NetSocket {
 
   connect(...args: unknown[]): this {
     const options = args[0] as { port?: unknown; host?: unknown; hostname?: unknown; socket?: unknown } | undefined;
-    const host = String(options?.host ?? options?.hostname ?? 'localhost');
-    if (options && typeof options === 'object' && options.socket === undefined && loopback(host)) {
-      // The peer is a listener of this engine, or nothing: a refused port
-      // fails as a net connect does.
+    const host = String(options?.host ?? options?.hostname ?? 'localhost') || 'localhost';
+    const pair = (): this => {
+      // The peer is a listener of the namespace's network, or nothing: a refused port fails as a net connect does.
       this.once('connect', () => {
         this.authorized = true;
         this.emit('secureConnect');
       });
       return (NetSocket.prototype as unknown as { connect: (this: TLSSocket, options: object) => TLSSocket })
-        .connect.call(this, { port: options.port, host }) as this;
-    }
-    this.connecting = true;
+        .connect.call(this, { port: options!.port, host }) as this;
+    };
     // Never inherit a plain TCP connect while advertising an encrypted socket.
     // Agent assigns its socket on nextTick after connect returns, so failure
     // follows that assignment and reaches ClientRequest's error listener.
-    queueMicrotask(() => queueMicrotask(() => this.destroy(Object.assign(
+    const fail = (error: Error): void => { queueMicrotask(() => queueMicrotask(() => this.destroy(error))); };
+    const unavailable = (): Error => Object.assign(
       new Error('TLS transport is unavailable in this runtime; HTTPS requires an admitted HTTP transport.'),
       { code: 'ERR_TLS_UNAVAILABLE' },
-    ))));
+    );
+    if (!options || typeof options !== 'object' || options.socket !== undefined) { this.connecting = true; fail(unavailable()); return this; }
+    const held = namespaceHolds(currentNetworkNamespace(), host);
+    if (held === true) return pair();
+    this.connecting = true;
+    if (held === false) { fail(unavailable()); return this; }
+    held.then(own => { if (own) pair(); else fail(unavailable()); },
+      (cause: unknown) => fail(cause instanceof Error ? cause : new Error(String(cause))));
     return this;
   }
 

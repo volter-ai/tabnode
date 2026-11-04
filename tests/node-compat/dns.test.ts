@@ -25,7 +25,8 @@ import dns, {
   ALL,
 } from '../../src/shims/dns';
 import { assert } from './common';
-import { getEngineNamespace, loopbackOnlyNamespace, setEngineNamespace, type NetworkNamespace, type ResolverAnswer } from '../../src/network-namespace';
+import { loopbackOnlyNamespace, type NetworkNamespace, type ResolverAnswer } from '../../src/network-namespace';
+import { inside as asRunOf } from './namespace-run';
 
 /**
  * A namespace whose resolver holds what Docker's embedded resolver answers a container on one network: `db` and its
@@ -43,9 +44,7 @@ function withResolver(): NetworkNamespace {
 
 /** Asks as a realm of `network` does. */
 async function inside<T>(network: NetworkNamespace, ask: () => Promise<T>): Promise<T> {
-  const previous = getEngineNamespace();
-  setEngineNamespace(network);
-  try { return await ask(); } finally { setEngineNamespace(previous); }
+  return asRunOf(network, ask);
 }
 
 describe('dns module (Node.js compat)', () => {

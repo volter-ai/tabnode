@@ -68,7 +68,8 @@ import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __subs
 
 import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
 
-import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, type ProcessToken } from '../process-tokens';
+import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, forgetRunNetwork, runNetworkOf, type ProcessToken } from '../process-tokens';
+import { currentNetworkNamespace } from '../network-namespace';
 import type { ProcessRegistry } from '../process-registry';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
 const __hostProcess: { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown } | null =
@@ -235,7 +236,7 @@ export interface RunStreams {
 const _runStreams = new Map<ProcessToken, RunStreams>();
 
 /** Submit before returning to a spawning parent; completion remains async. */
-async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaunch, 'identity' | 'inherited' | 'stdinStream'>): Promise<CommandOutcome> {
+async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaunch, 'identity' | 'inherited' | 'stdinStream' | 'network'>): Promise<CommandOutcome> {
   const { token, streams } = launch;
   // A run not yet numbered is forked here, and its end is reaped here: the run's end is its parent's wait.
   const forked = !runPid(token);
@@ -262,7 +263,9 @@ async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaun
       ...(streams.onStdoutBytes ? { onStdoutBytes: { value: (bytes: Uint8Array) => { bytesOut = true; streams.onStdoutBytes!(bytes); } } } : {}),
       ...(streams.onStderrBytes ? { onStderrBytes: { value: (bytes: Uint8Array) => { bytesErr = true; streams.onStderrBytes!(bytes); } } } : {}),
     }) as RunStreams;
-    const result = await host.run({ ...launch, ...(watched ? { streams: watched } : {}), identity: { ...runPid(token)! }, inherited,
+    // The child is in its parent's network namespace, as fork(2) leaves it.
+    const network = runNetworkOf(token) ?? currentNetworkNamespace();
+    const result = await host.run({ ...launch, ...(watched ? { streams: watched } : {}), identity: { ...runPid(token)! }, inherited, network,
       ...(input.stream ? { stdinStream: input.stream } : {}) });
     ran = true;
     // The host's realm ran it and reported its exit; the end is the one the process table holds.
@@ -326,6 +329,7 @@ export function registerRunStreams(token: ProcessToken, streams: RunStreams): vo
 /** Forget a run that has ended. */
 export function releaseRunStreams(token: ProcessToken): void {
   _runStreams.delete(token);
+  forgetRunNetwork(token);
   shellRuns.delete(token);
   hostedNodes.delete(token);
 }

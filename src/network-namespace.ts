@@ -4,12 +4,14 @@
  * A process lives in one network namespace: its own loopback, its own port space, the addresses its interfaces hold,
  * the routes out of it, and the resolver its `/etc/resolv.conf` names. Two processes in two namespaces each listen on
  * 5432 and neither sees the other's; `127.0.0.1` is each one's own; a connection to another namespace's address goes
- * where the host's routes send it, or is refused as the kernel refuses it (`EHOSTUNREACH` across bridges that are
- * isolated from one another, `ENETUNREACH` where there is no route at all).
+ * where the host's routes send it, or fails as the kernel fails it (`ETIMEDOUT` where its packets are dropped, as
+ * between Docker's isolated bridges; `ENETUNREACH` where there is no route at all).
  *
  * The engine does not know what namespaces exist or how they are wired: that is the host's, as it is the kernel's
  * and the container runtime's on a computer. The host hands each realm its `NetworkNamespace`, and the engine's
- * `tcp_wrap`, `dns` and `os` read it: a listen takes a port of the namespace's own space and is told to the host; a
+ * `tcp_wrap`, `dns`, `os`, `tls` and HTTP's Agent read it. A namespace is a container's (`createContainer({ network })`),
+ * held by each of its runs and inherited by the processes a run forks, or a host scope's (`NativeStreamScope`); it is
+ * never the engine's, so two containers in one page are in their own namespaces: a listen takes a port of the namespace's own space and is told to the host; a
  * connect to the namespace's own loopback or addresses reaches its own listeners, and every other connect is the
  * host's to route; a lookup asks the namespace's resolver. A namespace the engine makes itself, for a realm no host
  * gave one, is `loopbackOnlyNamespace()`: what a fresh namespace is on Linux (`ip netns add`, `docker run
@@ -17,10 +19,16 @@
  */
 import type { Socket } from './node-lib/net-module';
 import { UV_ECONNREFUSED, UV_ENETUNREACH } from './node-lib/binding/uv';
+import { __currentProcessToken, runNetworkOf } from './process-tokens';
 
 /** One address an interface of the namespace holds (a container's address on one network it joined). */
 export interface NamespaceAddress {
   address: string;
+  /**
+   * The interface that holds it (`eth0`): a network's IPv4 and IPv6 addresses are one interface's. An address that
+   * names none is an interface of its own, in order.
+   */
+  interface?: string;
   /** The network's prefix length: 16 for a /16. */
   prefixLength: number;
   /** The interface's hardware address, when the host gives one (Docker's is 02:42 and the IPv4 address). */
@@ -29,8 +37,10 @@ export interface NamespaceAddress {
 
 /**
  * Where a connect the namespace's own listeners do not take goes, as the host answers it:
- * - a libuv status (`UV_ECONNREFUSED`, `UV_EHOSTUNREACH`, `UV_ENETUNREACH`, `UV_ETIMEDOUT`): refused, as the kernel
- *   refuses it, and the socket's `connect` fails with that error;
+ * - a libuv status (`UV_ECONNREFUSED`, `UV_EHOSTUNREACH`, `UV_ENETUNREACH`, `UV_ETIMEDOUT`): failed, as the kernel
+ *   fails it, and the socket's `connect` fails with that error. A host whose answer is dropped packets answers
+ *   `UV_ETIMEDOUT` once Linux would have given up (`CONNECT_TIMEOUT_MS`), or leaves the promise pending: an answer
+ *   that has not come by then is `ETIMEDOUT`, and one that fails or throws is `ECONNREFUSED`;
  * - `{ namespace, source }`: the address belongs to `namespace`, another namespace this engine serves listeners for;
  *   its listener on the port takes the connection, which leaves by `source` (the connector's address on the network
  *   the two share), and no listener there is `ECONNREFUSED`;
@@ -97,18 +107,30 @@ export function loopbackOnlyNamespace(): NetworkNamespace {
 }
 
 /**
- * The engine's namespace: the one its own runs and the page's doors (`listenNet`, the server bridge) live in, set by
- * `createContainer`'s `network`. A realm the host started is in the namespace the host gave it.
+ * How long a connect the host routes may stay unanswered before it fails with `ETIMEDOUT`: Linux's, its SYN sent and
+ * retried `tcp_syn_retries` (6) times with doubling waits (1 + 2 + … + 64 s). A host that never answers is a route
+ * whose packets are dropped, as Docker's bridge isolation drops them.
  */
-let engineNamespace: NetworkNamespace = loopbackOnlyNamespace();
-/** A namespace a host-held scope creates its handles in (NativeStreamScope), while it creates them. */
+export const CONNECT_TIMEOUT_MS = 127_000;
+/** How long a resolver's answer may stay away before a lookup fails `EAI_AGAIN`: resolv.conf's `timeout:5`, `attempts:2`. */
+export const RESOLVE_TIMEOUT_MS = 10_000;
+
+/**
+ * The namespace of a socket made with no process and no host scope: a fresh one of its own, which reaches nothing, as
+ * a socket no process could have made would. Every socket a run makes is in its run's namespace, every socket a host
+ * scope makes in the scope's.
+ */
+const unowned = loopbackOnlyNamespace();
+/** A namespace a host-held scope (NativeStreamScope, a container's own door) creates its handles in, while it creates them. */
 let creatingIn: NetworkNamespace | undefined;
 
-export function setEngineNamespace(network: NetworkNamespace): void { engineNamespace = network; }
-export function getEngineNamespace(): NetworkNamespace { return engineNamespace; }
-
-/** The namespace a socket made now is in. */
-export function currentNetworkNamespace(): NetworkNamespace { return creatingIn ?? engineNamespace; }
+/**
+ * The namespace a socket made now is in: the host scope's that is making it, else the executing run's (its container's,
+ * or the one its parent's fork left it), as socket(2) makes a socket in the calling process's namespace.
+ */
+export function currentNetworkNamespace(): NetworkNamespace {
+  return creatingIn ?? runNetworkOf(__currentProcessToken()) ?? unowned;
+}
 
 /** Makes the handles `create` makes in `network`'s namespace, as a socket(2) call in a process of it does. */
 export function inNetworkNamespace<T>(network: NetworkNamespace | undefined, create: () => T): T {
@@ -118,27 +140,97 @@ export function inNetworkNamespace<T>(network: NetworkNamespace | undefined, cre
   try { return create(); } finally { creatingIn = previous; }
 }
 
-/** An address as compared: no brackets, no zone, lower case. */
+/** IPv4-mapped IPv6 in hex form (`::ffff:7f00:1`), as a URL canonicalises it, back to its dotted form. */
+function dottedMapped(address: string): string {
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/u.exec(address);
+  if (!hex) return address;
+  const high = parseInt(hex[1]!, 16), low = parseInt(hex[2]!, 16);
+  return `::ffff:${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+}
+
+/** An address as compared: no brackets, no zone, lower case, and an IPv6 address in its one canonical (RFC 5952) form. */
 export function bareAddress(address: string): string {
   const unbracketed = address.startsWith('[') && address.endsWith(']') ? address.slice(1, -1) : address;
-  return unbracketed.split('%')[0].toLowerCase();
+  const name = unbracketed.split('%')[0]!.toLowerCase();
+  if (!name.includes(':')) return name;
+  try { return dottedMapped(new URL(`http://[${name}]/`).hostname.slice(1, -1)); } catch { return name; }
+}
+
+/** An address with an IPv4-mapped IPv6 address read as its IPv4 address. */
+export function unmappedAddress(address: string): string {
+  return bareAddress(address).replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/u, '');
 }
 
 /** 127.0.0.0/8 and ::1 (also as an IPv4-mapped address): every namespace's own loopback. */
 export function isLoopbackAddress(address: string): boolean {
-  const name = bareAddress(address);
-  return name === 'localhost' || name === '::1' || name === '0:0:0:0:0:0:0:1' || name.startsWith('127.') || name.startsWith('::ffff:127.');
+  const name = unmappedAddress(address);
+  return name === 'localhost' || name === '::1' || name.startsWith('127.');
 }
 
 /** The wildcards, which a bind takes as every address and a connect (Linux) as the loopback. */
 export function isWildcardAddress(address: string): boolean {
   const name = bareAddress(address);
-  return name === '' || name === '0.0.0.0' || name === '::' || name === '0:0:0:0:0:0:0:0';
+  return name === '' || name === '0.0.0.0' || name === '::';
 }
 
 /** Whether `address` is one `network`'s interfaces hold: loopback, a wildcard, or one of its own addresses. */
 export function isOwnAddress(network: NetworkNamespace, address: string): boolean {
   if (isLoopbackAddress(address) || isWildcardAddress(address)) return true;
-  const name = bareAddress(address).replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/, '');
-  return network.addresses().some(held => held.address.toLowerCase() === name);
+  const name = unmappedAddress(address);
+  return network.addresses().some(held => unmappedAddress(held.address) === name);
+}
+
+/** An address as a number of its family's width, or undefined for a name. */
+function addressBits(address: string): { bits: bigint; width: 32 | 128 } | undefined {
+  const name = unmappedAddress(address);
+  const v4 = name.split('.');
+  if (v4.length === 4 && v4.every(part => /^\d{1,3}$/u.test(part) && Number(part) <= 255)) {
+    return { bits: v4.reduce((value, part) => (value << 8n) | BigInt(Number(part)), 0n), width: 32 };
+  }
+  if (!name.includes(':')) return undefined;
+  const [head, tail] = name.split('::') as [string, string | undefined];
+  const groups = (part: string | undefined): string[] => part ? part.split(':') : [];
+  const left = groups(head), right = groups(tail);
+  if (tail === undefined && left.length !== 8) return undefined;
+  const all = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right];
+  if (all.length !== 8 || all.some(group => !/^[0-9a-f]{1,4}$/u.test(group))) return undefined;
+  return { bits: all.reduce((value, group) => (value << 16n) | BigInt(parseInt(group, 16)), 0n), width: 128 };
+}
+
+/** Whether `address` is on one of the namespace's networks: an on-link route, as an interface's prefix gives Linux one. */
+export function isOnLink(network: NetworkNamespace, address: string): boolean {
+  const target = addressBits(address);
+  if (!target) return false;
+  return network.addresses().some(({ address: held, prefixLength }) => {
+    const own = addressBits(held);
+    if (!own || own.width !== target.width || prefixLength < 0 || prefixLength > own.width) return false;
+    const shift = BigInt(own.width - prefixLength);
+    return (own.bits >> shift) === (target.bits >> shift);
+  });
+}
+
+/**
+ * THE ONE ROUTING DECISION for a destination by name or address, which `net`'s connect, HTTP's Agent and `tls` all
+ * read: whether the namespace holds it (its loopback or a wildcard, an address on one of its networks, a name its
+ * resolver answers), so the connection is the namespace's own network; what it does not hold is the outside's. A
+ * resolver's answer may arrive later; one that fails is `EAI_AGAIN`, and one that never arrives is too, after
+ * `RESOLVE_TIMEOUT_MS`. A name it does not hold (NXDOMAIN) is the outside's.
+ */
+export function namespaceHolds(network: NetworkNamespace, host: string): boolean | Promise<boolean> {
+  const name = bareAddress(host);
+  if (name === 'localhost' || isLoopbackAddress(name) || isWildcardAddress(name)) return true;
+  if (addressBits(name) || name.includes(':')) return isOwnAddress(network, name) || isOnLink(network, name);
+  const answered = (answer: ResolverAnswer): boolean => answer !== undefined;
+  const answer = network.resolve(name.replace(/\.$/u, ''), 4);
+  return answer instanceof Promise ? settleResolver(answer, name).then(answered) : answered(answer);
+}
+
+/** A resolver's pending answer, bounded: its failure, or no answer within `RESOLVE_TIMEOUT_MS`, is `EAI_AGAIN`. */
+export function settleResolver<T>(answer: Promise<T>, hostname: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const again = (): Error => Object.assign(new Error(`getaddrinfo EAI_AGAIN ${hostname}`), { code: 'EAI_AGAIN', errno: -3001, syscall: 'getaddrinfo', hostname });
+    const timer = setTimeout(() => reject(again()), RESOLVE_TIMEOUT_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    answer.then(value => { clearTimeout(timer); resolve(value); }, () => { clearTimeout(timer); reject(again()); });
+  });
 }

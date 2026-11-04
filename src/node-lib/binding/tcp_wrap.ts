@@ -7,11 +7,15 @@
  * it and tells the namespace's host, which may refuse it and can open connections to it; a `connect` to the
  * namespace's own loopback or addresses reaches its own listener on the port, and every other connect is routed by the
  * host: to a listener of another namespace this engine serves, to a listener the host holds, or refused with the
- * error the kernel gives (`ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`). The bytes of a connection paired here are
- * each end's writes as the other's reads.
+ * error the kernel gives (`ECONNREFUSED`, `ETIMEDOUT`, `ENETUNREACH`). The bytes of a connection paired here are
+ * each end's writes as the other's reads. A host that fails, throws or never answers fails the one socket, as a
+ * kernel's refusal or timeout does, and nothing else.
  *
- * A wildcard bind holds the port for both families, as a dual-stack `::` bind does on Linux, so `connect('127.0.0.1')`
- * reaches a server that bound `::`.
+ * Families are Linux's: an IPv4 bind takes the IPv4 port, a dual-stack `::` bind both (so `connect('127.0.0.1')`
+ * reaches a server that bound `::`), an `ipv6Only` or address-specific IPv6 bind the IPv6 port alone. An IPv4 connect
+ * reaches only the IPv4 port's listener, an IPv6 one the IPv6 port's (an IPv4-mapped address the IPv4 port's). A
+ * listener bound to one address takes connections to that address alone (127.0.0.1 not 127.0.0.2, nor ::1); a connect
+ * to a wildcard is a connect to its family's loopback.
  */
 import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap } from './stream_wrap';
@@ -20,10 +24,10 @@ import { __runFor } from '../../process-tokens';
 import { internalAsyncHooks, internalTimers } from '../internals/runtime';
 import { rememberSocketConnect, traceSocketConnect } from '../../socket-connect-trace';
 import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
-import { UV_EADDRINUSE, UV_EADDRNOTAVAIL, UV_ECONNREFUSED, UV_EINVAL, UV_ENOTSUP, UV_EBADF } from './uv';
+import { UV_EADDRINUSE, UV_EADDRNOTAVAIL, UV_ECONNREFUSED, UV_EINVAL, UV_ENOTSUP, UV_EBADF, UV_EIO, UV_ETIMEDOUT } from './uv';
 import {
-  bareAddress, currentNetworkNamespace, getEngineNamespace, inNetworkNamespace, isLoopbackAddress, isOwnAddress,
-  isWildcardAddress, type NamespaceConnection, type NetworkNamespace,
+  CONNECT_TIMEOUT_MS, bareAddress, currentNetworkNamespace, inNetworkNamespace, isLoopbackAddress, isOwnAddress,
+  isWildcardAddress, unmappedAddress, type NamespaceConnection, type NetworkNamespace,
 } from '../../network-namespace';
 import type { Socket } from '../net-module';
 
@@ -72,10 +76,15 @@ function portSpace(namespace: string): PortSpace {
   return space;
 }
 const portTaken = (space: PortSpace, port: number): boolean => space.v4.has(port) || space.v6.has(port) || space.ephemeral.has(port);
-/** The family spaces a bind occupies. */
-function spacesOf(space: PortSpace, family: string, flags: number): Array<Map<number, TCP>> {
+/**
+ * The family spaces a bind occupies: an IPv4 address the IPv4 space; an IPv6 wildcard both, unless `ipv6Only`; an
+ * IPv4-mapped IPv6 address the IPv4 space; any other IPv6 address (`::1`) the IPv6 space alone.
+ */
+function spacesOf(space: PortSpace, family: string, flags: number, address: string): Array<Map<number, TCP>> {
   if (family !== 'IPv6') return [space.v4];
-  return (flags & constants.UV_TCP_IPV6ONLY) ? [space.v6] : [space.v4, space.v6];
+  if (flags & constants.UV_TCP_IPV6ONLY) return [space.v6];
+  if (isWildcardAddress(address)) return [space.v4, space.v6];
+  return unmappedAddress(address).includes(':') ? [space.v6] : [space.v4];
 }
 
 function allocatePort(space: PortSpace): number {
@@ -95,27 +104,34 @@ function seenBy(handleFamily: string, address: string, addressFamily: string): s
   return handleFamily === 'IPv6' && addressFamily !== 'IPv6' ? `::ffff:${bareAddress(address)}` : address;
 }
 
-/**
- * Whether a listener takes a connection dialled to `to`: one bound to a wildcard takes every address of its namespace,
- * one bound to a loopback address only the loopback, and one bound to an address of its own only that address. A
- * server bound to 127.0.0.1 in a container is not reached at the container's network address.
- */
-function takesConnectionTo(listener: TCP, to: string): boolean {
-  const bound = listener.boundAddress;
-  if (bound === undefined || isWildcardAddress(bound)) return true;
-  if (isLoopbackAddress(bound)) return isLoopbackAddress(to) || isWildcardAddress(to);
-  const strip = (address: string): string => bareAddress(address).replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/, '');
-  return strip(bound) === strip(to);
+/** The address a connect dialled, as it arrives: a wildcard is its family's loopback (Linux's connect to INADDR_ANY). */
+function arrivingAt(to: string, family: string | undefined): string {
+  return isWildcardAddress(to) ? (bareAddress(to) === '::' || (family === 'IPv6' && bareAddress(to) === '') ? '::1' : '127.0.0.1') : unmappedAddress(to);
 }
 
-/** The listening member of `namespace`'s port that a connection to `to` reaches, if any. */
+/**
+ * Whether a listener takes a connection dialled to `to`: one bound to a wildcard takes every address of its namespace
+ * (its port space already chose the family), one bound to an address only that address. A server bound to 127.0.0.1
+ * is reached at 127.0.0.1 alone: not at 127.0.0.2, not at ::1, not at the container's network address.
+ */
+function takesConnectionTo(listener: TCP, to: string, family?: string): boolean {
+  const bound = listener.boundAddress;
+  if (bound === undefined || isWildcardAddress(bound)) return true;
+  return unmappedAddress(bound) === arrivingAt(to, family);
+}
+
+/**
+ * The listening member of `namespace`'s port that a connection to `to` reaches, if any: an IPv4 connect (or an
+ * IPv4-mapped address) the IPv4 space's, an IPv6 connect the IPv6 space's.
+ */
 function listenerIn(namespace: string, port: number, family: string | undefined, to: string): TCP | undefined {
   const space = portSpaces.get(namespace);
   if (!space) return undefined;
-  const order = family === 'IPv6' ? [space.v6, space.v4] : [space.v4, space.v6];
+  const arriving = arrivingAt(to, family);
+  const order = arriving.includes(':') ? [space.v6] : [space.v4];
   for (const ports of order) {
     const held = ports.get(port);
-    if (!held || !takesConnectionTo(held, to)) continue;
+    if (!held || !takesConnectionTo(held, arriving)) continue;
     const member = held.acceptingMember();
     if (member) return member;
   }
@@ -133,8 +149,8 @@ function socketFor(handle: TCP): Socket {
   return hostSocket(handle);
 }
 
-/** What a listening socket told its namespace's host and the page bridge, by the socket (its connection end). */
-const announcements = new WeakMap<object, { release?: () => void; watched: boolean }>();
+/** What a listening socket told its namespace's host and its namespace's page bridge, by the socket (its connection end). */
+const announcements = new WeakMap<object, { release?: () => void; watched?: string }>();
 
 /**
  * What the page bridge is told when a guest starts or stops listening. The
@@ -143,8 +159,6 @@ const announcements = new WeakMap<object, { release?: () => void; watched: boole
  * where a port is actually taken.
  */
 type ListenWatcher = (port: number, address: string) => void;
-// eslint-disable-next-line no-var, vars-on-top
-var onListenWatcher: ListenWatcher | null = null;
 /**
  * An instrument's seam: told, once a handle, that a server began listening, with the process that owns the handle
  * and the port. The engine's load clock says the process's split there (runtime.ts): a server still loading its
@@ -156,16 +170,18 @@ function sayListenClock(handle: TCP, port: number | null): void {
   try { listenClockObserver?.(ownerOf(handle), port); }
   catch { /* Evidence failure must not change a listen. */ }
 }
-// eslint-disable-next-line no-var, vars-on-top
-var onCloseWatcher: ((port: number) => void) | null = null;
-export function setPortWatchers(onListen: ListenWatcher | null, onClose: ((port: number) => void) | null): void {
-  onListenWatcher = onListen;
-  onCloseWatcher = onClose;
+/** Each namespace's page bridge (its container's), told as a listener of that namespace starts and stops listening. */
+const portWatchers = new Map<string, { onListen: ListenWatcher; onClose: (port: number) => void }>();
+/** A container's page bridge watches its namespace's listeners, until the function it returns runs. */
+export function watchNamespacePorts(network: NetworkNamespace, onListen: ListenWatcher, onClose: (port: number) => void): () => void {
+  const watcher = { onListen, onClose };
+  portWatchers.set(network.id, watcher);
+  return () => { if (portWatchers.get(network.id) === watcher) portWatchers.delete(network.id); };
 }
 
-/** The listening handle a connect to this port of the engine's namespace (its loopback) reaches, if any. */
-export function listenerOnPort(port: number, family?: string): TCP | undefined {
-  return listenerIn(getEngineNamespace().id, port, family, loopbackOf(family ?? 'IPv4'));
+/** The listening handle a connect to this port of `network`'s loopback reaches, if any. */
+export function listenerOnPort(port: number, network: NetworkNamespace, family?: string): TCP | undefined {
+  return listenerIn(network.id, port, family, loopbackOf(family ?? 'IPv4'));
 }
 /** Each shared listening socket's turn: its next connection goes to the member after the last one served. */
 const acceptTurns = new WeakMap<object, number>();
@@ -180,7 +196,7 @@ export class TCP extends LibuvStreamWrap {
   onconnection: ((status: number, clientHandle: TCP) => void) | null = null;
 
   /** The network namespace the handle was made in, and keeps: its port space, its loopback, its routes. */
-  network: NetworkNamespace = currentNetworkNamespace();
+  private network: NetworkNamespace = currentNetworkNamespace();
   private local: SockName | null = null;
   private remote: SockName | null = null;
   /** Whether the local name was given by a connect rather than a bind: the route then chooses its address. */
@@ -212,7 +228,7 @@ export class TCP extends LibuvStreamWrap {
     if (!isOwnAddress(this.network, address)) return UV_EADDRNOTAVAIL;
     const space = portSpace(this.network.id);
     const wanted = Number(port) || 0;
-    const spaces = spacesOf(space, family, flags);
+    const spaces = spacesOf(space, family, flags, address);
     if (wanted !== 0 && spaces.some(ports => ports.has(wanted))) return UV_EADDRINUSE;
     if (wanted !== 0 && space.ephemeral.has(wanted)) return UV_EADDRINUSE;
     const bound = wanted === 0 ? allocatePort(space) : wanted;
@@ -247,33 +263,43 @@ export class TCP extends LibuvStreamWrap {
 
   /**
    * Tells the namespace's host that this socket listens, with the door through which the host opens a connection to
-   * it; a host that holds the port itself refuses it. The engine's own namespace's listeners are also the page
-   * bridge's ports (setPortWatchers): the host's view of its own loopback.
+   * it; a host that holds the port itself refuses it, and a host whose `listen` throws fails the listen (`EIO`) and
+   * nothing else. A namespace a container's page bridge watches (watchNamespacePorts) has the port there too.
    */
   private announce(): number {
     const local = this.local;
     if (!local) return 0;
     let release: (() => void) | undefined;
-    const answer = this.network.listen({
-      port: local.port, address: local.address, family: local.family === 'IPv6' ? 'IPv6' : 'IPv4',
-      open: (from, to) => this.openFrom(from, to),
-    });
+    // The door holds the socket, not this handle: a listener handed to another descriptor (a passed server) is opened
+    // through whichever of its members still listens.
+    const end = this.connectionEnd;
+    const self = this;
+    let answer: number | (() => void);
+    try {
+      answer = this.network.listen({
+        port: local.port, address: local.address, family: local.family === 'IPv6' ? 'IPv6' : 'IPv4',
+        open: (from, to) => self.openFrom(end, from, to),
+      });
+    } catch { return UV_EIO; }
     if (typeof answer === 'number') { if (answer !== 0) return answer; }
     else release = answer;
-    const watched = this.network.id === getEngineNamespace().id;
-    announcements.set(this.connectionEnd, { ...(release ? { release } : {}), watched });
-    if (watched) { try { onListenWatcher?.(local.port, local.address); } catch { /* a watcher that throws is not the listen's business */ } }
+    const watcher = portWatchers.get(this.network.id);
+    announcements.set(this.connectionEnd, { ...(release ? { release } : {}), ...(watcher ? { watched: this.network.id } : {}) });
+    if (watcher) { try { watcher.onListen(local.port, local.address); } catch { /* a watcher that throws is not the listen's business */ } }
     return 0;
   }
 
-  /** The host's connection to this listener: from `from`, dialled at `to`; the connector's end, or a libuv status. */
-  private openFrom(from: { address: string; port: number }, to: string): Socket | number {
-    const local = this.local;
-    if (!local || !this.listening || this.closed || !takesConnectionTo(this, to)) return UV_ECONNREFUSED;
+  /**
+   * The host's connection to the listening socket `end`: from `from`, dialled at `to`; the connector's end, or a libuv
+   * status. Taken by a member of the socket that still listens, whichever descriptor the socket is now held by.
+   */
+  private openFrom(end: object, from: { address: string; port: number }, to: string): Socket | number {
+    if (end !== this.connectionEnd) return UV_ECONNREFUSED;
     const member = this.acceptingMember();
-    if (!member) return UV_ECONNREFUSED;
+    const local = member?.local;
+    if (!member || !local || !takesConnectionTo(member, to)) return UV_ECONNREFUSED;
     const family = to.includes(':') ? 'IPv6' : 'IPv4';
-    const client = inNetworkNamespace(this.network, () => new (this.constructor as typeof TCP)(constants.SOCKET));
+    const client = inNetworkNamespace(member.network, () => new (this.constructor as typeof TCP)(constants.SOCKET));
     // The connection is the host's, not a guest's: it holds no run open, as the page's listenNet sockets do not.
     __adoptHandle(client, null);
     client.local = { address: from.address, family, port: from.port };
@@ -367,7 +393,8 @@ export class TCP extends LibuvStreamWrap {
         far.remote = { ...(this.local as SockName) };
         LibuvStreamWrap.pair(this, far);
         complete(0);
-        answer.accept(socketFor(far));
+        // A host that cannot take the end it was handed resets the connection, as a peer that drops it does.
+        try { answer.accept(socketFor(far)); } catch { far.reset(); }
         return;
       }
       const server = listenerIn(answer.namespace, target, family, dialled);
@@ -393,16 +420,22 @@ export class TCP extends LibuvStreamWrap {
             return;
           }
         }
-        const answer = network.connect(dialled, target, family === 'IPv6' ? 6 : 4);
+        // The host's route. A host that throws, or whose answer fails, refuses this one socket; one that has not
+        // answered when Linux would have stopped retrying its SYN fails it ETIMEDOUT. Nothing else is told.
+        let answer: NamespaceConnection | Promise<NamespaceConnection>;
+        try { answer = network.connect(dialled, target, family === 'IPv6' ? 6 : 4); }
+        catch { complete(UV_ECONNREFUSED); return; }
         if (typeof answer === 'object' && answer !== null && typeof (answer as Promise<NamespaceConnection>).then === 'function') {
           pending = true;
-          (answer as Promise<NamespaceConnection>).then(
-            (settled) => queueBindingTask(() => { try { if (!this.closed) routed(settled); } finally { forgetNodeRequest(req); } }),
-            (cause: unknown) => {
-              queueBindingTask(() => { try { if (!this.closed) complete(UV_ECONNREFUSED); } finally { forgetNodeRequest(req); } });
-              // The host's door failed: the connect is refused, and the failure is the host's to see.
-              throw cause;
-            });
+          let settled = false;
+          const settle = (finish: () => void): void => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            queueBindingTask(() => { try { if (!this.closed) finish(); } finally { forgetNodeRequest(req); } });
+          };
+          const timer = setTimeout(() => settle(() => complete(UV_ETIMEDOUT)), CONNECT_TIMEOUT_MS);
+          (answer as Promise<NamespaceConnection>).then((value) => settle(() => routed(value)), () => settle(() => complete(UV_ECONNREFUSED)));
           return;
         }
         routed(answer as NamespaceConnection);
@@ -568,7 +601,7 @@ export class TCP extends LibuvStreamWrap {
     if (announced) {
       announcements.delete(this.connectionEnd);
       try { announced.release?.(); } catch { /* a host's release that throws is not the close's business */ }
-      if (announced.watched && this.local) { try { onCloseWatcher?.(this.local.port); } catch { /* as above */ } }
+      if (announced.watched !== undefined && this.local) { try { portWatchers.get(announced.watched)?.onClose(this.local.port); } catch { /* as above */ } }
     }
     // The socket's last listener closed: what waited in its accept queue is reset (inet_csk_listen_stop: its peers
     // read ECONNRESET), as Linux disconnects an unaccepted child.

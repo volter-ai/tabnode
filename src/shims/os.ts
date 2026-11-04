@@ -1,5 +1,5 @@
 import type { ProcessCredentials } from '../process-credentials';
-import { getEngineNamespace } from '../network-namespace';
+import { currentNetworkNamespace } from '../network-namespace';
 /**
  * Node.js os module shim
  * Provides operating system utilities
@@ -84,44 +84,44 @@ function netmaskOf(prefixLength: number, v6: boolean): string {
   return zeros < 0 ? groups.join(':') : `${groups.slice(0, zeros).join(':')}::`;
 }
 
+/** One address as `os.networkInterfaces()` lists it; an IPv6 address carries its scope (its interface's index for a link-local one). */
+type InterfaceAddress = { address: string; netmask: string; family: string; mac: string; internal: boolean; cidr: string; scopeid?: number };
+
 /**
- * The interfaces of the realm's network namespace: its loopback, and one `eth<n>` per address its host gave it, in
- * the order they were made, as a container's interfaces read inside it.
+ * The interfaces of the calling process's network namespace, as Linux lists them inside it: `lo` (127.0.0.1 and ::1),
+ * then one `eth<n>` per interface its host gave it (a network's IPv4 and IPv6 addresses are one interface's), in the
+ * order they were made. An IPv6 address carries `scopeid`: its interface's index (lo 1, eth0 2, …) when link-local,
+ * else 0.
  */
-export function networkInterfaces(): Record<
-  string,
-  Array<{
-    address: string;
-    netmask: string;
-    family: string;
-    mac: string;
-    internal: boolean;
-    cidr: string;
-  }>
-> {
-  const interfaces: ReturnType<typeof networkInterfaces> = {
+export function networkInterfaces(): Record<string, InterfaceAddress[]> {
+  const interfaces: Record<string, InterfaceAddress[]> = {
     lo: [
-      {
-        address: '127.0.0.1',
-        netmask: '255.0.0.0',
-        family: 'IPv4',
-        mac: '00:00:00:00:00:00',
-        internal: true,
-        cidr: '127.0.0.1/8',
-      },
+      { address: '127.0.0.1', netmask: '255.0.0.0', family: 'IPv4', mac: '00:00:00:00:00:00', internal: true, cidr: '127.0.0.1/8' },
+      { address: '::1', netmask: netmaskOf(128, true), family: 'IPv6', mac: '00:00:00:00:00:00', internal: true, cidr: '::1/128', scopeid: 0 },
     ],
   };
-  getEngineNamespace().addresses().forEach((held, index) => {
+  const names = new Map<string, string>();
+  let next = 0;
+  for (const held of currentNetworkNamespace().addresses()) {
+    let name = held.interface !== undefined ? names.get(held.interface) : undefined;
+    if (name === undefined) {
+      name = held.interface !== undefined && /^eth\d+$/u.test(held.interface) && !interfaces[held.interface] ? held.interface : `eth${next}`;
+      next = Math.max(next, Number(name.slice(3)) + 1);
+      if (held.interface !== undefined) names.set(held.interface, name);
+      interfaces[name] = [];
+    }
     const v6 = held.address.includes(':');
-    interfaces[`eth${index}`] = [{
+    const index = Object.keys(interfaces).indexOf(name) + 1;
+    interfaces[name]!.push({
       address: held.address,
       netmask: netmaskOf(held.prefixLength, v6),
       family: v6 ? 'IPv6' : 'IPv4',
-      mac: held.mac ?? '00:00:00:00:00:00',
+      mac: held.mac ?? interfaces[name]![0]?.mac ?? '00:00:00:00:00:00',
       internal: false,
       cidr: `${held.address}/${held.prefixLength}`,
-    }];
-  });
+      ...(v6 ? { scopeid: /^fe[89ab]/iu.test(held.address) ? index : 0 } : {}),
+    });
+  }
   return interfaces;
 }
 

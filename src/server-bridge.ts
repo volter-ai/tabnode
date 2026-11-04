@@ -7,7 +7,8 @@ import {
   __requestOverLoopback, __streamOverLoopback, __upgradeOverLoopback, __listening,
   type ResponseData, type LoopbackStreamFlow,
 } from './node-lib/http-bridge';
-import { setPortWatchers } from './node-lib/net-module';
+import { watchNamespacePorts } from './node-lib/net-module';
+import { currentNetworkNamespace, type NetworkNamespace } from './network-namespace';
 import { __bridgeConnection } from './node-lib/net-module';
 import type { Socket } from './node-lib/net-module';
 import { Buffer } from './node-lib/buffer-module';
@@ -26,7 +27,7 @@ export type { IVirtualServer, VirtualServer, BridgeOptions, InitServiceWorkerOpt
  * while one with no host (openvscode-server's) could still reach the page
  * through a wrap that did not bind `handleRequest`.
  */
-function guestListeningServer(port: number, address: string): IVirtualServer {
+function guestListeningServer(network: NetworkNamespace, port: number, address: string): IVirtualServer {
   const hostname = address || '0.0.0.0';
   return {
     listening: true,
@@ -37,7 +38,7 @@ function guestListeningServer(port: number, address: string): IVirtualServer {
     }),
     handleRequest: (method, url, headers, body) =>
       // this engine's bridge hands its servers a Buffer (`bodyOf`)
-      __requestOverLoopback(port, method, url, headers, (typeof body === 'string' ? Buffer.from(body) : body) as Buffer | undefined),
+      __requestOverLoopback(network, port, method, url, headers, (typeof body === 'string' ? Buffer.from(body) : body) as Buffer | undefined),
   };
 }
 
@@ -312,7 +313,7 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
       let url2: URL;
       try { url2 = new URL(data2.url!); } catch { return; }
       const port = Number(url2.port);
-      if (!__listening(port)) return;
+      if (!__listening(bridge.network, port)) return;
       const record = { clientId: data2.clientId, port, channel };
       // A client that asked for no frames is a byte pipe; anything else is a
       // WebSocket, and the bridge speaks RFC 6455 on its own end of it.
@@ -323,7 +324,7 @@ function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | 
       // server answers it with its own code: Node's `http` emits `upgrade`
       // with the socket, which is what the real `ws` takes over. What comes
       // back here is the client's end of that same connection.
-      void __upgradeOverLoopback(port, "GET", url2.pathname + url2.search, {
+      void __upgradeOverLoopback(bridge.network, port, "GET", url2.pathname + url2.search, {
         // Host is the authority the client addressed, as an HTTP request's is
         Host: typeof data2.host === "string" && /^(?:\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::[0-9]{1,5})?$/iu.test(data2.host) ? data2.host : url2.host,
         Upgrade: "websocket",
@@ -363,8 +364,14 @@ export class ServerBridge extends PortBridge {
   /** The upgrade channel this bridge opened, held so it can be given back. */
   private upgradeChannel: BroadcastChannel | null = null;
 
+  /** The namespace whose loopback this bridge answers for: its container's. */
+  readonly network: NetworkNamespace;
+  private stopWatching: (() => void) | null = null;
+
   constructor(options: BridgeOptions = {}) {
     super(options);
+    // A bridge no container made answers for the namespace it is made in: a run's, or that of the sockets no run made.
+    this.network = options.network ?? currentNetworkNamespace();
     // A guest's servers register themselves, from the port they take.
     this.watchGuestPorts();
     this.upgradeChannel = __substrateListenForUpgrades(this);
@@ -379,11 +386,11 @@ export class ServerBridge extends PortBridge {
   private readonly guestServers = new WeakSet<IVirtualServer>();
 
   private watchGuestPorts(): void {
-    setPortWatchers(
+    this.stopWatching = watchNamespacePorts(this.network,
       (port, address) => {
         if (this.servers.has(port)) return;
         const hostname = address || '0.0.0.0';
-        const server = guestListeningServer(port, hostname);
+        const server = guestListeningServer(this.network, port, hostname);
         this.guestServers.add(server);
         this.registerServer(server, port, hostname);
       },
@@ -401,6 +408,8 @@ export class ServerBridge extends PortBridge {
   }
 
   override close(): void {
+    this.stopWatching?.();
+    this.stopWatching = null;
     if (this.upgradeChannel) {
       try { this.upgradeChannel.close(); } catch { /* a channel the realm already closed is closed */ }
       this.upgradeChannel = null;
@@ -414,7 +423,7 @@ export class ServerBridge extends PortBridge {
   }
 
   protected override requestGuest(port: number, method: string, url: string, headers: Record<string, string>, body: Uint8Array | undefined): Promise<ResponseData> {
-    return __requestOverLoopback(port, method, url, headers, body as Buffer | undefined);
+    return __requestOverLoopback(this.network, port, method, url, headers, body as Buffer | undefined);
   }
 
   protected override streamGuest(
@@ -424,7 +433,7 @@ export class ServerBridge extends PortBridge {
     onEnd: () => void,
     flow?: LoopbackStreamFlow,
   ): Promise<void> {
-    return __streamOverLoopback(port, method, url, headers, body as Buffer | undefined, onStart, onChunk, onEnd, flow);
+    return __streamOverLoopback(this.network, port, method, url, headers, body as Buffer | undefined, onStart, onChunk, onEnd, flow);
   }
 
   /** A server of this engine reads a request's body as Node's Buffer. */

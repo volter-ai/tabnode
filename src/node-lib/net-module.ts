@@ -178,7 +178,7 @@ export { __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles };
 export { __ownedServerPorts, __releaseOwnedServers } from './binding/handles';
 
 /** Who is told when a guest starts or stops listening on a port. */
-export { setPortWatchers, listenerOnPort } from './binding/tcp_wrap';
+export { watchNamespacePorts, listenerOnPort } from './binding/tcp_wrap';
 
 /**
  * A socket another run received over IPC is that run's: its handle moves, so

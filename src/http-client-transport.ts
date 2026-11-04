@@ -11,7 +11,7 @@ import { netModule } from './node-lib/net-module';
 import { streamModule } from './node-lib/stream-module';
 import { onNodeLibLoaded, type NodeLibRequire } from './node-lib/load';
 import { DuplexStreamHandle } from './node-lib/binding/duplex_stream';
-import { bareAddress, currentNetworkNamespace, type NetworkNamespace, type ResolverAnswer } from './network-namespace';
+import { currentNetworkNamespace, namespaceHolds, type NetworkNamespace } from './network-namespace';
 
 export interface HttpClientExchangeRequest {
   url: string;
@@ -32,7 +32,6 @@ export type HttpClientExchange = (request: HttpClientExchangeRequest) => Promise
 export type HttpClientTransportFactory = () => HttpClientExchange;
 
 const unsupported = (detail: string): Error => Object.assign(new Error(`HTTP transport does not support ${detail}.`), { code: 'ERR_HTTP_TRANSPORT_UNSUPPORTED' });
-const local = (host: string): boolean => host === 'localhost' || host === '::1' || host === '[::1]' || /^127\./u.test(host);
 const tlsOptions = ['ca', 'cert', 'key', 'pfx', 'passphrase', 'ciphers', 'secureContext', 'checkServerIdentity', 'minVersion', 'maxVersion', 'secureProtocol', 'secureOptions', 'session', 'ALPNProtocols', 'pskCallback'];
 
 export interface HttpClientTransportOptions {
@@ -45,38 +44,6 @@ export interface HttpClientTransportOptions {
    * through the exchange.
    */
   hostService?: (network: NetworkNamespace, host: string, port: number) => boolean;
-}
-
-/** An IPv4 address as a number, or undefined for anything else. */
-function ipv4(address: string): number | undefined {
-  const parts = address.split('.');
-  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/u.test(part) || Number(part) > 255)) return undefined;
-  return parts.reduce((value, part) => ((value << 8) | Number(part)) >>> 0, 0);
-}
-
-/** Whether `address` is on one of the namespace's networks (an on-link route, as an interface's prefix gives Linux one). */
-function onLink(network: NetworkNamespace, address: string): boolean {
-  const target = ipv4(address);
-  if (target === undefined) return false;
-  return network.addresses().some(({ address: held, prefixLength }) => {
-    const own = ipv4(held);
-    if (own === undefined || prefixLength < 0 || prefixLength > 32) return false;
-    const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
-    return ((own & mask) >>> 0) === ((target & mask) >>> 0);
-  });
-}
-
-/**
- * Whether the namespace holds `host`: its loopback, an address on its networks, or a name its resolver answers. A
- * resolver's answer may arrive later; a name it does not hold (NXDOMAIN) is the outside's.
- */
-function namespaceHolds(network: NetworkNamespace, host: string): boolean | Promise<boolean> {
-  const bare = bareAddress(host);
-  if (local(bare)) return true;
-  if (ipv4(bare) !== undefined || bare.includes(':')) return onLink(network, bare);
-  const answered = (answer: ResolverAnswer): boolean => answer !== undefined;
-  const answer = network.resolve(bare, 4);
-  return answer instanceof Promise ? answer.then(answered, () => false) : answered(answer);
 }
 
 /** Host-only installation; guest modules receive Node's normal exports. */
@@ -95,6 +62,7 @@ export function installHttpClientTransport(factory: HttpClientTransportFactory, 
       // The process's namespace decides where the connection goes, as its routes do on a computer: a service its
       // host serves itself takes the host exchange; what the namespace holds is its own network (a TLS connect there
       // is `tls`'s); everything else leaves through the exchange. A socket path is the process's own filesystem.
+      // One routing decision (network-namespace.ts namespaceHolds), the one `tls` and `net` read.
       const network = currentNetworkNamespace();
       const hostService = !options.socketPath && transportOptions.hostService?.(network, host, port) === true;
       const held: boolean | Promise<boolean> = hostService ? false : options.socketPath ? protocol === 'http:' : namespaceHolds(network, host);
