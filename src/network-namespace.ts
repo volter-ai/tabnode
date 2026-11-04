@@ -161,20 +161,30 @@ export function captureNetworkContext(): <T>(continuation: () => T) => T {
 }
 
 /**
- * The namespaces of the containers this engine made, for a host-held scope given none: the one container's, where the
- * engine has one (createContainer records it). An engine with several has no single owner to default to.
+ * The containers this engine holds, by their namespaces, for a host-held scope given none: the one container's, where
+ * the engine has one. A container is forgotten when it is disposed (`container.dispose()`) or collected.
  */
-const engineContainerNamespaces: NetworkNamespace[] = [];
-export function recordContainerNamespace(network: NetworkNamespace): void { engineContainerNamespaces.push(network); }
+const engineContainers = new Set<{ network: NetworkNamespace; container: WeakRef<object> }>();
+const collectedContainers = new FinalizationRegistry<{ network: NetworkNamespace; container: WeakRef<object> }>(entry => { engineContainers.delete(entry); });
+/** Records `container`, in `network`, until the function it returns runs (its disposal) or it is collected. */
+export function recordContainerNamespace(container: object, network: NetworkNamespace): () => void {
+  const entry = { network, container: new WeakRef(container) };
+  engineContainers.add(entry);
+  collectedContainers.register(container, entry, entry);
+  return () => { engineContainers.delete(entry); collectedContainers.unregister(entry); };
+}
 /**
  * The namespace a host-held scope made with none is in: the calling code's, where it is in one, else the engine's one
- * container's. With several containers and no context, the scope must be given its namespace.
+ * container's; with no container, the run-less namespace that code no container started is in (as a bare Runtime's and
+ * a ServerBridge made outside a container are). With several containers and no context, the scope must be given its
+ * namespace.
  */
 export function owningContainerNamespace(): NetworkNamespace {
   const context = contextNetworkNamespace();
   if (context) return context;
-  if (engineContainerNamespaces.length === 1) return engineContainerNamespaces[0]!;
-  if (engineContainerNamespaces.length === 0) return loopbackOnlyNamespace();
+  const live = [...engineContainers].filter(entry => entry.container.deref() !== undefined);
+  if (live.length === 1) return live[0]!.network;
+  if (live.length === 0) return unowned;
   throw Object.assign(new TypeError('This engine has several containers: give the scope its network namespace (the owning container\'s `network`).'),
     { code: 'ERR_INVALID_ARG_VALUE' });
 }

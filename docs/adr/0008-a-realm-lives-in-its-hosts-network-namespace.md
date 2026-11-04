@@ -46,15 +46,17 @@ type ResolverAnswer = readonly string[] | undefined;        // [] = NOERROR with
 
 Where the host supplies it:
 
-- `createContainer({ network })`: the container's namespace. Every run the container starts is in it, unless the host
-  names another for that run (`RunOptions.network`), and every process a run forks keeps its parent's
+- `createContainer({ network })`: the container's namespace. Every run the container starts begins in it, unless the
+  host names another for that run (`RunOptions.network`), whatever namespace the frame that started the run carried, and every process a run forks keeps its parent's
   (`setRunPid`), as fork(2) does; a `node` the run launches through its host is handed it
   (`NodeProcessLaunch.network`). The container's own code (`execute`, `runFile`) runs in it with every continuation
   it makes, and its own doors (`listenNet`, its page bridge) make their sockets in it.
   A container given none has a fresh namespace of its loopback alone (`loopbackOnlyNamespace()`), its own.
 - `new NativeStreamScope(limits, emit, ownerPid, network)`: the namespace of a process whose sockets this engine holds
   for another worker. Every TCP handle the scope makes is made in it. A scope given none is in its owning container's:
-  that of the code that made it, else the engine's one container's; an engine of several containers names it.
+  that of the code that made it, else the engine's one live container's (a disposed or collected container is no
+  owner), else, with no container, the run-less namespace a bare Runtime's code is in; an engine of several
+  containers names it.
   That process's own realm, whose `net` handles are the scope's, reads the same namespace for `dns`, `os`, `tls` and
   HTTP's Agent from its bootstrap: its host makes the realm's container with the namespace (`createContainer({
   network })`), so the realm's runs are in it.

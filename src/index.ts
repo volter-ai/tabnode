@@ -264,6 +264,11 @@ export function createContainer(options?: ContainerOptions): {
   listenNet: (port: number, onConnection: (socket: NetSocket) => void) => () => void;
   createREPL: () => { eval: (code: string) => unknown };
   on: (event: string, listener: (...args: unknown[]) => void) => void;
+  /**
+   * The container is done: its namespace is no longer the owner a host-held scope given none defaults to, and its page
+   * bridge stops answering for it.
+   */
+  dispose: () => void;
 } {
   // A container takes the filesystem it is given. Building its own in memory
   // with no way to hand it another left the worker that owns the origin's store
@@ -275,7 +280,6 @@ export function createContainer(options?: ContainerOptions): {
   // installRunNetwork, setRunPid); the container's own doors (listenNet, the page bridge) make their sockets in it.
   // A container given none is a fresh namespace of its loopback alone, its own and no other container's.
   const network: NetworkNamespace = options?.network ?? loopbackOnlyNamespace();
-  recordContainerNamespace(network);
   const runtime = new Runtime(vfs, options);
   const npmManager = new PackageManager(vfs);
   // A container owns its servers. One process-wide bridge meant two runtimes in
@@ -323,7 +327,8 @@ export function createContainer(options?: ContainerOptions): {
       : `run-${__nextRunName++}`;
     // The run is in the namespace its host names (a process launched by another, which keeps its launcher's), else
     // in the container's.
-    installRunNetwork(processToken, runOptions?.network ?? network);
+    const runNetwork = runOptions?.network ?? network;
+    installRunNetwork(processToken, runNetwork);
     const credentials = copyProcessCredentials(runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()));
     registerRunStreams(processToken, {
       credentials,
@@ -344,7 +349,9 @@ export function createContainer(options?: ContainerOptions): {
     let outcome: { stdout: string; stderr: string; exitCode: number };
     let terminatedBy: string | undefined;
     try {
-      outcome = await start(processToken);
+      // The run begins in its own namespace, whatever namespace the frame that started it carried (a callback of
+      // another container's run, a page bridge's event): everything it does and continues is in its container's.
+      outcome = await inNetworkScope(runNetwork, () => start(processToken));
     } finally {
       releaseRunStreams(processToken);
       terminatedBy = __takeTermination(processToken);
@@ -357,7 +364,8 @@ export function createContainer(options?: ContainerOptions): {
     };
   };
 
-  return {
+  let disposed = false;
+  const container: ReturnType<typeof createContainer> = {
     vfs,
     runtime,
     network,
@@ -461,7 +469,16 @@ export function createContainer(options?: ContainerOptions): {
     on: (event: string, listener: (...args: unknown[]) => void) => {
       serverBridge.on(event, listener);
     },
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      forgetContainer();
+      serverBridge.close();
+    },
   };
+  // The engine knows the container while it lives: a host-held scope given no namespace defaults to the one it has.
+  const forgetContainer = recordContainerNamespace(container, network);
+  return container;
 }
 
 export default createContainer;

@@ -2,13 +2,24 @@
 // (every run of the container, and every process a run forks, is in it; a container given none has a fresh one of its
 // own), `new NativeStreamScope(limits, emit, ownerPid, network)` (every TCP handle the scope makes is made in it), and
 // HTTP's Agent (`installHttpClientTransport`), which sends a connection where the caller's namespace routes it.
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { VirtualFS, createContainer, installHttpClientTransport, loopbackOnlyNamespace, NativeStreamScope, type NetworkNamespace } from '../src/index';
 import { httpModule } from '../src/node-lib/http-module';
+import { netModule } from '../src/node-lib/net-module';
 import { inside } from './node-compat/namespace-run';
+import { ServerBridge } from '../src/server-bridge';
 import type { HttpClientExchangeRequest } from '../src/http-client-transport';
 
 const UV_EADDRNOTAVAIL = -99;
+
+/** Each container a test makes is disposed after it, so no test's default scope owner is another test's leftover. */
+const containers: Array<ReturnType<typeof createContainer>> = [];
+function made(options?: Parameters<typeof createContainer>[0]): ReturnType<typeof createContainer> {
+  const container = createContainer(options);
+  containers.push(container);
+  return container;
+}
+afterEach(() => { for (const container of containers.splice(0)) container.dispose(); });
 
 /** A container's namespace on one Docker network: its address, a resolver that holds `db` there, no route out. */
 function containerNamespace(id: string, address: string, held: Record<string, string> = {}): NetworkNamespace & { listened: number[] } {
@@ -27,11 +38,11 @@ function program(vfs: VirtualFS, name: string, source: string): void {
   vfs.writeFileSync(`/work/${name}`, source);
 }
 
-describe('createContainer({ network })', () => {
+describe('made({ network })', () => {
   it('holds the namespace it was given, and a container given none has a fresh one, not another container\'s', () => {
     const front = containerNamespace('web', '172.18.0.2');
-    const first = createContainer({ network: front });
-    const second = createContainer();
+    const first = made({ network: front });
+    const second = made();
     expect(first.network).toBe(front);
     expect(second.network).not.toBe(front);
     expect(second.network.addresses()).toEqual([]);
@@ -47,7 +58,7 @@ describe('createContainer({ network })', () => {
     ].map(async ([id, address, held]) => {
       const vfs = new VirtualFS();
       program(vfs, 'ask.js', script);
-      const result = await createContainer({ vfs, network: containerNamespace(id as string, address as string, held as Record<string, string>) })
+      const result = await made({ vfs, network: containerNamespace(id as string, address as string, held as Record<string, string>) })
         .run('node /work/ask.js', { cwd: '/work' });
       return JSON.parse(result.stdout.trim());
     }));
@@ -63,7 +74,7 @@ describe('createContainer({ network })', () => {
     const results = await Promise.all(namespaces.map(async (network) => {
       const vfs = new VirtualFS();
       program(vfs, 'listen.js', script);
-      return createContainer({ vfs, network }).run('node /work/listen.js', { cwd: '/work' });
+      return made({ vfs, network }).run('node /work/listen.js', { cwd: '/work' });
     }));
     expect(results.map(result => result.stdout.trim())).toEqual(['listening', 'listening']);
     expect(namespaces.map(network => network.listened)).toEqual([[5432], [5432]]);
@@ -87,7 +98,7 @@ describe('a container\'s own code and its engine continuations', () => {
     const network = asyncResolving('web', '172.18.0.2', {});
     const vfs = new VirtualFS();
     program(vfs, 'later.js', "module.exports = new Promise(resolve => setTimeout(() => resolve(Object.keys(require('os').networkInterfaces())), 1));\n");
-    const container = createContainer({ vfs, network });
+    const container = made({ vfs, network });
     expect(container.execute("module.exports = Object.keys(require('os').networkInterfaces());").exports).toEqual(['lo', 'eth0']);
     expect(await (container.runFile('/work/later.js').exports as Promise<string[]>)).toEqual(['lo', 'eth0']);
   });
@@ -95,7 +106,7 @@ describe('a container\'s own code and its engine continuations', () => {
   it('answers a lookup from an asynchronous resolver in the asking run\'s namespace', async () => {
     const vfs = new VirtualFS();
     program(vfs, 'ask.js', "require('dns').lookup('db', (error, address) => console.log(error ? error.code : address));\n");
-    const result = await createContainer({ vfs, network: asyncResolving('web', '172.18.0.2', { db: '172.18.0.3' }) })
+    const result = await made({ vfs, network: asyncResolving('web', '172.18.0.2', { db: '172.18.0.3' }) })
       .run('node /work/ask.js', { cwd: '/work' });
     expect(result.stdout.trim()).toBe('172.18.0.3');
   });
@@ -104,7 +115,7 @@ describe('a container\'s own code and its engine continuations', () => {
     const network = asyncResolving('web', '172.18.0.2', { web: '172.18.0.2' });
     const vfs = new VirtualFS();
     program(vfs, 'serve.js', "const server = require('net').createServer().listen(3000, 'web', () => { console.log(server.address().address); server.close(); });\n");
-    const result = await createContainer({ vfs, network }).run('node /work/serve.js', { cwd: '/work' });
+    const result = await made({ vfs, network }).run('node /work/serve.js', { cwd: '/work' });
     expect(result.stdout.trim()).toBe('172.18.0.2');
     expect(network.listened).toEqual([{ port: 3000, address: '172.18.0.2' }]);
   });
@@ -113,9 +124,71 @@ describe('a container\'s own code and its engine continuations', () => {
     const network = asyncResolving('web', '172.18.0.2', {});
     const vfs = new VirtualFS();
     program(vfs, 'serve.js', "const server = require('net').createServer().listen(3000, '0.0.0.0', () => { console.log('listening'); server.close(); });\n");
-    const result = await createContainer({ vfs, network }).run('node /work/serve.js', { cwd: '/work' });
+    const result = await made({ vfs, network }).run('node /work/serve.js', { cwd: '/work' });
     expect(result.stdout.trim()).toBe('listening');
     expect(network.listened).toEqual([{ port: 3000, address: '0.0.0.0' }]);
+  });
+});
+
+/** A container's namespace that records each listen told to it, with the address bound. */
+function recordingNamespace(id: string, address: string): NetworkNamespace & { listened: Array<{ port: number; address: string }> } {
+  const listened: Array<{ port: number; address: string }> = [];
+  return {
+    id, listened,
+    addresses: () => [{ address, prefixLength: 16, interface: 'eth0' }],
+    connect: () => -111,
+    listen: (listener) => { listened.push({ port: listener.port, address: listener.address }); return () => undefined; },
+    resolve: () => undefined,
+  };
+}
+
+describe('a run and the frame that started it', () => {
+  it('makes a run\'s sockets in its own container\'s namespace when another container\'s code starts it', async () => {
+    const a = recordingNamespace('a', '172.18.0.2');
+    const b = recordingNamespace('b', '172.19.0.2');
+    const vfs = new VirtualFS();
+    program(vfs, 'serve.js', "const server = require('net').createServer().listen(3000, () => { console.log('listening'); server.close(); });\n");
+    const first = made({ network: a });
+    const second = made({ vfs, network: b });
+    try {
+      // A's own code hands B's run a callback of A's (its frame carries A's namespace), as a page bridge event of a
+      // run of A's would start it.
+      const later = first.execute('module.exports = (start) => setTimeout(start, 1);').exports as (start: () => void) => void;
+      const result = await new Promise<{ stdout: string }>((resolve) => later(() => { void second.run('node /work/serve.js', { cwd: '/work' }).then(resolve); }));
+      expect(result.stdout.trim()).toBe('listening');
+      expect(b.listened.map(row => row.port)).toEqual([3000]);
+      expect(a.listened).toEqual([]);
+    } finally { first.dispose(); second.dispose(); }
+  });
+});
+
+describe('the page bridge and a host\'s late answer', () => {
+  it('reaches a guest bound to ::1 alone', async () => {
+    const container = made({ network: recordingNamespace('web', '172.18.0.2') });
+    try {
+      container.execute("require('http').createServer((request, response) => response.end('six')).listen(8461, '::1');");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const response = await container.serverBridge.handleRequest(8461, 'GET', '/', {});
+      expect(response.statusCode).toBe(200);
+      expect(new TextDecoder().decode(response.body)).toBe('six');
+    } finally { container.dispose(); }
+  });
+
+  it('hands a listener the host answered after the socket closed an end that closes at once', async () => {
+    type Late = { source: string; accept(socket: { on(event: 'close', listener: () => void): void }): void };
+    let answer: ((connection: Late) => void) | undefined;
+    const network: NetworkNamespace = {
+      ...loopbackOnlyNamespace(),
+      addresses: () => [{ address: '172.18.0.2', prefixLength: 16 }],
+      connect: () => new Promise((resolve) => { answer = resolve as unknown as (connection: Late) => void; }),
+    };
+    const socket = await inside(network, () => netModule.connect(5432, '172.18.0.9') as unknown as { on(event: string, listener: () => void): void; destroy(): void });
+    socket.on('error', () => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const closed = new Promise<string>((resolve) => answer!({ source: '172.18.0.2', accept: (end) => end.on('close', () => resolve('closed')) }));
+    expect(await closed).toBe('closed');
   });
 });
 
@@ -143,9 +216,22 @@ describe('new NativeStreamScope(limits, emit, ownerPid, network)', () => {
   });
 
   it('without one and outside any container\'s code, in an engine of several containers, asks for it by name', () => {
-    createContainer({ network: containerNamespace('a', '172.18.0.2') });
-    createContainer({ network: containerNamespace('b', '172.18.0.3') });
-    expect(() => new NativeStreamScope(limits, () => undefined)).toThrow(expect.objectContaining({ code: 'ERR_INVALID_ARG_VALUE' }));
+    const a = made({ network: containerNamespace('a', '172.18.0.2') });
+    const b = made({ network: containerNamespace('b', '172.18.0.3') });
+    try {
+      expect(() => new NativeStreamScope(limits, () => undefined)).toThrow(expect.objectContaining({ code: 'ERR_INVALID_ARG_VALUE' }));
+    } finally { a.dispose(); b.dispose(); }
+  });
+
+  it('forgets a disposed container: one live container is the default owner again', () => {
+    const a = made({ network: containerNamespace('a', '172.18.0.2') });
+    const b = made({ network: containerNamespace('b', '172.18.0.3') });
+    b.dispose();
+    expect(new NativeStreamScope(limits, () => undefined).network).toBe(a.network);
+  });
+
+  it('with no container, is in the run-less namespace a bare Runtime and a ServerBridge made outside a container use', () => {
+    expect(new NativeStreamScope(limits, () => undefined).network).toBe(new ServerBridge().network);
   });
 });
 
