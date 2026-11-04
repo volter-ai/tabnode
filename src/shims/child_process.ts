@@ -651,21 +651,22 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   /** True while `exit` is being emitted: a listener's own `process.exit(n)` gives the status and ends the emission. */
   let emittingExit = false;
   /**
-   * True once the process has ended: after its `exit` listeners and the microtasks they queued, which Node runs before
-   * the process is gone (its nextTick queue it does not run: process.ts `exiting`). Its writes until then are written.
+   * True once the process has ended. After `process.exit`, that is as soon as its `exit` listeners have run; after its
+   * loop drained, once the microtasks those listeners queued have run too, which Node runs then and only then (measured
+   * on v26.12.0; its nextTick queue it runs in neither: process.ts `exiting`). Its writes until then are written.
    */
   let exitEnded = false;
   let exitCode = 0;
   let syncExecution = true;
   let exitResolve: ((code: number) => void) | null = null;
-  /** Settles with the process's status once it has ended (`endExit`), never at `process.exit` itself. */
+  /** Settles with the process's status once it has ended: after process.exit's `exit` listeners, or at `endExit`. */
   const exitPromise = new Promise<number>((resolve) => { exitResolve = resolve; });
   /** The throw that stands for a `process.exit` (it stops the code that called it), never a guest's error. */
   const exitThrow = (error: unknown): boolean => error instanceof Error && error.message.startsWith('Process exited with code');
   /**
-   * The process ends: the microtasks its `exit` listeners queued run, and a rejection among them is reported (and
-   * exits 1, as Node exits), behind the host's checkpoint that orders rejection reports (`settleEntry`); then nothing
-   * of it writes again, and its status is settled.
+   * A drained process ends: the microtasks its `exit` listeners queued run, and a rejection or throw among them is
+   * reported (and exits 1 unless the program set its exitCode, as Node's does), behind the host's checkpoint that orders
+   * rejection reports (`settleEntry`); then nothing of it writes again, and its status is settled.
    */
   let exitEnding: Promise<number> | undefined;
   const endExit = (): Promise<number> => exitEnding ??= settleEntry().catch(() => undefined).then(() => {
@@ -673,14 +674,26 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     exitResolve!(exitCode);
     return exitCode;
   });
+  /** Whether the process is between its drained `exit` and its end, where a reported error makes its status 1. */
+  const inExitWindow = (): boolean => exitCalled && !exitEnded && !emittingExit;
+  /**
+   * A throw out of an `exit` listener, reported as the process's uncaught exception. The guest's own
+   * `uncaughtException` listener runs, and its `process.exit(n)` (VS Code's host does this) ends the process there:
+   * that stop is the end it is, as any stop is. Any other throw out of the report is printed as Node prints one.
+   */
+  const reportExitListenerError = (error: unknown): void => {
+    if (exitThrow(error)) return;
+    try { __reportUncaughtException(proc, error); }
+    catch (thrown) { if (!exitThrow(thrown)) appendStderr(`${thrown instanceof Error ? uncaughtText(thrown) : String(thrown)}\n`); }
+  };
 
   // Helper to append to stdout, also streaming if configured
   // A process that has exited writes nothing more, as Node's cannot: a
   // continuation of the guest that runs on after its exit keeps its output
-  // to itself. Its `exit` listeners, and the microtasks they queue, run before
-  // it has ended, as Node runs them (`process.exit` emits `exit`, then calls
-  // `reallyExit`, with its stdio still open), so what they write is written
-  // (`exitEnded`, set by `endExit`): npm prints its last lines from one
+  // to itself. Its `exit` listeners run before it has ended, as Node runs them
+  // (`process.exit` emits `exit`, then calls `reallyExit`, with its stdio still
+  // open), and after a drained loop so do the microtasks they queue; what
+  // they write is written (`exitEnded`): npm prints its last lines from one
   // (11.x lib/cli/exit-handler.js #handleProcessExit: "A complete log of this
   // run can be found in", "Exit handler never called!"), and they were dropped.
   //
@@ -819,14 +832,23 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // a test runner reports failures): Node takes the new code and does not emit again
     // (`if (arguments.length) process.exitCode = code; if (!process._exiting) …; reallyExit(process.exitCode || 0)`).
     // The code was dropped here, so a run that ended by draining, or by `process.exit(0)`, kept its first status.
-    if (exitCalled && given.length !== 0 && given[0] !== undefined) {
-      exitCode = __substrateExitCode(given[0]);
-      (proc as { exitCode?: number }).exitCode = exitCode;
+    if (exitCalled) {
+      // A continuation that runs on after the end (a caught stop, below) changes no status: the process has ended.
+      if (given.length !== 0 && given[0] !== undefined && !exitEnded) {
+        exitCode = __substrateExitCode(given[0]);
+        (proc as { exitCode?: number }).exitCode = exitCode;
+      }
       code = exitCode;
-      // Inside a listener, Node's process.exit ends the process there (reallyExit): the rest of that listener and the
-      // listeners after it do not run. Thrown to stop them; the emission below takes it as the end it is (`exitThrow`)
-      // and prints nothing of it.
-      if (emittingExit) throw new Error(`Process exited with code ${code}`);
+      // Inside an `exit` listener, or a microtask one queued after the loop drained, Node's process.exit ends the
+      // process there (reallyExit), with or without a status: nothing after it runs. Its end here is exitEnded, so
+      // nothing after it writes; inside a listener it is also thrown, to stop that listener and the listeners after
+      // it, and the emission takes the throw as the end it is (`exitThrow`) and prints nothing of it. A guest that
+      // catches that throw runs on, which Node's cannot, but writes nothing and keeps this status: an uncatchable
+      // stop would need the realm itself to stop here, which this engine has no door for.
+      if (!exitEnded) {
+        exitEnded = true;
+        if (emittingExit) throw new Error(`Process exited with code ${code}`);
+      }
     }
     if (!exitCalled) {
       exitCalled = true;
@@ -847,14 +869,16 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       emittingExit = true;
       __substrateProcessEnding(proc);
       // A throw out of an `exit` listener is printed as Node prints an uncaught exception, and the process keeps the
-      // status it was given; its exit still ends it (below: the release of its servers, its settled status).
-      try { proc.emit('exit', code); }
-      catch (error) { if (!exitThrow(error)) __reportUncaughtException(proc, error); }
-      finally { emittingExit = false; }
+      // status it was given. The process ends as soon as its listeners have run: Node runs no microtask after
+      // process.exit's `exit` (measured on v26.12.0), so nothing of it writes from here, whatever the listeners did.
+      try {
+        try { proc.emit('exit', code); }
+        catch (error) { reportExitListenerError(error); }
+      } finally { emittingExit = false; exitEnded = true; }
       // A listener may have ended the process with another status (above); that is the status it ends with.
       code = exitCode;
       (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
-      void endExit();
+      exitResolve!(code);
     }
     // `process.exit()` ends a Node process and everything it holds; a named
     // run's servers and timers go with it.
@@ -950,8 +974,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     const errorMsg = reason instanceof Error ? `${reason.message}\n${reason.stack || ''}` : String(reason);
     appendStderr(`Error: ${errorMsg}\n`);
     writeHostReceipt('uncaught', reason);
-    // A rejection of a microtask an `exit` listener queued: printed, and the process exits 1, as Node's does.
-    if (exitCalled) { if (!exitEnded && !emittingExit) exitCode = 1; return; }
+    // A rejection of a microtask an `exit` listener queued after the loop drained: printed, and the process exits 1
+    // unless the program set its exitCode, as Node's does.
+    if (exitCalled) { if (inExitWindow() && typeof proc.exitCode !== 'number') exitCode = 1; return; }
     const wasSync = syncExecution;
     syncExecution = false;
     try { proc.exit(1); } finally { syncExecution = wasSync; }
@@ -990,7 +1015,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     }
     appendStderr(`${error instanceof Error ? uncaughtText(error) : String(error)}\n`);
     writeHostReceipt('uncaught', error);
-    if (exitCalled) return;
+    // A throw of a microtask an `exit` listener queued after the loop drained: as a rejection there (above).
+    if (exitCalled) { if (inExitWindow() && typeof proc.exitCode !== 'number') exitCode = 1; return; }
     const wasSync = syncExecution;
     syncExecution = false;
     try { proc.exit(1); } finally { syncExecution = wasSync; }
@@ -1321,17 +1347,19 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       exitCode = typeof proc.exitCode === 'number' ? proc.exitCode : 0;
       emittingExit = true;
       __substrateProcessEnding(proc);
-      try { proc.emit('exit', exitCode); }
-      catch (error) {
-        // A listener's `process.exit(n)` ended it with that status; any other throw is the process's uncaught
-        // exception, printed, and the process exits 1 unless the program set its exitCode, as Node's does.
-        if (!exitThrow(error)) {
-          __reportUncaughtException(proc, error);
-          if (typeof proc.exitCode !== 'number') exitCode = 1;
+      try {
+        try { proc.emit('exit', exitCode); }
+        catch (error) {
+          // A listener's `process.exit(n)` ended it with that status; any other throw is the process's uncaught
+          // exception, printed, and the process exits 1 unless the program set its exitCode, as Node's does.
+          if (!exitThrow(error)) {
+            reportExitListenerError(error);
+            if (typeof proc.exitCode !== 'number') exitCode = 1;
+          }
         }
-      }
-      finally { emittingExit = false; }
+      } finally { emittingExit = false; }
       if (typeof proc.exitCode === 'number') exitCode = proc.exitCode;
+      // Then the microtasks its listeners queued, which Node runs after a drained `exit`, and its end.
       await endExit();
     }
     // Keep D1 evidence when the new first-empty decision is shorter than the old trace threshold.
