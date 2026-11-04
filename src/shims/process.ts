@@ -26,7 +26,7 @@ import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
 import { freemem as osFreemem } from './os';
 import { copyProcessCredentials, recordProcessCredentials, type ProcessCredentials } from '../process-credentials';
 import { version as acornVersion } from 'acorn';
-import { ERR_INVALID_ARG_TYPE } from '../node-internals';
+import { ERR_INVALID_ARG_TYPE, ERR_OUT_OF_RANGE } from '../node-internals';
 import { setSourceMapsSupportOf, sourceMapsSupportOf } from '../node-lib/internals/events-util';
 
 export interface ProcessEnv {
@@ -1142,6 +1142,26 @@ export function createProcess(options?: {
   processEndings.set(proc, { exiting() { exiting = true; }, ended() { exiting = true; ended = true; } });
   // Node's `process._exiting`: true from the first `exit` on, read by programs and settable by them, as Node's is.
   Object.defineProperty(proc, '_exiting', { get: () => exiting, set: (value: unknown) => { exiting = Boolean(value); }, enumerable: true, configurable: true });
+  // Node's `process.exitCode` (bootstrap/node.js): undefined until set; undefined or null clears it; a string that is a
+  // number becomes that number; anything else must be a safe integer (validateInteger: ERR_INVALID_ARG_TYPE for a
+  // non-number, ERR_OUT_OF_RANGE otherwise). `process.exit(code)` assigns it whenever it is given a code.
+  let exitCodeValue: number | undefined;
+  Object.defineProperty(proc, 'exitCode', {
+    get: () => exitCodeValue,
+    set: (code: unknown) => {
+      if (code === null || code === undefined) { exitCodeValue = undefined; return; }
+      let value: unknown = code;
+      if (typeof code === 'string' && code !== '' && Number.isNaN((value = Number(code)))) value = code;
+      if (typeof value !== 'number') throw new ERR_INVALID_ARG_TYPE('code', 'number', value);
+      if (!Number.isInteger(value)) throw new ERR_OUT_OF_RANGE('code', 'an integer', value);
+      if (value < Number.MIN_SAFE_INTEGER || value > Number.MAX_SAFE_INTEGER) {
+        throw new ERR_OUT_OF_RANGE('code', `>= ${Number.MIN_SAFE_INTEGER} && <= ${Number.MAX_SAFE_INTEGER}`, value);
+      }
+      exitCodeValue = value;
+    },
+    enumerable: true,
+    configurable: false,
+  });
   recordProcessCredentials(proc, credentials);
   return proc;
 }

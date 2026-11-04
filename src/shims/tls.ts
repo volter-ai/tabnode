@@ -72,7 +72,7 @@ type Wrapped = { remoteAddress?: unknown; remotePort?: unknown; remoteFamily?: u
 /**
  * The socket a TLS socket was given to run over (`new tls.TLSSocket(socket)`, `tls.connect({ socket })`). Node's
  * TLSSocket runs on that socket's handle: its peer is that socket's (`remoteAddress`, `remotePort`), and a failed
- * handshake destroys that socket with it (v26.12.0: after the error both are `destroyed`).
+ * handshake destroys that socket with it (v26.12.0: open in the `error` listener, destroyed at `close`).
  */
 const wrappedBy = new WeakMap<object, Wrapped>();
 /** A TLS socket over a socket it was given fails, and the wrapped socket goes with it. */
@@ -80,10 +80,12 @@ const failWrapped = (socket: Socket, wrapped: object): void => {
   wrappedBy.set(socket, wrapped as Wrapped);
   socket.connecting = true;
   const error = wrappedUnavailable(wrapped);
-  queueMicrotask(() => queueMicrotask(() => {
-    socket.destroy(error);
+  // As Node's does, the wrapped socket is still open inside the TLS socket's `error` listener and is destroyed by the
+  // time its `close` is emitted (v26.12.0).
+  socket.once('close', () => {
     try { (wrapped as Wrapped).destroy?.(); } catch { /* the wrapped socket's own teardown cannot undo this one's */ }
-  }));
+  });
+  queueMicrotask(() => queueMicrotask(() => socket.destroy(error)));
 };
 
 class TLSSocket extends NetSocket {
