@@ -6,6 +6,16 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## 0.16.0 — Unreleased
 
+- **A realm lives in the network namespace its host gives it** (ADR-0008; Article 6). A host passes a
+  `NetworkNamespace` (`addresses`, `connect`, `listen`, `resolve`) to `createContainer({ network })` and to
+  `new NativeStreamScope(limits, emit, ownerPid, network)`. Each namespace has its own loopback and port space.
+  A bind to an address the namespace does not hold is `EADDRNOTAVAIL`. A listen is told to the host, which may
+  refuse it. A connect outside the namespace is the host's to route or refuse (`EHOSTUNREACH`, `ENETUNREACH`).
+  `dns.lookup` and `dns.resolve*` ask the namespace's resolver (`ENODATA` for a held name without the record type),
+  and `os.networkInterfaces()` lists its addresses. A realm given none has its loopback alone
+  (`loopbackOnlyNamespace()`). The `installHostNames` export is removed: a name a host holds is answered by its
+  namespace's resolver.
+
 - SQLite binds JavaScript Numbers as doubles and rejects BigInts outside signed 64-bit range with
   `ERR_INVALID_ARG_VALUE`, matching Node. Native cleanup state permits collection during a live process while
   statements retain their database and original-process exit still destroys outstanding resources

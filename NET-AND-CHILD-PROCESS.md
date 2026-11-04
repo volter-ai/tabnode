@@ -76,7 +76,8 @@ and the run ownership that keeps a run alive while it holds a handle.
   `UV_ECONNRESET` -104, `UV_EADDRINUSE` -98, `UV_ENOENT` -2, `UV_ENOTSOCK`
   -88, `UV_EPIPE` -32, `UV_EACCES` -13, `UV_EINVAL` -22, `UV_ENOTCONN` -107,
   `UV_EAGAIN` -11, `UV_ECANCELED` -125, `UV_EMFILE` -24, `UV_ENOSYS` -38,
-  `UV_ESRCH` -3).
+  `UV_ESRCH` -3, `UV_EADDRNOTAVAIL` -99, `UV_EHOSTUNREACH` -113,
+  `UV_ENETUNREACH` -101).
 - `stream_wrap`: `LibuvStreamWrap` (the base `TCP` and `Pipe` extend) with
   `readStart()`, `readStop()`, `shutdown(req)`, `writeBuffer(req, buf)`,
   `writev(req, chunks, allBuffers)`, `writeUtf8String(req, str)`,
@@ -93,14 +94,17 @@ and the run ownership that keeps a run alive while it holds a handle.
   `oncomplete` not called), which is what the engine's writes are.
 - `tcp_wrap`: `TCP(type)` with `constants.SOCKET|SERVER`,
   `TCPConnectWrap` (`oncomplete(status, handle, req, readable, writable)`),
-  `bind`/`bind6`, `listen(backlog)` (registers the port with the loopback
-  registry and the page bridge as `http.ts`'s server registration does
-  today, so a preview reaches it), `connect`/`connect6` (pairs with a
-  listening `TCP` on a loopback address; any other host is
-  `UV_ECONNREFUSED`, which is what the shim answers today), `onconnection(err,
-  clientHandle)`, `getsockname(out)`, `getpeername(out)`, `setNoDelay`,
-  `setKeepAlive`, `setSimultaneousAccepts` (0), `open(fd)` (`UV_ENOTSUP`),
-  `reset()`.
+  in the realm's network namespace (below): `bind`/`bind6` (a port of the
+  namespace's own space, at a wildcard, a loopback address or one of the
+  namespace's addresses, else `UV_EADDRNOTAVAIL`), `listen(backlog)` (tells
+  the namespace's host, which may refuse it, and, in the engine's own
+  namespace, the page bridge, so a preview reaches it), `connect`/`connect6`
+  (the namespace's own loopback and addresses reach its own listener; every
+  other destination is routed by the host, or refused as the kernel refuses
+  it: `UV_ECONNREFUSED`, `UV_EHOSTUNREACH`, `UV_ENETUNREACH`),
+  `onconnection(err, clientHandle)`, `getsockname(out)`, `getpeername(out)`,
+  `setNoDelay`, `setKeepAlive`, `setSimultaneousAccepts` (0), `open(fd)`
+  (`UV_ENOTSUP`), `reset()`.
 - `pipe_wrap`: `Pipe(type)` with `constants.SOCKET|SERVER|IPC`,
   `PipeConnectWrap`, `bind(path)`, `listen`, `connect(req, path)` (the .37
   path registry: `UV_ENOENT` when nothing listens, `UV_EADDRINUSE` on a bound
@@ -131,7 +135,8 @@ and the run ownership that keeps a run alive while it holds a handle.
 - `tty_wrap`: `isTTY(fd)` and `TTY` for the stdio the engine reports as a
   terminal, and `guessHandleType(fd)` in `internal/util`'s bound object.
 - `cares_wrap`: `isIP`, `isIPv4`, `isIPv6` (Node's own from
-  `internal/net.js` need only these); lookups stay the engine's `dns`.
+  `internal/net.js` need only these); lookups stay the engine's `dns`, which
+  asks the namespace's resolver.
 - `udp_wrap`, `http_parser`: the classes `internal/child_process.js` names
   in `instanceof` tests, as stubs.
 
@@ -143,6 +148,26 @@ substrate's bridge and `http.ts` read today (`__ownedServerPorts`,
 `_registerServer`, `__releaseOwnedServers`, `__adoptSocket`,
 `__pairLoopbackSockets`'s effect) are served by the binding under the same
 names until `http` is ported the same way.
+
+## The network namespace
+
+A realm lives in one network namespace, as a Linux process does, and its host
+supplies it (ADR-0008, `src/network-namespace.ts`). The engine knows nothing of
+which namespaces exist or how they are wired. It asks the host through four
+calls:
+
+| The host's | Asked when | Answers |
+|---|---|---|
+| `addresses()` | a bind, a connect, `os.networkInterfaces()` | the addresses the namespace's interfaces hold besides loopback (`{ address, prefixLength, mac? }`, eth0 first) |
+| `connect(address, port, family)` | a connect no listener of the namespace in this engine takes | a libuv status (refused: `ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`); `{ namespace, source }` (a listener of another namespace this engine serves); `{ source, accept(socket) }` (a listener the host holds, handed the far end as a `net.Socket`); or a Promise of one |
+| `listen(listener)` | a socket starts listening | a nonzero libuv status refuses it; else the function called when it stops. `listener.open(from, to)` is the host's connection to it |
+| `resolve(name, family)` | `dns.lookup` past `/etc/hosts` and `localhost`, `dns.resolve*` | the name's addresses of the family, `[]` when it holds none of the family, `undefined` when it holds no such name; or a Promise of one |
+
+`id` names the namespace: realms given one id share one loopback and one port
+space. The engine's own runs are in the namespace `createContainer({ network })`
+gave. A process whose sockets the engine holds for another worker is in the one
+its `NativeStreamScope` was made with. A realm given none is in
+`loopbackOnlyNamespace()`: its loopback alone, no names, no routes.
 
 ## Lanes and the measure
 
