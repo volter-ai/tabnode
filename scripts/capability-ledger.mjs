@@ -2,14 +2,23 @@
 // work assignment. A matching shape and a passing test are distinct proof rows.
 import * as fs from 'node:fs';
 import { resolve } from 'node:path';
-import { limitations, namedFailure, moduleFor } from './parity-data.mjs';
+import { limitations, namedFailure, moduleFor, manifest } from './parity-data.mjs';
 const arg = (name, fallback) => { const i = process.argv.indexOf(`--${name}`); return i < 0 ? fallback : process.argv[i + 1]; };
 const out = resolve(arg('out', 'measurement'));
 const read = (file) => JSON.parse(fs.readFileSync(`${out}/${file}`, 'utf8'));
-const metadata = read('summary.json');
-const results = read('results.json');
 const native = read('native.json');
 const surface = read('public.json');
+const pending = process.argv.includes('--pending-behavior');
+const metadata = pending ? {
+  nodeVersion: manifest.nodeVersion, nodeCommit: manifest.nodeCommit,
+  engineCommit: arg('commit', 'unknown'), mode: 'local production bundle; requested behavior measurement in progress',
+  denominator: manifest.files.length, passing: null, failingNamed: null, failingUnnamed: null,
+  complete: false, counts: { unresolvedNativeReads: native.unresolved.length,
+    unclassifiedNativeEntries: native.entries.filter((entry) => entry.status === 'UNCLASSIFIED').length,
+    unnamedTestFailures: null,
+    unattributedPublicDifferences: new Set([...surface.differences.filter((entry) => !entry.limitation), ...surface.unresolved].map((entry) => entry.key)).size },
+} : read('summary.json');
+const results = pending ? { results: manifest.files.map((file) => ({ file, passed: false, reason: 'requested behavior measurement in progress', stderr: '', code: null, signal: null, timedOut: null })) } : read('results.json');
 const exceptions = limitations();
 const work = JSON.parse(fs.readFileSync(new URL('./parity-work.json', import.meta.url), 'utf8'));
 const active = new Set(work.doing);
@@ -18,7 +27,7 @@ const state = (key, done, exception) => done ? 'done' : exception ? "won't do" :
 for (const result of results.results) {
   const key = `test:${result.file}`;
   const exception = !result.passed ? namedFailure(result, exceptions) : null;
-  capabilities.push({ key, layer: 'behavior', module: moduleFor(result.file), state: state(key, result.passed, exception),
+  capabilities.push({ key, layer: 'behavior', module: moduleFor(result.file), state: pending ? 'doing' : state(key, result.passed, exception),
     metric: result.passed ? 'exit 0' : result.reason, evidence: `results.json: ${result.file}; exit=${result.code}, signal=${result.signal}, timeout=${result.timedOut}`,
     reason: exception ? `${exception.id}: ${exception.reason}` : '', limitation: exception?.id ?? null });
 }
@@ -60,18 +69,19 @@ if (capabilityKeys.size !== capabilities.length) throw new Error('duplicate capa
 const staleWork = work.doing.filter((key) => !capabilityKeys.has(key));
 if (staleWork.length) throw new Error(`doing keys are outside the measured scope: ${staleWork.join(', ')}`);
 Object.assign(metadata, { capabilityRows: capabilities.length, statusCounts,
-  enumerationFinal: native.unresolved.length === 0 && !surface.unresolved.some((entry) => entry.reason.startsWith('real Node export snapshot failed')) });
+  enumerationFinal: native.unresolved.length === 0 && surface.unresolved.length === 0 });
 fs.writeFileSync(`${out}/capabilities.json`, JSON.stringify({ metadata, capabilities }, null, 2) + '\n');
-fs.writeFileSync(`${out}/summary.json`, JSON.stringify(metadata, null, 2) + '\n');
+if (!pending) fs.writeFileSync(`${out}/summary.json`, JSON.stringify(metadata, null, 2) + '\n');
 const cell = (text) => String(text ?? '').replaceAll('|', '\\|').replaceAll('\n', ' ').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 let table = `# Node ${metadata.nodeVersion} capability ledger\n\nCommit: \`${metadata.engineCommit}\`. Production host-run baseline; browser qualification remains separate.\n\n`;
 const headline = `${capabilities.length} measured rows: ${statusCounts.done} done; ${statusCounts.doing} doing; ${statusCounts.todo} todo; ${statusCounts["won't do"]} won't do. Scope enumeration finalized: **${metadata.enumerationFinal ? 'yes' : 'no'}**.`;
 table += `${headline}\n\nUnresolved native flows count as todo, not as proof that their undiscovered members have been enumerated. `
   + `Matching public shapes prove structure; test rows prove only their exercised behavior.\n\n`;
+if (pending) table += 'Behavior rows are doing because the requested measurement is running. No behavior pass/failure count is asserted until the complete result exists.\n\n';
 table += `| Capability | Layer | Module | State | Metric | Evidence | Limitation reason |\n|---|---|---|---|---|---|---|\n`;
 for (const entry of capabilities) table += `| ${[entry.key, entry.layer, entry.module, entry.state, entry.metric, entry.evidence, entry.reason].map(cell).join(' | ')} |\n`;
 fs.writeFileSync(`${out}/CAPABILITIES.md`, table);
 const summary = `\n${headline} Full table: \`CAPABILITIES.md\` in the measurement artifact.\n`;
-fs.appendFileSync(`${out}/summary.md`, summary);
+if (!pending) fs.appendFileSync(`${out}/summary.md`, summary);
 if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
 console.log(headline);
