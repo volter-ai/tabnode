@@ -63,7 +63,7 @@ export function installHttpClientTransport(factory: HttpClientTransportFactory, 
       // host serves itself takes the host exchange; what the namespace holds is its own network (a TLS connect there
       // is `tls`'s); everything else leaves through the exchange. A socket path is the process's own filesystem.
       // One routing decision (network-namespace.ts namespaceHolds), the one `tls` and `net` read.
-      const network = currentNetworkNamespace();
+      const network = currentNetworkNamespace('an HTTP request');
       const hostService = !options.socketPath && transportOptions.hostService?.(network, host, port) === true;
       const held: boolean | Promise<boolean> = hostService ? false : options.socketPath ? protocol === 'http:' : namespaceHolds(network, host);
       if (held === true) return original.call(this, options, callback);

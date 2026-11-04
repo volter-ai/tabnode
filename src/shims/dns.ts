@@ -141,7 +141,7 @@ function lookupWithHosts(
   if (typeof given !== 'function') throw Object.assign(new TypeError('The callback argument must be a function'), { code: 'ERR_INVALID_ARG_TYPE' });
   // Node's net.js makes a listener's handle in this callback (listen(port, host)): it runs in the caller's namespace.
   const cb = inCallersContext(given as LookupCallback) as LookupCallback | LookupAllCallback;
-  const network = currentNetworkNamespace();
+  const network = currentNetworkNamespace(`dns.lookup ${String(hostname)}`);
   if (hostname && typeof hostname !== 'string') throw Object.assign(new TypeError('The hostname argument must be a string'), { code: 'ERR_INVALID_ARG_TYPE' });
   const requested = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family ?? 0;
   if (![0, 4, 6].includes(requested)) throw Object.assign(new TypeError(`Invalid address family: ${requested}`), { code: 'ERR_INVALID_ARG_VALUE' });
@@ -220,7 +220,7 @@ function query(hostname: string, rrtype: string, given: ResolveCallback): void {
   const syscall = `query${rrtype.charAt(0)}${rrtype.slice(1).toLowerCase()}`;
   const family = RECORD_FAMILIES[rrtype];
   const callback = inCallersContext(given);
-  const network = currentNetworkNamespace();
+  const network = currentNetworkNamespace(`dns ${syscall} ${hostname}`);
   answerLater(() => bounded(ask(network, hostname, family ?? 4))
     .then((outcome) => {
       if ('failed' in outcome) callback(queryFailed(hostname, syscall, outcome.failed));

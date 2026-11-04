@@ -385,7 +385,7 @@ export class ServerBridge extends PortBridge {
   constructor(options: BridgeOptions = {}) {
     super(options);
     // A bridge no container made answers for the namespace it is made in: a run's, or that of the sockets no run made.
-    this.network = options.network ?? currentNetworkNamespace();
+    this.network = options.network ?? currentNetworkNamespace('a server bridge');
     // A guest's servers register themselves, from the port they take.
     this.watchGuestPorts();
     this.upgradeChannel = __substrateListenForUpgrades(this);

@@ -138,7 +138,7 @@ class TLSSocket extends NetSocket {
       else { this.connecting = true; fail(unavailable(undefined, undefined)); }
       return this;
     }
-    const held = namespaceHolds(currentNetworkNamespace(), host);
+    const held = namespaceHolds(currentNetworkNamespace(`tls.connect to ${host}`), host);
     if (held === true) return pair();
     this.connecting = true;
     if (held === false) { fail(unavailable(host, options.port)); return this; }

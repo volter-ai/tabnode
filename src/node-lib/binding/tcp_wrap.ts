@@ -202,7 +202,7 @@ export class TCP extends LibuvStreamWrap {
   onconnection: ((status: number, clientHandle: TCP) => void) | null = null;
 
   /** The network namespace the handle was made in, and keeps: its port space, its loopback, its routes. */
-  #network: NetworkNamespace = currentNetworkNamespace();
+  #network: NetworkNamespace = currentNetworkNamespace('a TCP socket');
   private local: SockName | null = null;
   private remote: SockName | null = null;
   /** Whether the local name was given by a connect rather than a bind: the route then chooses its address. */

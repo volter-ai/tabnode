@@ -54,17 +54,20 @@ Where the host supplies it:
   A container given none has a fresh namespace of its loopback alone (`loopbackOnlyNamespace()`), its own.
 - `new NativeStreamScope(limits, emit, ownerPid, network)`: the namespace of a process whose sockets this engine holds
   for another worker. Every TCP handle the scope makes is made in it. A scope given none is in its owning container's:
-  that of the code that made it, else the engine's one live container's (a disposed or collected container is no
-  owner), else, with no container, the run-less namespace a bare Runtime's code is in; an engine of several
-  containers names it.
+  that of the code that made it, else the realm owner's below (a disposed or collected container is no owner).
   That process's own realm, whose `net` handles are the scope's, reads the same namespace for `dns`, `os`, `tls` and
   HTTP's Agent from its bootstrap: its host makes the realm's container with the namespace (`createContainer({
   network })`), so the realm's runs are in it.
 - The engine's own continuations (a resolver's answer, a lookup's callback, a routing decision answered later, in
   which Node's `net.js` makes a `listen(port, host)` handle and HTTP's Agent and `tls` make their sockets) run in the
   context of the call that began them: its run and its namespace (`captureNetworkContext`).
-- A socket, lookup or interface list made outside any container's code and any host scope is in a namespace of its
-  own that reaches nothing; a page bridge made outside a container answers for the namespace it was made in.
+- A socket, lookup or interface list made outside every run's context and every host scope (code resumed from a native
+  await, which the engine cannot carry a context across: a wasm module's future, a host promise) is the process's
+  that owns the realm, since a namespace is a property of the process and not of an async context: the realm's one
+  live container's namespace. A realm with no container (a bare Runtime) is in its own namespace of its loopback alone.
+  A realm whose containers are in several namespaces has no one owner, and the socket or lookup is refused by name
+  (`ERR_NO_NETWORK_NAMESPACE`, naming the realm and the operation), never placed in a namespace that answers nothing.
+  A page bridge made outside a container answers for the namespace it was made in.
 
 What the engine does with it:
 

@@ -117,10 +117,10 @@ export const CONNECT_TIMEOUT_MS = 127_000;
 export const RESOLVE_TIMEOUT_MS = 10_000;
 
 /**
- * The namespace of a socket made with no process, no container and no host scope: a fresh one of its own, which reaches
- * nothing, as a socket no process could have made would.
+ * The namespace of a realm whose host made no container (a bare `Runtime`): the engine's own, made once, loopback
+ * alone, as a fresh namespace is on Linux. It is that realm's; a realm a container owns never falls into it.
  */
-const unowned = loopbackOnlyNamespace();
+const bareRealm = loopbackOnlyNamespace();
 /** A namespace a host-held scope (NativeStreamScope, a container's own door) creates its handles in, while it creates them. */
 let creatingIn: NetworkNamespace | undefined;
 
@@ -130,11 +130,37 @@ export function contextNetworkNamespace(): NetworkNamespace | undefined {
 }
 
 /**
- * The namespace a socket made now is in: the host scope's that is making it, else the code's (its container's, its
- * run's, or the one its parent's fork left it), as socket(2) makes a socket in the calling process's namespace.
+ * The namespace a socket or lookup made now is in: the host scope's that is making it, else the code's (its run's, or
+ * the one its parent's fork left it), else the namespace of the process that owns the realm, as socket(2) makes a
+ * socket in the calling process's namespace. A process's namespace is a property of the process, not of the async
+ * context that happens to be current: code resumed from a native await (a wasm module's future, a host promise the
+ * engine cannot restore a context across) has no run in its context and is still that process's, so it is in the
+ * realm's owner's namespace. `operation` names what is being made, for the refusal where no one process owns the realm.
  */
-export function currentNetworkNamespace(): NetworkNamespace {
-  return contextNetworkNamespace() ?? unowned;
+export function currentNetworkNamespace(operation: string): NetworkNamespace {
+  return contextNetworkNamespace() ?? realmNamespace(operation);
+}
+
+/** The realm's name, as an error names it: its worker's name, where it has one. */
+function realmName(): string {
+  const name = (globalThis as { name?: unknown }).name;
+  return typeof name === 'string' && name.length > 0 ? `realm "${name}"` : 'this realm';
+}
+
+/**
+ * The namespace of the process that owns the realm: its one live container's (every container recorded with its
+ * namespace, `recordContainerNamespace`); with none, the bare realm's. A realm holding containers in several namespaces
+ * has no one owner, and what is made outside every run's context is refused by name (`ERR_NO_NETWORK_NAMESPACE`), never
+ * placed in a namespace of the engine's choosing: a socket in a namespace its process is not in answers nothing, and
+ * that silence is what hid the misplacement.
+ */
+function realmNamespace(operation: string): NetworkNamespace {
+  const live = [...new Set([...engineContainers].filter(entry => entry.container.deref() !== undefined).map(entry => entry.network))];
+  if (live.length === 1) return live[0]!;
+  if (live.length === 0) return bareRealm;
+  throw Object.assign(new Error(`${operation} in ${realmName()}: made outside every run's context, and the realm's ${live.length} containers are in `
+    + `${live.length} namespaces (${live.map(network => network.id).join(', ')}); no one process owns the realm, so it has no namespace. `
+    + 'Make it inside its run, or give its scope its namespace (the owning container\'s `network`).'), { code: 'ERR_NO_NETWORK_NAMESPACE' });
 }
 
 /** Runs `run`, and every continuation it makes, in `network`'s namespace. */
@@ -150,7 +176,7 @@ export function inNetworkScope<T>(network: NetworkNamespace, run: () => T): T {
  */
 export function captureNetworkContext(): <T>(continuation: () => T) => T {
   const snapshot = AsyncLocalStorage.snapshot();
-  const network = currentNetworkNamespace();
+  const network = currentNetworkNamespace('a network continuation');
   return <T>(continuation: () => T): T => snapshot(() => networkScope.run(network, continuation)) as T;
 }
 
@@ -168,19 +194,11 @@ export function recordContainerNamespace(container: object, network: NetworkName
   return () => { engineContainers.delete(entry); collectedContainers.unregister(entry); };
 }
 /**
- * The namespace a host-held scope made with none is in: the calling code's, where it is in one, else the engine's one
- * container's; with no container, the run-less namespace that code no container started is in (as a bare Runtime's and
- * a ServerBridge made outside a container are). With several containers and no context, the scope must be given its
- * namespace.
+ * The namespace a host-held scope made with none is in: the calling code's, where it is in one, else the realm's owner's
+ * (`currentNetworkNamespace`).
  */
 export function owningContainerNamespace(): NetworkNamespace {
-  const context = contextNetworkNamespace();
-  if (context) return context;
-  const live = [...engineContainers].filter(entry => entry.container.deref() !== undefined);
-  if (live.length === 1) return live[0]!.network;
-  if (live.length === 0) return unowned;
-  throw Object.assign(new TypeError('This engine has several containers: give the scope its network namespace (the owning container\'s `network`).'),
-    { code: 'ERR_INVALID_ARG_VALUE' });
+  return currentNetworkNamespace('a host-held network scope');
 }
 
 /** Makes the handles `create` makes in `network`'s namespace, as a socket(2) call in a process of it does. */

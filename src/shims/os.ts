@@ -102,7 +102,7 @@ export function networkInterfaces(): Record<string, InterfaceAddress[]> {
   };
   const names = new Map<string, string>();
   let next = 0;
-  for (const held of currentNetworkNamespace().addresses()) {
+  for (const held of currentNetworkNamespace('os.networkInterfaces()').addresses()) {
     let name = held.interface !== undefined ? names.get(held.interface) : undefined;
     if (name === undefined) {
       name = held.interface !== undefined && /^eth\d+$/u.test(held.interface) && !interfaces[held.interface] ? held.interface : `eth${next}`;

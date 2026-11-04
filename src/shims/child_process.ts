@@ -264,7 +264,7 @@ async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaun
       ...(streams.onStderrBytes ? { onStderrBytes: { value: (bytes: Uint8Array) => { bytesErr = true; streams.onStderrBytes!(bytes); } } } : {}),
     }) as RunStreams;
     // The child is in its parent's network namespace, as fork(2) leaves it.
-    const network = runNetworkOf(token) ?? currentNetworkNamespace();
+    const network = runNetworkOf(token) ?? currentNetworkNamespace('a child process');
     const result = await host.run({ ...launch, ...(watched ? { streams: watched } : {}), identity: { ...runPid(token)! }, inherited, network,
       ...(input.stream ? { stdinStream: input.stream } : {}) });
     ran = true;
