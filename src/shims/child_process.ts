@@ -658,7 +658,11 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // Helper to append to stdout, also streaming if configured
   // A process that has exited writes nothing more, as Node's cannot: a
   // continuation of the guest that runs on after its exit keeps its output
-  // to itself.
+  // to itself. Its `exit` listeners run before it has ended, as Node runs them
+  // (`process.exit` emits `exit`, then calls `reallyExit`, with its stdio still
+  // open), so what they write is written: npm prints its last lines from one
+  // (11.x lib/cli/exit-handler.js #handleProcessExit: "A complete log of this
+  // run can be found in", "Exit handler never called!"), and they were dropped.
   //
   // A host that takes an fd as bytes gets each write's bytes as the program
   // wrote them, as a file or a pipe on that fd would, and nothing of that fd
@@ -684,7 +688,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const stdoutDecoder = new TextDecoder();
   const stderrDecoder = new TextDecoder();
   const appendStdout = (data: string | Uint8Array) => {
-    if (exitCalled) return;
+    if (exitCalled && !emittingExit) return;
     printed += data.length;
     noteWrite(1, data);
     if (stdoutBytes) { stdoutBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
@@ -693,7 +697,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     streams?.onStdout?.(text);
   };
   const appendStderr = (data: string | Uint8Array) => {
-    if (exitCalled) return;
+    if (exitCalled && !emittingExit) return;
     printed += data.length;
     noteWrite(2, data);
     if (stderrBytes) { stderrBytes(typeof data === 'string' ? outputEncoder.encode(data) : data); return; }
