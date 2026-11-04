@@ -1,4 +1,5 @@
 import type { ProcessCredentials } from '../process-credentials';
+import { getEngineNamespace } from '../network-namespace';
 /**
  * Node.js os module shim
  * Provides operating system utilities
@@ -69,6 +70,24 @@ export function loadavg(): [number, number, number] {
   return [0.5, 0.5, 0.5];
 }
 
+/** A netmask for a prefix length, as Node prints one: dotted for IPv4, compressed hex groups for IPv6. */
+function netmaskOf(prefixLength: number, v6: boolean): string {
+  if (!v6) {
+    const bits = prefixLength <= 0 ? 0 : (0xffffffff << (32 - Math.min(prefixLength, 32))) >>> 0;
+    return [bits >>> 24, (bits >>> 16) & 255, (bits >>> 8) & 255, bits & 255].join('.');
+  }
+  const groups = Array.from({ length: 8 }, (_, index) => {
+    const bits = Math.max(0, Math.min(16, prefixLength - index * 16));
+    return ((0xffff << (16 - bits)) & 0xffff).toString(16);
+  });
+  const zeros = groups.indexOf('0');
+  return zeros < 0 ? groups.join(':') : `${groups.slice(0, zeros).join(':')}::`;
+}
+
+/**
+ * The interfaces of the realm's network namespace: its loopback, and one `eth<n>` per address its host gave it, in
+ * the order they were made, as a container's interfaces read inside it.
+ */
 export function networkInterfaces(): Record<
   string,
   Array<{
@@ -80,7 +99,7 @@ export function networkInterfaces(): Record<
     cidr: string;
   }>
 > {
-  return {
+  const interfaces: ReturnType<typeof networkInterfaces> = {
     lo: [
       {
         address: '127.0.0.1',
@@ -92,6 +111,18 @@ export function networkInterfaces(): Record<
       },
     ],
   };
+  getEngineNamespace().addresses().forEach((held, index) => {
+    const v6 = held.address.includes(':');
+    interfaces[`eth${index}`] = [{
+      address: held.address,
+      netmask: netmaskOf(held.prefixLength, v6),
+      family: v6 ? 'IPv6' : 'IPv4',
+      mac: held.mac ?? '00:00:00:00:00:00',
+      internal: false,
+      cidr: `${held.address}/${held.prefixLength}`,
+    }];
+  });
+  return interfaces;
 }
 
 export function userInfo(credentials?: Pick<ProcessCredentials, 'uid' | 'gid'>): {

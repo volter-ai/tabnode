@@ -1,47 +1,52 @@
 /**
- * Host lookup for this engine's loopback. There is no outbound DNS service.
- * The World can wrap this door; a miss must never become a local wildcard.
+ * `dns`, answered by the realm's network namespace (`../network-namespace.ts`). Node's `dns.lookup` is getaddrinfo:
+ * the process's own `/etc/hosts`, then the resolver its `/etc/resolv.conf` names; `dns.resolve*` is a query to that
+ * resolver. The resolver here is the namespace's, which its host answers (a container's names, by the networks the
+ * asker shares with it, as Docker's embedded resolver at 127.0.0.11 answers them). A name the resolver does not hold
+ * is `ENOTFOUND`; it never becomes this host or a wildcard.
  */
 import { heldWork } from '../host-globals';
+import { getEngineNamespace, type ResolverAnswer } from '../network-namespace';
 
 // DNS lookup callback type
 type LookupCallback = (err: Error | null, address?: string, family?: number) => void;
 type LookupAllCallback = (err: Error | null, addresses?: Array<{ address: string; family: number }>) => void;
 type LookupOptions = { family?: number | 'IPv4' | 'IPv6'; all?: boolean; order?: 'verbatim' | 'ipv4first' | 'ipv6first' };
+type ResolveCallback = (err: Error | null, addresses?: string[]) => void;
 
 /**
  * Node counts a lookup request until its callback runs. This answer uses the engine's own immediate, which a
- * guest run does not count. Hold the asking process's work through the callback so a lookup stays pending until
- * its answer is delivered.
+ * guest run does not count. Hold the asking process's work through the callback (and through the resolver's
+ * answer, when the namespace's host answers later) so a lookup stays pending until its answer is delivered. A
+ * callback that throws is the asking process's uncaught exception, as a throw from a getaddrinfo callback is in
+ * Node: thrown from the immediate, or from a fresh one when the resolver answered later.
  */
-function answerLater(answer: () => void): void {
+function answerLater(answer: () => void | Promise<void>): void {
   const held = heldWork();
   held.count += 1;
-  setImmediate(() => { try { answer(); } finally { held.count -= 1; } });
+  setImmediate(() => {
+    let pending: Promise<void> | undefined;
+    try { const result: unknown = answer(); if (result instanceof Promise) pending = result; }
+    finally { if (!pending) held.count -= 1; }
+    pending?.then(() => { held.count -= 1; }, (cause: unknown) => {
+      setImmediate(() => { try { throw cause; } finally { held.count -= 1; } });
+    });
+  });
 }
 
-/**
- * The names that are this host besides `localhost`, as the host that owns the tab's loopback holds them (the
- * services of a stack, the host's own name). The engine keeps no name table of its own (ADR-0002): the host
- * installs its one, and a lookup asks it each time, so a name the host takes or drops is seen at once.
- */
-let hostNames: (() => Iterable<string>) | undefined;
+/** What a resolver's failure is to a callback: the error it threw, or one naming what it threw. */
+const asError = (cause: unknown): Error => cause instanceof Error ? cause : new Error(String(cause));
 
-/** Host bootstrap only, as the realm starts (the door `installNativeStreamTransport` is). */
-export function installHostNames(names: () => Iterable<string>): void {
-  hostNames = names;
+/** The namespace's resolver, asked for one family: what it holds for the name, compared without case or a trailing dot. */
+async function ask(hostname: string, family: 4 | 6): Promise<ResolverAnswer> {
+  return getEngineNamespace().resolve(hostname.toLowerCase().replace(/\.$/, ''), family);
 }
 
-/** Whether a name the host holds is this host: compared as DNS compares, without case or a trailing dot. */
-function heldByHost(hostname: string): boolean {
-  if (!hostNames) return false;
-  const name = hostname.toLowerCase().replace(/\.$/, '');
-  for (const held of hostNames()) if (held.toLowerCase() === name) return true;
-  return false;
-}
-
-function notFound(hostname: string, syscall = 'getaddrinfo'): Error {
-  return Object.assign(new Error(`${syscall} ENOTFOUND ${hostname}`), { code: 'ENOTFOUND', errno: -3008, syscall, hostname });
+/** getaddrinfo's EAI_NONAME, which Node names ENOTFOUND; a resolver query's ENOTFOUND (NXDOMAIN) or ENODATA. */
+function notFound(hostname: string, syscall = 'getaddrinfo', code: 'ENOTFOUND' | 'ENODATA' = 'ENOTFOUND'): Error {
+  return Object.assign(new Error(`${syscall} ${code} ${hostname}`), {
+    code, ...(syscall === 'getaddrinfo' ? { errno: -3008 } : {}), syscall, hostname,
+  });
 }
 
 /** 4 or 6 for an IPv4 or IPv6 literal (brackets allowed), 0 for a name. */
@@ -143,52 +148,67 @@ function lookupWithHosts(
       else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
       return;
     }
-    if (hostname.toLowerCase().replace(/\.$/, '') === 'localhost' || heldByHost(hostname)) {
+    // localhost is the namespace's own loopback (RFC 6761), whatever its resolver holds.
+    if (hostname.toLowerCase().replace(/\.$/, '') === 'localhost') {
       const families = requested ? [requested] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
       const addresses = families.map(family => ({ address: family === 6 ? '::1' : '127.0.0.1', family }));
       if (options.all) (cb as LookupAllCallback)(null, addresses);
       else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
-    } else {
-      // TCP accepts 0.0.0.0 as this host. Returning it for an unknown name
-      // silently connected a program to an unrelated local listener.
-      cb(notFound(hostname));
+      return;
     }
+    // The resolver: A, then AAAA (or as `order` puts them), as getaddrinfo asks for an unspecified family.
+    const families: Array<4 | 6> = requested ? [requested as 4 | 6] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
+    const asked = Promise.all(families.map(family => ask(hostname, family)))
+      .then(answers => ({ answers }), (cause: unknown) => ({ cause }));
+    // The callback runs outside the resolver's settlement, so what it throws is its own (answerLater).
+    return asked.then((outcome) => {
+      if ('cause' in outcome) { cb(asError(outcome.cause)); return; }
+      const addresses = outcome.answers.flatMap((answer, index) => (answer ?? []).map(address => ({ address, family: families[index]! })));
+      // A name with no address of the asked family is EAI_NODATA, which Node reports as ENOTFOUND too.
+      if (!addresses.length) { cb(notFound(hostname)); return; }
+      if (options.all) (cb as LookupAllCallback)(null, addresses);
+      else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
+    });
   });
 }
 
+/** The record types the namespace's resolver holds: a name's addresses. */
+const RECORD_FAMILIES: Record<string, 4 | 6> = { A: 4, AAAA: 6 };
+
 /**
- * Resource-record queries require a DNS service, which this host does not have. A name the host holds as itself
- * has the loopback's records, as the resolver that serves it to every other program answers: A 127.0.0.1.
+ * A query to the namespace's resolver. It holds A and AAAA records: a name it does not hold is ENOTFOUND, one it
+ * holds with no record of the type ENODATA, as a server answers NOERROR with an empty answer.
  */
-export function resolve(
-  hostname: string,
-  callback: (err: Error | null, addresses?: string[]) => void
-): void {
-  answerLater(() => {
-    if (heldByHost(hostname)) callback(null, ['127.0.0.1']);
-    else callback(notFound(hostname, 'queryA'));
-  });
+function query(hostname: string, rrtype: string, callback: ResolveCallback): void {
+  const syscall = `query${rrtype.charAt(0)}${rrtype.slice(1).toLowerCase()}`;
+  const family = RECORD_FAMILIES[rrtype];
+  answerLater(() => ask(hostname, family ?? 4)
+    .then(held => ({ held }), (cause: unknown) => ({ cause }))
+    .then((outcome) => {
+      if ('cause' in outcome) callback(asError(outcome.cause));
+      else if (outcome.held === undefined) callback(notFound(hostname, syscall));
+      else if (family === undefined || outcome.held.length === 0) callback(notFound(hostname, syscall, 'ENODATA'));
+      else callback(null, [...outcome.held]);
+    }));
 }
 
-export function resolve4(
-  hostname: string,
-  callback: (err: Error | null, addresses?: string[]) => void
-): void {
-  resolve(hostname, callback);
+export function resolve(hostname: string, callback: ResolveCallback): void;
+export function resolve(hostname: string, rrtype: string, callback: ResolveCallback): void;
+export function resolve(hostname: string, rrtypeOrCallback: string | ResolveCallback, callback?: ResolveCallback): void {
+  if (typeof rrtypeOrCallback === 'function') query(hostname, 'A', rrtypeOrCallback);
+  else query(hostname, String(rrtypeOrCallback).toUpperCase(), callback as ResolveCallback);
 }
 
-export function resolve6(
-  hostname: string,
-  callback: (err: Error | null, addresses?: string[]) => void
-): void {
-  answerLater(() => {
-    if (heldByHost(hostname)) callback(null, ['::1']);
-    else callback(notFound(hostname, 'queryAaaa'));
-  });
+export function resolve4(hostname: string, callback: ResolveCallback): void {
+  query(hostname, 'A', callback);
+}
+
+export function resolve6(hostname: string, callback: ResolveCallback): void {
+  query(hostname, 'AAAA', callback);
 }
 
 /**
- * No PTR resolver is installed; an arbitrary address is never localhost.
+ * The namespace's resolver holds no PTR records; an arbitrary address is never localhost.
  */
 export function reverse(
   ip: string,
@@ -246,9 +266,9 @@ export const promises = {
       });
     });
   },
-  resolve: (hostname: string) => {
+  resolve: (hostname: string, rrtype = 'A') => {
     return new Promise<string[]>((promiseResolve, promiseReject) => {
-      resolve(hostname, (err, addresses) => {
+      resolve(hostname, rrtype, (err, addresses) => {
         if (err) promiseReject(err);
         else promiseResolve(addresses || []);
       });

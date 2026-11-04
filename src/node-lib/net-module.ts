@@ -28,7 +28,7 @@ import type { DuplexLike } from './stream-module';
 import type { EventEmitter } from './events-module';
 import type { ProcessToken } from '../process-tokens';
 import { __adoptHandle, __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles } from './binding/handles';
-import { TCP, constants as tcpConstants, type SockName } from './binding/tcp_wrap';
+import { TCP, constants as tcpConstants, installHostSocket, type SockName } from './binding/tcp_wrap';
 import { LibuvStreamWrap, WriteWrap, ShutdownWrap, kReadBytesOrError, kArrayBufferOffset, streamBaseState } from './binding/stream_wrap';
 
 export type { ProcessToken };
@@ -166,6 +166,10 @@ export const connect = netModule.connect;
 export const isIP = netModule.isIP;
 export const isIPv4 = netModule.isIPv4;
 export const isIPv6 = netModule.isIPv6;
+
+// A connection the namespace's host holds an end of (a listener it holds, a connection it opens to a guest's
+// listener) reaches the host as Node's own `net.Socket` over that end's handle, as `net.js` wraps an accepted handle.
+installHostSocket((handle) => new Socket({ handle, readable: true, writable: true, allowHalfOpen: true }));
 
 /** How many ref'd handles the named run holds, as Node's loop counts them. */
 export { __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles };

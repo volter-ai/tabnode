@@ -33,6 +33,7 @@ import os, {
   devNull,
 } from '../../src/shims/os';
 import { assert } from './common';
+import { getEngineNamespace, loopbackOnlyNamespace, setEngineNamespace } from '../../src/network-namespace';
 
 describe('os module (Node.js compat)', () => {
   describe('os.hostname()', () => {
@@ -273,6 +274,18 @@ describe('os module (Node.js compat)', () => {
 
     it('should be accessible from default export', () => {
       expect(os.networkInterfaces()).toEqual(networkInterfaces());
+    });
+
+    it('lists the loopback and one interface per address the realm\'s namespace holds', () => {
+      const previous = getEngineNamespace();
+      setEngineNamespace({ ...loopbackOnlyNamespace(), addresses: () => [{ address: '172.18.0.3', prefixLength: 16, mac: '02:42:ac:12:00:03' }] });
+      try {
+        const result = networkInterfaces();
+        expect(Object.keys(result)).toEqual(['lo', 'eth0']);
+        expect(result.eth0).toEqual([{
+          address: '172.18.0.3', netmask: '255.255.0.0', family: 'IPv4', mac: '02:42:ac:12:00:03', internal: false, cidr: '172.18.0.3/16',
+        }]);
+      } finally { setEngineNamespace(previous); }
     });
   });
 

@@ -84,7 +84,9 @@ export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialPro
 import type { ProcessRegistry } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
-export { installHostNames } from './shims/dns';
+export { loopbackOnlyNamespace } from './network-namespace';
+export type { NetworkNamespace, NamespaceAddress, NamespaceConnection, NamespaceListener, ResolverAnswer } from './network-namespace';
+import { setEngineNamespace, type NetworkNamespace } from './network-namespace';
 export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport, NativeStreamHandleView, NativeStreamWriteTrace } from './native-stream-owner';
 
 export interface RunResult {
@@ -203,6 +205,13 @@ export interface ContainerOptions extends RuntimeOptions {
   vfs?: VirtualFS;
   baseUrl?: string;
   onServerReady?: (port: number, url: string) => void;
+  /**
+   * The network namespace the container's runs live in, as its host lays it out (`NetworkNamespace`): their
+   * loopback and port space, the addresses they hold, where their connections go and what their names resolve to.
+   * The engine serves one namespace for its own runs; a host-held process elsewhere has its scope's
+   * (`NativeStreamScope`). Without one, the engine's runs are in a namespace of their loopback alone.
+   */
+  network?: NetworkNamespace;
 }
 
 /**
@@ -254,6 +263,8 @@ export function createContainer(options?: ContainerOptions): {
   // pack.
   // A tree the caller gives is the caller's; one made here is the engine's to furnish.
   const vfs = (options && options.vfs) || adoptEngineTree(new VirtualFS());
+  // Before any of the container's sockets is made: each is made in it.
+  if (options?.network) setEngineNamespace(options.network);
   const runtime = new Runtime(vfs, options);
   const npmManager = new PackageManager(vfs);
   // A container owns its servers. One process-wide bridge meant two runtimes in
