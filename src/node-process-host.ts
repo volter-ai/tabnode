@@ -1,3 +1,4 @@
+import type { NetworkNamespace } from './network-namespace';
 import type { ProcessCredentials } from './process-credentials';
 import type { ProcessIdentity } from './process-registry';
 import type { NativeStreamDescriptor } from './native-stream-owner';
@@ -23,6 +24,8 @@ export interface NodeProcessLaunch {
   stdinStream?: AsyncIterable<Uint8Array>;
   streams?: RunStreams;
   inherited: readonly { fd: number; handle: NativeStreamDescriptor }[];
+  /** The network namespace of the process that launched it, which the child is in, as fork(2) keeps its parent's. */
+  network: NetworkNamespace;
 }
 
 export interface NodeProcessHost {

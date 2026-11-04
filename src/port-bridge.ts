@@ -1,3 +1,4 @@
+import type { NetworkNamespace } from './network-namespace';
 /**
  * The page's side of the virtual-port service worker (public/__sw__.js): the
  * servers a host registered, by port, and the protocol the worker speaks to
@@ -56,6 +57,8 @@ export interface VirtualServer {
 export interface BridgeOptions {
   baseUrl?: string;
   onServerReady?: (port: number, url: string) => void;
+  /** The network namespace whose loopback the bridge answers for: its container's. Without one, the namespace it is made in. */
+  network?: NetworkNamespace;
 }
 
 export interface InitServiceWorkerOptions {

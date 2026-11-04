@@ -14,12 +14,16 @@
  * run by `scripts/node-tests.mjs` and
  * recorded in BUILTINS.md. This file is the engine's own shape check: that the
  * loopback pairing behind Node's file carries bytes, ports, paths and
- * refusals the way Node's kernel does.
+ * refusals the way Node's kernel does, in the network namespace its host gives
+ * each realm (`src/network-namespace.ts`).
  */
 
 import { describe, it, expect, vi } from 'vitest';
 import { netModule as net, Socket, Server, createServer, createConnection, connect, isIP, isIPv4, isIPv6 } from '../../src/node-lib/net-module';
 import { assert } from './common';
+import { loopbackOnlyNamespace, type NamespaceConnection, type NamespaceListener, type NetworkNamespace } from '../../src/network-namespace';
+import { UV_EADDRINUSE, UV_ECONNREFUSED, UV_ENETUNREACH, UV_ETIMEDOUT } from '../../src/node-lib/binding/uv';
+import { inside as asRunOf } from './namespace-run';
 
 /** A server listening on an engine-chosen port, and the port. */
 function listening(onConnection?: (socket: unknown) => void): Promise<{ server: ReturnType<typeof createServer>; port: number }> {
@@ -30,6 +34,89 @@ function listening(onConnection?: (socket: unknown) => void): Promise<{ server: 
       resolve({ server, port: address.port });
     });
   });
+}
+
+/**
+ * A host as the substrate is one: two Docker networks, `front` (172.18.0.0/16, gateway .1) holding `web` (.2) and
+ * `api` (.3), and `back` (172.19.0.0/16) holding `api` (.2) and `db` (.3). Each container is a namespace; a peer on a
+ * shared network is reached from the connector's address there, one on no shared network times out (ETIMEDOUT: Docker drops
+ * the packets between isolated bridges, read 2026-11-04 on Docker through colima), and the
+ * gateway's port 3128 is a listener the host holds (its egress proxy), answered a tick later.
+ */
+function dockerHost() {
+  const networks: Record<string, Record<string, string>> = {
+    web: { front: '172.18.0.2' },
+    api: { front: '172.18.0.3', back: '172.19.0.2' },
+    db: { back: '172.19.0.3' },
+  };
+  const gateways: Record<string, string> = { front: '172.18.0.1', back: '172.19.0.1' };
+  const told: Array<{ namespace: string; listener: NamespaceListener; released: boolean }> = [];
+  const heldByHost: Array<{ from: string; socket: Socket }> = [];
+  let refusedPort: number | undefined;
+  const namespace = (name: string): NetworkNamespace => ({
+    id: name,
+    addresses: () => Object.values(networks[name]!).map(address => ({ address, prefixLength: 16 })),
+    connect: (address, port): NamespaceConnection | Promise<NamespaceConnection> => {
+      const mine = networks[name]!;
+      for (const [network, gateway] of Object.entries(gateways)) {
+        if (address !== gateway) continue;
+        if (!mine[network]) return UV_ETIMEDOUT;
+        if (port !== 3128) return UV_ECONNREFUSED;
+        const source = mine[network]!;
+        return new Promise(resolve => setTimeout(() => resolve({
+          source, accept: (socket) => { heldByHost.push({ from: socket.remoteAddress as string, socket }); socket.end('proxy\n'); },
+        }), 0));
+      }
+      for (const [peer, held] of Object.entries(networks)) {
+        const network = Object.keys(held).find(key => held[key] === address);
+        if (!network) continue;
+        if (peer === name) return UV_ECONNREFUSED;
+        return mine[network] ? { namespace: peer, source: mine[network]! } : UV_ETIMEDOUT;
+      }
+      return UV_ENETUNREACH;
+    },
+    listen: (listener) => {
+      if (listener.port === refusedPort) return UV_EADDRINUSE;
+      const entry = { namespace: name, listener, released: false };
+      told.push(entry);
+      return () => { entry.released = true; };
+    },
+    resolve: () => undefined,
+  });
+  return {
+    web: namespace('web'), api: namespace('api'), db: namespace('db'), told, heldByHost,
+    refuse: (port: number) => { refusedPort = port; },
+  };
+}
+
+/** Acts as a realm of `network` does: every socket made meanwhile is made in it, and keeps it. */
+async function inside<T>(network: NetworkNamespace, act: () => T | Promise<T>): Promise<T> {
+  return asRunOf(network, act);
+}
+
+/** A server that answers each connection with `word` and the address it came from. */
+function answering(word: string, port: number, host?: string): Promise<ReturnType<typeof createServer>> {
+  return new Promise((resolve, reject) => {
+    const server = createServer((socket: Socket) => { socket.end(`${word} ${socket.remoteAddress}\n`); });
+    server.once('error', reject);
+    if (host === undefined) server.listen(port, () => resolve(server));
+    else server.listen(port, host, () => resolve(server));
+  });
+}
+
+/** Everything a connection reads until it ends, or its error. */
+function readAll(socket: Socket): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let text = '';
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk: string) => { text += chunk; });
+    socket.once('end', () => resolve(text));
+    socket.once('error', reject);
+  });
+}
+
+function failure(socket: Socket | ReturnType<typeof createServer>): Promise<NodeJS.ErrnoException> {
+  return new Promise(resolve => socket.once('error', resolve as () => void));
 }
 
 describe('net module (Node.js compat)', () => {
@@ -368,6 +455,96 @@ describe('net module (Node.js compat)', () => {
       assert.strictEqual(socket.remoteAddress, '127.0.0.1');
       socket.destroy();
       server.close();
+    });
+  });
+
+  describe('a realm in its network namespace', () => {
+    it('has its own port space and its own loopback', async () => {
+      const host = dockerHost();
+      const web = await inside(host.web, () => answering('web', 5432));
+      const db = await inside(host.db, () => answering('db', 5432));
+      const fromWeb = await inside(host.web, () => readAll(createConnection(5432, '127.0.0.1')));
+      const fromDb = await inside(host.db, () => readAll(createConnection(5432, '127.0.0.1')));
+      expect(fromWeb.startsWith('web ')).toBe(true);
+      expect(fromDb.startsWith('db ')).toBe(true);
+      web.close();
+      db.close();
+    });
+
+    it('reaches a peer on a shared network at its address, leaving by its own address there', async () => {
+      const host = dockerHost();
+      const api = await inside(host.api, () => answering('api', 8080, '0.0.0.0'));
+      const socket = await inside(host.web, () => createConnection(8080, '172.18.0.3'));
+      await new Promise(resolve => socket.once('connect', resolve));
+      assert.strictEqual(socket.localAddress, '172.18.0.2');
+      assert.strictEqual(socket.remoteAddress, '172.18.0.3');
+      assert.strictEqual(await readAll(socket), 'api 172.18.0.2\n');
+      api.close();
+    });
+
+    it('times out a peer on no shared network (ETIMEDOUT), as Docker drops packets between isolated bridges', async () => {
+      const host = dockerHost();
+      const db = await inside(host.db, () => answering('db', 5432));
+      const socket = await inside(host.web, () => createConnection(5432, '172.19.0.3'));
+      const error = await failure(socket);
+      assert.strictEqual(error.code, 'ETIMEDOUT');
+      assert.strictEqual(error.syscall, 'connect');
+      db.close();
+    });
+
+    it('does not reach a server bound to the loopback at the namespace\'s address', async () => {
+      const host = dockerHost();
+      const api = await inside(host.api, () => answering('api', 9000, '127.0.0.1'));
+      const socket = await inside(host.web, () => createConnection(9000, '172.18.0.3'));
+      assert.strictEqual((await failure(socket)).code, 'ECONNREFUSED');
+      api.close();
+    });
+
+    it('refuses a bind to an address the namespace does not hold with EADDRNOTAVAIL', async () => {
+      const host = dockerHost();
+      const server = createServer();
+      const error = await inside(host.web, () => { server.listen(0, '172.19.0.3'); return failure(server); });
+      assert.strictEqual(error.code, 'EADDRNOTAVAIL');
+      assert.strictEqual(error.syscall, 'listen');
+    });
+
+    it('tells the host of each listener, which may refuse it and is told when it stops', async () => {
+      const host = dockerHost();
+      const db = await inside(host.db, () => answering('db', 5432));
+      const told = host.told.find(entry => entry.namespace === 'db' && entry.listener.port === 5432);
+      expect(told?.listener.family).toBe('IPv6');
+      expect(told?.released).toBe(false);
+      await new Promise(resolve => db.close(resolve));
+      expect(told?.released).toBe(true);
+
+      host.refuse(6000);
+      const server = createServer();
+      const error = await inside(host.db, () => { server.listen(6000); return failure(server); });
+      assert.strictEqual(error.code, 'EADDRINUSE');
+    });
+
+    it('hands a connection to a listener the host holds, with the connector\'s bytes', async () => {
+      const host = dockerHost();
+      const socket = await inside(host.web, () => createConnection(3128, '172.18.0.1'));
+      assert.strictEqual(await readAll(socket), 'proxy\n');
+      assert.strictEqual(host.heldByHost[0]?.from, '172.18.0.2');
+      assert.strictEqual(socket.localAddress, '172.18.0.2');
+    });
+
+    it('lets the host open a connection to a listener, from the address the host names', async () => {
+      const host = dockerHost();
+      const db = await inside(host.db, () => answering('db', 5432));
+      const told = host.told.find(entry => entry.namespace === 'db' && entry.listener.port === 5432)!;
+      const opened = told.listener.open({ address: '172.19.0.1', port: 40000 }, '172.19.0.3');
+      expect(opened).toBeInstanceOf(Socket);
+      // A dual-stack listener reads an IPv4 peer as Linux names it.
+      assert.strictEqual(await readAll(opened as Socket), 'db ::ffff:172.19.0.1\n');
+      db.close();
+    });
+
+    it('has only its loopback when its host gave it no namespace: any other address has no route', async () => {
+      const socket = await inside(loopbackOnlyNamespace(), () => createConnection(80, '10.1.2.3'));
+      assert.strictEqual((await failure(socket)).code, 'ENETUNREACH');
     });
   });
 

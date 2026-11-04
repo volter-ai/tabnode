@@ -3,7 +3,9 @@
  *
  * Adapted from: https://github.com/nodejs/node/blob/main/test/parallel/test-dns-*.js
  *
- * Note: Browser environments cannot perform real OS DNS resolution.
+ * A name is answered by the realm's network namespace's resolver, as its host gives it (`src/network-namespace.ts`),
+ * the way a container's names are answered by the resolver its /etc/resolv.conf names. A realm given no namespace
+ * has a resolver that holds no name: only literals and `localhost` resolve, and every other name is ENOTFOUND.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -23,6 +25,27 @@ import dns, {
   ALL,
 } from '../../src/shims/dns';
 import { assert } from './common';
+import { loopbackOnlyNamespace, type NetworkNamespace, type ResolverAnswer } from '../../src/network-namespace';
+import { inside as asRunOf } from './namespace-run';
+
+/**
+ * A namespace whose resolver holds what Docker's embedded resolver answers a container on one network: `db` and its
+ * alias `postgres` at 172.18.0.3 (A only; AAAA is NOERROR with no record), answered a tick later as a host's door is.
+ */
+function withResolver(): NetworkNamespace {
+  const held: Record<string, string[]> = { db: ['172.18.0.3'], postgres: ['172.18.0.3'] };
+  return {
+    ...loopbackOnlyNamespace(),
+    resolve: (name, family) => new Promise<ResolverAnswer>(resolve => setTimeout(() => {
+      resolve(held[name] === undefined ? undefined : family === 4 ? held[name] : []);
+    }, 0)),
+  };
+}
+
+/** Asks as a realm of `network` does. */
+async function inside<T>(network: NetworkNamespace, ask: () => Promise<T>): Promise<T> {
+  return asRunOf(network, ask);
+}
 
 describe('dns module (Node.js compat)', () => {
   describe('exports', () => {
@@ -82,16 +105,36 @@ describe('dns module (Node.js compat)', () => {
       assert.strictEqual(result.family, 4);
     });
 
-    it('should return placeholder address for non-local hostnames', async () => {
-      const result = await new Promise<{ address?: string; family?: number }>((resolvePromise) => {
-        lookup('example.com', (err, address, family) => {
-          expect(err).toBeNull();
-          resolvePromise({ address, family });
-        });
+    it('is ENOTFOUND for a name the namespace\'s resolver does not hold, never a wildcard', async () => {
+      const error = await new Promise<NodeJS.ErrnoException | null>((resolvePromise) => {
+        lookup('example.com', (err) => resolvePromise(err as NodeJS.ErrnoException | null));
       });
 
-      assert.strictEqual(result.address, '0.0.0.0');
+      assert.strictEqual(error?.code, 'ENOTFOUND');
+      assert.strictEqual(error?.syscall, 'getaddrinfo');
+      assert.strictEqual((error as { hostname?: string } | null)?.hostname, 'example.com');
+    });
+
+    it('answers a name from the namespace\'s resolver, without case or a trailing dot', async () => {
+      const result = await inside(withResolver(), () => new Promise<{ address?: string; family?: number }>((resolvePromise, reject) => {
+        lookup('DB.', (err, address, family) => err ? reject(err) : resolvePromise({ address, family }));
+      }));
+
+      assert.strictEqual(result.address, '172.18.0.3');
       assert.strictEqual(result.family, 4);
+    });
+
+    it('lookup({ all: true }) lists what the resolver holds in every family', async () => {
+      const addresses = await inside(withResolver(), () => promises.lookup('postgres', { all: true }));
+      expect(addresses).toEqual([{ address: '172.18.0.3', family: 4 }]);
+    });
+
+    it('is ENOTFOUND for a held name with no address of the asked family', async () => {
+      await expect(inside(withResolver(), () => promises.lookup('db', { family: 6 }))).rejects.toMatchObject({ code: 'ENOTFOUND' });
+    });
+
+    it('resolves localhost to the namespace\'s own loopback whatever its resolver holds', async () => {
+      await expect(inside(withResolver(), () => promises.lookup('localhost'))).resolves.toEqual({ address: '127.0.0.1', family: 4 });
     });
 
     it('lookup({ all: true }) should return address objects', async () => {
@@ -109,48 +152,38 @@ describe('dns module (Node.js compat)', () => {
   });
 
   describe('resolve* callbacks', () => {
-    it('resolve() should return placeholder IPv4 list', async () => {
-      const addresses = await new Promise<string[]>((resolvePromise) => {
-        resolve('example.com', (err, result) => {
-          expect(err).toBeNull();
-          resolvePromise(result || []);
-        });
-      });
+    it('resolve() asks the namespace\'s resolver for A records', async () => {
+      const addresses = await inside(withResolver(), () => new Promise<string[]>((resolvePromise, reject) => {
+        resolve('db', (err, result) => err ? reject(err) : resolvePromise(result || []));
+      }));
 
-      expect(addresses).toEqual(['0.0.0.0']);
+      expect(addresses).toEqual(['172.18.0.3']);
     });
 
-    it('resolve4() should return placeholder IPv4 list', async () => {
-      const addresses = await new Promise<string[]>((resolvePromise) => {
-        resolve4('example.com', (err, result) => {
-          expect(err).toBeNull();
-          resolvePromise(result || []);
-        });
+    it('resolve4() is ENOTFOUND for a name the resolver does not hold', async () => {
+      const error = await new Promise<NodeJS.ErrnoException | null>((resolvePromise) => {
+        resolve4('example.com', (err) => resolvePromise(err as NodeJS.ErrnoException | null));
       });
 
-      expect(addresses).toEqual(['0.0.0.0']);
+      assert.strictEqual(error?.code, 'ENOTFOUND');
+      assert.strictEqual(error?.syscall, 'queryA');
     });
 
-    it('resolve6() should return placeholder IPv6 list', async () => {
-      const addresses = await new Promise<string[]>((resolvePromise) => {
-        resolve6('example.com', (err, result) => {
-          expect(err).toBeNull();
-          resolvePromise(result || []);
-        });
-      });
+    it('resolve6() is ENODATA for a held name with no AAAA record', async () => {
+      const error = await inside(withResolver(), () => new Promise<NodeJS.ErrnoException | null>((resolvePromise) => {
+        resolve6('db', (err) => resolvePromise(err as NodeJS.ErrnoException | null));
+      }));
 
-      expect(addresses).toEqual(['::1']);
+      assert.strictEqual(error?.code, 'ENODATA');
+      assert.strictEqual(error?.syscall, 'queryAaaa');
     });
 
-    it('reverse() should return localhost hostname', async () => {
-      const hostnames = await new Promise<string[]>((resolvePromise) => {
-        reverse('127.0.0.1', (err, result) => {
-          expect(err).toBeNull();
-          resolvePromise(result || []);
-        });
+    it('reverse() is ENOTFOUND: the resolver holds no PTR records', async () => {
+      const error = await new Promise<NodeJS.ErrnoException | null>((resolvePromise) => {
+        reverse('127.0.0.1', (err) => resolvePromise(err as NodeJS.ErrnoException | null));
       });
 
-      expect(hostnames).toEqual(['localhost']);
+      assert.strictEqual(error?.code, 'ENOTFOUND');
     });
   });
 
@@ -194,20 +227,24 @@ describe('dns module (Node.js compat)', () => {
       assert.strictEqual(addresses[0].family, 4);
     });
 
-    it('promises.resolve() should return IPv4 list', async () => {
-      await expect(promises.resolve('example.com')).resolves.toEqual(['0.0.0.0']);
+    it('promises.resolve() answers the namespace\'s A records', async () => {
+      await expect(inside(withResolver(), () => promises.resolve('db'))).resolves.toEqual(['172.18.0.3']);
     });
 
-    it('promises.resolve4() should return IPv4 list', async () => {
-      await expect(promises.resolve4('example.com')).resolves.toEqual(['0.0.0.0']);
+    it('promises.resolve(name, \'AAAA\') is ENODATA for a held name without one', async () => {
+      await expect(inside(withResolver(), () => promises.resolve('db', 'AAAA'))).rejects.toMatchObject({ code: 'ENODATA' });
     });
 
-    it('promises.resolve6() should return IPv6 list', async () => {
-      await expect(promises.resolve6('example.com')).resolves.toEqual(['::1']);
+    it('promises.resolve4() is ENOTFOUND for a name nothing holds', async () => {
+      await expect(promises.resolve4('example.com')).rejects.toMatchObject({ code: 'ENOTFOUND', syscall: 'queryA' });
     });
 
-    it('promises.reverse() should return localhost hostname', async () => {
-      await expect(promises.reverse('127.0.0.1')).resolves.toEqual(['localhost']);
+    it('promises.resolve6() is ENOTFOUND for a name nothing holds', async () => {
+      await expect(promises.resolve6('example.com')).rejects.toMatchObject({ code: 'ENOTFOUND', syscall: 'queryAaaa' });
+    });
+
+    it('promises.reverse() is ENOTFOUND', async () => {
+      await expect(promises.reverse('127.0.0.1')).rejects.toMatchObject({ code: 'ENOTFOUND' });
     });
 
     it('promises server helpers should be callable', () => {
@@ -222,20 +259,6 @@ describe('dns module (Node.js compat)', () => {
       expect(dns.resolve).toBe(resolve);
       expect(dns.promises).toBe(promises);
       expect(dns.ADDRCONFIG).toBe(ADDRCONFIG);
-    });
-  });
-
-  describe('known limitations (documented)', () => {
-    it.skip('should resolve public hostnames using real DNS infrastructure', async () => {
-      const result = await promises.lookup('nodejs.org');
-      const addr = result as { address: string };
-      expect(addr.address).not.toBe('0.0.0.0');
-    });
-
-    it.skip('should return Node-style DNS error codes (e.g. ENOTFOUND)', async () => {
-      await expect(promises.resolve('definitely-not-a-real-domain.invalid')).rejects.toMatchObject({
-        code: 'ENOTFOUND',
-      });
     });
   });
 });

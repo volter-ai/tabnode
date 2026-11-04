@@ -106,5 +106,7 @@ export const UV_EMFILE = codes.UV_EMFILE[0];
 export const UV_EBUSY = codes.UV_EBUSY[0];
 export const UV_EALREADY = codes.UV_EALREADY[0];
 export const UV_ESRCH = codes.UV_ESRCH[0];
+export const UV_EHOSTUNREACH = codes.UV_EHOSTUNREACH[0];
+export const UV_ENETUNREACH = codes.UV_ENETUNREACH[0];
 
 export default uvBinding;
