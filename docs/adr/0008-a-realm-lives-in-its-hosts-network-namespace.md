@@ -67,6 +67,12 @@ What the engine does with it:
   name it does not hold is `ENOTFOUND`, and a held name with no record of the type is `ENODATA`. Nothing resolves to
   the loopback unless the resolver says so.
 - **os.networkInterfaces** lists `lo` and one `eth<n>` per address the namespace holds.
+- **HTTP's Agent** (`installHttpClientTransport`) sends a connection where the namespace routes it: what the namespace
+  holds (its loopback, an address on one of its networks by its interfaces' prefixes, a name its resolver answers) is
+  its own network, through `net`; a service its host serves itself is the host exchange only where the host's
+  `hostService(network, host, port)` says the namespace's routes reach it (a container reaches the host at its
+  gateway, so its own `localhost` is its own loopback); only what the namespace does not hold leaves through the
+  exchange. The per-port `hostPorts` list, which sent a loopback port to the host whatever namespace asked, is gone.
 
 A realm whose host gives it no namespace is in `loopbackOnlyNamespace()`, which is a fresh namespace on Linux
 (`ip netns add`, `docker run --network none`). It has its loopback and nothing else: it resolves no name and has no

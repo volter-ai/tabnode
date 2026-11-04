@@ -14,7 +14,9 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   `dns.lookup` and `dns.resolve*` ask the namespace's resolver (`ENODATA` for a held name without the record type),
   and `os.networkInterfaces()` lists its addresses. A realm given none has its loopback alone
   (`loopbackOnlyNamespace()`). The `installHostNames` export is removed: a name a host holds is answered by its
-  namespace's resolver.
+  namespace's resolver. HTTP's Agent routes by the namespace too: what it holds is its own network, a host's own
+  service is the exchange only where `hostService(network, host, port)` says the namespace reaches it, and the rest
+  leaves through the exchange; `HttpClientTransportOptions.hostPorts` is replaced by `hostService`.
 
 - SQLite binds JavaScript Numbers as doubles and rejects BigInts outside signed 64-bit range with
   `ERR_INVALID_ARG_VALUE`, matching Node. Native cleanup state permits collection during a live process while
