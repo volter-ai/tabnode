@@ -78,9 +78,11 @@ class TLSSocket extends NetSocket {
     // Agent assigns its socket on nextTick after connect returns, so failure
     // follows that assignment and reaches ClientRequest's error listener.
     const fail = (error: Error): void => { queueMicrotask(() => queueMicrotask(() => this.destroy(error))); };
+    // Named by the destination it was asked for, as Node's network errors are (`host`, `port`).
+    const port = options && typeof options === 'object' ? options.port : undefined;
     const unavailable = (): Error => Object.assign(
-      new Error('TLS transport is unavailable in this runtime; HTTPS requires an admitted HTTP transport.'),
-      { code: 'ERR_TLS_UNAVAILABLE' },
+      new Error(`TLS transport is unavailable in this runtime for ${host}:${String(port ?? 443)}; HTTPS requires an admitted HTTP transport.`),
+      { code: 'ERR_TLS_UNAVAILABLE', host, port: port ?? 443 },
     );
     if (!options || typeof options !== 'object' || options.socket !== undefined) { this.connecting = true; fail(unavailable()); return this; }
     const held = namespaceHolds(currentNetworkNamespace(), host);
