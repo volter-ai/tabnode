@@ -819,7 +819,7 @@ export function createProcess(options?: {
     exit(code: number | string | null | undefined = 0) {
       code = __substrateExitCode(code);
       exiting = true;
-      emitter.emit('exit', code);
+      proc.emit('exit', code);
       (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
       if (options?.onExit) {
         options.onExit(code);
@@ -873,11 +873,17 @@ export function createProcess(options?: {
         return true;
       }
       if (name !== "SIGKILL" && name !== "SIGSTOP" && emitter.listenerCount(name) > 0) {
-        emitter.emit(name, name);
+        // A handler's throw is the process's uncaught exception, as Node's signal callback's is (v26.12.0: printed, exit
+        // 1); a `process.exit` inside it is the stop it is.
+        try { proc.emit(name, name); }
+        catch (error) {
+          if ((error instanceof Error && error.message.startsWith("Process exited with code")) || !__reportUncaughtException(proc, error)) throw error;
+        }
         return true;
       }
       if (__substrateIgnoredSignals.has(name)) return true;
       __recordTermination(proc as never, name);
+      terminating.add(proc);
       proc.exit(128 + __substrateSignals[name]);
       return true;
     },
@@ -952,7 +958,9 @@ export function createProcess(options?: {
       // `common.expectWarning`) observes it; the engine only printed it.
       const code = printedCode;
       const raised = warning instanceof Error ? warning : Object.assign(new Error(text), { name: type as string }, code === undefined ? {} : { code });
-      queueMicrotask(() => { emitter.emit('warning', raised); });
+      // Node emits it from a tick (warning.js `process.nextTick(doEmitWarning, warning)`), where a listener's throw is
+      // the process's uncaught exception; out of a microtask it was the realm's.
+      proc.nextTick(() => { proc.emit('warning', raised); });
     },
 
     stdout: createProcessStream(true, (data, encoding) => {
@@ -1058,13 +1066,19 @@ export function createProcess(options?: {
      * process object and reads it back off `this` inside an `internalMessage`
      * listener; called with the held emitter instead, it found no channel and
      * a socket sent to the child arrived at nothing.
+     *
+     * Otherwise it is Node's EventEmitter emit, on this process: a `once` listener is removed before it is called, and
+     * a listener's throw stops the emission and is the caller's, as `events.js` emit lets it out. Each place the engine
+     * emits on a process takes that throw where Node's does (child_process.ts launchNode: `exit`, `beforeExit`,
+     * `uncaughtException`, `unhandledRejection`; here: signals and `warning`). Caught here and printed on the host's
+     * console, an `exit` listener's throw left the status as it was and the listeners after it ran.
      */
     emit(event: string, ...args: unknown[]): boolean {
-      const listeners = emitter.listeners(event);
+      const listeners = emitter.rawListeners(event) as (EventListener & { listener?: EventListener })[];
       if (listeners.length === 0) return emitter.emit(event, ...args);
-      for (const listener of listeners) {
-        try { listener.apply(proc, args); }
-        catch (error) { console.error('Error in event listener:', error); }
+      for (const raw of listeners) {
+        if (typeof raw.listener === 'function') { emitter.removeListener(event, raw); raw.listener.apply(proc, args); }
+        else raw.apply(proc, args);
       }
       return true;
     },
@@ -1116,15 +1130,21 @@ export function createProcess(options?: {
     },
   };
 
-  processEndings.set(proc, () => { exiting = true; });
+  processEndings.set(proc, (ending) => { exiting = ending; });
   recordProcessCredentials(proc, credentials);
   return proc;
 }
 
 /** Each process's own mark that it is ending, kept here and not on the process, where a guest could reach it. */
-const processEndings = new WeakMap<object, () => void>();
-/** The launcher says a process is ending, before it emits that process's `exit`. */
-export function __substrateProcessEnding(process: object): void { processEndings.get(process)?.(); }
+const processEndings = new WeakMap<object, (ending: boolean) => void>();
+/**
+ * The launcher says a process is ending, before it emits that process's `exit`; or, with `false`, that it is not
+ * after all: a listener's throw left `process.exit` before the end, and the process runs on, as Node's does.
+ */
+export function __substrateProcessEnding(process: object, ending = true): void { processEndings.get(process)?.(ending); }
+/** Processes a signal's default action is ending: Node's dies of the signal, and nothing an `exit` listener throws stops that. */
+const terminating = new WeakSet<object>();
+export function __substrateTerminating(process: object): boolean { return terminating.has(process); }
 
 // There is no default process: a process is made for a run, by the `node`
 // command, and making one when this module is evaluated built the guest's

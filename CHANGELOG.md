@@ -1,7 +1,5 @@
 # Changelog
 
-Container hostname review correction: Node lookup uses the caller's mounted /etc/hosts, Docker image Hostname is ignored, and container domain defaults to (none). Admission requires a trusted identity; missing UTS transport returns ENOSYS; standalone DNS aliases stay outside identified containers. Older-engine adapters are guarded and the0.9.0 pin stays. Changed production outputs and full engine declarations emit; independent re-read and cycle execution remain.
-
 What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
 ## 0.17.0 — 2026-11-04
@@ -30,13 +28,24 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   write to its stdout and stderr: npm prints its last lines from one ("A complete log of this run can be found in"),
   and they were dropped. After a drained loop the microtasks those listeners queue run and write, and the process ends
   after them; `process.exit` ends at once, after its listeners, and a microtask they queue writes nothing.
-  `process.exit(n)` inside a listener ends the process there with status `n`, and nothing written after it is written.
-  A process's status settles even when a host hook at its end throws. The engine's handling of a throw out of an
-  `exit` listener (reported as the process's uncaught exception: exit 1 when printed after a drained loop unless
-  `process.exitCode` is set, the status unchanged when the program's `uncaughtException` listener or capture callback
-  takes it, and the given status after `process.exit`) does not take effect yet: the process object's own `emit`
-  catches a listener's throw and prints it on the host console, so the status stays as it was and the listeners after
-  it still run. It takes effect once `process.emit` lets a listener's throw out, as Node's EventEmitter does.
+  `process.exit(n)` inside a listener ends the process there with status `n`, and the listeners after it do not run.
+  `process.exit()` without a status ends with `process.exitCode`. A process's status settles even when a host hook at
+  its end throws.
+- **`process.emit` is Node's EventEmitter emit, and every place the engine emits on a process takes a listener's throw
+  where Node's does** (Article 6; measured on Node v26.12.0). A `once` listener is removed before it is called, and a
+  listener's throw stops the emission and is its caller's; it was caught and printed on the host's console, so an
+  `exit` listener's throw left the status as it was. A throw out of an `exit` listener after a drained loop is the
+  process's uncaught exception: printed, exit 1 unless `process.exitCode` is set; handled by the program's
+  `uncaughtException` listener or capture callback, the status stands. After `process.exit` it leaves `process.exit`
+  as the uncaught exception of its caller: printed, the process ends with the status it was given; handled, the
+  program runs on and `exit` is emitted again when its loop drains. After an unhandled exception an `exit` listener's
+  throw is dropped. A throw out of the program's `uncaughtException` listener or capture callback is printed and the
+  process exits 7 without emitting `exit`. A throw out of an `unhandledRejection`, `beforeExit`, `warning` or signal
+  listener is the process's uncaught exception; a handled one out of `beforeExit` brings `beforeExit` round again. An
+  unhandled rejection asks the capture callback before the `uncaughtException` listeners. `warning` is emitted from a
+  tick, and `warning` and signal listeners are called with `this` as the process. A signal's default action ends the
+  process without emitting `exit`. A throw out of the entry that the program's handler takes leaves it running; it
+  ended the run with status 1.
 - **A TLS socket is `secureConnecting` until it is secure, and an unavailable TLS connection names its destination**
   (#22; Article 6). `secureConnecting` is true from construction until `secureConnect`, and a server's socket clears it
   before `secureConnection`: npm's `@npmcli/agent` waits for `secureConnect` only while it is true, took the socket
@@ -351,6 +360,8 @@ minor release, for the new public run options and exports.
   package-config cache lifetimes are unchanged (substrate Articles5/6/7/8/9;
   production emission/review and Cal runtime saving pending).
 - Container hostname follow-up: handle missing and unreadable /etc/hosts in one DNS fallback path; surface EIO transport failures. Full declarations and changed production JS emit. No app execution or runtime qualification. Retained receipt hostname-hosts-error-followup.json SHA256 e128facd7b9414c88c819a0224c1e7878ad230eaf1b4a27f9989ed6eab5430bd.
+
+Container hostname review correction: Node lookup uses the caller's mounted /etc/hosts, Docker image Hostname is ignored, and container domain defaults to (none). Admission requires a trusted identity; missing UTS transport returns ENOSYS; standalone DNS aliases stay outside identified containers. Older-engine adapters are guarded and the0.9.0 pin stays. Changed production outputs and full engine declarations emit; independent re-read and cycle execution remain.
 
 Container hostname fork/inspect correction: the inherited kernel channel supplies the fork's container identity to root/pthread UTS and resolver policy. Docker inspect reports the prepared identity and creation hostname; Node lookup skips an unreadable hosts file. Changed production closures and full engine declarations pass; independent re-read and cycle qualification remain.
 
