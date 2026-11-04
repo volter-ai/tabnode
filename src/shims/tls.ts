@@ -47,6 +47,15 @@ const netServer = (): any => (require ? require('net') : nodeLibInternalRequire(
 class TLSSocket extends NetSocket {
   authorized = false;
   encrypted = true;
+  /**
+   * True from construction until the socket is secure, as Node's TLSSocket has it (`_tls_wrap.js`; Node 26:
+   * `new tls.TLSSocket().secureConnecting` and a refused `tls.connect(...)` are both true). A client that waits for
+   * `secureConnect` only while this is true (npm's `@npmcli/agent` races `once(socket, 'secureConnect')` against
+   * `once(socket, 'error')` when it is, and resolves at once when it is not) took this socket for connected, stopped
+   * listening for `error`, and the failure below reached the process as an uncaught exception: npm's `npx` exited 1
+   * on its update check with no message.
+   */
+  secureConnecting = true;
 
   constructor(_socket?: unknown, _options?: unknown) {
     super({ allowHalfOpen: false });
@@ -58,6 +67,7 @@ class TLSSocket extends NetSocket {
     const pair = (): this => {
       // The peer is a listener of the namespace's network, or nothing: a refused port fails as a net connect does.
       this.once('connect', () => {
+        this.secureConnecting = false;
         this.authorized = true;
         this.emit('secureConnect');
       });
@@ -122,6 +132,8 @@ const Server = function TLSServer(this: TlsServer, options?: unknown, secureConn
   NetServer.call(this, options ?? {}, function secure(this: TlsServer, socket: Socket & { encrypted?: boolean; authorized?: boolean }) {
     socket.encrypted = true;
     socket.authorized = false;
+    // Node sets it false as a server's socket becomes secure, before `secureConnection`.
+    (socket as { secureConnecting?: boolean }).secureConnecting = false;
     this.emit('secureConnection', socket);
   });
   if (secureConnectionListener) this.on('secureConnection', secureConnectionListener);
