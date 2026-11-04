@@ -20,6 +20,7 @@
 import type { Socket } from './node-lib/net-module';
 import { UV_ECONNREFUSED, UV_ENETUNREACH } from './node-lib/binding/uv';
 import { __currentProcessToken, runNetworkOf } from './process-tokens';
+import { AsyncLocalStorage } from './shims/async_hooks';
 
 /** One address an interface of the namespace holds (a container's address on one network it joined). */
 export interface NamespaceAddress {
@@ -116,20 +117,66 @@ export const CONNECT_TIMEOUT_MS = 127_000;
 export const RESOLVE_TIMEOUT_MS = 10_000;
 
 /**
- * The namespace of a socket made with no process and no host scope: a fresh one of its own, which reaches nothing, as
- * a socket no process could have made would. Every socket a run makes is in its run's namespace, every socket a host
- * scope makes in the scope's.
+ * The namespace of a socket made with no process, no container and no host scope: a fresh one of its own, which reaches
+ * nothing, as a socket no process could have made would.
  */
 const unowned = loopbackOnlyNamespace();
 /** A namespace a host-held scope (NativeStreamScope, a container's own door) creates its handles in, while it creates them. */
 let creatingIn: NetworkNamespace | undefined;
+/**
+ * The namespace code is running in, carried through every continuation the code makes (its timers, its promises), as
+ * the engine's async context carries a run: a container's own code (`execute`, `runFile`) and an engine continuation
+ * resumed in the namespace of the call that began it (captureNetworkContext).
+ */
+const networkScope = new AsyncLocalStorage<NetworkNamespace>({ name: 'tabnode.network' });
+
+/** The namespace the calling code is in, where it is in one: a host scope's, its own scope's, or its run's. */
+export function contextNetworkNamespace(): NetworkNamespace | undefined {
+  return creatingIn ?? networkScope.getStore() ?? runNetworkOf(__currentProcessToken());
+}
 
 /**
- * The namespace a socket made now is in: the host scope's that is making it, else the executing run's (its container's,
- * or the one its parent's fork left it), as socket(2) makes a socket in the calling process's namespace.
+ * The namespace a socket made now is in: the host scope's that is making it, else the code's (its container's, its
+ * run's, or the one its parent's fork left it), as socket(2) makes a socket in the calling process's namespace.
  */
 export function currentNetworkNamespace(): NetworkNamespace {
-  return creatingIn ?? runNetworkOf(__currentProcessToken()) ?? unowned;
+  return contextNetworkNamespace() ?? unowned;
+}
+
+/** Runs `run`, and every continuation it makes, in `network`'s namespace. */
+export function inNetworkScope<T>(network: NetworkNamespace, run: () => T): T {
+  return networkScope.run(network, run);
+}
+
+/**
+ * The caller's context, to resume a continuation of the engine's own in (a resolver's answer, a lookup's callback, a
+ * routing decision that arrived later): its run and everything else its async context carries, and its namespace. An
+ * engine continuation runs on the host's loop, outside any run, so without this a socket it makes, or a callback it
+ * calls, would be in no process's namespace.
+ */
+export function captureNetworkContext(): <T>(continuation: () => T) => T {
+  const snapshot = AsyncLocalStorage.snapshot();
+  const network = currentNetworkNamespace();
+  return <T>(continuation: () => T): T => snapshot(() => networkScope.run(network, continuation)) as T;
+}
+
+/**
+ * The namespaces of the containers this engine made, for a host-held scope given none: the one container's, where the
+ * engine has one (createContainer records it). An engine with several has no single owner to default to.
+ */
+const engineContainerNamespaces: NetworkNamespace[] = [];
+export function recordContainerNamespace(network: NetworkNamespace): void { engineContainerNamespaces.push(network); }
+/**
+ * The namespace a host-held scope made with none is in: the calling code's, where it is in one, else the engine's one
+ * container's. With several containers and no context, the scope must be given its namespace.
+ */
+export function owningContainerNamespace(): NetworkNamespace {
+  const context = contextNetworkNamespace();
+  if (context) return context;
+  if (engineContainerNamespaces.length === 1) return engineContainerNamespaces[0]!;
+  if (engineContainerNamespaces.length === 0) return loopbackOnlyNamespace();
+  throw Object.assign(new TypeError('This engine has several containers: give the scope its network namespace (the owning container\'s `network`).'),
+    { code: 'ERR_INVALID_ARG_VALUE' });
 }
 
 /** Makes the handles `create` makes in `network`'s namespace, as a socket(2) call in a process of it does. */

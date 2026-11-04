@@ -17,7 +17,7 @@ import { lazyExport } from '../node-lib/lazy';
 import { nodeLibInternalRequire } from '../node-lib/load';
 import type { Socket } from '../node-lib/net-module';
 import type { EventEmitter } from '../node-lib/events-module';
-import { currentNetworkNamespace, namespaceHolds } from '../network-namespace';
+import { captureNetworkContext, currentNetworkNamespace, namespaceHolds } from '../network-namespace';
 
 /** A TLS server as Node's module exposes it: constructed with or without `new`. */
 export interface TlsServer extends EventEmitter {
@@ -77,8 +77,10 @@ class TLSSocket extends NetSocket {
     if (held === true) return pair();
     this.connecting = true;
     if (held === false) { fail(unavailable()); return this; }
-    held.then(own => { if (own) pair(); else fail(unavailable()); },
-      (cause: unknown) => fail(cause instanceof Error ? cause : new Error(String(cause))));
+    // The connection is made when the resolver has answered, on the engine's loop: in the connecting call's context.
+    const within = captureNetworkContext();
+    held.then(own => within(() => { if (own) pair(); else fail(unavailable()); }),
+      (cause: unknown) => within(() => fail(cause instanceof Error ? cause : new Error(String(cause)))));
     return this;
   }
 

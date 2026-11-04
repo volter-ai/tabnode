@@ -13,7 +13,9 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   refuse it. A connect outside the namespace is the host's to route or fail (`ECONNREFUSED`, `ETIMEDOUT` where the
   route drops packets, as Docker's isolated bridges do, `ENETUNREACH`); a host failure, throw or silence fails that
   one socket. A namespace is a container's (`container.network`) and each of its runs', inherited by forked processes
-  and handed to a launched `node` (`NodeProcessLaunch.network`); there is no engine-wide namespace.
+  and handed to a launched `node` (`NodeProcessLaunch.network`); there is no engine-wide namespace. A container's
+  `execute`/`runFile` and the engine's own continuations (lookups, routing answered later) run in the caller's
+  namespace; a `NativeStreamScope` given none is in its owning container's.
   `dns.lookup` and `dns.resolve*` ask the namespace's resolver (`ENODATA` for a held name without the record type),
   and `os.networkInterfaces()` lists its addresses. A realm given none has its loopback alone
   (`loopbackOnlyNamespace()`). The `installHostNames` export is removed: a name a host holds is answered by its

@@ -8,7 +8,7 @@
  * report a server that fails or does not answer. `getServers()` is the process's `/etc/resolv.conf`'s nameservers.
  */
 import { heldWork } from '../host-globals';
-import { RESOLVE_TIMEOUT_MS, currentNetworkNamespace, settleResolver, type ResolverAnswer } from '../network-namespace';
+import { RESOLVE_TIMEOUT_MS, captureNetworkContext, currentNetworkNamespace, settleResolver, type NetworkNamespace, type ResolverAnswer } from '../network-namespace';
 
 // DNS lookup callback type
 type LookupCallback = (err: Error | null, address?: string, family?: number) => void;
@@ -26,14 +26,23 @@ type ResolveCallback = (err: Error | null, addresses?: string[]) => void;
 function answerLater(answer: () => void | Promise<void>): void {
   const held = heldWork();
   held.count += 1;
+  // The answer, and what its callback throws, run in the asking call's context: its run and its network namespace
+  // (the immediate and the resolver's settlement are the engine's own, outside any run).
+  const within = captureNetworkContext();
   setImmediate(() => {
     let pending: Promise<void> | undefined;
-    try { const result: unknown = answer(); if (result instanceof Promise) pending = result; }
+    try { const result: unknown = within(answer); if (result instanceof Promise) pending = result; }
     finally { if (!pending) held.count -= 1; }
     pending?.then(() => { held.count -= 1; }, (cause: unknown) => {
-      setImmediate(() => { try { throw cause; } finally { held.count -= 1; } });
+      setImmediate(() => { try { within(() => { throw cause; }); } finally { held.count -= 1; } });
     });
   });
+}
+
+/** `callback`, called in the context of the call that was given it, wherever the engine resumes it from. */
+function inCallersContext<F extends (...args: never[]) => void>(callback: F): F {
+  const within = captureNetworkContext();
+  return ((...args: Parameters<F>) => within(() => callback(...args))) as F;
 }
 
 /** What a resolver's failure is to a callback: the error it threw, or one naming what it threw. */
@@ -41,10 +50,9 @@ const asError = (cause: unknown): Error => cause instanceof Error ? cause : new 
 
 /**
  * The asking process's namespace's resolver, asked for one family: what it holds for the name, compared without case
- * or a trailing dot. Read when the question is asked, in the asking run.
+ * or a trailing dot: the namespace the asking call was in.
  */
-function ask(hostname: string, family: 4 | 6): Promise<ResolverAnswer> {
-  const network = currentNetworkNamespace();
+function ask(network: NetworkNamespace, hostname: string, family: 4 | 6): Promise<ResolverAnswer> {
   try { return Promise.resolve(network.resolve(hostname.toLowerCase().replace(/\.$/, ''), family)); }
   catch (cause) { return Promise.reject(cause); }
 }
@@ -128,9 +136,12 @@ function lookupWithHosts(
   optionsOrCallback: number | LookupOptions | LookupCallback,
   callback?: LookupCallback | LookupAllCallback,
 ): void {
-  const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+  const given = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
   const options = typeof optionsOrCallback === 'number' ? { family: optionsOrCallback } : typeof optionsOrCallback === 'object' && optionsOrCallback ? optionsOrCallback : {};
-  if (typeof cb !== 'function') throw Object.assign(new TypeError('The callback argument must be a function'), { code: 'ERR_INVALID_ARG_TYPE' });
+  if (typeof given !== 'function') throw Object.assign(new TypeError('The callback argument must be a function'), { code: 'ERR_INVALID_ARG_TYPE' });
+  // Node's net.js makes a listener's handle in this callback (listen(port, host)): it runs in the caller's namespace.
+  const cb = inCallersContext(given as LookupCallback) as LookupCallback | LookupAllCallback;
+  const network = currentNetworkNamespace();
   if (hostname && typeof hostname !== 'string') throw Object.assign(new TypeError('The hostname argument must be a string'), { code: 'ERR_INVALID_ARG_TYPE' });
   const requested = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family ?? 0;
   if (![0, 4, 6].includes(requested)) throw Object.assign(new TypeError(`Invalid address family: ${requested}`), { code: 'ERR_INVALID_ARG_VALUE' });
@@ -183,7 +194,7 @@ function lookupWithHosts(
     // The resolver: A, then AAAA (or as `order` puts them), as getaddrinfo asks for an unspecified family.
     const families: Array<4 | 6> = requested ? [requested as 4 | 6] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
     // A resolver that fails or does not answer in time is EAI_AGAIN (settleResolver).
-    const asked = Promise.all(families.map(family => settleResolver(ask(hostname, family), hostname)))
+    const asked = Promise.all(families.map(family => settleResolver(ask(network, hostname, family), hostname)))
       .then(answers => ({ answers }), (cause: unknown) => ({ cause }));
     // The callback runs outside the resolver's settlement, so what it throws is its own (answerLater).
     return asked.then((outcome) => {
@@ -205,10 +216,12 @@ const RECORD_FAMILIES: Record<string, 4 | 6> = { A: 4, AAAA: 6 };
  * A query to the namespace's resolver. It holds A and AAAA records: a name it does not hold is ENOTFOUND, one it
  * holds with no record of the type ENODATA, as a server answers NOERROR with an empty answer.
  */
-function query(hostname: string, rrtype: string, callback: ResolveCallback): void {
+function query(hostname: string, rrtype: string, given: ResolveCallback): void {
   const syscall = `query${rrtype.charAt(0)}${rrtype.slice(1).toLowerCase()}`;
   const family = RECORD_FAMILIES[rrtype];
-  answerLater(() => bounded(ask(hostname, family ?? 4))
+  const callback = inCallersContext(given);
+  const network = currentNetworkNamespace();
+  answerLater(() => bounded(ask(network, hostname, family ?? 4))
     .then((outcome) => {
       if ('failed' in outcome) callback(queryFailed(hostname, syscall, outcome.failed));
       else if (outcome.held === undefined) callback(notFound(hostname, syscall));

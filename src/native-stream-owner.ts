@@ -3,7 +3,7 @@ import { TCP, TCPConnectWrap, type SockName } from './node-lib/binding/tcp_wrap'
 import { Pipe, PipeConnectWrap } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset } from './node-lib/binding/stream_wrap';
 import { __adoptHandle } from './node-lib/binding/handles';
-import { inNetworkNamespace, loopbackOnlyNamespace, type NetworkNamespace } from './network-namespace';
+import { inNetworkNamespace, owningContainerNamespace, type NetworkNamespace } from './network-namespace';
 import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOBUFS, UV_ENOTSUP, UV_EPIPE, UV_EMFILE, UV_EBUSY, UV_EALREADY, UV_ENOSYS } from './node-lib/binding/uv';
 
 const UV_EAGAIN = uv.UV_EAGAIN as number;
@@ -87,7 +87,7 @@ export class NativeStreamScope {
   private disposed = false;
   private readonly limits: Readonly<NativeStreamLimits>;
 
-  /** The namespace every TCP handle of the scope is made in: the one its host gave, else a fresh one of its loopback alone. */
+  /** The namespace every TCP handle of the scope is made in: the one its host gave, else its owning container's. */
   readonly network: NetworkNamespace;
 
   /**
@@ -95,13 +95,13 @@ export class NativeStreamScope {
    * it opens is that process's socket, as the container's /proc shows it.
    * `network` is that process's network namespace: every TCP handle the
    * scope makes is made in it (its port space, its loopback, its routes), as
-   * a socket(2) in that process is; without one, a fresh namespace of its
-   * loopback alone. The process's own realm is given the same namespace for
+   * a socket(2) in that process is; without one, the owning container's (the
+   * calling code's, else the engine's one container's). The process's own realm is given the same namespace for
    * its `dns`, `os` and HTTP client by its bootstrap (`createContainer({ network })`).
    */
   constructor(limits: NativeStreamLimits, private readonly emit: (event: NativeStreamEvent) => void, readonly ownerPid?: () => number | undefined,
     network?: NetworkNamespace) {
-    this.network = network ?? loopbackOnlyNamespace();
+    this.network = network ?? owningContainerNamespace();
     if ([limits.maxHandles, limits.maxReadChunkBytes, limits.maxQueuedBytes, limits.maxQueuedHandles, limits.maxPendingWriteBytes].some(value => !Number.isSafeInteger(value) || value < 1)
       || limits.maxReadChunkBytes > 0x7fffffff
       || limits.maxReadChunkBytes > limits.maxQueuedBytes

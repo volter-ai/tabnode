@@ -179,9 +179,15 @@ export function watchNamespacePorts(network: NetworkNamespace, onListen: ListenW
   return () => { if (portWatchers.get(network.id) === watcher) portWatchers.delete(network.id); };
 }
 
-/** The listening handle a connect to this port of `network`'s loopback reaches, if any. */
-export function listenerOnPort(port: number, network: NetworkNamespace, family?: string): TCP | undefined {
-  return listenerIn(network.id, port, family, loopbackOf(family ?? 'IPv4'));
+/**
+ * The listening handle a connect to this port of `network`'s loopback reaches, if any, and the loopback address that
+ * reaches it: 127.0.0.1's listener, else ::1's (a guest bound to `::1` alone is reached there).
+ */
+export function listenerOnPort(port: number, network: NetworkNamespace): { listener: TCP; address: '127.0.0.1' | '::1' } | undefined {
+  const v4 = listenerIn(network.id, port, 'IPv4', '127.0.0.1');
+  if (v4) return { listener: v4, address: '127.0.0.1' };
+  const v6 = listenerIn(network.id, port, 'IPv6', '::1');
+  return v6 ? { listener: v6, address: '::1' } : undefined;
 }
 /** Each shared listening socket's turn: its next connection goes to the member after the last one served. */
 const acceptTurns = new WeakMap<object, number>();
@@ -196,7 +202,7 @@ export class TCP extends LibuvStreamWrap {
   onconnection: ((status: number, clientHandle: TCP) => void) | null = null;
 
   /** The network namespace the handle was made in, and keeps: its port space, its loopback, its routes. */
-  private network: NetworkNamespace = currentNetworkNamespace();
+  #network: NetworkNamespace = currentNetworkNamespace();
   private local: SockName | null = null;
   private remote: SockName | null = null;
   /** Whether the local name was given by a connect rather than a bind: the route then chooses its address. */
@@ -225,8 +231,8 @@ export class TCP extends LibuvStreamWrap {
 
   private bindTo(address: string, port: number, family: string, flags = 0): number {
     // bind(2) takes an address an interface of the socket's namespace holds, or a wildcard; any other is not here.
-    if (!isOwnAddress(this.network, address)) return UV_EADDRNOTAVAIL;
-    const space = portSpace(this.network.id);
+    if (!isOwnAddress(this.#network, address)) return UV_EADDRNOTAVAIL;
+    const space = portSpace(this.#network.id);
     const wanted = Number(port) || 0;
     const spaces = spacesOf(space, family, flags, address);
     if (wanted !== 0 && spaces.some(ports => ports.has(wanted))) return UV_EADDRINUSE;
@@ -276,15 +282,15 @@ export class TCP extends LibuvStreamWrap {
     const self = this;
     let answer: number | (() => void);
     try {
-      answer = this.network.listen({
+      answer = this.#network.listen({
         port: local.port, address: local.address, family: local.family === 'IPv6' ? 'IPv6' : 'IPv4',
         open: (from, to) => self.openFrom(end, from, to),
       });
     } catch { return UV_EIO; }
     if (typeof answer === 'number') { if (answer !== 0) return answer; }
     else release = answer;
-    const watcher = portWatchers.get(this.network.id);
-    announcements.set(this.connectionEnd, { ...(release ? { release } : {}), ...(watcher ? { watched: this.network.id } : {}) });
+    const watcher = portWatchers.get(this.#network.id);
+    announcements.set(this.connectionEnd, { ...(release ? { release } : {}), ...(watcher ? { watched: this.#network.id } : {}) });
     if (watcher) { try { watcher.onListen(local.port, local.address); } catch { /* a watcher that throws is not the listen's business */ } }
     return 0;
   }
@@ -299,7 +305,7 @@ export class TCP extends LibuvStreamWrap {
     const local = member?.local;
     if (!member || !local || !takesConnectionTo(member, to)) return UV_ECONNREFUSED;
     const family = to.includes(':') ? 'IPv6' : 'IPv4';
-    const client = inNetworkNamespace(member.network, () => new (this.constructor as typeof TCP)(constants.SOCKET));
+    const client = inNetworkNamespace(member.#network, () => new (this.constructor as typeof TCP)(constants.SOCKET));
     // The connection is the host's, not a guest's: it holds no run open, as the page's listenNet sockets do not.
     __adoptHandle(client, null);
     client.local = { address: from.address, family, port: from.port };
@@ -317,7 +323,7 @@ export class TCP extends LibuvStreamWrap {
     const listening = this.local as SockName;
     const connectorName = connector.local as SockName;
     const accepted = new (this.constructor as typeof TCP)(constants.SOCKET);
-    accepted.network = this.network;
+    accepted.#network = this.#network;
     const dialled = isWildcardAddress(to) ? loopbackOf(connectorName.family) : bareAddress(to);
     accepted.local = { address: isWildcardAddress(listening.address) ? seenBy(listening.family, dialled, connectorName.family) : listening.address,
       family: listening.family, port: listening.port };
@@ -365,7 +371,7 @@ export class TCP extends LibuvStreamWrap {
       } catch (cause) { forgetNodeRequest(req); throw cause; }
     }
     const target = Number(port);
-    const network = this.network;
+    const network = this.#network;
     const dialled = bareAddress(address);
     // inet_hash_connect: an unbound socket takes a local port of its own namespace as it connects, and keeps it.
     if (!this.local) {
@@ -380,6 +386,18 @@ export class TCP extends LibuvStreamWrap {
     /** The address the connection leaves by, as the route chose it; a socket bound to an address keeps that one. */
     const leaveBy = (source: string): void => {
       if (this.local && (this.localByConnect || isWildcardAddress(this.local.address))) this.local = { ...this.local, address: source };
+    };
+    /**
+     * A host's answer that came after the socket timed out or closed: a listener the host holds is handed an end that
+     * closes at once, so the host releases what it opened for the connection through its own door.
+     */
+    const refuseLate = (answer: NamespaceConnection): void => {
+      if (typeof answer !== 'object' || answer === null || !('accept' in answer)) return;
+      const far = inNetworkNamespace(network, () => new (this.constructor as typeof TCP)(constants.SOCKET));
+      __adoptHandle(far, null);
+      let end: Socket;
+      try { end = socketFor(far); answer.accept(end); } catch { far.close(); return; }
+      queueBindingTask(() => { (end as unknown as { destroy(): void }).destroy(); });
     };
     /** The host's answer for a destination this namespace's listeners in this engine do not take. */
     const routed = (answer: NamespaceConnection): void => {
@@ -428,14 +446,21 @@ export class TCP extends LibuvStreamWrap {
         if (typeof answer === 'object' && answer !== null && typeof (answer as Promise<NamespaceConnection>).then === 'function') {
           pending = true;
           let settled = false;
-          const settle = (finish: () => void): void => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const stop = (): void => { if (timer !== undefined) { clearTimeout(timer); timer = undefined; } };
+          const settle = (finish: () => void, closedMeanwhile?: () => void): void => {
             if (settled) return;
             settled = true;
-            clearTimeout(timer);
-            queueBindingTask(() => { try { if (!this.closed) finish(); } finally { forgetNodeRequest(req); } });
+            stop();
+            queueBindingTask(() => { try { if (!this.closed) finish(); else closedMeanwhile?.(); } finally { forgetNodeRequest(req); } });
           };
-          const timer = setTimeout(() => settle(() => complete(UV_ETIMEDOUT)), CONNECT_TIMEOUT_MS);
-          (answer as Promise<NamespaceConnection>).then((value) => settle(() => routed(value)), () => settle(() => complete(UV_ECONNREFUSED)));
+          // The wait is the socket's: it holds no loop open of its own, and ends with the socket.
+          timer = setTimeout(() => settle(() => complete(UV_ETIMEDOUT)), CONNECT_TIMEOUT_MS);
+          (timer as unknown as { unref?: () => void }).unref?.();
+          this.onLastReferenceClose(() => { if (!settled) { settled = true; stop(); forgetNodeRequest(req); } });
+          (answer as Promise<NamespaceConnection>).then(
+            (value) => { if (settled || this.closed) refuseLate(value); else settle(() => routed(value), () => refuseLate(value)); },
+            () => settle(() => complete(UV_ECONNREFUSED)));
           return;
         }
         routed(answer as NamespaceConnection);
@@ -515,7 +540,7 @@ export class TCP extends LibuvStreamWrap {
       return copy;
     }
     const copy = new (this.constructor as typeof TCP)(this.type);
-    copy.network = this.network;
+    copy.#network = this.#network;
     copy.local = this.local ? { ...this.local } : null;
     copy.remote = this.remote ? { ...this.remote } : null;
     copy.shareConnectionFrom(this);

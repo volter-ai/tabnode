@@ -18,12 +18,9 @@ shared network refused at once; so a connect across bridges fails `ETIMEDOUT` on
 (about 127 s, `tcp_syn_retries` 6). The reading stopped at 20 s; the 127 s is Linux's documented retry schedule, not
 read.
 
-browser-substrate's WALI kernel gives its programs exactly that (its `container-networks.ts` is the one table). The
-engine had one host loopback and no namespaces: `tcp_wrap` reached only loopback addresses and every listener shared
-one port table, and `dns` answered every name the host listed with the loopback. A Node realm in a Compose service
-therefore could not hold the address, ports or names its container holds, and the substrate kept two one-offs to
-paper over it: a by-port mirror of every kernel listener into the engine's loopback, and a kernel fallback that sent a
-connection with no kernel listener to the host's port table, whatever namespace it was dialled in.
+browser-substrate's WALI kernel gives its programs exactly that (its `container-networks.ts` is the one table). A
+Node realm in a Compose service is a process of that container too, so it holds the address, ports and names its
+container holds, as the container's other programs do.
 
 ## Decision
 
@@ -52,15 +49,20 @@ Where the host supplies it:
 - `createContainer({ network })`: the container's namespace. Every run the container starts is in it, unless the host
   names another for that run (`RunOptions.network`), and every process a run forks keeps its parent's
   (`setRunPid`), as fork(2) does; a `node` the run launches through its host is handed it
-  (`NodeProcessLaunch.network`). The container's own doors (`listenNet`, its page bridge) make their sockets in it.
+  (`NodeProcessLaunch.network`). The container's own code (`execute`, `runFile`) runs in it with every continuation
+  it makes, and its own doors (`listenNet`, its page bridge) make their sockets in it.
   A container given none has a fresh namespace of its loopback alone (`loopbackOnlyNamespace()`), its own.
 - `new NativeStreamScope(limits, emit, ownerPid, network)`: the namespace of a process whose sockets this engine holds
-  for another worker. Every TCP handle the scope makes is made in it; a scope given none has a fresh one of its own.
+  for another worker. Every TCP handle the scope makes is made in it. A scope given none is in its owning container's:
+  that of the code that made it, else the engine's one container's; an engine of several containers names it.
   That process's own realm, whose `net` handles are the scope's, reads the same namespace for `dns`, `os`, `tls` and
   HTTP's Agent from its bootstrap: its host makes the realm's container with the namespace (`createContainer({
   network })`), so the realm's runs are in it.
-- A socket, lookup or interface list made outside any run and any host scope is in a namespace of its own that
-  reaches nothing; a page bridge made outside a container answers for the namespace it was made in.
+- The engine's own continuations (a resolver's answer, a lookup's callback, a routing decision answered later, in
+  which Node's `net.js` makes a `listen(port, host)` handle and HTTP's Agent and `tls` make their sockets) run in the
+  context of the call that began them: its run and its namespace (`captureNetworkContext`).
+- A socket, lookup or interface list made outside any container's code and any host scope is in a namespace of its
+  own that reaches nothing; a page bridge made outside a container answers for the namespace it was made in.
 
 What the engine does with it:
 
@@ -83,7 +85,9 @@ What the engine does with it:
   Docker's isolated bridges), or `ENETUNREACH` with no route. The connection leaves by the `source` the route names,
   which is what both ends read. A host failure is one failed socket and nothing else: a `connect` that throws or whose
   answer rejects is `ECONNREFUSED`, one that has not answered within Linux's SYN retries (`CONNECT_TIMEOUT_MS`,
-  127 s) is `ETIMEDOUT`, and an `accept` that throws resets the connection.
+  127 s) is `ETIMEDOUT`, and an `accept` that throws resets the connection. The wait ends with the socket; a host
+  listener answered after the socket timed out or closed is handed an end that closes at once, so the host releases
+  it through its own door.
 - **dns.lookup** reads the process's `/etc/hosts` and answers `localhost` and IP literals. It then asks the
   namespace's resolver for A, then AAAA records, as getaddrinfo does. `dns.resolve*` is a query to that resolver: a
   name it does not hold is `ENOTFOUND`, and a held name with no record of the type is `ENODATA`. Nothing resolves to
@@ -106,12 +110,12 @@ What the engine does with it:
   its own network, through `net`; a service its host serves itself is the host exchange only where the host's
   `hostService(network, host, port)` says the namespace's routes reach it (a container reaches the host at its
   gateway, so its own `localhost` is its own loopback); only what the namespace does not hold leaves through the
-  exchange. The per-port `hostPorts` list, which sent a loopback port to the host whatever namespace asked, is gone.
+  exchange.
 
 A realm whose host gives it no namespace is in `loopbackOnlyNamespace()`, which is a fresh namespace on Linux
 (`ip netns add`, `docker run --network none`). It has its loopback and nothing else: it resolves no name and has no
-route (`ENETUNREACH`). There is no "every name is this host" default and no held-name list: a name a host holds as
-itself is answered by its namespace's resolver, with the address it has there.
+route (`ENETUNREACH`). A name a host holds as itself is answered by its namespace's resolver, with the address it has
+there.
 
 ## What the substrate supplies
 
@@ -126,7 +130,6 @@ browser-substrate supplies it on its `container-addresses` branch (`packages/nod
   registers the listener at (namespace, port) where the kernel's connects look, and `resolve` is
   `resolveContainerName` for that container.
 
-With that in place the substrate's by-port mirror and its kernel fallback to the host's port table have no work left.
 The kernel reaches a Node listener at the namespace and port where the realm's `listen` put it.
 
 ## Where the evidence stops
@@ -140,5 +143,4 @@ compared against a real kernel:
   always did (Linux allows it);
 - a connect's ephemeral port is drawn from the engine's space for the namespace, not one the host coordinates, and a
   connection through a host's route reads the connector's port as the engine numbered it;
-- an answer a host gives after `CONNECT_TIMEOUT_MS` is dropped; a host listener it handed out then is the host's to
-  close.
+- the page bridge reaches a guest's loopback listener at 127.0.0.1, else at ::1.

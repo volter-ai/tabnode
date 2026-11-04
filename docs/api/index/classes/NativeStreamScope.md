@@ -19,8 +19,8 @@ descriptor from another scope; wire operations can name this scope's IDs only.
 it opens is that process's socket, as the container's /proc shows it.
 `network` is that process's network namespace: every TCP handle the
 scope makes is made in it (its port space, its loopback, its routes), as
-a socket(2) in that process is; without one, a fresh namespace of its
-loopback alone. The process's own realm is given the same namespace for
+a socket(2) in that process is; without one, the owning container's (the
+calling code's, else the engine's one container's). The process's own realm is given the same namespace for
 its `dns`, `os` and HTTP client by its bootstrap (`createContainer({ network })`).
 
 #### Parameters
@@ -51,7 +51,7 @@ its `dns`, `os` and HTTP client by its bootstrap (`createContainer({ network })`
 
 > `readonly` **network**: [`NetworkNamespace`](../interfaces/NetworkNamespace.md)
 
-The namespace every TCP handle of the scope is made in: the one its host gave, else a fresh one of its loopback alone.
+The namespace every TCP handle of the scope is made in: the one its host gave, else its owning container's.
 
 ***
 

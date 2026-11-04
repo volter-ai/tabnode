@@ -39,9 +39,13 @@ export function __listening(network: NetworkNamespace, port: number): boolean {
   return listenerOnPort(port, network) !== undefined;
 }
 
-/** A connection to `port` on `network`'s loopback: the bridge's own socket, made in the namespace it serves. */
+/**
+ * A connection to `port` on `network`'s loopback: the bridge's own socket, made in the namespace it serves, to the
+ * loopback address the guest listens at (127.0.0.1, or ::1 for a guest bound there alone).
+ */
 function connectLoopback(network: NetworkNamespace, port: number): Socket {
-  return inNetworkNamespace(network, () => netModule.connect({ port, host: '127.0.0.1' }) as unknown as Socket);
+  const host = listenerOnPort(port, network)?.address ?? '127.0.0.1';
+  return inNetworkNamespace(network, () => netModule.connect({ port, host }) as unknown as Socket);
 }
 
 /** The request head a server reads, from the parts the page gave. */

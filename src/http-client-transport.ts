@@ -11,7 +11,7 @@ import { netModule } from './node-lib/net-module';
 import { streamModule } from './node-lib/stream-module';
 import { onNodeLibLoaded, type NodeLibRequire } from './node-lib/load';
 import { DuplexStreamHandle } from './node-lib/binding/duplex_stream';
-import { currentNetworkNamespace, namespaceHolds, type NetworkNamespace } from './network-namespace';
+import { captureNetworkContext, currentNetworkNamespace, namespaceHolds, type NetworkNamespace } from './network-namespace';
 
 export interface HttpClientExchangeRequest {
   url: string;
@@ -68,12 +68,14 @@ export function installHttpClientTransport(factory: HttpClientTransportFactory, 
       const held: boolean | Promise<boolean> = hostService ? false : options.socketPath ? protocol === 'http:' : namespaceHolds(network, host);
       if (held === true) return original.call(this, options, callback);
       if (held instanceof Promise) {
-        held.then(own => {
+        // The socket is made when the resolver has answered, on the engine's loop: in the asking call's context.
+        const within = captureNetworkContext();
+        held.then(own => within(() => {
           if (own) { callback(null, original.call(this, options)); return; }
           let socket: unknown;
           try { socket = exchanged(); } catch (cause) { callback(cause instanceof Error ? cause : new Error(String(cause))); return; }
           callback(null, socket);
-        }, cause => callback(cause instanceof Error ? cause : new Error(String(cause))));
+        }), cause => within(() => callback(cause instanceof Error ? cause : new Error(String(cause)))));
         return undefined;
       }
       try {

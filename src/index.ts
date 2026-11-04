@@ -86,7 +86,7 @@ export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
 export { loopbackOnlyNamespace } from './network-namespace';
 export type { NetworkNamespace, NamespaceAddress, NamespaceConnection, NamespaceListener, ResolverAnswer } from './network-namespace';
-import { inNetworkNamespace, loopbackOnlyNamespace, type NetworkNamespace } from './network-namespace';
+import { inNetworkNamespace, inNetworkScope, loopbackOnlyNamespace, recordContainerNamespace, type NetworkNamespace } from './network-namespace';
 export type { NativeStreamDescriptor, NativeStreamLimits, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport, NativeStreamHandleView, NativeStreamWriteTrace } from './native-stream-owner';
 
 export interface RunResult {
@@ -275,6 +275,7 @@ export function createContainer(options?: ContainerOptions): {
   // installRunNetwork, setRunPid); the container's own doors (listenNet, the page bridge) make their sockets in it.
   // A container given none is a fresh namespace of its loopback alone, its own and no other container's.
   const network: NetworkNamespace = options?.network ?? loopbackOnlyNamespace();
+  recordContainerNamespace(network);
   const runtime = new Runtime(vfs, options);
   const npmManager = new PackageManager(vfs);
   // A container owns its servers. One process-wide bridge meant two runtimes in
@@ -362,8 +363,9 @@ export function createContainer(options?: ContainerOptions): {
     network,
     npm: npmManager,
     serverBridge,
-    execute: (code: string, filename?: string) => runtime.execute(code, filename),
-    runFile: (filename: string) => runtime.runFile(filename),
+    // The container's own code is in its namespace, and so is every continuation it makes.
+    execute: (code: string, filename?: string) => inNetworkScope(network, () => runtime.execute(code, filename)),
+    runFile: (filename: string) => inNetworkScope(network, () => runtime.runFile(filename)),
     run: (command: string, runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, async (processToken) => {
       const numbered = runOptions?.registry !== undefined || runOptions?.process !== undefined;
       try {
@@ -409,7 +411,7 @@ export function createContainer(options?: ContainerOptions): {
     /** The ports the servers the named run opened are listening on. */
     processPorts: (token: string): number[] => __ownedServerPorts(token),
     portPid: (port: number): number | undefined => {
-      const listener = listenerOnPort(port, network);
+      const listener = listenerOnPort(port, network)?.listener;
       if (!listener) return undefined;
       // a guest's own listener, or one this engine holds for another worker's process
       return runPid(ownerOf(listener as unknown as OwnedHandle))?.pid ?? nativeStreamOwnerPid(listener);
