@@ -1,23 +1,20 @@
 /**
- * tls: a namespace's network inside the tab carries no wire to protect. A TLS
- * server listens as a net server does and hands its connections on as secure;
- * a TLS connect to a destination the caller's network namespace holds (its
- * loopback, a peer on one of its networks, a name its resolver answers: the
- * one routing decision, network-namespace.ts namespaceHolds, that `net` and
- * HTTP's Agent read too) pairs with that listener the same way. Bytes cross
- * unencrypted because nothing lies between the two ends, and the browser holds
- * TLS wherever there is a wire: a page reaches a guest server through the
- * sandbox origin, and a request to another host goes out through the page's
- * HTTP transport. A TLS connect to a destination the namespace does not hold
- * fails asynchronously (`ERR_TLS_UNAVAILABLE`), rather than pretending to
- * connect and leaving Node's HTTPS client waiting forever.
+ * tls: the engine has no TLS. A TLS server listens as a net server does and
+ * hands its connections on as secure; a TLS connect to a destination on a
+ * network the calling process is directly connected to (its loopback, or an
+ * interface's network by its netmask, read from its kernel's interfaces
+ * after a lookup: host-sockets.ts directlyConnected) is a plain connection
+ * marked secure, because nothing but the kernel lies between the two ends.
+ * A TLS connect to any other destination fails asynchronously
+ * (`ERR_TLS_UNAVAILABLE`), rather than pretending to connect and leaving
+ * Node's HTTPS client waiting forever (ADR-0009 §3).
  */
 
 import { lazyExport } from '../node-lib/lazy';
 import { nodeLibInternalRequire } from '../node-lib/load';
 import type { Socket } from '../node-lib/net-module';
 import type { EventEmitter } from '../node-lib/events-module';
-import { captureNetworkContext, currentNetworkNamespace, namespaceHolds } from '../network-namespace';
+import { captureCallingSockets, callingSockets, directlyConnected, ipv4Bytes, ipv6Bytes } from '../host-sockets';
 
 /** A TLS server as Node's module exposes it: constructed with or without `new`. */
 export interface TlsServer extends EventEmitter {
@@ -138,14 +135,24 @@ class TLSSocket extends NetSocket {
       else { this.connecting = true; fail(unavailable(undefined, undefined)); }
       return this;
     }
-    const held = namespaceHolds(currentNetworkNamespace(), host);
-    if (held === true) return pair();
+    const sockets = callingSockets();
+    const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+    if (bare.toLowerCase().replace(/\.$/u, '') === 'localhost') return pair();
+    if (ipv4Bytes(bare) || ipv6Bytes(bare.split('%')[0]!)) {
+      if (directlyConnected(bare, sockets)) return pair();
+      this.connecting = true;
+      fail(unavailable(host, options.port));
+      return this;
+    }
     this.connecting = true;
-    if (held === false) { fail(unavailable(host, options.port)); return this; }
-    // The connection is made when the resolver has answered, on the engine's loop: in the connecting call's context.
-    const within = captureNetworkContext();
-    held.then(own => within(() => { if (own) pair(); else fail(unavailable(host, options.port)); }),
-      (cause: unknown) => within(() => fail(cause instanceof Error ? cause : new Error(String(cause)))));
+    // The connection is made when the lookup has answered, in the connecting call's process.
+    const within = captureCallingSockets();
+    const dns = (require ? require('dns') : nodeLibInternalRequire('dns')) as { lookup(name: string, callback: (error: Error | null, address?: string) => void): void };
+    dns.lookup(bare, (error, address) => within(() => {
+      if (error) fail(error);
+      else if (address !== undefined && directlyConnected(address, sockets)) pair();
+      else fail(unavailable(host, options.port));
+    }));
     return this;
   }
 

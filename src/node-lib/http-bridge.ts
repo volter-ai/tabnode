@@ -4,10 +4,12 @@
  * The page bridge used to reach a guest's server by calling a method on the
  * engine's own `http.Server` object. `http` is Node's own file now and its
  * `Server` has no such method -- it has a socket, and a request is what
- * arrives on one. So the bridge is a client here: it finds the port in the
- * net binding's listening registry, connects to it through the same loopback
- * pairing any guest client uses, writes the request, and reads the answer
- * back through the RESPONSE side of `./binding/http_parser.ts`.
+ * arrives on one. So the bridge is a client here: it connects to the port on
+ * the loopback as the process whose tree it is given (its container's), with
+ * that process's kernel socket calls (ADR-0009), writes the request, and
+ * reads the answer back through the RESPONSE side of
+ * `./binding/http_parser.ts`. A port nothing listens on is refused by the
+ * kernel, and answered 503.
  *
  * What this buys beyond correctness: the guest's server sees a real
  * connection. Its `req.socket` is a socket, `server.on('connection')` fires,
@@ -20,8 +22,8 @@ import { netModule } from './net-module';
 import type { Socket } from './net-module';
 import { Buffer } from './buffer-module';
 import { HTTPParser } from './binding/http_parser';
-import { listenerOnPort } from './binding/tcp_wrap';
-import { inNetworkNamespace, type NetworkNamespace } from '../network-namespace';
+import { withFilesystem } from './binding/fs';
+import type { VirtualFS } from '../virtual-fs';
 
 /** What a page request answers with, the shape the bridge has always answered. */
 export interface ResponseData {
@@ -34,18 +36,20 @@ export interface ResponseData {
   body?: Uint8Array;
 }
 
-/** Whether a guest is listening on this port of `network`'s loopback right now. */
-export function __listening(network: NetworkNamespace, port: number): boolean {
-  return listenerOnPort(port, network) !== undefined;
+/**
+ * A connection to `port` on the loopback, as the process whose tree is `tree` (the calling process's without one):
+ * `localhost`, which is 127.0.0.1 and then ::1, so a guest bound to `::1` alone is reached there, as a client that
+ * tries each of a name's addresses reaches it.
+ */
+function connectLoopback(tree: object | undefined, port: number): Socket {
+  const connect = (): Socket => netModule.connect({ port, host: 'localhost' }) as unknown as Socket;
+  return tree ? withFilesystem(tree as VirtualFS, connect) : connect();
 }
 
-/**
- * A connection to `port` on `network`'s loopback: the bridge's own socket, made in the namespace it serves, to the
- * loopback address the guest listens at (127.0.0.1, or ::1 for a guest bound there alone).
- */
-function connectLoopback(network: NetworkNamespace, port: number): Socket {
-  const host = listenerOnPort(port, network)?.address ?? '127.0.0.1';
-  return inNetworkNamespace(network, () => netModule.connect({ port, host }) as unknown as Socket);
+/** Whether a connection failed because nothing listens where it went: the kernel's refusal. */
+function refused(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === 'ECONNREFUSED' || (error instanceof AggregateError && error.errors.every(refused));
 }
 
 /** The request head a server reads, from the parts the page gave. */
@@ -157,14 +161,12 @@ function serviceUnavailable(port: number): ResponseData {
 }
 
 /**
- * A request to a guest's server, answered whole. The connection is this
- * engine's own loopback: the guest's server accepts it, and nothing leaves
- * the tab.
+ * A request to a guest's server, answered whole, over a connection to its port on the loopback of the process whose
+ * tree is `tree`: the guest's server accepts it. A connection that fails (nothing listens) is answered 503.
  */
 export function __requestOverLoopback(
-  network: NetworkNamespace, port: number, method: string, url: string, headers: Record<string, string>, body?: Buffer,
+  tree: object | undefined, port: number, method: string, url: string, headers: Record<string, string>, body?: Buffer,
 ): Promise<ResponseData> {
-  if (!__listening(network, port)) return Promise.resolve(serviceUnavailable(port));
   return new Promise<ResponseData>((resolve) => {
     const collected = emptyCollected();
     const parser = responseParser(collected);
@@ -180,7 +182,7 @@ export function __requestOverLoopback(
         body: ownedConcat(collected.chunks),
       });
     };
-    const socket = connectLoopback(network, port);
+    const socket = connectLoopback(tree, port);
     socket.on('data', (chunk: Uint8Array) => {
       if (settled) return;
       const read = parser.execute(chunk);
@@ -217,17 +219,12 @@ export interface LoopbackStreamFlow {
 }
 
 export function __streamOverLoopback(
-  network: NetworkNamespace, port: number, method: string, url: string, headers: Record<string, string>, body: Buffer | undefined,
+  tree: object | undefined, port: number, method: string, url: string, headers: Record<string, string>, body: Buffer | undefined,
   onStart: (statusCode: number, statusMessage: string, headers: Record<string, string>) => void,
   onChunk: (chunk: Uint8Array) => void,
   onEnd: () => void,
   flow?: LoopbackStreamFlow,
 ): Promise<void> {
-  if (!__listening(network, port)) {
-    onStart(503, 'Service Unavailable', { 'Content-Type': 'text/plain' });
-    onEnd();
-    return Promise.resolve();
-  }
   return new Promise<void>((resolve) => {
     const collected = emptyCollected();
     let started = false;
@@ -238,7 +235,7 @@ export function __streamOverLoopback(
       () => { started = true; onStart(collected.statusCode, collected.statusMessage, collected.headers); },
       (chunk) => onChunk(chunk),
     );
-    const socket = connectLoopback(network, port);
+    const socket = connectLoopback(tree, port);
     flow?.control?.(() => socket.pause(), () => socket.resume());
     if (flow?.signal) {
       if (flow.signal.aborted) { socket.destroy(); finish(); return; }
@@ -276,23 +273,25 @@ export interface UpgradeResult {
  * one -- its `upgrade` listener was handed it by Node's own `http` -- and the
  * page holds this one, which is exactly what the real `ws` needs on both
  * sides. The bytes llhttp had already read past the head are pushed back
- * onto this end, because they are the first frame.
+ * onto this end, because they are the first frame. A port nothing listens on
+ * (the kernel refuses the connection) answers 503 with no socket.
  */
 export function __upgradeOverLoopback(
-  network: NetworkNamespace, port: number, method: string, url: string, headers: Record<string, string>,
+  tree: object | undefined, port: number, method: string, url: string, headers: Record<string, string>,
 ): Promise<UpgradeResult> {
-  if (!__listening(network, port)) {
-    return Promise.resolve({ statusCode: 503, statusMessage: 'Service Unavailable', headers: {}, socket: null });
-  }
   return new Promise<UpgradeResult>((resolve) => {
     const collected = emptyCollected();
     let settled = false;
     const parser = responseParser(collected);
-    const socket = connectLoopback(network, port);
-    const fail = (): void => {
+    const socket = connectLoopback(tree, port);
+    const fail = (error?: unknown): void => {
       if (settled) return;
       settled = true;
       parser.free();
+      if (collected.statusCode === 0 && refused(error)) {
+        resolve({ statusCode: 503, statusMessage: 'Service Unavailable', headers: {}, socket: null });
+        return;
+      }
       resolve({ statusCode: collected.statusCode || 502, statusMessage: collected.statusMessage, headers: collected.headers, socket: null });
     };
     socket.on('data', (chunk: Uint8Array) => {
@@ -313,7 +312,7 @@ export function __upgradeOverLoopback(
       if (collected.complete) { socket.destroy(); fail(); }
     });
     socket.on('error', fail);
-    socket.on('close', fail);
+    socket.on('close', () => fail());
     const upgradeHeaders = { ...headers, Connection: 'Upgrade' };
     const lines = [`${method.toUpperCase()} ${url} HTTP/1.1`];
     for (const [name, value] of Object.entries(upgradeHeaders)) {

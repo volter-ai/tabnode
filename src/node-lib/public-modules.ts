@@ -16,7 +16,6 @@
 import { createDnsModule } from '../shims/dns';
 import { processHostsReaderOf } from '../process-hostname';
 import * as clusterShim from '../shims/cluster';
-import * as dgramShim from '../shims/dgram';
 import asyncHooksShim from '../shims/async_hooks';
 import stringDecoderShim, { createStringDecoderModule } from '../shims/string_decoder';
 import v8Shim from '../shims/v8';
@@ -48,7 +47,6 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   cluster: () => clusterShim,
   string_decoder: () => stringDecoderShim,
   v8: () => v8Shim,
-  dgram: () => dgramShim,
   // Node's `events.js` builds `EventEmitterAsyncResource` by extending this
   // binding's `AsyncResource`. The shim's class answers `asyncId` 0, which
   // is not an id a resource has.

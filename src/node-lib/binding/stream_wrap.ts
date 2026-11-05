@@ -5,8 +5,10 @@
  * it writes through `handle.writeBuffer(req, buf)` and its string cousins and
  * reads through `handle.onread(arrayBuffer)` with the byte count in
  * `streamBaseState[kReadBytesOrError]`. That is the whole contract, and this
- * file implements exactly it over the engine's loopback pairing: two handles
- * whose writes are each other's reads.
+ * file implements exactly it over the engine's pipe pairing: two handles
+ * whose writes are each other's reads. A `TCP` handle extends it for that
+ * contract and nothing of the pairing: its bytes are its process's kernel
+ * socket's (`tcp_wrap.ts`, ADR-0009).
  *
  * Nothing here implements anything Node's files implement. There is no
  * buffering policy, no half-open rule, no timeout: those are `net.js`'s, and
@@ -15,7 +17,6 @@
 import { bytesOfString } from './buffer';
 import { UV_EOF, UV_EBADF, UV_ECONNRESET, UV_EPIPE } from './uv';
 import { attachNativeStream, nativeStreamFor } from '../../native-stream-binding';
-import type { TCP } from './tcp_wrap';
 import type { Pipe } from './pipe_wrap';
 
 /**
@@ -60,6 +61,8 @@ export class ShutdownWrap {
 }
 
 let nextAsyncId = 1;
+/** A handle's async id, from the one counter every wrap's comes from. */
+export function nextHandleAsyncId(): number { return nextAsyncId++; }
 
 /**
  * The bytes one direction of a pairing is carrying, oldest first, and the
@@ -148,8 +151,8 @@ export class LibuvStreamWrap implements OwnedHandle {
     registerHandle(this, true);
   }
 
-  protected attachNative(kind: 'tcp' | 'pipe', type: number): void {
-    attachNativeStream(this as unknown as TCP | Pipe, kind, type,
+  protected attachNative(kind: 'pipe', type: number): void {
+    attachNativeStream(this as unknown as Pipe, kind, type,
       callback => this.closeLocal(callback, true), () => this.flushInbound());
   }
 

@@ -17,7 +17,7 @@ import { attachVmScriptEnvironment, VmScriptPreparationCache } from './vm-script
 import type { VmScriptObserver, VmScriptPhase } from './vm-script-state';
 import { startGuestLoop, withGuestExecution, guestExecutionActiveMs, enableGuestEntryAccount, guestEntryAccount, guestEntryKinds } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
-import { guestFetch, rememberRequestBodySource } from './fetch-transport';
+import { guestFetch } from './node-fetch';
 import { installNodeResponse } from './node-response';
 import { withNodeRequestBody } from './node-body';
 import { installHttpParserModule } from './http-parser-module';
@@ -65,9 +65,9 @@ import {
 } from './node-lib/small-modules';
 import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
-import { observeNativeStreamClocks, sayNativeStreamCounts, type NativeStreamClockSample } from './native-stream-binding';
+import { sayNativeStreamCounts } from './native-stream-binding';
 import { observeListenClocks } from './node-lib/binding/tcp_wrap';
-import { __runFor, __tokenForProcess, runPid } from './process-tokens';
+import { __runFor, __tokenForProcess, runPidOf } from './process-tokens';
 import { nodeLibBindingsAsked } from './node-lib/load';
 import type { ResolutionKept } from './node-resolution';
 import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
@@ -87,7 +87,6 @@ import * as v8Shim from './shims/v8';
 import * as tlsShim from './shims/tls';
 import * as http2Shim from './shims/http2';
 import * as clusterShim from './shims/cluster';
-import * as dgramShim from './shims/dgram';
 import * as replShim from './shims/repl';
 import * as vmShim from './shims/vm';
 import * as inspectorShim from './shims/inspector';
@@ -386,7 +385,9 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   let guest = __substrateGuestGlobals.get(process);
   if (guest) return guest;
   const host = globalThis as unknown as Record<string, unknown>;
-  const fetch = typeof host.fetch === 'function' ? guestFetch(process, host.fetch as typeof globalThis.fetch) : host.fetch;
+  // Node's fetch, over the process's own HTTP client and so its own sockets (node-fetch.ts); the realm's is kept for
+  // the URLs no socket carries.
+  const fetch = guestFetch(process, typeof host.fetch === 'function' ? host.fetch as typeof globalThis.fetch : undefined);
   // A guest's global object is an ordinary object to the guest, as Node's is: what it assigns, defines or deletes
   // is ITS, and every trap below reads that before anything else. Two places hold it and nothing else does:
   //   - the proxy's own target, for a name the guest has assigned or defined (a value, or an accessor);
@@ -1306,10 +1307,10 @@ function __substrateSaidReplacement(replacement: unknown): { source: string; sta
   return { source, stack: (new Error().stack ?? '').split('\n').slice(2, 10).map(line => line.trim().slice(0, 200)) };
 }
 type HttpLoadClockSample = { n: number; what: string; url: string | null } & Record<string, unknown>;
-function __substrateSayLoadClock(process: object, at: string, nativeStream?: NativeStreamClockSample, http?: HttpLoadClockSample): void {
+function __substrateSayLoadClock(process: object, at: string, http?: HttpLoadClockSample): void {
   if (!traceReadingRequested()) return;
   const clock = __substrateLoadClocks.get(process);
-  const boundary = nativeStream !== undefined || http !== undefined;
+  const boundary = http !== undefined;
   // A process that went quiet and then ran on (a seed script's queries after its last require: Cal's seed-app-store,
   // 1.9 s of its 2.7 s) says its exit too, once, though it loaded nothing more: without it that run had no line.
   const exitAfterQuiet = at === 'exit' && clock?.quietSaidAt !== undefined && !clock.exitSaid;
@@ -1336,7 +1337,6 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
   const requires = paths ? { ...paths, engineLoad: { ...paths.engineLoad }, replaced: { ...paths.replaced } } : null;
   const limit = clock.bodies;
   const payload = { event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
-    ...(nativeStream ? { epoch: nativeStream.at, nativeStream: { ...nativeStream } } : {}),
     ...(http ? { http: { ...http } } : {}),
     script: entry === undefined ? null : pathShim.posix.basename(entry),
     preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
@@ -1389,13 +1389,7 @@ observeListenClocks((owner, port) => {
   const process = owner === null ? undefined : __runFor(owner)?.process;
   if (!process || __substrateListenSaid.has(process)) return;
   __substrateListenSaid.add(process);
-  __substrateSayLoadClock(process, 'listen', undefined, { n: 0, what: 'listen', url: null, port });
-});
-observeNativeStreamClocks((owner, sample) => {
-  // A binding's handle retains its actual run owner across native awaits;
-  // the current guest globals and the last runtime created cannot name it.
-  const process = owner === null ? undefined : __runFor(owner)?.process;
-  if (process) __substrateSayLoadClock(process, sample.when, sample);
+  __substrateSayLoadClock(process, 'listen', { n: 0, what: 'listen', url: null, port });
 });
 
 type K5ServerPrototype = { emit: (event: string | symbol, ...args: unknown[]) => unknown };
@@ -1424,7 +1418,7 @@ function __substrateObserveHttp(process: object, module: unknown): void {
           const say = (what: string, extra: Record<string, unknown> = {}): string | null | undefined => {
             try {
               const url = req.url, owner = __tokenForProcess(process as Process);
-              const pid = runPid(owner)?.pid ?? (process as { pid?: unknown }).pid;
+              const pid = runPidOf(owner) ?? (process as { pid?: unknown }).pid;
               const capturedUrl = typeof url === 'string' ? url : null;
               if (traceReadingRequested()) traceOutput('[k5] server', { n, what, url: capturedUrl,
                 at: Math.round((performance.timeOrigin + performance.now()) * 10) / 10,
@@ -1438,7 +1432,7 @@ function __substrateObserveHttp(process: object, module: unknown): void {
           // before its first page. Reuse this existing process-owned slot;
           // capture phases now and defer source-byte work through R5.
           if (n === 1 && requestUrl !== undefined) {
-            try { __substrateSayLoadClock(process, 'first-request', undefined, { n, what: 'request-event', url: requestUrl }); }
+            try { __substrateSayLoadClock(process, 'first-request', { n, what: 'request-event', url: requestUrl }); }
             catch { /* Evidence cannot change Node's request delivery. */ }
           }
           const writeHead = res.writeHead;
@@ -1463,7 +1457,7 @@ function __substrateObserveHttp(process: object, module: unknown): void {
             // captured scalar URL/status; do not read caller properties or
             // perform their coercion a second time.
             if (headClock) {
-              try { __substrateSayLoadClock(process, 'first-write-head', undefined, headClock); }
+              try { __substrateSayLoadClock(process, 'first-write-head', headClock); }
               catch { /* Evidence cannot change the response. */ }
             }
             return result;
@@ -1959,9 +1953,8 @@ export interface RuntimeOptions {
   stdinHeld?: boolean;
   /** The run was given a TTY, on all three fds or per fd as `[stdin, stdout, stderr]`; a pipe child is not one. */
   tty?: boolean | readonly [boolean, boolean, boolean];
-  /** This run's process number and its parent's; minted where neither is given. */
+  /** This run's process number; minted where none is given. Its parent's is its registry's, read when asked. */
   pid?: number;
-  ppid?: number;
 }
 
 export interface RequireFunction {
@@ -2115,7 +2108,6 @@ const builtinModules: Record<string, unknown> = {
   tls: tlsShim,
   http2: http2Shim,
   cluster: clusterShim,
-  dgram: dgramShim,
   // A stand-in for Node's surface that refuses the REPL by name (shims/repl.ts says why it is not Node's file).
   repl: replShim,
   // Node's `sys` is `util` itself (lib/sys.js: `module.exports = require('util')`), deprecated (DEP0025).
@@ -4206,7 +4198,6 @@ export class Runtime {
       ...(options.stdinHeld ? { stdinHeld: true } : {}),
       ...(options.tty ? { tty: options.tty } : {}),
       ...(typeof options.pid === 'number' ? { pid: options.pid } : {}),
-      ...(typeof options.ppid === 'number' ? { ppid: options.ppid } : {}),
     });
     // The filesystem of this run, on this run's own process. Node's `fs` is
     // one module for the whole engine and the engine holds one tree per run,
@@ -4667,7 +4658,6 @@ forGuestRealm(() => {
         // An async-iterable body (a Node stream) is read as undici reads it.
         init = withNodeRequestBody(init);
         super(input as RequestInfo, init);
-        rememberRequestBodySource(this, input, init);
         const asked = new Headers(init?.headers ?? (input instanceof Native ? (input as Request).headers : undefined));
         const headers = new Headers(super.headers);
         asked.forEach((value, name) => { if (!headers.has(name)) headers.set(name, value); });
@@ -4678,7 +4668,6 @@ forGuestRealm(() => {
       }
       clone(): Request {
         const copy = super.clone();
-        rememberRequestBodySource(copy, this);
         return new NodeRequest(copy, { headers: this.headers });
       }
     }

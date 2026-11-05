@@ -20,7 +20,7 @@ import { nodeActiveHandles, nodeActiveRequests } from '../node-lib/binding/handl
 /** The names Node 24's `process.binding` answers with `internalBinding(name)` (lib/internal/bootstrap/realm.js). */
 const PROCESS_BINDING_ALLOWED = new Set(['buffer', 'cares_wrap', 'config', 'constants', 'contextify', 'fs', 'fs_event_wrap', 'icu', 'inspector',
   'js_stream', 'os', 'pipe_wrap', 'process_wrap', 'spawn_sync', 'stream_wrap', 'tcp_wrap', 'tls_wrap', 'tty_wrap', 'udp_wrap', 'uv', 'zlib']);
-import { ownProcessIdentity, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, publishSignalDisposition, type ProcessToken } from '../process-tokens';
+import { ownProcessPid, parentPidOf, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, publishSignalDisposition, type ProcessToken } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
 import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
 import { freemem as osFreemem } from './os';
@@ -568,9 +568,8 @@ export function createProcess(options?: {
   credentials?: ProcessCredentials;
   cwd?: string;
   env?: ProcessEnv;
-  /** This process's own number and its parent's, as Node gives every process. */
+  /** This process's own number, as Node gives every process; its parent's is read from its registry (`ppid`). */
   pid?: number;
-  ppid?: number;
   onExit?: (code: number) => void;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
@@ -653,7 +652,7 @@ export function createProcess(options?: {
   const stdoutDecoder = new TextDecoder();
   const stderrDecoder = new TextDecoder();
   // A process object no run names is the realm's own process, never a second one forked for it.
-  const own = options?.pid === undefined ? ownProcessIdentity() : undefined;
+  const pid = options?.pid ?? ownProcessPid();
   const proc: Process = {
     _getActiveHandles: () => nodeActiveHandles(proc, __tokenForProcess(proc)),
     _getActiveRequests: () => nodeActiveRequests(proc, __tokenForProcess(proc)),
@@ -812,11 +811,11 @@ export function createProcess(options?: {
       return previous;
     },
 
-    // Every process has its own number, and `ppid` names the one that
-    // started it: `src/process-tokens.ts` says what reads them and what it
-    // cost when they were 1 and 0 for everyone.
-    pid: options?.pid ?? own!.pid,
-    ppid: options?.ppid ?? (options?.pid === undefined ? own!.ppid : 0),
+    // Every process has its own number, and `ppid` names its parent: `src/process-tokens.ts` says what reads them
+    // and what it cost when they were 1 and 0 for everyone. The pid is the process's for its life; its parent changes
+    // when it is reparented, so `ppid` is read from its registry at each read, as Node's accessor calls getppid.
+    pid,
+    get ppid(): number { return parentPidOf(pid, __tokenForProcess(proc)); },
 
     exit(code: number | string | null | undefined = 0) {
       code = __substrateExitCode(code);

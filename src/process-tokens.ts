@@ -17,7 +17,6 @@ import type { ProcessCredentials } from './process-credentials';
  */
 
 import type { Process } from './shims/process';
-import type { NetworkNamespace } from './network-namespace';
 import { AsyncLocalStorage, routeUncaughtExceptions } from './shims/async_hooks';
 import { createProcessRegistryOwner, type ProcessRegistry, type InitialProcessRegistration } from './process-registry';
 
@@ -47,21 +46,6 @@ export interface OwnedRun {
 }
 
 const runs = new Map<ProcessToken, OwnedRun>();
-
-/**
- * Each run's network namespace: its container's, given when the container starts it, or the one the run that forked
- * it is in (setRunPid), as a forked process keeps its parent's namespace. Read by every socket, lookup and interface
- * list the run makes (network-namespace.ts currentNetworkNamespace).
- */
-const runNetworks = new Map<ProcessToken, NetworkNamespace>();
-/** Trusted host only: run `token` is in `network`. */
-export function installRunNetwork(token: ProcessToken, network: NetworkNamespace): void { runNetworks.set(token, network); }
-/** The network namespace run `token` is in, where one was given or inherited. */
-export function runNetworkOf(token: ProcessToken | null | undefined): NetworkNamespace | undefined {
-  return token === null || token === undefined ? undefined : runNetworks.get(token);
-}
-/** A run that has ended keeps no namespace. */
-export function forgetRunNetwork(token: ProcessToken): void { runNetworks.delete(token); }
 const tokensByProcess = new WeakMap<Process, ProcessToken>();
 
 /**
@@ -74,23 +58,9 @@ const tokensByProcess = new WeakMap<Process, ProcessToken>();
  */
 const executing = new AsyncLocalStorage<ProcessToken>();
 
-/**
- * The namespace code is running in, carried through every continuation the code makes (its timers, its promises), as
- * the engine's async context carries a run: a run entered with an installed namespace, a container's own code
- * (`execute`, `runFile`) and an engine continuation resumed in the namespace of the call that began it
- * (network-namespace.ts captureNetworkContext).
- */
-export const networkScope = new AsyncLocalStorage<NetworkNamespace>({ name: 'tabnode.network' });
-
-/**
- * Run `fn` as this token's guest code, so the doors below name that run. A run with an installed namespace is entered in
- * it too, so a frame resumed from another run (a native `await`'s continuation, which the engine does not restore)
- * cannot lend this run its namespace.
- */
+/** Run `fn` as this token's guest code, so the doors below name that run. */
 export function enterRun<T>(token: ProcessToken, fn: () => T): T {
-  const network = runNetworks.get(token);
-  const body = fn as (...args: unknown[]) => T;
-  return network === undefined ? executing.run(token, body) : executing.run(token, () => networkScope.run(network, body));
+  return executing.run(token, fn as (...args: unknown[]) => T);
 }
 
 /**
@@ -212,9 +182,17 @@ localProcessRegistry.receiveSignals((pid, signal) => {
 let processRegistry: ProcessRegistry = localProcessRegistry;
 let registryInstalled = false;
 let registryUsed = false;
-/** This realm's own process, where it was started as one (installProcessRegistry's initial registration). */
-let initialIdentity: { pid: number; ppid: number } | undefined;
-const pidsOfRuns = new Map<ProcessToken, { pid: number; ppid: number; pgid?: number }>();
+/**
+ * This realm's own process's pid, where it was started as one (installProcessRegistry's initial registration). A pid
+ * is a process's for its life; its parent and its group are its registry's, read when they are asked (ADR-0009 §6).
+ */
+let initialPid: number | undefined;
+/**
+ * Each named run's process: its pid, and the pid of the process whose fork made it and waits for it (wait4's caller,
+ * which `exit` and `reap` name; 0 for the realm's own process). Its parent and group are never kept here: they move
+ * (a reparenting, setpgid, setsid), and the registry is read for them.
+ */
+const pidsOfRuns = new Map<ProcessToken, { pid: number; waiter: number }>();
 
 /** Startup-only host seam; never swap identity authorities under live runs. */
 export function installProcessRegistry(registry: ProcessRegistry, initial?: InitialProcessRegistration): void {
@@ -228,8 +206,8 @@ export function installProcessRegistry(registry: ProcessRegistry, initial?: Init
     const identity = Object.freeze({ pid: initial.identity.pid, ppid: initial.identity.ppid,
       ...(initial.identity.pgid !== undefined ? { pgid: initial.identity.pgid } : {}) });
     registry.publish(initial.token, identity);
-    pidsOfRuns.set(initial.token, identity);
-    initialIdentity = identity;
+    pidsOfRuns.set(initial.token, { pid: identity.pid, waiter: identity.ppid });
+    initialPid = identity.pid;
   }
   processRegistry = registry;
   registryInstalled = true;
@@ -269,10 +247,9 @@ export function installRunRegistry(token: ProcessToken, registry: ProcessRegistr
 export function claimRunPid(token: ProcessToken, pid: number, ppid: number, started?: { argv?: readonly string[]; cwd?: string }): void {
   if (!Number.isSafeInteger(ppid) || ppid < 0 || ppid > 0x7fffffff) throw new Error('Invalid parent process identifier.');
   registryUsed = true;
-  const registry = registryFor(token);
-  const pgid = pidsOfRuns.get(token)?.pgid ?? registry.lookup(ppid)?.pgid ?? pid;
-  registry.exec(token, { pid, ppid, pgid, ...(started ?? {}), startedAt: Date.now() });
-  pidsOfRuns.set(token, { pid, ppid, pgid });
+  // execve keeps the process's group: the registry holds it.
+  registryFor(token).exec(token, { pid, ppid, ...(started ?? {}), startedAt: Date.now() });
+  pidsOfRuns.set(token, { pid, waiter: ppid });
 }
 
 /**
@@ -280,9 +257,13 @@ export function claimRunPid(token: ProcessToken, pid: number, ppid: number, star
  * initial registration), else a new process of this container's owner. A realm's own runtime is its process and is
  * never forked a second one.
  */
-export function ownProcessIdentity(): { pid: number; ppid: number } {
-  if (initialIdentity) return { pid: initialIdentity.pid, ppid: initialIdentity.ppid };
-  return { pid: mintPid(), ppid: 0 };
+export function ownProcessPid(): number {
+  return initialPid ?? mintPid();
+}
+
+/** The parent of process `pid`, as its registry reads it now (getppid); 0 where the registry holds no such process. */
+export function parentPidOf(pid: number, caller: ProcessToken | null): number {
+  return registryFor(caller).lookup(pid)?.ppid ?? 0;
 }
 
 /** fork: a new process numbered by `parent`'s registry (the run that forks it; null for the realm process). */
@@ -299,22 +280,33 @@ export function setRunPid(token: ProcessToken, pid: number, ppid: number, starte
   registryUsed = true;
   const registry = registryFor(parent);
   if (registry !== processRegistry && !runRegistries.has(token)) runRegistries.set(token, registry);
-  // fork(2) keeps the parent's network namespace.
-  const parentNetwork = runNetworkOf(parent);
-  if (parentNetwork && !runNetworks.has(token)) runNetworks.set(token, parentNetwork);
-  // Node's detached spawn starts a private group. Every other child inherits
-  // its parent's, and a second publication preserves an adopted group.
-  const pgid = pidsOfRuns.get(token)?.pgid ?? (started?.detached ? pid : registry.lookup(ppid)?.pgid ?? pid);
-  const { detached: _detached, env, ...description } = started ?? {};
+  // Node's detached spawn starts a private group; every other child is in its parent's, which the registry gives it.
+  const { detached, env, ...description } = started ?? {};
   // Its initial environment goes to the process table as execve's envp (browser-substrate ADR-0129).
-  registryFor(token).publish(token, { pid, ppid, pgid, ...description,
+  registryFor(token).publish(token, { pid, ppid, ...(detached ? { pgid: pid } : {}), ...description,
     ...(env ? { env: Object.entries(env).map(([name, value]) => `${name}=${value}`) } : {}), startedAt: Date.now() });
-  pidsOfRuns.set(token, { pid, ppid, pgid });
+  pidsOfRuns.set(token, { pid, waiter: ppid });
 }
 
-/** The numbers a named run was started with, where one was recorded. */
+/** A named run's pid, where one was recorded. */
+export function runPidOf(token: ProcessToken | null | undefined): number | undefined {
+  return token === null || token === undefined ? undefined : pidsOfRuns.get(token)?.pid;
+}
+
+/** The pid of the process that forked named run `token` and waits for it (0: the realm's own process). */
+export function runWaiterOf(token: ProcessToken): number | undefined {
+  return pidsOfRuns.get(token)?.waiter;
+}
+
+/**
+ * A named run's numbers as its registry reads them now: its pid, its parent and its group. Its parent and group move
+ * (a reparenting, setpgid, setsid), so they are read, never kept.
+ */
 export function runPid(token: ProcessToken | null | undefined): { pid: number; ppid: number; pgid?: number } | undefined {
-  return token === null || token === undefined ? undefined : pidsOfRuns.get(token);
+  const pid = runPidOf(token);
+  if (pid === undefined) return undefined;
+  const identity = registryFor(token).lookup(pid);
+  return { pid, ppid: identity?.ppid ?? 0, ...(identity?.pgid !== undefined ? { pgid: identity.pgid } : {}) };
 }
 
 /** exit_group for a child `parent` ran itself: its end goes to the process table through `parent`'s registry. */
@@ -351,7 +343,7 @@ export function tokenOfPid(pid: number, caller?: ProcessToken | null): ProcessTo
 /** Whether a live process carries this number, as `caller`'s namespace numbers it: what `kill(pid, 0)` asks. */
 export function pidIsLive(pid: number, caller: ProcessToken | null, callerPid?: number): boolean {
   // Metadata lookup may fail for reasons other than absence. Only the authority's kill(2) answer proves ESRCH.
-  return registryFor(caller).signal(pid, '0', callerPid ?? runPid(caller)?.pid ?? initialIdentity?.pid);
+  return registryFor(caller).signal(pid, '0', callerPid ?? runPidOf(caller) ?? initialPid);
 }
 
 /** A process's listener for `signal` came or went: its registry hears it where it keeps dispositions. */

@@ -23,7 +23,7 @@ import {
   internalStartupSnapshot, internalPermission,
 } from './runtime';
 import { internalSocketAddress, internalBlockList } from './addresses';
-import { internalFsUtils, internalDgram } from './child-process';
+import { internalFsUtils } from './child-process';
 import {
   internalAbortController, internalBlob, internalFile, internalWebStreamsAdapters, createWebStreamsAdapters,
 } from './buffer-and-streams';
@@ -76,7 +76,6 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   'internal/assert': () => internalAssert,
   'internal/v8/startup_snapshot': () => internalStartupSnapshot,
   'internal/fs/utils': () => internalFsUtils,
-  'internal/dgram': () => internalDgram,
   'internal/abort_controller': () => internalAbortController,
   'internal/blob': () => internalBlob,
   'internal/file': () => internalFile,

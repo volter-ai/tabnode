@@ -68,8 +68,7 @@ import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __subs
 
 import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
 
-import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, forgetRunNetwork, runNetworkOf, type ProcessToken } from '../process-tokens';
-import { currentNetworkNamespace } from '../network-namespace';
+import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, runPidOf, runWaiterOf, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, type ProcessToken } from '../process-tokens';
 import type { ProcessRegistry } from '../process-registry';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
 const __hostProcess: { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown } | null =
@@ -236,12 +235,12 @@ export interface RunStreams {
 const _runStreams = new Map<ProcessToken, RunStreams>();
 
 /** Submit before returning to a spawning parent; completion remains async. */
-async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaunch, 'identity' | 'inherited' | 'stdinStream' | 'network'>): Promise<CommandOutcome> {
+async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaunch, 'identity' | 'inherited' | 'stdinStream'>): Promise<CommandOutcome> {
   const { token, streams } = launch;
   // A run not yet numbered is forked here, and its end is reaped here: the run's end is its parent's wait.
-  const forked = !runPid(token);
+  const forked = runPidOf(token) === undefined;
   if (forked) setRunPid(token, mintPid(), 0, { argv: [launch.argv0, ...launch.argv], cwd: launch.cwd, ...(launch.env ? { env: launch.env } : {}) });
-  const own = runPid(token)!;
+  const own = { pid: runPidOf(token)!, waiter: runWaiterOf(token)! };
   let input: ReturnType<typeof nodeProcessInput> | undefined;
   let ran = false;
   try {
@@ -263,18 +262,16 @@ async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaun
       ...(streams.onStdoutBytes ? { onStdoutBytes: { value: (bytes: Uint8Array) => { bytesOut = true; streams.onStdoutBytes!(bytes); } } } : {}),
       ...(streams.onStderrBytes ? { onStderrBytes: { value: (bytes: Uint8Array) => { bytesErr = true; streams.onStderrBytes!(bytes); } } } : {}),
     }) as RunStreams;
-    // The child is in its parent's network namespace, as fork(2) leaves it.
-    const network = runNetworkOf(token) ?? currentNetworkNamespace();
-    const result = await host.run({ ...launch, ...(watched ? { streams: watched } : {}), identity: { ...runPid(token)! }, inherited, network,
+    const result = await host.run({ ...launch, ...(watched ? { streams: watched } : {}), identity: { ...runPid(token)! }, inherited,
       ...(input.stream ? { stdinStream: input.stream } : {}) });
     ran = true;
     // The host's realm ran it and reported its exit; the end is the one the process table holds.
-    const ended = forked ? reapRunProcess(own.pid, own.ppid, result.exitCode, result.signal ?? null) : undefined;
+    const ended = forked ? reapRunProcess(own.pid, own.waiter, result.exitCode, result.signal ?? null) : undefined;
     return { ...result, stdout: bytesOut ? '' : result.stdout, stderr: bytesErr ? '' : result.stderr,
       ...(ended ? { exitCode: ended.code, ...(ended.signal ? { signal: ended.signal } : {}) } : {}) };
   } finally {
     // A run the host failed to run (the runtime's failure, thrown to the caller) is killed, and reaped.
-    if (forked && !ran) { exitRunProcess(own.pid, own.ppid, 0, 'SIGKILL'); reapRunProcess(own.pid, own.ppid, 0, 'SIGKILL'); }
+    if (forked && !ran) { exitRunProcess(own.pid, own.waiter, 0, 'SIGKILL'); reapRunProcess(own.pid, own.waiter, 0, 'SIGKILL'); }
     if (streams) streams.stdin = null;
     input?.dispose();
     // Adoption moves owner registration; only the source-local lookup remains.
@@ -329,7 +326,6 @@ export function registerRunStreams(token: ProcessToken, streams: RunStreams): vo
 /** Forget a run that has ended. */
 export function releaseRunStreams(token: ProcessToken): void {
   _runStreams.delete(token);
-  forgetRunNetwork(token);
   shellRuns.delete(token);
   hostedNodes.delete(token);
 }
@@ -351,7 +347,7 @@ export function holdShellRun(token: ProcessToken): void {
 /** A child identity for a `node` a run's shell runs: its own token and pid under the run's, on the run's streams. */
 function nestedNodeToken(parentToken: ProcessToken, args: readonly string[], cwd: string | undefined, env?: Readonly<Record<string, string>>): ProcessToken {
   const token: ProcessToken = `child-${__nextChildRun++}`;
-  const parentPid = runPid(parentToken)?.pid ?? 0;
+  const parentPid = runPidOf(parentToken) ?? 0;
   setRunPid(token, mintPid(parentPid, false, parentToken), parentPid, { argv: ['node', ...args], ...(cwd ? { cwd } : {}), ...(env ? { env } : {}) }, parentToken);
   const parentStreams = runStreamsFor(parentToken);
   if (parentStreams) registerRunStreams(token, parentStreams);
@@ -525,7 +521,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   if (processHost && runToken !== null) {
     if (!nested) hostedNodes.add(runToken);
     // A nested node is its parent run's child: the host's realm reports its exit, and its end is the parent's wait.
-    const own = nested ? runPid(runToken)! : undefined;
+    const own = nested ? { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! } : undefined;
     let ran = false;
     try {
       const result = await runHostedNode(processHost, {
@@ -534,13 +530,13 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       });
       ran = true;
       if (!own) return result;
-      const ended = reapRunProcess(own.pid, own.ppid, result.exitCode, result.signal ?? null, parentToken);
+      const ended = reapRunProcess(own.pid, own.waiter, result.exitCode, result.signal ?? null, parentToken);
       return { ...result, exitCode: ended.code, ...(ended.signal ? { signal: ended.signal } : {}) };
     } finally {
       // One the host failed to run (thrown to the caller) is killed, and reaped by its parent.
       if (own && !ran) {
-        exitRunProcess(own.pid, own.ppid, 0, 'SIGKILL', parentToken);
-        reapRunProcess(own.pid, own.ppid, 0, 'SIGKILL', parentToken);
+        exitRunProcess(own.pid, own.waiter, 0, 'SIGKILL', parentToken);
+        reapRunProcess(own.pid, own.waiter, 0, 'SIGKILL', parentToken);
       }
       if (nested) releaseRunStreams(runToken);
     }
@@ -779,7 +775,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
 
   // A named run not yet numbered is a process its realm forks now (as runHostedNode's is), runs here and reaps at its
   // end; only a run nobody names is the realm's own process.
-  const forkedHere = runToken !== null && !runPid(runToken);
+  const forkedHere = runToken !== null && runPidOf(runToken) === undefined;
   if (forkedHere) setRunPid(runToken, mintPid(), 0, { argv: [...launch.argv], cwd: launch.cwd, env: launch.env });
   // Whose wait its end is: a nested node's parent run, a run forked here the realm's; any other run's parent is
   // elsewhere (the kernel's exec'd node: its own channel reports its exit) or is the host's.
@@ -815,9 +811,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     stdin: stdinRing ? '' : launch.stdin ?? '',
     ...(stdinRing || streams?.held || streams?.stdinOpen ? { stdinHeld: true } : {}),
     ...(ttyFds.some(Boolean) ? { tty: ttyFds } : {}),
-    // The numbers this run was started with, so the guest's `process.pid`
-    // is the one its parent's handle carries.
-    ...(runPid(runToken) ? { pid: runPid(runToken)!.pid, ppid: runPid(runToken)!.ppid } : {}),
+    // The number this run was started with, so the guest's `process.pid` is the one its parent's handle carries; its
+    // `process.ppid` is read from the registry.
+    ...(runPidOf(runToken) !== undefined ? { pid: runPidOf(runToken)! } : {}),
   });
 
   // Override process.exit to resolve the completion promise
@@ -826,10 +822,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // symbol is the binding's `kStdioKinds`, named here so this file does not
   // import the fs binding).
   (proc as unknown as Record<symbol, unknown>)[engineSymbolFor('tabnode.run.stdioKinds')] = stdioKinds;
-  // This run's numbers, recorded under its name: a child it spawns reads
-  // them for its own `ppid`, and `process.kill(pid, 0)` asks this registry
-  // whether a pid is a live process.
-  if (runToken !== null) setRunPid(runToken, proc.pid, proc.ppid, { argv: [...launch.argv], cwd: launch.cwd, env: launch.env });
+  // This run's number, recorded under its name, with the process that waits for it: `process.kill(pid, 0)` asks the
+  // registry whether a pid is a live process.
+  if (runToken !== null) setRunPid(runToken, proc.pid, runWaiterOf(runToken) ?? proc.ppid, { argv: [...launch.argv], cwd: launch.cwd, env: launch.env });
   const releaseRun = runToken === null ? null : __recordRun(runToken, {
     process: proc,
     stdout: appendStdout,
@@ -1490,11 +1485,11 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     if (runToken !== null) { __releaseOwnedServers(runToken, false); __releaseOwnedHandles(runToken); }
     // A run this realm forked for itself exits with its end and, its end being its parent's wait, is reaped. One whose
     // launch threw (the runtime's failure, thrown to the caller) passed no code: it is killed.
-    if (reaper !== undefined) {
-      const own = runPid(runToken)!;
+    if (reaper !== undefined && runToken !== null) {
+      const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
       const [code, signal] = runEnd === undefined ? [0, 'SIGKILL'] : [runEnd, null];
-      exitRunProcess(own.pid, own.ppid, code, signal, reaper);
-      reapRunProcess(own.pid, own.ppid, code, signal, reaper);
+      exitRunProcess(own.pid, own.waiter, code, signal, reaper);
+      reapRunProcess(own.pid, own.waiter, code, signal, reaper);
     }
     // A run that has ended is no longer a process: the number it wrote into
     // a lock file answers ESRCH from here on, which is how a stale lock is
@@ -2722,7 +2717,7 @@ function startChildRun(request: RunRequest): StartedRun {
   // Async bookkeeping for a routed child must not make that child its parent.
   // The parent is the run whose `Process` handle spawned it (its NodeLibScope's process, the request's owner), never a
   // frame or a global; a spawn no run owns is the realm process's own.
-  const parentPid = runPid(nodeProcessRealmToken() ?? request.owner)?.pid ?? 0;
+  const parentPid = runPidOf(nodeProcessRealmToken() ?? request.owner) ?? 0;
   const pid = mintPid(parentPid, request.detached === true, request.owner, request.runAs);
   setRunPid(token, pid, parentPid,
     { detached: request.detached, argv: request.args.length ? request.args : [request.file], ...(request.cwd ? { cwd: request.cwd } : {}),

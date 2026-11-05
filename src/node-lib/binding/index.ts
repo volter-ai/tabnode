@@ -20,7 +20,7 @@ import caresWrapBinding from './cares_wrap';
 import processWrapBinding from './process_wrap';
 import spawnSyncBinding from './spawn_sync';
 import ttyWrapBinding from './tty_wrap';
-import { udpWrapBinding } from './stubs';
+import udpWrapBinding from './udp_wrap';
 import httpParserBinding from './http_parser';
 import bufferBinding from './buffer';
 import { constantsBinding, osBinding, configBinding, errorsBinding, credentialsBinding, encodingBinding, typesBinding, stringDecoderBinding, traceEventsBinding, messagingBinding } from './misc';

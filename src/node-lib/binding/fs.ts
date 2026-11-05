@@ -97,6 +97,9 @@ export function withFilesystem<T>(tree: VirtualFS, work: () => T): T {
   try { return work(); } finally { overrideTree = previous; }
 }
 
+/** The tree named for the length of one call, where one is: the engine's own door acting as its process. */
+export function namedTree(): VirtualFS | null { return overrideTree; }
+
 /** The cwd named for the length of one call, captured with the tree. */
 // eslint-disable-next-line no-var, vars-on-top
 var overrideCwd: string | null = null;

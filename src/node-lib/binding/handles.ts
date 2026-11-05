@@ -56,6 +56,8 @@ export function withNodeResourceScope<T>(process: object, call: () => T): T {
   resourceScope = process;
   try { return call(); } finally { resourceScope = previous; }
 }
+/** The process whose binding scope is executing, where one is: the caller a scoped binding's work is made for. */
+export function resourceScopeProcess(): object | undefined { return resourceScope; }
 /** Deferred native fs work/returned directory methods retain their actual binding scope. */
 export function captureNodeResourceScope(): <T>(call: () => T) => T {
   const process = resourceScope;
@@ -239,6 +241,12 @@ export function stopHandle(handle: OwnedHandle): void {
   drop(handle);
 }
 
+/** libuv's `uv__handle_start`: a stopped handle does something again, and holds its run's loop while ref'd. */
+export function startHandle(handle: OwnedHandle): void {
+  activeHandles.add(handle);
+  hold(handle);
+}
+
 /** libuv's `uv_ref`. */
 export function refHandle(handle: OwnedHandle): void {
   if (closingReferences.has(handle)) closingReferences.set(handle, true);
@@ -314,8 +322,11 @@ export function __ownedServerPorts(token: ProcessToken): number[] {
   if (!held) return [];
   const ports: number[] = [];
   for (const handle of held) {
-    const listening = handle as unknown as { listening?: boolean; local?: { port?: number } };
-    if (listening.listening === true && typeof listening.local?.port === 'number') ports.push(listening.local.port);
+    // A listening socket's port is its kernel's name for it (getsockname).
+    const listening = handle as unknown as { listening?: boolean; getsockname?: (out: { port?: number }) => number };
+    if (listening.listening !== true || typeof listening.getsockname !== 'function') continue;
+    const name: { port?: number } = {};
+    if (listening.getsockname(name) === 0 && typeof name.port === 'number') ports.push(name.port);
   }
   return ports;
 }

@@ -1,11 +1,13 @@
 /**
- * `internalBinding('pipe_wrap')`: the same loopback, named by a path.
+ * `internalBinding('pipe_wrap')`: a pairing of the engine's own, named by a path.
  *
  * VS Code's extension host is started by its parent and connects back to it
  * over a unix-domain socket path: the parent runs `server.listen(path)` and
- * the child `net.connect(path)`. A path is a name in one registry here, as a
- * port is a number in the other; nothing on the path is `ENOENT`, which is
- * what Node answers, and a path a live server already holds is `EADDRINUSE`.
+ * the child `net.connect(path)`. A path is a name in one registry here;
+ * nothing on the path is `ENOENT`, which is what Node answers, and a path a
+ * live server already holds is `EADDRINUSE`. AF_UNIX sockets and IPC
+ * channels are not yet the kernel's, as TCP and UDP are (ADR-0009, where the
+ * evidence stops).
  *
  * The IPC flavour is the same stream with one extra: a write may carry a
  * handle, which is set on the peer before the peer's read, and that is how
@@ -176,7 +178,7 @@ export class Pipe extends LibuvStreamWrap {
     observeNodeRequest(req, this);
     if (native) {
       try {
-        const status = native.connect(path, undefined, false, status => invokeOwned(req, 'oncomplete', status === UV_ENOENT ? noListener(path) : status, this, req, true, true));
+        const status = native.connect(path, status => invokeOwned(req, 'oncomplete', status === UV_ENOENT ? noListener(path) : status, this, req, true, true));
         if (status !== 0) forgetNodeRequest(req);
         return status;
       } catch (cause) { forgetNodeRequest(req); throw cause; }

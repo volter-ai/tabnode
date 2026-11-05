@@ -36,6 +36,8 @@ import STREAMS_UTILS from './internal/streams/utils.js?raw';
 import STREAMS_WRITABLE from './internal/streams/writable.js?raw';
 import CHILD_PROCESS from './child_process.js?raw';
 import INTERNAL_NET from './internal/net.js?raw';
+import DGRAM from './dgram.js?raw';
+import INTERNAL_DGRAM from './internal/dgram.js?raw';
 import INTERNAL_CHILD_PROCESS from './internal/child_process.js?raw';
 import INTERNAL_STREAM_BASE_COMMONS from './internal/stream_base_commons.js?raw';
 import INTERNAL_SOCKET_LIST from './internal/socket_list.js?raw';
@@ -177,6 +179,8 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/streams/writable': STREAMS_WRITABLE,
   'child_process': CHILD_PROCESS,
   'internal/net': INTERNAL_NET,
+  'dgram': DGRAM,
+  'internal/dgram': INTERNAL_DGRAM,
   'internal/child_process': INTERNAL_CHILD_PROCESS,
   'internal/stream_base_commons': INTERNAL_STREAM_BASE_COMMONS,
   'internal/socket_list': INTERNAL_SOCKET_LIST,
