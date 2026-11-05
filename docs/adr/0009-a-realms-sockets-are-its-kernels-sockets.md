@@ -226,7 +226,9 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   connections are the process's kernel sockets. A builtin runs with its process's global as `globalThis`, where
   undici keeps its global dispatcher, so a program's own undici's `setGlobalDispatcher` is its `fetch`'s, as on Node,
   and one process's dispatcher is never another's. `data:` URLs are undici's own; a `blob:` URL is resolved through
-  `node:buffer`'s `resolveObjectURL`. `WebAssembly.compileStreaming` and `instantiateStreaming` take that Response as
+  `node:buffer`'s `resolveObjectURL`, which answers what the process's `URL.createObjectURL` registered: Node's
+  `blob:nodedata:<id>`, held by the process's blob binding (one registry a process, as Node's is one a realm). The
+  process's `URL` is the realm's with Node's `createObjectURL` and `revokeObjectURL`. `WebAssembly.compileStreaming` and `instantiateStreaming` take that Response as
   Node's do: the process's `wasm_web_api` binding is given Node's `internal/wasm_web_api.js` callback, which checks the
   Response and pushes its bytes to the realm's streaming compiler.
 - **The page's doors** (`ServerBridge`, `http-bridge`, `container.listenNet`) are a client and a server like any

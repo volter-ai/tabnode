@@ -19,6 +19,8 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   `CloseEvent` and `MessageEvent` are the ones it exports, exposed as Node's bootstrap exposes them, over the process's
   `net` and `tls`. `WebAssembly.compileStreaming` and `instantiateStreaming` take its Response, through Node's
   `internal/wasm_web_api.js` and a `wasm_web_api` binding.
+  `URL.createObjectURL` and `revokeObjectURL` are Node's (`blob:nodedata:<id>`, the process's blob registry), so
+  `buffer.resolveObjectURL` and `fetch` resolve the URLs a program makes.
   A builtin's `globalThis` is its process's global, so undici's global dispatcher is per process. The realm's patched
   `Request` and `Response` are gone.
 - **TLS is the host's** (ADR-0009 §3). A tree offers its process's TLS client and server under `TREE_TLS`

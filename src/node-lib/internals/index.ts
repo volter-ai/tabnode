@@ -25,8 +25,10 @@ import {
 import { internalSocketAddress, internalBlockList } from './addresses';
 import { internalFsUtils } from './child-process';
 import {
-  internalAbortController, internalBlob, internalFile, internalWebStreamsAdapters, createWebStreamsAdapters,
+  internalAbortController, internalBlob, internalBlobOf, internalFile, internalWebStreamsAdapters, createWebStreamsAdapters,
 } from './buffer-and-streams';
+import type { BlobBinding } from '../binding/blob';
+import { nodeLibBindingFor } from '../load';
 import { internalBootstrapRealm, internalUrl, internalEncoding } from './modules';
 import { internalAmaro } from './amaro';
 import { locksOf } from './locks';
@@ -54,6 +56,7 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   });
   if (require && name === 'internal/webstreams/adapters') return () => createWebStreamsAdapters(require);
   if (name === 'internal/locks') return () => ({ locks: locksOf(process) });
+  if (process && name === 'internal/blob') return () => internalBlobOf(nodeLibBindingFor(process, 'blob') as BlobBinding);
   if (process && name === 'internal/process/per_thread') return () => ({
     platform: process.platform, arch: process.arch, version: process.version,
   });

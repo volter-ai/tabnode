@@ -343,7 +343,15 @@ class TLSSocket extends NetSocket {
     }
     if (socket) {
       (socket as Socket).on('close', () => this.destroy());
-      (socket as Socket).on('error', (error: Error) => this.emit('error', error));
+      (socket as Socket).on('error', (error: Error) => {
+        // Before a server's handshake is done its socket's failure is the server's `tlsClientError` (Node's
+        // `_tlsError` holds it while control is not released).
+        if (!tlsOptions.isServer || this._secureEstablished) { this.emit('error', error); return; }
+        if (this._hadError) return;
+        this._hadError = true;
+        (tlsOptions.server as EventEmitter).emit('tlsClientError', error, this);
+        this.destroy();
+      });
     } else this.connecting = true;
     // Read on the next tick, so the caller has a chance to set up its listeners; what the wrapped socket already read
     // is the server's.
