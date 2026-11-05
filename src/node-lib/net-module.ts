@@ -12,8 +12,8 @@
  * What this is: Node's `lib/net.js` v22.18.0, vendored unmodified in
  * `./net.js`, loaded by `./load.ts` on the binding in `./binding/` -- the
  * libuv surface and nothing above it. `Socket`, `Server`, `connect`,
- * `BlockList` and the rest are Node's own code running on the engine's
- * loopback pairing.
+ * `BlockList` and the rest are Node's own code running on the process's
+ * kernel sockets (ADR-0009).
  *
  * The rule for this file: it binds, it does not implement. A `net` bug is
  * fixed in the binding or by moving the vendored file to a newer Node, never
@@ -28,8 +28,7 @@ import type { DuplexLike } from './stream-module';
 import type { EventEmitter } from './events-module';
 import type { ProcessToken } from '../process-tokens';
 import { __adoptHandle, __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles } from './binding/handles';
-import { TCP, constants as tcpConstants, installHostSocket, type SockName } from './binding/tcp_wrap';
-import { LibuvStreamWrap, WriteWrap, ShutdownWrap, kReadBytesOrError, kArrayBufferOffset, streamBaseState } from './binding/stream_wrap';
+import type { LibuvStreamWrap } from './binding/stream_wrap';
 
 export type { ProcessToken };
 
@@ -167,18 +166,11 @@ export const isIP = netModule.isIP;
 export const isIPv4 = netModule.isIPv4;
 export const isIPv6 = netModule.isIPv6;
 
-// A connection the namespace's host holds an end of (a listener it holds, a connection it opens to a guest's
-// listener) reaches the host as Node's own `net.Socket` over that end's handle, as `net.js` wraps an accepted handle.
-installHostSocket((handle) => new Socket({ handle, readable: true, writable: true, allowHalfOpen: true }));
-
 /** How many ref'd handles the named run holds, as Node's loop counts them. */
 export { __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles };
 
 /** The ports a run is listening on, and the release of them when it ends. */
 export { __ownedServerPorts, __releaseOwnedServers } from './binding/handles';
-
-/** Who is told when a guest starts or stops listening on a port. */
-export { watchNamespacePorts, listenerOnPort } from './binding/tcp_wrap';
 
 /**
  * A socket another run received over IPC is that run's: its handle moves, so
@@ -192,61 +184,4 @@ export function __adoptSocket(socket: Socket, token: ProcessToken | null): void 
 /** The same for a listening server a run received. */
 export function __adoptServerHandle(server: Server, token: ProcessToken | null): void {
   __adoptHandle(server._handle, token);
-}
-
-/** The bridge's end of a connection whose other end is a `net.Socket`. */
-export interface BridgeEnd {
-  /** Bytes the socket's owner wrote, as the engine hands them over. */
-  onData(listener: (bytes: Uint8Array) => void): void;
-  /** Bytes arriving from the far side, read by the socket as its own. */
-  push(bytes: Uint8Array): void;
-  /** The far side will write no more; the socket reads EOF. */
-  end(): void;
-  /** Close the pairing from this end. */
-  destroy(): void;
-  readonly destroyed: boolean;
-}
-
-/**
- * A connection with a `net.Socket` on one end and the page bridge on the
- * other.
- *
- * An `upgrade` listener is handed the connection's own `net.Socket` by Node,
- * and a program does everything a socket can with it: pause, resume, pipe,
- * `setEncoding`, `bufferSize`, and being sent to a child over IPC. The engine
- * used to hand it an object with `write` and `emit('data')` overridden, which
- * was no socket at all -- VS Code's `NodeSocket.drain` waits on
- * `bufferSize === 0` and a `drain` event, and waited forever. So the bridge
- * is a handle now, the far end of a real pairing, and what it holds is the
- * two calls a bridge needs and nothing of the socket's.
- *
- * The bridge's own handle is unref'd: a page's connection is not a guest's
- * work, and the socket the guest holds is what keeps the guest's run alive.
- */
-export function __bridgeConnection(local: AddressInfo, remote: AddressInfo): { socket: Socket; bridge: BridgeEnd } {
-  const near = new TCP(tcpConstants.SOCKET);
-  const far = new TCP(tcpConstants.SOCKET);
-  near.adoptNames(local as SockName, remote as SockName);
-  far.adoptNames(remote as SockName, local as SockName);
-  LibuvStreamWrap.pair(near, far);
-  far.unref();
-
-  const listeners: Array<(bytes: Uint8Array) => void> = [];
-  far.onread = (arrayBuffer: ArrayBuffer | null): void => {
-    const length = streamBaseState[kReadBytesOrError];
-    if (length <= 0 || arrayBuffer === null) return;
-    const bytes = new Uint8Array(arrayBuffer, streamBaseState[kArrayBufferOffset], length).slice();
-    for (const listener of [...listeners]) listener(bytes);
-  };
-  far.readStart();
-
-  const socket = new netModule.Socket({ handle: near, readable: true, writable: true });
-  const bridge: BridgeEnd = {
-    onData(listener) { listeners.push(listener); },
-    push(bytes) { far.writeBuffer(new WriteWrap(), bytes); },
-    end() { far.shutdown(new ShutdownWrap()); },
-    destroy() { far.close(); },
-    get destroyed() { return far.closed; },
-  };
-  return { socket, bridge };
 }

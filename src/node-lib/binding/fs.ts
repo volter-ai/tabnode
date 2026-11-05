@@ -78,24 +78,10 @@ import type { VirtualFS, Stats as VfsStats } from '../../virtual-fs';
 import { constantsBinding } from './misc';
 import { Buffer as NodeBuffer } from '../buffer-module';
 import { unsharedBytes } from './buffer';
+import { namedTree, withFilesystem } from './named-tree';
 
 /** The key the engine hangs a run's filesystem off its guest process. */
 export const kRunFilesystem = Symbol.for('tabnode.run.vfs');
-
-/**
- * A tree named for the length of one call, which is how the engine's own
- * parts use `fs` outside a run: the substrate builds with rolldown over a
- * project's tree, and the engine hands WASI a tree of its own. Node's `fs` is
- * one module and reads the run's tree off the run's process; this is the
- * door for a caller that has a tree but is not a run.
- */
-// eslint-disable-next-line no-var, vars-on-top
-var overrideTree: VirtualFS | null = null;
-export function withFilesystem<T>(tree: VirtualFS, work: () => T): T {
-  const previous = overrideTree;
-  overrideTree = tree;
-  try { return work(); } finally { overrideTree = previous; }
-}
 
 /** The cwd named for the length of one call, captured with the tree. */
 // eslint-disable-next-line no-var, vars-on-top
@@ -108,7 +94,8 @@ function withCwd<T>(cwd: string, work: () => T): T {
 
 /** The filesystem of the run whose code is executing. */
 function vfs(): VirtualFS {
-  if (overrideTree !== null) return overrideTree;
+  const named = namedTree();
+  if (named !== null) return named;
   const realm = globalThis as unknown as { process?: Record<symbol, unknown> };
   const found = realm.process?.[kRunFilesystem] as VirtualFS | undefined;
   if (!found) {

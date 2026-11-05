@@ -16,7 +16,6 @@
 import { createDnsModule } from '../shims/dns';
 import { processHostsReaderOf } from '../process-hostname';
 import * as clusterShim from '../shims/cluster';
-import * as dgramShim from '../shims/dgram';
 import asyncHooksShim from '../shims/async_hooks';
 import stringDecoderShim, { createStringDecoderModule } from '../shims/string_decoder';
 import v8Shim from '../shims/v8';
@@ -28,6 +27,7 @@ import * as workerThreadsShim from '../shims/worker_threads';
 import * as http2Shim from '../shims/http2';
 import * as inspectorShim from '../shims/inspector';
 import * as perfHooksShim from '../shims/perf_hooks';
+import { engineUrlModule, processUrlModule } from './object-urls';
 import { nodeLibInternalRequire } from './load';
 import { createTimersModule } from './timers';
 import { guestTimerFunctions } from '../guest-timers';
@@ -41,6 +41,8 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   if (_process && name === 'timers') return () => createTimersModule(guestTimerFunctions(_process, globalThis as unknown as Record<string, unknown>));
   if (require && name === 'crypto') return () => cryptoShim.createCryptoModule(require);
   if (require && name === 'tls') return () => tlsShim.createTlsModule(require);
+  // `url`'s URL is the process's, whose `createObjectURL` is Node's.
+  if (_process && name === 'url') return () => processUrlModule(_process);
   if (require && name === 'string_decoder') return () => createStringDecoderModule(() => require('buffer').Buffer);
   __table ??= {
   timers: createTimersModule,
@@ -48,7 +50,6 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   cluster: () => clusterShim,
   string_decoder: () => stringDecoderShim,
   v8: () => v8Shim,
-  dgram: () => dgramShim,
   // Node's `events.js` builds `EventEmitterAsyncResource` by extending this
   // binding's `AsyncResource`. The shim's class answers `asyncId` 0, which
   // is not an id a resource has.
@@ -60,6 +61,7 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   http2: () => http2Shim,
   inspector: () => inspectorShim,
   perf_hooks: () => perfHooksShim,
+  url: engineUrlModule,
   // `internal/fs/cp/cp.js` requires the public alias; it is the same object
   // as `internal/util/types`, which is `util.types`.
   'util/types': () => nodeLibInternalRequire('internal/util/types'),

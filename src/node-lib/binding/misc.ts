@@ -9,6 +9,7 @@ import { processCredentialsOf } from '../../process-credentials';
 import { constantsBinding as buildConstantsBinding } from '../../shims/constants';
 import { UV_ENOSYS } from './uv';
 import * as osShim from '../../shims/os';
+import { treeSocketsOf, type TreeSockets } from '../../host-sockets';
 import { nodeLibInternalRequire } from '../load';
 
 /**
@@ -119,9 +120,9 @@ export const osBinding = {
    * The same shape for interfaces: name, address, netmask, family, mac,
    * scope id, then the CIDR, per address.
    */
-  getInterfaceAddresses: (): Array<string | number | boolean> => {
+  getInterfaceAddresses: (sockets?: TreeSockets): Array<string | number | boolean> => {
     const flat: Array<string | number | boolean> = [];
-    for (const [name, addresses] of Object.entries(osShim.networkInterfaces())) {
+    for (const [name, addresses] of Object.entries(osShim.networkInterfaces(sockets))) {
       for (const address of addresses ?? []) {
         // lib/os.js reads the family as its name ('IPv4', 'IPv6') and a scope id of -1 as "none": handed 4 and 0,
         // every interface read `family: 4, scopeid: 0`, and a program asking for `family === 'IPv4'` found none.
@@ -150,7 +151,10 @@ export const osBinding = {
 /** libuv's account lookup belongs to the asking process, even when multiple guests share this realm. */
 export function createOsBinding(process: object): typeof osBinding {
   const credentials = processCredentialsOf(process);
-  return { ...osBinding, getHostname: () => processHostnameOf(process), getUserInfo: () => ({ ...osShim.userInfo(credentials) }) };
+  // The interfaces are the process's kernel's: its tree's socket calls (ADR-0009).
+  const sockets = (): TreeSockets | undefined => treeSocketsOf((process as Record<symbol, unknown>)[Symbol.for('tabnode.run.vfs')]);
+  return { ...osBinding, getHostname: () => processHostnameOf(process), getUserInfo: () => ({ ...osShim.userInfo(credentials) }),
+    getInterfaceAddresses: () => osBinding.getInterfaceAddresses(sockets()) };
 }
 
 /**

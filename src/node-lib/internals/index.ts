@@ -15,7 +15,7 @@ import * as acorn from 'acorn';
 import { internalCryptoKeys } from './crypto-keys';
 import {
   internalConsoleGlobal, internalProcessExecution,
-  internalProcessWarning, internalSourceMapCache, internalUndici, internalReadlineInterface, internalJsTransferable,
+  internalProcessWarning, internalSourceMapCache, internalReadlineInterface, internalJsTransferable,
 } from './events-util';
 import {
   internalAsyncHooks, internalTimers, internalStreamsState, internalTaskQueues,
@@ -23,10 +23,12 @@ import {
   internalStartupSnapshot, internalPermission,
 } from './runtime';
 import { internalSocketAddress, internalBlockList } from './addresses';
-import { internalFsUtils, internalDgram } from './child-process';
+import { internalFsUtils } from './child-process';
 import {
-  internalAbortController, internalBlob, internalFile, internalWebStreamsAdapters, createWebStreamsAdapters,
+  internalAbortController, internalBlob, internalBlobOf, internalFile, internalWebStreamsAdapters, createWebStreamsAdapters,
 } from './buffer-and-streams';
+import type { BlobBinding } from '../binding/blob';
+import { nodeLibBindingFor } from '../load';
 import { internalBootstrapRealm, internalUrl, internalEncoding } from './modules';
 import { internalAmaro } from './amaro';
 import { locksOf } from './locks';
@@ -54,6 +56,7 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   });
   if (require && name === 'internal/webstreams/adapters') return () => createWebStreamsAdapters(require);
   if (name === 'internal/locks') return () => ({ locks: locksOf(process) });
+  if (process && name === 'internal/blob') return () => internalBlobOf(nodeLibBindingFor(process, 'blob') as BlobBinding);
   if (process && name === 'internal/process/per_thread') return () => ({
     platform: process.platform, arch: process.arch, version: process.version,
   });
@@ -76,7 +79,6 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   'internal/assert': () => internalAssert,
   'internal/v8/startup_snapshot': () => internalStartupSnapshot,
   'internal/fs/utils': () => internalFsUtils,
-  'internal/dgram': () => internalDgram,
   'internal/abort_controller': () => internalAbortController,
   'internal/blob': () => internalBlob,
   'internal/file': () => internalFile,
@@ -90,7 +92,6 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   'internal/process/execution': () => internalProcessExecution,
   'internal/process/warning': () => internalProcessWarning,
   'internal/source_map/source_map_cache': () => internalSourceMapCache,
-  'internal/deps/undici/undici': () => internalUndici,
   'internal/deps/amaro/dist/index': () => internalAmaro(),
   'internal/readline/interface': () => internalReadlineInterface,
   'internal/worker/js_transferable': () => internalJsTransferable,

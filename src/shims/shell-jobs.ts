@@ -37,7 +37,7 @@
 import { defineCommand } from 'just-bash';
 import type { Bash, CommandContext } from 'just-bash';
 import {
-  PROCESS_TOKEN_ENV, enterRun, mintPid, setRunPid, runPid, forgetRunPid, pidIsLive, signalPid, exitRunProcess, reapRunProcess,
+  PROCESS_TOKEN_ENV, enterRun, mintPid, setRunPid, runPidOf, forgetRunPid, pidIsLive, signalPid, exitRunProcess, reapRunProcess,
   tokenOfPid, __signalOwnedProcess, __stopOwnedProcess, type ProcessToken,
 } from '../process-tokens';
 import { __substrateChildrenOf, __substrateSignals, __substrateSignalNames } from './process';
@@ -223,7 +223,7 @@ function toRun(streams: RunStreams | undefined, fd: 1 | 2, chunk: string | Uint8
 function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script: Node, sourceText: string): Job {
   const token: ProcessToken = `job-${nextJob++}`;
   const parent = host.runTokenOf(ctx);
-  const parentPid = runPid(parent)?.pid;
+  const parentPid = runPidOf(parent);
   const liveParent = parentPid !== undefined && pidIsLive(parentPid, parent) ? parentPid : 0;
   const pid = mintPid(liveParent, false, parent);
   setRunPid(token, pid, liveParent, { argv: ['sh', '-c', sourceText], cwd: ctx.cwd }, parent);

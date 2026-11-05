@@ -138,13 +138,7 @@ fd 1 and fd 2 as the bytes the program wrote; where given, the text sink of that
 
 > `optional` **pid?**: `number`
 
-This run's process number and its parent's; minted where neither is given.
-
-***
-
-### ppid?
-
-> `optional` **ppid?**: `number`
+This run's process number; minted where none is given. Its parent's is its registry's, read when asked.
 
 ***
 

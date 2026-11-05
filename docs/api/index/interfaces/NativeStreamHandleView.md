@@ -18,13 +18,7 @@ One open stream handle, as a process's descriptor table shows it.
 
 ### kind
 
-> **kind**: `"pipe"` \| `"tcp"`
-
-***
-
-### listening
-
-> **listening**: `boolean`
+> **kind**: `"pipe"`
 
 ***
 

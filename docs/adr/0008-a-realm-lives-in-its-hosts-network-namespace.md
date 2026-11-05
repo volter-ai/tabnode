@@ -1,6 +1,6 @@
 # ADR-0008: A realm lives in the network namespace its host gives it
 
-Status: Accepted
+Status: Superseded by ADR-0009 (a realm's sockets are its kernel's, called by descriptor).
 
 Date: 2026-11-04. Constitution Article 6 (correct toward Node's own behaviour). Owner: "now the way that the tab runs
 things is done like on a real computer right? instead of magically"; "we dont' want any one offs everything has to

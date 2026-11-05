@@ -56,6 +56,8 @@ export function withNodeResourceScope<T>(process: object, call: () => T): T {
   resourceScope = process;
   try { return call(); } finally { resourceScope = previous; }
 }
+/** The process whose binding scope is executing, where one is: the caller a scoped binding's work is made for. */
+export function resourceScopeProcess(): object | undefined { return resourceScope; }
 /** Deferred native fs work/returned directory methods retain their actual binding scope. */
 export function captureNodeResourceScope(): <T>(call: () => T) => T {
   const process = resourceScope;
@@ -214,8 +216,12 @@ export function ownerOf(handle: OwnedHandle): ProcessToken | null {
   return heldBy.get(handle) ?? null;
 }
 
-/** A new handle is the current run's, ref'd and active, as libuv's start. */
-export function registerHandle(handle: OwnedHandle, nodeWrap = false): void {
+/**
+ * A new handle is the current run's and ref'd, as `uv_handle_init` leaves it. `active` says whether it holds the loop
+ * from its start: a stream or socket libuv starts only when it reads, listens or receives (TCP, UDP, a kernel pipe)
+ * is registered stopped, and its binding starts and stops it (`startHandle`, `stopHandle`) as libuv's does.
+ */
+export function registerHandle(handle: OwnedHandle, nodeWrap = false, active = true): void {
   heldBy.set(handle, currentOwner());
   const token = heldBy.get(handle);
   if (token != null) {
@@ -224,7 +230,7 @@ export function registerHandle(handle: OwnedHandle, nodeWrap = false): void {
     owned.add(handle);
   }
   refHeld.add(handle);
-  activeHandles.add(handle);
+  if (active) activeHandles.add(handle);
   hold(handle);
   if (nodeWrap) observeNodeHandle(handle);
 }
@@ -237,6 +243,12 @@ export function registerHandle(handle: OwnedHandle, nodeWrap = false): void {
 export function stopHandle(handle: OwnedHandle): void {
   activeHandles.delete(handle);
   drop(handle);
+}
+
+/** libuv's `uv__handle_start`: a stopped handle does something again, and holds its run's loop while ref'd. */
+export function startHandle(handle: OwnedHandle): void {
+  activeHandles.add(handle);
+  hold(handle);
 }
 
 /** libuv's `uv_ref`. */
@@ -256,6 +268,14 @@ export function unrefHandle(handle: OwnedHandle): void {
 /** Whether the handle still holds its run's loop open. */
 export function handleHasRef(handle: OwnedHandle): boolean {
   return refHeld.has(handle);
+}
+
+/** A uv request's hold on its handle's loop, which it keeps alive even when the handle is unreferenced; the answer ends it. */
+export function holdRequest(handle: OwnedHandle): () => void {
+  const request = { close: (): void => releaseHandle(request) };
+  registerHandle(request);
+  __adoptHandle(request, ownerOf(handle));
+  return request.close;
 }
 
 /** A closed handle holds nothing. */
@@ -314,8 +334,11 @@ export function __ownedServerPorts(token: ProcessToken): number[] {
   if (!held) return [];
   const ports: number[] = [];
   for (const handle of held) {
-    const listening = handle as unknown as { listening?: boolean; local?: { port?: number } };
-    if (listening.listening === true && typeof listening.local?.port === 'number') ports.push(listening.local.port);
+    // A listening socket's port is its kernel's name for it (getsockname).
+    const listening = handle as unknown as { listening?: boolean; getsockname?: (out: { port?: number }) => number };
+    if (listening.listening !== true || typeof listening.getsockname !== 'function') continue;
+    const name: { port?: number } = {};
+    if (listening.getsockname(name) === 0 && typeof name.port === 'number') ports.push(name.port);
   }
   return ports;
 }
@@ -359,14 +382,9 @@ export function __releaseOwnedHandles(token: ProcessToken): void {
 }
 
 /**
- * Move a handle to another run, as a descriptor sent over IPC moves.
- *
- * Node's `subprocess.send(message, socket)` duplicates the parent's descriptor
- * into the child, and from then on the socket is an active handle of the
- * child's loop, not the parent's. The engine has no descriptor to duplicate —
- * parent and child are one realm and the loopback pairing is the connection —
- * so the move is this count's. A handle the program `unref`'d stays unref'd
- * through the move, as Node's does.
+ * Count a handle in another run's loop: one made outside the run it belongs to (a connection a listener accepted, a
+ * descriptor an IPC read received, a pipe pairing's end given to a child). The descriptor is already that process's;
+ * this moves only the loop's count. A handle the program `unref`'d stays unref'd through the move, as Node's does.
  */
 export function __adoptHandle(handle: OwnedHandle | null | undefined, token: ProcessToken | null, resourceSource?: object): void {
   if (!handle) return;

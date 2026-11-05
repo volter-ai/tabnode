@@ -106,21 +106,6 @@ export const internalSourceMapCache = {
 };
 
 /**
- * `internal/deps/undici/undici`: what `http.js` reaches for when a program
- * touches `http.WebSocket`, `http.CloseEvent` or `http.MessageEvent`.
- *
- * Node bundles undici to have those classes at all. A tab already has them --
- * they are the platform's, and they are what `new WebSocket(url)` means
- * everywhere else on the page -- so the realm's own are what the engine
- * answers with, rather than a second implementation of the same three names.
- */
-export const internalUndici = {
-  get WebSocket() { return (globalThis as { WebSocket?: unknown }).WebSocket; },
-  get CloseEvent() { return (globalThis as { CloseEvent?: unknown }).CloseEvent; },
-  get MessageEvent() { return (globalThis as { MessageEvent?: unknown }).MessageEvent; },
-};
-
-/**
  * `internal/readline/interface`: the one name `internal/fs/promises.js`
  * takes from it, at its top, so every use of `fs/promises` needs it.
  * `filehandle.readLines()` builds one of these over the file's own stream;
