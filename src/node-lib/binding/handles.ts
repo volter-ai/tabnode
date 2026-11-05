@@ -374,9 +374,9 @@ export function __releaseOwnedHandles(token: ProcessToken): void {
  *
  * Node's `subprocess.send(message, socket)` duplicates the parent's descriptor
  * into the child, and from then on the socket is an active handle of the
- * child's loop, not the parent's. The engine has no descriptor to duplicate —
- * parent and child are one realm and the loopback pairing is the connection —
- * so the move is this count's. A handle the program `unref`'d stays unref'd
+ * child's loop, not the parent's. Parent and child are one realm, and the
+ * handle (a pipe pairing, or a kernel socket's duplicated descriptor) is the
+ * connection, so the move is this count's. A handle the program `unref`'d stays unref'd
  * through the move, as Node's does.
  */
 export function __adoptHandle(handle: OwnedHandle | null | undefined, token: ProcessToken | null, resourceSource?: object): void {

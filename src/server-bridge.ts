@@ -185,9 +185,9 @@ function __substrateParseFrames(state: FrameState, chunk: Uint8Array, onFrame: (
  * forever, which is what openvscode-server does before handing its extension
  * host the workbench's connection.
  *
- * So the bridge is a handle, not a fake socket: the listener's end is a
+ * So the bridge is a client, not a fake socket: the listener's end is a
  * `net.Socket` of Node's own making and the bridge holds the other end of the
- * pairing. What the library writes arrives as bytes -- read first as the
+ * connection. What the library writes arrives as bytes -- read first as the
  * `101` head and then as RFC 6455 -- and what the client says is framed,
  * masked as a client must, and pushed in as the connection's own inbound
  * bytes.
@@ -249,7 +249,7 @@ function __substrateUpgradeSocket(entry: UpgradeEntry, socket: Socket): UpgradeS
 }
 /**
  * The socket an `upgrade` listener is handed for a connect that carries no
- * WebSocket frames: the same `net.Socket` over the same pairing, with the
+ * WebSocket frames: the same `net.Socket` over the same connection, with the
  * bridge speaking bytes rather than frames on its end.
  *
  * vscode-server's `RemoteExtensionHostAgentServer` answers its own upgrade. It

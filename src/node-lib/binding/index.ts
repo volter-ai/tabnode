@@ -4,8 +4,9 @@
  *
  * The rule for every file under this directory is the one the contract sets:
  * the binding implements nothing Node's own files implement. It is the libuv
- * surface and the engine's own doors behind it — the loopback pairing, the
- * port and path registries, the run's count of open handles — and nothing
+ * surface and the engine's own doors behind it — the process's kernel
+ * sockets (ADR-0009), the pipe pairing and path registry, the run's count of
+ * open handles — and nothing
  * about sockets, servers, half-open, timeouts or buffering, nor about
  * `ChildProcess`, `fork`'s IPC protocol or `exec`'s buffering: all of those
  * are `net.js`'s and `child_process.js`'s, and both are vendored.

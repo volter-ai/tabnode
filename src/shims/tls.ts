@@ -119,7 +119,7 @@ class TLSSocket extends NetSocket {
     const options = args[0] as { port?: unknown; host?: unknown; hostname?: unknown; socket?: unknown } | undefined;
     const host = String(options?.host ?? options?.hostname ?? 'localhost') || 'localhost';
     const pair = (): this => {
-      // The peer is a listener of the namespace's network, or nothing: a refused port fails as a net connect does.
+      // The peer is a listener on a directly connected network, or nothing: a refused port fails as a net connect does.
       this.once('connect', () => {
         this.secureConnecting = false;
         this.authorized = true;
