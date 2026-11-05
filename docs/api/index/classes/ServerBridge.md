@@ -34,14 +34,6 @@ Server Bridge manages virtual HTTP servers and routes requests
 
 ## Properties
 
-### network
-
-> `readonly` **network**: [`NetworkNamespace`](../interfaces/NetworkNamespace.md)
-
-The namespace whose loopback this bridge answers for: its container's.
-
-***
-
 ### servers
 
 > **servers**: `Map`\<`number`, `VirtualServer`\>
@@ -49,6 +41,14 @@ The namespace whose loopback this bridge answers for: its container's.
 #### Inherited from
 
 [`PortBridge`](PortBridge.md).[`servers`](PortBridge.md#servers)
+
+***
+
+### tree
+
+> `readonly` **tree**: `object` \| `undefined`
+
+The tree of the process this bridge acts as, its container's; the calling process's where none was given.
 
 ***
 
@@ -324,7 +324,7 @@ Configuration options for the service worker
 
 > `protected` **isGuest**(`entry`): `boolean`
 
-A guest's listener (the old null sentinel, now a request adapter) is answered over the loopback.
+A guest's listener (a request adapter) is answered over a connection to its port.
 
 #### Parameters
 

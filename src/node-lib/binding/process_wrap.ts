@@ -250,7 +250,8 @@ export class Process implements OwnedHandle {
   private closed = false;
   /** The stdio entries this run was started with, and their far ends. */
   private stdio: StdioEntry[] = [];
-  private terminalEnds = new Map<number, TTY>();
+  /** The child's ends this handle holds by number where they are no pairing's peer: a terminal's, a kernel channel's. */
+  private farEnds = new Map<number, TTY | Pipe>();
   /** Writers holding their own reference to a parent's description (fd stdio), released at the child's end. */
   private heldDescriptions: DescriptorWriter[] = [];
   /** The file this process was spawned from, for the instrument below. */
@@ -332,7 +333,7 @@ export class Process implements OwnedHandle {
           // wrapper. Failed spawn and child exit release only this copy.
           const inherited = descriptor.duplicate();
           __adoptHandle(inherited, null);
-          this.terminalEnds.set(index, inherited);
+          this.farEnds.set(index, inherited);
           request.terminal = inherited.terminal;
           if (index === 0) { stdinFar = inherited; request.stdinIsPipe = true; }
           else if (index === 1) request.stdout = chunk => this.toPipe(index, chunk);
@@ -340,7 +341,12 @@ export class Process implements OwnedHandle {
           continue;
         }
       }
-      const far = this.pairFarEnd(entry);
+      const far = this.pairFarEnd(entry, index);
+      if (typeof far === 'number') {
+        for (const held of this.heldDescriptions.splice(0)) held.release?.();
+        this.closeFarEnds();
+        return far;
+      }
       if (entry.ipc) {
         if (far) {
           request.channel = {
@@ -435,20 +441,26 @@ export class Process implements OwnedHandle {
   /**
    * The other half of a `pipe` entry: the end the child holds. It belongs to
    * no run -- the parent holds the handle Node gave it and the child holds the
-   * one it opens; this is the wire between them.
+   * one it opens; this is the wire between them. A kernel IPC pipe's is the
+   * other end of a `socketpair` in the parent's table, which the child's fork
+   * copies (uv_spawn's `UV_CREATE_PIPE`); a failure to make it is the spawn's.
    */
-  private pairFarEnd(entry: StdioEntry): Pipe | null {
+  private pairFarEnd(entry: StdioEntry, index: number): Pipe | number | null {
     if (entry.type !== 'pipe' && entry.type !== 'overlapped') return null;
     if (!entry.handle) return null;
     const far = new Pipe(entry.ipc ? pipeConstants.IPC : pipeConstants.SOCKET);
     __adoptHandle(far, null);
-    LibuvStreamWrap.pair(entry.handle, far);
+    if (entry.handle instanceof Pipe && entry.handle.kernelBacked) {
+      const status = entry.handle.socketpair(far);
+      if (status !== 0) { far.close(); return status; }
+      this.farEnds.set(index, far);
+    } else LibuvStreamWrap.pair(entry.handle, far);
     return far;
   }
 
   /** The far end of fd `index`, whoever holds it now. */
   private farEndAt(index: number): LibuvStreamWrap | null {
-    return this.terminalEnds.get(index) ?? this.stdio[index]?.handle?.peer ?? null;
+    return this.farEnds.get(index) ?? this.stdio[index]?.handle?.peer ?? null;
   }
 
   private closeFarEnds(): void {

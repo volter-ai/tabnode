@@ -52,11 +52,7 @@ text sink of the same fd is not called.
 
 `number`
 
-This process's own number and its parent's, as Node gives every process.
-
-#### ppid?
-
-`number`
+This process's own number, as Node gives every process; its parent's is read from its registry (`ppid`).
 
 #### stdin?
 

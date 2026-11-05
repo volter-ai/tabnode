@@ -22,8 +22,10 @@ const codes: Record<string, [number, string]> = {
   UV_ECONNABORTED: [-103, 'software caused connection abort'],
   UV_ECONNREFUSED: [-111, 'connection refused'],
   UV_ECONNRESET: [-104, 'connection reset by peer'],
+  UV_EDESTADDRREQ: [-89, 'destination address required'],
   UV_EEXIST: [-17, 'file already exists'],
   UV_EFAULT: [-14, 'bad address in system call argument'],
+  UV_EHOSTDOWN: [-112, 'host is down'],
   UV_EHOSTUNREACH: [-113, 'host is unreachable'],
   UV_EINTR: [-4, 'interrupted system call'],
   UV_EINVAL: [-22, 'invalid argument'],
@@ -31,6 +33,7 @@ const codes: Record<string, [number, string]> = {
   UV_EISCONN: [-106, 'socket is already connected'],
   UV_EISDIR: [-21, 'illegal operation on a directory'],
   UV_EMFILE: [-24, 'too many open files'],
+  UV_EMSGSIZE: [-90, 'message too long'],
   UV_ENAMETOOLONG: [-36, 'name too long'],
   UV_ENETDOWN: [-100, 'network is down'],
   UV_ENETUNREACH: [-101, 'network is unreachable'],
@@ -38,6 +41,8 @@ const codes: Record<string, [number, string]> = {
   UV_ENOBUFS: [-105, 'no buffer space available'],
   UV_ENOENT: [-2, 'no such file or directory'],
   UV_ENOMEM: [-12, 'not enough memory'],
+  UV_ENONET: [-64, 'machine is not on the network'],
+  UV_ENOPROTOOPT: [-92, 'protocol not available'],
   UV_ENOSPC: [-28, 'no space left on device'],
   UV_ENOSYS: [-38, 'function not implemented'],
   UV_ENOTCONN: [-107, 'socket is not connected'],
@@ -49,7 +54,10 @@ const codes: Record<string, [number, string]> = {
   UV_EPERM: [-1, 'operation not permitted'],
   UV_EPIPE: [-32, 'broken pipe'],
   UV_EPROTO: [-71, 'protocol error'],
+  UV_EPROTONOSUPPORT: [-93, 'protocol not supported'],
+  UV_EPROTOTYPE: [-91, 'protocol wrong type for socket'],
   UV_ESHUTDOWN: [-108, 'cannot send after transport endpoint shutdown'],
+  UV_ESOCKTNOSUPPORT: [-94, 'socket type not supported'],
   UV_ESRCH: [-3, 'no such process'],
   UV_ETIMEDOUT: [-110, 'connection timed out'],
   UV_UNKNOWN: [-4094, 'unknown error'],
@@ -108,5 +116,6 @@ export const UV_EALREADY = codes.UV_EALREADY[0];
 export const UV_ESRCH = codes.UV_ESRCH[0];
 export const UV_EHOSTUNREACH = codes.UV_EHOSTUNREACH[0];
 export const UV_ENETUNREACH = codes.UV_ENETUNREACH[0];
+export const UV_EAFNOSUPPORT = codes.UV_EAFNOSUPPORT[0];
 
 export default uvBinding;

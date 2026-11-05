@@ -54,11 +54,3 @@ function getValidatedPath(fileURLOrPath: unknown, propName = 'path'): string | U
 }
 
 export const internalFsUtils = { getValidatedPath, validatePath };
-
-/**
- * `internal/dgram`: the one name `internal/child_process.js` reads from it,
- * the symbol a `dgram.Socket` keeps its handle under. The engine's `dgram` is
- * a stub with no handle, so nothing is ever sent this way; the symbol exists
- * because the conversion table names it while it is built.
- */
-export const internalDgram = { kStateSymbol: Symbol('state symbol') };

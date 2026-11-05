@@ -2,6 +2,57 @@
 
 What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## Unreleased
+
+- **The prepared format is `tabnode-prepared-8`, a minor release, 0.18.0** (CONTRIBUTING: a change to the lowered text
+  moves the format). A guest body's free `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent`,
+  `MessageEvent`, `URL` and `WebAssembly` are now rewritten to the guest's, so the same source lowers to different
+  text: a body prepared under format 7 (which kept the browser's `Response`, or the browser's
+  `WebAssembly.instantiateStreaming`) is not found by name and is prepared again.
+- **A realm's sockets are its kernel's, called by descriptor** (ADR-0009, superseding ADR-0008; browser-substrate
+  ADR-0227 §8). A tree that is a kernel's client offers its process's socket calls under `TREE_SOCKETS`
+  (`TreeSockets`: `socket`, `bind`, `listen`, `accept4`, `connect`, `sendto`, `recvfrom`, `shutdown`, `close`,
+  `getsockname`, `getpeername`, `getsockopt`, `setsockopt`, `fcntl`, `wait`, `getifaddrs`), and `tcp_wrap`, a new
+  `udp_wrap` under Node's own `dgram.js`, `dns`, `os.networkInterfaces()` and `tls` make their calls there, with
+  libuv's rules. The engine keeps no loopback, port space, listener table or pairing for TCP or UDP. `dns` is a DNS
+  exchange over the process's own UDP with its resolv.conf's nameservers. A tree that offers none (`VirtualFS`) is a
+  process with no IPv4 or IPv6: a listen or connect fails `EAFNOSUPPORT`.
+- **A handle crosses an IPC channel as `SCM_RIGHTS`** (ADR-0009 §4). `TreeSockets` adds `socketpair`, `sendmsg` and
+  `recvmsg` (`SocketMessage`). An IPC pipe of a process with socket calls is a kernel AF_UNIX socketpair; a sent TCP,
+  UDP or kernel pipe handle is its descriptor in an `SCM_RIGHTS` record, installed in the receiver's own table, and
+  the received socket lives as long as the receiver holds it. `NodeProcessLaunch.descriptors` names the kernel
+  descriptors a hosted child starts with (a dup2 of its fork's copy, before its exec). `TCP.duplicate` is removed.
+- **A pipe's path is a kernel AF_UNIX socket.** `bind`, `listen` and `connect` to a path (or an abstract name) are
+  `socket`, `bind`, `listen`, `accept4` and `connect` on a `sockaddr_un` of the process's own; the kernel makes the
+  path's node and answers every refusal, so a path socket crosses an IPC channel as `SCM_RIGHTS` too. The engine's
+  path table is removed, with the native stream operations `bind`, `listen` and `connect`, their `connection` and
+  `connect` events, and `NativeStreamHandleView.listening`. A process with no socket calls has no AF_UNIX
+  (`EAFNOSUPPORT`).
+- **HTTP leaves by the network.** `installHttpClientTransport` and its `HttpClient*` types, `installFetchTransport`,
+  `requestHasStaticBody` and the `Fetch*` types are removed: Node's `http.Agent` is unpatched.
+- **`fetch` is Node's own undici** (ADR-0009 §3). Node v24.21.0's `deps/undici/undici.js` is vendored byte for byte as
+  `internal/deps/undici/undici`, and a guest's `fetch`, `Request`, `Response`, `Headers`, `FormData`, `WebSocket`,
+  `CloseEvent` and `MessageEvent` are the ones it exports, exposed as Node's bootstrap exposes them, over the process's
+  `net` and `tls`. `WebAssembly.compileStreaming` and `instantiateStreaming` take its Response, through Node's
+  `internal/wasm_web_api.js` and a `wasm_web_api` binding.
+  `URL.createObjectURL` and `revokeObjectURL` are Node's (`blob:nodedata:<id>`, the process's blob registry), so
+  `buffer.resolveObjectURL` and `fetch` resolve the URLs a program makes.
+  A builtin's `globalThis` is its process's global, so undici's global dispatcher is per process. The realm's patched
+  `Request` and `Response` are gone.
+- **TLS is the host's** (ADR-0009 §3). A tree offers its process's TLS client and server under `TREE_TLS`
+  (`TreeTls`: `connect`, `serve`). A client `TLSSocket` runs over a kernel TCP connection Node's `net` makes, to any
+  destination, verifying against the image's `/etc/ssl/certs/ca-certificates.crt` and `NODE_EXTRA_CA_CERTS`; a TLS
+  server answers each connection with the program's own `key` and `cert`, and the page bridge reaches its port as a
+  TLS client (unverified, as a dev server's proxy reaches a local target). `getPeerCertificate` (subject, issuer,
+  subjectaltname, validity, fingerprints, serial, raw), `getCipher`, `getProtocol` and `alpnProtocol` are the
+  session's. A tree that offers none fails a handshake `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
+- **Removed with ADR-0008:** `NetworkNamespace` and its types, `loopbackOnlyNamespace`, `ContainerOptions.network`,
+  `RunOptions.network`, `container.network`, `container.portPid`, `NodeProcessLaunch.network`, `NativeStreamScope`'s
+  fourth argument, TCP through native streams (they carry pipes), and `NativeStreamWriteTrace`. `BridgeOptions.tree`
+  replaces `BridgeOptions.network`.
+- **Identity is read, never copied.** `process.ppid` is read from the process registry at each read, as Node's
+  accessor calls getppid; a run's group is the registry's. The engine keeps a run's pid and the pid that waits for it.
+
 ## 0.17.1 — 2026-11-04
 
 - **Exit and `once` as Node's, in the cases 0.17.0's review left** (Article 6; measured on Node v26.12.0). A `once`

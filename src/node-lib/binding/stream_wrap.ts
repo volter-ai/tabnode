@@ -5,17 +5,19 @@
  * it writes through `handle.writeBuffer(req, buf)` and its string cousins and
  * reads through `handle.onread(arrayBuffer)` with the byte count in
  * `streamBaseState[kReadBytesOrError]`. That is the whole contract, and this
- * file implements exactly it over the engine's loopback pairing: two handles
- * whose writes are each other's reads.
+ * file implements exactly it over the engine's pipe pairing: two handles
+ * whose writes are each other's reads. A kernel descriptor's handle (a `TCP`,
+ * a kernel IPC `Pipe`) extends it for that contract and nothing of the
+ * pairing: its bytes are its process's kernel socket's (`kernel_stream.ts`,
+ * ADR-0009).
  *
  * Nothing here implements anything Node's files implement. There is no
  * buffering policy, no half-open rule, no timeout: those are `net.js`'s, and
  * `net.js` is vendored.
  */
 import { bytesOfString } from './buffer';
-import { UV_EOF, UV_EBADF, UV_ECONNRESET, UV_EPIPE } from './uv';
+import { UV_EOF, UV_EBADF, UV_EPIPE } from './uv';
 import { attachNativeStream, nativeStreamFor } from '../../native-stream-binding';
-import type { TCP } from './tcp_wrap';
 import type { Pipe } from './pipe_wrap';
 
 /**
@@ -60,6 +62,8 @@ export class ShutdownWrap {
 }
 
 let nextAsyncId = 1;
+/** A handle's async id, from the one counter every wrap's comes from. */
+export function nextHandleAsyncId(): number { return nextAsyncId++; }
 
 /**
  * The bytes one direction of a pairing is carrying, oldest first, and the
@@ -118,10 +122,6 @@ export class LibuvStreamWrap implements OwnedHandle {
   private streamEndpoint = new StreamEndpoint(this);
   /** The connection end this descriptor shares with its duplicates: one socket, one send buffer (S2 T14's shared credit). */
   get connectionEnd(): object { return this.streamEndpoint; }
-  /** The live wrappers sharing this descriptor's socket (its duplicates), not counting a closed one. */
-  protected get sharingHandles(): ReadonlySet<LibuvStreamWrap> { return this.streamEndpoint.handles; }
-  /** Whether a listening handle of this kind is passed (SCM_RIGHTS) as a duplicate of its socket, not as itself. */
-  get listenerDuplicates(): boolean { return false; }
   /** A live wrapper on the other end, including after the original was closed. */
   get peer(): LibuvStreamWrap | null {
     const native = nativeStreamFor(this);
@@ -144,12 +144,13 @@ export class LibuvStreamWrap implements OwnedHandle {
   protected userBuffer: Uint8Array | null = null;
   protected readonly asyncId = nextAsyncId++;
 
-  constructor() {
-    registerHandle(this, true);
+  /** `active`: whether the handle holds its run's loop from its start (the engine's pairing does; `kernel_stream.ts`). */
+  constructor(active = true) {
+    registerHandle(this, true, active);
   }
 
-  protected attachNative(kind: 'tcp' | 'pipe', type: number): void {
-    attachNativeStream(this as unknown as TCP | Pipe, kind, type,
+  protected attachNative(kind: 'pipe', type: number): void {
+    attachNativeStream(this as unknown as Pipe, kind, type,
       callback => this.closeLocal(callback, true), () => this.flushInbound());
   }
 
@@ -443,16 +444,6 @@ export class LibuvStreamWrap implements OwnedHandle {
     this.streamEndpoint.writeEnded = true;
     const peer = this.peer;
     if (peer) peer.receiveEof();
-  }
-
-  /**
-   * libuv's close-with-reset: the peer's next read is `ECONNRESET`, not EOF,
-   * which is how `socket.resetAndDestroy()` differs from `socket.destroy()`.
-   */
-  protected sendReset(): void {
-    this.streamEndpoint.writeEnded = true;
-    const peer = this.peer;
-    if (peer) peer.receiveError(UV_ECONNRESET);
   }
 
   /** An error arriving on the read side, delivered as libuv delivers one. */

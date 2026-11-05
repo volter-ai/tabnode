@@ -55,21 +55,25 @@ the engine has nothing), `internal/timers` (`kTimeout`, `TIMEOUT_MAX`,
 `internal/options` (`getOptionValue` answering Node's defaults),
 `internal/perf/observe` (`hasObserver` false), `internal/assert`,
 `internal/fs/utils` (`getValidatedPath`, `validatePath` over the engine's
-`fs`), `internal/process/permission` (`isEnabled` false), `internal/dgram`
-(the two names `internal/child_process` reads). Public modules resolve to the
-engine's shims: `buffer`, `events`, `stream`, `timers`, `dns`, `cluster`,
-`diagnostics_channel`, `dgram` (a stub `Socket`), `_http_common` (an
-`HTTPParser` stub for the `instanceof` test only).
+`fs`), `internal/process/permission` (`isEnabled` false). `dgram.js` and
+`internal/dgram.js` are Node's own (v24.21.0), vendored. Public modules
+resolve to the engine's shims: `buffer`, `events`, `stream`, `timers`, `dns`,
+`cluster`, `diagnostics_channel`.
 
 ## The binding
 
 One directory, `src/node-lib/binding/`, one file per `internalBinding` name.
-Everything the engine already does for a socket or a child stays and becomes
-the binding's implementation: the loopback pairing of a connect to a
-listening port or path, the page bridge that announces a listening port and
-routes a preview's requests and upgrades, the routing of a spawned command
-to the engine's `node`, a page-registered program, a WALI pack or the shell,
-and the run ownership that keeps a run alive while it holds a handle.
+A TCP, UDP or AF_UNIX socket is the calling process's kernel's, made
+through the socket calls its tree offers (`TREE_SOCKETS`,
+`src/host-sockets.ts`, ADR-0009): the engine keeps no port, path, loopback,
+listener table or pairing of its own for them, and an IPC channel of such a
+process is a kernel AF_UNIX socketpair whose handles cross as `SCM_RIGHTS`
+(ADR-0009 §4). What else the engine does for a child stays and is the
+binding's implementation: the stdio pipes, the IPC channel of a process with
+no socket calls, the page bridge that hears a listening port and routes a
+preview's requests and upgrades, the routing of a spawned command to the engine's
+`node`, a page-registered program, a WALI pack or the shell, and the run
+ownership that keeps a run alive while it holds a handle.
 
 - `uv`: `errname(code)`, `getErrorMap()`, and the `UV_*` constants Node's
   files read, with Linux numbers (`UV_EOF` -4095, `UV_ECONNREFUSED` -111,
@@ -92,29 +96,39 @@ and the run ownership that keeps a run alive while it holds a handle.
   `internal/stream_base_commons.js` expects; a write completes
   synchronously (`kLastWriteWasAsync` 0, `kBytesWritten` set, the request's
   `oncomplete` not called), which is what the engine's writes are.
-- `tcp_wrap`: `TCP(type)` with `constants.SOCKET|SERVER`,
+- `tcp_wrap`: `TCP(type)` with `constants.SOCKET|SERVER|UV_TCP_IPV6ONLY|UV_TCP_REUSEPORT`,
   `TCPConnectWrap` (`oncomplete(status, handle, req, readable, writable)`),
-  in the realm's network namespace (below): `bind`/`bind6` (a port of the
-  namespace's own space, at a wildcard, a loopback address or one of the
-  namespace's addresses, else `UV_EADDRNOTAVAIL`), `listen(backlog)` (tells
-  the namespace's host, which may refuse it, and the page bridge of the
-  container whose namespace it is, so a preview reaches it), `connect`/`connect6`
-  (the namespace's own loopback and addresses reach its own listener; every
-  other destination is routed by the host, or fails as the kernel fails it:
-  `UV_ECONNREFUSED`, `UV_ETIMEDOUT`, `UV_ENETUNREACH`; a host that throws,
-  rejects or never answers fails that socket alone),
-  `onconnection(err, clientHandle)`, `getsockname(out)`, `getpeername(out)`,
-  `setNoDelay`, `setKeepAlive`, `setSimultaneousAccepts` (0), `open(fd)`
-  (`UV_ENOTSUP`), `reset()`.
+  over the process's socket calls, with libuv's rules (Node v24.21.0's
+  `deps/uv/src/unix/tcp.c` and `stream.c`): the socket made at `bind`,
+  `connect` or `listen`, non-blocking; `bind`/`bind6` with `SO_REUSEADDR`,
+  `SO_REUSEPORT` and `IPV6_V6ONLY` as the flags say, its `EADDRINUSE` said by
+  `listen`; `connect`/`connect6` completed when the socket is writable, from
+  `SO_ERROR`; `listen(backlog)` accepting one connection per readiness into
+  `onconnection(err, clientHandle)`; reads of 64 KiB, 32 per readiness; a
+  write tried at once and queued for writability; `shutdown` after the queue;
+  `getsockname(out)`, `getpeername(out)`, `setNoDelay`, `setKeepAlive`,
+  `setTypeOfService`/`getTypeOfService`, `open(fd)` (a descriptor of the
+  process's own), `reset()` (`SO_LINGER` {1, 0}). A process whose tree offers no socket calls has no IPv4
+  or IPv6: making a socket is `EAFNOSUPPORT`.
+- `udp_wrap`: `UDP` and `SendWrap` under Node's own `dgram.js`, over the same
+  calls, with libuv's `udp.c` rules: the socket bound at the first bind,
+  connect, send or receive; a send tried at once (its size plus one) or
+  queued; `onmessage(nread, handle, buffer, rinfo)` per datagram; the options
+  as socket options.
 - `pipe_wrap`: `Pipe(type)` with `constants.SOCKET|SERVER|IPC`,
-  `PipeConnectWrap`, `bind(path)`, `listen`, `connect(req, path)` (the .37
-  path registry: `UV_ENOENT` when nothing listens, `UV_EADDRINUSE` on a bound
-  path), `fchmod` (0), `setPendingInstances` (0), `open(fd)` (the fd of a
-  forked child's IPC channel, from the per-child fd table `process_wrap`
-  keeps). An IPC pipe's `writeUtf8String(req, string, handle)` delivers the
-  string to the peer and, when `handle` is given, sets the peer's
-  `pendingHandle` before the peer's `onread`, which is how
-  `setupChannel` in `internal/child_process.js` receives a sent handle.
+  `PipeConnectWrap`, `bind(path)`, `listen`, `connect(req, path)` (a kernel
+  AF_UNIX socket of the process on a `sockaddr_un`: the kernel makes the
+  path's node and answers `ENOENT`, `ECONNREFUSED` and `EADDRINUSE`; a
+  process with no socket calls has none, `EAFNOSUPPORT`), `fchmod` (0),
+  `setPendingInstances` (0), `open(fd)` (the fd of a forked child's IPC
+  channel, from the per-child fd table `process_wrap` keeps, or a kernel
+  descriptor). An IPC pipe of a process with socket calls is a kernel
+  AF_UNIX socket too (`kernel_stream.ts`): `writeUtf8String(req,
+  string, handle)` is a `sendmsg` carrying the handle's descriptor, and each
+  descriptor a `recvmsg` brings becomes the `pendingHandle` of a read's
+  `onread`, which is how `setupChannel` in `internal/child_process.js`
+  receives a sent handle. On the engine's pairing the handle is a duplicate
+  of another pairing, set on the peer before its `onread`.
 - `process_wrap`: `Process` with `spawn(options)` (`file`, `args`, `cwd`,
   `envPairs`, `stdio` entries of type `pipe`/`ignore`/`inherit`/`fd`/`wrap`
   with their `handle`, `detached`), which starts the engine's run of the
@@ -136,10 +150,9 @@ and the run ownership that keeps a run alive while it holds a handle.
 - `tty_wrap`: `isTTY(fd)` and `TTY` for the stdio the engine reports as a
   terminal, and `guessHandleType(fd)` in `internal/util`'s bound object.
 - `cares_wrap`: `isIP`, `isIPv4`, `isIPv6` (Node's own from
-  `internal/net.js` need only these); lookups stay the engine's `dns`, which
-  asks the namespace's resolver.
-- `udp_wrap`, `http_parser`: the classes `internal/child_process.js` names
-  in `instanceof` tests, as stubs.
+  `internal/net.js` need only these); lookups are the engine's `dns`, a DNS
+  exchange over the process's own UDP with its `/etc/resolv.conf`'s
+  nameservers, as getaddrinfo and c-ares make it.
 
 Run ownership: a handle registers with the current run token when it is
 created, `ref`/`unref` toggle it, and a run is alive while it holds a ref'd
@@ -150,26 +163,23 @@ substrate's bridge and `http.ts` read today (`__ownedServerPorts`,
 `__pairLoopbackSockets`'s effect) are served by the binding under the same
 names until `http` is ported the same way.
 
-## The network namespace
+## The process's sockets
 
-A realm lives in one network namespace, as a Linux process does, and its host
-supplies it (ADR-0008, `src/network-namespace.ts`). The engine knows nothing of
-which namespaces exist or how they are wired. It asks the host through four
-calls:
-
-| The host's | Asked when | Answers |
-|---|---|---|
-| `addresses()` | a bind, a connect, `os.networkInterfaces()`, the routing decision | the addresses the namespace's interfaces hold besides loopback (`{ address, prefixLength, interface?, mac? }`, eth0 first) |
-| `connect(address, port, family)` | a connect no listener of the namespace in this engine takes | a libuv status (failed: `ECONNREFUSED`, `ETIMEDOUT`, `ENETUNREACH`); `{ namespace, source }` (a listener of another namespace this engine serves); `{ source, accept(socket) }` (a listener the host holds, handed the far end as a `net.Socket`); or a Promise of one |
-| `listen(listener)` | a socket starts listening | a nonzero libuv status refuses it; else the function called when it stops. `listener.open(from, to)` is the host's connection to it |
-| `resolve(name, family)` | `dns.lookup` past `/etc/hosts` and `localhost`, `dns.resolve*`, the routing decision for a name (`net`, HTTP's Agent, `tls`) | the name's addresses of the family, `[]` when it holds none of the family, `undefined` when it holds no such name; or a Promise of one |
-
-`id` names the namespace: realms given one id share one loopback and one port
-space. A container's runs are in the namespace `createContainer({ network })`
-gave it, and the processes a run forks in their parent's. A process whose
-sockets the engine holds for another worker is in the one its
-`NativeStreamScope` was made with. A container or scope given none is in a
-fresh `loopbackOnlyNamespace()`: its loopback alone, no names, no routes.
+A realm's process makes its sockets in its own network namespace, which is its
+kernel's, through the socket calls its tree offers (ADR-0009,
+`src/host-sockets.ts`): `socket`, `bind`, `listen`, `accept4`, `connect`,
+`sendto`, `recvfrom`, `socketpair`, `sendmsg`, `recvmsg`, `shutdown`,
+`close`, `getsockname`, `getpeername`,
+`getsockopt`, `setsockopt`, `fcntl`, each Linux's call by descriptor with a
+negative errno for a failure; `wait(fd, events)`, a promise of the
+descriptor's poll readiness; and `getifaddrs()`. The engine knows nothing of
+which namespaces exist, what listens or where a connect goes: a refusal, a
+route, a drop and an egress are the kernel's. A handle keeps the calls of the
+process that made it, an accepted one its listener's, a received one its
+receiver's. HTTP is a `net` or `tls` connection like any other (a process's
+TLS, client and server, is its host's, `TREE_TLS`), and a guest's `fetch` is Node's own
+undici over the process's `net` and `tls`, so nothing leaves around the
+network.
 
 ## Lanes and the measure
 

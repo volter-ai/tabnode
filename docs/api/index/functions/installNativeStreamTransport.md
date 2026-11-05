@@ -8,7 +8,7 @@
 
 > **installNativeStreamTransport**(`next`): `void`
 
-Host bootstrap only, before any TCP/Pipe exists in this process realm.
+Host bootstrap only, before any Pipe exists in this process realm.
 
 ## Parameters
 

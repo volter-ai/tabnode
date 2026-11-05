@@ -1,4 +1,3 @@
-import type { NetworkNamespace } from './network-namespace';
 import type { ProcessCredentials } from './process-credentials';
 import type { ProcessIdentity } from './process-registry';
 import type { NativeStreamDescriptor } from './native-stream-owner';
@@ -14,7 +13,10 @@ export interface NodeProcessLaunch {
   /** Arguments after the Node executable, preserving each parsed word. */
   argv: readonly string[];
   cwd: string;
-  /** This entry's filesystem view, including any host-prepared entry wrapper. */
+  /**
+   * This entry's filesystem view, including any host-prepared entry wrapper. A tree that is a kernel's client is the
+   * process's kernel connection, and its socket calls (`TREE_SOCKETS`) are the process's network (ADR-0009).
+   */
   filesystem: VirtualFS;
   env: Record<string, string>;
   /** Retained process credentials for the host to pass to Runtime/contained realm admission. */
@@ -24,8 +26,12 @@ export interface NodeProcessLaunch {
   stdinStream?: AsyncIterable<Uint8Array>;
   streams?: RunStreams;
   inherited: readonly { fd: number; handle: NativeStreamDescriptor }[];
-  /** The network namespace of the process that launched it, which the child is in, as fork(2) keeps its parent's. */
-  network: NetworkNamespace;
+  /**
+   * The kernel descriptors the child starts with (an IPC channel's end): each `fd` of the child's table is `dup2` of
+   * its descriptor `from`, which its fork copied from its parent's, made before its exec closes the close-on-exec ones,
+   * as libuv's `uv__process_child_init` makes them.
+   */
+  descriptors: readonly { fd: number; from: number }[];
 }
 
 export interface NodeProcessHost {

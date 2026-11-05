@@ -16,7 +16,7 @@ import { UV_EPERM, UV_EINVAL, UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ET
 import { runSyncChild, syncChildRefusal } from '../../shims/sync-child';
 import { __substrateArgvFor, __substrateHostRuns, __substrateLineFor, __substrateRunsNode, __substrateShellLine, __substrateShellWord } from '../../shims/command-line';
 import { inheritedWriter } from './process_wrap';
-import { __currentProcessToken, enterRun, exitRunProcess, forgetRunPid, mintPid, reapRunProcess, runPid, setRunPid } from '../../process-tokens';
+import { __currentProcessToken, enterRun, exitRunProcess, forgetRunPid, mintPid, reapRunProcess, runPidOf, setRunPid } from '../../process-tokens';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio(stdio, true)` builds it. */
 interface SyncStdioEntry {
@@ -174,7 +174,7 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
   const ownsAllSyncChildren = host?.ownsAllSyncChildren === true;
   if (host && typeof host.runSync === 'function' && (ownsAllSyncChildren || __substrateHostRuns(options.file, cwd, env ?? {}) || (declaredIdentity && __substrateRunsNode(options.file, cwd)))) {
     const owner = __currentProcessToken();
-    const parentPid = runPid(owner)?.pid ?? 0;
+    const parentPid = runPidOf(owner) ?? 0;
     const token = `sync-child-${nextSyncChild++}`;
     let childPid: number;
     try { childPid = mintPid(parentPid, false, owner, declaredIdentity ? credentials : undefined); }

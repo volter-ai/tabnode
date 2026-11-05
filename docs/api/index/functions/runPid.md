@@ -8,7 +8,8 @@
 
 > **runPid**(`token`): \{ `pgid?`: `number`; `pid`: `number`; `ppid`: `number`; \} \| `undefined`
 
-The numbers a named run was started with, where one was recorded.
+A named run's numbers as its registry reads them now: its pid, its parent and its group. Its parent and group move
+(a reparenting, setpgid, setsid), so they are read, never kept.
 
 ## Parameters
 

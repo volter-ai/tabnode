@@ -17,9 +17,6 @@ import { attachVmScriptEnvironment, VmScriptPreparationCache } from './vm-script
 import type { VmScriptObserver, VmScriptPhase } from './vm-script-state';
 import { startGuestLoop, withGuestExecution, guestExecutionActiveMs, enableGuestEntryAccount, guestEntryAccount, guestEntryKinds } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
-import { guestFetch, rememberRequestBodySource } from './fetch-transport';
-import { installNodeResponse } from './node-response';
-import { withNodeRequestBody } from './node-body';
 import { installHttpParserModule } from './http-parser-module';
 import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork } from './host-globals';
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
@@ -57,7 +54,8 @@ import * as moduleShim from './shims/module';
 import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
 import { kRunFilesystem } from './node-lib/binding/fs';
 import { byteLengthUtf8 } from './node-lib/binding/buffer';
-import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor } from './node-lib/load';
+import { processUrl } from './node-lib/object-urls';
+import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor, setNodeLibGlobal, nodeLibBindingFor } from './node-lib/load';
 import { fsModule, fsModuleFor } from './node-lib/fs-module';
 import {
   assertModule, querystringModule, punycodeModule, constantsModule,
@@ -65,9 +63,9 @@ import {
 } from './node-lib/small-modules';
 import { recordedProxies } from './node-lib/internals/util';
 import { __nodeResolverFor } from './node-resolver';
-import { observeNativeStreamClocks, sayNativeStreamCounts, type NativeStreamClockSample } from './native-stream-binding';
+import { sayNativeStreamCounts } from './native-stream-binding';
 import { observeListenClocks } from './node-lib/binding/tcp_wrap';
-import { __runFor, __tokenForProcess, runPid } from './process-tokens';
+import { __runFor, __tokenForProcess, runPidOf } from './process-tokens';
 import { nodeLibBindingsAsked } from './node-lib/load';
 import type { ResolutionKept } from './node-resolution';
 import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
@@ -87,7 +85,6 @@ import * as v8Shim from './shims/v8';
 import * as tlsShim from './shims/tls';
 import * as http2Shim from './shims/http2';
 import * as clusterShim from './shims/cluster';
-import * as dgramShim from './shims/dgram';
 import * as replShim from './shims/repl';
 import * as vmShim from './shims/vm';
 import * as inspectorShim from './shims/inspector';
@@ -286,7 +283,7 @@ function __substrateScriptName(resolvedPath: string): string | undefined {
 }
 /** A body whose guest names are rewritten where free (`__substrateGuestNameEdits`): it runs in Node's own wrapper form, no `with`. */
 const __substrateGuestScopedMarker = '/*__substrate_guest_scoped__*/';
-const __substrateGuestNamePattern = new RegExp(`\\b(?:new|eval|with|${['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'window', 'document', 'location', 'performance'].join('|')})\\b`, 'u');
+const __substrateGuestNamePattern = new RegExp(`\\b(?:new|eval|with|${['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'URL', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'MessageEvent', 'WebAssembly', 'window', 'document', 'location', 'performance'].join('|')})\\b`, 'u');
 /** Whether a prepared body carries the mark, after an ES module's own mark where it has one. */
 function __substrateGuestScoped(code: string): boolean {
   return code.startsWith(__substrateGuestScopedMarker) || (code.startsWith(__substrateModuleMarker) && code.startsWith(__substrateGuestScopedMarker, __substrateModuleMarker.length));
@@ -378,7 +375,10 @@ const __substrateHeldNamespaces: Record<string, readonly string[]> = {
 
 /** The names `for (const name in globalThis)` gives in Node v24.21.0, measured (`node -e` of that loop), less the module wrapper's five. */
 /** Node's own shape for the globals it gives every program that are accessors (v24.21.0, `Object.getOwnPropertyDescriptor(globalThis, name)`); the rest are writable values. */
-const NODE_GLOBAL_ACCESSORS: Record<string, { set: boolean; enumerable: boolean } | undefined> = { __proto__: null as never, performance: { set: true, enumerable: true }, Buffer: { set: true, enumerable: false }, crypto: { set: false, enumerable: true } };
+const NODE_GLOBAL_ACCESSORS: Record<string, { set: boolean; enumerable: boolean } | undefined> = { __proto__: null as never, performance: { set: true, enumerable: true }, Buffer: { set: true, enumerable: false }, crypto: { set: false, enumerable: true },
+  URL: { set: true, enumerable: false }, FormData: { set: true, enumerable: false }, Headers: { set: true, enumerable: false }, Request: { set: true, enumerable: false }, Response: { set: true, enumerable: false }, CloseEvent: { set: true, enumerable: false }, MessageEvent: { set: true, enumerable: false }, WebSocket: { set: true, enumerable: false } };
+/** The interfaces Node's bootstrap exposes from undici (`exposeLazyInterfaces`, internal/bootstrap/web/exposed-window-or-worker.js); `EventSource` is behind a flag. */
+const UNDICI_GLOBALS = new Set(['FormData', 'Headers', 'Request', 'Response', 'MessageEvent', 'CloseEvent', 'WebSocket']);
 const NODE_ENUMERABLE_GLOBALS = new Set(['global', 'clearImmediate', 'setImmediate', 'clearInterval', 'clearTimeout', 'setInterval', 'setTimeout', 'queueMicrotask', 'structuredClone', 'atob', 'btoa', 'performance', 'fetch', 'crypto', 'navigator']);
 /** The names whose shape the guest's global takes from Node: those fifteen and two it does not enumerate, `Buffer` and `globalThis`. `process` is not among them: see the `get` trap. `navigator` is among them and is the guest's own accessor from the start. */
 const NODE_GLOBALS = new Set([...NODE_ENUMERABLE_GLOBALS, 'Buffer', 'globalThis']);
@@ -386,7 +386,34 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   let guest = __substrateGuestGlobals.get(process);
   if (guest) return guest;
   const host = globalThis as unknown as Record<string, unknown>;
-  const fetch = typeof host.fetch === 'function' ? guestFetch(process, host.fetch as typeof globalThis.fetch) : host.fetch;
+  // Node's own fetch and its interfaces are undici's (`internal/deps/undici/undici`), loaded at their first use, as
+  // Node's bootstrap exposes them: its connections are the process's `net` and `tls`, and so its kernel sockets.
+  const undici = (): Record<string, unknown> => loadNodeLibFor(process, 'internal/deps/undici/undici') as Record<string, unknown>;
+  let fetchImpl: ((input: unknown, init: unknown) => Promise<unknown>) | undefined;
+  const fetch = function fetch(input: unknown, init: unknown = undefined): Promise<unknown> {
+    fetchImpl ??= undici().fetch as (input: unknown, init: unknown) => Promise<unknown>;
+    return fetchImpl(input, init);
+  };
+  // Node's `WebAssembly.compileStreaming` and `instantiateStreaming`: its bootstrap gives the process's
+  // `wasm_web_api` binding `internal/wasm_web_api`'s callback, which takes the process's own undici Response and
+  // feeds its bytes to the compiler.
+  type WasmWebApi = { compileStreaming(source: unknown): Promise<WebAssembly.Module>; setImplementation(callback: (state: unknown, source: unknown) => void): void };
+  let wasmWebApi: WasmWebApi | undefined;
+  const wasmStreaming = (): WasmWebApi => {
+    if (wasmWebApi) return wasmWebApi;
+    const binding = nodeLibBindingFor(process, 'wasm_web_api') as WasmWebApi;
+    binding.setImplementation((state, source) => {
+      (loadNodeLibFor(process, 'internal/wasm_web_api') as { wasmStreamingCallback(state: unknown, source: unknown): void }).wasmStreamingCallback(state, source);
+    });
+    return wasmWebApi = binding;
+  };
+  const streamingWasm: Record<string, (...args: never[]) => Promise<unknown>> = {
+    compileStreaming: function compileStreaming(source: unknown) { return wasmStreaming().compileStreaming(source); },
+    instantiateStreaming: function instantiateStreaming(source: unknown, imports?: WebAssembly.Imports) {
+      return wasmStreaming().compileStreaming(source)
+        .then(module => WebAssembly.instantiate(module, imports).then(instance => ({ module, instance })));
+    },
+  };
   // A guest's global object is an ordinary object to the guest, as Node's is: what it assigns, defines or deletes
   // is ITS, and every trap below reads that before anything else. Two places hold it and nothing else does:
   //   - the proxy's own target, for a name the guest has assigned or defined (a value, or an accessor);
@@ -451,6 +478,8 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   const standing = (key: string | symbol): unknown => {
       if (key === "global" || key === "globalThis") return guest;
       if (key === "fetch") return fetch;
+      if (UNDICI_GLOBALS.has(key as string)) return undici()[key as string];
+      if (key === "URL") return processUrl(process);
       // The guest's `Buffer` is the one `require('buffer')` answers with, read when the guest asks rather than when
       // this closure is made: a guest that compared the two found two objects.
       if (key === "Buffer") return loadNodeLibFor(process, 'buffer').Buffer;
@@ -485,6 +514,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
           const namespace = value as Record<string, unknown>;
           boundGlobals.set(key, { original: value, bound: new Proxy(namespace, {
             get(target, name, receiver) {
+              if (key === "WebAssembly" && (name === "compileStreaming" || name === "instantiateStreaming")) return __substrateHeldAsync(streamingWasm[name]!, target);
               const member = Reflect.get(target, name, receiver);
               if (!held.includes(name as string) || typeof member !== "function") return member;
               return __substrateHeldAsync(member as (...args: never[]) => Promise<unknown>, target);
@@ -595,16 +625,10 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
         removed.delete(key);
         return true;
       }
-      // A non-configurable define, undici's of its global dispatcher symbol,
-      // is defined on the proxy's own target too: a proxy may only claim a
-      // non-configurable property its target holds non-configurable, and
-      // the host global keeps every key configurable so a later guest can
-      // redefine it.
-      if (descriptor.configurable === false) {
-        if (!Reflect.defineProperty(target, key, descriptor)) return false;
-        Reflect.defineProperty(host, key, { ...descriptor, configurable: true });
-        return true;
-      }
+      // A non-configurable define, undici's of its global dispatcher symbol, is the guest's own: a proxy may only
+      // claim a non-configurable property its target holds non-configurable, and on the realm it would be every
+      // process's (one process's dispatcher making another's connections).
+      if (descriptor.configurable === false) return Reflect.defineProperty(target, key, descriptor);
       if (Reflect.defineProperty(host, key, descriptor)) return true;
       // The host refused (a name it holds non-configurable): the define is
       // still the guest's to make on its own global, so the target takes it.
@@ -614,6 +638,8 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   __substrateGuestGlobals.set(process, guest!);
   return guest!;
 }
+// A process's builtins run in its global, as Node's run in its context.
+setNodeLibGlobal((process) => __substrateGuestGlobal(process as Process));
 /**
  * The names a body reads as bare identifiers from its process's guest global rather than the host realm's, live:
  * each read is the guest's value now, each assignment is the guest's. They were an object literal of accessors in
@@ -623,7 +649,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
  * configurable: one body's `delete window` used to remove the name from that body's own scope alone, and on a
  * shared scope it would remove it from every later body's, so the delete is refused (false, as sloppy code sees it).
  */
-const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'window', 'document', 'location', 'performance'] as const;
+const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'URL', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'MessageEvent', 'WebAssembly', 'window', 'document', 'location', 'performance'] as const;
 const __substrateGuestScopes = new WeakMap<Process, object>();
 function __substrateGuestScope(process: Process): object {
   let scope = __substrateGuestScopes.get(process);
@@ -1306,10 +1332,10 @@ function __substrateSaidReplacement(replacement: unknown): { source: string; sta
   return { source, stack: (new Error().stack ?? '').split('\n').slice(2, 10).map(line => line.trim().slice(0, 200)) };
 }
 type HttpLoadClockSample = { n: number; what: string; url: string | null } & Record<string, unknown>;
-function __substrateSayLoadClock(process: object, at: string, nativeStream?: NativeStreamClockSample, http?: HttpLoadClockSample): void {
+function __substrateSayLoadClock(process: object, at: string, http?: HttpLoadClockSample): void {
   if (!traceReadingRequested()) return;
   const clock = __substrateLoadClocks.get(process);
-  const boundary = nativeStream !== undefined || http !== undefined;
+  const boundary = http !== undefined;
   // A process that went quiet and then ran on (a seed script's queries after its last require: Cal's seed-app-store,
   // 1.9 s of its 2.7 s) says its exit too, once, though it loaded nothing more: without it that run had no line.
   const exitAfterQuiet = at === 'exit' && clock?.quietSaidAt !== undefined && !clock.exitSaid;
@@ -1336,7 +1362,6 @@ function __substrateSayLoadClock(process: object, at: string, nativeStream?: Nat
   const requires = paths ? { ...paths, engineLoad: { ...paths.engineLoad }, replaced: { ...paths.replaced } } : null;
   const limit = clock.bodies;
   const payload = { event: 'load-clock', at: Date.now(), when: at, pid: (process as { pid?: number }).pid ?? null,
-    ...(nativeStream ? { epoch: nativeStream.at, nativeStream: { ...nativeStream } } : {}),
     ...(http ? { http: { ...http } } : {}),
     script: entry === undefined ? null : pathShim.posix.basename(entry),
     preparedBodies: clock.preparedBodies, preparedBodyBytes: clock.preparedBodyBytes, sourceBodies: clock.sourceBodies, sourceBodyBytes: clock.sourceBodyBytes,
@@ -1389,13 +1414,7 @@ observeListenClocks((owner, port) => {
   const process = owner === null ? undefined : __runFor(owner)?.process;
   if (!process || __substrateListenSaid.has(process)) return;
   __substrateListenSaid.add(process);
-  __substrateSayLoadClock(process, 'listen', undefined, { n: 0, what: 'listen', url: null, port });
-});
-observeNativeStreamClocks((owner, sample) => {
-  // A binding's handle retains its actual run owner across native awaits;
-  // the current guest globals and the last runtime created cannot name it.
-  const process = owner === null ? undefined : __runFor(owner)?.process;
-  if (process) __substrateSayLoadClock(process, sample.when, sample);
+  __substrateSayLoadClock(process, 'listen', { n: 0, what: 'listen', url: null, port });
 });
 
 type K5ServerPrototype = { emit: (event: string | symbol, ...args: unknown[]) => unknown };
@@ -1424,7 +1443,7 @@ function __substrateObserveHttp(process: object, module: unknown): void {
           const say = (what: string, extra: Record<string, unknown> = {}): string | null | undefined => {
             try {
               const url = req.url, owner = __tokenForProcess(process as Process);
-              const pid = runPid(owner)?.pid ?? (process as { pid?: unknown }).pid;
+              const pid = runPidOf(owner) ?? (process as { pid?: unknown }).pid;
               const capturedUrl = typeof url === 'string' ? url : null;
               if (traceReadingRequested()) traceOutput('[k5] server', { n, what, url: capturedUrl,
                 at: Math.round((performance.timeOrigin + performance.now()) * 10) / 10,
@@ -1438,7 +1457,7 @@ function __substrateObserveHttp(process: object, module: unknown): void {
           // before its first page. Reuse this existing process-owned slot;
           // capture phases now and defer source-byte work through R5.
           if (n === 1 && requestUrl !== undefined) {
-            try { __substrateSayLoadClock(process, 'first-request', undefined, { n, what: 'request-event', url: requestUrl }); }
+            try { __substrateSayLoadClock(process, 'first-request', { n, what: 'request-event', url: requestUrl }); }
             catch { /* Evidence cannot change Node's request delivery. */ }
           }
           const writeHead = res.writeHead;
@@ -1463,7 +1482,7 @@ function __substrateObserveHttp(process: object, module: unknown): void {
             // captured scalar URL/status; do not read caller properties or
             // perform their coercion a second time.
             if (headClock) {
-              try { __substrateSayLoadClock(process, 'first-write-head', undefined, headClock); }
+              try { __substrateSayLoadClock(process, 'first-write-head', headClock); }
               catch { /* Evidence cannot change the response. */ }
             }
             return result;
@@ -1959,9 +1978,8 @@ export interface RuntimeOptions {
   stdinHeld?: boolean;
   /** The run was given a TTY, on all three fds or per fd as `[stdin, stdout, stderr]`; a pipe child is not one. */
   tty?: boolean | readonly [boolean, boolean, boolean];
-  /** This run's process number and its parent's; minted where neither is given. */
+  /** This run's process number; minted where none is given. Its parent's is its registry's, read when asked. */
   pid?: number;
-  ppid?: number;
 }
 
 export interface RequireFunction {
@@ -2086,7 +2104,6 @@ const builtinModules: Record<string, unknown> = {
   // `stream/promises` is the promise form of pipeline and finished, as Node's.
   'stream/promises': streamPromises,
   buffer: bufferShim,
-  url: urlShim,
   querystring: querystringModule,
   util: utilShim,
   tty: ttyModule,
@@ -2115,7 +2132,6 @@ const builtinModules: Record<string, unknown> = {
   tls: tlsShim,
   http2: http2Shim,
   cluster: clusterShim,
-  dgram: dgramShim,
   // A stand-in for Node's surface that refuses the REPL by name (shims/repl.ts says why it is not Node's file).
   repl: replShim,
   // Node's `sys` is `util` itself (lib/sys.js: `module.exports = require('util')`), deprecated (DEP0025).
@@ -4206,7 +4222,6 @@ export class Runtime {
       ...(options.stdinHeld ? { stdinHeld: true } : {}),
       ...(options.tty ? { tty: options.tty } : {}),
       ...(typeof options.pid === 'number' ? { pid: options.pid } : {}),
-      ...(typeof options.ppid === 'number' ? { ppid: options.ppid } : {}),
     });
     // The filesystem of this run, on this run's own process. Node's `fs` is
     // one module for the whole engine and the engine holds one tree per run,
@@ -4643,56 +4658,6 @@ forGuestRealm(() => {
 // `setTimeout` of any Node process that imported the engine. It is the
 // guest's, and it is made on the guest's own timers, in
 // `guestTimerFunctions`.
-
-forGuestRealm(() => {
-  // Node's `fetch` does not apply the fetch specification's
-  // forbidden-request-header guard, and a browser's `Request` constructor
-  // does: `new Request(url, { headers: { host } })` keeps the header on
-  // Node and silently loses it here, along with `connection`,
-  // `content-length`, `origin` and the `sec-`/`proxy-` families. Any
-  // program that wraps a request it was handed in a web `Request` then
-  // reads `null` where Node shows a value. Next's middleware adapter and
-  // its app-router `headers()` both do exactly that, so Dub's middleware
-  // died on its first line reading the authority the request arrived on.
-  //
-  // A request keeps the headers it was built with, as Node keeps them.
-  // What the browser will not *send* is still its own business: this
-  // restores what a program can read, which is what Node's own behaviour
-  // is measured on.
-  if (typeof globalThis.Request === 'function' && !(globalThis.Request as unknown as { __substrateHeaderGuard?: boolean }).__substrateHeaderGuard) {
-    const Native = globalThis.Request;
-    const kept = new WeakMap<object, Headers>();
-    class NodeRequest extends Native {
-      constructor(input: RequestInfo | URL, init?: RequestInit) {
-        // An async-iterable body (a Node stream) is read as undici reads it.
-        init = withNodeRequestBody(init);
-        super(input as RequestInfo, init);
-        rememberRequestBodySource(this, input, init);
-        const asked = new Headers(init?.headers ?? (input instanceof Native ? (input as Request).headers : undefined));
-        const headers = new Headers(super.headers);
-        asked.forEach((value, name) => { if (!headers.has(name)) headers.set(name, value); });
-        kept.set(this, headers);
-      }
-      get headers(): Headers {
-        return kept.get(this) ?? super.headers;
-      }
-      clone(): Request {
-        const copy = super.clone();
-        rememberRequestBodySource(copy, this);
-        return new NodeRequest(copy, { headers: this.headers });
-      }
-    }
-    Object.defineProperty(NodeRequest, '__substrateHeaderGuard', { value: true });
-    Object.defineProperty(NodeRequest, 'name', { value: 'Request', configurable: true });
-    takeFromHost(globalThis, 'Request', NodeRequest);
-  }
-});
-
-forGuestRealm(() => {
-  // A response keeps the Set-Cookie headers it was built with, as Node's
-  // does; the browser's response guard drops them (see node-response.ts).
-  installNodeResponse(globalThis);
-});
 
 forGuestRealm(() => {
   // Node's `stream.finished()` on a web stream waits on a promise Node's own

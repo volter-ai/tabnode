@@ -577,7 +577,8 @@ function transformEsmToCjsRegex(code: string): string {
  * THE GUEST'S GLOBAL NAMES, REWRITTEN WHERE THEY ARE FREE (S2 K1 evaluate; lead ruling m-71c68f37). A module body ran
  * inside `with (__substrateGuestScope)` so that the few names whose realm value is not the guest's (the worker's
  * `self`, `postMessage`, `close` and event names, `window`/`document`/`location` that a Node process has not,
- * `Promise`, `fetch`, `performance`, `navigator`, `MessageChannel`/`MessagePort`/`Worker`) read the guest's. Node runs
+ * `Promise`, `fetch` and undici's interfaces, `URL`, `WebAssembly`, `performance`, `navigator`,
+ * `MessageChannel`/`MessagePort`/`Worker`) read the guest's. Node runs
  * a body in its wrapper with no `with`: every free name resolves lexically, then on the global. The `with` made every
  * free name of every function in the body a dynamic lookup through that object, at every call. Here only the free
  * references to those names become `<scope>.<name>`, as reads, writes, `typeof` and update operands, a bare call

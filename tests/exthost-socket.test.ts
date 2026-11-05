@@ -11,7 +11,6 @@ import { VirtualFS } from '../src/virtual-fs';
 import { Runtime } from '../src/runtime';
 import { ServerBridge } from '../src/server-bridge';
 import { __upgradeOverLoopback } from '../src/node-lib/http-bridge';
-import { currentNetworkNamespace } from '../src/network-namespace';
 
 function startGuest(vfs: VirtualFS, source: string): Promise<unknown> {
   vfs.writeFileSync('/workspace/app/server.js', source);
@@ -28,7 +27,7 @@ function listeningPort(bridge: ServerBridge): Promise<number> {
 }
 
 async function connectRaw(port: number): Promise<{ socket: any; events: string[]; text: () => string }> {
-  const result = await __upgradeOverLoopback(currentNetworkNamespace(), port, 'GET', '/exthost', { Host: `127.0.0.1:${port}`, Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==' });
+  const result = await __upgradeOverLoopback(undefined, port, 'GET', '/exthost', { Host: `127.0.0.1:${port}`, Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==' });
   expect(result.statusCode).toBe(101);
   const socket = result.socket as any;
   const chunks: string[] = [];

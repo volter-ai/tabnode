@@ -8,7 +8,7 @@
  * than answering with something that is not it.
  */
 import { libRequire } from '../require-hook';
-import { createBlobFromFilePath } from '../binding/blob';
+import blobBinding, { createBlobFromFilePath, type BlobBinding } from '../binding/blob';
 
 /** Node's `once(fn)`: the same function, run at most once. */
 export function once<F extends (...args: never[]) => unknown>(
@@ -85,16 +85,37 @@ export const internalAbortController = {
 
 /**
  * `internal/blob` and `internal/file`: the realm's own `Blob` and `File`,
- * which every realm the engine runs in has. `resolveObjectURL` answers
- * nothing, because the engine registers no blob URLs of its own.
- * `createBlobFromFilePath` is the blob binding's, which `fs.openAsBlob` is.
+ * which every realm the engine runs in has. `resolveObjectURL` is Node's
+ * (`lib/internal/blob.js`): a `blob:nodedata:<id>` URL names what the
+ * process's blob binding stored under `<id>` (`URL.createObjectURL`), a Blob
+ * of its length and type. `createBlobFromFilePath` is the blob binding's,
+ * which `fs.openAsBlob` is.
  */
-export const internalBlob = {
-  Blob: globalThis.Blob,
-  isBlob: (value: unknown): boolean => typeof Blob === 'function' && value instanceof Blob,
-  resolveObjectURL: (): undefined => undefined,
-  createBlobFromFilePath,
-};
+export function internalBlobOf(binding: BlobBinding) {
+  return {
+    Blob: globalThis.Blob,
+    isBlob: (value: unknown): boolean => typeof Blob === 'function' && value instanceof Blob,
+    resolveObjectURL(url: unknown): Blob | undefined {
+      url = `${url}`;
+      try {
+        const split = new URL(url as string).pathname.split(':');
+        if (split.length !== 2) return undefined;
+        const [base, id] = split as [string, string];
+        if (base !== 'nodedata') return undefined;
+        const stored = binding.getDataObject(id);
+        if (stored === undefined) return undefined;
+        const [handle, length, type] = stored;
+        return handle.slice(0, length, type);
+      } catch {
+        // If there's an error, it's ignored and nothing is returned
+        return undefined;
+      }
+    },
+    createBlobFromFilePath,
+  };
+}
+/** The realm's, for a builtin loaded with no process of its own. */
+export const internalBlob = internalBlobOf(blobBinding);
 export const internalFile = {
   File: (globalThis as unknown as { File?: unknown }).File,
 };

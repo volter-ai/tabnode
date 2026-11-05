@@ -40,6 +40,16 @@ Retained process credentials for the host to pass to Runtime/contained realm adm
 
 ***
 
+### descriptors
+
+> **descriptors**: readonly `object`[]
+
+The kernel descriptors the child starts with (an IPC channel's end): each `fd` of the child's table is `dup2` of
+its descriptor `from`, which its fork copied from its parent's, made before its exec closes the close-on-exec ones,
+as libuv's `uv__process_child_init` makes them.
+
+***
+
 ### env
 
 > **env**: `Record`\<`string`, `string`\>
@@ -50,7 +60,8 @@ Retained process credentials for the host to pass to Runtime/contained realm adm
 
 > **filesystem**: [`VirtualFS`](../classes/VirtualFS.md)
 
-This entry's filesystem view, including any host-prepared entry wrapper.
+This entry's filesystem view, including any host-prepared entry wrapper. A tree that is a kernel's client is the
+process's kernel connection, and its socket calls (`TREE_SOCKETS`) are the process's network (ADR-0009).
 
 ***
 
@@ -63,14 +74,6 @@ This entry's filesystem view, including any host-prepared entry wrapper.
 ### inherited
 
 > **inherited**: readonly `object`[]
-
-***
-
-### network
-
-> **network**: [`NetworkNamespace`](NetworkNamespace.md)
-
-The network namespace of the process that launched it, which the child is in, as fork(2) keeps its parent's.
 
 ***
 

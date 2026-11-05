@@ -36,13 +36,13 @@ The environment the command runs in, as `child_process.exec` takes it.
 
 The tree this run's Node reads and writes, in place of the container's
 own: a host's tree for one process (a kernel's, for a `node` its shell
-exec'd), chosen per run, while the run keeps the container's one port
-space, process table and servers, as a process on Linux keeps its
-network namespace whatever filesystem it sees. The engine writes nothing
-into it on its own account. `runNode`, and `run`, whose shell line, its
-builtins and the children it runs in this realm read and write it
-(browser-substrate ADR-0129 5f.1: a line that is a kernel process's is on
-that process's tree, as its `node` is).
+exec'd), chosen per run. A tree that is a kernel's client is the
+process's kernel connection: its descriptors (`TREE_DESCRIPTORS`) and
+its sockets (`TREE_SOCKETS`, ADR-0009) are that process's. The engine
+writes nothing into it on its own account. `runNode`, and `run`, whose
+shell line, its builtins and the children it runs in this realm read and
+write it (browser-substrate ADR-0129 5f.1: a line that is a kernel
+process's is on that process's tree, as its `node` is).
 
 ***
 
@@ -61,15 +61,6 @@ is not held ends when its loop has nothing left, as Node's does. A
 > `optional` **moduleEvaluationObserver?**: [`ModuleEvaluationObserver`](ModuleEvaluationObserver.md)
 
 Private host evidence selection; it is not a guest Node global or inherited child option.
-
-***
-
-### network?
-
-> `optional` **network?**: [`NetworkNamespace`](NetworkNamespace.md)
-
-The run's network namespace, where it is not the container's: a process another run launched keeps its
-launcher's (`NodeProcessLaunch.network`), as fork(2) does.
 
 ***
 

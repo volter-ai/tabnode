@@ -36,6 +36,8 @@ import STREAMS_UTILS from './internal/streams/utils.js?raw';
 import STREAMS_WRITABLE from './internal/streams/writable.js?raw';
 import CHILD_PROCESS from './child_process.js?raw';
 import INTERNAL_NET from './internal/net.js?raw';
+import DGRAM from './dgram.js?raw';
+import INTERNAL_DGRAM from './internal/dgram.js?raw';
 import INTERNAL_CHILD_PROCESS from './internal/child_process.js?raw';
 import INTERNAL_STREAM_BASE_COMMONS from './internal/stream_base_commons.js?raw';
 import INTERNAL_SOCKET_LIST from './internal/socket_list.js?raw';
@@ -91,6 +93,8 @@ import INTERNAL_FS_SYNC_WRITE_STREAM from './internal/fs/sync_write_stream.js?ra
 import INTERNAL_FS_RECURSIVE_WATCH from './internal/fs/recursive_watch.js?raw';
 import INTERNAL_FS_GLOB from './internal/fs/glob.js?raw';
 import INTERNAL_DEPS_MINIMATCH from './internal/deps/minimatch/index.js?raw';
+import INTERNAL_DEPS_UNDICI from './internal/deps/undici/undici.js?raw';
+import INTERNAL_WASM_WEB_API from './internal/wasm_web_api.js?raw';
 import INTERNAL_FS_READ_CONTEXT from './internal/fs/read/context.js?raw';
 import INTERNAL_FS_CP_CP_SYNC from './internal/fs/cp/cp-sync.js?raw';
 import INTERNAL_FS_CP_CP from './internal/fs/cp/cp.js?raw';
@@ -177,6 +181,8 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/streams/writable': STREAMS_WRITABLE,
   'child_process': CHILD_PROCESS,
   'internal/net': INTERNAL_NET,
+  'dgram': DGRAM,
+  'internal/dgram': INTERNAL_DGRAM,
   'internal/child_process': INTERNAL_CHILD_PROCESS,
   'internal/stream_base_commons': INTERNAL_STREAM_BASE_COMMONS,
   'internal/socket_list': INTERNAL_SOCKET_LIST,
@@ -232,6 +238,8 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/fs/recursive_watch': INTERNAL_FS_RECURSIVE_WATCH,
   'internal/fs/glob': INTERNAL_FS_GLOB,
   'internal/deps/minimatch/index': INTERNAL_DEPS_MINIMATCH,
+  'internal/deps/undici/undici': INTERNAL_DEPS_UNDICI,
+  'internal/wasm_web_api': INTERNAL_WASM_WEB_API,
   'internal/fs/read/context': INTERNAL_FS_READ_CONTEXT,
   'internal/fs/cp/cp-sync': INTERNAL_FS_CP_CP_SYNC,
   'internal/fs/cp/cp': INTERNAL_FS_CP_CP,

@@ -4,8 +4,8 @@
  * Node's own `internal/net.js` recognises an IP with its own regular
  * expressions and does not ask this binding; `net.js` asks it for one thing
  * only, `convertIpv6StringToBuffer`, which it reads the first two bytes of to
- * tell a link-local address from a routable one. Lookups stay the engine's
- * `dns`, which answers for this host and nothing else.
+ * tell a link-local address from a routable one. Lookups are the engine's
+ * `dns`, a DNS exchange over the process's own UDP with its resolver.
  */
 import { libRequire } from '../require-hook';
 

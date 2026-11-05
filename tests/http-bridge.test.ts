@@ -127,7 +127,7 @@ describe('the page bridge over a real connection', () => {
     // The page's side of the upgrade, which is what the bridge's channel does
     // for a virtual websocket: connect, send a frame, read the answer.
     const { __upgradeOverLoopback } = await import('../src/node-lib/http-bridge');
-    const result = await __upgradeOverLoopback(bridge.network, 8412, 'GET', '/', {
+    const result = await __upgradeOverLoopback(bridge.tree, 8412, 'GET', '/', {
       Host: '127.0.0.1:8412',
       Upgrade: 'websocket',
       'Sec-WebSocket-Version': '13',
