@@ -49,7 +49,8 @@ descriptor of the same table, so its number, `dup`, `close`, `FD_CLOEXEC` and fo
 
 The engine takes the calling process's tree as its `fs` binding does: a tree named for one call (`withFilesystem`, how
 the engine's own doors act as their container), else the process whose binding scope is executing, else the realm's
-process. A socket keeps the calls of the process that made it; an accepted or duplicated socket is its listener's.
+process. A socket keeps the calls of the process that made it; an accepted socket is its listener's, and a received
+one the receiver's (§4).
 
 Why the tree and not an option of its own: the run's tree is already the process's kernel connection, chosen per run
 (`RunOptions.filesystem`, `NodeProcessLaunch.filesystem`, a `spawnSync` child on its parent's tree), and in the
@@ -64,12 +65,15 @@ export const TREE_SOCKETS: unique symbol; // Symbol.for('tabnode.tree.sockets')
 
 export interface TreeSockets {
   socket(domain: number, type: number, protocol: number): number;
+  socketpair(domain: number, type: number, protocol: number, pair: Int32Array): number;
   bind(fd: number, address: Uint8Array): number;
   listen(fd: number, backlog: number): number;
   accept4(fd: number, flags: number, address: Uint8Array | null): number;
   connect(fd: number, address: Uint8Array): number;
   sendto(fd: number, data: Uint8Array, flags: number, address: Uint8Array | null): number;
   recvfrom(fd: number, buffer: Uint8Array, flags: number, address: Uint8Array | null): number;
+  sendmsg(fd: number, message: SocketMessage, flags: number): number;
+  recvmsg(fd: number, message: SocketMessage, flags: number): number;
   shutdown(fd: number, how: number): number;
   close(fd: number): number;
   getsockname(fd: number, address: Uint8Array): number;
@@ -79,6 +83,13 @@ export interface TreeSockets {
   fcntl(fd: number, command: number, argument: number): number;
   wait(fd: number, events: number): Promise<number>;
   getifaddrs(): readonly InterfaceAddressEntry[];
+}
+
+export interface SocketMessage {
+  readonly data: Uint8Array;
+  readonly control?: Uint8Array | null;
+  controlLength?: number;
+  flags?: number;
 }
 
 export interface InterfaceAddressEntry {
@@ -94,7 +105,7 @@ export function treeSocketsOf(tree: unknown): TreeSockets | undefined;
 
 - **Each call is Linux's call of its name**, with Linux's generic constants (`AF_INET` 2, `AF_INET6` 10, `SOCK_STREAM`
   1, `SOCK_DGRAM` 2, `SOCK_NONBLOCK` 0o4000, `SOCK_CLOEXEC` 0o2000000, `MSG_DONTWAIT` 0x40, `MSG_NOSIGNAL` 0x4000,
-  `SOL_SOCKET` 1, `SO_*`, `IPPROTO_*`, `TCP_*`, `IP_*`, `IPV6_*`, `F_GETFL` 3, `F_SETFL` 4, `F_DUPFD_CLOEXEC` 1030,
+  `MSG_CMSG_CLOEXEC` 0x40000000, `SOL_SOCKET` 1, `SCM_RIGHTS` 1, `SO_*`, `IPPROTO_*`, `TCP_*`, `IP_*`, `IPV6_*`, `F_GETFL` 3, `F_SETFL` 4, `F_DUPFD_CLOEXEC` 1030,
   `O_NONBLOCK` 0o4000, `SHUT_WR` 1), the values `host-sockets.ts` names, which are the same on x86-64 Linux and on
   WALI's wasm32.
 - **A result is the call's return: a non-negative value, or a negative errno**, Linux's number, which is libuv's on
@@ -103,6 +114,11 @@ export function treeSocketsOf(tree: unknown): TreeSockets | undefined;
   family and scope id, port and address in network order, as on Linux. An address the call fills (`accept4`,
   `recvfrom`, `getsockname`, `getpeername`) is given 28 bytes; its family says which it is. The same calls take
   `sockaddr_un` for AF_UNIX without a change here.
+- **A message is a `struct msghdr`** for a connected socket: one buffer (`msg_iov`) and its control bytes
+  (`msg_control`), `struct cmsghdr` records as x86-64 Linux lays them out (a 16-byte header whose `cmsg_len` is eight
+  bytes, records 8-byte aligned), which the kernel reads for both images; `recvmsg` sets `controlLength`
+  (`msg_controllen`) and `flags` (`msg_flags`). A descriptor an `SCM_RIGHTS` record names is the sender's number; one
+  received is installed in the receiver's table and its number is in the record.
 - **An option is its value's bytes**: an `int` option four little-endian bytes, `SO_LINGER` a `struct linger`, a
   membership a `struct ip_mreq` or `struct ipv6_mreq`. `getsockopt` answers the option's length.
 - **Every socket the engine makes is non-blocking** (`SOCK_NONBLOCK`, `accept4`'s flag, `fcntl(F_SETFL, O_NONBLOCK)`
@@ -155,8 +171,8 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   - `setNoDelay` is `TCP_NODELAY`, `setKeepAlive` `SO_KEEPALIVE` with `TCP_KEEPIDLE`, `TCP_KEEPINTVL` and
     `TCP_KEEPCNT` (`uv__tcp_keepalive`), each remembered and applied when the socket is made (`uv__stream_open`);
     `getsockname` and `getpeername` answer a held bind error first;
-  - `open(fd)` makes a descriptor it is handed non-blocking; `duplicate` is `F_DUPFD_CLOEXEC`, the same open
-    description under a second number, as `SCM_RIGHTS` gives a receiver one.
+  - `open(fd)` makes a descriptor it is handed non-blocking.
+  - The stream rules above are `stream.c`'s, shared with a kernel IPC pipe (§4): `kernel_stream.ts`.
 - **`udp_wrap`, and Node's own `dgram.js` and `internal/dgram.js`** (v24.21.0, vendored unmodified) in place of the
   stub: `bind` (`SO_REUSEADDR` for `UV_UDP_REUSEADDR`, `SO_REUSEPORT`, `IPV6_V6ONLY`), `connect`, `disconnect`
   (a connect to `AF_UNSPEC`), `send` tried at once (`uv_udp_try_send`: taken whole it answers its size plus one) and
@@ -189,6 +205,36 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   other, on the container tree's sockets: a request to a port nothing listens on is refused by the kernel and answered
   503; the bridge learns a guest's port when a handle made through its tree's calls starts listening, an
   announcement of the engine's own handles, not a table of what listens.
+
+### 4. A handle crosses an IPC channel as `SCM_RIGHTS`
+
+Node's IPC channel is an AF_UNIX stream socket, and libuv sends a handle over it with `uv_write2`: a `sendmsg` whose
+`SCM_RIGHTS` record names the handle's descriptor; the receiver's `recvmsg` installs the description in its own table
+(`scm_detach_fds`) and `OnUvRead` hands the next read's callback a handle of the descriptor's type (`uv_pipe_pending_type`,
+`uv_accept`). The engine does the same over the kernel's calls (read in Node v24.21.0's `deps/uv/src/unix/stream.c`,
+`process.c` and `src/stream_wrap.cc`):
+
+- **The channel is a socketpair.** An IPC pipe of a process whose tree offers socket calls is a kernel AF_UNIX socket.
+  `spawn` makes the channel as `uv_spawn`'s `UV_CREATE_PIPE` does: `socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC)`
+  in the parent's table, the parent's pipe one end and the child's end the other, which the child's fork copies. A
+  child its parent's realm runs on its parent's tree opens that end; a child a host runs in another realm is started
+  with it at its `NODE_CHANNEL_FD` (`NodeProcessLaunch.descriptors`: the host dup2s it in the child's table before the
+  exec closes the close-on-exec ones, as `uv__process_child_init` does), and the parent closes its copy.
+- **A send is `sendmsg`.** A write that carries a handle sends the handle's descriptor (`uv__handle_fd`: a TCP, UDP
+  or kernel pipe's) in an `SCM_RIGHTS` record with the write's first bytes, queued behind earlier writes and written
+  at once where none is; a handle with no kernel descriptor is `EBADF`, a handle on a pipe that is not IPC `EINVAL`.
+  The kernel holds a reference to the description while the message is in flight, so the sender's close after
+  `NODE_HANDLE_ACK` ends nothing the receiver holds.
+- **A receive is `recvmsg`** with `MSG_CMSG_CLOEXEC` and room for 64 descriptors (`UV__CMSG_FD_COUNT`). Each received
+  descriptor is the receiver's; it waits in the pipe's queue (`queued_fds`), and each read that delivers bytes takes the
+  next one as `pendingHandle`, a handle of its socket's type (`SO_TYPE`, `SO_DOMAIN`: TCP, UDP or a kernel pipe) opened
+  on it in the receiver's process and counted in its loop. A descriptor of no handle type, and one still queued when
+  the pipe closes, is closed.
+- **Lifetime is the kernel's.** A received socket is a descriptor of the receiver's table: it lives until the receiver
+  closes it or exits, whatever the sender does; a listening one is listened on again (`listen` on a listening socket
+  sets its backlog), and both ends accept from its one queue.
+- **A tree that offers no sockets** keeps the engine's pairing for its channels, and a pipe crosses one as a duplicate
+  of the pairing; such a process has no kernel descriptor to send.
 
 ### 5. A process whose tree offers no sockets
 
@@ -225,6 +271,9 @@ Each method is its Linux call, answered in the caller's worker from kernel memor
 | `connect` | `connect(2)`: paired in the kernel, refused, routed over a bridge, or queued to the network bridge for egress |
 | `sendto` | `sendto(2)` |
 | `recvfrom` | `recvfrom(2)`, filling the source address |
+| `socketpair` | `socketpair(2)` of AF_UNIX, both ends in the caller's table |
+| `sendmsg` | `sendmsg(2)`: an `SCM_RIGHTS` record's descriptors held in flight (`scm_fp_copy`) |
+| `recvmsg` | `recvmsg(2)`: received descriptors installed in the caller's table (`scm_detach_fds`), the record filled |
 | `shutdown` | `shutdown(2)` |
 | `close` | `close(2)` of the descriptor (the description goes with its last reference), settling its pending waits `POLLNVAL` |
 | `getsockname`, `getpeername` | `getsockname(2)`, `getpeername(2)` |
@@ -233,6 +282,9 @@ Each method is its Linux call, answered in the caller's worker from kernel memor
 | `wait` | the description's poll operation, waited on with `Atomics.waitAsync` on its wait word, settled with `revents` |
 | `getifaddrs` | `getifaddrs(3)`'s answer: the namespace's interfaces (RTM_GETLINK, RTM_GETADDR) |
 
+And for a child's start: a Node child admitted with `NodeProcessLaunch.descriptors` has each `fd` made, in its own
+table, a `dup2` of its fork's copy of `from` before its exec closes the close-on-exec ones (`readyKernelChild`).
+
 And for identity: its `ProcessRegistry.lookup(pid)` reads the kernel's process table at each call (its
 `KernelRealmProcessRegistry` does, from `/proc/<pid>/stat`), and the engine reads ppid from it at each read.
 
@@ -240,16 +292,17 @@ And for identity: its `ProcessRegistry.lookup(pid)` reads the kernel's process t
 
 - **Read:** Tabnode at caf4b02; browser-substrate at 1f2ad3666bf (ADR-0227 as amended at step 3; `network-host.ts`'s
   DNS answer at port 53; `kernel-realm-process-registry.ts`; `cross-origin-container-worker.ts`); Node v24.21.0's
-  `lib/dgram.js`, `lib/internal/dgram.js`, `deps/uv/src/unix/tcp.c`, `stream.c`, `udp.c`, `src/tcp_wrap.cc`,
-  `src/udp_wrap.cc`.
+  `lib/dgram.js`, `lib/internal/dgram.js`, `lib/internal/child_process.js`, `deps/uv/src/unix/tcp.c`, `stream.c`,
+  `udp.c`, `process.c`, `src/tcp_wrap.cc`, `src/udp_wrap.cc`, `src/stream_wrap.cc`; browser-substrate's kernel at
+  58adec4e358 (`socket.c`'s `msghdr_from_user`, `scm_rights_read`, `scm_detach`, `do_socketpair`).
 - **Not run.** The engine side is written and typechecked, and the substrate's `TREE_SOCKETS` is written
   (`packages/node/src/kernel-tree-sockets.ts` on browser-substrate's `kernel-step2-realm-sockets`); nothing was run
   against a kernel.
 - **Extrapolation:** that one `Atomics.waitAsync` per pending readiness costs what a kernel-side poll costs; that a
   DNS exchange per lookup (no cache, as glibc keeps none) is fast enough for a boot's lookups.
-- **Not moved by this record, and still the engine's:** AF_UNIX path sockets and IPC channels (`pipe_wrap`). Until an
-  IPC channel is a kernel socketpair carrying `SCM_RIGHTS`, a kernel TCP socket cannot be sent over a channel to a
-  process in another worker (before this record it crossed as a native stream).
+- **Still the engine's:** AF_UNIX path sockets (`pipe_wrap`'s `bind`, `listen` and `connect` to a path). Such a pipe
+  has no kernel descriptor, so it cannot cross a kernel IPC channel (`EBADF`), and `net.Socket({ fd })` on an
+  inherited AF_UNIX descriptor is not opened.
 - **Not built in `udp_wrap`:** IPv6 source-specific multicast membership answers `ENOSYS`: its `struct
   group_source_req` is laid out by the host's word size, which this interface does not fix.
 - **Lost reach, named:** HTTPS to anything beyond a directly connected network fails `ERR_TLS_UNAVAILABLE` (for

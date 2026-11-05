@@ -12,6 +12,11 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   libuv's rules. The engine keeps no loopback, port space, listener table or pairing for TCP or UDP. `dns` is a DNS
   exchange over the process's own UDP with its resolv.conf's nameservers. A tree that offers none (`VirtualFS`) is a
   process with no IPv4 or IPv6: a listen or connect fails `EAFNOSUPPORT`.
+- **A handle crosses an IPC channel as `SCM_RIGHTS`** (ADR-0009 §4). `TreeSockets` adds `socketpair`, `sendmsg` and
+  `recvmsg` (`SocketMessage`). An IPC pipe of a process with socket calls is a kernel AF_UNIX socketpair; a sent TCP,
+  UDP or kernel pipe handle is its descriptor in an `SCM_RIGHTS` record, installed in the receiver's own table, and
+  the received socket lives as long as the receiver holds it. `NodeProcessLaunch.descriptors` names the kernel
+  descriptors a hosted child starts with (a dup2 of its fork's copy, before its exec). `TCP.duplicate` is removed.
 - **HTTP leaves by the network.** `installHttpClientTransport` and its `HttpClient*` types, `installFetchTransport`,
   `requestHasStaticBody` and the `Fetch*` types are removed: Node's `http.Agent` is unpatched, and a guest's `fetch` is
   Node's over the engine's own `http` and `https` client. HTTPS to anything but a directly connected network is

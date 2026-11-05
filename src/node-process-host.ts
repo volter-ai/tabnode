@@ -26,6 +26,12 @@ export interface NodeProcessLaunch {
   stdinStream?: AsyncIterable<Uint8Array>;
   streams?: RunStreams;
   inherited: readonly { fd: number; handle: NativeStreamDescriptor }[];
+  /**
+   * The kernel descriptors the child starts with (an IPC channel's end): each `fd` of the child's table is `dup2` of
+   * its descriptor `from`, which its fork copied from its parent's, made before its exec closes the close-on-exec ones,
+   * as libuv's `uv__process_child_init` makes them.
+   */
+  descriptors: readonly { fd: number; from: number }[];
 }
 
 export interface NodeProcessHost {

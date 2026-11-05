@@ -59,7 +59,7 @@ import { ServerBridge, getServerBridge } from './server-bridge';
 import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, type StdioKind } from './shims/child_process';
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, type OwnedHandle } from './node-lib/binding/handles';
-import { withFilesystem } from './node-lib/binding/fs';
+import { withFilesystem } from './node-lib/binding/named-tree';
 import { nativeStreamHandles, type NativeStreamHandleView } from './native-stream-owner';
 
 import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid, installRunRegistry, claimRunPid, forgetRunPid } from './process-tokens';
@@ -79,7 +79,7 @@ import { stdinRingProblem, stdinRingWaitsAsync, type StdinReader } from './stdin
 export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
 export { TREE_SOCKETS } from './host-sockets';
-export type { TreeSockets, InterfaceAddressEntry } from './host-sockets';
+export type { TreeSockets, InterfaceAddressEntry, SocketMessage } from './host-sockets';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 import type { ProcessRegistry } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';

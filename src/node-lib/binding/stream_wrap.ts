@@ -6,9 +6,10 @@
  * reads through `handle.onread(arrayBuffer)` with the byte count in
  * `streamBaseState[kReadBytesOrError]`. That is the whole contract, and this
  * file implements exactly it over the engine's pipe pairing: two handles
- * whose writes are each other's reads. A `TCP` handle extends it for that
- * contract and nothing of the pairing: its bytes are its process's kernel
- * socket's (`tcp_wrap.ts`, ADR-0009).
+ * whose writes are each other's reads. A kernel descriptor's handle (a `TCP`,
+ * a kernel IPC `Pipe`) extends it for that contract and nothing of the
+ * pairing: its bytes are its process's kernel socket's (`kernel_stream.ts`,
+ * ADR-0009).
  *
  * Nothing here implements anything Node's files implement. There is no
  * buffering policy, no half-open rule, no timeout: those are `net.js`'s, and
@@ -123,8 +124,6 @@ export class LibuvStreamWrap implements OwnedHandle {
   get connectionEnd(): object { return this.streamEndpoint; }
   /** The live wrappers sharing this descriptor's socket (its duplicates), not counting a closed one. */
   protected get sharingHandles(): ReadonlySet<LibuvStreamWrap> { return this.streamEndpoint.handles; }
-  /** Whether a listening handle of this kind is passed (SCM_RIGHTS) as a duplicate of its socket, not as itself. */
-  get listenerDuplicates(): boolean { return false; }
   /** A live wrapper on the other end, including after the original was closed. */
   get peer(): LibuvStreamWrap | null {
     const native = nativeStreamFor(this);

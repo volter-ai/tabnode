@@ -3,10 +3,9 @@ import { traceReadingRequested, traceOutput } from './trace-output';
 /** Worker-side libuv delegation of a process's pipes. The capability channel never becomes a handle property. */
 import { withGuestCallback, queueBindingTask } from './guest-loop';
 import type { NativeStreamDescriptor, NativeStreamEvent, NativeStreamOperation, NativeStreamReply, NativeStreamTransport } from './native-stream-owner';
-import type { ProcessToken } from './process-tokens';
 import type { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, type WriteWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './node-lib/binding/stream_wrap';
-import { __adoptHandle, ownerOf, registerHandle, releaseHandle, observeNodeRequest, forgetNodeRequest } from './node-lib/binding/handles';
+import { __adoptHandle, holdRequest, ownerOf, releaseHandle, observeNodeRequest, forgetNodeRequest } from './node-lib/binding/handles';
 import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EPIPE, UV_ENOSYS, errname } from './node-lib/binding/uv';
 
 const UV_EAGAIN = uv.UV_EAGAIN as number;
@@ -147,14 +146,6 @@ export function installNativeStreamTransport(next: NativeStreamTransport): void 
 
 function closeDescriptor(id: number): void {
   if (!stopped) transport!.call({ operation: 'close', id, request: requestId() });
-}
-
-/** uv requests keep their loop alive even when their stream is unreferenced. */
-function holdRequest(handle: Stream): () => void {
-  const request = { close: (): void => releaseHandle(request) };
-  registerHandle(request);
-  __adoptHandle(request, ownerOf(handle));
-  return request.close;
 }
 
 function adopt(descriptor: NativeStreamDescriptor, receiver: Stream): Stream {

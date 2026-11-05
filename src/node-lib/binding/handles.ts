@@ -266,6 +266,14 @@ export function handleHasRef(handle: OwnedHandle): boolean {
   return refHeld.has(handle);
 }
 
+/** A uv request's hold on its handle's loop, which it keeps alive even when the handle is unreferenced; the answer ends it. */
+export function holdRequest(handle: OwnedHandle): () => void {
+  const request = { close: (): void => releaseHandle(request) };
+  registerHandle(request);
+  __adoptHandle(request, ownerOf(handle));
+  return request.close;
+}
+
 /** A closed handle holds nothing. */
 export function releaseHandle(handle: OwnedHandle, closePending = false, closeTurns: 1 | 2 = 2): void {
   if (closePending && handleRowByObject.has(handle)) {
@@ -370,14 +378,9 @@ export function __releaseOwnedHandles(token: ProcessToken): void {
 }
 
 /**
- * Move a handle to another run, as a descriptor sent over IPC moves.
- *
- * Node's `subprocess.send(message, socket)` duplicates the parent's descriptor
- * into the child, and from then on the socket is an active handle of the
- * child's loop, not the parent's. Parent and child are one realm, and the
- * handle (a pipe pairing, or a kernel socket's duplicated descriptor) is the
- * connection, so the move is this count's. A handle the program `unref`'d stays unref'd
- * through the move, as Node's does.
+ * Count a handle in another run's loop: one made outside the run it belongs to (a connection a listener accepted, a
+ * descriptor an IPC read received, a pipe pairing's end given to a child). The descriptor is already that process's;
+ * this moves only the loop's count. A handle the program `unref`'d stays unref'd through the move, as Node's does.
  */
 export function __adoptHandle(handle: OwnedHandle | null | undefined, token: ProcessToken | null, resourceSource?: object): void {
   if (!handle) return;

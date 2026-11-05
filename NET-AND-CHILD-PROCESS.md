@@ -66,9 +66,11 @@ One directory, `src/node-lib/binding/`, one file per `internalBinding` name.
 A TCP or UDP socket is the calling process's kernel's, made through the socket
 calls its tree offers (`TREE_SOCKETS`, `src/host-sockets.ts`, ADR-0009): the
 engine keeps no port, loopback, listener table or pairing of its own for
-them. What else the engine does for a child stays and is the binding's
-implementation: the pairing of a connect to a listening path, the IPC
-channel, the page bridge that hears a listening port and routes a preview's
+them, and an IPC channel of such a process is a kernel AF_UNIX socketpair
+whose handles cross as `SCM_RIGHTS` (ADR-0009 §4). What else the engine does
+for a child stays and is the binding's implementation: the pairing of a
+connect to a listening path, the IPC channel of a process with no socket
+calls, the page bridge that hears a listening port and routes a preview's
 requests and upgrades, the routing of a spawned command to the engine's
 `node`, a page-registered program, a WALI pack or the shell, and the run
 ownership that keeps a run alive while it holds a handle.
@@ -119,10 +121,13 @@ ownership that keeps a run alive while it holds a handle.
   path registry: `UV_ENOENT` when nothing listens, `UV_EADDRINUSE` on a bound
   path), `fchmod` (0), `setPendingInstances` (0), `open(fd)` (the fd of a
   forked child's IPC channel, from the per-child fd table `process_wrap`
-  keeps). An IPC pipe's `writeUtf8String(req, string, handle)` delivers the
-  string to the peer and, when `handle` is given, sets the peer's
-  `pendingHandle` before the peer's `onread`, which is how
-  `setupChannel` in `internal/child_process.js` receives a sent handle.
+  keeps, or a kernel descriptor). An IPC pipe of a process with socket calls
+  is a kernel AF_UNIX socket (`kernel_stream.ts`): `writeUtf8String(req,
+  string, handle)` is a `sendmsg` carrying the handle's descriptor, and each
+  descriptor a `recvmsg` brings becomes the `pendingHandle` of a read's
+  `onread`, which is how `setupChannel` in `internal/child_process.js`
+  receives a sent handle. On the engine's pairing the handle is a duplicate
+  of another pairing, set on the peer before its `onread`.
 - `process_wrap`: `Process` with `spawn(options)` (`file`, `args`, `cwd`,
   `envPairs`, `stdio` entries of type `pipe`/`ignore`/`inherit`/`fd`/`wrap`
   with their `handle`, `detached`), which starts the engine's run of the
@@ -162,13 +167,15 @@ names until `http` is ported the same way.
 A realm's process makes its sockets in its own network namespace, which is its
 kernel's, through the socket calls its tree offers (ADR-0009,
 `src/host-sockets.ts`): `socket`, `bind`, `listen`, `accept4`, `connect`,
-`sendto`, `recvfrom`, `shutdown`, `close`, `getsockname`, `getpeername`,
+`sendto`, `recvfrom`, `socketpair`, `sendmsg`, `recvmsg`, `shutdown`,
+`close`, `getsockname`, `getpeername`,
 `getsockopt`, `setsockopt`, `fcntl`, each Linux's call by descriptor with a
 negative errno for a failure; `wait(fd, events)`, a promise of the
 descriptor's poll readiness; and `getifaddrs()`. The engine knows nothing of
 which namespaces exist, what listens or where a connect goes: a refusal, a
 route, a drop and an egress are the kernel's. A handle keeps the calls of the
-process that made it; an accepted or duplicated one its listener's. HTTP is a
+process that made it, an accepted one its listener's, a received one its
+receiver's. HTTP is a
 `net` or `tls` connection like any other, and a guest's `fetch` is Node's over
 the engine's own `http` client, so nothing leaves around the network.
 

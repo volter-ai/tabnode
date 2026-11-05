@@ -40,6 +40,16 @@ Retained process credentials for the host to pass to Runtime/contained realm adm
 
 ***
 
+### descriptors
+
+> **descriptors**: readonly `object`[]
+
+The kernel descriptors the child starts with (an IPC channel's end): each `fd` of the child's table is `dup2` of
+its descriptor `from`, which its fork copied from its parent's, made before its exec closes the close-on-exec ones,
+as libuv's `uv__process_child_init` makes them.
+
+***
+
 ### env
 
 > **env**: `Record`\<`string`, `string`\>

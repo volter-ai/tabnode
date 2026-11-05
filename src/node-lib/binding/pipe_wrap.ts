@@ -1,20 +1,18 @@
 /**
- * `internalBinding('pipe_wrap')`: a pairing of the engine's own, named by a path.
+ * `internalBinding('pipe_wrap')`: libuv's `uv_pipe_t`.
  *
- * VS Code's extension host is started by its parent and connects back to it
- * over a unix-domain socket path: the parent runs `server.listen(path)` and
- * the child `net.connect(path)`. A path is a name in one registry here;
- * nothing on the path is `ENOENT`, which is what Node answers, and a path a
- * live server already holds is `EADDRINUSE`. AF_UNIX sockets and IPC
- * channels are not yet the kernel's, as TCP and UDP are (ADR-0009, where the
- * evidence stops).
- *
- * The IPC flavour is the same stream with one extra: a write may carry a
- * handle, which is set on the peer before the peer's read, and that is how
- * `setupChannel` in `internal/child_process.js` receives a sent socket.
+ * An IPC pipe of a process whose tree offers socket calls is a kernel AF_UNIX socket, as libuv's is: a child's channel
+ * is one end of a `socketpair` its parent made (`process_wrap`), a handle is sent as `SCM_RIGHTS` and received into
+ * the receiver's own table (`kernel_stream.ts`, ADR-0009 §4). Every other pipe is a pairing of the engine's own, named
+ * by a path: the parent runs `server.listen(path)` and the child `net.connect(path)`, a path is a name in one
+ * registry, nothing on the path is `ENOENT`, which is what Node answers, and a path a live server already holds is
+ * `EADDRINUSE`. On such a pairing an IPC write may carry another pairing, set on the peer before the peer's read,
+ * which is where `setupChannel` in `internal/child_process.js` takes a sent handle.
  */
 import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
+import { KernelStreamWrap, kHandleFd, registerKernelHandle } from './kernel_stream';
+import { callingSockets } from '../../host-sockets';
 import { UV_EACCES, UV_EADDRINUSE, UV_ECONNREFUSED, UV_ENOENT, UV_ENOTDIR, UV_EBADF } from './uv';
 import { handleForFd, registerFd, releaseFd } from './fds';
 import { __adoptHandle, ownerOf, invokeOwned, observeNodeRequest, forgetNodeRequest } from './handles';
@@ -76,7 +74,10 @@ export function listenerOnPath(path: string): Pipe | undefined {
 const pipeAcceptTurns = new WeakMap<object, number>();
 const pipeAcceptQueues = new WeakMap<object, Array<{ accepted: Pipe; adoptedBy: Pipe | undefined }>>();
 
-export class Pipe extends LibuvStreamWrap {
+/** Set while a pipe is made for a received AF_UNIX descriptor, which is the kernel's whatever its flavour. */
+let receivedDescriptor = false;
+
+export class Pipe extends KernelStreamWrap {
   readonly type: number;
   listening = false;
   onconnection: ((status: number, clientHandle: Pipe) => void) | null = null;
@@ -87,9 +88,15 @@ export class Pipe extends LibuvStreamWrap {
   private node: { path: string; tree: SocketTree } | null = null;
 
   constructor(type: number = constants.SOCKET) {
-    super();
+    super((type === constants.IPC || receivedDescriptor) && callingSockets() !== undefined);
     this.type = type;
-    this.attachNative('pipe', type);
+    if (!this.kernelBacked) this.attachNative('pipe', type);
+  }
+
+  /** A pipe for a received AF_UNIX descriptor: a kernel stream of the receiving process, opened on it by its caller. */
+  static forReceivedDescriptor(): Pipe {
+    receivedDescriptor = true;
+    try { return new Pipe(constants.SOCKET); } finally { receivedDescriptor = false; }
   }
 
   /**
@@ -135,12 +142,6 @@ export class Pipe extends LibuvStreamWrap {
     if (already) this.drainAccepted();
     return 0;
   }
-
-  /**
-   * A listening Unix socket passed over IPC is one socket under two descriptors, as SCM_RIGHTS gives it (tcp_wrap.ts
-   * says the same of a TCP one): a realm's own is duplicated; a native owner's crosses as before.
-   */
-  override get listenerDuplicates(): boolean { return nativeStreamFor(this) === undefined; }
 
   /** The member of this handle's socket a connection is accepted on: a listening one, those net.js serves first, in turn. */
   acceptingMember(): Pipe | undefined {
@@ -211,13 +212,17 @@ export class Pipe extends LibuvStreamWrap {
   }
 
   /**
-   * The descriptor of a handle the engine itself opened — a forked child's IPC
-   * channel among them. There is nothing else to open: the engine has no
-   * descriptors of its own beyond the ones it hands out. Opening one takes
-   * over that end of its pairing, with whatever arrived on it before anyone
-   * opened it, because a child's channel is written to before the child runs.
+   * uv_pipe_open. A kernel pipe opens a descriptor of its process; a child's channel in its parent's realm, on its
+   * parent's tree, is the end its parent's spawn made, which it takes. An engine pipe opens a descriptor the engine
+   * itself handed out, a forked child's channel among them, taking over that end of its pairing with whatever arrived
+   * on it before anyone opened it, because a child's channel is written to before the child runs.
    */
   open(fd: number): number {
+    if (this.kernelBacked) {
+      const made = this.type === constants.IPC ? handleForFd(fd) : undefined;
+      if (made instanceof Pipe && made.kernelBacked && made[kHandleFd] >= 0) { this.takeDescriptorFrom(made); return 0; }
+      return this.openDescriptor(fd);
+    }
     const native = nativeStreamFor(this);
     if (native) {
       const status = native.call({ operation: 'open', id: native.descriptor.id, fd }).status;
@@ -234,6 +239,7 @@ export class Pipe extends LibuvStreamWrap {
 
   /** The descriptor this handle can be reached at, for a child's stdio table. */
   toFd(): number {
+    if (this.kernelBacked) return this[kHandleFd];
     if (this.ownFd === null) { this.ownFd = registerFd('PIPE', this); this.fd = this.ownFd; }
     return this.ownFd;
   }
@@ -263,37 +269,33 @@ export class Pipe extends LibuvStreamWrap {
     return 0;
   }
 
+  /** An IPC kernel pipe sends a handle's descriptor (`uv__handle_fd`); one that has none is EBADF, as uv_write2 answers. */
+  protected override descriptorToSend(handle: unknown): number {
+    if (this.type !== constants.IPC) return super.descriptorToSend(handle);
+    const fd = (handle as { [kHandleFd]?: unknown })[kHandleFd];
+    return typeof fd === 'number' && fd >= 0 ? fd : UV_EBADF;
+  }
+
+  protected override get receivesDescriptors(): boolean { return this.type === constants.IPC; }
+
   /**
-   * An IPC write may carry a handle. The peer is given it before the bytes, so
-   * `setupChannel`'s reader sees `channel.pendingHandle` when the message it
-   * belongs to arrives, which is the order Node delivers them in.
-   *
-   * The handle becomes the receiving run's. Node's `send(message, socket)`
-   * duplicates the sender's descriptor into the other process, and from then
-   * on the socket is an active handle of that process's loop. The binding
-   * duplicates the wrapper and assigns that reference to the receiver.
-   * Without that ownership, openvscode-server's extension
-   * host -- a program whose only handle is the socket its parent sent it --
-   * read as idle and was settled with exit 0.
+   * An IPC write may carry a handle. On a kernel pipe it is the descriptor's `sendmsg` (`kernel_stream.ts`). On the
+   * engine's pairing it is another pairing of the engine's, crossing as a duplicate, the receiver's own handle on the
+   * same connection, so the sender's close on `NODE_HANDLE_ACK` ends nothing; the peer is given it before the bytes, so
+   * `setupChannel`'s reader sees `channel.pendingHandle` when the message it belongs to arrives, and it is counted in
+   * the receiving run's loop. A kernel handle has no place on a pairing (its process has no socket calls to have made
+   * it with): EBADF.
    */
   protected override dispatchWrite(req: WriteWrap, bytes: Uint8Array, handle?: unknown): number {
+    if (this.kernelBacked) return super.dispatchWrite(req, bytes, handle);
     const native = nativeStreamFor(this);
     if (native) return native.write(req, [bytes], handle);
     if (handle === undefined || handle === null) return super.dispatchWrite(req, bytes);
-    // A descriptor crosses as a duplicate, as `SCM_RIGHTS` hands one over: the
-    // receiver gets its own handle on the same connection, so the sender's
-    // close on `NODE_HANDLE_ACK` -- which Node's `child_process.js` does the
-    // moment the receiver confirms -- ends nothing. A connection is duplicated
-    // whether or not its other end is still there; a listening server has no
-    // connection to duplicate; a realm's own TCP listener is duplicated as its socket (tcp_wrap.ts), any other
-    // crosses as it is.
-    const sent = handle as LibuvStreamWrap & { listening?: boolean };
-    const given = sent.listening === true && !sent.listenerDuplicates ? sent : sent.duplicate();
-    // The receiving run owns this reference; the sender retains its own until
-    // Node closes it on acknowledgement, or continues using it with keepOpen.
+    if (!(handle instanceof Pipe) || handle.kernelBacked) return UV_EBADF;
+    const given = handle.duplicate();
     __adoptHandle(given, ownerOf(this.peer ?? this), this.peer ?? this);
     const status = super.dispatchWrite(req, bytes, given);
-    if (status !== 0 && given !== sent) given.close();
+    if (status !== 0) given.close();
     return status;
   }
 
@@ -355,4 +357,5 @@ export class Pipe extends LibuvStreamWrap {
 }
 
 registerNativeStreamConstructor('pipe', Pipe);
+registerKernelHandle('PIPE', () => Pipe.forReceivedDescriptor());
 export default { Pipe, PipeConnectWrap, constants };

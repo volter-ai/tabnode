@@ -17,7 +17,7 @@ import type { ProcessToken } from '../../process-tokens';
 import { currentOwner } from './handles';
 import { nativeInheritedFdType } from '../../native-stream-binding';
 import { treeDescriptorsOf, type TreeDescriptors } from '../../tree-descriptors';
-import { callingSockets, linux, readIntOption } from '../../host-sockets';
+import { callingSockets, linux, readIntOption, type TreeSockets } from '../../host-sockets';
 
 /** What libuv answers for a descriptor. */
 export type HandleType = 'TCP' | 'TTY' | 'UDP' | 'FILE' | 'PIPE' | 'UNKNOWN';
@@ -120,15 +120,16 @@ export function guessHandleTypeOfFd(fd: number): HandleType {
   if (open) return open.type;
   const inherited = nativeInheritedFdType(fd);
   if (inherited) return inherited;
-  const socket = kernelSocketType(fd);
+  const sockets = callingSockets();
+  const socket = sockets && kernelSocketType(sockets, fd);
   if (socket) return socket;
   if (fd === 0 || fd === 1 || fd === 2) return 'PIPE';
   return 'FILE';
 }
 
-function kernelSocketType(fd: number): HandleType | undefined {
-  const sockets = callingSockets();
-  if (!sockets || !Number.isInteger(fd) || fd < 0) return undefined;
+/** uv_guess_handle of a kernel descriptor of `sockets`' process: its socket's type and family; none for no socket. */
+export function kernelSocketType(sockets: TreeSockets, fd: number): HandleType | undefined {
+  if (!Number.isInteger(fd) || fd < 0) return undefined;
   const type = new Uint8Array(4), domain = new Uint8Array(4);
   if (sockets.getsockopt(fd, linux.SOL_SOCKET, linux.SO_TYPE, type) < 0) return undefined;
   if (sockets.getsockopt(fd, linux.SOL_SOCKET, linux.SO_DOMAIN, domain) < 0) return 'UNKNOWN';

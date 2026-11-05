@@ -55,6 +55,7 @@ import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/bindi
 import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
 import { nodeProcessHostFor, nodeProcessHostInstalled, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
+import { KernelStreamWrap, kHandleFd } from '../node-lib/binding/kernel_stream';
 import { Pipe, constants as pipeConstants } from '../node-lib/binding/pipe_wrap';
 import {
   WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
@@ -235,7 +236,7 @@ export interface RunStreams {
 const _runStreams = new Map<ProcessToken, RunStreams>();
 
 /** Submit before returning to a spawning parent; completion remains async. */
-async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaunch, 'identity' | 'inherited' | 'stdinStream'>): Promise<CommandOutcome> {
+async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaunch, 'identity' | 'inherited' | 'descriptors' | 'stdinStream'>): Promise<CommandOutcome> {
   const { token, streams } = launch;
   // A run not yet numbered is forked here, and its end is reaped here: the run's end is its parent's wait.
   const forked = runPidOf(token) === undefined;
@@ -245,11 +246,21 @@ async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaun
   let ran = false;
   try {
     streams?.signal?.throwIfAborted();
-    const inherited = inheritedRunFds(token).map(({ fd, handle }) => {
+    // A kernel descriptor the child starts with is its fork's copy of this process's, made its number before its exec
+    // (uv__process_child_init's dup2); this process's copy is closed, as libuv's parent closes a child's ends after the
+    // spawn. Any other is a native stream the child's realm inherits.
+    const inherited: NodeProcessLaunch['inherited'][number][] = [];
+    const descriptors: NodeProcessLaunch['descriptors'][number][] = [];
+    for (const { fd, handle } of inheritedRunFds(token)) {
+      if (handle instanceof KernelStreamWrap && handle.kernelBacked) {
+        descriptors.push({ fd, from: handle[kHandleFd] });
+        handle.close();
+        continue;
+      }
       const descriptor = nativeStreamDescriptor(handle as LibuvStreamWrap);
       if (!descriptor) throw new Error(`Node descriptor ${fd} has no native owner for process isolation.`);
-      return { fd, handle: descriptor };
-    });
+      inherited.push({ fd, handle: descriptor });
+    }
     input = nodeProcessInput(streams);
     // An fd the host streamed through its byte sink is whole already: its
     // total is empty by the host's contract, and is never replayed. The host
@@ -262,7 +273,7 @@ async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaun
       ...(streams.onStdoutBytes ? { onStdoutBytes: { value: (bytes: Uint8Array) => { bytesOut = true; streams.onStdoutBytes!(bytes); } } } : {}),
       ...(streams.onStderrBytes ? { onStderrBytes: { value: (bytes: Uint8Array) => { bytesErr = true; streams.onStderrBytes!(bytes); } } } : {}),
     }) as RunStreams;
-    const result = await host.run({ ...launch, ...(watched ? { streams: watched } : {}), identity: { ...runPid(token)! }, inherited,
+    const result = await host.run({ ...launch, ...(watched ? { streams: watched } : {}), identity: { ...runPid(token)! }, inherited, descriptors,
       ...(input.stream ? { stdinStream: input.stream } : {}) });
     ran = true;
     // The host's realm ran it and reported its exit; the end is the one the process table holds.

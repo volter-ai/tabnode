@@ -22,7 +22,7 @@ import { netModule } from './net-module';
 import type { Socket } from './net-module';
 import { Buffer } from './buffer-module';
 import { HTTPParser } from './binding/http_parser';
-import { withFilesystem } from './binding/fs';
+import { withFilesystem } from './binding/named-tree';
 import type { VirtualFS } from '../virtual-fs';
 
 /** What a page request answers with, the shape the bridge has always answered. */

@@ -263,6 +263,60 @@ recvfrom(2): answers the bytes read (0 at a stream's end) and fills `address` wi
 
 ***
 
+### recvmsg()
+
+> **recvmsg**(`fd`, `message`, `flags`): `number`
+
+recvmsg(2): answers the bytes read (0 at a stream's end) into `message.data`, fills `message.control` with the
+records that came with them (descriptors an `SCM_RIGHTS` record carries installed in this process's table), and
+sets `message.controlLength` and `message.flags`.
+
+#### Parameters
+
+##### fd
+
+`number`
+
+##### message
+
+[`SocketMessage`](SocketMessage.md)
+
+##### flags
+
+`number`
+
+#### Returns
+
+`number`
+
+***
+
+### sendmsg()
+
+> **sendmsg**(`fd`, `message`, `flags`): `number`
+
+sendmsg(2) on a connected socket: answers the bytes taken; an `SCM_RIGHTS` record's descriptors go with them.
+
+#### Parameters
+
+##### fd
+
+`number`
+
+##### message
+
+[`SocketMessage`](SocketMessage.md)
+
+##### flags
+
+`number`
+
+#### Returns
+
+`number`
+
+***
+
 ### sendto()
 
 > **sendto**(`fd`, `data`, `flags`, `address`): `number`
@@ -364,6 +418,36 @@ socket(2): `type` may carry `SOCK_NONBLOCK` and `SOCK_CLOEXEC`; answers the desc
 ##### protocol
 
 `number`
+
+#### Returns
+
+`number`
+
+***
+
+### socketpair()
+
+> **socketpair**(`domain`, `type`, `protocol`, `pair`): `number`
+
+socketpair(2): fills `pair` with the two connected descriptors; `type` as socket's.
+
+#### Parameters
+
+##### domain
+
+`number`
+
+##### type
+
+`number`
+
+##### protocol
+
+`number`
+
+##### pair
+
+`Int32Array`
 
 #### Returns
 

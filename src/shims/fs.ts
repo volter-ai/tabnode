@@ -17,7 +17,7 @@
  * `fs` runs unchanged.
  */
 import { fsModule } from '../node-lib/fs-module';
-import { withFilesystem } from '../node-lib/binding/fs';
+import { withFilesystem } from '../node-lib/binding/named-tree';
 import type { VirtualFS } from '../virtual-fs';
 
 /** Node's `fs`, as a caller of `createFsShim` reads it: the module is Node's own file, so its shape is Node's. */

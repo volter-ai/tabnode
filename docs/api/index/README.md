@@ -66,6 +66,7 @@
 - [RunOptions](interfaces/RunOptions.md)
 - [RunResult](interfaces/RunResult.md)
 - [RuntimeOptions](interfaces/RuntimeOptions.md)
+- [SocketMessage](interfaces/SocketMessage.md)
 - [Stats](interfaces/Stats.md)
 - [StdinReader](interfaces/StdinReader.md)
 - [TreeAdvisoryLocks](interfaces/TreeAdvisoryLocks.md)

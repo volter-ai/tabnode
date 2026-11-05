@@ -11,8 +11,9 @@
  * IPv4 or IPv6: making the socket is `EAFNOSUPPORT`.
  */
 import { queueBindingTask, withGuestCallback } from '../../guest-loop';
-import { __adoptHandle, invokeOwned, nodeHandleHasRef, ownerOf, refHandle, registerHandle, releaseHandle, resourceScopeProcess, startHandle, stopHandle, unrefHandle, type OwnedHandle } from './handles';
+import { holdRequest, invokeOwned, nodeHandleHasRef, refHandle, registerHandle, releaseHandle, resourceScopeProcess, startHandle, stopHandle, unrefHandle, type OwnedHandle } from './handles';
 import { nextHandleAsyncId } from './stream_wrap';
+import { kHandleFd, registerKernelHandle } from './kernel_stream';
 import { UV_EAFNOSUPPORT, UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOSYS, UV_ENOTCONN, errname, getErrorMap } from './uv';
 import { callingSockets, intOption, linux, readIntOption, readSocketName, socketAddress, socketAddressBuffer, type TreeSockets } from '../../host-sockets';
 import { loadNodeLib, loadNodeLibFor } from '../load';
@@ -40,14 +41,6 @@ export class SendWrap {
   port: unknown = undefined;
   callback: unknown = undefined;
   oncomplete: ((status: number, sent: number) => void) | null = null;
-}
-
-/** uv requests keep their loop alive even when their handle is unreferenced. */
-function holdRequest(handle: UDP): () => void {
-  const request = { close: (): void => releaseHandle(request) };
-  registerHandle(request);
-  __adoptHandle(request, ownerOf(handle));
-  return request.close;
 }
 
 /** The `Buffer` of the graph whose binding made the handle, which a received datagram is one of. */
@@ -91,6 +84,7 @@ export class UDP implements OwnedHandle {
 
   /** The socket's descriptor, -1 until it is made. */
   get fd(): number { return this.#fd; }
+  get [kHandleFd](): number { return this.#fd; }
 
   getAsyncId(): number { return this.#asyncId; }
 
@@ -477,5 +471,7 @@ export class UDP implements OwnedHandle {
     if (typeof callback === 'function') queueBindingTask(() => queueBindingTask(() => withGuestCallback(callback)));
   }
 }
+
+registerKernelHandle('UDP', () => new UDP());
 
 export default { UDP, SendWrap, constants };

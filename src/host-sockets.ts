@@ -17,7 +17,7 @@
  * A tree that offers no sockets is a process on a Linux built without IPv4 and IPv6: `socket(AF_INET)` is
  * `EAFNOSUPPORT`, it has no interface addresses, and a name resolves from `/etc/hosts` alone.
  */
-import { namedTree, withFilesystem } from './node-lib/binding/fs';
+import { namedTree, withFilesystem } from './node-lib/binding/named-tree';
 import { captureNodeResourceScope, resourceScopeProcess } from './node-lib/binding/handles';
 import type { VirtualFS } from './virtual-fs';
 
@@ -39,12 +39,28 @@ export interface InterfaceAddressEntry {
 }
 
 /**
+ * A `struct msghdr` for a connected socket: its one buffer (`msg_iov`) and its ancillary data (`msg_control`), as
+ * `struct cmsghdr` records laid out as on x86-64 Linux (a 16-byte header, `cmsg_len` eight bytes; records 8-byte
+ * aligned). A receive sets `controlLength` (`msg_controllen`) and `flags` (`msg_flags`).
+ */
+export interface SocketMessage {
+  /** The bytes a send takes, or the room a receive fills. */
+  readonly data: Uint8Array;
+  /** The records a send carries, or the room a receive fills; none where null or absent. */
+  readonly control?: Uint8Array | null;
+  controlLength?: number;
+  flags?: number;
+}
+
+/**
  * The socket calls of one process, each Linux's of its name: a non-negative result or a negative errno.
  * Addresses the call fills are given 28 bytes, room for a `sockaddr_in6`.
  */
 export interface TreeSockets {
   /** socket(2): `type` may carry `SOCK_NONBLOCK` and `SOCK_CLOEXEC`; answers the descriptor. */
   socket(domain: number, type: number, protocol: number): number;
+  /** socketpair(2): fills `pair` with the two connected descriptors; `type` as socket's. */
+  socketpair(domain: number, type: number, protocol: number, pair: Int32Array): number;
   /** bind(2). */
   bind(fd: number, address: Uint8Array): number;
   /** listen(2). */
@@ -57,6 +73,14 @@ export interface TreeSockets {
   sendto(fd: number, data: Uint8Array, flags: number, address: Uint8Array | null): number;
   /** recvfrom(2): answers the bytes read (0 at a stream's end) and fills `address` with the source, where given. */
   recvfrom(fd: number, buffer: Uint8Array, flags: number, address: Uint8Array | null): number;
+  /** sendmsg(2) on a connected socket: answers the bytes taken; an `SCM_RIGHTS` record's descriptors go with them. */
+  sendmsg(fd: number, message: SocketMessage, flags: number): number;
+  /**
+   * recvmsg(2): answers the bytes read (0 at a stream's end) into `message.data`, fills `message.control` with the
+   * records that came with them (descriptors an `SCM_RIGHTS` record carries installed in this process's table), and
+   * sets `message.controlLength` and `message.flags`.
+   */
+  recvmsg(fd: number, message: SocketMessage, flags: number): number;
   /** shutdown(2). */
   shutdown(fd: number, how: number): number;
   /** close(2); a `wait` pending on the descriptor settles `POLLNVAL`. */
@@ -114,7 +138,7 @@ export function captureCallingSockets(): <T>(continuation: () => T) => T {
 export const linux = Object.freeze({
   AF_UNIX: 1, AF_INET: 2, AF_INET6: 10,
   SOCK_STREAM: 1, SOCK_DGRAM: 2, SOCK_NONBLOCK: 0o4000, SOCK_CLOEXEC: 0o2000000,
-  MSG_DONTWAIT: 0x40, MSG_NOSIGNAL: 0x4000,
+  MSG_DONTWAIT: 0x40, MSG_NOSIGNAL: 0x4000, MSG_CMSG_CLOEXEC: 0x40000000, SCM_RIGHTS: 1,
   SHUT_WR: 1,
   SOL_SOCKET: 1, SO_REUSEADDR: 2, SO_TYPE: 3, SO_ERROR: 4, SO_BROADCAST: 6, SO_SNDBUF: 7, SO_RCVBUF: 8,
   SO_KEEPALIVE: 9, SO_LINGER: 13, SO_REUSEPORT: 15, SO_DOMAIN: 39,
@@ -130,6 +154,39 @@ export const linux = Object.freeze({
   EINTR: 4, EAGAIN: 11, EINVAL: 22, EOPNOTSUPP: 95, EAFNOSUPPORT: 97, EADDRINUSE: 98,
   ECONNREFUSED: 111, EINPROGRESS: 115,
 });
+
+/** A `struct cmsghdr`'s header, and the alignment of its records (`CMSG_ALIGN`), as on x86-64 Linux. */
+const CMSG_HEADER = 16;
+const cmsgAlign = (length: number): number => (length + 7) & ~7;
+
+/** `CMSG_SPACE(count * sizeof(int))`: the control room `count` descriptors take. */
+export function rightsSpace(count: number): number { return cmsgAlign(CMSG_HEADER + 4 * count); }
+
+/** One `SCM_RIGHTS` record carrying `fds`. */
+export function rightsControl(fds: readonly number[]): Uint8Array {
+  const out = new Uint8Array(rightsSpace(fds.length));
+  const view = new DataView(out.buffer);
+  view.setUint32(0, CMSG_HEADER + 4 * fds.length, true);
+  view.setInt32(8, linux.SOL_SOCKET, true);
+  view.setInt32(12, linux.SCM_RIGHTS, true);
+  fds.forEach((fd, index) => view.setInt32(CMSG_HEADER + 4 * index, fd, true));
+  return out;
+}
+
+/** The descriptors the `SCM_RIGHTS` records of a received control carry, in order (`CMSG_FIRSTHDR`, `CMSG_NXTHDR`). */
+export function receivedRights(control: Uint8Array, length: number): number[] {
+  const view = new DataView(control.buffer, control.byteOffset, control.byteLength);
+  const fds: number[] = [];
+  for (let at = 0; at + CMSG_HEADER <= length;) {
+    const size = view.getUint32(at, true);
+    if (size < CMSG_HEADER || at + size > length) break;
+    if (view.getInt32(at + 8, true) === linux.SOL_SOCKET && view.getInt32(at + 12, true) === linux.SCM_RIGHTS) {
+      for (let offset = CMSG_HEADER; offset + 4 <= size; offset += 4) fds.push(view.getInt32(at + offset, true));
+    }
+    at += cmsgAlign(size);
+  }
+  return fds;
+}
 
 /** A `sockaddr_in` or `sockaddr_in6`, read: its address as inet_ntop prints it, its family as Node names it, its port. */
 export interface SocketName {
