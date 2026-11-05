@@ -1,20 +1,34 @@
 /**
- * tls: the engine has no TLS. A TLS server listens as a net server does and
- * hands its connections on as secure; a TLS connect to a destination on a
- * network the calling process is directly connected to (its loopback, or an
- * interface's network by its netmask, read from its kernel's interfaces
- * after a lookup: host-sockets.ts directlyConnected) is a plain connection
- * marked secure, because nothing but the kernel lies between the two ends.
- * A TLS connect to any other destination fails asynchronously
- * (`ERR_TLS_UNAVAILABLE`), rather than pretending to connect and leaving
- * Node's HTTPS client waiting forever (ADR-0009 §3).
+ * tls, as Node's `lib/internal/tls/wrap.js` arranges it: a client TLSSocket is a `net.Socket` whose handle is a
+ * TLSWrap over the TCP handle of a kernel connection the socket makes with Node's own `net` (or over the socket it was
+ * given), and the TLS on that connection is the process's host's client (`TREE_TLS`, host-tls.ts; ADR-0009 §3). Node's
+ * TLSWrap is C++ over OpenSSL; this one is the same stream contract over the host's client: the connection's bytes go
+ * to the client, the client's records go to the connection, and the decrypted bytes are this handle's reads.
+ *
+ * The roots are the CA file the process's root holds (`/etc/ssl/certs/ca-certificates.crt`) and the file
+ * `NODE_EXTRA_CA_CERTS` names, read through the process's own files; a `ca` the program passes replaces them, as in
+ * Node. A tree that offers no TLS client is a Node without TLS: a connect fails
+ * `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
+ *
+ * A TLS server listens as a net server does and hands its connections on as secure: the engine has no server TLS for
+ * a program's own key and certificate.
  */
 
 import { lazyExport } from '../node-lib/lazy';
-import { nodeLibInternalRequire } from '../node-lib/load';
+import { nodeLibBindingFor, nodeLibInternalRequire, nodeLibProcessOf } from '../node-lib/load';
 import type { Socket } from '../node-lib/net-module';
 import type { EventEmitter } from '../node-lib/events-module';
-import { captureCallingSockets, callingSockets, directlyConnected, ipv4Bytes, ipv6Bytes } from '../host-sockets';
+import { internalAsyncHooks } from '../node-lib/internals/runtime';
+import {
+  LibuvStreamWrap, ShutdownWrap, WriteWrap, streamBaseState, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync,
+  kReadBytesOrError,
+} from '../node-lib/binding/stream_wrap';
+import { DuplexStreamHandle } from '../node-lib/binding/duplex_stream';
+import { forgetNodeHandle, invokeOwned, unrefHandle } from '../node-lib/binding/handles';
+import { UV_EBADF, UV_EOF } from '../node-lib/binding/uv';
+import { kRunFilesystem } from '../node-lib/binding/fs';
+import { queueBindingTask, withGuestCallback } from '../guest-loop';
+import { treeTlsOf, type TlsClientSession, type TlsSecureConnection, type TreeTls } from '../host-tls';
 
 /** A TLS server as Node's module exposes it: constructed with or without `new`. */
 export interface TlsServer extends EventEmitter {
@@ -32,147 +46,434 @@ export interface TlsServerConstructor {
   readonly prototype: TlsServer;
 }
 
-// Keep the ordinary stream lifecycle (error, close, destroy) from Node's own
-// Socket. Resolve it lazily, like the other builtin classes, to avoid a loader
-// cycle while the engine is being imported.
+/** The handle a TLSWrap runs over: a TCP or Pipe handle, or a JS stream's (libuv's stream contract). */
+type StreamHandle = LibuvStreamWrap & Record<string, unknown> & { reading: boolean };
+type WrappedSocket = Socket & { _handle: StreamHandle | null; connecting: boolean; allowHalfOpen: boolean; _host?: string };
+type Options = Record<string, any>;
+
+const owner_symbol = internalAsyncHooks.symbols.owner_symbol;
+const SYSTEM_CA_FILE = '/etc/ssl/certs/ca-certificates.crt';
+const PEM_CERTIFICATE = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/gu;
+
+/** Node's `tls.convertALPNProtocols` read the other way: the protocols, from an array of names or the wire format. */
+function alpnProtocols(value: unknown): string[] | undefined {
+  const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+  if (Array.isArray(value)) return value.map(entry => typeof entry === 'string' ? entry : decode(entry as Uint8Array));
+  if (!ArrayBuffer.isView(value)) return undefined;
+  const wire = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  const out: string[] = [];
+  for (let at = 0; at < wire.byteLength; at += 1 + wire[at]!) out.push(decode(wire.subarray(at + 1, at + 1 + wire[at]!)));
+  return out;
+}
+
+/** The handlers a TLSWrap reports its session to: its socket's. */
+interface SessionOwner {
+  secure(connection: TlsSecureConnection): void;
+  error(error: Error): void;
+}
+
+/**
+ * Node's TLSWrap: a stream over its parent stream's bytes. A TLSWrap is not a handle of the loop: its parent holds
+ * the loop, and `ref`, `unref` and the socket calls are the parent's.
+ */
+class TLSWrap extends LibuvStreamWrap {
+  #session: TlsClientSession | null = null;
+  #owner: SessionOwner | null = null;
+  /** What the process wrote before the handshake began, and what the parent's socket held before it was wrapped. */
+  #clear: Uint8Array[] = [];
+  #encrypted: Uint8Array[] = [];
+  /** The handshake's outcome, once it is done. */
+  secured: TlsSecureConnection | null = null;
+
+  constructor(readonly _parent: StreamHandle, readonly _parentWrap: WrappedSocket | null) {
+    super();
+    unrefHandle(this);
+    forgetNodeHandle(this);
+  }
+
+  /** Begins the client handshake over the parent's bytes. */
+  start(tls: TreeTls, options: Parameters<TreeTls['connect']>[1], owner: SessionOwner): void {
+    if (this.closed || this.#session) return;
+    const parent = this._parent;
+    this.#owner = owner;
+    const session = tls.connect({
+      write: bytes => this.#send(bytes),
+      end: () => this.#shutdownParent(),
+      close: () => {},
+    }, options);
+    this.#session = session;
+    session.plain.onData(bytes => this.receive(bytes));
+    session.plain.onEnd(() => this.receiveEof());
+    session.plain.onError(error => { if (!this.closed) owner.error(error); });
+    session.secure.then(connection => {
+      if (this.closed) return;
+      this.secured = connection;
+      owner.secure(connection);
+    }, () => {});
+    parent.onread = (buffer: ArrayBuffer | null) => this.#parentRead(buffer);
+    for (const bytes of this.#encrypted.splice(0)) session.receive(bytes);
+    for (const bytes of this.#clear.splice(0)) session.plain.write(bytes);
+    const status = parent.readStart();
+    if (status < 0) owner.error(this.#errno(status, 'read'));
+  }
+
+  /** Bytes the wrapped socket had read before it was wrapped: the server's, for the session. */
+  receiveEncrypted(bytes: Uint8Array): void {
+    if (this.#session) this.#session.receive(bytes);
+    else this.#encrypted.push(bytes);
+  }
+
+  #errno(status: number, syscall: string): Error {
+    const { ErrnoException } = nodeLibInternalRequire('internal/errors') as { ErrnoException: new (status: number, syscall: string) => Error };
+    return new ErrnoException(status, syscall);
+  }
+
+  #parentRead(buffer: ArrayBuffer | null): void {
+    const session = this.#session;
+    const nread = streamBaseState[kReadBytesOrError]!;
+    if (!session || this.closed) return;
+    if (nread > 0) session.receive(new Uint8Array(buffer!, streamBaseState[kArrayBufferOffset]!, nread).slice());
+    else if (nread === UV_EOF) session.receiveEnd();
+    else if (nread < 0) {
+      session.receiveClose();
+      this.receiveError(nread);
+    }
+  }
+
+  /** A record the client wrote, onto the parent's connection. */
+  #send(bytes: Uint8Array): void {
+    if (this.closed) return;
+    const request = new WriteWrap();
+    request.handle = this._parent;
+    request.oncomplete = (status: number) => { if (status < 0 && !this.closed) this.#owner?.error(this.#errno(status, 'write')); };
+    const status = this._parent.writeBuffer(request, bytes);
+    if (status < 0) this.#owner?.error(this.#errno(status, 'write'));
+  }
+
+  #shutdownParent(): void {
+    if (this.closed) return;
+    const request = new ShutdownWrap();
+    request.handle = this._parent;
+    request.oncomplete = () => {};
+    this._parent.shutdown(request);
+  }
+
+  override readStart(): number {
+    const status = super.readStart();
+    if (status === 0 && this.#session) this._parent.readStart();
+    return status;
+  }
+
+  /** The handshake reads the parent whatever the socket's reader wants; after it, the reader's pause is the parent's. */
+  override readStop(): number {
+    super.readStop();
+    if (this.secured) this._parent.readStop();
+    return 0;
+  }
+
+  /** The process's bytes, taken whole by the client, which holds them until the handshake is done. */
+  protected override dispatchWrite(_req: WriteWrap, buffer: Uint8Array): number {
+    streamBaseState[kBytesWritten] = buffer.byteLength;
+    streamBaseState[kLastWriteWasAsync] = 0;
+    if (this.closed) return UV_EBADF;
+    const bytes = buffer.slice();
+    if (this.#session) this.#session.plain.write(bytes);
+    else this.#clear.push(bytes);
+    this.bytesWritten += bytes.byteLength;
+    return 0;
+  }
+
+  /** close_notify, then the parent's write side. */
+  override shutdown(req: ShutdownWrap): number {
+    if (this.closed) return UV_EBADF;
+    if (this.#session) this.#session.plain.end();
+    else this.#shutdownParent();
+    queueBindingTask(() => { invokeOwned(req, 'oncomplete', 0); });
+    return 0;
+  }
+
+  /** Closing the wrap closes what it runs over: the wrapped socket, or the parent handle. */
+  override close(callback?: () => void): void {
+    if (this.closed) return;
+    super.close();
+    this.#session?.receiveClose();
+    const wrapped = this._parentWrap;
+    if (wrapped && wrapped._handle === null) {
+      if (callback) queueBindingTask(() => withGuestCallback(callback));
+      return;
+    }
+    if (wrapped && wrapped._handle === this._parent) {
+      if (callback) wrapped.once('close', callback);
+      wrapped.destroy();
+      return;
+    }
+    (this._parent.close as (callback?: () => void) => void)(callback);
+  }
+
+  override ref(): void { (this._parent.ref as () => void)(); }
+  override unref(): void { (this._parent.unref as () => void)(); }
+  override hasRef(): boolean { return (this._parent.hasRef as () => boolean)(); }
+}
+
+// Node's TLSWrap proxies its parent's handle and socket calls (`proxiedMethods`).
+for (const name of ['open', 'bind', 'listen', 'connect', 'bind6', 'connect6', 'getsockname', 'getpeername', 'setNoDelay',
+  'setKeepAlive', 'setSimultaneousAccepts', 'setBlocking']) {
+  Object.defineProperty(TLSWrap.prototype, name, {
+    value: function methodProxy(this: TLSWrap, ...args: unknown[]) {
+      const method = this._parent[name];
+      if (typeof method === 'function') return Reflect.apply(method, this._parent, args);
+      return undefined;
+    },
+    writable: true, configurable: true,
+  });
+}
+
 /** Each graph's TLS keeps that graph's Socket and Server identity. */
 export function createTlsModule(require?: (name: string) => any) {
+const need = (name: string): any => require ? require(name) : nodeLibInternalRequire(name);
 const NetSocket = require ? require('net').Socket as new (options?: object) => Socket
     : lazyExport<new (options?: object) => Socket>('net', 'Socket');
-const netServer = (): any => (require ? require('net') : nodeLibInternalRequire('net') as any).Server;
+const netServer = (): any => need('net').Server;
+/** The process this graph is: its environment, its files and its tree. */
+const processOf = (): Record<string | symbol, any> => require ? require('process') : nodeLibProcessOf();
+const errors = (): any => need('internal/errors');
 
-/**
- * The failure of a TLS connection this engine cannot make, named by the destination it was asked for (`host`,
- * `port`), as Node's network errors are; a destination nobody named is left out rather than invented.
- */
-const unavailable = (host: string | undefined, port: unknown): Error => Object.assign(
-  new Error(`TLS transport is unavailable in this runtime${host === undefined ? '' : ` for ${host}:${String(port ?? 443)}`}; HTTPS requires an admitted HTTP transport.`),
-  { code: 'ERR_TLS_UNAVAILABLE' },
-  host === undefined ? {} : { host, port: port ?? 443 },
-);
-/**
- * A TLS socket over a socket it was given (Node's `new tls.TLSSocket(socket)`, `tls.connect({ socket })`) would run
- * TLS over that socket's bytes, and this engine has no TLS to run there. Its destination is the wrapped socket's
- * peer, which is what Node's wrapping TLSSocket reports as its own `remoteAddress` and `remotePort` (v26.12.0).
- */
-const wrappedUnavailable = (wrapped: unknown): Error => {
-  let host: unknown; let port: unknown;
-  try { ({ remoteAddress: host, remotePort: port } = wrapped as { remoteAddress?: unknown; remotePort?: unknown }); }
-  catch { /* a peer that cannot be read is not named */ }
-  return typeof host === 'string' && host !== '' && typeof port === 'number' ? unavailable(host, port) : unavailable(undefined, undefined);
+/** The roots a connect verifies against where the program names none: the image's CA file and NODE_EXTRA_CA_CERTS. */
+let defaultRoots: { system: string; extra: string } | undefined;
+const roots = (): { system: string; extra: string } => {
+  if (defaultRoots) return defaultRoots;
+  const fs = need('fs');
+  const process = processOf();
+  let system = '';
+  try { system = String(fs.readFileSync(SYSTEM_CA_FILE, 'latin1')); } catch { /* an image with no CA file has no roots */ }
+  let extra = '';
+  const file = process.env?.NODE_EXTRA_CA_CERTS;
+  if (file) {
+    try { extra = String(fs.readFileSync(file, 'latin1')); }
+    catch (error) { process.emitWarning?.(`Ignoring extra certs from \`${file}\`, load failed: ${(error as Error).message}`); }
+  }
+  return defaultRoots = { system, extra };
 };
-// Never inherit a plain TCP connect while advertising an encrypted socket.
-// Agent assigns its socket on nextTick after connect returns, so failure
-// follows that assignment and reaches ClientRequest's error listener.
-const failLater = (socket: Socket, error: Error): void => { queueMicrotask(() => queueMicrotask(() => socket.destroy(error))); };
-type Wrapped = { remoteAddress?: unknown; remotePort?: unknown; remoteFamily?: unknown; destroy?: () => unknown };
-/**
- * The socket a TLS socket was given to run over (`new tls.TLSSocket(socket)`, `tls.connect({ socket })`). Node's
- * TLSSocket runs on that socket's handle: its peer is that socket's (`remoteAddress`, `remotePort`), and a failed
- * handshake destroys that socket with it (v26.12.0: open in the `error` listener, destroyed at `close`).
- */
-const wrappedBy = new WeakMap<object, Wrapped>();
-/** A TLS socket over a socket it was given fails, and the wrapped socket goes with it. */
-const failWrapped = (socket: Socket, wrapped: object): void => {
-  wrappedBy.set(socket, wrapped as Wrapped);
-  socket.connecting = true;
-  const error = wrappedUnavailable(wrapped);
-  // As Node's does, the wrapped socket is still open inside the TLS socket's `error` listener and is destroyed by the
-  // time its `close` is emitted (v26.12.0).
-  socket.once('close', () => {
-    try { (wrapped as Wrapped).destroy?.(); } catch { /* the wrapped socket's own teardown cannot undo this one's */ }
-  });
-  queueMicrotask(() => queueMicrotask(() => socket.destroy(error)));
+const certificatesIn = (pem: string): string[] => (pem.match(PEM_CERTIFICATE) ?? []).map(entry => `${entry}\n`);
+const pemOf = (ca: unknown): string => (Array.isArray(ca) ? ca : [ca]).map(entry => typeof entry === 'string' ? entry
+  : new TextDecoder('latin1').decode(entry as Uint8Array)).join('\n');
+
+/** Node's `getAllowUnauthorized`: NODE_TLS_REJECT_UNAUTHORIZED=0 turns verification off, with a warning, once. */
+let warnedUnauthorized = false;
+const allowUnauthorized = (): boolean => {
+  const process = processOf();
+  const allow = process.env?.NODE_TLS_REJECT_UNAUTHORIZED === '0';
+  if (allow && !warnedUnauthorized) {
+    warnedUnauthorized = true;
+    process.emitWarning?.("Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections "
+      + 'and HTTPS requests insecure by disabling certificate verification.');
+  }
+  return allow;
 };
+
+/** What `tls.connect` was asked (Node's `kConnectOptions`), and the name `setServername` gave, per socket. */
+const connectOptions = new WeakMap<object, Options>();
+const servernames = new WeakMap<object, string>();
+const fingerprint = (algorithm: string, der: Uint8Array): string => (need('crypto').createHash(algorithm).update(der)
+  .digest('hex') as string).toUpperCase().replace(/(..)(?!$)/gu, '$1:');
+/** A certificate as `getPeerCertificate` gives it: its DER and its fingerprints. */
+const peerCertificate = (der: Uint8Array): Record<string, unknown> => ({
+  raw: need('buffer').Buffer.from(der),
+  fingerprint: fingerprint('sha1', der),
+  fingerprint256: fingerprint('sha256', der),
+  fingerprint512: fingerprint('sha512', der),
+});
+
+/** Node's `getSessionServerIdentity`: the name the server's certificate must carry. */
+const serverIdentity = (options: Options): string => options.servername || options.host || options.socket?._host || 'localhost';
+
+let reinitializeInstalled = false;
 
 class TLSSocket extends NetSocket {
-  authorized = false;
-  encrypted = true;
-  /**
-   * True from construction until the socket is secure, as Node's TLSSocket has it (`_tls_wrap.js`; Node 26:
-   * `new tls.TLSSocket().secureConnecting` and a refused `tls.connect(...)` are both true). A client that waits for
-   * `secureConnect` only while this is true (npm's `@npmcli/agent` races `once(socket, 'secureConnect')` against
-   * `once(socket, 'error')` when it is, and resolves at once when it is not) took this socket for connected, stopped
-   * listening for `error`, and the failure below reached the process as an uncaught exception: npm's `npx` exited 1
-   * on its update check with no message.
-   */
+  _tlsOptions: Options;
+  _secureEstablished = false;
+  _hadError = false;
   secureConnecting = true;
+  servername: string | null = null;
+  alpnProtocol: string | false | null = null;
+  authorized = false;
+  authorizationError: string | null = null;
+  encrypted = true;
+  ssl: TLSWrap | null;
 
-  constructor(socket?: unknown, _options?: unknown) {
-    super({ allowHalfOpen: false });
-    // Given a socket to run over, it fails as `tls.connect({ socket })` does, asynchronously, rather than leaving its
-    // caller waiting for a handshake that never begins.
-    if (socket !== null && typeof socket === 'object') failWrapped(this, socket);
-  }
-
-  /** net.js reads `remoteAddress`, `remotePort` and `remoteFamily` from here: over a wrapped socket, that socket's peer. */
-  _getpeername(): { address?: unknown; port?: unknown; family?: unknown } {
-    const wrapped = wrappedBy.get(this);
-    if (wrapped) {
-      try { return { address: wrapped.remoteAddress, port: wrapped.remotePort, family: wrapped.remoteFamily }; }
-      catch { return {}; }
+  constructor(socket?: unknown, options?: Options) {
+    const tlsOptions: Options = { ...options };
+    let wrapped: WrappedSocket | null = null;
+    let parent: StreamHandle;
+    let created = false;
+    if (socket) {
+      if (socket instanceof NetSocket && (socket as WrappedSocket)._handle) {
+        wrapped = socket as WrappedSocket;
+        parent = wrapped._handle!;
+      } else {
+        // A stream with no handle of its own (an unconnected socket, a JS Duplex) runs as a stream handle, as Node's
+        // JSStreamSocket makes one.
+        parent = new DuplexStreamHandle(socket as ConstructorParameters<typeof DuplexStreamHandle>[0]) as unknown as StreamHandle;
+      }
+    } else {
+      const { TCP, constants } = nodeLibBindingFor(processOf(), 'tcp_wrap') as { TCP: new (type: number) => StreamHandle; constants: { SOCKET: number } };
+      parent = new TCP(constants.SOCKET);
+      created = true;
     }
-    return (NetSocket.prototype as unknown as { _getpeername: (this: TLSSocket) => object })._getpeername.call(this);
-  }
-
-  connect(...args: unknown[]): this {
-    const options = args[0] as { port?: unknown; host?: unknown; hostname?: unknown; socket?: unknown } | undefined;
-    const host = String(options?.host ?? options?.hostname ?? 'localhost') || 'localhost';
-    const pair = (): this => {
-      // The peer is a listener on a directly connected network, or nothing: a refused port fails as a net connect does.
-      this.once('connect', () => {
-        this.secureConnecting = false;
-        this.authorized = true;
-        this.emit('secureConnect');
-      });
-      return (NetSocket.prototype as unknown as { connect: (this: TLSSocket, options: object) => TLSSocket })
-        .connect.call(this, { port: options!.port, host }) as this;
+    const wrap = new TLSWrap(parent, wrapped);
+    super({
+      handle: wrap,
+      allowHalfOpen: socket ? (socket as WrappedSocket).allowHalfOpen : tlsOptions.allowHalfOpen,
+      pauseOnCreate: tlsOptions.pauseOnConnect,
+      manualStart: true,
+      highWaterMark: tlsOptions.highWaterMark,
+      onread: socket ? null : tlsOptions.onread,
+      signal: tlsOptions.signal,
+      noDelay: tlsOptions.noDelay,
+      keepAlive: tlsOptions.keepAlive,
+      keepAliveInitialDelay: tlsOptions.keepAliveInitialDelay,
+    });
+    installReinitialize();
+    if (created) (parent as unknown as Record<symbol, unknown>)[owner_symbol] = this;
+    this._tlsOptions = tlsOptions;
+    this.ssl = wrap;
+    if (socket instanceof NetSocket) {
+      const net = socket as WrappedSocket;
+      this.connecting = net.connecting || !net._handle;
+      net.once('connect', () => { this.connecting = false; this.emit('connect'); });
+    }
+    if (socket) {
+      (socket as Socket).on('close', () => this.destroy());
+      (socket as Socket).on('error', (error: Error) => this.emit('error', error));
+    } else this.connecting = true;
+    // Read on the next tick, so the caller has a chance to set up its listeners; what the wrapped socket already read
+    // is the server's.
+    const initRead = (): void => {
+      if (!this._handle) return;
+      if (wrapped && (wrapped as unknown as { readableLength: number }).readableLength) {
+        let chunk: Uint8Array | null;
+        while ((chunk = (wrapped as unknown as { read(): Uint8Array | null }).read()) !== null) wrap.receiveEncrypted(chunk);
+      }
+      (this as unknown as { read(size: number): unknown }).read(0);
     };
-    const fail = (error: Error): void => failLater(this, error);
-    if (!options || typeof options !== 'object') { this.connecting = true; fail(unavailable(undefined, undefined)); return this; }
-    if (options.socket !== undefined) {
-      if (options.socket !== null && typeof options.socket === 'object') failWrapped(this, options.socket);
-      else { this.connecting = true; fail(unavailable(undefined, undefined)); }
-      return this;
-    }
-    const sockets = callingSockets();
-    const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
-    if (bare.toLowerCase().replace(/\.$/u, '') === 'localhost') return pair();
-    if (ipv4Bytes(bare) || ipv6Bytes(bare.split('%')[0]!)) {
-      if (directlyConnected(bare, sockets)) return pair();
-      this.connecting = true;
-      fail(unavailable(host, options.port));
-      return this;
-    }
-    this.connecting = true;
-    // The connection is made when the lookup has answered, in the connecting call's process.
-    const within = captureCallingSockets();
-    const dns = (require ? require('dns') : nodeLibInternalRequire('dns')) as { lookup(name: string, callback: (error: Error | null, address?: string) => void): void };
-    dns.lookup(bare, (error, address) => within(() => {
-      if (error) fail(error);
-      else if (address !== undefined && directlyConnected(address, sockets)) pair();
-      else fail(unavailable(host, options.port));
-    }));
-    return this;
+    processOf().nextTick(initRead);
   }
 
-  getPeerCertificate(_detailed?: boolean): object {
-    return {};
+  /** Begins the handshake once the connection is made. */
+  _start(): void {
+    if (this.connecting) { this.once('connect', () => this._start()); return; }
+    const wrap = (this as unknown as { _handle: TLSWrap | null })._handle;
+    if (!wrap) return;
+    const tls = treeTlsOf(processOf()[kRunFilesystem]);
+    if (!tls) { this.destroy(new (errors().codes.ERR_FEATURE_UNAVAILABLE_ON_PLATFORM)('TLS')); return; }
+    const options = connectOptions.get(this) ?? this._tlsOptions;
+    const ca = options.ca !== undefined && options.ca !== null ? pemOf(options.ca) : `${roots().system}\n${roots().extra}`;
+    const host = String(serverIdentity({ ...options, servername: servernames.get(this) ?? options.servername })).replace(/^\[|\]$/gu, '');
+    // A program's own `checkServerIdentity` is asked about a chain that verified, as Node asks it; without one the
+    // client applies Node's.
+    const ownCheck = typeof options.checkServerIdentity === 'function';
+    wrap.start(tls, {
+      servername: host,
+      ca: new TextEncoder().encode(ca),
+      rejectUnauthorized: ownCheck ? false : options.rejectUnauthorized !== false,
+      protocols: alpnProtocols(options.ALPNProtocols),
+    }, {
+      secure: () => this._finishInit(),
+      error: (error) => {
+        if (this._hadError) return;
+        this._hadError = true;
+        this.destroy(error);
+      },
+    });
   }
 
-  getCipher(): { name: string; version: string } | null {
-    return null;
+  _finishInit(): void {
+    const secured = this.ssl?.secured;
+    if (!secured) return;
+    this.alpnProtocol = secured.alpnProtocol;
+    if (this.servername === null) this.servername = servernames.get(this) ?? null;
+    this._secureEstablished = true;
+    this.emit('secure');
+  }
+
+  getPeerCertificate(detailed?: boolean): object | null {
+    if (!this.ssl) return null;
+    const certificates = this.ssl.secured?.certificates ?? [];
+    if (certificates.length === 0) return {};
+    const chain = (detailed ? certificates : certificates.slice(0, 1)).map(peerCertificate);
+    for (let index = 0; index + 1 < chain.length; index += 1) chain[index]!.issuerCertificate = chain[index + 1];
+    return chain[0]!;
+  }
+
+  getCipher(): { name: string; standardName: string; version: string } | null {
+    const secured = this.ssl?.secured;
+    return secured ? { name: secured.cipher, standardName: secured.cipher, version: secured.version } : null;
   }
 
   getProtocol(): string | null {
-    return null;
+    return this.ssl?.secured?.version ?? null;
   }
 
-  setServername(_name: string): void {}
+  isSessionReused(): boolean {
+    return false;
+  }
+
+  setServername(name: string): void {
+    if (typeof name !== 'string') throw new (errors().codes.ERR_INVALID_ARG_TYPE)('name', 'string', name);
+    servernames.set(this, name);
+  }
 
   renegotiate(_options: unknown, _callback: (err: Error | null) => void): boolean {
     return false;
   }
+}
+
+/**
+ * A connect to a name that resolves to several addresses tries each on a TCP handle of its own (`net.js`
+ * internalConnectMultiple); each is wrapped as the first was (`TLSSocket.prototype[kReinitializeHandle]`).
+ */
+function installReinitialize(): void {
+  if (reinitializeInstalled) return;
+  reinitializeInstalled = true;
+  const { kReinitializeHandle } = need('internal/net') as { kReinitializeHandle: symbol };
+  const reinitialize = (NetSocket.prototype as unknown as Record<symbol, (handle: unknown) => void>)[kReinitializeHandle]!;
+  Object.defineProperty(TLSSocket.prototype, kReinitializeHandle, {
+    value: function reinitializeHandle(this: TLSSocket, handle: StreamHandle) {
+      handle[owner_symbol as unknown as string] = this;
+      const wrap = new TLSWrap(handle, null);
+      this.ssl = wrap;
+      reinitialize.call(this, wrap);
+    },
+    writable: true, configurable: true,
+  });
+}
+
+/** Node's `onConnectSecure`: the verification's outcome, then `secureConnect`. */
+function onConnectSecure(this: TLSSocket): void {
+  const options = connectOptions.get(this)!;
+  const secured = this.ssl!.secured!;
+  let verifyError: (Error & { code?: string }) | null | undefined = secured.authorizationError ?? null;
+  if (typeof options.checkServerIdentity === 'function' && (!verifyError || verifyError.code === 'ERR_TLS_CERT_ALTNAME_INVALID')) {
+    verifyError = options.checkServerIdentity(serverIdentity(options), this.getPeerCertificate(true));
+  }
+  if (verifyError) {
+    this.authorized = false;
+    this.authorizationError = verifyError.code || verifyError.message;
+    if (options.rejectUnauthorized !== false) { this.destroy(verifyError); return; }
+  } else this.authorized = true;
+  this.secureConnecting = false;
+  this.emit('secureConnect');
+  (this as unknown as EventEmitter).removeListener('end', onConnectEnd);
+}
+
+/** Node's `onConnectEnd`: the server went before the handshake was done. */
+function onConnectEnd(this: TLSSocket): void {
+  if (this._hadError) return;
+  const options = connectOptions.get(this)!;
+  this._hadError = true;
+  const error = new (errors().ConnResetException)('Client network socket disconnected before secure TLS connection was established');
+  Object.assign(error, { path: options.path, host: options.host, port: options.port, localAddress: options.localAddress });
+  this.destroy(error);
 }
 
 // A function constructor, as Node's: its own `https.js` builds an https.Server
@@ -205,7 +506,7 @@ const Server = function TLSServer(this: TlsServer, options?: unknown, secureConn
 Object.assign(Server.prototype, {
   addContext(_hostname: string, _context: unknown) {},
   getTicketKeys() {
-    return (require ? require('buffer').Buffer : Buffer).from('');
+    return need('buffer').Buffer.from('');
   },
   setTicketKeys(_keys: Buffer) {},
   setSecureContext(_options: unknown) {},
@@ -215,19 +516,42 @@ function createServer(options?: unknown, secureConnectionListener?: (socket: Soc
   return new Server(options, secureConnectionListener);
 }
 
-// tls.connect(options[, callback]) and tls.connect(port[, host][, options][, callback]).
+/** Node's `normalizeConnectArgs`: `[port,] [host,] [options,] [cb]`, the TLS options merged over net's. */
+function normalizeConnectArgs(listArgs: unknown[]): [Options, (() => void)?] {
+  const args = need('net')._normalizeArgs(listArgs) as [Options, (() => void)?];
+  const options = args[0];
+  const extra = listArgs[1] !== null && typeof listArgs[1] === 'object' ? listArgs[1] : listArgs[2];
+  Object.assign(options, extra);
+  return args;
+}
+
+// tls.connect(options[, callback]) and tls.connect(port[, host][, options][, callback]), as Node's.
 function connect(...args: unknown[]): TLSSocket {
-  const options: Record<string, unknown> = {};
-  let callback: (() => void) | undefined;
-  for (const arg of args) {
-    if (typeof arg === 'function') callback = arg as () => void;
-    else if (typeof arg === 'number' || (typeof arg === 'string' && options.port === undefined && /^\d+$/u.test(arg))) options.port = arg;
-    else if (typeof arg === 'string') options.host = arg;
-    else if (arg && typeof arg === 'object') Object.assign(options, arg);
-  }
-  const socket = new TLSSocket();
+  const [given, callback] = normalizeConnectArgs(args);
+  const options: Options = { rejectUnauthorized: !allowUnauthorized(), ...given };
+  options.rejectUnauthorized = options.rejectUnauthorized !== false;
+  const socket = new TLSSocket(options.socket, {
+    allowHalfOpen: options.allowHalfOpen,
+    rejectUnauthorized: options.rejectUnauthorized,
+    ALPNProtocols: options.ALPNProtocols,
+    highWaterMark: options.highWaterMark,
+    onread: options.onread,
+    signal: options.signal,
+    noDelay: options.noDelay,
+    keepAlive: options.keepAlive,
+    keepAliveInitialDelay: options.keepAliveInitialDelay,
+  });
+  connectOptions.set(socket, options);
   if (callback) socket.once('secureConnect', callback);
-  return socket.connect(options);
+  if (!options.socket) {
+    if (options.timeout) (socket as unknown as { setTimeout(ms: number): void }).setTimeout(options.timeout);
+    (socket as unknown as { connect(options: Options, listener: () => void): void }).connect(options, () => socket._start());
+  }
+  if (options.servername) socket.setServername(options.servername);
+  if (options.socket) socket._start();
+  socket.on('secure', onConnectSecure);
+  (socket as unknown as EventEmitter).prependListener('end', onConnectEnd);
+  return socket;
 }
 
 const createSecureContext = (_options?: unknown) => ({});
@@ -238,17 +562,18 @@ const DEFAULT_ECDH_CURVE = 'auto';
 const DEFAULT_MAX_VERSION = 'TLSv1.3';
 const DEFAULT_MIN_VERSION = 'TLSv1.2';
 
+/** The roots compiled into Node; the engine has none compiled in, and its roots are the image's CA file. */
 const rootCertificates: string[] = [];
 
-// Node's certificate-store door, read by callers that build their own agents
-// (VS Code's proxy agent, on every fetch it patches). The engine holds no
-// store: certificates are the browser's, so every kind answers the same empty
-// set `rootCertificates` does.
+// Node's certificate-store door, read by callers that build their own agents (VS Code's proxy agent, on every fetch
+// it patches): the image's CA file is the system store, NODE_EXTRA_CA_CERTS's the extra, and both are the default.
 const getCACertificates = (type: string = 'default'): string[] => {
   if (!['default', 'system', 'bundled', 'extra'].includes(type)) {
     throw Object.assign(new TypeError(`The argument 'type' must be one of: 'default', 'system', 'bundled', 'extra'. Received '${String(type)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
   }
-  return [];
+  if (type === 'bundled') return [...rootCertificates];
+  const { system, extra } = roots();
+  return certificatesIn(type === 'system' ? system : type === 'extra' ? extra : `${system}\n${extra}`);
 };
 
 return {

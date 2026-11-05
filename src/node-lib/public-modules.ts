@@ -27,6 +27,7 @@ import * as workerThreadsShim from '../shims/worker_threads';
 import * as http2Shim from '../shims/http2';
 import * as inspectorShim from '../shims/inspector';
 import * as perfHooksShim from '../shims/perf_hooks';
+import * as urlShim from '../shims/url';
 import { nodeLibInternalRequire } from './load';
 import { createTimersModule } from './timers';
 import { guestTimerFunctions } from '../guest-timers';
@@ -58,6 +59,7 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   http2: () => http2Shim,
   inspector: () => inspectorShim,
   perf_hooks: () => perfHooksShim,
+  url: () => urlShim,
   // `internal/fs/cp/cp.js` requires the public alias; it is the same object
   // as `internal/util/types`, which is `util.types`.
   'util/types': () => nodeLibInternalRequire('internal/util/types'),

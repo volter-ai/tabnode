@@ -85,6 +85,8 @@ var cache: Map<string, NodeLibModule> | undefined;
 var builtInternals: Map<string, unknown> | undefined;
 /** A builtin's file compiled once a realm (compiledNodeLibFor), kept for the realm's life. */
 var compiledNodeLib: Map<string, Function> | undefined;
+/** Each process's global object, as the engine makes it (setNodeLibGlobal). */
+var processGlobalOf: ((process: object) => object) | undefined;
 var builtBindings: Map<string, unknown> | undefined;
 /* eslint-enable no-var, vars-on-top */
 
@@ -433,7 +435,7 @@ class NodeLibScope {
     // Insert before evaluation: circular dependencies see this graph's record.
     this.modules.set(name, record);
     try {
-      compileNodeLib(name, record, this.require, this.process, this.binding);
+      compileNodeLib(name, record, this.require, this.process, this.binding, processGlobalOf?.(this.process));
       for (const initialize of moduleInitializers) initialize(name, record.exports, this.require);
     } catch (error) {
       this.modules.delete(name);
@@ -469,18 +471,27 @@ function newNodeLibRecord(name: string): NodeLibModule {
 }
 
 /**
+ * The global object a process's builtins run in: Node runs every builtin in its process's context, so a builtin's
+ * `globalThis` is that process's global (undici keeps its global dispatcher there, and a program's own undici sets it
+ * there). The engine runs many processes in one realm and gives each a global of its own; it names it here.
+ */
+export function setNodeLibGlobal(of: (process: object) => object): void {
+  processGlobalOf = of;
+}
+
+/**
  * A builtin's file as a function, compiled once a realm (S2 AC-LC12): every Node process's realm compiled its builtins
  * at their first require, on its own start (LibreChat run 4: 332 ms of `compileNodeLib` self time over its 20 Node
- * realms). Compiling runs nothing: each load still calls it into a module scope of its own.
+ * realms). Compiling runs nothing: each load still calls it into a module scope of its own, given its process's
+ * global as `globalThis` (a scope around the file's own, so a file that declares the name keeps its declaration).
  */
 function compiledNodeLibFor(name: string): Function {
   compiledNodeLib ??= new Map<string, Function>();
   let compiled = compiledNodeLib.get(name);
   if (!compiled) {
     // eslint-disable-next-line no-new-func
-    compiled = new Function(
-      'exports', 'require', 'module', 'process', 'internalBinding', 'primordials',
-      `${NODE_LIB_SOURCES[name]}\n//# sourceURL=node:${name}`,
+    compiled = new Function('globalThis',
+      `return function (exports, require, module, process, internalBinding, primordials) {${NODE_LIB_SOURCES[name]}\n}\n//# sourceURL=node:${name}`,
     );
     compiledNodeLib.set(name, compiled);
   }
@@ -499,9 +510,9 @@ export function precompileNodeLib(name: string): boolean {
 
 /** The scope Node's `BuiltinModule.compileForInternalLoader` gives a builtin. */
 function compileNodeLib(name: string, record: NodeLibModule, require: NodeLibRequire = nodeLibRequire,
-  process: object = nodeLibProcessOf(), binding: (name: string) => unknown = internalBinding): void {
+  process: object = nodeLibProcessOf(), binding: (name: string) => unknown = internalBinding, global: object = globalThis): void {
   const compiled = compiledNodeLibFor(name);
-  compiled(record.exports, require, record, process, binding, primordialsOf());
+  compiled(global)(record.exports, require, record, process, binding, primordialsOf());
   // lib/buffer.js defines `transcode` only where Node is built with ICU, which this engine is not; the one
   // function is bound here (binding/transcode.ts) rather than left undefined.
   if (name === 'buffer') {
