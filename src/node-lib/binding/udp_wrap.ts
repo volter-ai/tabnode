@@ -13,7 +13,7 @@
 import { queueBindingTask, withGuestCallback } from '../../guest-loop';
 import { holdRequest, invokeOwned, nodeHandleHasRef, refHandle, registerHandle, releaseHandle, resourceScopeProcess, startHandle, stopHandle, unrefHandle, type OwnedHandle } from './handles';
 import { nextHandleAsyncId } from './stream_wrap';
-import { kHandleFd, registerKernelHandle } from './kernel_stream';
+import { kHandleFd, registerKernelHandle, setNonblocking } from './kernel_stream';
 import { UV_EAFNOSUPPORT, UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOSYS, UV_ENOTCONN, errname, getErrorMap } from './uv';
 import { callingSockets, intOption, linux, readIntOption, readSocketName, socketAddress, socketAddressBuffer, type TreeSockets } from '../../host-sockets';
 import { loadNodeLib, loadNodeLibFor } from '../load';
@@ -142,10 +142,8 @@ export class UDP implements OwnedHandle {
     const sockets = this.#sockets;
     if (!sockets) return UV_EBADF;
     if (this.#fd >= 0) return -16; // UV_EBUSY
-    const flags = sockets.fcntl(fd, linux.F_GETFL, 0);
-    if (flags < 0) return flags;
-    const set = sockets.fcntl(fd, linux.F_SETFL, flags | linux.O_NONBLOCK);
-    if (set < 0) return set;
+    const status = setNonblocking(sockets, fd);
+    if (status !== 0) return status;
     this.#fd = fd;
     const name = socketAddressBuffer();
     if (sockets.getsockname(fd, name) === 0 && (name[0]! | (name[1]! << 8)) === linux.AF_INET6) this.#ipv6 = true;

@@ -37,6 +37,14 @@ export function registerKernelHandle(type: 'TCP' | 'UDP' | 'PIPE', make: () => K
   kernelHandles[type] = make;
 }
 
+/** uv__nonblock: `fd` of `sockets`' process made non-blocking; 0 or the call's negative errno. */
+export function setNonblocking(sockets: TreeSockets, fd: number): number {
+  const flags = sockets.fcntl(fd, linux.F_GETFL, 0);
+  if (flags < 0) return flags;
+  const set = sockets.fcntl(fd, linux.F_SETFL, flags | linux.O_NONBLOCK);
+  return set < 0 ? set : 0;
+}
+
 /** uv__read's buffer (`alloc_cb`'s suggested size) and its reads per readiness. */
 const READ_BYTES = 64 * 1024;
 const READS_PER_READINESS = 32;
@@ -109,10 +117,8 @@ export class KernelStreamWrap extends LibuvStreamWrap {
     const sockets = this.#sockets;
     if (!sockets) return UV_EBADF;
     if (this.#fd >= 0 && this.#fd !== fd) return UV_EBUSY;
-    const flags = sockets.fcntl(fd, linux.F_GETFL, 0);
-    if (flags < 0) return flags;
-    const set = sockets.fcntl(fd, linux.F_SETFL, flags | linux.O_NONBLOCK);
-    if (set < 0) return set;
+    const status = setNonblocking(sockets, fd);
+    if (status !== 0) return status;
     this.setDescriptor(fd);
     this.setOpen(true, true);
     return 0;
