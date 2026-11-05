@@ -54,7 +54,7 @@ import * as moduleShim from './shims/module';
 import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
 import { kRunFilesystem } from './node-lib/binding/fs';
 import { byteLengthUtf8 } from './node-lib/binding/buffer';
-import { processUrl } from './node-lib/object-urls';
+import { processUrl, setUrlModule } from './node-lib/object-urls';
 import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor, setNodeLibGlobal, nodeLibBindingFor } from './node-lib/load';
 import { fsModule, fsModuleFor } from './node-lib/fs-module';
 import {
@@ -2104,6 +2104,9 @@ const builtinModules: Record<string, unknown> = {
   // `stream/promises` is the promise form of pipeline and finished, as Node's.
   'stream/promises': streamPromises,
   buffer: bufferShim,
+  // The shim, which `__browserRuntimeFillModules` extends with Node's names (`Url`, `domainToASCII`,
+  // `urlToHttpOptions` and the rest); a process's `url` is this module with its own `URL` (object-urls.ts).
+  url: urlShim,
   querystring: querystringModule,
   util: utilShim,
   tty: ttyModule,
@@ -2584,6 +2587,7 @@ function __browserRuntimeFillStreams(table: Record<string, any>, Bytes = BufferP
 __browserRuntimeFillStreams(builtinModules);
 
 __browserRuntimeFillModules(builtinModules);
+setUrlModule(() => builtinModules.url as Record<string, unknown>);
 
 /**
  * A shared esbuild or rollup shim must use the calling guest's cwd, even after
