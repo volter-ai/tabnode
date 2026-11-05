@@ -1,17 +1,14 @@
 /**
- * tls, as Node's `lib/internal/tls/wrap.js` arranges it: a client TLSSocket is a `net.Socket` whose handle is a
- * TLSWrap over the TCP handle of a kernel connection the socket makes with Node's own `net` (or over the socket it was
- * given), and the TLS on that connection is the process's host's client (`TREE_TLS`, host-tls.ts; ADR-0009 §3). Node's
- * TLSWrap is C++ over OpenSSL; this one is the same stream contract over the host's client: the connection's bytes go
- * to the client, the client's records go to the connection, and the decrypted bytes are this handle's reads.
+ * tls, as Node's `lib/internal/tls/wrap.js` arranges it: a TLSSocket is a `net.Socket` whose handle is a TLSWrap over
+ * the TCP handle of a kernel connection (one the socket makes with Node's own `net`, one a TLS server accepted, or the
+ * socket it was given), and the TLS on that connection is the process's host's (`TREE_TLS`, host-tls.ts; ADR-0009 §3).
+ * Node's TLSWrap is C++ over OpenSSL; this one is the same stream contract over the host's TLS: the connection's bytes
+ * go to the session, the session's records go to the connection, and the decrypted bytes are this handle's reads.
  *
- * The roots are the CA file the process's root holds (`/etc/ssl/certs/ca-certificates.crt`) and the file
+ * A client's roots are the CA file the process's root holds (`/etc/ssl/certs/ca-certificates.crt`) and the file
  * `NODE_EXTRA_CA_CERTS` names, read through the process's own files; a `ca` the program passes replaces them, as in
- * Node. A tree that offers no TLS client is a Node without TLS: a connect fails
- * `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
- *
- * A TLS server listens as a net server does and hands its connections on as secure: the engine has no server TLS for
- * a program's own key and certificate.
+ * Node. A server answers with the program's own `key` and `cert`. A tree that offers no TLS is a Node without TLS: a
+ * handshake fails `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
  */
 
 import { lazyExport } from '../node-lib/lazy';
@@ -27,8 +24,10 @@ import { DuplexStreamHandle } from '../node-lib/binding/duplex_stream';
 import { forgetNodeHandle, invokeOwned, unrefHandle } from '../node-lib/binding/handles';
 import { UV_EBADF, UV_EOF } from '../node-lib/binding/uv';
 import { kRunFilesystem } from '../node-lib/binding/fs';
+import { namedTree } from '../node-lib/binding/named-tree';
+import { callingSockets, type TreeSockets } from '../host-sockets';
 import { queueBindingTask, withGuestCallback } from '../guest-loop';
-import { treeTlsOf, type TlsClientSession, type TlsSecureConnection, type TreeTls } from '../host-tls';
+import { treeTlsOf, type TlsClientSession, type TlsSecureConnection, type TlsServerSecureConnection, type TlsServerSession, type TlsTransport } from '../host-tls';
 
 /** A TLS server as Node's module exposes it: constructed with or without `new`. */
 export interface TlsServer extends EventEmitter {
@@ -66,24 +65,42 @@ function alpnProtocols(value: unknown): string[] | undefined {
   return out;
 }
 
+/**
+ * The ports a TLS server listens on, by the socket calls of the process whose handle listens: what the engine's own
+ * TLS servers said as they began listening, as `tcp_wrap` tells a page bridge a port (`watchListens`). A bridge that
+ * reaches a port its tree's process listens on with TLS reaches it as a TLS client.
+ */
+const tlsListeners = new WeakMap<TreeSockets, Map<number, number>>();
+export function listensWithTls(sockets: TreeSockets, port: number): boolean {
+  return (tlsListeners.get(sockets)?.get(port) ?? 0) > 0;
+}
+function announceTlsListener(sockets: TreeSockets, port: number, change: 1 | -1): void {
+  let ports = tlsListeners.get(sockets);
+  if (!ports) tlsListeners.set(sockets, ports = new Map());
+  const count = (ports.get(port) ?? 0) + change;
+  if (count > 0) ports.set(port, count); else ports.delete(port);
+}
+
 /** The handlers a TLSWrap reports its session to: its socket's. */
 interface SessionOwner {
-  secure(connection: TlsSecureConnection): void;
+  secure(): void;
   error(error: Error): void;
 }
+/** A client's handshake outcome, or a server's. */
+type Secured = TlsSecureConnection | TlsServerSecureConnection;
 
 /**
  * Node's TLSWrap: a stream over its parent stream's bytes. A TLSWrap is not a handle of the loop: its parent holds
  * the loop, and `ref`, `unref` and the socket calls are the parent's.
  */
 class TLSWrap extends LibuvStreamWrap {
-  #session: TlsClientSession | null = null;
+  #session: TlsClientSession | TlsServerSession | null = null;
   #owner: SessionOwner | null = null;
   /** What the process wrote before the handshake began, and what the parent's socket held before it was wrapped. */
   #clear: Uint8Array[] = [];
   #encrypted: Uint8Array[] = [];
   /** The handshake's outcome, once it is done. */
-  secured: TlsSecureConnection | null = null;
+  secured: Secured | null = null;
 
   constructor(readonly _parent: StreamHandle, readonly _parentWrap: WrappedSocket | null) {
     super();
@@ -91,24 +108,24 @@ class TLSWrap extends LibuvStreamWrap {
     forgetNodeHandle(this);
   }
 
-  /** Begins the client handshake over the parent's bytes. */
-  start(tls: TreeTls, options: Parameters<TreeTls['connect']>[1], owner: SessionOwner): void {
+  /** Begins the handshake over the parent's bytes: a client's (`TreeTls.connect`) or a server's (`TreeTls.serve`). */
+  start(open: (transport: TlsTransport) => TlsClientSession | TlsServerSession, owner: SessionOwner): void {
     if (this.closed || this.#session) return;
     const parent = this._parent;
     this.#owner = owner;
-    const session = tls.connect({
+    const session = open({
       write: bytes => this.#send(bytes),
       end: () => this.#shutdownParent(),
       close: () => {},
-    }, options);
+    });
     this.#session = session;
     session.plain.onData(bytes => this.receive(bytes));
     session.plain.onEnd(() => this.receiveEof());
     session.plain.onError(error => { if (!this.closed) owner.error(error); });
-    session.secure.then(connection => {
+    (session.secure as Promise<Secured>).then(connection => {
       if (this.closed) return;
       this.secured = connection;
-      owner.secure(connection);
+      owner.secure();
     }, () => {});
     parent.onread = (buffer: ArrayBuffer | null) => this.#parentRead(buffer);
     for (const bytes of this.#encrypted.splice(0)) session.receive(bytes);
@@ -239,9 +256,9 @@ const processOf = (): Record<string | symbol, any> => require ? require('process
 const errors = (): any => need('internal/errors');
 
 /** The roots a connect verifies against where the program names none: the image's CA file and NODE_EXTRA_CA_CERTS. */
-let defaultRoots: { system: string; extra: string } | undefined;
-const roots = (): { system: string; extra: string } => {
-  if (defaultRoots) return defaultRoots;
+let rootsRead: { system: string; extra: string } | undefined;
+const defaultRoots = (): { system: string; extra: string } => {
+  if (rootsRead) return rootsRead;
   const fs = need('fs');
   const process = processOf();
   let system = '';
@@ -252,9 +269,19 @@ const roots = (): { system: string; extra: string } => {
     try { extra = String(fs.readFileSync(file, 'latin1')); }
     catch (error) { process.emitWarning?.(`Ignoring extra certs from \`${file}\`, load failed: ${(error as Error).message}`); }
   }
-  return defaultRoots = { system, extra };
+  return rootsRead = { system, extra };
 };
 const certificatesIn = (pem: string): string[] => (pem.match(PEM_CERTIFICATE) ?? []).map(entry => `${entry}\n`);
+/**
+ * Node's `SecureContext`: what `tls.createSecureContext(options)` holds, `ca`, `key` and `cert`, for a connect or a
+ * server to use in place of its own options (`secureContext`).
+ */
+const contexts = new WeakMap<object, Options>();
+class SecureContext {
+  context = {};
+  constructor(options: Options) { contexts.set(this, { ca: options.ca, key: options.key, cert: options.cert }); }
+}
+const secureContextOf = (options: Options): Options => (options.secureContext && contexts.get(options.secureContext)) || options;
 const pemOf = (ca: unknown): string => (Array.isArray(ca) ? ca : [ca]).map(entry => typeof entry === 'string' ? entry
   : new TextDecoder('latin1').decode(entry as Uint8Array)).join('\n');
 
@@ -274,16 +301,6 @@ const allowUnauthorized = (): boolean => {
 /** What `tls.connect` was asked (Node's `kConnectOptions`), and the name `setServername` gave, per socket. */
 const connectOptions = new WeakMap<object, Options>();
 const servernames = new WeakMap<object, string>();
-const fingerprint = (algorithm: string, der: Uint8Array): string => (need('crypto').createHash(algorithm).update(der)
-  .digest('hex') as string).toUpperCase().replace(/(..)(?!$)/gu, '$1:');
-/** A certificate as `getPeerCertificate` gives it: its DER and its fingerprints. */
-const peerCertificate = (der: Uint8Array): Record<string, unknown> => ({
-  raw: need('buffer').Buffer.from(der),
-  fingerprint: fingerprint('sha1', der),
-  fingerprint256: fingerprint('sha256', der),
-  fingerprint512: fingerprint('sha512', der),
-});
-
 /** Node's `getSessionServerIdentity`: the name the server's certificate must carry. */
 const serverIdentity = (options: Options): string => options.servername || options.host || options.socket?._host || 'localhost';
 
@@ -300,6 +317,8 @@ class TLSSocket extends NetSocket {
   authorizationError: string | null = null;
   encrypted = true;
   ssl: TLSWrap | null;
+  /** The tree whose TLS this socket's session is: the one named for the call that made it, else its process's. */
+  _tree: unknown;
 
   constructor(socket?: unknown, options?: Options) {
     const tlsOptions: Options = { ...options };
@@ -337,6 +356,7 @@ class TLSSocket extends NetSocket {
     if (created) (parent as unknown as Record<symbol, unknown>)[owner_symbol] = this;
     this._tlsOptions = tlsOptions;
     this.ssl = wrap;
+    this._tree = namedTree() ?? processOf()[kRunFilesystem];
     if (socket instanceof NetSocket) {
       const net = socket as WrappedSocket;
       this.connecting = net.connecting || !net._handle;
@@ -344,12 +364,21 @@ class TLSSocket extends NetSocket {
     }
     if (socket) {
       (socket as Socket).on('close', () => this.destroy());
-      (socket as Socket).on('error', (error: Error) => this.emit('error', error));
+      (socket as Socket).on('error', (error: Error) => {
+        // Before a server's handshake is done its socket's failure is the server's `tlsClientError` (Node's
+        // `_tlsError` holds it while control is not released).
+        if (!tlsOptions.isServer || this._secureEstablished) { this.emit('error', error); return; }
+        if (this._hadError) return;
+        this._hadError = true;
+        (tlsOptions.server as EventEmitter).emit('tlsClientError', error, this);
+        this.destroy();
+      });
     } else this.connecting = true;
     // Read on the next tick, so the caller has a chance to set up its listeners; what the wrapped socket already read
     // is the server's.
     const initRead = (): void => {
       if (!this._handle) return;
+      if (tlsOptions.isServer) this._start();
       if (wrapped && (wrapped as unknown as { readableLength: number }).readableLength) {
         let chunk: Uint8Array | null;
         while ((chunk = (wrapped as unknown as { read(): Uint8Array | null }).read()) !== null) wrap.receiveEncrypted(chunk);
@@ -359,25 +388,43 @@ class TLSSocket extends NetSocket {
     processOf().nextTick(initRead);
   }
 
-  /** Begins the handshake once the connection is made. */
+  /** Begins the handshake once the connection is made: the client's hello, or a server's wait for one. */
   _start(): void {
     if (this.connecting) { this.once('connect', () => this._start()); return; }
     const wrap = (this as unknown as { _handle: TLSWrap | null })._handle;
     if (!wrap) return;
-    const tls = treeTlsOf(processOf()[kRunFilesystem]);
+    const tls = treeTlsOf(this._tree);
     if (!tls) { this.destroy(new (errors().codes.ERR_FEATURE_UNAVAILABLE_ON_PLATFORM)('TLS')); return; }
     const options = connectOptions.get(this) ?? this._tlsOptions;
-    const ca = options.ca !== undefined && options.ca !== null ? pemOf(options.ca) : `${roots().system}\n${roots().extra}`;
+    const protocols = alpnProtocols(options.ALPNProtocols);
+    if (this._tlsOptions.isServer) {
+      const server = this._tlsOptions.server as EventEmitter;
+      const context = secureContextOf(options);
+      const pem = (value: unknown): Uint8Array => new TextEncoder().encode(value === undefined || value === null ? '' : pemOf(value));
+      wrap.start(transport => tls.serve(transport, { key: pem(context.key), cert: pem(context.cert), ...(protocols ? { protocols } : {}) }), {
+        secure: () => this._finishInit(),
+        error: (error) => {
+          if (this._hadError) return;
+          this._hadError = true;
+          // Node's `onSocketTLSError`: a handshake that fails is the server's `tlsClientError`, and the socket goes.
+          if (!this._secureEstablished) server.emit('tlsClientError', error, this);
+          this.destroy(this._secureEstablished ? error : undefined);
+        },
+      });
+      return;
+    }
+    const roots = secureContextOf(options).ca;
+    const ca = roots !== undefined && roots !== null ? pemOf(roots) : `${defaultRoots().system}\n${defaultRoots().extra}`;
     const host = String(serverIdentity({ ...options, servername: servernames.get(this) ?? options.servername })).replace(/^\[|\]$/gu, '');
     // A program's own `checkServerIdentity` is asked about a chain that verified, as Node asks it; without one the
     // client applies Node's.
     const ownCheck = typeof options.checkServerIdentity === 'function';
-    wrap.start(tls, {
+    wrap.start(transport => tls.connect(transport, {
       servername: host,
       ca: new TextEncoder().encode(ca),
       rejectUnauthorized: ownCheck ? false : options.rejectUnauthorized !== false,
-      protocols: alpnProtocols(options.ALPNProtocols),
-    }, {
+      ...(protocols ? { protocols } : {}),
+    }), {
       secure: () => this._finishInit(),
       error: (error) => {
         if (this._hadError) return;
@@ -391,16 +438,22 @@ class TLSSocket extends NetSocket {
     const secured = this.ssl?.secured;
     if (!secured) return;
     this.alpnProtocol = secured.alpnProtocol;
-    if (this.servername === null) this.servername = servernames.get(this) ?? null;
+    if (this.servername === null) this.servername = 'servername' in secured ? secured.servername || null : servernames.get(this) ?? null;
     this._secureEstablished = true;
     this.emit('secure');
   }
 
+  /** The peer's certificate, as the session describes it, in Node's shape; with `detailed`, its issuers linked. */
   getPeerCertificate(detailed?: boolean): object | null {
     if (!this.ssl) return null;
-    const certificates = this.ssl.secured?.certificates ?? [];
+    const secured = this.ssl.secured;
+    const certificates = secured && 'certificates' in secured ? secured.certificates : [];
     if (certificates.length === 0) return {};
-    const chain = (detailed ? certificates : certificates.slice(0, 1)).map(peerCertificate);
+    const Buffer = need('buffer').Buffer;
+    const names = (name: Readonly<Record<string, string | readonly string[]>>): object => Object.assign(Object.create(null), name);
+    const chain: Record<string, unknown>[] = (detailed ? certificates : certificates.slice(0, 1)).map(certificate => ({
+      ...certificate, subject: names(certificate.subject), issuer: names(certificate.issuer), raw: Buffer.from(certificate.raw),
+    }));
     for (let index = 0; index + 1 < chain.length; index += 1) chain[index]!.issuerCertificate = chain[index + 1];
     return chain[0]!;
   }
@@ -451,7 +504,7 @@ function installReinitialize(): void {
 /** Node's `onConnectSecure`: the verification's outcome, then `secureConnect`. */
 function onConnectSecure(this: TLSSocket): void {
   const options = connectOptions.get(this)!;
-  const secured = this.ssl!.secured!;
+  const secured = this.ssl!.secured as TlsSecureConnection;
   let verifyError: (Error & { code?: string }) | null | undefined = secured.authorizationError ?? null;
   if (typeof options.checkServerIdentity === 'function' && (!verifyError || verifyError.code === 'ERR_TLS_CERT_ALTNAME_INVALID')) {
     verifyError = options.checkServerIdentity(serverIdentity(options), this.getPeerCertificate(true));
@@ -476,9 +529,12 @@ function onConnectEnd(this: TLSSocket): void {
   this.destroy(error);
 }
 
-// A function constructor, as Node's: its own `https.js` builds an https.Server
-// by calling `tls.Server` on the instance, which a class refuses. It is a net
-// server, chained to the graph's `net.Server` when the first one is built.
+/** What a server's `setSecureContext` was given: the key, chain and roots its connections answer with. */
+const serverContexts = new WeakMap<object, Options>();
+
+// A function constructor, as Node's: its own `https.js` builds an https.Server by calling `tls.Server` on the
+// instance, which a class refuses. It is a net server whose connections are TLS sockets (Node's
+// `tlsConnectionListener`), chained to the graph's `net.Server` when the first one is built.
 let chained = false;
 const Server = function TLSServer(this: TlsServer, options?: unknown, secureConnectionListener?: (socket: Socket) => void): TlsServer {
   if (!(this instanceof Server)) return new Server(options, secureConnectionListener);
@@ -492,24 +548,50 @@ const Server = function TLSServer(this: TlsServer, options?: unknown, secureConn
     secureConnectionListener = options as (socket: Socket) => void;
     options = {};
   }
-  NetServer.call(this, options ?? {}, function secure(this: TlsServer, socket: Socket & { encrypted?: boolean; authorized?: boolean }) {
-    socket.encrypted = true;
-    socket.authorized = false;
-    // Node sets it false as a server's socket becomes secure, before `secureConnection`.
-    (socket as { secureConnecting?: boolean }).secureConnecting = false;
-    this.emit('secureConnection', socket);
-  });
+  const given = (options ?? {}) as Options;
+  NetServer.call(this, given, tlsConnectionListener);
+  this.setSecureContext(given);
   if (secureConnectionListener) this.on('secureConnection', secureConnectionListener);
   return this;
 } as unknown as TlsServerConstructor;
 
+/** Node's `tlsConnectionListener`: each accepted connection is a server-side TLS socket over it. */
+function tlsConnectionListener(this: TlsServer, raw: Socket): void {
+  const context = serverContexts.get(this) ?? {};
+  const socket = new TLSSocket(raw, { ...context, isServer: true, server: this, pauseOnConnect: (this as unknown as { pauseOnConnect?: boolean }).pauseOnConnect });
+  (socket as unknown as EventEmitter).on('secure', onServerSocketSecure);
+}
+
+/** Node's `onServerSocketSecure`: a handshake done is the server's `secureConnection`. */
+function onServerSocketSecure(this: TLSSocket): void {
+  if ((this as unknown as { destroyed: boolean }).destroyed) return;
+  this.secureConnecting = false;
+  (this._tlsOptions.server as EventEmitter).emit('secureConnection', this);
+}
+
 Object.assign(Server.prototype, {
+  /** Node's `listen`, which also says, once listening, that the port answers TLS. */
+  listen(this: TlsServer, ...args: unknown[]) {
+    const sockets = callingSockets();
+    if (sockets) {
+      this.once('listening', () => {
+        const address = this.address();
+        if (address === null || typeof address !== 'object') return;
+        announceTlsListener(sockets, address.port, 1);
+        this.once('close', () => announceTlsListener(sockets, address.port, -1));
+      });
+    }
+    return netServer().prototype.listen.apply(this, args);
+  },
   addContext(_hostname: string, _context: unknown) {},
   getTicketKeys() {
     return need('buffer').Buffer.from('');
   },
   setTicketKeys(_keys: Buffer) {},
-  setSecureContext(_options: unknown) {},
+  setSecureContext(this: TlsServer, options: Options) {
+    const context = secureContextOf(options ?? {});
+    serverContexts.set(this, { key: context.key, cert: context.cert, ca: context.ca, ALPNProtocols: options?.ALPNProtocols });
+  },
 });
 
 function createServer(options?: unknown, secureConnectionListener?: (socket: Socket) => void): TlsServer {
@@ -554,7 +636,7 @@ function connect(...args: unknown[]): TLSSocket {
   return socket;
 }
 
-const createSecureContext = (_options?: unknown) => ({});
+const createSecureContext = (options: Options = {}): SecureContext => new SecureContext(options);
 
 const getCiphers = () => ['TLS_AES_256_GCM_SHA384', 'TLS_AES_128_GCM_SHA256'];
 
@@ -572,7 +654,7 @@ const getCACertificates = (type: string = 'default'): string[] => {
     throw Object.assign(new TypeError(`The argument 'type' must be one of: 'default', 'system', 'bundled', 'extra'. Received '${String(type)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
   }
   if (type === 'bundled') return [...rootCertificates];
-  const { system, extra } = roots();
+  const { system, extra } = defaultRoots();
   return certificatesIn(type === 'system' ? system : type === 'extra' ? extra : `${system}\n${extra}`);
 };
 

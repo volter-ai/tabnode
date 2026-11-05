@@ -1,11 +1,12 @@
 /**
- * A process's TLS client, as its host offers it (ADR-0009 §3, `tls`).
+ * A process's TLS, as its host offers it (ADR-0009 §3, `tls`).
  *
  * On Linux a Node process's TLS is its own library's, the OpenSSL inside `node`, run over a TCP connection the kernel
- * only carries. The engine has no TLS library of its own: a tree whose host has one offers its client under
- * `TREE_TLS`, beside its socket calls (`TREE_SOCKETS`), and `tls` runs it over the bytes of a kernel TCP connection
- * the process made with Node's own `net`. The client reads nothing and holds nothing of the process: the engine hands
- * it the connection's bytes, the name to verify and the roots, which the engine reads through the process's own files.
+ * only carries. The engine has no TLS library of its own: a tree whose host has one offers its client and its server
+ * under `TREE_TLS`, beside its socket calls (`TREE_SOCKETS`), and `tls` runs them over the bytes of a kernel TCP
+ * connection of the process. They read nothing and hold nothing of the process: the engine hands them the
+ * connection's bytes and what Node's `SecureContext` would hold (the roots, the name to verify, the key and chain),
+ * which it reads through the process's own files or takes from the program.
  */
 
 /** The key a tree offers its process's TLS client under. */
@@ -35,6 +36,27 @@ export interface TlsPlainConnection {
   close(): void;
 }
 
+/** A certificate as Node's `getPeerCertificate()` describes it (OpenSSL's `X509ToObject`). */
+export interface TlsPeerCertificate {
+  /** Each attribute of the distinguished name by OpenSSL's short name (`CN`, `O`); a repeated one an array. */
+  subject: Readonly<Record<string, string | readonly string[]>>;
+  issuer: Readonly<Record<string, string | readonly string[]>>;
+  /** `DNS:a, IP Address:1.2.3.4`, where the certificate has a subjectAltName. */
+  subjectaltname?: string;
+  ca: boolean;
+  /** As OpenSSL prints a time: `Jan  5 01:02:03 2025 GMT`. */
+  valid_from: string;
+  valid_to: string;
+  /** SHA-1, SHA-256 and SHA-512 of the DER, colon-separated uppercase hex. */
+  fingerprint: string;
+  fingerprint256: string;
+  fingerprint512: string;
+  /** Uppercase hex. */
+  serialNumber: string;
+  /** The DER. */
+  raw: Uint8Array;
+}
+
 /** The handshake's outcome, what Node's TLSSocket reports from `secureConnect` on. */
 export interface TlsSecureConnection {
   /** Whether the server's chain verified to a root and its certificate names the server. */
@@ -43,8 +65,8 @@ export interface TlsSecureConnection {
   authorizationError: Error | undefined;
   /** The ALPN protocol the server chose, or false. */
   alpnProtocol: string | false;
-  /** The server's certificates as it sent them, DER, the leaf first. */
-  certificates: readonly Uint8Array[];
+  /** The server's certificates as it sent them, the leaf first. */
+  certificates: readonly TlsPeerCertificate[];
   /** The protocol version, as Node names it (`TLSv1.3`). */
   version: string;
   /** The cipher suite, by its IANA name (`TLS_AES_128_GCM_SHA256`). */
@@ -72,13 +94,43 @@ export interface TlsClientOptions {
   protocols?: readonly string[];
 }
 
-/** The TLS client a host offers its processes. */
+export interface TlsServerOptions {
+  /** The server's private key, PEM (PKCS #8, PKCS #1 or SEC 1; RSA, EC or Ed25519). */
+  key: Uint8Array;
+  /** Its certificate chain, PEM, the leaf first. */
+  cert: Uint8Array;
+  /** ALPN protocols, in the server's preference; a client that offers only others is refused. */
+  protocols?: readonly string[];
+}
+
+/** A server handshake's outcome, what Node's server-side TLSSocket reports from `secureConnection` on. */
+export interface TlsServerSecureConnection {
+  alpnProtocol: string | false;
+  /** The name the client's SNI carried, or false. */
+  servername: string | false;
+  version: string;
+  cipher: string;
+}
+
+export interface TlsServerSession {
+  /** Where the client's bytes go: its records, its FIN, the connection's close. */
+  receive(bytes: Uint8Array): void;
+  receiveEnd(): void;
+  receiveClose(): void;
+  plain: TlsPlainConnection;
+  /** Settles once: when the client's Finished verifies, or with the failure that ended the handshake. */
+  secure: Promise<TlsServerSecureConnection>;
+}
+
+/** The TLS a host offers its processes. */
 export interface TreeTls {
   /** Starts a client handshake over `transport`. */
   connect(transport: TlsTransport, options: TlsClientOptions): TlsClientSession;
+  /** Answers a client's handshake over `transport`, with the program's own key and chain. */
+  serve(transport: TlsTransport, options: TlsServerOptions): TlsServerSession;
 }
 
-/** The TLS client a tree offers, where it offers one. */
+/** The TLS a tree offers, where it offers one. */
 export function treeTlsOf(tree: unknown): TreeTls | undefined {
   if (tree === null || (typeof tree !== 'object' && typeof tree !== 'function')) return undefined;
   const offered = (tree as Record<symbol, unknown>)[TREE_TLS];

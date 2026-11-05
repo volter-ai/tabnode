@@ -23,6 +23,8 @@ import type { Socket } from './net-module';
 import { Buffer } from './buffer-module';
 import { HTTPParser } from './binding/http_parser';
 import { withFilesystem } from './binding/named-tree';
+import { callingSockets } from '../host-sockets';
+import tlsModule, { listensWithTls } from '../shims/tls';
 import type { VirtualFS } from '../virtual-fs';
 
 /** What a page request answers with, the shape the bridge has always answered. */
@@ -39,10 +41,20 @@ export interface ResponseData {
 /**
  * A connection to `port` on the loopback, as the process whose tree is `tree` (the calling process's without one):
  * `localhost`, which is 127.0.0.1 and then ::1, so a guest bound to `::1` alone is reached there, as a client that
- * tries each of a name's addresses reaches it.
+ * tries each of a name's addresses reaches it. A port a TLS server of that process listens on (`listensWithTls`) is
+ * reached as a TLS client over its tree's TLS, and the HTTP goes inside it. Its certificate is not verified, as a
+ * development server's proxy does not verify a local target (`secure: false`): the page is the person's own and the
+ * server is the person's own program, on their own container's loopback, where nothing else can stand between them,
+ * and its certificate is a development one that no root signs (ADR-0009 §3).
  */
 function connectLoopback(tree: object | undefined, port: number): Socket {
-  const connect = (): Socket => netModule.connect({ port, host: 'localhost' }) as unknown as Socket;
+  const connect = (): Socket => {
+    const sockets = callingSockets();
+    if (sockets && listensWithTls(sockets, port)) {
+      return tlsModule.connect({ port, host: 'localhost', servername: 'localhost', rejectUnauthorized: false, ALPNProtocols: ['http/1.1'] }) as unknown as Socket;
+    }
+    return netModule.connect({ port, host: 'localhost' }) as unknown as Socket;
+  };
   return tree ? withFilesystem(tree as VirtualFS, connect) : connect();
 }
 

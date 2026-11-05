@@ -28,6 +28,7 @@ import * as http2Shim from '../shims/http2';
 import * as inspectorShim from '../shims/inspector';
 import * as perfHooksShim from '../shims/perf_hooks';
 import * as urlShim from '../shims/url';
+import { processUrl } from './object-urls';
 import { nodeLibInternalRequire } from './load';
 import { createTimersModule } from './timers';
 import { guestTimerFunctions } from '../guest-timers';
@@ -41,6 +42,8 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   if (_process && name === 'timers') return () => createTimersModule(guestTimerFunctions(_process, globalThis as unknown as Record<string, unknown>));
   if (require && name === 'crypto') return () => cryptoShim.createCryptoModule(require);
   if (require && name === 'tls') return () => tlsShim.createTlsModule(require);
+  // `url`'s URL is the process's, whose `createObjectURL` is Node's.
+  if (_process && name === 'url') return () => ({ ...urlShim, URL: processUrl(_process), default: { ...urlShim.default, URL: processUrl(_process) } });
   if (require && name === 'string_decoder') return () => createStringDecoderModule(() => require('buffer').Buffer);
   __table ??= {
   timers: createTimersModule,
