@@ -283,7 +283,7 @@ function __substrateScriptName(resolvedPath: string): string | undefined {
 }
 /** A body whose guest names are rewritten where free (`__substrateGuestNameEdits`): it runs in Node's own wrapper form, no `with`. */
 const __substrateGuestScopedMarker = '/*__substrate_guest_scoped__*/';
-const __substrateGuestNamePattern = new RegExp(`\\b(?:new|eval|with|${['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'URL', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'MessageEvent', 'window', 'document', 'location', 'performance'].join('|')})\\b`, 'u');
+const __substrateGuestNamePattern = new RegExp(`\\b(?:new|eval|with|${['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'URL', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'MessageEvent', 'WebAssembly', 'window', 'document', 'location', 'performance'].join('|')})\\b`, 'u');
 /** Whether a prepared body carries the mark, after an ES module's own mark where it has one. */
 function __substrateGuestScoped(code: string): boolean {
   return code.startsWith(__substrateGuestScopedMarker) || (code.startsWith(__substrateModuleMarker) && code.startsWith(__substrateGuestScopedMarker, __substrateModuleMarker.length));
@@ -649,7 +649,7 @@ setNodeLibGlobal((process) => __substrateGuestGlobal(process as Process));
  * configurable: one body's `delete window` used to remove the name from that body's own scope alone, and on a
  * shared scope it would remove it from every later body's, so the delete is refused (false, as sloppy code sees it).
  */
-const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'URL', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'MessageEvent', 'window', 'document', 'location', 'performance'] as const;
+const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'URL', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'MessageEvent', 'WebAssembly', 'window', 'document', 'location', 'performance'] as const;
 const __substrateGuestScopes = new WeakMap<Process, object>();
 function __substrateGuestScope(process: Process): object {
   let scope = __substrateGuestScopes.get(process);

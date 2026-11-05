@@ -4,6 +4,11 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
+- **The prepared format is `tabnode-prepared-8`, a minor release, 0.18.0** (CONTRIBUTING: a change to the lowered text
+  moves the format). A guest body's free `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent`,
+  `MessageEvent`, `URL` and `WebAssembly` are now rewritten to the guest's, so the same source lowers to different
+  text: a body prepared under format 7 (which kept the browser's `Response`, or the browser's
+  `WebAssembly.instantiateStreaming`) is not found by name and is prepared again.
 - **A realm's sockets are its kernel's, called by descriptor** (ADR-0009, superseding ADR-0008; browser-substrate
   ADR-0227 §8). A tree that is a kernel's client offers its process's socket calls under `TREE_SOCKETS`
   (`TreeSockets`: `socket`, `bind`, `listen`, `accept4`, `connect`, `sendto`, `recvfrom`, `shutdown`, `close`,
