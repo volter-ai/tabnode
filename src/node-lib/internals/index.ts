@@ -15,7 +15,7 @@ import * as acorn from 'acorn';
 import { internalCryptoKeys } from './crypto-keys';
 import {
   internalConsoleGlobal, internalProcessExecution,
-  internalProcessWarning, internalSourceMapCache, internalUndici, internalReadlineInterface, internalJsTransferable,
+  internalProcessWarning, internalSourceMapCache, internalReadlineInterface, internalJsTransferable,
 } from './events-util';
 import {
   internalAsyncHooks, internalTimers, internalStreamsState, internalTaskQueues,
@@ -89,7 +89,6 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   'internal/process/execution': () => internalProcessExecution,
   'internal/process/warning': () => internalProcessWarning,
   'internal/source_map/source_map_cache': () => internalSourceMapCache,
-  'internal/deps/undici/undici': () => internalUndici,
   'internal/deps/amaro/dist/index': () => internalAmaro(),
   'internal/readline/interface': () => internalReadlineInterface,
   'internal/worker/js_transferable': () => internalJsTransferable,

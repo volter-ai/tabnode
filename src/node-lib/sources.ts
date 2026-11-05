@@ -94,6 +94,7 @@ import INTERNAL_FS_RECURSIVE_WATCH from './internal/fs/recursive_watch.js?raw';
 import INTERNAL_FS_GLOB from './internal/fs/glob.js?raw';
 import INTERNAL_DEPS_MINIMATCH from './internal/deps/minimatch/index.js?raw';
 import INTERNAL_DEPS_UNDICI from './internal/deps/undici/undici.js?raw';
+import INTERNAL_WASM_WEB_API from './internal/wasm_web_api.js?raw';
 import INTERNAL_FS_READ_CONTEXT from './internal/fs/read/context.js?raw';
 import INTERNAL_FS_CP_CP_SYNC from './internal/fs/cp/cp-sync.js?raw';
 import INTERNAL_FS_CP_CP from './internal/fs/cp/cp.js?raw';
@@ -238,6 +239,7 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/fs/glob': INTERNAL_FS_GLOB,
   'internal/deps/minimatch/index': INTERNAL_DEPS_MINIMATCH,
   'internal/deps/undici/undici': INTERNAL_DEPS_UNDICI,
+  'internal/wasm_web_api': INTERNAL_WASM_WEB_API,
   'internal/fs/read/context': INTERNAL_FS_READ_CONTEXT,
   'internal/fs/cp/cp-sync': INTERNAL_FS_CP_CP_SYNC,
   'internal/fs/cp/cp': INTERNAL_FS_CP_CP,

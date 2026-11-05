@@ -41,6 +41,7 @@ import { __tokenForProcess, type ProcessToken } from '../process-tokens';
 import type { Process } from '../shims/process';
 import { createFsBindings } from './binding/fs';
 import { createDiagnosticsChannelBinding } from './binding/diagnostics_channel';
+import { createWasmWebApiBinding } from './binding/wasm_web_api';
 import { errorsBinding } from './binding/misc';
 import { errorSourcePositions } from '../error-source';
 import { stackOverrideMap } from '../stack-overrides';
@@ -421,6 +422,8 @@ class NodeLibScope {
         this.bindings.set(name, { ...errorsBinding, getErrorSourcePositions: (error: object) => errorSourcePositions(this.process, error) });
       } else if (name === 'diagnostics_channel') {
         this.bindings.set(name, createDiagnosticsChannelBinding());
+      } else if (name === 'wasm_web_api') {
+        this.bindings.set(name, createWasmWebApiBinding());
       } else {
         this.bindings.set(name, name === 'util' ? createUtilBinding(this.require) : bindingSurface(internalBinding(name), this.owner, this.process));
       }

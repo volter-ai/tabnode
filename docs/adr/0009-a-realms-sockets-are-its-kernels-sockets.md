@@ -196,35 +196,39 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
 - **`os.networkInterfaces`**: `getifaddrs`, by libuv's `uv_interface_addresses`: interfaces up and running, their IPv4
   and IPv6 addresses, `internal` for a loopback interface, `mac` from the hardware address, `scopeid` from
   `sin6_scope_id`.
-- **`tls`**: a client's TLS is its host's TLS client, offered under `TREE_TLS` beside `TREE_SOCKETS`
-  (`src/host-tls.ts`), as a Linux process's is the library inside it over a connection the kernel only carries.
-  `connect(transport, { servername, ca, rejectUnauthorized, protocols })` starts a handshake over the bytes the engine
-  hands it and answers a session: `plain`, the decrypted connection, and `secure`, which settles with `authorized`,
-  `authorizationError`, `alpnProtocol`, the server's certificates (DER, the leaf first), `version` and `cipher`, or
-  with the failure that ended the handshake. The engine runs it where Node's `lib/internal/tls/wrap.js` (v24.21.0)
-  runs OpenSSL: a client `TLSSocket` is a `net.Socket` whose handle is a TLSWrap over the TCP handle of a connection
-  it makes with Node's own `net` to any destination (a name with several addresses tries each on a handle of its own,
-  `kReinitializeHandle`), or over the socket it was given; the handshake starts once the connection is made, and
-  `secureConnect` follows Node's `onConnectSecure`. The roots are the image's `/etc/ssl/certs/ca-certificates.crt`
-  and the file `NODE_EXTRA_CA_CERTS` names, read through the process's files, unless the program passes `ca`; the
-  client verifies the chain and the name by Node's `checkServerIdentity` rules and ends the handshake on a failure
-  unless `rejectUnauthorized` is false (`NODE_TLS_REJECT_UNAUTHORIZED=0` makes it false); a program's own
-  `checkServerIdentity` is asked about a chain that verified. `getPeerCertificate` answers each certificate's `raw`
-  and fingerprints; `getCipher`, `getProtocol` and `alpnProtocol` are the session's. A tree that offers no TLS client
-  is a Node without TLS: a connect fails `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. A TLS server listens as a net server
-  and hands its connections on as secure: the engine has no server TLS for a program's own key and certificate, so a
-  TLS client of such a server fails its handshake.
+- **`tls`**: a process's TLS is its host's, offered under `TREE_TLS` beside `TREE_SOCKETS` (`src/host-tls.ts`), as a
+  Linux process's is the library inside it over a connection the kernel only carries. `connect(transport, {
+  servername, ca, rejectUnauthorized, protocols })` starts a client handshake and `serve(transport, { key, cert,
+  protocols })` answers one, each over the bytes the engine hands it, and each answers a session: `plain`, the
+  decrypted connection, and `secure`, which settles with the handshake's outcome (`alpnProtocol`, `version`, `cipher`;
+  a client's `authorized`, `authorizationError` and the server's certificates as Node's `getPeerCertificate`
+  describes them, `subject`, `issuer`, `subjectaltname`, `ca`, `valid_from`, `valid_to`, the fingerprints,
+  `serialNumber` and `raw`; a server's `servername` from the client's SNI), or with the failure that ended it. The
+  engine runs it where Node's `lib/internal/tls/wrap.js` (v24.21.0) runs OpenSSL: a `TLSSocket` is a `net.Socket`
+  whose handle is a TLSWrap over the TCP handle of a kernel connection: one it makes with Node's own `net` to any
+  destination (a name with several addresses tries each on a handle of its own, `kReinitializeHandle`), one a TLS
+  server accepted, or the socket it was given. A client's handshake starts once the connection is made and
+  `secureConnect` follows Node's `onConnectSecure`; its roots are the image's `/etc/ssl/certs/ca-certificates.crt` and
+  the file `NODE_EXTRA_CA_CERTS` names, read through the process's files, unless the program passes `ca` (or a
+  `secureContext` holding one); the client verifies the chain and the name by Node's `checkServerIdentity` rules and
+  ends the handshake on a failure unless `rejectUnauthorized` is false (`NODE_TLS_REJECT_UNAUTHORIZED=0` makes it
+  false); a program's own `checkServerIdentity` is asked about a chain that verified. A TLS server is a net server
+  whose connections are server-side TLS sockets (Node's `tlsConnectionListener`), answered with the program's own
+  `key` and `cert` (PEM; an RSA, EC or Ed25519 key); a handshake done is `secureConnection`, one that fails
+  `tlsClientError`. A tree that offers no TLS is a Node without TLS: a handshake fails
+  `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
 - **HTTP**: Node's `http.Agent` and `https.Agent` are unpatched: a request is a `net` or `tls` connection of the
   process.
-- **`fetch`**: a guest's `fetch`, `Request`, `Response`, `Headers`, `FormData`, `WebSocket` and `CloseEvent` are Node's
-  own: undici's bundle as Node v24.21.0 ships it (`deps/undici/undici.js`, vendored byte for byte as
-  `internal/deps/undici/undici`), exposed as Node's bootstrap exposes it (`fetch` a value that loads undici at its
-  first call, the interfaces lazy accessors). A fetch is undici's over the process's `net` and `tls`, so its
+- **`fetch`**: a guest's `fetch`, `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent` and
+  `MessageEvent` are Node's own: undici's bundle as Node v24.21.0 ships it (`deps/undici/undici.js`, vendored byte for
+  byte as `internal/deps/undici/undici`), exposed as Node's bootstrap exposes it (`fetch` a value that loads undici at
+  its first call, the interfaces lazy accessors). A fetch is undici's over the process's `net` and `tls`, so its
   connections are the process's kernel sockets. A builtin runs with its process's global as `globalThis`, where
   undici keeps its global dispatcher, so a program's own undici's `setGlobalDispatcher` is its `fetch`'s, as on Node,
-  and one process's dispatcher is never another's. `MessageEvent` stays the realm's, which its message ports deliver.
-  `data:` URLs are undici's own; a `blob:` URL is resolved through `node:buffer`'s `resolveObjectURL`, which answers
-  nothing here, so its fetch fails as undici fails a URL it cannot resolve.
+  and one process's dispatcher is never another's. `data:` URLs are undici's own; a `blob:` URL is resolved through
+  `node:buffer`'s `resolveObjectURL`. `WebAssembly.compileStreaming` and `instantiateStreaming` take that Response as
+  Node's do: the process's `wasm_web_api` binding is given Node's `internal/wasm_web_api.js` callback, which checks the
+  Response and pushes its bytes to the realm's streaming compiler.
 - **The page's doors** (`ServerBridge`, `http-bridge`, `container.listenNet`) are a client and a server like any
   other, on the container tree's sockets: a request to a port nothing listens on is refused by the kernel and answered
   503, as before; the bridge learns a guest's port when a handle made through its tree's calls starts listening, an
@@ -304,6 +308,8 @@ identity with its kernel numbers: the engine reads ppid from it.
   process in another worker (before this record it crossed as a native stream).
 - **Not built in `udp_wrap`:** IPv6 source-specific multicast membership answers `ENOSYS`: its `struct
   group_source_req` is laid out by the host's word size, which this interface does not fix.
-- **Not built in `tls`:** a peer certificate's subject, issuer, names and validity in `getPeerCertificate` (the
-  engine decodes no X.509; the host's client verifies), session tickets and their reuse, and a TLS server's own TLS.
-  The host's client (browser-substrate's `tls-client.ts`) speaks TLS 1.3 with TLS_AES_128_GCM_SHA256 only.
+- **Not built in `tls`:** session tickets and their reuse, client certificates (`requestCert`), SNI contexts
+  (`addContext`, `SNICallback`), PFX and encrypted keys. The host's TLS (browser-substrate's `tls-client.ts` and
+  `tls-server.ts`) speaks TLS 1.3 with TLS_AES_128_GCM_SHA256 only.
+- **The page's doors and TLS:** the bridge speaks plain HTTP to a guest's port, so a guest's TLS server is not
+  reached from the page.

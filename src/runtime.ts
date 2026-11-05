@@ -54,7 +54,7 @@ import * as moduleShim from './shims/module';
 import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
 import { kRunFilesystem } from './node-lib/binding/fs';
 import { byteLengthUtf8 } from './node-lib/binding/buffer';
-import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor, setNodeLibGlobal } from './node-lib/load';
+import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor, setNodeLibGlobal, nodeLibBindingFor } from './node-lib/load';
 import { fsModule, fsModuleFor } from './node-lib/fs-module';
 import {
   assertModule, querystringModule, punycodeModule, constantsModule,
@@ -282,7 +282,7 @@ function __substrateScriptName(resolvedPath: string): string | undefined {
 }
 /** A body whose guest names are rewritten where free (`__substrateGuestNameEdits`): it runs in Node's own wrapper form, no `with`. */
 const __substrateGuestScopedMarker = '/*__substrate_guest_scoped__*/';
-const __substrateGuestNamePattern = new RegExp(`\\b(?:new|eval|with|${['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'window', 'document', 'location', 'performance'].join('|')})\\b`, 'u');
+const __substrateGuestNamePattern = new RegExp(`\\b(?:new|eval|with|${['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'MessageEvent', 'window', 'document', 'location', 'performance'].join('|')})\\b`, 'u');
 /** Whether a prepared body carries the mark, after an ES module's own mark where it has one. */
 function __substrateGuestScoped(code: string): boolean {
   return code.startsWith(__substrateGuestScopedMarker) || (code.startsWith(__substrateModuleMarker) && code.startsWith(__substrateGuestScopedMarker, __substrateModuleMarker.length));
@@ -375,9 +375,9 @@ const __substrateHeldNamespaces: Record<string, readonly string[]> = {
 /** The names `for (const name in globalThis)` gives in Node v24.21.0, measured (`node -e` of that loop), less the module wrapper's five. */
 /** Node's own shape for the globals it gives every program that are accessors (v24.21.0, `Object.getOwnPropertyDescriptor(globalThis, name)`); the rest are writable values. */
 const NODE_GLOBAL_ACCESSORS: Record<string, { set: boolean; enumerable: boolean } | undefined> = { __proto__: null as never, performance: { set: true, enumerable: true }, Buffer: { set: true, enumerable: false }, crypto: { set: false, enumerable: true },
-  FormData: { set: true, enumerable: false }, Headers: { set: true, enumerable: false }, Request: { set: true, enumerable: false }, Response: { set: true, enumerable: false }, CloseEvent: { set: true, enumerable: false }, WebSocket: { set: true, enumerable: false } };
-/** The interfaces Node's bootstrap exposes from undici (`exposeLazyInterfaces`, internal/bootstrap/web/exposed-window-or-worker.js); `EventSource` is behind a flag and `MessageEvent` stays the realm's, whose ports deliver it. */
-const UNDICI_GLOBALS = new Set(['FormData', 'Headers', 'Request', 'Response', 'CloseEvent', 'WebSocket']);
+  FormData: { set: true, enumerable: false }, Headers: { set: true, enumerable: false }, Request: { set: true, enumerable: false }, Response: { set: true, enumerable: false }, CloseEvent: { set: true, enumerable: false }, MessageEvent: { set: true, enumerable: false }, WebSocket: { set: true, enumerable: false } };
+/** The interfaces Node's bootstrap exposes from undici (`exposeLazyInterfaces`, internal/bootstrap/web/exposed-window-or-worker.js); `EventSource` is behind a flag. */
+const UNDICI_GLOBALS = new Set(['FormData', 'Headers', 'Request', 'Response', 'MessageEvent', 'CloseEvent', 'WebSocket']);
 const NODE_ENUMERABLE_GLOBALS = new Set(['global', 'clearImmediate', 'setImmediate', 'clearInterval', 'clearTimeout', 'setInterval', 'setTimeout', 'queueMicrotask', 'structuredClone', 'atob', 'btoa', 'performance', 'fetch', 'crypto', 'navigator']);
 /** The names whose shape the guest's global takes from Node: those fifteen and two it does not enumerate, `Buffer` and `globalThis`. `process` is not among them: see the `get` trap. `navigator` is among them and is the guest's own accessor from the start. */
 const NODE_GLOBALS = new Set([...NODE_ENUMERABLE_GLOBALS, 'Buffer', 'globalThis']);
@@ -392,6 +392,26 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   const fetch = function fetch(input: unknown, init: unknown = undefined): Promise<unknown> {
     fetchImpl ??= undici().fetch as (input: unknown, init: unknown) => Promise<unknown>;
     return fetchImpl(input, init);
+  };
+  // Node's `WebAssembly.compileStreaming` and `instantiateStreaming`: its bootstrap gives the process's
+  // `wasm_web_api` binding `internal/wasm_web_api`'s callback, which takes the process's own undici Response and
+  // feeds its bytes to the compiler.
+  type WasmWebApi = { compileStreaming(source: unknown): Promise<WebAssembly.Module>; setImplementation(callback: (state: unknown, source: unknown) => void): void };
+  let wasmWebApi: WasmWebApi | undefined;
+  const wasmStreaming = (): WasmWebApi => {
+    if (wasmWebApi) return wasmWebApi;
+    const binding = nodeLibBindingFor(process, 'wasm_web_api') as WasmWebApi;
+    binding.setImplementation((state, source) => {
+      (loadNodeLibFor(process, 'internal/wasm_web_api') as { wasmStreamingCallback(state: unknown, source: unknown): void }).wasmStreamingCallback(state, source);
+    });
+    return wasmWebApi = binding;
+  };
+  const streamingWasm: Record<string, (...args: never[]) => Promise<unknown>> = {
+    compileStreaming: function compileStreaming(source: unknown) { return wasmStreaming().compileStreaming(source); },
+    instantiateStreaming: function instantiateStreaming(source: unknown, imports?: WebAssembly.Imports) {
+      return wasmStreaming().compileStreaming(source)
+        .then(module => WebAssembly.instantiate(module, imports).then(instance => ({ module, instance })));
+    },
   };
   // A guest's global object is an ordinary object to the guest, as Node's is: what it assigns, defines or deletes
   // is ITS, and every trap below reads that before anything else. Two places hold it and nothing else does:
@@ -492,6 +512,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
           const namespace = value as Record<string, unknown>;
           boundGlobals.set(key, { original: value, bound: new Proxy(namespace, {
             get(target, name, receiver) {
+              if (key === "WebAssembly" && (name === "compileStreaming" || name === "instantiateStreaming")) return __substrateHeldAsync(streamingWasm[name]!, target);
               const member = Reflect.get(target, name, receiver);
               if (!held.includes(name as string) || typeof member !== "function") return member;
               return __substrateHeldAsync(member as (...args: never[]) => Promise<unknown>, target);
@@ -626,7 +647,7 @@ setNodeLibGlobal((process) => __substrateGuestGlobal(process as Process));
  * configurable: one body's `delete window` used to remove the name from that body's own scope alone, and on a
  * shared scope it would remove it from every later body's, so the delete is refused (false, as sloppy code sees it).
  */
-const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'window', 'document', 'location', 'performance'] as const;
+const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'MessageEvent', 'window', 'document', 'location', 'performance'] as const;
 const __substrateGuestScopes = new WeakMap<Process, object>();
 function __substrateGuestScope(process: Process): object {
   let scope = __substrateGuestScopes.get(process);
