@@ -114,14 +114,20 @@ export function treeSocketsOf(tree: unknown): TreeSockets | undefined {
 const kRunFilesystem = Symbol.for('tabnode.run.vfs');
 
 /**
- * The calls of the process that is calling, as its `fs` finds its tree: a tree named for one call (an engine door
- * acting as its container), else the process whose binding scope is executing, else the realm's process.
+ * The tree of the process that is calling, as its `fs` finds it: a tree named for one call (an engine door acting as
+ * its container), else the process whose binding scope is executing, else the realm's process.
  */
-export function callingSockets(): TreeSockets | undefined {
+export function callingTree(): object | undefined {
   const named = namedTree();
-  if (named) return treeSocketsOf(named);
+  if (named) return named;
   const process = (resourceScopeProcess() ?? (globalThis as unknown as { process?: object }).process) as Record<symbol, unknown> | undefined;
-  return treeSocketsOf(process?.[kRunFilesystem]);
+  const tree = process?.[kRunFilesystem];
+  return tree !== null && typeof tree === 'object' ? tree : undefined;
+}
+
+/** The socket calls of the process that is calling (its tree's, `callingTree`). */
+export function callingSockets(): TreeSockets | undefined {
+  return treeSocketsOf(callingTree());
 }
 
 /**

@@ -3,10 +3,10 @@
  * Node's JS IPC library stays in the guest. A socket is never one: a process's sockets are its own kernel's, made in
  * its own worker (ADR-0009).
  */
-import { Pipe, PipeConnectWrap } from './node-lib/binding/pipe_wrap';
+import { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset } from './node-lib/binding/stream_wrap';
 import { __adoptHandle } from './node-lib/binding/handles';
-import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOBUFS, UV_ENOTSUP, UV_EPIPE, UV_EMFILE, UV_EBUSY, UV_EALREADY, UV_ENOSYS } from './node-lib/binding/uv';
+import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOBUFS, UV_ENOTSUP, UV_EPIPE, UV_EMFILE, UV_EBUSY, UV_ENOSYS } from './node-lib/binding/uv';
 
 const UV_EAGAIN = uv.UV_EAGAIN as number;
 
@@ -22,16 +22,12 @@ export interface NativeStreamLimits {
 export type NativeStreamEvent =
   | { type: 'closed' }
   | { type: 'read'; id: number; status: number; bytes?: Uint8Array; handle?: NativeStreamDescriptor }
-  | { type: 'connection'; id: number; status: number; handle?: NativeStreamDescriptor }
-  | { type: 'connect' | 'shutdown' | 'close'; id: number; request: number; status: number };
+  | { type: 'shutdown' | 'close'; id: number; request: number; status: number };
 export type NativeStreamOperation =
   | { operation: 'create'; kind: 'pipe'; type: number }
   | { operation: 'fdType'; fd: number }
   | { operation: 'pair'; id: number; peer: number }
   | { operation: 'duplicate'; id: number }
-  | { operation: 'bind'; id: number; address: string }
-  | { operation: 'listen'; id: number; backlog: number }
-  | { operation: 'connect'; id: number; request: number; address: string }
   | { operation: 'open'; id: number; fd: number }
   | { operation: 'readStart' | 'readStop' | 'ref' | 'unref'; id: number }
   | { operation: 'shutdown' | 'close'; id: number; request: number };
@@ -69,7 +65,7 @@ const scopes = new WeakMap<LibuvStreamWrap, NativeStreamScope>();
 const liveScopes = new Set<NativeStreamScope>();
 
 /** One open stream handle, as a process's descriptor table shows it. */
-export interface NativeStreamHandleView { pid?: number; id: number; kind: 'pipe'; listening: boolean }
+export interface NativeStreamHandleView { pid?: number; id: number; kind: 'pipe' }
 
 /**
  * One capability namespace per worker. Only the trusted host can inherit a
@@ -81,7 +77,6 @@ export class NativeStreamScope {
   private readonly writes = new Map<number, (status: number) => void>();
   /** S2 T14: each credited handle's connection end's send credit (SendCredit), with the handle it was taken for. */
   private readonly credits = new Map<number, { credit: SendCredit; handle: LibuvStreamWrap }>();
-  private readonly connects = new Map<number, number>();
   private nextId = 1;
   private pendingWriteBytes = 0;
   private disposed = false;
@@ -105,7 +100,7 @@ export class NativeStreamScope {
     if (this.disposed) return [];
     const pid = this.ownerPid?.();
     return [...this.entries.values()].map(({ handle, descriptor }) => ({
-      ...(pid !== undefined ? { pid } : {}), id: descriptor.id, kind: descriptor.kind, listening: !!handle.listening,
+      ...(pid !== undefined ? { pid } : {}), id: descriptor.id, kind: descriptor.kind,
     }));
   }
 
@@ -130,11 +125,6 @@ export class NativeStreamScope {
     scopes.set(handle, this);
     // The scope, not the currently executing guest in the owner realm, owns it.
     __adoptHandle(handle, null);
-    handle.onconnection = (status: number, accepted: NativeHandle) => {
-      const incoming = status === 0 ? this.claim(accepted) : undefined;
-      if (status === 0 && !incoming) accepted.close();
-      this.publish({ type: 'connection', id: descriptor.id, status: status || (incoming ? 0 : UV_EMFILE), ...(incoming ? { handle: incoming } : {}) });
-    };
     handle.onread = buffer => {
       const count = streamBaseState[kReadBytesOrError];
       const offset = streamBaseState[kArrayBufferOffset];
@@ -143,9 +133,9 @@ export class NativeStreamScope {
       handle.pendingHandle = null;
       let incoming: NativeStreamDescriptor | undefined;
       if (sent != null) {
-        if (sent instanceof Pipe && !sent.listening) incoming = this.claim(sent);
+        if (sent instanceof Pipe) incoming = this.claim(sent);
         if (!incoming) {
-          if (sent instanceof LibuvStreamWrap && !scopes.has(sent) && !(sent as NativeHandle).listening) sent.close();
+          if (sent instanceof LibuvStreamWrap && !scopes.has(sent)) sent.close();
           this.publish({ type: 'read', id: descriptor.id, status: UV_ENOTSUP });
           this.close(descriptor.id);
           return;
@@ -182,9 +172,7 @@ export class NativeStreamScope {
     const handle = entry.handle;
     switch (operation.operation) {
       case 'duplicate': {
-        // A connection is duplicated whether or not its other end is still
-        // there (the copy reads its EOF); a listening server is not one.
-        if (handle.listening) return { status: UV_ENOTSUP };
+        // A connection is duplicated whether or not its other end is still there (the copy reads its EOF).
         if (this.entries.size >= this.limits.maxHandles) return { status: UV_EMFILE };
         const copy = handle.duplicate();
         const descriptor = this.claim(copy);
@@ -193,29 +181,9 @@ export class NativeStreamScope {
       }
       case 'pair': {
         const other = this.entry(operation.peer)?.handle;
-        if (!other || handle.peer || other.peer || handle.listening || other.listening || other === handle) return { status: UV_EINVAL };
+        if (!other || handle.peer || other.peer || other === handle) return { status: UV_EINVAL };
         LibuvStreamWrap.pair(handle, other);
         return { status: 0 };
-      }
-      case 'bind': {
-        if (typeof operation.address !== 'string') return { status: UV_EINVAL };
-        // The guest's realm made the socket's node in its own tree; the owner takes the name alone.
-        return { status: handle.bindName(operation.address) };
-      }
-      case 'listen': return { status: Number.isInteger(operation.backlog) && operation.backlog >= 0 ? handle.listen(operation.backlog) : UV_EINVAL };
-      case 'connect': {
-        if (this.connects.has(operation.id)) return { status: UV_EALREADY };
-        if (typeof operation.address !== 'string' || !Number.isSafeInteger(operation.request) || operation.request < 1) return { status: UV_EINVAL };
-        this.connects.set(operation.id, operation.request);
-        const request = new PipeConnectWrap();
-        request.oncomplete = status => {
-          if (this.connects.get(operation.id) !== operation.request) return;
-          this.connects.delete(operation.id);
-          this.publish({ type: 'connect', id: operation.id, request: operation.request, status });
-        };
-        const status = handle.connect(request, operation.address);
-        if (status !== 0) this.connects.delete(operation.id);
-        return { status };
       }
       case 'open': {
         const inherited = this.descriptors.get(operation.fd);
@@ -416,9 +384,6 @@ export class NativeStreamScope {
     // Credit-accepted writes are already in the peer's queue (port order): nothing of them is cancelled. The word is
     // closed to its processed count, so no further write is accepted against it.
     this.uncredit(id);
-    const connecting = this.connects.get(id);
-    this.connects.delete(id);
-    if (connecting !== undefined) this.publish({ type: 'connect', id, request: connecting, status: UV_ECANCELED });
     this.entries.delete(id);
     scopes.delete(entry.handle);
     for (const [fd, held] of this.descriptors) if (held === id) this.descriptors.delete(fd);

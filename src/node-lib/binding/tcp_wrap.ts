@@ -19,7 +19,7 @@
  */
 import { queueBindingTask } from '../../guest-loop';
 import { KernelStreamWrap, registerKernelHandle } from './kernel_stream';
-import { __adoptHandle, holdRequest, ownerOf, ownerOfInstance, invokeOwned, observeNodeRequest, forgetNodeRequest, startHandle } from './handles';
+import { holdRequest, ownerOf, ownerOfInstance, invokeOwned, observeNodeRequest, forgetNodeRequest, startHandle } from './handles';
 import { __runFor } from '../../process-tokens';
 import { internalAsyncHooks, internalTimers } from '../internals/runtime';
 import { rememberSocketConnect, traceSocketConnect } from '../../socket-connect-trace';
@@ -318,22 +318,20 @@ export class TCP extends KernelStreamWrap {
   }
 
   /**
-   * uv__server_io: one connection per readiness, handed to `onconnection`. A listener nobody serves yet (a passed one
-   * whose receiver has not set its `onconnection`) leaves it in the kernel's backlog until it listens again.
+   * A connection accepted (uv__server_io), with the options asked of the listener's family. A listener nobody serves
+   * yet (a received one whose receiver has not set its `onconnection`) leaves it in the kernel's backlog until it
+   * listens again.
    */
   #accept(): void {
     if (!this.listening || this.closed || this.onconnection === null) return;
-    const sockets = this.sockets!;
-    const fd = sockets.accept4(this.descriptor, linux.SOCK_NONBLOCK | linux.SOCK_CLOEXEC, null);
-    if (fd < 0) { this.waitIn(); return; }
-    const accepted = new (this.constructor as typeof TCP)(constants.SOCKET);
-    const status = accepted.#adopt(fd, this.#family, sockets);
-    if (status !== 0) { sockets.close(fd); accepted.setDescriptor(-1); accepted.close(); this.waitIn(); return; }
-    accepted.setOpen(true, true);
-    // An accepted connection is a handle of the loop that serves it.
-    __adoptHandle(accepted, ownerOf(this), this);
-    invokeOwned(this, 'onconnection', 0, accepted);
-    this.waitIn();
+    this.serveConnection((fd, sockets) => {
+      const accepted = new (this.constructor as typeof TCP)(constants.SOCKET);
+      if (accepted.#adopt(fd, this.#family, sockets) === 0) return accepted;
+      sockets.close(fd);
+      accepted.setDescriptor(-1);
+      accepted.close();
+      return undefined;
+    });
   }
 
   /** uv_close: a pending connect is cancelled, then the stream's requests; the descriptor goes. */

@@ -163,6 +163,18 @@ function adopt(descriptor: NativeStreamDescriptor, receiver: Stream): Stream {
 
 export function nativeStreamFor(handle: LibuvStreamWrap): NativeStreamDriver | undefined { return drivers.get(handle); }
 
+/**
+ * A pipe made before it was known to be a socket (one that then binds or connects to a path, which is a kernel
+ * AF_UNIX socket of its process) gives back the owner descriptor its construction claimed, before any operation on it.
+ */
+export function detachNativeStream(handle: LibuvStreamWrap): void {
+  const driver = drivers.get(handle);
+  if (!driver) return;
+  drivers.delete(handle);
+  handles.delete(driver.descriptor.id);
+  closeDescriptor(driver.descriptor.id);
+}
+
 /** Inherited descriptors live with the owner, not in this realm's JS fd table. */
 export function nativeInheritedFdType(fd: number): 'PIPE' | undefined {
   if (!transport || stopped || !Number.isInteger(fd) || fd < 0) return undefined;
@@ -352,11 +364,6 @@ export class NativeStreamDriver {
       if (status !== 0) { this.completions.delete(operation.request); release(); }
       return status;
     } catch (cause) { this.completions.delete(operation.request); release(); throw cause; }
-  }
-
-  connect(address: string, callback: (status: number, request: number) => void): number {
-    const request = requestId();
-    return this.complete({ operation: 'connect', id: this.descriptor.id, request, address }, status => callback(status, request));
   }
 
   shutdown(callback: (status: number) => void): number {
@@ -575,10 +582,6 @@ export class NativeStreamDriver {
         this.handle.receive(event.bytes, event.handle ? adopt(event.handle, this.handle) : undefined);
       }
       else { this.readEnded = true; this.handle.receiveError(event.status); }
-    } else if (event.type === 'connection') {
-      if (this.closing || !this.handle.onconnection) { if (event.handle) closeDescriptor(event.handle.id); return; }
-      const accepted = event.handle ? adopt(event.handle, this.handle) : undefined;
-      withGuestCallback(() => (this.handle.onconnection as (status: number, handle?: Stream) => void)(event.status, accepted), 'wrap', this.handle.onconnection);
     } else {
       const complete = this.completions.get(event.request);
       this.completions.delete(event.request);

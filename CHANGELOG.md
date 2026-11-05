@@ -17,6 +17,12 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   UDP or kernel pipe handle is its descriptor in an `SCM_RIGHTS` record, installed in the receiver's own table, and
   the received socket lives as long as the receiver holds it. `NodeProcessLaunch.descriptors` names the kernel
   descriptors a hosted child starts with (a dup2 of its fork's copy, before its exec). `TCP.duplicate` is removed.
+- **A pipe's path is a kernel AF_UNIX socket.** `bind`, `listen` and `connect` to a path (or an abstract name) are
+  `socket`, `bind`, `listen`, `accept4` and `connect` on a `sockaddr_un` of the process's own; the kernel makes the
+  path's node and answers every refusal, so a path socket crosses an IPC channel as `SCM_RIGHTS` too. The engine's
+  path table is removed, with the native stream operations `bind`, `listen` and `connect`, their `connection` and
+  `connect` events, and `NativeStreamHandleView.listening`. A process with no socket calls has no AF_UNIX
+  (`EAFNOSUPPORT`).
 - **HTTP leaves by the network.** `installHttpClientTransport` and its `HttpClient*` types, `installFetchTransport`,
   `requestHasStaticBody` and the `Fetch*` types are removed: Node's `http.Agent` is unpatched.
 - **`fetch` is Node's own undici** (ADR-0009 §3). Node v24.21.0's `deps/undici/undici.js` is vendored byte for byte as

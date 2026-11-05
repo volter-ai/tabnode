@@ -63,15 +63,15 @@ resolve to the engine's shims: `buffer`, `events`, `stream`, `timers`, `dns`,
 ## The binding
 
 One directory, `src/node-lib/binding/`, one file per `internalBinding` name.
-A TCP or UDP socket is the calling process's kernel's, made through the socket
-calls its tree offers (`TREE_SOCKETS`, `src/host-sockets.ts`, ADR-0009): the
-engine keeps no port, loopback, listener table or pairing of its own for
-them, and an IPC channel of such a process is a kernel AF_UNIX socketpair
-whose handles cross as `SCM_RIGHTS` (ADR-0009 §4). What else the engine does
-for a child stays and is the binding's implementation: the pairing of a
-connect to a listening path, the IPC channel of a process with no socket
-calls, the page bridge that hears a listening port and routes a preview's
-requests and upgrades, the routing of a spawned command to the engine's
+A TCP, UDP or AF_UNIX socket is the calling process's kernel's, made
+through the socket calls its tree offers (`TREE_SOCKETS`,
+`src/host-sockets.ts`, ADR-0009): the engine keeps no port, path, loopback,
+listener table or pairing of its own for them, and an IPC channel of such a
+process is a kernel AF_UNIX socketpair whose handles cross as `SCM_RIGHTS`
+(ADR-0009 §4). What else the engine does for a child stays and is the
+binding's implementation: the stdio pipes, the IPC channel of a process with
+no socket calls, the page bridge that hears a listening port and routes a
+preview's requests and upgrades, the routing of a spawned command to the engine's
 `node`, a page-registered program, a WALI pack or the shell, and the run
 ownership that keeps a run alive while it holds a handle.
 
@@ -117,12 +117,14 @@ ownership that keeps a run alive while it holds a handle.
   queued; `onmessage(nread, handle, buffer, rinfo)` per datagram; the options
   as socket options.
 - `pipe_wrap`: `Pipe(type)` with `constants.SOCKET|SERVER|IPC`,
-  `PipeConnectWrap`, `bind(path)`, `listen`, `connect(req, path)` (the .37
-  path registry: `UV_ENOENT` when nothing listens, `UV_EADDRINUSE` on a bound
-  path), `fchmod` (0), `setPendingInstances` (0), `open(fd)` (the fd of a
-  forked child's IPC channel, from the per-child fd table `process_wrap`
-  keeps, or a kernel descriptor). An IPC pipe of a process with socket calls
-  is a kernel AF_UNIX socket (`kernel_stream.ts`): `writeUtf8String(req,
+  `PipeConnectWrap`, `bind(path)`, `listen`, `connect(req, path)` (a kernel
+  AF_UNIX socket of the process on a `sockaddr_un`: the kernel makes the
+  path's node and answers `ENOENT`, `ECONNREFUSED` and `EADDRINUSE`; a
+  process with no socket calls has none, `EAFNOSUPPORT`), `fchmod` (0),
+  `setPendingInstances` (0), `open(fd)` (the fd of a forked child's IPC
+  channel, from the per-child fd table `process_wrap` keeps, or a kernel
+  descriptor). An IPC pipe of a process with socket calls is a kernel
+  AF_UNIX socket too (`kernel_stream.ts`): `writeUtf8String(req,
   string, handle)` is a `sendmsg` carrying the handle's descriptor, and each
   descriptor a `recvmsg` brings becomes the `pendingHandle` of a read's
   `onread`, which is how `setupChannel` in `internal/child_process.js`

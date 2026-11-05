@@ -16,7 +16,7 @@
  * `net.js` is vendored.
  */
 import { bytesOfString } from './buffer';
-import { UV_EOF, UV_EBADF, UV_ECONNRESET, UV_EPIPE } from './uv';
+import { UV_EOF, UV_EBADF, UV_EPIPE } from './uv';
 import { attachNativeStream, nativeStreamFor } from '../../native-stream-binding';
 import type { Pipe } from './pipe_wrap';
 
@@ -122,8 +122,6 @@ export class LibuvStreamWrap implements OwnedHandle {
   private streamEndpoint = new StreamEndpoint(this);
   /** The connection end this descriptor shares with its duplicates: one socket, one send buffer (S2 T14's shared credit). */
   get connectionEnd(): object { return this.streamEndpoint; }
-  /** The live wrappers sharing this descriptor's socket (its duplicates), not counting a closed one. */
-  protected get sharingHandles(): ReadonlySet<LibuvStreamWrap> { return this.streamEndpoint.handles; }
   /** A live wrapper on the other end, including after the original was closed. */
   get peer(): LibuvStreamWrap | null {
     const native = nativeStreamFor(this);
@@ -446,16 +444,6 @@ export class LibuvStreamWrap implements OwnedHandle {
     this.streamEndpoint.writeEnded = true;
     const peer = this.peer;
     if (peer) peer.receiveEof();
-  }
-
-  /**
-   * libuv's close-with-reset: the peer's next read is `ECONNRESET`, not EOF,
-   * which is how `socket.resetAndDestroy()` differs from `socket.destroy()`.
-   */
-  protected sendReset(): void {
-    this.streamEndpoint.writeEnded = true;
-    const peer = this.peer;
-    if (peer) peer.receiveError(UV_ECONNRESET);
   }
 
   /** An error arriving on the read side, delivered as libuv delivers one. */

@@ -103,7 +103,7 @@ connect(2): a non-blocking socket answers `-EINPROGRESS` and is writable once th
 
 > **fcntl**(`fd`, `command`, `argument`): `number`
 
-fcntl(2), for `F_GETFL`, `F_SETFL` and `F_DUPFD_CLOEXEC`.
+fcntl(2), for `F_GETFL` and `F_SETFL`.
 
 #### Parameters
 

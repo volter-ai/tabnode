@@ -179,6 +179,15 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
     until it completes. An accepted or received socket is stopped until it reads or listens, so a paused socket with
     nothing pending lets its process end, as Node's does.
   - The stream rules above are `stream.c`'s, shared with a kernel IPC pipe (§4): `kernel_stream.ts`.
+- **`pipe_wrap`'s path sockets** (`uv_pipe_bind2`, `uv_pipe_listen`, `uv_pipe_connect2`, `uv__pipe_close`, read in
+  `deps/uv/src/unix/pipe.c`): a pipe that binds or connects to a name is a kernel AF_UNIX stream socket, its address
+  a `sockaddr_un` (a path NUL-terminated, an abstract name with its leading NUL and its bytes alone; empty, or longer
+  than `sun_path`, `EINVAL`, as Node's `UV_PIPE_NO_TRUNCATE` asks). The kernel makes a path's node at `bind` and
+  answers `EADDRINUSE`, `ENOENT` and `ECONNREFUSED`; a bind's `ENOENT` is `EACCES`, as libuv answers, and a refused
+  bind leaves no socket. `listen` starts the handle and accepts as TCP's does; a connect completes through its
+  request on a later turn (`ECANCELED` where the handle closed first); `fchmod` adds read or write for everyone to the
+  bound path's mode (`uv_pipe_chmod`); `close` unlinks a path the handle bound. A pipe opened on an AF_UNIX descriptor of its
+  process is that socket. The rest of `stream.c` is the kernel stream's (§4). A stdio pipe is the engine's pairing.
 - **`udp_wrap`, and Node's own `dgram.js` and `internal/dgram.js`** (v24.21.0, vendored unmodified) in place of the
   stub: `bind` (`SO_REUSEADDR` for `UV_UDP_REUSEADDR`, `SO_REUSEPORT`, `IPV6_V6ONLY`), `connect`, `disconnect`
   (a connect to `AF_UNSPEC`), `send` tried at once (`uv_udp_try_send`: taken whole it answers its size plus one) and
@@ -266,7 +275,8 @@ A tree with no `TREE_SOCKETS` (`VirtualFS`, a library user's) is a process on a 
 (`CONFIG_INET` unset): `socket(AF_INET)` and `socket(AF_INET6)` are `EAFNOSUPPORT`, so a listen, connect, bind or send
 fails `EAFNOSUPPORT` where libuv makes the socket; there are no interface addresses (`os.networkInterfaces()` is `{}`);
 a name resolves from `/etc/hosts`, `localhost` and literals, and otherwise is `EAI_AGAIN` (no server can be asked); a
-TLS connect is refused. The engine makes no loopback for it: a loopback of the engine's would answer for a process its
+TLS connect is refused. It has no AF_UNIX either (`CONFIG_UNIX` unset): a pipe's bind or connect to a path is
+`EAFNOSUPPORT`, and its IPC channels and stdio pipes are the engine's pairing. The engine makes no loopback for it: a loopback of the engine's would answer for a process its
 host did not connect, a namespace the kernel does not hold.
 
 ### 6. Identity is read from the host
@@ -324,9 +334,6 @@ And for identity: its `ProcessRegistry.lookup(pid)` reads the kernel's process t
   against a kernel.
 - **Extrapolation:** that one `Atomics.waitAsync` per pending readiness costs what a kernel-side poll costs; that a
   DNS exchange per lookup (no cache, as glibc keeps none) is fast enough for a boot's lookups.
-- **Still the engine's:** AF_UNIX path sockets (`pipe_wrap`'s `bind`, `listen` and `connect` to a path). Such a pipe
-  has no kernel descriptor, so it cannot cross a kernel IPC channel (`EBADF`), and `net.Socket({ fd })` on an
-  inherited AF_UNIX descriptor is not opened.
 - **Not built in `udp_wrap`:** IPv6 source-specific multicast membership answers `ENOSYS`: its `struct
   group_source_req` is laid out by the host's word size, which this interface does not fix.
 - **Not built in `tls`:** a peer certificate's subject, issuer, names and validity in `getPeerCertificate` (the

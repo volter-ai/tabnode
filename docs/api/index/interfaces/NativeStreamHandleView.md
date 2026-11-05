@@ -22,12 +22,6 @@ One open stream handle, as a process's descriptor table shows it.
 
 ***
 
-### listening
-
-> **listening**: `boolean`
-
-***
-
 ### pid?
 
 > `optional` **pid?**: `number`

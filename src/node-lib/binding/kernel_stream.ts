@@ -57,11 +57,11 @@ const CMSG_FD_COUNT = 64;
 interface QueuedWrite { request: WriteWrap; bytes: Uint8Array; sent: number; fd: number | undefined; release: () => void }
 
 export class KernelStreamWrap extends LibuvStreamWrap {
-  readonly #kernel: boolean;
+  #kernel: boolean;
   /** The socket calls of the process that made the handle, which it keeps. */
   #sockets: TreeSockets | undefined;
   /** The calling process the handle was made in: a descriptor it receives becomes a handle there. */
-  readonly #calling: (<T>(continuation: () => T) => T) | undefined;
+  #calling: (<T>(continuation: () => T) => T) | undefined;
   /** The descriptor (libuv's `io_watcher.fd`), -1 until it is made or opened. */
   #fd = -1;
   #readable = false;
@@ -93,6 +93,21 @@ export class KernelStreamWrap extends LibuvStreamWrap {
 
   /** Whether the handle is a kernel descriptor's. */
   get kernelBacked(): boolean { return this.#kernel; }
+
+  /**
+   * A handle made before it was known to be a socket (a pipe that then binds or connects to a path) becomes a kernel
+   * stream of the calling process, stopped until it reads or listens; false where the process has no socket calls.
+   */
+  protected becomeKernel(): boolean {
+    if (this.#kernel) return true;
+    const sockets = callingSockets();
+    if (!sockets) return false;
+    this.#kernel = true;
+    this.#sockets = sockets;
+    this.#calling = captureCallingSockets();
+    stopHandle(this);
+    return true;
+  }
 
   get [kHandleFd](): number { return this.#kernel ? this.#fd : -1; }
 
@@ -198,6 +213,23 @@ export class KernelStreamWrap extends LibuvStreamWrap {
       if (this.closed || this.#fd !== fd) return;
       this.onReadable();
     }));
+  }
+
+  /**
+   * uv__server_io: one connection per readiness, from the listener's backlog, made a handle by `adopt` (which closes
+   * the descriptor where it cannot) and handed to `onconnection` in the listener's run.
+   */
+  protected serveConnection(adopt: (fd: number, sockets: TreeSockets) => KernelStreamWrap | undefined): void {
+    const sockets = this.#sockets!;
+    const fd = sockets.accept4(this.#fd, linux.SOCK_NONBLOCK | linux.SOCK_CLOEXEC, null);
+    if (fd < 0) { this.waitIn(); return; }
+    const accepted = adopt(fd, sockets);
+    if (accepted) {
+      accepted.setOpen(true, true);
+      __adoptHandle(accepted, ownerOf(this), this);
+      invokeOwned(this, 'onconnection', 0, accepted);
+    }
+    this.waitIn();
   }
 
   /** The socket is readable: a reading stream reads. */
