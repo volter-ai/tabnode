@@ -501,15 +501,18 @@ export class TCP extends LibuvStreamWrap {
 
   /** uv__drain: the pending shutdown, once nothing is queued. */
   #drain(): void {
+    if (!this.#shutdown || this.#writes.length) return;
+    // A close cancels a pending shutdown itself, so a drain finds the socket open.
+    const shut = this.#sockets!.shutdown(this.#fd, linux.SHUT_WR);
+    if (shut >= 0) this.#shut = true;
+    this.#finishShutdown(shut < 0 ? shut : 0);
+  }
+
+  /** The pending shutdown's request completed with `status`, on its own turn. */
+  #finishShutdown(status: number): void {
     const pending = this.#shutdown;
-    if (!pending || this.#writes.length) return;
+    if (!pending) return;
     this.#shutdown = null;
-    let status = 0;
-    if (this.closed) status = UV_ECANCELED;
-    else {
-      const shut = this.#sockets!.shutdown(this.#fd, linux.SHUT_WR);
-      if (shut < 0) status = shut; else this.#shut = true;
-    }
     queueBindingTask(() => {
       try { invokeOwned(pending.request, 'oncomplete', status); }
       finally { forgetNodeRequest(pending.request); pending.release(); }
@@ -523,7 +526,7 @@ export class TCP extends LibuvStreamWrap {
       this.#connect = null;
       if (connect) queueBindingTask(() => { try { connect.complete(UV_ECANCELED); } finally { forgetNodeRequest(connect.request); connect.release(); } });
       for (const write of [...this.#writes]) this.#finishWrite(write, UV_ECANCELED);
-      if (this.#shutdown) this.#drain();
+      if (this.#shutdown) this.#finishShutdown(UV_ECANCELED);
       this.#reading = false;
       if (this.#fd >= 0 && this.#sockets) this.#sockets.close(this.#fd);
       this.#fd = -1;
