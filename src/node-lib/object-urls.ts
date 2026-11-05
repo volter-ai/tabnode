@@ -9,6 +9,20 @@ import { loadNodeLibFor, nodeLibBindingFor } from './load';
 import type { BlobBinding } from './binding/blob';
 
 const urls = new WeakMap<object, typeof URL>();
+/** The engine's `url` module, its shim with Node's names filled in (runtime.ts `__browserRuntimeFillModules`). */
+// eslint-disable-next-line no-var, vars-on-top
+var urlModule: (() => Record<string, unknown>) | undefined;
+export function setUrlModule(of: () => Record<string, unknown>): void { urlModule = of; }
+/** The engine's `url` module itself, for a builtin loaded with no process of its own. */
+export function engineUrlModule(): Record<string, unknown> { return urlModule!(); }
+
+/** A process's `url` module: the engine's, whose `URL` (and its default's) is the process's. The loader keeps it. */
+export function processUrlModule(process: object): Record<string, unknown> {
+  const base = urlModule!();
+  const URL = processUrl(process);
+  const defaults = base.default as Record<string, unknown> | undefined;
+  return { ...base, URL, ...(defaults && typeof defaults === 'object' ? { default: { ...defaults, URL } } : {}) };
+}
 
 export function processUrl(process: object): typeof URL {
   let url = urls.get(process);

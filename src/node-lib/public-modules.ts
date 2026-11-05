@@ -27,8 +27,7 @@ import * as workerThreadsShim from '../shims/worker_threads';
 import * as http2Shim from '../shims/http2';
 import * as inspectorShim from '../shims/inspector';
 import * as perfHooksShim from '../shims/perf_hooks';
-import * as urlShim from '../shims/url';
-import { processUrl } from './object-urls';
+import { engineUrlModule, processUrlModule } from './object-urls';
 import { nodeLibInternalRequire } from './load';
 import { createTimersModule } from './timers';
 import { guestTimerFunctions } from '../guest-timers';
@@ -43,7 +42,7 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   if (require && name === 'crypto') return () => cryptoShim.createCryptoModule(require);
   if (require && name === 'tls') return () => tlsShim.createTlsModule(require);
   // `url`'s URL is the process's, whose `createObjectURL` is Node's.
-  if (_process && name === 'url') return () => ({ ...urlShim, URL: processUrl(_process), default: { ...urlShim.default, URL: processUrl(_process) } });
+  if (_process && name === 'url') return () => processUrlModule(_process);
   if (require && name === 'string_decoder') return () => createStringDecoderModule(() => require('buffer').Buffer);
   __table ??= {
   timers: createTimersModule,
@@ -62,7 +61,7 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   http2: () => http2Shim,
   inspector: () => inspectorShim,
   perf_hooks: () => perfHooksShim,
-  url: () => urlShim,
+  url: engineUrlModule,
   // `internal/fs/cp/cp.js` requires the public alias; it is the same object
   // as `internal/util/types`, which is `util.types`.
   'util/types': () => nodeLibInternalRequire('internal/util/types'),
