@@ -811,9 +811,8 @@ export function createProcess(options?: {
       return previous;
     },
 
-    // Every process has its own number, and `ppid` names its parent: `src/process-tokens.ts` says what reads them
-    // and what it cost when they were 1 and 0 for everyone. The pid is the process's for its life; its parent changes
-    // when it is reparented, so `ppid` is read from its registry at each read, as Node's accessor calls getppid.
+    // Every process has its own number, and `ppid` names its parent. The pid is the process's for its life; its parent
+    // changes when it is reparented, so `ppid` is read from its registry at each read, as Node's accessor calls getppid.
     pid,
     get ppid(): number { return parentPidOf(pid, __tokenForProcess(proc)); },
 

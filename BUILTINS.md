@@ -37,7 +37,7 @@ from .58.
 | Module | Number on .58 | The binding under it | What still fails |
 |---|---|---|---|
 | `path` | no tests of its own here | none; it is pure | |
-| `net` | not measured on this binding | `tcp_wrap` over the process's kernel sockets (`TREE_SOCKETS`, ADR-0009), with libuv's rules; `pipe_wrap` and `stream_wrap`'s pairing for paths and IPC | Node's suite needs a host that offers socket calls, which this repository has none of; the 109 of 151 measured on .58 was the engine's own loopback, which is gone |
+| `net` | not measured on this binding | `tcp_wrap` over the process's kernel sockets (`TREE_SOCKETS`, ADR-0009), with libuv's rules; `pipe_wrap` and `stream_wrap`'s pairing for paths and IPC | Node's suite needs a host that offers socket calls, which this repository has none of |
 | `dgram` | not measured on this binding | `udp_wrap` over the process's kernel sockets (`TREE_SOCKETS`, ADR-0009), with libuv's rules | Node's suite needs a host that offers socket calls; IPv6 source-specific multicast membership answers `ENOSYS` (its `struct group_source_req` is laid out by the host's word size, which the interface does not fix) |
 | `child_process` | 72 of 109 | `process_wrap`, `spawn_sync`, `tty_wrap`, the IPC flavour of `pipe_wrap` | signals, timeouts and buffer limits on synchronous children, which run on a thread with no process to kill (`ROADMAP.md`); the harness's `node:test` and `--expose-internals` |
 | `stream` | 158 of 171 | none; eighteen `internal/streams/*` files over `events`, `buffer` and `string_decoder` | the harness's `node:test` |

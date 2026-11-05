@@ -22,10 +22,8 @@ export type { IVirtualServer, VirtualServer, BridgeOptions, InitServiceWorkerOpt
  * A guest that called `listen` is a server: it answers requests on its port,
  * over a connection the bridge makes as its container's process. The page
  * observes registrations by wrapping `registerServer` and reading
- * `server.handleRequest`; a `null` server there threw, tcp_wrap swallowed it,
- * and a listen on `127.0.0.1` never opened while one with no host
- * (openvscode-server's) could still reach the page through a wrap that did
- * not bind `handleRequest`.
+ * `server.handleRequest`, so each listen registers a server whose
+ * `handleRequest` answers.
  */
 function guestListeningServer(tree: object | undefined, port: number, address: string): IVirtualServer {
   const hostname = address || '0.0.0.0';

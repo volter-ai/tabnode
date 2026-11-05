@@ -21,7 +21,7 @@ call: `getaddrinfo(3)` is libc code that reads `/etc/hosts` and exchanges DNS me
 netlink exchange with the kernel. `getpid` never changes over a process's life; `getppid` changes when its parent dies
 and it is reparented, and its process group and session change at `setpgid` and `setsid`.
 
-### What the substrate's kernel now holds (read in ADR-0227 at browser-substrate 1f2ad3666bf)
+### What the substrate's kernel holds (read in ADR-0227 at browser-substrate 1f2ad3666bf)
 
 The kernel is C compiled to wasm, in one shared memory, called in the caller's own worker (§1, §2). It holds every
 container's net namespace with its loopback, its TCP and UDP bind tables and its sockets, the bridges, the veth
@@ -33,33 +33,11 @@ each process's ids (pid, ppid, pgid, sid in its identity block). The resolver Do
 answered on UDP port 53 in the namespace (`packages/wali/src/network-host.ts`, which answers a WALI program's DNS
 query from the namespace's table, `dnsResponse`).
 
-### What Tabnode did (read at origin/main caf4b02, release 0.17.1)
+### Why the engine holds no copy
 
-- **A namespace of its own making, per container.** ADR-0008's `NetworkNamespace` (`src/network-namespace.ts`): the
-  host handed `addresses`, `connect`, `listen` and `resolve`, and the engine did the rest itself. `tcp_wrap` kept a port
-  space per namespace id (IPv4, IPv6 and ephemeral maps), paired a connect with a listener of the same engine by
-  joining two `LibuvStreamWrap` endpoints, kept an accept queue and a round-robin turn per shared listener, and asked
-  the host only for what it did not hold. A run's namespace was tracked by the engine: `runNetworks` per run token,
-  inherited at `setRunPid`, an `AsyncLocalStorage` (`networkScope`) for code outside a run, `captureNetworkContext` to
-  resume continuations in it, `creatingIn` for host scopes, and `owningContainerNamespace` for a scope given none.
-- **A worker's sockets held in another worker.** `NativeStreamScope` (`src/native-stream-owner.ts`) made a process
-  realm's TCP handles in the container worker, in the container's namespace, and served them over a channel.
-- **HTTP egress around the network.** `installHttpClientTransport` patched every graph's `http.Agent` and
-  `https.Agent` `createConnection`: a destination the namespace did not hold was answered by a host HTTP exchange. A
-  guest's global `fetch` was `guestFetch` over `installFetchTransport`'s adapter (the substrate's `brokerFetch`, the
-  page's relay), else the realm's own browser `fetch`.
-- **The rest.** `dns` asked `namespace.resolve`; `os.networkInterfaces` listed `namespace.addresses()`; `dgram` was a
-  stub whose sends succeeded and delivered nothing; `tls` paired a destination the namespace held as plaintext marked
-  secure and refused every other (`ERR_TLS_UNAVAILABLE`).
-- **Identity copied.** `src/process-tokens.ts` kept `pidsOfRuns` (pid, ppid, pgid per run) and `initialIdentity`
-  (pid, ppid); `src/shims/process.ts` fixed `process.ppid` as a value when the process object was made.
-
-### The failure class this removes
-
-ADR-0227's top-down table: Rallly runs 40-43, P1001, "no lookup or connect of the schema engine's realm reached its
-container's namespace": a socket placed by a second copy of the namespace state outside the kernel. A copy agrees with
-the kernel until it does not, and a realm made without its copy silently gets a namespace of its own that reaches
-nothing. The identity copies are the same class: a reparented child's `process.ppid` named its dead parent.
+A second copy of the namespace's state outside the kernel agrees with the kernel until it does not, and a realm made
+without its copy gets a namespace of its own that reaches nothing. A copied identity is the same: a reparented child's
+`ppid` would name its dead parent.
 
 ## Decision
 
@@ -75,9 +53,9 @@ process. A socket keeps the calls of the process that made it; an accepted or du
 
 Why the tree and not an option of its own: the run's tree is already the process's kernel connection, chosen per run
 (`RunOptions.filesystem`, `NodeProcessLaunch.filesystem`, a `spawnSync` child on its parent's tree), and in the
-substrate it is `KernelVirtualFS` over that process's kernel channel. A separate `sockets` option would need what
-ADR-0008's `network` needed (a per-run map, inheritance at fork, an async-context scope for code outside a run): the
-engine's own record of which process is in which namespace, which is the kernel's to know.
+substrate it is `KernelVirtualFS` over that process's kernel channel. A separate `sockets` option would need a per-run
+map, inheritance at fork and an async-context scope for code outside a run: the engine's own record of which process
+is in which namespace, which is the kernel's to know.
 
 ### 2. The interface (`src/host-sockets.ts`, exported from the package entry)
 
@@ -185,13 +163,13 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   else queued for `POLLOUT`, `recvStart` delivering each datagram (`onmessage(nread, handle, buffer, rinfo)`), and the
   options as their socket options (`SO_BROADCAST`, `IP_TTL`, `IP_MULTICAST_TTL`, `IP_MULTICAST_LOOP`,
   `IP_MULTICAST_IF`, memberships, `SO_RCVBUF` and `SO_SNDBUF`).
-- **`dns`**: `/etc/hosts`, `localhost` (RFC 6761) and literals as before, then DNS over UDP to `/etc/resolv.conf`'s
+- **`dns`**: `/etc/hosts`, `localhost` (RFC 6761) and literals, then DNS over UDP to `/etc/resolv.conf`'s
   nameservers in order, each tried `attempts` times for `timeout` seconds (resolv.conf's `options`, glibc's defaults 5
   and 2), A then AAAA as getaddrinfo asks. The answers and errors are the ones the code gave: NXDOMAIN is `ENOTFOUND`
   (getaddrinfo's -3008), NOERROR with no record of the family `ENOTFOUND` -3007 to a lookup and `ENODATA` to a query, a
   server that fails or does not answer `EAI_AGAIN` to a lookup; to a query, c-ares's name for the last failure
   (`ESERVFAIL`, `EREFUSED`, `ENOTIMP`, `EFORMERR` by its rcode, `ECONNREFUSED`, `ETIMEOUT`); queries read A and AAAA
-  records, as before, and a held name answers `ENODATA` for any other type; a resolv.conf naming no server is the
+  records, and a held name answers `ENODATA` for any other type; a resolv.conf naming no server is the
   local one (127.0.0.1), as glibc and c-ares take it.
 - **`os.networkInterfaces`**: `getifaddrs`, by libuv's `uv_interface_addresses`: interfaces up and running, their IPv4
   and IPv6 addresses, `internal` for a loopback interface, `mac` from the hardware address, `scopeid` from
@@ -209,19 +187,8 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   and `requestHasStaticBody` go.
 - **The page's doors** (`ServerBridge`, `http-bridge`, `container.listenNet`) are a client and a server like any
   other, on the container tree's sockets: a request to a port nothing listens on is refused by the kernel and answered
-  503, as before; the bridge learns a guest's port when a handle made through its tree's calls starts listening, an
+  503; the bridge learns a guest's port when a handle made through its tree's calls starts listening, an
   announcement of the engine's own handles, not a table of what listens.
-
-### 4. What ADR-0008 kept, and what is deleted
-
-Nothing of ADR-0008's interface remains: `NetworkNamespace`, `NamespaceAddress`, `NamespaceConnection`,
-`NamespaceListener`, `ResolverAnswer`, `loopbackOnlyNamespace`, `CONNECT_TIMEOUT_MS`, `RESOLVE_TIMEOUT_MS`, the routing
-helpers, `ContainerOptions.network`, `RunOptions.network`, `container.network`, `NodeProcessLaunch.network`,
-`NativeStreamScope`'s `network`, TCP through native streams, `tcp_wrap`'s port spaces, pairing, accept queues and
-turns, `listenerOnPort`, `watchNamespacePorts`, `container.portPid`, `__bridgeConnection`, the per-run namespace map and
-scope, `src/http-client-transport.ts` and `src/fetch-transport.ts`. Its Linux rules (families, bind conflicts, a
-dropped route's `ETIMEDOUT`, a wildcard connect reaching the loopback) are the kernel's now. What stays of it is the
-resolver's error mapping, in `dns`, now read off DNS messages.
 
 ### 5. A process whose tree offers no sockets
 
@@ -230,7 +197,7 @@ A tree with no `TREE_SOCKETS` (`VirtualFS`, a library user's) is a process on a 
 fails `EAFNOSUPPORT` where libuv makes the socket; there are no interface addresses (`os.networkInterfaces()` is `{}`);
 a name resolves from `/etc/hosts`, `localhost` and literals, and otherwise is `EAI_AGAIN` (no server can be asked); a
 TLS connect is refused. The engine makes no loopback for it: a loopback of the engine's would answer for a process its
-host forgot to connect, which is the class §0 removes.
+host did not connect, a namespace the kernel does not hold.
 
 ### 6. Identity is read from the host
 
@@ -241,8 +208,7 @@ host forgot to connect, which is the class §0 removes.
   registry gives the inherited one; `kill(0)` and a group signal ask the registry.
 - `sid` is read by nothing in Node, so nothing reads it.
 - The engine keeps, per run, its pid and the pid of the process whose fork made it, which waits for it (the
-  `wait4` caller that `exit` and `reap` name); `pidsOfRuns`' ppid and pgid, `initialIdentity`'s ppid and the fixed
-  `process.ppid` are deleted.
+  `wait4` caller that `exit` and `reap` name).
 - A realm with no host registry keeps `process-registry.ts`'s own table: there it is the process table, not a copy,
   as `VirtualFS` is such a realm's tree; a kernel with no network still has processes.
 
@@ -268,8 +234,7 @@ Each method is its Linux call, answered in the caller's worker from kernel memor
 | `getifaddrs` | `getifaddrs(3)`'s answer: the namespace's interfaces (RTM_GETLINK, RTM_GETADDR) |
 
 And for identity: its `ProcessRegistry.lookup(pid)` reads the kernel's process table at each call (its
-`KernelRealmProcessRegistry` does, from `/proc/<pid>/stat`). It no longer needs to rewrite the realm's initial
-identity with its kernel numbers: the engine reads ppid from it.
+`KernelRealmProcessRegistry` does, from `/proc/<pid>/stat`), and the engine reads ppid from it at each read.
 
 ## Where the evidence stops
 
@@ -277,8 +242,9 @@ identity with its kernel numbers: the engine reads ppid from it.
   DNS answer at port 53; `kernel-realm-process-registry.ts`; `cross-origin-container-worker.ts`); Node v24.21.0's
   `lib/dgram.js`, `lib/internal/dgram.js`, `deps/uv/src/unix/tcp.c`, `stream.c`, `udp.c`, `src/tcp_wrap.cc`,
   `src/udp_wrap.cc`.
-- **Not run.** The engine side is written and typechecked; nothing was run against a kernel, and the substrate's
-  implementation of `TREE_SOCKETS` does not exist yet (ADR-0227 step 3).
+- **Not run.** The engine side is written and typechecked, and the substrate's `TREE_SOCKETS` is written
+  (`packages/node/src/kernel-tree-sockets.ts` on browser-substrate's `kernel-step2-realm-sockets`); nothing was run
+  against a kernel.
 - **Extrapolation:** that one `Atomics.waitAsync` per pending readiness costs what a kernel-side poll costs; that a
   DNS exchange per lookup (no cache, as glibc keeps none) is fast enough for a boot's lookups.
 - **Not moved by this record, and still the engine's:** AF_UNIX path sockets and IPC channels (`pipe_wrap`). Until an
