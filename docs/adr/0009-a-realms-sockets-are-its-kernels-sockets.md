@@ -215,8 +215,14 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   false); a program's own `checkServerIdentity` is asked about a chain that verified. A TLS server is a net server
   whose connections are server-side TLS sockets (Node's `tlsConnectionListener`), answered with the program's own
   `key` and `cert` (PEM; an RSA, EC or Ed25519 key); a handshake done is `secureConnection`, one that fails
-  `tlsClientError`. A tree that offers no TLS is a Node without TLS: a handshake fails
-  `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
+  `tlsClientError`. A TLS server says, once listening, that its port answers TLS, to the page bridge of the socket
+  calls its handle was made with, as `tcp_wrap` tells that bridge the port itself; the bridge reaches such a port as a
+  TLS client over its tree's TLS and sends its HTTP inside, and any other port as plain HTTP. It does not verify the
+  server's certificate (`rejectUnauthorized: false`), the rule a development server's proxy applies to a local target
+  (Vite's and webpack-dev-server's `secure: false`): the page is the person's own, the server is the person's own
+  program on their own container's loopback with nothing between the two, and its certificate is a development one no
+  root signs, so verifying it would refuse exactly the server being previewed and protect against no one. A tree that
+  offers no TLS is a Node without TLS: a handshake fails `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
 - **HTTP**: Node's `http.Agent` and `https.Agent` are unpatched: a request is a `net` or `tls` connection of the
   process.
 - **`fetch`**: a guest's `fetch`, `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent` and
@@ -313,5 +319,3 @@ identity with its kernel numbers: the engine reads ppid from it.
 - **Not built in `tls`:** session tickets and their reuse, client certificates (`requestCert`), SNI contexts
   (`addContext`, `SNICallback`), PFX and encrypted keys. The host's TLS (browser-substrate's `tls-client.ts` and
   `tls-server.ts`) speaks TLS 1.3 with TLS_AES_128_GCM_SHA256 only.
-- **The page's doors and TLS:** the bridge speaks plain HTTP to a guest's port, so a guest's TLS server is not
-  reached from the page.

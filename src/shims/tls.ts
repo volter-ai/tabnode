@@ -23,7 +23,8 @@ import {
 import { DuplexStreamHandle } from '../node-lib/binding/duplex_stream';
 import { forgetNodeHandle, invokeOwned, unrefHandle } from '../node-lib/binding/handles';
 import { UV_EBADF, UV_EOF } from '../node-lib/binding/uv';
-import { kRunFilesystem } from '../node-lib/binding/fs';
+import { kRunFilesystem, namedTree } from '../node-lib/binding/fs';
+import { callingSockets, type TreeSockets } from '../host-sockets';
 import { queueBindingTask, withGuestCallback } from '../guest-loop';
 import { treeTlsOf, type TlsClientSession, type TlsSecureConnection, type TlsServerSecureConnection, type TlsServerSession, type TlsTransport } from '../host-tls';
 
@@ -61,6 +62,22 @@ function alpnProtocols(value: unknown): string[] | undefined {
   const out: string[] = [];
   for (let at = 0; at < wire.byteLength; at += 1 + wire[at]!) out.push(decode(wire.subarray(at + 1, at + 1 + wire[at]!)));
   return out;
+}
+
+/**
+ * The ports a TLS server listens on, by the socket calls of the process whose handle listens: what the engine's own
+ * TLS servers said as they began listening, as `tcp_wrap` tells a page bridge a port (`watchListens`). A bridge that
+ * reaches a port its tree's process listens on with TLS reaches it as a TLS client.
+ */
+const tlsListeners = new WeakMap<TreeSockets, Map<number, number>>();
+export function listensWithTls(sockets: TreeSockets, port: number): boolean {
+  return (tlsListeners.get(sockets)?.get(port) ?? 0) > 0;
+}
+function announceTlsListener(sockets: TreeSockets, port: number, change: 1 | -1): void {
+  let ports = tlsListeners.get(sockets);
+  if (!ports) tlsListeners.set(sockets, ports = new Map());
+  const count = (ports.get(port) ?? 0) + change;
+  if (count > 0) ports.set(port, count); else ports.delete(port);
 }
 
 /** The handlers a TLSWrap reports its session to: its socket's. */
@@ -299,6 +316,8 @@ class TLSSocket extends NetSocket {
   authorizationError: string | null = null;
   encrypted = true;
   ssl: TLSWrap | null;
+  /** The tree whose TLS this socket's session is: the one named for the call that made it, else its process's. */
+  _tree: unknown;
 
   constructor(socket?: unknown, options?: Options) {
     const tlsOptions: Options = { ...options };
@@ -336,6 +355,7 @@ class TLSSocket extends NetSocket {
     if (created) (parent as unknown as Record<symbol, unknown>)[owner_symbol] = this;
     this._tlsOptions = tlsOptions;
     this.ssl = wrap;
+    this._tree = namedTree() ?? processOf()[kRunFilesystem];
     if (socket instanceof NetSocket) {
       const net = socket as WrappedSocket;
       this.connecting = net.connecting || !net._handle;
@@ -372,7 +392,7 @@ class TLSSocket extends NetSocket {
     if (this.connecting) { this.once('connect', () => this._start()); return; }
     const wrap = (this as unknown as { _handle: TLSWrap | null })._handle;
     if (!wrap) return;
-    const tls = treeTlsOf(processOf()[kRunFilesystem]);
+    const tls = treeTlsOf(this._tree);
     if (!tls) { this.destroy(new (errors().codes.ERR_FEATURE_UNAVAILABLE_ON_PLATFORM)('TLS')); return; }
     const options = connectOptions.get(this) ?? this._tlsOptions;
     const protocols = alpnProtocols(options.ALPNProtocols);
@@ -549,6 +569,19 @@ function onServerSocketSecure(this: TLSSocket): void {
 }
 
 Object.assign(Server.prototype, {
+  /** Node's `listen`, which also says, once listening, that the port answers TLS. */
+  listen(this: TlsServer, ...args: unknown[]) {
+    const sockets = callingSockets();
+    if (sockets) {
+      this.once('listening', () => {
+        const address = this.address();
+        if (address === null || typeof address !== 'object') return;
+        announceTlsListener(sockets, address.port, 1);
+        this.once('close', () => announceTlsListener(sockets, address.port, -1));
+      });
+    }
+    return netServer().prototype.listen.apply(this, args);
+  },
   addContext(_hostname: string, _context: unknown) {},
   getTicketKeys() {
     return need('buffer').Buffer.from('');

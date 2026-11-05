@@ -26,7 +26,8 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 - **TLS is the host's** (ADR-0009 §3). A tree offers its process's TLS client and server under `TREE_TLS`
   (`TreeTls`: `connect`, `serve`). A client `TLSSocket` runs over a kernel TCP connection Node's `net` makes, to any
   destination, verifying against the image's `/etc/ssl/certs/ca-certificates.crt` and `NODE_EXTRA_CA_CERTS`; a TLS
-  server answers each connection with the program's own `key` and `cert`. `getPeerCertificate` (subject, issuer,
+  server answers each connection with the program's own `key` and `cert`, and the page bridge reaches its port as a
+  TLS client (unverified, as a dev server's proxy reaches a local target). `getPeerCertificate` (subject, issuer,
   subjectaltname, validity, fingerprints, serial, raw), `getCipher`, `getProtocol` and `alpnProtocol` are the
   session's. A tree that offers none fails a handshake `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
 - **Removed with ADR-0008:** `NetworkNamespace` and its types, `loopbackOnlyNamespace`, `ContainerOptions.network`,
