@@ -189,8 +189,10 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   nameservers in order, each tried `attempts` times for `timeout` seconds (resolv.conf's `options`, glibc's defaults 5
   and 2), A then AAAA as getaddrinfo asks. The answers and errors are the ones the code gave: NXDOMAIN is `ENOTFOUND`
   (getaddrinfo's -3008), NOERROR with no record of the family `ENOTFOUND` -3007 to a lookup and `ENODATA` to a query, a
-  server that fails or does not answer `EAI_AGAIN` to a lookup and `ESERVFAIL` or `ETIMEOUT` to a query; queries answer
-  A and AAAA, as before.
+  server that fails or does not answer `EAI_AGAIN` to a lookup; to a query, c-ares's name for the last failure
+  (`ESERVFAIL`, `EREFUSED`, `ENOTIMP`, `EFORMERR` by its rcode, `ECONNREFUSED`, `ETIMEOUT`); queries read A and AAAA
+  records, as before, and a held name answers `ENODATA` for any other type; a resolv.conf naming no server is the
+  local one (127.0.0.1), as glibc and c-ares take it.
 - **`os.networkInterfaces`**: `getifaddrs`, by libuv's `uv_interface_addresses`: interfaces up and running, their IPv4
   and IPv6 addresses, `internal` for a loopback interface, `mac` from the hardware address, `scopeid` from
   `sin6_scope_id`.
@@ -282,6 +284,8 @@ identity with its kernel numbers: the engine reads ppid from it.
 - **Not moved by this record, and still the engine's:** AF_UNIX path sockets and IPC channels (`pipe_wrap`). Until an
   IPC channel is a kernel socketpair carrying `SCM_RIGHTS`, a kernel TCP socket cannot be sent over a channel to a
   process in another worker (before this record it crossed as a native stream).
+- **Not built in `udp_wrap`:** IPv6 source-specific multicast membership answers `ENOSYS`: its `struct
+  group_source_req` is laid out by the host's word size, which this interface does not fix.
 - **Lost reach, named:** HTTPS to anything beyond a directly connected network fails `ERR_TLS_UNAVAILABLE` (for
   `fetch`, `TypeError: fetch failed` with that cause); before this record it left by the host's exchange. The network
   design needs the client to speak TLS (the egress terminates a twinned host's TLS and tunnels a granted one), so the
