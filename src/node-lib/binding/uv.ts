@@ -117,7 +117,5 @@ export const UV_ESRCH = codes.UV_ESRCH[0];
 export const UV_EHOSTUNREACH = codes.UV_EHOSTUNREACH[0];
 export const UV_ENETUNREACH = codes.UV_ENETUNREACH[0];
 export const UV_EAFNOSUPPORT = codes.UV_EAFNOSUPPORT[0];
-export const UV_EAGAIN = codes.UV_EAGAIN[0];
-export const UV_EMSGSIZE = codes.UV_EMSGSIZE[0];
 
 export default uvBinding;
