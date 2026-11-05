@@ -4,9 +4,9 @@
  * On Linux a process makes its sockets with `socket(2)` in its own network namespace, and every socket is a
  * descriptor of its own table. The engine makes none of its own: a tree that is a client of a kernel offers that
  * kernel's socket calls for the process it serves under `TREE_SOCKETS`, beside the descriptor calls it offers under
- * `TREE_DESCRIPTORS` (ADR-0006), and `tcp_wrap`, `udp_wrap`, `dns`, `os` and `tls` make their calls there. The
- * namespace, its loopback, its bind tables, its routes and its resolver are the kernel's; the engine holds no copy of
- * any of them.
+ * `TREE_DESCRIPTORS` (ADR-0006), and `tcp_wrap`, `udp_wrap`, `pipe_wrap`, `dns` and `os` make their calls there (a
+ * client's TLS is its host's, `TREE_TLS` in `host-tls.ts`, over a kernel TCP connection). The namespace, its loopback,
+ * its bind tables, its routes and its resolver are the kernel's; the engine holds no copy of any of them.
  *
  * Each call is Linux's call of its name, with Linux's numbers (`linux` below). A result is the call's return: a
  * non-negative value, or a negative errno, which is libuv's number on Linux and goes to Node unchanged. An address is
@@ -93,7 +93,7 @@ export interface TreeSockets {
   getsockopt(fd: number, level: number, name: number, value: Uint8Array): number;
   /** setsockopt(2). */
   setsockopt(fd: number, level: number, name: number, value: Uint8Array): number;
-  /** fcntl(2), for `F_GETFL`, `F_SETFL` and `F_DUPFD_CLOEXEC`. */
+  /** fcntl(2), for `F_GETFL` and `F_SETFL`. */
   fcntl(fd: number, command: number, argument: number): number;
   /**
    * The descriptor's readiness, as poll(2) reports it: settles with its `revents` once any of `events`, or
@@ -148,7 +148,7 @@ export const linux = Object.freeze({
   IP_ADD_MEMBERSHIP: 35, IP_DROP_MEMBERSHIP: 36, IP_ADD_SOURCE_MEMBERSHIP: 39, IP_DROP_SOURCE_MEMBERSHIP: 40,
   IPV6_UNICAST_HOPS: 16, IPV6_MULTICAST_IF: 17, IPV6_MULTICAST_HOPS: 18, IPV6_MULTICAST_LOOP: 19,
   IPV6_ADD_MEMBERSHIP: 20, IPV6_DROP_MEMBERSHIP: 21, IPV6_V6ONLY: 26, IPV6_TCLASS: 67,
-  F_GETFL: 3, F_SETFL: 4, F_DUPFD_CLOEXEC: 1030, O_NONBLOCK: 0o4000,
+  F_GETFL: 3, F_SETFL: 4, O_NONBLOCK: 0o4000,
   POLLIN: 0x1, POLLOUT: 0x4,
   IFF_UP: 0x1, IFF_LOOPBACK: 0x8, IFF_RUNNING: 0x40,
   EINTR: 4, EAGAIN: 11, EINVAL: 22, EOPNOTSUPP: 95, EAFNOSUPPORT: 97, EADDRINUSE: 98,
@@ -198,7 +198,7 @@ export interface SocketName {
 }
 
 /** inet_pton(AF_INET): a dotted quad, each part a decimal number below 256 with no leading zero. */
-export function ipv4Bytes(text: string): Uint8Array | undefined {
+function ipv4Bytes(text: string): Uint8Array | undefined {
   const parts = text.split('.');
   if (parts.length !== 4) return undefined;
   const bytes = new Uint8Array(4);
@@ -211,7 +211,7 @@ export function ipv4Bytes(text: string): Uint8Array | undefined {
 }
 
 /** inet_pton(AF_INET6), with a dotted quad allowed in the last 32 bits; any zone (`%eth0`) is not part of it. */
-export function ipv6Bytes(text: string): Uint8Array | undefined {
+function ipv6Bytes(text: string): Uint8Array | undefined {
   let rest = text;
   const tail: number[] = [];
   const dotted = /:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/u.exec(rest);
@@ -390,37 +390,4 @@ export function interfaceAddresses(sockets: TreeSockets | undefined): InterfaceA
       internal: (entry.flags & linux.IFF_LOOPBACK) !== 0, scopeid: address.family === 'IPv6' ? address.scopeid ?? 0 : -1 });
   }
   return out;
-}
-
-/** The bytes of a numeric address of either family, IPv4-mapped IPv6 read as IPv4. */
-function addressBytes(address: string): Uint8Array | undefined {
-  const bare = address.startsWith('[') && address.endsWith(']') ? address.slice(1, -1) : address;
-  const v4 = ipv4Bytes(bare);
-  if (v4) return v4;
-  const percent = bare.indexOf('%');
-  const v6 = ipv6Bytes(percent < 0 ? bare : bare.slice(0, percent));
-  if (!v6) return undefined;
-  const mapped = v6.subarray(0, 10).every(byte => byte === 0) && v6[10] === 0xff && v6[11] === 0xff;
-  return mapped ? v6.slice(12) : v6;
-}
-
-/**
- * Whether a numeric address is on a network the process is directly connected to: its loopback, or an interface's
- * network by that interface's netmask (an on-link route, as an interface's prefix gives Linux one). Nothing lies
- * between the two ends of such a connection but the kernel.
- */
-export function directlyConnected(address: string, sockets: TreeSockets | undefined): boolean {
-  const target = addressBytes(address);
-  if (!target) return false;
-  if (target.byteLength === 4 && target[0] === 127) return true;
-  if (target.byteLength === 16 && target.subarray(0, 15).every(byte => byte === 0) && target[15] === 1) return true;
-  for (const entry of interfaceEntries(sockets)) {
-    if ((entry.flags & linux.IFF_UP) === 0) continue;
-    const own = readSocketName(entry.address), mask = readSocketName(entry.netmask);
-    if (!own || !mask) continue;
-    const ownBytes = addressBytes(own.address), maskBytes = addressBytes(mask.address);
-    if (!ownBytes || !maskBytes || ownBytes.byteLength !== target.byteLength || maskBytes.byteLength !== target.byteLength) continue;
-    if (target.every((byte, index) => (byte & maskBytes[index]!) === (ownBytes[index]! & maskBytes[index]!))) return true;
-  }
-  return false;
 }

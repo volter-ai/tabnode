@@ -105,8 +105,8 @@ export function treeSocketsOf(tree: unknown): TreeSockets | undefined;
 
 - **Each call is Linux's call of its name**, with Linux's generic constants (`AF_INET` 2, `AF_INET6` 10, `SOCK_STREAM`
   1, `SOCK_DGRAM` 2, `SOCK_NONBLOCK` 0o4000, `SOCK_CLOEXEC` 0o2000000, `MSG_DONTWAIT` 0x40, `MSG_NOSIGNAL` 0x4000,
-  `MSG_CMSG_CLOEXEC` 0x40000000, `SOL_SOCKET` 1, `SCM_RIGHTS` 1, `SO_*`, `IPPROTO_*`, `TCP_*`, `IP_*`, `IPV6_*`, `F_GETFL` 3, `F_SETFL` 4, `F_DUPFD_CLOEXEC` 1030,
-  `O_NONBLOCK` 0o4000, `SHUT_WR` 1), the values `host-sockets.ts` names, which are the same on x86-64 Linux and on
+  `MSG_CMSG_CLOEXEC` 0x40000000, `SOL_SOCKET` 1, `SCM_RIGHTS` 1, `SO_*`, `IPPROTO_*`, `TCP_*`, `IP_*`, `IPV6_*`,
+  `F_GETFL` 3, `F_SETFL` 4, `O_NONBLOCK` 0o4000, `SHUT_WR` 1), the values `host-sockets.ts` names, which are the same on x86-64 Linux and on
   WALI's wasm32.
 - **A result is the call's return: a non-negative value, or a negative errno**, Linux's number, which is libuv's on
   Linux. The engine hands it to Node unchanged: no exception, no allocation, as the kernel's own exports answer.
@@ -302,7 +302,7 @@ Each method is its Linux call, answered in the caller's worker from kernel memor
 | `close` | `close(2)` of the descriptor (the description goes with its last reference), settling its pending waits `POLLNVAL` |
 | `getsockname`, `getpeername` | `getsockname(2)`, `getpeername(2)` |
 | `getsockopt`, `setsockopt` | `getsockopt(2)`, `setsockopt(2)` |
-| `fcntl` | `fcntl(2)` for `F_GETFL`, `F_SETFL` and `F_DUPFD_CLOEXEC` |
+| `fcntl` | `fcntl(2)` for `F_GETFL` and `F_SETFL` |
 | `wait` | the description's poll operation, waited on with `Atomics.waitAsync` on its wait word, settled with `revents` |
 | `getifaddrs` | `getifaddrs(3)`'s answer: the namespace's interfaces (RTM_GETLINK, RTM_GETADDR) |
 
