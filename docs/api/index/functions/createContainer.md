@@ -54,9 +54,9 @@ The run whose guest code is executing, for a caller attributing a child.
 
 > **dispose**: () => `void`
 
-The container is done: its namespace is no longer the owner a host-held scope given none defaults to, and its page
-bridge stops following its guests' ports and ends the WebSocket and raw upgraded sockets it carries (1001, going
-away). Plain HTTP to the ports it already serves is still answered; its runs and their own sockets keep going.
+The container is done: its page bridge stops following its guests' ports and ends the WebSocket and raw upgraded
+sockets it carries (1001, going away). Plain HTTP to the ports it already serves is still answered; its runs and
+their own sockets keep going.
 
 #### Returns
 
@@ -102,12 +102,6 @@ away). Plain HTTP to the ports it already serves is still answered; its runs and
 
 () => `void`
 
-### network
-
-> **network**: [`NetworkNamespace`](../interfaces/NetworkNamespace.md)
-
-The container's network namespace: its runs', and its own doors'.
-
 ### npm
 
 > **npm**: [`PackageManager`](../namespaces/npm/classes/PackageManager.md)
@@ -143,22 +137,6 @@ The container's network namespace: its runs', and its own doors'.
 #### Returns
 
 `number`
-
-### portPid
-
-> **portPid**: (`port`) => `number` \| `undefined`
-
-The pid of the process listening on a port of this engine, where a guest process is: `/proc`'s socket owner.
-
-#### Parameters
-
-##### port
-
-`number`
-
-#### Returns
-
-`number` \| `undefined`
 
 ### processByPid
 

@@ -8,12 +8,6 @@
 
 ## Properties
 
-### address?
-
-> `optional` **address?**: `Partial`\<`SockName`\>
-
-***
-
 ### handle?
 
 > `optional` **handle?**: [`NativeStreamDescriptor`](NativeStreamDescriptor.md)
@@ -22,7 +16,7 @@
 
 ### handleType?
 
-> `optional` **handleType?**: `"TCP"` \| `"PIPE"`
+> `optional` **handleType?**: `"PIPE"`
 
 ***
 

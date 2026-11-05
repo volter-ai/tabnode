@@ -74,18 +74,6 @@ Observe only original completed synchronous bodies at these exact paths, when th
 
 ***
 
-### network?
-
-> `optional` **network?**: [`NetworkNamespace`](NetworkNamespace.md)
-
-The network namespace the container's runs live in, as its host lays it out (`NetworkNamespace`): their
-loopback and port space, the addresses they hold, where their connections go and what their names resolve to.
-Each container has its own (two containers in one page are two namespaces, unless their host gives both the same); a
-host-held process elsewhere has its scope's (`NativeStreamScope`). Without one, the container's runs are in a fresh namespace of their loopback alone, the
-container's own.
-
-***
-
 ### onConsole?
 
 > `optional` **onConsole?**: (`method`, `args`) => `void`
@@ -216,21 +204,11 @@ fd 1 and fd 2 as the bytes the program wrote; where given, the text sink of that
 
 > `optional` **pid?**: `number`
 
-This run's process number and its parent's; minted where neither is given.
+This run's process number; minted where none is given. Its parent's is its registry's, read when asked.
 
 #### Inherited from
 
 [`RuntimeOptions`](RuntimeOptions.md).[`pid`](RuntimeOptions.md#pid)
-
-***
-
-### ppid?
-
-> `optional` **ppid?**: `number`
-
-#### Inherited from
-
-[`RuntimeOptions`](RuntimeOptions.md).[`ppid`](RuntimeOptions.md#ppid)
 
 ***
 
@@ -274,4 +252,6 @@ The run was given a TTY, on all three fds or per fd as `[stdin, stdout, stderr]`
 
 > `optional` **vfs?**: [`VirtualFS`](../classes/VirtualFS.md)
 
-The filesystem the container runs on; one is built in memory when absent.
+The filesystem the container runs on; one is built in memory when absent. A tree that offers socket calls
+(`TREE_SOCKETS`) is the network of the container's runs and doors; one that offers none, as the in-memory tree,
+is a process with no IPv4 or IPv6 (ADR-0009 §5).

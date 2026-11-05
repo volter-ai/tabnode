@@ -78,7 +78,7 @@ read, a shutdown as its completion. Optional; without it each is a call.
 
 ### tryWriteWithinBudget()?
 
-> `optional` **tryWriteWithinBudget**(`id`, `bytes`, `trace?`): `number` \| `Promise`\<`number`\> \| `undefined`
+> `optional` **tryWriteWithinBudget**(`id`, `bytes`): `number` \| `Promise`\<`number`\> \| `undefined`
 
 Whole bounded write, without a descriptor: 0 means all bytes accepted.
 EAGAIN (or undefined when local credit prevents an attempt) accepts none.
@@ -96,10 +96,6 @@ this bounded method and their ordered writes stay async.
 
 `Uint8Array`
 
-##### trace?
-
-[`NativeStreamWriteTrace`](NativeStreamWriteTrace.md)
-
 #### Returns
 
 `number` \| `Promise`\<`number`\> \| `undefined`
@@ -108,7 +104,7 @@ this bounded method and their ordered writes stay async.
 
 ### write()
 
-> **write**(`id`, `bytes`, `handle?`, `trace?`): `Promise`\<`number`\>
+> **write**(`id`, `bytes`, `handle?`): `Promise`\<`number`\>
 
 #### Parameters
 
@@ -123,10 +119,6 @@ this bounded method and their ordered writes stay async.
 ##### handle?
 
 `number`
-
-##### trace?
-
-[`NativeStreamWriteTrace`](NativeStreamWriteTrace.md)
 
 #### Returns
 

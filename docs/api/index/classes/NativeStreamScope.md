@@ -13,15 +13,10 @@ descriptor from another scope; wire operations can name this scope's IDs only.
 
 ### Constructor
 
-> **new NativeStreamScope**(`limits`, `emit`, `ownerPid?`, `network?`): `NativeStreamScope`
+> **new NativeStreamScope**(`limits`, `emit`, `ownerPid?`): `NativeStreamScope`
 
-`ownerPid` names the process whose worker this scope serves: a listener
-it opens is that process's socket, as the container's /proc shows it.
-`network` is that process's network namespace: every TCP handle the
-scope makes is made in it (its port space, its loopback, its routes), as
-a socket(2) in that process is; without one, the owning container's (the
-calling code's, else the engine's one container's). The process's own realm is given the same namespace for
-its `dns`, `os` and HTTP client by its bootstrap (`createContainer({ network })`).
+`ownerPid` names the process whose worker this scope serves: a pipe it
+opens is that process's, as the container's /proc shows it.
 
 #### Parameters
 
@@ -37,23 +32,11 @@ its `dns`, `os` and HTTP client by its bootstrap (`createContainer({ network })`
 
 () => `number` \| `undefined`
 
-##### network?
-
-[`NetworkNamespace`](../interfaces/NetworkNamespace.md)
-
 #### Returns
 
 `NativeStreamScope`
 
 ## Properties
-
-### network
-
-> `readonly` **network**: [`NetworkNamespace`](../interfaces/NetworkNamespace.md)
-
-The namespace every TCP handle of the scope is made in: the one its host gave, else its owning container's.
-
-***
 
 ### ownerPid?
 

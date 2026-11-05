@@ -2,6 +2,27 @@
 
 What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## Unreleased
+
+- **A realm's sockets are its kernel's, called by descriptor** (ADR-0009, superseding ADR-0008; browser-substrate
+  ADR-0227 §8). A tree that is a kernel's client offers its process's socket calls under `TREE_SOCKETS`
+  (`TreeSockets`: `socket`, `bind`, `listen`, `accept4`, `connect`, `sendto`, `recvfrom`, `shutdown`, `close`,
+  `getsockname`, `getpeername`, `getsockopt`, `setsockopt`, `fcntl`, `wait`, `getifaddrs`), and `tcp_wrap`, a new
+  `udp_wrap` under Node's own `dgram.js`, `dns`, `os.networkInterfaces()` and `tls` make their calls there, with
+  libuv's rules. The engine keeps no loopback, port space, listener table or pairing for TCP or UDP. `dns` is a DNS
+  exchange over the process's own UDP with its resolv.conf's nameservers. A tree that offers none (`VirtualFS`) is a
+  process with no IPv4 or IPv6: a listen or connect fails `EAFNOSUPPORT`.
+- **HTTP leaves by the network.** `installHttpClientTransport` and its `HttpClient*` types, `installFetchTransport`,
+  `requestHasStaticBody` and the `Fetch*` types are removed: Node's `http.Agent` is unpatched, and a guest's `fetch` is
+  Node's over the engine's own `http` and `https` client. HTTPS to anything but a directly connected network is
+  `ERR_TLS_UNAVAILABLE` until the engine has TLS.
+- **Removed with ADR-0008:** `NetworkNamespace` and its types, `loopbackOnlyNamespace`, `ContainerOptions.network`,
+  `RunOptions.network`, `container.network`, `container.portPid`, `NodeProcessLaunch.network`, `NativeStreamScope`'s
+  fourth argument, TCP through native streams (they carry pipes), and `NativeStreamWriteTrace`. `BridgeOptions.tree`
+  replaces `BridgeOptions.network`.
+- **Identity is read, never copied.** `process.ppid` is read from the process registry at each read, as Node's
+  accessor calls getppid; a run's group is the registry's. The engine keeps a run's pid and the pid that waits for it.
+
 ## 0.17.1 — 2026-11-04
 
 - **Exit and `once` as Node's, in the cases 0.17.0's review left** (Article 6; measured on Node v26.12.0). A `once`
