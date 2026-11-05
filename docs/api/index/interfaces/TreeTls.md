@@ -6,7 +6,7 @@
 
 # Interface: TreeTls
 
-The TLS client a host offers its processes.
+The TLS a host offers its processes.
 
 ## Methods
 
@@ -29,3 +29,25 @@ Starts a client handshake over `transport`.
 #### Returns
 
 [`TlsClientSession`](TlsClientSession.md)
+
+***
+
+### serve()
+
+> **serve**(`transport`, `options`): [`TlsServerSession`](TlsServerSession.md)
+
+Answers a client's handshake over `transport`, with the program's own key and chain.
+
+#### Parameters
+
+##### transport
+
+[`TlsTransport`](TlsTransport.md)
+
+##### options
+
+[`TlsServerOptions`](TlsServerOptions.md)
+
+#### Returns
+
+[`TlsServerSession`](TlsServerSession.md)

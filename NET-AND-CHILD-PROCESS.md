@@ -108,8 +108,7 @@ ownership that keeps a run alive while it holds a handle.
   write tried at once and queued for writability; `shutdown` after the queue;
   `getsockname(out)`, `getpeername(out)`, `setNoDelay`, `setKeepAlive`,
   `setTypeOfService`/`getTypeOfService`, `open(fd)` (a descriptor of the
-  process's own), `reset()` (`SO_LINGER` {1, 0}); `duplicate()` is
-  `F_DUPFD_CLOEXEC`. A process whose tree offers no socket calls has no IPv4
+  process's own), `reset()` (`SO_LINGER` {1, 0}). A process whose tree offers no socket calls has no IPv4
   or IPv6: making a socket is `EAFNOSUPPORT`.
 - `udp_wrap`: `UDP` and `SendWrap` under Node's own `dgram.js`, over the same
   calls, with libuv's `udp.c` rules: the socket bound at the first bind,
@@ -177,8 +176,8 @@ descriptor's poll readiness; and `getifaddrs()`. The engine knows nothing of
 which namespaces exist, what listens or where a connect goes: a refusal, a
 route, a drop and an egress are the kernel's. A handle keeps the calls of the
 process that made it, an accepted one its listener's, a received one its
-receiver's. HTTP is a `net` or `tls` connection like any other (a client's
-TLS is its host's client, `TREE_TLS`), and a guest's `fetch` is Node's own
+receiver's. HTTP is a `net` or `tls` connection like any other (a process's
+TLS, client and server, is its host's, `TREE_TLS`), and a guest's `fetch` is Node's own
 undici over the process's `net` and `tls`, so nothing leaves around the
 network.
 

@@ -36,9 +36,9 @@ Whether the server's chain verified to a root and its certificate names the serv
 
 ### certificates
 
-> **certificates**: readonly `Uint8Array`\<`ArrayBufferLike`\>[]
+> **certificates**: readonly [`TlsPeerCertificate`](TlsPeerCertificate.md)[]
 
-The server's certificates as it sent them, DER, the leaf first.
+The server's certificates as it sent them, the leaf first.
 
 ***
 
