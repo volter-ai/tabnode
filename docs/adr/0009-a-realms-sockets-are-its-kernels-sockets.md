@@ -215,12 +215,16 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   and hands its connections on as secure: the engine has no server TLS for a program's own key and certificate, so a
   TLS client of such a server fails its handshake.
 - **HTTP**: Node's `http.Agent` and `https.Agent` are unpatched: a request is a `net` or `tls` connection of the
-  process. `installHttpClientTransport` and its exchange go.
-- **`fetch`**: a guest's global `fetch` is Node's (undici's contract) over the engine's `http` and `https` client, so
-  its connections are the process's kernel sockets: redirects followed as `redirect` says (20 at most), the body
-  decoded by `content-encoding`, an abort as the signal's reason, every other failure `TypeError: fetch failed` with
-  its cause. `data:` and `blob:` URLs, which no socket carries, are the realm's own `fetch`'s. `installFetchTransport`
-  and `requestHasStaticBody` go.
+  process.
+- **`fetch`**: a guest's `fetch`, `Request`, `Response`, `Headers`, `FormData`, `WebSocket` and `CloseEvent` are Node's
+  own: undici's bundle as Node v24.21.0 ships it (`deps/undici/undici.js`, vendored byte for byte as
+  `internal/deps/undici/undici`), exposed as Node's bootstrap exposes it (`fetch` a value that loads undici at its
+  first call, the interfaces lazy accessors). A fetch is undici's over the process's `net` and `tls`, so its
+  connections are the process's kernel sockets. A builtin runs with its process's global as `globalThis`, where
+  undici keeps its global dispatcher, so a program's own undici's `setGlobalDispatcher` is its `fetch`'s, as on Node,
+  and one process's dispatcher is never another's. `MessageEvent` stays the realm's, which its message ports deliver.
+  `data:` URLs are undici's own; a `blob:` URL is resolved through `node:buffer`'s `resolveObjectURL`, which answers
+  nothing here, so its fetch fails as undici fails a URL it cannot resolve.
 - **The page's doors** (`ServerBridge`, `http-bridge`, `container.listenNet`) are a client and a server like any
   other, on the container tree's sockets: a request to a port nothing listens on is refused by the kernel and answered
   503, as before; the bridge learns a guest's port when a handle made through its tree's calls starts listening, an

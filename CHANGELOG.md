@@ -13,8 +13,12 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   exchange over the process's own UDP with its resolv.conf's nameservers. A tree that offers none (`VirtualFS`) is a
   process with no IPv4 or IPv6: a listen or connect fails `EAFNOSUPPORT`.
 - **HTTP leaves by the network.** `installHttpClientTransport` and its `HttpClient*` types, `installFetchTransport`,
-  `requestHasStaticBody` and the `Fetch*` types are removed: Node's `http.Agent` is unpatched, and a guest's `fetch` is
-  Node's over the engine's own `http` and `https` client.
+  `requestHasStaticBody` and the `Fetch*` types are removed: Node's `http.Agent` is unpatched.
+- **`fetch` is Node's own undici** (ADR-0009 §3). Node v24.21.0's `deps/undici/undici.js` is vendored byte for byte as
+  `internal/deps/undici/undici`, and a guest's `fetch`, `Request`, `Response`, `Headers`, `FormData`, `WebSocket` and
+  `CloseEvent` are the ones it exports, exposed as Node's bootstrap exposes them, over the process's `net` and `tls`.
+  A builtin's `globalThis` is its process's global, so undici's global dispatcher is per process. The realm's patched
+  `Request` and `Response` are gone.
 - **TLS is the host's client** (ADR-0009 §3). A tree offers its process's TLS client under `TREE_TLS` (`TreeTls`),
   and a client `TLSSocket` runs it over a kernel TCP connection Node's `net` makes, to any destination, verifying
   against the image's `/etc/ssl/certs/ca-certificates.crt` and `NODE_EXTRA_CA_CERTS`; `getPeerCertificate`,

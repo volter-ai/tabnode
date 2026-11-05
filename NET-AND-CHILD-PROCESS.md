@@ -169,8 +169,9 @@ descriptor's poll readiness; and `getifaddrs()`. The engine knows nothing of
 which namespaces exist, what listens or where a connect goes: a refusal, a
 route, a drop and an egress are the kernel's. A handle keeps the calls of the
 process that made it; an accepted or duplicated one its listener's. HTTP is a
-`net` or `tls` connection like any other, and a guest's `fetch` is Node's over
-the engine's own `http` client, so nothing leaves around the network.
+`net` or `tls` connection like any other (a client's TLS is its host's client,
+`TREE_TLS`), and a guest's `fetch` is Node's own undici over the process's
+`net` and `tls`, so nothing leaves around the network.
 
 ## Lanes and the measure
 
