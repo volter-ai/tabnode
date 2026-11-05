@@ -239,7 +239,6 @@ export class Pipe extends KernelStreamWrap {
 
   /** The descriptor this handle can be reached at, for a child's stdio table. */
   toFd(): number {
-    if (this.kernelBacked) return this[kHandleFd];
     if (this.ownFd === null) { this.ownFd = registerFd('PIPE', this); this.fd = this.ownFd; }
     return this.ownFd;
   }
