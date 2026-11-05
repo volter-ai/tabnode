@@ -26,6 +26,7 @@ import {
 import { DuplexStreamHandle } from '../node-lib/binding/duplex_stream';
 import { forgetNodeHandle, invokeOwned, unrefHandle } from '../node-lib/binding/handles';
 import { UV_EBADF, UV_EOF } from '../node-lib/binding/uv';
+import { kRunFilesystem } from '../node-lib/binding/fs';
 import { queueBindingTask, withGuestCallback } from '../guest-loop';
 import { treeTlsOf, type TlsClientSession, type TlsSecureConnection, type TreeTls } from '../host-tls';
 
@@ -51,7 +52,6 @@ type WrappedSocket = Socket & { _handle: StreamHandle | null; connecting: boolea
 type Options = Record<string, any>;
 
 const owner_symbol = internalAsyncHooks.symbols.owner_symbol;
-const kRunFilesystem = Symbol.for('tabnode.run.vfs');
 const SYSTEM_CA_FILE = '/etc/ssl/certs/ca-certificates.crt';
 const PEM_CERTIFICATE = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/gu;
 
