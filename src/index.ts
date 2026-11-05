@@ -80,6 +80,8 @@ export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
 export { TREE_SOCKETS } from './host-sockets';
 export type { TreeSockets, InterfaceAddressEntry } from './host-sockets';
+export { TREE_TLS } from './host-tls';
+export type { TreeTls, TlsTransport, TlsPlainConnection, TlsSecureConnection, TlsClientSession, TlsClientOptions } from './host-tls';
 export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 import type { ProcessRegistry } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';

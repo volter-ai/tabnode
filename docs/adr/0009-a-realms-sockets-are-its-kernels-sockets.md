@@ -196,10 +196,24 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
 - **`os.networkInterfaces`**: `getifaddrs`, by libuv's `uv_interface_addresses`: interfaces up and running, their IPv4
   and IPv6 addresses, `internal` for a loopback interface, `mac` from the hardware address, `scopeid` from
   `sin6_scope_id`.
-- **`tls`**: the engine has no TLS. A TLS connect is a plaintext connection marked secure where nothing lies between
-  the two ends: a destination on a directly connected network (loopback, or on an interface's network by its netmask,
-  read from `getifaddrs` after a lookup); any other is `ERR_TLS_UNAVAILABLE`, as before. This is the old rule with the
-  namespace's routing read from the process's interfaces.
+- **`tls`**: a client's TLS is its host's TLS client, offered under `TREE_TLS` beside `TREE_SOCKETS`
+  (`src/host-tls.ts`), as a Linux process's is the library inside it over a connection the kernel only carries.
+  `connect(transport, { servername, ca, rejectUnauthorized, protocols })` starts a handshake over the bytes the engine
+  hands it and answers a session: `plain`, the decrypted connection, and `secure`, which settles with `authorized`,
+  `authorizationError`, `alpnProtocol`, the server's certificates (DER, the leaf first), `version` and `cipher`, or
+  with the failure that ended the handshake. The engine runs it where Node's `lib/internal/tls/wrap.js` (v24.21.0)
+  runs OpenSSL: a client `TLSSocket` is a `net.Socket` whose handle is a TLSWrap over the TCP handle of a connection
+  it makes with Node's own `net` to any destination (a name with several addresses tries each on a handle of its own,
+  `kReinitializeHandle`), or over the socket it was given; the handshake starts once the connection is made, and
+  `secureConnect` follows Node's `onConnectSecure`. The roots are the image's `/etc/ssl/certs/ca-certificates.crt`
+  and the file `NODE_EXTRA_CA_CERTS` names, read through the process's files, unless the program passes `ca`; the
+  client verifies the chain and the name by Node's `checkServerIdentity` rules and ends the handshake on a failure
+  unless `rejectUnauthorized` is false (`NODE_TLS_REJECT_UNAUTHORIZED=0` makes it false); a program's own
+  `checkServerIdentity` is asked about a chain that verified. `getPeerCertificate` answers each certificate's `raw`
+  and fingerprints; `getCipher`, `getProtocol` and `alpnProtocol` are the session's. A tree that offers no TLS client
+  is a Node without TLS: a connect fails `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. A TLS server listens as a net server
+  and hands its connections on as secure: the engine has no server TLS for a program's own key and certificate, so a
+  TLS client of such a server fails its handshake.
 - **HTTP**: Node's `http.Agent` and `https.Agent` are unpatched: a request is a `net` or `tls` connection of the
   process. `installHttpClientTransport` and its exchange go.
 - **`fetch`**: a guest's global `fetch` is Node's (undici's contract) over the engine's `http` and `https` client, so
@@ -286,7 +300,6 @@ identity with its kernel numbers: the engine reads ppid from it.
   process in another worker (before this record it crossed as a native stream).
 - **Not built in `udp_wrap`:** IPv6 source-specific multicast membership answers `ENOSYS`: its `struct
   group_source_req` is laid out by the host's word size, which this interface does not fix.
-- **Lost reach, named:** HTTPS to anything beyond a directly connected network fails `ERR_TLS_UNAVAILABLE` (for
-  `fetch`, `TypeError: fetch failed` with that cause); before this record it left by the host's exchange. The network
-  design needs the client to speak TLS (the egress terminates a twinned host's TLS and tunnels a granted one), so the
-  next record is TLS in the engine over its sockets.
+- **Not built in `tls`:** a peer certificate's subject, issuer, names and validity in `getPeerCertificate` (the
+  engine decodes no X.509; the host's client verifies), session tickets and their reuse, and a TLS server's own TLS.
+  The host's client (browser-substrate's `tls-client.ts`) speaks TLS 1.3 with TLS_AES_128_GCM_SHA256 only.
