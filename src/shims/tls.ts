@@ -15,7 +15,7 @@
  */
 
 import { lazyExport } from '../node-lib/lazy';
-import { nodeLibBindingFor, nodeLibInternalRequire } from '../node-lib/load';
+import { nodeLibBindingFor, nodeLibInternalRequire, nodeLibProcessOf } from '../node-lib/load';
 import type { Socket } from '../node-lib/net-module';
 import type { EventEmitter } from '../node-lib/events-module';
 import { internalAsyncHooks } from '../node-lib/internals/runtime';
@@ -235,8 +235,7 @@ const NetSocket = require ? require('net').Socket as new (options?: object) => S
     : lazyExport<new (options?: object) => Socket>('net', 'Socket');
 const netServer = (): any => need('net').Server;
 /** The process this graph is: its environment, its files and its tree. */
-const realmless = {};
-const processOf = (): Record<string | symbol, any> => (require ? require('process') : (globalThis as { process?: object }).process ?? realmless) as Record<string | symbol, any>;
+const processOf = (): Record<string | symbol, any> => require ? require('process') : nodeLibProcessOf();
 const errors = (): any => need('internal/errors');
 
 /** The roots a connect verifies against where the program names none: the image's CA file and NODE_EXTRA_CA_CERTS. */
@@ -349,7 +348,6 @@ class TLSSocket extends NetSocket {
     } else this.connecting = true;
     // Read on the next tick, so the caller has a chance to set up its listeners; what the wrapped socket already read
     // is the server's.
-    const process = processOf();
     const initRead = (): void => {
       if (!this._handle) return;
       if (wrapped && (wrapped as unknown as { readableLength: number }).readableLength) {
@@ -358,7 +356,7 @@ class TLSSocket extends NetSocket {
       }
       (this as unknown as { read(size: number): unknown }).read(0);
     };
-    if (typeof process.nextTick === 'function') process.nextTick(initRead); else queueMicrotask(initRead);
+    processOf().nextTick(initRead);
   }
 
   /** Begins the handshake once the connection is made. */
