@@ -216,8 +216,12 @@ export function ownerOf(handle: OwnedHandle): ProcessToken | null {
   return heldBy.get(handle) ?? null;
 }
 
-/** A new handle is the current run's, ref'd and active, as libuv's start. */
-export function registerHandle(handle: OwnedHandle, nodeWrap = false): void {
+/**
+ * A new handle is the current run's and ref'd, as `uv_handle_init` leaves it. `active` says whether it holds the loop
+ * from its start: a stream or socket libuv starts only when it reads, listens or receives (TCP, UDP, a kernel pipe)
+ * is registered stopped, and its binding starts and stops it (`startHandle`, `stopHandle`) as libuv's does.
+ */
+export function registerHandle(handle: OwnedHandle, nodeWrap = false, active = true): void {
   heldBy.set(handle, currentOwner());
   const token = heldBy.get(handle);
   if (token != null) {
@@ -226,7 +230,7 @@ export function registerHandle(handle: OwnedHandle, nodeWrap = false): void {
     owned.add(handle);
   }
   refHeld.add(handle);
-  activeHandles.add(handle);
+  if (active) activeHandles.add(handle);
   hold(handle);
   if (nodeWrap) observeNodeHandle(handle);
 }

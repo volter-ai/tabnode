@@ -1258,18 +1258,12 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // Heuristic: if we already captured output, the script likely finished synchronously
   // (e.g. a simple "console.log('hello')" script). Return immediately.
   // A program that printed and still holds a timer, or a build, is working:
-  // the timers are the engine's own count for this guest, where this asked
-  // an adapter that is gone through an ambient name nothing ever installed.
-  // An active handle keeps Node's loop alive, so a run that owns one is not
-  // idle however long it has been quiet. The engine registers a guest's
-  // servers under this run's name as it opens them, and releases them when
-  // the run ends; counting them here is what a `vite` a guest spawned needs,
-  // which listened, printed, and was cut half a second later with its server
-  // still up. A connected socket is such a handle too, and counting only the
-  // listening ones settled VS Code's extension host — a program whose only
-  // handle is one socket back to the server that forked it and which sets no
-  // timer — as idle, with exit 0, three times over.
-  const __ownsHandles = () => runToken !== null && (__ownedServerPorts(runToken).length > 0 || __ownedHandleCount(runToken) > 0);
+  // the timers are the engine's own count for this guest. An active,
+  // referenced handle keeps Node's loop alive (uv_loop_alive), so a run that
+  // owns one is not idle however long it has been quiet: a listening server,
+  // a socket that is reading, a child it waits for. A handle counts while
+  // libuv's would be active, so a paused socket holds nothing.
+  const __ownsHandles = () => runToken !== null && __ownedHandleCount(runToken) > 0;
   const __printedThenWorking = () => (streams?.stdinOpen === true && inputConsumed()) || pendingGuestTimers(proc) > 0 || heldWork().count > 0 || __ownsHandles();
   if ((streams?.held || runToken === null) && printed > 0 && !__printedThenWorking()) {
     // Settling the command is host work. Killing guest timers must not

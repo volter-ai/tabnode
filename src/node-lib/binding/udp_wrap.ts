@@ -78,8 +78,7 @@ export class UDP implements OwnedHandle {
 
   constructor() {
     // A UDP handle does nothing until it receives or sends (uv_udp_init leaves it stopped).
-    registerHandle(this, true);
-    stopHandle(this);
+    registerHandle(this, true, false);
   }
 
   /** The socket's descriptor, -1 until it is made. */

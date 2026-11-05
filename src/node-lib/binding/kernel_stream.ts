@@ -17,7 +17,7 @@
  */
 import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap, type ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync } from './stream_wrap';
-import { __adoptHandle, holdRequest, ownerOf, invokeOwned, observeNodeRequest, forgetNodeRequest, stopHandle, type OwnedHandle } from './handles';
+import { __adoptHandle, holdRequest, ownerOf, invokeOwned, observeNodeRequest, forgetNodeRequest, startHandle, stopHandle, type OwnedHandle } from './handles';
 import { UV_EBADF, UV_EBUSY, UV_ECANCELED, UV_EINVAL, UV_ENOTCONN, UV_EOF, UV_EPIPE } from './uv';
 import { callingSockets, captureCallingSockets, linux, receivedRights, rightsControl, rightsSpace, type TreeSockets } from '../../host-sockets';
 import { kernelSocketType, type HandleType } from './fds';
@@ -76,7 +76,8 @@ export class KernelStreamWrap extends LibuvStreamWrap {
 
   /** `kernel`: the handle is a kernel descriptor of the calling process's (else the engine's pairing serves it). */
   constructor(kernel: boolean) {
-    super();
+    // uv_tcp_init and uv_pipe_init leave a kernel stream stopped; the engine's pairing holds its loop from its start.
+    super(!kernel);
     this.#kernel = kernel;
     this.#sockets = kernel ? callingSockets() : undefined;
     this.#calling = kernel ? captureCallingSockets() : undefined;
@@ -163,15 +164,20 @@ export class KernelStreamWrap extends LibuvStreamWrap {
     if (!this.#readable) return UV_ENOTCONN;
     this.#reading = true;
     this.reading = true;
+    // uv_read_start: reading is what a stream does, so it holds its loop while it reads.
+    startHandle(this);
     this.waitIn();
     return 0;
   }
 
   override readStop(): number {
     if (!this.#kernel) return super.readStop();
-    // libuv stops polling; a readiness already asked for is answered and left: the bytes stay in the kernel's buffer.
-    this.#reading = false;
     this.reading = false;
+    if (!this.#reading) return 0;
+    // uv_read_stop: polling stops and so does the handle (its requests hold the loop for themselves); a readiness
+    // already asked for is answered and left: the bytes stay in the kernel's buffer.
+    this.#reading = false;
+    stopHandle(this);
     return 0;
   }
 

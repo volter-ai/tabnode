@@ -172,6 +172,12 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
     `TCP_KEEPCNT` (`uv__tcp_keepalive`), each remembered and applied when the socket is made (`uv__stream_open`);
     `getsockname` and `getpeername` answer a held bind error first;
   - `open(fd)` makes a descriptor it is handed non-blocking.
+  - a handle holds its run's loop while libuv's would be active (`uv__handle_start`, `uv__handle_stop`): it is made
+    stopped (`uv_tcp_init`); `readStart` starts it and `readStop` stops it (`uv_read_start`, `uv_read_stop`); `listen`
+    starts it (`uv_listen`); EOF and a read error stop it; `close` releases it. A connect, a queued write and a
+    shutdown are requests, each holding the loop for itself (`uv__req_init`) whatever the handle's state or reference,
+    until it completes. An accepted or received socket is stopped until it reads or listens, so a paused socket with
+    nothing pending lets its process end, as Node's does.
   - The stream rules above are `stream.c`'s, shared with a kernel IPC pipe (§4): `kernel_stream.ts`.
 - **`udp_wrap`, and Node's own `dgram.js` and `internal/dgram.js`** (v24.21.0, vendored unmodified) in place of the
   stub: `bind` (`SO_REUSEADDR` for `UV_UDP_REUSEADDR`, `SO_REUSEPORT`, `IPV6_V6ONLY`), `connect`, `disconnect`

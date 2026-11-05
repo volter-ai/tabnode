@@ -146,8 +146,9 @@ export class LibuvStreamWrap implements OwnedHandle {
   protected userBuffer: Uint8Array | null = null;
   protected readonly asyncId = nextAsyncId++;
 
-  constructor() {
-    registerHandle(this, true);
+  /** `active`: whether the handle holds its run's loop from its start (the engine's pairing does; `kernel_stream.ts`). */
+  constructor(active = true) {
+    registerHandle(this, true, active);
   }
 
   protected attachNative(kind: 'pipe', type: number): void {

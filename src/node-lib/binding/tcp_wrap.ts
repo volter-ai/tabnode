@@ -19,7 +19,7 @@
  */
 import { queueBindingTask } from '../../guest-loop';
 import { KernelStreamWrap, registerKernelHandle } from './kernel_stream';
-import { __adoptHandle, holdRequest, ownerOf, ownerOfInstance, invokeOwned, observeNodeRequest, forgetNodeRequest } from './handles';
+import { __adoptHandle, holdRequest, ownerOf, ownerOfInstance, invokeOwned, observeNodeRequest, forgetNodeRequest, startHandle } from './handles';
 import { __runFor } from '../../process-tokens';
 import { internalAsyncHooks, internalTimers } from '../internals/runtime';
 import { rememberSocketConnect, traceSocketConnect } from '../../socket-connect-trace';
@@ -192,6 +192,8 @@ export class TCP extends KernelStreamWrap {
     const port = this.#localPort();
     if (!this.listening) {
       this.listening = true;
+      // uv_listen: a listening socket holds its loop.
+      startHandle(this);
       this.#announce(port);
     }
     sayListenClock(this, port);
