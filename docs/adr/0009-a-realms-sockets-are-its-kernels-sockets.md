@@ -208,7 +208,13 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
     name checks, numeric forms, `/etc/hosts`, search list, `res_msend` and result selection, reading the process's
     `/etc/hosts` and `/etc/resolv.conf` through its kernel's files and asking through its kernel's sockets (the
     namespace's resolver, browser-substrate ADR-0227 §8). Node's own front stays as Node has it, and is Node's own
-    code wherever the engine holds it rather than a re-derivation: the name is validated as `lib/dns.js` validates it
+    code wherever the engine holds it rather than a re-derivation. Node's argument checks come first, before any
+    conversion or fast answer, on every door (the engine's `dns` and each process's, callback and promise): a lookup
+    checks its name and then its family (`lib/dns.js` 151-202, `internal/dns/promises.js` 197-239) before its empty-name
+    or literal answer, and a query checks its record type and then that its name is a string (Node's own
+    `validateString(name, 'name')`, `internal/dns/callback_resolver.js` 55-63, `internal/dns/promises.js` 341-346)
+    before the name is converted; a query's name may still hold a NUL, which the conversion's cut takes. The name is
+    validated as `lib/dns.js` validates it
     (`validateStringWithoutNullBytes`, `internal/validators.js`); an empty name answers `null` on a later tick, on the
     callback door as `lib/dns.js` 204-212 and on the promise door as `internal/dns/promises.js` 138-142; an IP literal
     is answered as given where Node's own `isIP` (`internal/net.js`, through `libRequire`) recognises the original

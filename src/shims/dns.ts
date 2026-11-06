@@ -167,10 +167,29 @@ function nodeIsIP(hostname: string): number {
   return (libRequire('internal/net') as { isIP(value: string): number }).isIP(hostname);
 }
 
-/** Node's own `validateStringWithoutNullBytes` (`internal/validators.js`), which `lib/dns.js` checks a name with. */
+/** Node's own validators (`internal/validators.js`). */
+const nodeValidators = (): { validateStringWithoutNullBytes(value: unknown, name: string): void; validateString(value: unknown, name: string): void } =>
+  libRequire('internal/validators') as ReturnType<typeof nodeValidators>;
+
+/** A lookup's name as `lib/dns.js` checks it (`validateStringWithoutNullBytes`). */
 function validateHostname(hostname: unknown): void {
-  (libRequire('internal/validators') as { validateStringWithoutNullBytes(value: unknown, name: string): void })
-    .validateStringWithoutNullBytes(hostname, 'hostname');
+  nodeValidators().validateStringWithoutNullBytes(hostname, 'hostname');
+}
+
+/** A query's name as Node's resolver checks it, before anything converts it (`validateString(name, 'name')`). */
+function validateQueryName(name: unknown): void {
+  nodeValidators().validateString(name, 'name');
+}
+
+/**
+ * A lookup's options as the callback door reads them, checked before any answer (ADR-0009 §3): the family asked
+ * (4, 6, or 0 for either), or `ERR_INVALID_ARG_VALUE`.
+ */
+function lookupOptions(given: number | LookupOptions | undefined): { options: LookupOptions; requested: number } {
+  const options = typeof given === 'number' ? { family: given } : typeof given === 'object' && given ? given : {};
+  const requested = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family ?? 0;
+  if (![0, 4, 6].includes(requested as number)) throw Object.assign(new TypeError(`Invalid address family: ${requested}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  return { options, requested: requested as number };
 }
 
 /**
@@ -344,14 +363,12 @@ function lookupWithHosts(
   callback?: LookupCallback | LookupAllCallback,
 ): void {
   const given = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
-  const options = typeof optionsOrCallback === 'number' ? { family: optionsOrCallback } : typeof optionsOrCallback === 'object' && optionsOrCallback ? optionsOrCallback : {};
   if (typeof given !== 'function') throw Object.assign(new TypeError('The callback argument must be a function'), { code: 'ERR_INVALID_ARG_TYPE' });
   // Node's net.js makes a listener's handle in this callback (listen(port, host)): it runs in the caller's process.
   const cb = inCallersContext(given as LookupCallback) as LookupCallback | LookupAllCallback;
   const sockets = callingSockets();
   if (hostname) validateHostname(hostname);
-  const requested = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family ?? 0;
-  if (![0, 4, 6].includes(requested)) throw Object.assign(new TypeError(`Invalid address family: ${requested}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  const { options, requested } = lookupOptions(typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
   // Node's own answers (lib/dns.js 204-223), on a later tick: an empty name is null, and a string Node's isIP takes
   // is itself, in its family.
   if (!hostname) {
@@ -434,6 +451,7 @@ function lookupWithHosts(
  * types is not read: a held name answers ENODATA for them.
  */
 function query(resolver: ResolverDoor, hostname: string, rrtype: string, given: ResolveCallback): void {
+  validateQueryName(hostname);
   const syscall = `query${rrtype.charAt(0)}${rrtype.slice(1).toLowerCase()}`;
   const type = RECORD_TYPES[rrtype] ?? 1;
   const callback = inCallersContext(given);
@@ -530,12 +548,12 @@ export function getDefaultResultOrder(): string {
 function promisesOver(doLookup: typeof lookup, resolvers: ReturnType<typeof resolveFunctions>, servers: { get(): string[]; set(servers: string[]): void }) {
   const promises = {
     lookup: (hostname: string, options?: number | LookupOptions) => {
+      // Node's checks first (internal/dns/promises.js 197-239): the name, then the family.
       if (hostname) validateHostname(hostname);
+      const { requested: family } = lookupOptions(options);
       return new Promise((resolve, reject) => {
         // Node's own answers (internal/dns/promises.js 138-150): an empty name is null, a literal is itself.
         const all = typeof options === 'object' && options?.all === true;
-        const family = typeof options === 'number' ? options
-          : options?.family === 'IPv4' ? 4 : options?.family === 'IPv6' ? 6 : options?.family ?? 0;
         if (!hostname) { resolve(all ? [] : { address: null, family: family === 6 ? 6 : 4 }); return; }
         const literal = nodeIsIP(hostname);
         if (literal) { const result = { address: hostname, family: literal }; resolve(all ? [result] : result); return; }
@@ -553,7 +571,9 @@ function promisesOver(doLookup: typeof lookup, resolvers: ReturnType<typeof reso
       });
     },
     resolve: (hostname: string, rrtype = 'A') => {
+      // Node's checks first (internal/dns/promises.js 341-346): the record type, then the name.
       checkedRrtype(rrtype);
+      validateQueryName(hostname);
       return new Promise<string[]>((promiseResolve, promiseReject) => {
         resolvers.resolve(hostname, rrtype, (err, addresses) => {
           if (err) promiseReject(err);
@@ -562,9 +582,12 @@ function promisesOver(doLookup: typeof lookup, resolvers: ReturnType<typeof reso
       });
     },
     resolve4: (hostname: string) => promises.resolve(hostname),
-    resolve6: (hostname: string) => new Promise<string[]>((resolve, reject) => {
-      resolvers.resolve6(hostname, (err, addresses) => { if (err) reject(err); else resolve(addresses || []); });
-    }),
+    resolve6: (hostname: string) => {
+      validateQueryName(hostname);
+      return new Promise<string[]>((resolve, reject) => {
+        resolvers.resolve6(hostname, (err, addresses) => { if (err) reject(err); else resolve(addresses || []); });
+      });
+    },
     reverse: (ip: string) => new Promise<string[]>((resolve, reject) => {
       reverse(ip, (err, hostnames) => { if (err) reject(err); else resolve(hostnames || []); });
     }),
