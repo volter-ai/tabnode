@@ -72,6 +72,7 @@ import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException
 
 import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, runPidOf, runWaiterOf, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, type ProcessToken } from '../process-tokens';
 import type { ProcessRegistry } from '../process-registry';
+import { treeDescriptorsOf } from '../tree-descriptors';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
 const __hostProcess: { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown } | null =
   typeof process !== 'undefined' && process !== null && typeof (process as { on?: unknown }).on === 'function' && typeof (process as { off?: unknown }).off === 'function'
@@ -1724,8 +1725,8 @@ export function initChildProcess(vfs: VirtualFS): void {
   });
 }
 
-function npmVersionResult(tree: VirtualFS, cwd: string, env: Record<string, string>, executable = 'npm'): JustBashExecResult {
-  try { return { stdout: `${installedNpmVersion(tree, cwd, env, executable)}\n`, stderr: '', exitCode: 0 }; }
+function npmVersionResult(tree: VirtualFS, cwd: string, env: Record<string, string>): JustBashExecResult {
+  try { return { stdout: `${installedNpmVersion(tree, cwd, env)}\n`, stderr: '', exitCode: 0 }; }
   catch (error) { return { stdout: '', stderr: `npm ERR! ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 }; }
 }
 
@@ -2079,6 +2080,8 @@ export interface ExecOptions {
    * runs in flight at once each reach their own command.
    */
   processToken?: string;
+  /** What an argv run outside a kernel tree runs as, decided on its tree (`execvpExecution`, ADR-0012 §3). */
+  execution?: ArgvExecution;
   /** The tree this command runs on, so two containers in one realm keep theirs. */
   vfs?: VirtualFS;
 }
@@ -2199,10 +2202,12 @@ interface CommandRun {
   /** The executable to resolve independently of the caller's argv[0]. */
   executablePath?: string;
   /**
-   * `argv` is an argv run's vector, as `execvp` is given it (ADR-0012 §3), with `executablePath` its `argv[0]`: resolved
-   * where the run runs, the vector untouched. `command` is then only its words quoted, for a host with only a shell.
+   * `argv` is an argv run's vector, as `execvp` is given it (ADR-0012), with `executablePath` its `argv[0]`: the host
+   * resolves it, the vector untouched. `command` is then only its words quoted, for a host with only a shell.
    */
   execvp?: true;
+  /** What an argv run outside a kernel tree runs as on the local route (`execvpExecution`, ADR-0012 §3). */
+  execution?: ArgvExecution;
   /** Use the private compatibility shell only where no host owns this run. */
   engineFirst?: boolean;
   cwd?: string;
@@ -2250,8 +2255,10 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
   }
   const bash = shell?.bash ?? bashInstance;
   const bridge = run.engineFirst === true && bash !== null ? null : hostExecutor();
-  // A run started with kernel descriptors is a process the host runs: no bypass leaves it to the engine's shell.
-  if (bridge !== null && bridge.bypass > 0 && run.kernelDescriptors === undefined) bridge.bypass -= 1;
+  // A run started with kernel descriptors, or an argv in a kernel tree, is a process the host runs: no bypass leaves it
+  // to the engine's shell (ADR-0012 §2).
+  const kernelArgv = run.execvp === true && tree !== null && treeDescriptorsOf(tree) !== undefined;
+  if (bridge !== null && bridge.bypass > 0 && run.kernelDescriptors === undefined && !kernelArgv) bridge.bypass -= 1;
   else if (bridge !== null) {
     const controller = new AbortController();
     const abortWithParent = (): void => {
@@ -2327,18 +2334,19 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
   }
 
   if (!bash) throw new Error('child_process not initialized');
-  // Direct argv retains an explicitly selected npm pathname. Shell text
-  // queries use the custom command's own PATH and the same metadata reader.
-  if (tree && run.argv?.length === 2 && run.argv[0]?.split('/').pop() === 'npm'
-    && (run.argv[1] === '-v' || run.argv[1] === '--version')) {
-    return npmVersionResult(tree, run.cwd ?? '/', run.env ?? {}, run.argv[0]);
+  if (run.execvp) {
+    // In a kernel tree the kernel resolves the program, and with no host to run it nothing does: `EACCES`, as a child of
+    // such a process fails (ADR-0012 §2).
+    if (kernelArgv || run.execution === undefined) return execFailureOutcome(run.argv![0]!, 'EACCES');
+    if ('failure' in run.execution) return execFailureOutcome(run.argv![0]!, run.execution.failure);
   }
   shellLinesRunning.push(run.command);
   setShellReadWatch(shellReadsProgram);
   try {
-    // An argv run's vector goes to the shell's `command` builtin as the interpreter's own argv, which no parser reads:
-    // the shell resolves `argv[0]` on this tree as `execvp` does and hands the program its words untouched (ADR-0012 §3).
-    const vector = run.execvp ? run.argv : undefined;
+    // An argv run resolved to a registered command runs it by its installed entry's path, its words the interpreter's own
+    // argv, which no parser reads: the shell neither looks the name up nor offers a builtin (ADR-0012 §3).
+    const execution = run.execution !== undefined && 'command' in run.execution ? run.execution : undefined;
+    const vector = execution ? [execution.command, ...execution.words] : undefined;
     const result = await bash.exec(vector ? 'command --' : run.command, {
       cwd: run.cwd,
       env: run.env,
@@ -2562,7 +2570,7 @@ export function runCommand(given: string | readonly string[], options: ExecOptio
       const outcome = await routeCommand({
         command,
         // An argv run's executable is the host's to resolve, as a host-owned spawn's is, from its vector as given.
-        ...(execvp ? { execvp: true as const, argv: execvp, executablePath: execvp[0]! } : {}),
+        ...(execvp ? { execvp: true as const, argv: execvp, executablePath: execvp[0]!, ...(options.execution ? { execution: options.execution } : {}) } : {}),
         credentials: options.credentials,
         cwd: options.cwd,
         env: typeof options.processToken === 'string'
@@ -2699,31 +2707,113 @@ function engineProgramFor(file: string, cwd?: string): string {
   return shellCommandNames().has(bare) ? bare : name;
 }
 
+/** `execvp`'s `PATH` where the environment has none (musl 1.2.5, `src/process/execvp.c:21`). */
+const EXECVP_DEFAULT_PATH = '/usr/local/bin:/bin:/usr/bin';
+
+/** Why `execvp` found nothing it could run, and what a shell reports for it (POSIX XCU 2.8.2). */
+type ExecFailure = 'ENOENT' | 'EACCES' | 'ENAMETOOLONG' | 'ENOEXEC' | 'ELOOP';
+const EXEC_FAILURES: Record<ExecFailure, { exitCode: number; message: string }> = {
+  ENOENT: { exitCode: 127, message: 'No such file or directory' },
+  ENAMETOOLONG: { exitCode: 127, message: 'File name too long' },
+  EACCES: { exitCode: 126, message: 'Permission denied' },
+  ENOEXEC: { exitCode: 126, message: 'Exec format error' },
+  ELOOP: { exitCode: 126, message: 'Too many levels of symbolic links' },
+};
+
+/** A file `execve` would take, as the name it was given (`path`) and the file it is (`real`), or why not. */
+type Resolved = { path: string; real: string } | { error: ExecFailure };
+
 /**
- * POSIX `execvp`'s search on `tree`: a name with a slash is that path from `cwd`; any other is the first `dir/name`
- * of `PATH` (an absent `PATH` the engine's default) the tree holds and `accepts`.
+ * The file at `path` (relative to `cwd`), as `execve` takes it: a regular file with an execute bit, by the tree's own
+ * `statSync` (which follows links) and `realpathSync`; a directory or a file without execute permission is `EACCES`.
  */
-function execvpPath(tree: VirtualFS | null, file: string, cwd: string | undefined, env: Record<string, string>,
-  accepts: (path: string) => boolean = () => true): string | undefined {
-  const holds = (path: string): boolean => { try { return tree !== null && tree.existsSync(path) && accepts(path); } catch { return false; } };
-  if (file.includes('/')) {
-    const path = __resolvePath(cwd ?? '/', file);
-    return holds(path) ? path : undefined;
-  }
-  for (const dir of (env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin').split(':')) {
-    const path = `${dir}/${file}`.replace(/\/+/gu, '/');
-    if (dir.length > 0 && holds(path)) return path;
-  }
-  return undefined;
+function executableAt(tree: VirtualFS, path: string, cwd: string, accepts: (path: string) => boolean): Resolved {
+  const absolute = path.startsWith('/') ? path : `${cwd}/${path}`;
+  let stats: { isFile(): boolean; mode: number } | undefined;
+  try { stats = tree.statSync(absolute, { throwIfNoEntry: false }); } catch { return { error: 'ENOENT' }; }
+  if (!stats) return { error: 'ENOENT' };
+  if (!stats.isFile() || (stats.mode & 0o111) === 0) return { error: 'EACCES' };
+  if (!accepts(absolute)) return { error: 'ENOENT' };
+  return { path, real: tree.realpathSync(absolute) };
 }
 
 /**
- * Whether an argv run's `argv[0]` is the engine's Node (ADR-0012 §2): `execvp`'s search on the run's own tree reaches
- * the engine's node entry, `process.execPath` (`__substrateExecPath`), which the tree's shell keeps there.
+ * musl's `__execvpe` (`src/process/execvp.c:9-53`) on `tree`: an empty name is `ENOENT` and a name with a slash is that
+ * path; any other is tried in each entry of `searchPath` in order, an empty entry the working directory and a relative
+ * one taken against it, skipping a candidate that is absent or that `execve` refuses with `EACCES`, and ending `EACCES`
+ * where one was refused so, else `ENOENT`. `accepts` is a caller's own rule over a candidate (`programExists`'s stubs).
  */
-export function execvpReachesEngineNode(tree: VirtualFS, file: string, cwd: string | undefined, env: Record<string, string>): boolean {
+function execvpResolve(tree: VirtualFS, file: string, cwd: string, searchPath: string,
+  accepts: (path: string) => boolean = () => true): Resolved {
+  if (file.length === 0) return { error: 'ENOENT' };
+  if (file.includes('/')) return executableAt(tree, file, cwd, accepts);
+  if (new TextEncoder().encode(file).length > 255) return { error: 'ENAMETOOLONG' };
+  let refused = false;
+  for (const entry of searchPath.split(':')) {
+    const found = executableAt(tree, entry.length === 0 ? file : `${entry}/${file}`, cwd, accepts);
+    if (!('error' in found)) return found;
+    if (found.error === 'EACCES') refused = true;
+  }
+  return { error: refused ? 'EACCES' : 'ENOENT' };
+}
+
+/** What an argv run that is not the engine's Node runs on the local route (ADR-0012 §3). */
+export type ArgvExecution = { command: string; words: string[] } | { failure: ExecFailure };
+
+/** The registered command whose installed entry `real` is (just-bash's `registerCommand`), if it is one. */
+function registeredEntry(tree: VirtualFS, real: string): string | undefined {
+  const name = real.slice(real.lastIndexOf('/') + 1);
+  const directory = real.slice(0, real.lastIndexOf('/'));
+  if ((directory !== '/bin' && directory !== '/usr/bin') || !shellCommandNames().has(name)) return undefined;
+  try { return tree.readFileSync(real, 'utf8') === `#!/bin/bash\n# Built-in command: ${name}\n` ? name : undefined; }
+  catch { return undefined; }
+}
+
+/** A script's `#!` line, as Linux's `binfmt_script` reads it: the interpreter and at most one argument. */
+function shebangOf(tree: VirtualFS, path: string): { interpreter: string; argument?: string } | undefined {
+  let head: string;
+  try { head = tree.readFileSync(path, 'utf8').slice(0, 256); } catch { return undefined; }
+  if (!head.startsWith('#!')) return undefined;
+  const line = head.slice(2).split('\n', 1)[0]!.replace(/^[ \t]+|[ \t]+$/gu, '');
+  const at = line.search(/[ \t]/u);
+  if (line.length === 0) return undefined;
+  if (at < 0) return { interpreter: line };
+  const argument = line.slice(at).replace(/^[ \t]+/u, '');
+  return { interpreter: line.slice(0, at), ...(argument ? { argument } : {}) };
+}
+
+/**
+ * What an argv runs as on `tree` (ADR-0012 §3), decided by the file `execvp` resolves, never by its name: the engine's
+ * Node where its realpath is the node entry; a registered command where it is that command's installed entry; a script's
+ * interpreter, decided the same way, with `[interpreter, argument?, path, ...words]` (up to four levels, as
+ * `binfmt_script`); anything else `ENOEXEC`.
+ */
+export function execvpExecution(tree: VirtualFS, argv: readonly string[], cwd: string, env: Record<string, string>):
+  { node: string[] } | ArgvExecution {
+  // The tree's shell keeps the engine's node entry.
   if (!shells.has(tree)) shellForRunTree(tree);
-  return execvpPath(tree, file, cwd, env) === __substrateExecPath;
+  let nodeEntry: string | undefined;
+  try { nodeEntry = tree.realpathSync(__substrateExecPath); } catch { nodeEntry = undefined; }
+  let found = execvpResolve(tree, argv[0]!, cwd, env.PATH ?? EXECVP_DEFAULT_PATH);
+  let name = argv[0]!;
+  let words = argv.slice(1);
+  for (let depth = 0; ; depth += 1) {
+    if ('error' in found) return { failure: found.error };
+    if (found.real === nodeEntry) return { node: [name, ...words] };
+    if (registeredEntry(tree, found.real) !== undefined) return { command: found.real, words };
+    const script = shebangOf(tree, found.real);
+    if (!script) return { failure: 'ENOEXEC' };
+    if (depth === 4) return { failure: 'ELOOP' };
+    words = [...(script.argument !== undefined ? [script.argument] : []), found.path, ...words];
+    name = script.interpreter;
+    found = executableAt(tree, script.interpreter, cwd, () => true);
+  }
+}
+
+/** What a run reports for an argv `execvp` could not run: what a shell says of it, and its status. */
+function execFailureOutcome(file: string, failure: ExecFailure): CommandOutcome {
+  const { exitCode, message } = EXEC_FAILURES[failure];
+  return { stdout: '', stderr: `${file}: ${message}\n`, exitCode };
 }
 
 /** Whether the engine's shell can find a program under this name. */
@@ -2735,7 +2825,11 @@ function programExists(file: string, cwd: string | undefined, env: Record<string
   // what `spawn('/usr/bin/env', …)` means and what a Dockerfile's shebang
   // reaches. A file in the tree is a program too, and so is one on PATH.
   if (shellCommandNames().has(bare)) return true;
-  return execvpPath(treeForRun(), name, cwd, env, runsInEngine) !== undefined;
+  const tree = treeForRun();
+  if (!tree) return false;
+  // `spawn`'s own `PATH` default and stub rule; a file found without execute permission is there, and its run fails.
+  const found = execvpResolve(tree, name, cwd ?? '/', env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin', runsInEngine);
+  return !('error' in found) || found.error === 'EACCES';
 }
 
 /** A published host resolves every executable except the engine's Node. */

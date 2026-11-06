@@ -4,12 +4,20 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
-- **`container.run` takes an argv vector** (`run(argv, options?)`, ADR-0012), as `execvp` takes one: `argv[0]` is
-  resolved on the run's own tree (a name with a slash as it is, any other on `PATH`) and the vector reaches the
-  program untouched. The engine's shell takes it through its `command` builtin as its own argv, and a host is given
-  the executable and the vector to resolve itself. An argv whose resolution reaches the engine's node entry is that
-  Node, as `runNode` starts it, so a numbered run's pid is the Node's own; any other program, a shell included, is the
-  process, and a `node` it runs is its child. A command line is still a line, its process a shell.
+- **`container.run` takes an argv vector** (`run(argv, options?)`, ADR-0012), as `execvp` takes one, and the vector
+  reaches the program untouched.
+  - **Resolution:** `argv[0]` is resolved as musl's `execvp` resolves it, on the run's own tree: a name with a slash
+    is that path; any other walks `PATH` in order, relative entries against the working directory, counting only a
+    regular file with an execute bit. In a kernel tree the kernel's `posix_spawnp` resolves it, and Tabnode does not
+    search.
+  - **What runs:** the resolved file decides it, never its name. The engine's node entry is that Node, as `runNode`
+    starts it, so a numbered run's pid is the Node's own. A registered command's installed entry runs that command.
+    A script runs its `#!` interpreter, decided the same way. Anything else fails as a shell reports it: 127 for
+    `ENOENT`, 126 for `EACCES` or `ENOEXEC`. An argv runs no shell builtin, so `['true']` with no `true` on `PATH`
+    is `ENOENT`.
+  - **Hosts:** a host is given the executable and the vector to resolve itself.
+  - **The npm shortcut is gone:** `npm -v` is answered only by the shell's own `npm`.
+  - A command line is still a line, and its process a shell.
 - **`dns` takes Node's own front and Ada's own name conversion** (ADR-0009 §3).
   - **Node's own checks and answers:** names are validated with Node's own `validateStringWithoutNullBytes`.
     Literals are answered where Node's own `isIP` recognises the string as given, so `[::1]` is no longer

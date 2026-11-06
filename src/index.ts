@@ -56,7 +56,7 @@ import { VirtualFS } from './virtual-fs';
 import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
-import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, execvpReachesEngineNode, type StdioKind } from './shims/child_process';
+import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, execvpExecution, type ArgvExecution, type StdioKind } from './shims/child_process';
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, type OwnedHandle } from './node-lib/binding/handles';
 import { withFilesystem } from './node-lib/binding/named-tree';
@@ -77,6 +77,7 @@ export const RUN_SIGNAL_DISPOSITIONS = 1;
 export const RUN_LINE_FILESYSTEM = 1;
 import { stdinRingProblem, stdinRingWaitsAsync, type StdinReader } from './stdin-ring';
 export { TREE_DESCRIPTORS } from './tree-descriptors';
+import { treeDescriptorsOf } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
 export { TREE_SOCKETS } from './host-sockets';
 export type { TreeSockets, InterfaceAddressEntry, SocketMessage, PollDescriptor } from './host-sockets';
@@ -229,10 +230,10 @@ export function createContainer(options?: ContainerOptions): {
   execute: (code: string, filename?: string) => { exports: unknown };
   runFile: (filename: string) => { exports: unknown };
   /**
-   * Run a command line through the engine's shell, or, given an argv vector, that vector as `execvp` is given it:
-   * `argv[0]` resolved on the run's tree, its words untouched, no shell reading them (ADR-0012). An argv that reaches
-   * the engine's node entry is that Node, as `runNode` starts it; any other program is itself, and a `node` it runs
-   * is its child.
+   * Run a command line through the engine's shell, or, given an argv vector, that vector as `execvp` is given it: its
+   * words untouched, no shell reading them, and `argv[0]` resolved as musl's `execvp` resolves it on the run's tree, or
+   * by the kernel in a kernel's tree (ADR-0012). What runs is what the resolved file is: the engine's node entry is
+   * that Node, as `runNode` starts it; any other program is itself, and a `node` it runs is its child.
    */
   run: (command: string | readonly string[], options?: RunOptions) => Promise<RunResult>;
   /**
@@ -379,11 +380,16 @@ export function createContainer(options?: ContainerOptions): {
     execute: (code: string, filename?: string) => runtime.execute(code, filename),
     runFile: (filename: string) => runtime.runFile(filename),
     run: (command: string | readonly string[], runOptions?: RunOptions): Promise<RunResult> => {
-      // An argv whose `execvp` on the run's own tree reaches the engine's node entry is that Node (ADR-0012 §2):
-      // runNode's launch, its pid the one the host gave.
-      if (Array.isArray(command) && typeof command[0] === 'string'
-        && execvpReachesEngineNode(runOptions?.filesystem ?? vfs, command[0], runOptions?.cwd, runOptions?.env ?? {})) {
-        return startNodeRun(command, runOptions);
+      // An argv outside a kernel tree runs as what the file `execvp` resolves on the run's own tree is (ADR-0012 §2, §3):
+      // where that is the engine's Node, runNode's launch, its pid the one the host gave. In a kernel tree the kernel
+      // resolves it, and Tabnode does not search.
+      let execution: ArgvExecution | undefined;
+      const tree = runOptions?.filesystem ?? vfs;
+      if (Array.isArray(command) && command.length > 0 && command.every((word) => typeof word === 'string')
+        && treeDescriptorsOf(tree) === undefined) {
+        const decided = execvpExecution(tree, command, runOptions?.cwd ?? '/', runOptions?.env ?? {});
+        if ('node' in decided) return startNodeRun(decided.node, runOptions);
+        execution = decided;
       }
       return startRun(runOptions, async (processToken) => {
         const numbered = runOptions?.registry !== undefined || runOptions?.process !== undefined;
@@ -397,7 +403,7 @@ export function createContainer(options?: ContainerOptions): {
           // The run's stdin reaches the shell or the program, so a builtin reads what was piped, as it does in a Node
           // shell.
           return await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-            runCommand(command, { credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()), cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs: runOptions?.filesystem ?? vfs }, (error, stdout, stderr) => {
+            runCommand(command, { credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()), cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, ...(execution ? { execution } : {}), vfs: tree }, (error, stdout, stderr) => {
               resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
             });
           });

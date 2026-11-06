@@ -26,69 +26,109 @@ argv, the run itself, its pid the one the host gave.
 
 `run(command: string | readonly string[], options?)`:
 - **A string is a line.** The engine's shell or a host's shell parses it, as today.
-- **An array is an argv, as POSIX `execvp(argv[0], argv)` takes one** (source: POSIX `exec`, `execvp`): `argv[0]` is
-  resolved against `PATH` on the run's own filesystem, a name containing a slash is used as it is (from the working
-  directory), and the vector reaches the program untouched; nothing parses it. It is non-empty and every entry is a
-  string, else `TypeError`. A shell (`sh`, `bash`, ...) is a program like any other: `['sh', '-e', '-c', x]` reaches
-  that shell as its argv, and the shell reads its own options, `-c`, `$0` and positional words.
+- **An array is an argv, as POSIX `execvp(argv[0], argv)` takes one** (§2): the executable is chosen as `execvp`
+  chooses it, and the vector reaches the program untouched; nothing parses it. It is non-empty and every entry is a
+  string, else `TypeError`. A shell (`sh`, `bash`, ...) is a program like any other: `['sh', '-e', '-c', x]` is the
+  resolved shell program with that argv.
 
 There is no second run method; `runNode` stays the door for an argv a host already knows is Node.
 
-### 2. Which process the run is
+### 2. One resolution: `execvp`'s own
+
+musl 1.2.5's `__execvpe` (`src/process/execvp.c:9-53`), which every WALI program of the substrate links:
+- an empty name is `ENOENT`, and a name with a slash is that path (`execve(file)`, relative to the working directory);
+- otherwise the name (over 255 bytes `ENAMETOOLONG`) is tried in each `PATH` entry in order, `PATH` unset being
+  `/usr/local/bin:/bin:/usr/bin`; an empty entry is the working directory and a relative entry is taken against it;
+- a candidate that `execve` refuses with `EACCES` (a directory, a file without execute permission) is skipped and
+  remembered, one that is `ENOENT` or `ENOTDIR` is skipped, and the walk ends with `EACCES` if one was seen, else
+  `ENOENT`. There is no hash table, and no builtin: `execvp` has none.
+
+Tabnode's resolver (`execvpResolve`, `shims/child_process.ts`) is that walk on the run's own tree, with the tree's own
+answers: a candidate counts only where the tree's `statSync` shows a regular file with an execute bit, and the
+program's identity is the tree's `realpathSync` of it (the tree normalizes `.`, `..` and symlinks). `programExists`
+(`spawn`'s question whether a program is there at all) asks the same resolver with `spawn`'s own `PATH` default and
+its own stub rule, and keeps its answers: a name the shell carries exists, and a file found without execute
+permission still exists (its run then fails as before).
+
+**In a kernel tree the kernel decides.** A tree that offers kernel descriptors (`TREE_DESCRIPTORS`) belongs to a
+kernel whose `posix_spawnp` (browser-substrate ROADMAP item 1, `SYS_posix_spawnp_v1`, musl's walk in the kernel)
+resolves the program. Tabnode does not search there: the argv goes to the host as it is (§4), and with no host to run
+it the run fails `EACCES`, as a child of such a process does (ADR-0010 §2).
+
+### 3. What the resolved file runs as
+
+Outside a kernel tree, what runs is decided by what the resolved file is, never by its name:
+- **The engine's Node** where the file's realpath is the engine's node entry (`process.execPath`,
+  `__substrateExecPath`, the file the tree's shell keeps there). The run is then `runNode`'s launch (`launchNode` from
+  that argv), the existing owner of a Node process: a numbered run claims the given pid for the Node itself, and
+  `process.pid` and `process.ppid` are the pid and ppid the host gave. A real `/tools/node`, or a `node` on an
+  earlier `PATH` entry, is that file and runs as what it is.
+- **A command the engine's shell registered** where the file is that command's installed entry: just-bash's
+  `registerCommand` writes `/bin/<name>` and `/usr/bin/<name>` as `#!/bin/bash` then `# Built-in command: <name>`,
+  where its filesystem takes synchronous writes. The command runs with the vector's words, by that path, so the
+  shell neither looks the name up nor offers its builtins.
+- **A script** (`#!`): its first line names the interpreter and at most one argument, and the run is the interpreter
+  with `[interpreter, argument?, path, ...argv[1:]]`, the interpreter a path as `execve` takes it (no `PATH` walk)
+  and decided by these same rules (Linux `execve`'s `binfmt_script`, up to four levels, then `ELOOP`), so a script
+  whose interpreter is the engine's Node is that Node.
+- **Anything else** fails `ENOEXEC`, as musl's `execvp`, which does not fall back to a shell.
+
+A run that resolves nothing reports as a shell reports a program it could not execute (POSIX XCU 2.8.2): exit 127 with
+`<argv[0]>: No such file or directory` for `ENOENT` (and `File name too long`), 126 with `Permission denied`, `Exec
+format error` or `Too many levels of symbolic links`. So
+`['true']` with no `true` on `PATH` is `ENOENT`, and `['cd']` fails the same way.
+
+Tabnode's own trees carry the engine's node entry; their shell's adapter has no synchronous write, so just-bash
+installs no command entries in them, and an argv run there reaches a registered command only through an entry a tree
+really holds.
+
+### 4. Which process the run is, and the route
 
 - **A line's process is a shell.** A numbered line claims its pid as `['sh', '-c', line]`; every `node` the line runs
-  is that shell's child, under its own pid through the run's registry (`holdShellRun`), as today.
-- **An argv is the engine's Node only where `execvp` reaches the engine's node entry.** The run's tree is chosen
-  first (`options.filesystem`, else the container's), and `argv[0]` is resolved on it once by `execvp`'s search
-  (`execvpPath`, the search `programExists` also makes). Where that reaches the engine's node entry, the path
-  `process.execPath` reports (`/usr/local/bin/node`, which the tree's shell keeps there), the run is `runNode`'s launch
-  (`launchNode` from that argv), the existing owner of a Node process: a numbered run claims the given pid for the
-  Node itself, and `process.pid` and `process.ppid` are the pid and ppid the host gave. A basename is never the test:
-  a real `/tools/node` in the tree, or a `node` on an earlier `PATH` entry, is that file and runs as itself.
+  is that shell's child, under its own pid through the run's registry (`holdShellRun`).
+- **An argv that is the engine's Node** (§3) is `startNodeRun` on every route.
 - **Any other argv is its program.** A numbered one claims its pid with the argv as given. A `node` that program runs
-  (an `npm` script, a shell script, a shell's `-c`) is its child, exactly as a shell's is (`holdShellRun`'s rule: a
-  run whose program is a shell or another non-Node program).
-
-Kernel admission is unchanged: the pid and ppid are the kernel's, claimed through `claimRunPid`; children are numbered
-through the run's registry; the engine keeps no table of its own.
-
-### 3. How an argv reaches its program, on every route
-
-An argv that is not the engine's Node (§2) goes through `runCommand` and `routeCommand` as `CommandRun.execvp`, the
-vector as given; the run's tree is chosen by `routeCommand` before anything resolves `argv[0]`.
+  is its child, exactly as a shell's is (`holdShellRun`).
 
 | Route | When | A line | An argv |
 | --- | --- | --- | --- |
-| **Host** | a published host executor (`hostExecutor()`), unless its bypass is taken | `bridge.run(line)`, for the host's shell | `bridge.run(text, { executablePath: argv[0], argv })`: the executable is the host's to resolve and the vector its program's, as `spawn` leaves a host-owned executable to its host; `text` is the words each single-quoted, only for a host that has nothing but a shell |
-| **Local engine** | no host executor, or the host's bypass | `bash.exec(line)` | `bash.exec('command --', { args: argv })`: just-bash's interpreter-level argv, which no parser reads, handed to its `command` builtin, which resolves `argv[0]` on the run's tree (its `PATH` lookup, shell functions skipped as `execvp` has none) and hands the program its words |
-| **Kernel tree** | `options.filesystem`, a kernel process's tree | that tree's shell (`shellForRunTree`), then the host or local branch above | the same, on that tree |
-| **Node** | `execvp` reaches the engine's node entry (§2) | the shell's `node` command, a child of the shell | `runNode`'s launch on the run's tree: the process host admits it where one is installed (`runHostedNode`), else it runs in this realm |
+| **Host** | a published host executor (`hostExecutor()`), unless its bypass is taken (never for an argv in a kernel tree) | `bridge.run(line)` | `bridge.run(text, { executablePath: argv[0], argv })`: the host resolves the executable (in a kernel tree, its kernel's `posix_spawnp`) and the vector is its program's; `text` is the words each single-quoted, only for a host that has nothing but a shell |
+| **Local engine** | no host executor, or the host's bypass | `bash.exec(line)` | §3's decision on the run's tree: a registered command's entry is `bash.exec('command --', { args: [entry, ...argv[1:]] })`, the path naming the command; anything that resolves nothing reports 127 or 126; in a kernel tree, `EACCES` |
+| **Node** | §3 decides the engine's Node | the shell's `node` command, a child of the shell | `runNode`'s launch on the run's tree |
 
-`spawn`, `spawnSync` and `exec` are not argv runs and keep their own paths as they are.
+`spawn`, `spawnSync` and `exec` are not argv runs and keep their own paths.
 
-### 4. The argv consumers
+### Kept
 
-Read by grep at this decision's head: every consumer of an argv run, and the helpers it does not use.
-- **The argv path:** `index.ts` `run` (the Node test, `execvpReachesEngineNode`, then `startNodeRun` or `runCommand`);
-  `child_process.ts` `execvpReachesEngineNode` and `execvpPath`; `runCommand` (validates the vector, makes
-  `CommandRun.execvp` and its quoted text); `routeCommand`'s host branch (`executablePath`, `argv`) and local branch
-  (`command --` with `args`); `runNode` and `launchNode` for the Node case; `claimRunPid` and `holdShellRun` for its
-  process (§2).
+- **The engine's shell programs are just-bash's imitations.** Where a tree holds just-bash's `sh` or `bash` entry, an
+  argv that resolves to it runs just-bash's command, which reads `-c` only as its first argument, so
+  `['sh', '-e', '-c', x]` reads `-e` as a script's name. The real shell is browser-substrate ADR-0122's (the kernel
+  and the image's GNU Bash or BusyBox run commands, shebangs and Node's shell requests, and just-bash leaves the front
+  door); in a kernel tree the argv is the kernel's and reaches that shell.
+
+### 5. The argv consumers
+
+Read by grep at this decision's head:
+- **The argv path:** `index.ts` `run` (the vector checked, the run's tree chosen, `execvpExecution` for a tree that
+  is not a kernel's, then `startNodeRun` or `runCommand` with that execution); `child_process.ts` `execvpResolve`,
+  `executableAt` and `execvpExecution`; `runCommand` (validates the vector, makes `CommandRun.execvp`, its execution
+  and its quoted text);
+  `routeCommand`'s host branch (`executablePath`, `argv`) and local branch (§4); `runNode` and `launchNode` for the
+  Node case; `claimRunPid` and `holdShellRun` for its process.
+- **The same resolver for `spawn`:** `programExists`, with its own `PATH` default and stub rule.
 - **Not on the argv path, kept for `spawn` and `spawnSync` as they are:** `command-line.ts`'s `__substrateLineFor`,
   `__substrateArgvFor`, `__substrateShellLine`, `__substrateCommandLine`, `__substrateProgramName`,
-  `__substrateRunsNode` and the resolver `engineProgramFor` (`setProgramResolver`); their callers are
-  `startChildRun`'s routes, `runByHost`, `hostRunsProgram`, the process model's `resolves` answer (its
-  `{ shell: true }` test) and `node-lib/binding/spawn_sync.ts`.
-  `programExists` takes its `PATH` search from `execvpPath`, the same search with the same answers.
+  `__substrateRunsNode` and the resolver `engineProgramFor` (`setProgramResolver`).
 
 ## Where the evidence stops
 
-- **Read:** POSIX `exec` (`execvp`: a file name without a slash is searched for in `PATH`, one with a slash is used as
-  the path, and the argument list is passed as it is); just-bash 2.14.5 as published, `ExecOptions.args` ("Values
-  bypass shell parsing entirely") and its interpreter appending `extraArgs` to the first simple command's words, and the
-  `command` builtin (`--`, then `runCommand(name, words, ..., skipFunctions)`). Tabnode's `index.ts` (`run`,
-  `runNode`), `child_process.ts` (`runCommand`, `routeCommand`, `runNode`, `launchNode`, `holdShellRun`,
-  `nestedNodeToken`, `startChildRun`, `programExists`, the tree's shell writing `/usr/local/bin/node`) and
-  `command-line.ts`.
-- **Not read:** how just-bash's `command` orders its own builtins against a `PATH` file of the same name.
+- **Read:** musl 1.2.5's `src/process/execvp.c` (`__execvpe`); POSIX XCU 2.8.2 (exit status 126 and 127); just-bash
+  2.14.5 as published (bundle `dist/bundle/index.js`): `ExecOptions.args`, the `command` builtin, its command
+  resolution (a slash path's basename chooses a registered command; a `PATH` walk with a persistent hash table;
+  registered commands at `/bin` and `/usr/bin` win; a registry fallback where `/usr/bin` is absent), its builtin
+  dispatch ahead of external lookup, and `registerCommand`'s entries; Tabnode's `index.ts` (`run`, `runNode`),
+  `child_process.ts` (`runCommand`, `routeCommand`, `runNode`, `launchNode`, `holdShellRun`, `startChildRun`,
+  `programExists`, the tree's shell writing `/usr/local/bin/node`), `shims/vfs-adapter.ts`, `virtual-fs.ts`
+  (`statSync`, `realpathSync`) and `tree-descriptors.ts`.
+- **Taken from the record, not read here:** browser-substrate item 1's `SYS_posix_spawnp_v1`.
 - **Not run.** No probe of a line or argv run was made for this decision.
