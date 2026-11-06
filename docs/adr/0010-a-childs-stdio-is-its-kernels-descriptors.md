@@ -91,10 +91,11 @@ writes them in its loop (§4).
 - **`'inherit'` and a number** are the parent's descriptor of that number. A number the parent's run was started with
   as a kernel stream (its channel) is that stream's descriptor. Whether the parent holds it is the kernel's answer
   (`fcntl(F_GETFL)`): its `EBADF` fails the spawn, as the child's `dup2` fails libuv's, and nothing else does. Where
-  the engine serves the child in its own realm (§2), its writes to a kernel description (a kernel stream the engine
-  holds, or a descriptor it holds no record of) go through the tree's `write(2)` of a duplicate taken for the child
-  (`TREE_DESCRIPTORS.dup`), so a kernel socket or a file the host gave the process is written as it is; a file of the
-  engine's own table goes through that table.
+  the engine serves the child in its own realm (§2), its writes to that descriptor are made on a duplicate taken for
+  the child (`TREE_DESCRIPTORS.dup`): a socket (`SO_TYPE` answers) through a kernel stream opened on the duplicate
+  (`KernelStreamWrap`, the one owner of a socket's writes, readiness and their completion, as for the pipes the spawn
+  makes); any other description through the tree's `write(2)`, which a file takes whole and a blocking description
+  blocks for. A file of the engine's own table goes through that table.
 - **`'wrap'`** (a stream handed as stdio) is the stream's descriptor (`uv__stream_fd`), where it is a kernel one.
 - **`'ignore'` at 0 to 2 is `/dev/null`**, opened through the tree's descriptor calls (read-only for 0, read-write for
   1 and 2, close-on-exec as the tree's `open` makes every file) and given to the child at that number.
@@ -132,19 +133,25 @@ A child the engine runs in its own realm (the engine's own `node` without a proc
 shell) is no process with a table of its own: the parent's realm serves the child's ends for it, through the run's
 sinks (the child's writes are writes to its kernel end, the parent's writes to fd 0 reads of it).
 
-- **Its normal end follows its output.** A Linux child's `write(2)` returns only once its descriptor has taken the
-  bytes, so its exit follows everything it wrote, to a pipe its parent made or to a description it inherited. A write
-  the engine makes for it can be taken in part or refused for now (a full socket answers `EAGAIN`), so each keeps what
-  was not taken, in order, and writes it when the description is writable again:
-  - to a child end the spawn made, the end's own write queue (`uv_write`, ADR-0009 §3), finished by `uv_shutdown` of
-    that end, which completes once the queue is sent;
-  - to an inherited kernel description, its writer's queue, written at each `TreeSockets.wait(fd, POLLOUT)` and
-    settled once empty (`DescriptorWriter.settled`).
-  The run's normal end (an exit with no signal) waits for both, for fds 1 and 2 and any other, then the ends close,
-  the writers' duplicates are released and `onexit` is called. A child ended by a signal ends at once, its unsent
-  bytes dropped, as a killed child's unwritten output is lost. A synchronous child the engine's own worker runs
-  (`runSyncChild`) writes inherited descriptions through the same writers, and its call returns once each is written,
-  blocking in `TreeSockets.poll` where one is full (`DescriptorWriter.settleBlocking`).
+- **Its end follows its output, at one place.** A Linux child's `write(2)` returns only once its descriptor has taken
+  the bytes, so its exit follows everything it wrote, to a pipe its parent made or to a description it inherited.
+  - *One write mechanism.* Every socket write the engine makes for a child, to a child end the spawn made or to an
+    inherited socket, is a kernel stream's (`KernelStreamWrap`: `uv_write`, ADR-0009 §3): what the socket does not take
+    stays in that stream's queue, sent at its writability, and `whenWritten` settles once the queue is empty. A
+    realm that may block empties it with `writeBlocking`, blocking in `TreeSockets.poll`. No other queue writes a
+    socket.
+  - *One end point.* The runner's end of a same-realm run (`startChildRun`'s `end`) is the only place the run counts as
+    ended. A normal end (an exit with no signal) first waits there, while the run is still live (its pid, its streams
+    and descriptors held, signals delivered to it), for its output: `RunRequest.outputWritten`, every child end's and
+    every inherited writer's `whenWritten`, for fds 1, 2 and any other. Only then is the run retired (exited, reaped,
+    its token and streams released) and `reportExit` told, which closes the ends, releases the writers' duplicates and
+    calls `onexit` at once.
+  - *A signal ends it at once*, before or during that wait (`kill`, a signal from another process): the run is retired
+    with the signal, its ends close and its writers are released, cancelling what they still queue (`ECANCELED`), as a
+    killed child's unwritten output is lost; the wait it cut short ends with them and changes nothing.
+  - A child a host runs as its own process writes its own descriptors (§2 above): its end is the host's.
+  - A synchronous child the engine's own worker runs (`runSyncChild`) writes inherited sockets through the same
+    streams, and its call returns once each is empty (`writeBlocking`) and released.
 
 ### 3. A terminal's mode is set through the run's terminal
 
@@ -187,6 +194,9 @@ process with socket calls and for a child its host runs, does what `SyncProcessR
   (`signalPid`, SIGKILL for a signal with no name) and closes every pipe, and the call answers `ETIMEDOUT` or
   `ENOBUFS`; a pipe's failure is answered only where neither happened. `drain` returns once every end is closed: a
   child that fills 64 KiB waits for this realm's read, as on Linux, and never for its own end.
+- **What is captured is the stdio's choice**, made once: an output of the result is a pipe the child writes (Node's
+  `writable`, by default every pipe but fd 0), read from the stdio the caller gave, whatever the loop did with it;
+  readiness and end of file govern only the loop. Its bytes are what the loop kept, empty where it kept none.
 - **`maxBuffer` is Node's on every route**: positive, it limits the captured bytes of fds 1 and 2 together; zero or
   none sets no limit. The binding reads it once and uses that for the kernel loop, the host's `runSync` request (where
   it counts) and the engine's own synchronous worker.
