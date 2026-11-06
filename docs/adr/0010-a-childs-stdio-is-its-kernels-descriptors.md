@@ -38,8 +38,11 @@ canonical with echo." Builds on ADR-0009 (a realm's sockets are its kernel's).
   as `uv_spawn` does, writes each input pipe's `input` and shuts it down, reads every output pipe to its end on a
   private loop, and counts the bytes read; when `timeout` runs out (`ETIMEDOUT`) or the count passes `maxBuffer`
   (`ENOBUFS`), `Kill` signals the child with `killSignal` (SIGKILL where that signal cannot be sent; nothing to a
-  child already gone) and closes every pipe. The loop ends when the child has exited and every pipe has closed. A pipe's
-  failure (a write's `EPIPE`) is reported only where the runner has no error of its own (`GetError`).
+  child already gone) and closes every pipe. The kill timer fires at the deadline whatever the pipes are doing, and the
+  loop serves every pipe that is ready. `maxBuffer` limits the bytes read over all output pipes together, and only
+  where it is positive (`max_buffer_ > 0`): zero sets no limit. The loop ends when the child has exited and every pipe
+  has closed. A pipe's failure (a write's `EPIPE`) is reported only where the runner has no error of its own
+  (`GetError`).
 
 ### What the substrate holds (browser-substrate at 7cd0f130e3d)
 
@@ -63,9 +66,10 @@ canonical with echo." Builds on ADR-0009 (a realm's sockets are its kernel's).
   `TREE_DESCRIPTORS`) and keeps no descriptor table of its own for a process that has one: whether a number is a
   descriptor of the process is the kernel's answer.
 - **The binding** (`process_wrap`, `spawn_sync`, `tty_wrap`, `src/shims/child_process.ts`'s runner) owns what libuv
-  owns: making the child's stdio, the lifetime of the parent's handles and the child's ends while this realm holds them,
-  the completion of what was written to them, and the native terminal operation (`setRawMode(UV_TTY_MODE_*)`,
-  `getWindowSize`).
+  owns: making the child's stdio (one preparation, `child_stdio.ts`, for `spawn` and `spawnSync` alike), the lifetime
+  of the parent's handles and the child's ends while this realm holds them, the completion of every write the engine
+  makes for a child (to a child end it made, and to a description the child inherited), the synchronous loop's
+  deadline and limits, and the native terminal operation (`setRawMode(UV_TTY_MODE_*)`, `getWindowSize`).
 - **Node's own library** (vendored, unmodified) owns how stdio is read (`getValidStdio`) and the TTY userland:
   `tty.ReadStream.prototype.setRawMode`'s validation, its error and its `isRaw` and `rawMode` fields, for a run's
   `process.stdin` as for any `ReadStream`.
@@ -74,19 +78,23 @@ canonical with echo." Builds on ADR-0009 (a realm's sockets are its kernel's).
 
 ### 1. A process with socket calls places its child's stdio as libuv does
 
-Where the spawning process's tree offers socket calls (`TREE_SOCKETS`, so its descriptors are a kernel's), `Process.spawn`
-(`src/node-lib/binding/process_wrap.ts`) makes each stdio entry what `uv__process_init_stdio` makes it, in the
-parent's own table before the child's fork, and lists each in `RunRequest.kernelDescriptors` as `{ fd, from }`: the
-child's `fd` is the parent's descriptor `from`.
+Where the spawning process's tree offers socket calls (`TREE_SOCKETS`, so its descriptors are a kernel's), the child's
+stdio is made what `uv__process_init_stdio` makes it, in the parent's own table before the child's fork, by one
+preparation (`prepareChildStdio`, `src/node-lib/binding/child_stdio.ts`) that `Process.spawn` and `spawnSync` both use:
+it lists each as `{ fd, from }` (the child's `fd` is the parent's descriptor `from`; `RunRequest.kernelDescriptors`,
+`runSync`'s `kernelDescriptors`), gives back the parent's end of each pipe it made, and owns the child's ends and the
+/dev/null it opened until the child is forked. `spawn` opens Node's handles on its pipes' ends; `spawnSync` reads and
+writes them in its loop (§4).
 
 - **`'pipe'` (IPC or not) is a kernel socketpair** (`AF_UNIX`, `SOCK_STREAM`, close-on-exec, 64 KiB `SO_RCVBUF` and
-  `SO_SNDBUF` at both ends): Node's handle is the parent's end, non-blocking, and the other end is the child's.
+  `SO_SNDBUF` at both ends): the parent's end non-blocking, the child's blocking.
 - **`'inherit'` and a number** are the parent's descriptor of that number. A number the parent's run was started with
   as a kernel stream (its channel) is that stream's descriptor. Whether the parent holds it is the kernel's answer
   (`fcntl(F_GETFL)`): its `EBADF` fails the spawn, as the child's `dup2` fails libuv's, and nothing else does. Where
-  the engine serves the child in its own realm (§2), its writes to that fd go through the engine's record of the
-  descriptor where it has one, else through the tree's `write(2)` of the kernel's description (a duplicate taken for
-  the child, `TREE_DESCRIPTORS.dup`), so a kernel socket or a file the host gave the process is written as it is.
+  the engine serves the child in its own realm (§2), its writes to a kernel description (a kernel stream the engine
+  holds, or a descriptor it holds no record of) go through the tree's `write(2)` of a duplicate taken for the child
+  (`TREE_DESCRIPTORS.dup`), so a kernel socket or a file the host gave the process is written as it is; a file of the
+  engine's own table goes through that table.
 - **`'wrap'`** (a stream handed as stdio) is the stream's descriptor (`uv__stream_fd`), where it is a kernel one.
 - **`'ignore'` at 0 to 2 is `/dev/null`**, opened through the tree's descriptor calls (read-only for 0, read-write for
   1 and 2, close-on-exec as the tree's `open` makes every file) and given to the child at that number.
@@ -124,11 +132,19 @@ A child the engine runs in its own realm (the engine's own `node` without a proc
 shell) is no process with a table of its own: the parent's realm serves the child's ends for it, through the run's
 sinks (the child's writes are writes to its kernel end, the parent's writes to fd 0 reads of it).
 
-- **Its normal end follows its output.** A Linux child's `write(2)` returns only once its pipe has taken the bytes,
-  so its exit follows everything it wrote. A write to a kernel end is queued where the socket is full (`uv_write`,
-  ADR-0009 §3), so the run's normal end (an exit with no signal) waits for each child end's queued writes:
-  `uv_shutdown` of that end, which completes once they are sent, then the ends close and `onexit` is called. A child
-  ended by a signal ends at once, its unsent bytes cancelled, as a killed child's unwritten output is lost.
+- **Its normal end follows its output.** A Linux child's `write(2)` returns only once its descriptor has taken the
+  bytes, so its exit follows everything it wrote, to a pipe its parent made or to a description it inherited. A write
+  the engine makes for it can be taken in part or refused for now (a full socket answers `EAGAIN`), so each keeps what
+  was not taken, in order, and writes it when the description is writable again:
+  - to a child end the spawn made, the end's own write queue (`uv_write`, ADR-0009 §3), finished by `uv_shutdown` of
+    that end, which completes once the queue is sent;
+  - to an inherited kernel description, its writer's queue, written at each `TreeSockets.wait(fd, POLLOUT)` and
+    settled once empty (`DescriptorWriter.settled`).
+  The run's normal end (an exit with no signal) waits for both, for fds 1 and 2 and any other, then the ends close,
+  the writers' duplicates are released and `onexit` is called. A child ended by a signal ends at once, its unsent
+  bytes dropped, as a killed child's unwritten output is lost. A synchronous child the engine's own worker runs
+  (`runSyncChild`) writes inherited descriptions through the same writers, and its call returns once each is written,
+  blocking in `TreeSockets.poll` where one is full (`DescriptorWriter.settleBlocking`).
 
 ### 3. A terminal's mode is set through the run's terminal
 
@@ -154,10 +170,10 @@ A realm runs in a worker, so it may block, and a kernel call runs in its caller 
 blocking `poll(2)` there is the kernel's own wait. So `spawnSync` (`src/node-lib/binding/spawn_sync.ts`), in a
 process with socket calls and for a child its host runs, does what `SyncProcessRunner` does:
 
-- **Before the fork** each entry is made as `uv__process_init_stdio` makes it: a `'pipe'` a socketpair (close-on-exec,
-  64 KiB buffers, the parent's end non-blocking, the child's blocking), `'inherit'` or a number the parent's
-  descriptor (`EBADF` where it holds none; at 0 to 2 made blocking), an ignored or absent fd 0 to 2 /dev/null. Once the
-  registry has forked the child (`mintPid`) the parent closes its copies of the child's ends.
+- **Before the fork** the child's stdio is made by the same preparation as `spawn`'s (§1), an absent fd 0 to 2 being
+  ignored, as libuv opens /dev/null for it. Once the registry has forked the child (`mintPid`) the preparation makes
+  the child's fds 0 to 2 blocking and closes the parent's copies of what it made for the child, as at `spawn`'s
+  hand-over (§2).
 - **The host starts the child with them**: `runSync` is given `kernelDescriptors` (the same `{ fd, from }` records)
   and `drain`, and no `input`, `captured`, `maxBuffer`, `onStdout` or `onStderr`. It places the descriptors as
   `readyKernelChild` does, calls `drain` once the child runs (after its exec, before it waits for the child's end),
@@ -165,10 +181,15 @@ process with socket calls and for a child its host runs, does what `SyncProcessR
 - **`drain` is the loop**: each pipe the child reads is written its `input` (`sendto`, non-blocking) and shut down
   (`SHUT_WR`); each pipe it writes is read (`recvfrom`, 64 KiB at a time) to its end, every byte kept for the caller's
   `output`; between, the realm blocks in `TreeSockets.poll` on every end still open, with the time left before
-  `timeout` (counted from the spawn). A timeout, or more than `maxBuffer` bytes read over all pipes, kills the child
-  with `killSignal` (`signalPid`, SIGKILL for a signal with no name) and closes every pipe, and the call answers
-  `ETIMEDOUT` or `ENOBUFS`; a pipe's failure is answered only where neither happened. `drain` returns once every end
-  is closed: a child that fills 64 KiB waits for this realm's read, as on Linux, and never for its own end.
+  `timeout` (counted from the spawn). Each round serves every ready pipe once (one send, one read) and then reads the
+  clock, so the deadline holds whatever the pipes' readiness, and no pipe waits on another's flood. The deadline
+  passing, or the bytes read over all pipes passing a positive `maxBuffer`, kills the child with `killSignal`
+  (`signalPid`, SIGKILL for a signal with no name) and closes every pipe, and the call answers `ETIMEDOUT` or
+  `ENOBUFS`; a pipe's failure is answered only where neither happened. `drain` returns once every end is closed: a
+  child that fills 64 KiB waits for this realm's read, as on Linux, and never for its own end.
+- **`maxBuffer` is Node's on every route**: positive, it limits the captured bytes of fds 1 and 2 together; zero or
+  none sets no limit. The binding reads it once and uses that for the kernel loop, the host's `runSync` request (where
+  it counts) and the engine's own synchronous worker.
 - **`TreeSockets.poll(fds, timeout)`** is the door this needs: `poll(2)` of `struct pollfd` records
   (`PollDescriptor`), blocking the calling thread, answering how many are ready, 0 at the timeout, or a negative errno.
   `wait` stays the engine loop's door; only a realm that may block calls `poll`.
