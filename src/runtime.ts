@@ -15,6 +15,7 @@ import { VirtualFS } from './virtual-fs';
 import { rememberCompiledSource } from './error-source';
 import { attachVmScriptEnvironment, VmScriptPreparationCache } from './vm-script-state';
 import type { VmScriptObserver, VmScriptPhase } from './vm-script-state';
+import { loadNativeAddon } from './native-addon';
 import { startGuestLoop, withGuestExecution, guestExecutionActiveMs, enableGuestEntryAccount, guestEntryAccount, guestEntryKinds } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { installHttpParserModule } from './http-parser-module';
@@ -2979,7 +2980,8 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     ".ts": builtinHandler,
     ".mts": builtinHandler,
     ".cts": builtinHandler,
-    ".node": (module: any, filename: string) => { throw Object.assign(new Error(`Cannot load native addon ${filename} in a tab.`), { code: "ERR_DLOPEN_FAILED" }); },
+    // Node's `.node` loader is `process.dlopen` of the file; the load step reads its bytes (ADR-0011).
+    ".node": builtinHandler,
   });
   Module._pathCache = Object.create(null);
   Module.builtinModules = moduleShim.builtinModules;
@@ -3294,24 +3296,18 @@ function createRequire(
       }
     }
     // Return cached module
-    // A native addon cannot load in a tab. Node answers a `require` of a `.node`
-    // file that cannot be loaded with `ERR_DLOPEN_FAILED`, and a package that
-    // probes for its addon, chokidar for fsevents, takes its portable path on
-    // that error. Reading the binary as a module and parsing it took the process
-    // with it.
+    // A native addon whose surface the holder answers in JavaScript, named by
+    // the package the addon belongs to (`bcrypt` -> a module with the binding's
+    // exports): the addon's bytes are never read and the stand-in loads in its
+    // place. Every other `.node` is loaded by its extension, `process.dlopen`'s
+    // load (ADR-0011), and a file that is no WALI Node-API module fails there
+    // with `ERR_DLOPEN_FAILED`, on which a package that probes for its addon,
+    // chokidar for fsevents, takes its portable path.
     if (resolvedPath.endsWith('.node')) {
-      // A native addon whose surface the holder answers in JavaScript, named
-      // by the package the addon belongs to (`bcrypt` -> a module with the
-      // binding's exports): the addon's bytes are never read and the stand-in
-      // loads in its place. Every other addon fails as Node's dlopen would.
       const __native = (globalThis as { __browserRuntimeNativeStandIns?: Record<string, string> }).__browserRuntimeNativeStandIns;
       const __package = __native ? Object.keys(__native).find((name) => resolvedPath.includes('/node_modules/' + name + '/')) : undefined;
       const __answer = __package !== undefined && __native ? __native[__package] : undefined;
-      if (__answer && vfs.existsSync(__answer)) {
-        resolvedPath = __answer;
-      } else {
-        throw Object.assign(new Error('Cannot load native addon ' + resolvedPath + ': a tab runs no native code.'), { code: 'ERR_DLOPEN_FAILED' });
-      }
+      if (__answer && vfs.existsSync(__answer)) resolvedPath = __answer;
     }
     if (moduleCache[resolvedPath]) {
       return moduleCache[resolvedPath];
@@ -3388,6 +3384,10 @@ function createRequire(
   let preparedSourceEvidence: ((module: Module, filename: string, digest: string) => (() => void) | undefined) | undefined;
   const builtinLoad = (module: Module, resolvedPath: string): void => {
     __substrateLoadPhase(process, vfs, 'read');
+    if (resolvedPath.endsWith('.node')) {
+      loadNativeAddon(module, resolvedPath, vfs.readFileSync(resolvedPath) as Uint8Array);
+      return;
+    }
     const Mod = __substrateModule();
     const resolvedAs = __substrateLoading.get(module)?.resolvedAs;
     // A module's source, and the format it is compiled in, are the load step.
@@ -4252,12 +4252,12 @@ export class Runtime {
     this.options = options;
     // Node's `process.dlopen(module, filename[, flags])`, which a loader calls
     // in place of `require` when it wants its own flags: Prisma's library
-    // engine loads `libquery_engine-*.node` this way. A tab runs no native
-    // code, so the load is the one a `require` of that path makes: through
-    // the run's resolve hooks, where an image's binding map answers the
-    // addon with its prepared export, and otherwise to ERR_DLOPEN_FAILED as
-    // Node's dlopen fails. The flags name dynamic-linker modes and have
-    // nothing to act on here.
+    // engine loads `libquery_engine-*.node` this way. The load is the one a
+    // `require` of that path makes: through the run's resolve hooks, where an
+    // image's binding map answers the addon with its prepared export, and
+    // otherwise the `.node` extension's, which loads a WALI Node-API module
+    // (ADR-0011) or fails ERR_DLOPEN_FAILED as Node's dlopen fails. The flags
+    // name dynamic-linker modes and have nothing to act on here.
     Object.defineProperty(this.process, 'dlopen', {
       configurable: true, enumerable: true, writable: true,
       value: (target: { exports?: unknown }, filename: string, _flags?: number): void => {

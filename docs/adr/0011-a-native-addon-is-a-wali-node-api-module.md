@@ -1,6 +1,6 @@
 # ADR-0011: A native addon is a WALI module of Node-API, loaded over the realm's kernel process
 
-Status: Accepted (design); not coded, waiting on the toolchain (Where the evidence stops).
+Status: Accepted
 
 Date: 2026-11-06. Served: browser-substrate ADR-0218 §1, layer 4: "a native addon is its WebAssembly variant pack".
 The first consumer is Conduit's terminal in a tab, which needs node-pty's own C, built for WALI and loaded by Tabnode.
@@ -74,6 +74,9 @@ ADR-0094, `Module.__substrateSetAddons`) or a host's stand-in answers the path w
    - a file that is no WebAssembly module (an ELF, a Mach-O): `<path>: invalid ELF header`, `dlerror()`'s message on
      Linux, which the engine presents itself as;
    - a WebAssembly module without `napi_register_wasm_v1`: "Module did not self-register: '<path>'.";
+   - a WebAssembly module with no `dylink.0`, linked at fixed addresses as an executable is: `<path>: cannot
+     dynamically load executable`, glibc's refusal of an executable;
+   - in a tree that offers no `TREE_NATIVE` (§5): `<path>: a tab runs no native code`;
    - a module whose imports the loader does not answer (a `uv_*` symbol, an unknown `napi_*`):
      `<path>: undefined symbol: <name>`, as the linker answers an unresolved symbol.
    A package that probes for its addon (chokidar's fsevents) still takes its portable path on that error.
@@ -90,11 +93,13 @@ Nothing in the loader names a package; a variant is recognised by its own bytes.
   `worker-memory.ts`'s rule, and every later addon of that process is loaded into it. It costs one of the tab's ~124
   regions for each Node process that loads any addon, not one per addon, and a realm that loads none costs nothing.
 - **Each addon is a position-independent module** (ADR-0132's convention, `-fPIC`, `wasm-ld --experimental-pic
-  -shared`, its own static musl): the loader reads its `dylink.0` section, maps its memory size and alignment, and its
-  stack, from the process's address space (`mmap(2)` through the module's own WALI imports, so the kernel's address
-  allocator keeps two addons and the C heaps disjoint, ADR-0227's one address allocator), gives it its own table
-  (`__table_base` 0; function pointers do not cross addons), and calls `__wasm_apply_data_relocs` and its constructors
-  (`__wasm_call_ctors`) before `napi_register_wasm_v1`.
+  -shared`, its own static musl and C++ runtime, linked by browser-substrate ADR-0231's `bin/link-side-module`), placed
+  by the substrate's own dynamic linker (`packages/wali/src/dynamic-link.ts`, `WaliDynamicLinker`), which already reads
+  `dylink.0`, takes the module's memory and stack from the process's address space (one address allocator, so two
+  addons and the C heaps stay disjoint), gives it its table slots, checks its ABI (ADR-0138), and runs
+  `__wasm_apply_data_relocs` and `__wasm_call_ctors`, and which re-instantiates a loaded module in each thread's
+  worker. The engine places nothing itself; it hands the linker the module's Node-API imports (§3) and calls
+  `napi_register_wasm_v1` on the instance the linker returns.
 - **That memory is the process's user memory.** The realm's instance of the kernel is bound to it (the copy module's
   user memory), so an addon's system calls copy in and out of it as a WALI program's do. The realm's own `ks_` calls
   keep using the kernel scratch.
@@ -106,24 +111,28 @@ producer compiles addon variants with Emscripten and emnapi; sqlite3 is one). em
 `@emnapi/core`) answers Node's own wasm ABI (the `napi` imports, `napi_register_wasm_v1`) over JavaScript values and
 has a clang path beside Emscripten. So the loader takes emnapi's runtime as its Node-API implementation: the `napi`
 and `emnapi` imports are emnapi's, made by its `instantiateNapiModule` over the module and the process memory, and no
-second Node-API is written in the engine. A variant is therefore linked as emnapi's clang path links one (its
-`include/node` headers and its threaded library `emnapi-mt`, `-mexec-model=reactor`, `--import-memory
---shared-memory`, exporting `napi_register_wasm_v1`, `emnapi_create_env`, `malloc` and `free`), for the WALI target.
+second Node-API is written in the engine. A variant is built with emnapi's `include/node` headers and its threaded
+library `emnapi-mt`, and linked by ADR-0231's side-module link, which exports `napi_register_wasm_v1`,
+`node_api_module_get_api_version_v1`, `malloc` and `free`, what emnapi's `napiModule.init` calls. The engine makes the
+imports with `createNapiModule` (`@emnapi/core`) over `getDefaultContext()` (`@emnapi/runtime`), both at 1.11.3, the
+version ADR-0231 builds `emnapi-mt` from, and calls `napiModule.init` with the instance, memory and table.
 
 What the engine adds around it, and the parts emnapi cannot serve here:
 - **Threads are the kernel's tasks, not emnapi's workers** (a departure). emnapi's clang path makes a thread by WASI's
   `thread-spawn` import and a worker its `onCreateWorker` makes, and wakes the main thread by that worker's messages.
   A WALI module's `pthread_create` is WALI's `clone`, answered by a kernel task in a worker the substrate starts
-  (ADR-0227 §6), so `thread-spawn` is not offered and the thread side of the imports emnapi's threaded library needs
-  (its wakes of the main thread for `uv_async_send`, which its async work and thread-safe functions are built on) is
-  the engine's own, in that worker: a queue in the shared memory, `Atomics.notify` to wake the main side, and on the
-  main side `Atomics.waitAsync` (no timer) to run emnapi's callbacks on the realm's loop. Async work's pool and
-  thread-safe functions are then emnapi's own C over WALI's pthreads.
+  (ADR-0227 §6), so `thread-spawn` is not offered. The thread side of the imports is emnapi's own child-thread module
+  (`createNapiModule({ childThread: true, postMessage })`) in that worker, whose one message to the main thread is
+  `uv_async_send`'s (`_emnapi_async_send_js`, which emnapi-mt's async work and thread-safe functions are built on);
+  its `postMessage` writes the message to a queue in a `SharedArrayBuffer` and wakes the main side (`Atomics.notify`),
+  and the main side waits with `Atomics.waitAsync` (no timer) and calls each message's callback through the module's
+  table on the realm's loop, as emnapi's own send listener does. Every `napi` and `emnapi` import
+  on the thread side aborts the process, `napi_fatal_error`'s answer to a call Node-API forbids off the main thread.
+  Async work's pool and thread-safe functions are emnapi's own C over WALI's pthreads.
 - **One memory per process needs position-independent variants** (§2). emnapi's documented clang link is a reactor
   at fixed addresses, so two such variants in one memory would overlap. A variant is loaded into the process memory
-  at its own base only where it is linked position-independent (`-fPIC`, `--experimental-pic -shared`, with
-  `emnapi-mt`, musl and its C++ runtime built PIC); emnapi's runtime is given that memory and the module's base, as it
-  is given any imported memory.
+  at its own base only where it is linked position-independent (ADR-0231: `emnapi-mt`, musl and the C++ runtime built
+  PIC); emnapi's runtime is given that memory and table, as it is given any imported memory.
 - What §3's remainder says of handles, bytes, errors and the version is what emnapi's runtime does; the version the
   loader accepts is still the engine's Node line's (v24.21.0).
 
@@ -145,16 +154,16 @@ The original §3, kept as what emnapi's runtime must answer:
 ### 4. Threads, the loop and libuv
 
 - **An addon's threads are its process's tasks.** `pthread_create` is WALI's `clone`, answered by the kernel's task
-  creation and a worker of the process posted its memory (ADR-0227 §6), which instantiates the same module at the
-  same bases with the thread side of the `napi` imports.
+  creation and a worker of the process posted its memory (ADR-0227 §6), in which the dynamic linker instantiates the
+  same module at the same bases with the thread side of the imports (§3), which that worker makes by importing
+  `@volter/tabnode/native-thread` and calling its `threadImports(queue)` with the load's queue.
 - **The thread side of Node-API** is what Node-API allows off the main thread: `napi_call_threadsafe_function`,
-  `napi_acquire_threadsafe_function` and `napi_release_threadsafe_function`. A thread-safe function is a queue in the
-  shared memory with its lock word: a call enqueues its data and wakes the main side (`Atomics.notify`); a blocking
-  call on a full queue waits on it (`Atomics.wait`, a worker may block); the main side waits with `Atomics.waitAsync`
-  (no timer) and calls the JavaScript function on the realm's loop for each item, as Node's `uv_async` does. The
-  function holds the loop while it is referenced (`napi_ref_threadsafe_function`, `napi_unref_threadsafe_function`),
-  and its finalizer runs on the main thread when its last thread released it. Any other `napi_*` call from a thread
-  aborts the process, `napi_fatal_error`'s answer to a call Node-API forbids.
+  `napi_acquire_threadsafe_function` and `napi_release_threadsafe_function`, which emnapi-mt implements in C (a queue
+  under a pthread mutex, `uv_async_send` to the main thread). The queue of §3 carries each `uv_async_send`: a slot of
+  three words (the kind, emnapi's callback and its data) written under the queue's tail, `Atomics.notify` on the
+  tail, and a writer that finds the queue full waits on its head (`Atomics.wait`; a worker may block). The main side
+  holds the realm's loop while an addon is loaded with live thread-safe functions or queued async work, as emnapi's
+  `runtime_keepalive` asks. Any other `napi_*` call from a thread aborts the process.
 - **Async work** (`napi_create_async_work`, `napi_queue_async_work`) runs `execute` on a pool of the process's
   threads, four by default (`UV_THREADPOOL_SIZE`, as libuv), and `complete` on the realm's loop through the same queue;
   queued work holds the loop until its `complete` has run, and `napi_cancel_async_work` removes work not yet started.
@@ -166,13 +175,15 @@ The original §3, kept as what emnapi's runtime must answer:
 
 ### 5. What the substrate supplies
 
-Under a tree capability beside `TREE_SOCKETS` (`TREE_NATIVE`):
-- `memory()`: the process's user memory, made at the first call by `worker-memory.ts`'s rule and kept, and the
-  realm's kernel instance bound to it as its user memory;
-- `waliImports(module)`: the `wali` imports a WALI module takes, bound to the calling task, with that memory as their
-  user memory;
-- `startThread(module, entry, imports)`: a task of the process (`k_task_create`) running `module` from `entry` in a
-  worker posted the memory, with the engine's thread-side `napi` imports (§4), and its end reported.
+Under a tree capability beside `TREE_SOCKETS` (`TREE_NATIVE`, `src/host-native.ts`), one call:
+- `load({ path, bytes, imports, thread })`: the module loaded into the process's user memory (made at the first load
+  by `worker-memory.ts`'s rule and kept, the realm's kernel instance bound to it as its user memory) by the substrate's
+  dynamic linker, with the process's `wali` imports bound to the calling task and the engine's `imports` (`env`,
+  `napi`, `emnapi`) beside them; `thread` names the module a thread's worker imports for its side of those imports
+  (`@volter/tabnode/native-thread`) and the `SharedArrayBuffer` it is called with. It answers `{ instance, module,
+  memory, table }`, or `{ error }` with the dynamic linker's own message (an ABI another than the process's, an
+  import nothing answers), which the engine throws as `ERR_DLOPEN_FAILED`.
+A tree that offers no `TREE_NATIVE` loads no addon: `ERR_DLOPEN_FAILED` "<path>: a tab runs no native code".
 
 ## Where the evidence stops
 
@@ -196,13 +207,15 @@ Under a tree capability beside `TREE_SOCKETS` (`TREE_NATIVE`):
   - *emnapi's `emnapi-mt` library for the WALI target:* not built anywhere in the repository.
   - *node-pty needs the C++ runtime whatever its exceptions:* it uses `std::thread` and `std::string`, and its
     `src/unix/pty.cc` `throw`s `Napi::Error`, so `NAPI_DISABLE_CPP_EXCEPTIONS` does not remove C++ exceptions.
-  - **So it cannot be built today.** Missing, for the kernel lane's toolchain: a PIC build of libc++, libc++abi,
-    libunwind and `cpp_exception.o` (with `-fwasm-exceptions` and `-pthread`) in the SDK; `emnapi-mt` built PIC for
-    `wasm32-linux-muslwali`; and a recipe that links and records a `-shared` side module. The loader is not coded
-    until they exist.
+  - **So it could not be built then.** Missing were a PIC build of libc++, libc++abi, libunwind and `cpp_exception.o`
+    (with `-fwasm-exceptions` and `-pthread`); `emnapi-mt` built PIC for `wasm32-linux-muslwali`; and a recipe that
+    links and records a `-shared` side module. browser-substrate ADR-0231's `toolchains/wali/side-module/recipe.json`
+    (branch `wali-cxx-pic`) is that recipe.
 - **Not read:** whether the vfork of a host image keeps node-pty's `setuid`/`setgid` in the child (§5.12's list does
   not name them; Conduit passes no credentials).
 - **Extrapolation:** that one memory per addon-loading process keeps the tab's region count where it is, since the
   substrate's terminal processes are few; and that the copy-back of addon-made buffers at call boundaries is cheap
   enough for a pty's traffic, which is small.
-- **Not run.** Nothing here is coded.
+- **Coded, not run.** `src/native-addon.ts`, `src/native-queue.ts`, `src/native-thread.ts` and `src/host-native.ts`
+  are §1-§5. No substrate offers `TREE_NATIVE` yet (its `load`, over `WaliDynamicLinker`, is the kernel lane's), so
+  every `.node` that is a WALI Node-API module fails `<path>: a tab runs no native code` until one does.

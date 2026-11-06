@@ -4,6 +4,14 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
+- **A `.node` that is a WALI Node-API module loads** (ADR-0011). `require` and `process.dlopen` of a WebAssembly
+  side module importing `napi` and exporting `napi_register_wasm_v1` (browser-substrate ADR-0231's link) hand it to
+  its process's tree, which loads it into the process's memory by the substrate's dynamic linker (`TREE_NATIVE`,
+  `src/host-native.ts`); its Node-API is emnapi's (`@emnapi/core` and `@emnapi/runtime` 1.11.3), its threads' wakes
+  of the main thread come through a shared queue, and `@volter/tabnode/native-thread` is a thread worker's side of its
+  imports. Any other `.node` fails `ERR_DLOPEN_FAILED` as Node's `dlopen` does: `invalid ELF header`, "Module did not
+  self-register", `cannot dynamically load executable`, `undefined symbol: <name>`, or, in a tree that offers no
+  `TREE_NATIVE`, `a tab runs no native code`.
 - **The prepared format is `tabnode-prepared-8`, a minor release, 0.18.0** (CONTRIBUTING: a change to the lowered text
   moves the format). A guest body's free `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent`,
   `MessageEvent`, `URL` and `WebAssembly` are now rewritten to the guest's, so the same source lowers to different

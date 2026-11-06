@@ -80,6 +80,8 @@ export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
 export { TREE_SOCKETS } from './host-sockets';
 export type { TreeSockets, InterfaceAddressEntry, SocketMessage } from './host-sockets';
+export { TREE_NATIVE, NATIVE_THREAD_MODULE } from './host-native';
+export type { TreeNative, NativeLoadRequest, NativeLoaded } from './host-native';
 export { TREE_TLS } from './host-tls';
 export type { TreeTls, TlsTransport, TlsPlainConnection, TlsSecureConnection, TlsClientSession, TlsClientOptions, TlsPeerCertificate,
   TlsServerOptions, TlsServerSecureConnection, TlsServerSession } from './host-tls';
