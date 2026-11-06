@@ -381,7 +381,7 @@ export function createContainer(options?: ContainerOptions): {
     run: (command: string | readonly string[], runOptions?: RunOptions): Promise<RunResult> => {
       // An argv whose `execvp` on the run's own tree reaches the engine's node entry is that Node (ADR-0012 §2):
       // runNode's launch, its pid the one the host gave.
-      if (typeof command !== 'string' && Array.isArray(command) && typeof command[0] === 'string'
+      if (Array.isArray(command) && typeof command[0] === 'string'
         && execvpReachesEngineNode(runOptions?.filesystem ?? vfs, command[0], runOptions?.cwd, runOptions?.env ?? {})) {
         return startNodeRun(command, runOptions);
       }
@@ -394,10 +394,8 @@ export function createContainer(options?: ContainerOptions): {
           // That process is a shell, or the program other than Node its argv names: each `node` it runs is its child,
           // numbered through its registry, and it is forgotten only here, at its own end (below) (ADR-0012 §2).
           if (numbered) holdShellRun(processToken);
-          // `container.run("cat", { stdin })` used to reach the engine's shell
-          // without its stdin: the run dropped it before exec, and exec dropped
-          // it before the shell. Both forward it, so a builtin reads what was
-          // piped, as it does in a Node shell.
+          // The run's stdin reaches the shell or the program, so a builtin reads what was piped, as it does in a Node
+          // shell.
           return await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
             runCommand(command, { credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()), cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs: runOptions?.filesystem ?? vfs }, (error, stdout, stderr) => {
               resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
