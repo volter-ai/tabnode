@@ -4,10 +4,13 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
-- **`container.run` takes an argv vector** (`run(argv, options?)`): one of the engine's programs (its `npm`,
-  `node`, a tool on its tree) runs from its exact words, as `spawn(file, args)` makes a run (`command-line.ts`): the
-  program and each word quoted for the engine's shell, and the list itself to a host that starts programs from one.
-  A command line is still a line.
+- **`container.run` takes an argv vector** (`run(argv, options?)`, ADR-0012). The program `argv[0]` names runs with
+  its exact words and no shell reading them: the engine's shell dispatches the list through its `command` builtin
+  as its own argv, and a host is given the list. An argv naming the engine's Node is that Node, as `runNode` starts
+  it, so a numbered run's pid is the Node's own; any other program is the process, and a `node` it runs is its child.
+  A command line is still a line, its process a shell. A line made for a host's shell from a program and its words
+  quotes a program word with `=` or one that is a reserved word, and a non-Node `spawn` reaches the engine's shell as
+  its list too.
 - **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
   offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
   table: a `'pipe'` (IPC or not) a socketpair with 64 KiB buffers, `'inherit'` and a number the parent's descriptor,

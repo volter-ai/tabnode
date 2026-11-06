@@ -2328,13 +2328,18 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     && (run.argv[1] === '-v' || run.argv[1] === '--version')) {
     return npmVersionResult(tree, run.cwd ?? '/', run.env ?? {}, run.argv[0]);
   }
+  // A program and its words (an argv a run or a spawn gave, whose program is `argv[0]` itself) go to the shell's
+  // `command` builtin as the interpreter's own argv, which no parser reads: the program dispatched by name and each
+  // word exactly as given. Only a line is parsed (ADR-0012 §3).
+  const words = run.executablePath === undefined ? run.argv : undefined;
   shellLinesRunning.push(run.command);
   setShellReadWatch(shellReadsProgram);
   try {
-    const result = await bash.exec(run.command, {
+    const result = await bash.exec(words ? 'command --' : run.command, {
       cwd: run.cwd,
       env: run.env,
       ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
+      ...(words ? { args: [...words] } : {}),
     });
     return { stdout: result.stdout || '', stderr: result.stderr || '', exitCode: result.exitCode };
   } finally {
@@ -2525,9 +2530,9 @@ function emptyStdinStream(): AsyncIterable<Uint8Array> {
  * binding, and it knows nothing of a run's name.
  *
  * Given an argv vector instead, the run is the program `argv[0]` names with
- * those exact words, as `spawn(file, args)` makes one (`command-line.ts`): the
- * line is the program and each word quoted, and a host that starts programs
- * from a list is given the list.
+ * those exact words (ADR-0012): the engine's shell dispatches it from the list,
+ * which it never parses, and a host is given the list, with the line beside it
+ * only for a host that has nothing but a shell.
  */
 export function runCommand(given: string | readonly string[], options: ExecOptions, callback?: ExecCallback): void {
   let command: string;
