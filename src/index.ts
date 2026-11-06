@@ -56,8 +56,7 @@ import { VirtualFS } from './virtual-fs';
 import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
-import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, type StdioKind } from './shims/child_process';
-import { __substrateRunsNode } from './shims/command-line';
+import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, execvpReachesEngineNode, type StdioKind } from './shims/child_process';
 import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, type OwnedHandle } from './node-lib/binding/handles';
 import { withFilesystem } from './node-lib/binding/named-tree';
@@ -230,9 +229,10 @@ export function createContainer(options?: ContainerOptions): {
   execute: (code: string, filename?: string) => { exports: unknown };
   runFile: (filename: string) => { exports: unknown };
   /**
-   * Run a command line through the engine's shell, or, given an argv vector, the program `argv[0]` names with its
-   * words exactly as given, no shell reading them (ADR-0012). An argv naming the engine's Node is that Node, as
-   * `runNode` starts it; any other program is itself, and a `node` it runs is its child.
+   * Run a command line through the engine's shell, or, given an argv vector, that vector as `execvp` is given it:
+   * `argv[0]` resolved on the run's tree, its words untouched, no shell reading them (ADR-0012). An argv that reaches
+   * the engine's node entry is that Node, as `runNode` starts it; any other program is itself, and a `node` it runs
+   * is its child.
    */
   run: (command: string | readonly string[], options?: RunOptions) => Promise<RunResult>;
   /**
@@ -379,9 +379,12 @@ export function createContainer(options?: ContainerOptions): {
     execute: (code: string, filename?: string) => runtime.execute(code, filename),
     runFile: (filename: string) => runtime.runFile(filename),
     run: (command: string | readonly string[], runOptions?: RunOptions): Promise<RunResult> => {
-      // An argv naming the engine's Node is that Node (ADR-0012 §2): runNode's launch, its pid the one the host gave.
+      // An argv whose `execvp` on the run's own tree reaches the engine's node entry is that Node (ADR-0012 §2):
+      // runNode's launch, its pid the one the host gave.
       if (typeof command !== 'string' && Array.isArray(command) && typeof command[0] === 'string'
-        && __substrateRunsNode(command[0], runOptions?.cwd)) return startNodeRun(command, runOptions);
+        && execvpReachesEngineNode(runOptions?.filesystem ?? vfs, command[0], runOptions?.cwd, runOptions?.env ?? {})) {
+        return startNodeRun(command, runOptions);
+      }
       return startRun(runOptions, async (processToken) => {
         const numbered = runOptions?.registry !== undefined || runOptions?.process !== undefined;
         try {

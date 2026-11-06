@@ -1,12 +1,10 @@
 /**
- * A program and its exact words, as the list a host or the engine's shell
- * dispatches, and as the one line a host that has only a shell reads.
+ * A program and its exact words, as the one line the engine's shell reads.
  *
- * The engine has no `execve`: a child is a list its shell's `command` builtin
- * dispatches unparsed, or a line it parses (`exec(line)`, a `shell: true`
- * spawn), ADR-0012 §3. Naming the program and making the line for a shell-only
- * host is this file, and it is the engine's process model, not Node's:
- * `child_process.js` never sees it.
+ * The engine has no `execve`: every child is a command line handed to
+ * just-bash, whether it came from `spawn(file, args)` or from `exec(line)`.
+ * Turning the first into the second is this file, and it is the engine's
+ * process model, not Node's: `child_process.js` never sees it.
  *
  * A spawned child's arguments are exact words, not a command line the shell
  * reads again: quoting an argument only when it held a space let an argument
@@ -39,21 +37,9 @@ export function __substrateProgramName(file: string): string {
   return file;
 }
 
-/** The words a shell reads as something else at a command's start (bash's reserved words). */
-const RESERVED_WORDS = new Set(['case', 'coproc', 'do', 'done', 'elif', 'else', 'esac', 'fi', 'for', 'function', 'if', 'in',
-  'select', 'then', 'time', 'until', 'while']);
-
-/**
- * The program word of a line: a name with `=` (an assignment there) or a reserved word is quoted too, so that a
- * literal program name keeps no meaning but itself (ADR-0012 §3).
- */
-function programWord(name: string): string {
-  return name.includes('=') || RESERVED_WORDS.has(name) ? "'" + name.replaceAll("'", "'\\''") + "'" : __substrateShellWord(name);
-}
-
-/** The line a shell reads for a program and its words. */
+/** The line the engine's shell reads for a program and its words. */
 export function __substrateCommandLine(file: string, args: string[]): string {
-  const program = programWord(__substrateProgramName(file));
+  const program = __substrateShellWord(__substrateProgramName(file));
   return args.length > 0 ? `${program} ${args.map((arg) => __substrateShellWord(String(arg))).join(' ')}` : program;
 }
 

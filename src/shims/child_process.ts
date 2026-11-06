@@ -2198,6 +2198,11 @@ interface CommandRun {
   argv?: readonly string[];
   /** The executable to resolve independently of the caller's argv[0]. */
   executablePath?: string;
+  /**
+   * `argv` is an argv run's vector, as `execvp` is given it (ADR-0012 §3), with `executablePath` its `argv[0]`: resolved
+   * where the run runs, the vector untouched. `command` is then only its words quoted, for a host with only a shell.
+   */
+  execvp?: true;
   /** Use the private compatibility shell only where no host owns this run. */
   engineFirst?: boolean;
   cwd?: string;
@@ -2328,18 +2333,17 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     && (run.argv[1] === '-v' || run.argv[1] === '--version')) {
     return npmVersionResult(tree, run.cwd ?? '/', run.env ?? {}, run.argv[0]);
   }
-  // A program and its words (an argv a run or a spawn gave, whose program is `argv[0]` itself) go to the shell's
-  // `command` builtin as the interpreter's own argv, which no parser reads: the program dispatched by name and each
-  // word exactly as given. Only a line is parsed (ADR-0012 §3).
-  const words = run.executablePath === undefined ? run.argv : undefined;
   shellLinesRunning.push(run.command);
   setShellReadWatch(shellReadsProgram);
   try {
-    const result = await bash.exec(words ? 'command --' : run.command, {
+    // An argv run's vector goes to the shell's `command` builtin as the interpreter's own argv, which no parser reads:
+    // the shell resolves `argv[0]` on this tree as `execvp` does and hands the program its words untouched (ADR-0012 §3).
+    const vector = run.execvp ? run.argv : undefined;
+    const result = await bash.exec(vector ? 'command --' : run.command, {
       cwd: run.cwd,
       env: run.env,
       ...(typeof run.stdin === 'string' ? { stdin: run.stdin } : {}),
-      ...(words ? { args: [...words] } : {}),
+      ...(vector ? { args: [...vector] } : {}),
     });
     return { stdout: result.stdout || '', stderr: result.stderr || '', exitCode: result.exitCode };
   } finally {
@@ -2529,22 +2533,20 @@ function emptyStdinStream(): AsyncIterable<Uint8Array> {
  * half, not Node's `child_process.exec` -- Node's is its own file's, over the
  * binding, and it knows nothing of a run's name.
  *
- * Given an argv vector instead, the run is the program `argv[0]` names with
- * those exact words (ADR-0012): the engine's shell dispatches it from the list,
- * which it never parses, and a host is given the list, with the line beside it
- * only for a host that has nothing but a shell.
+ * Given an argv vector instead, the run is that vector as `execvp` is given it
+ * (ADR-0012 §3): its program resolved on the run's tree by whoever runs it, and
+ * its words untouched.
  */
 export function runCommand(given: string | readonly string[], options: ExecOptions, callback?: ExecCallback): void {
   let command: string;
-  let argv: string[] | null = null;
+  let execvp: string[] | undefined;
   if (typeof given === 'string') command = given;
   else {
     if (!Array.isArray(given) || given.length === 0 || given.some((word) => typeof word !== 'string')) {
       throw new TypeError('runCommand: argv must be a non-empty array of strings');
     }
-    const words = [...given];
-    command = __substrateLineFor(words[0]!, words, options.cwd);
-    argv = __substrateArgvFor(words[0]!, words, options.cwd);
+    execvp = [...given];
+    command = execvp.map((word) => "'" + word.replaceAll("'", "'\\''") + "'").join(' ');
   }
   const ownCredentialsToken = options.credentials && !options.processToken ? `credentials-${__nextChildRun++}` : undefined;
   if (ownCredentialsToken) {
@@ -2559,7 +2561,8 @@ export function runCommand(given: string | readonly string[], options: ExecOptio
     try {
       const outcome = await routeCommand({
         command,
-        ...(argv ? { argv } : {}),
+        // An argv run's executable is the host's to resolve, as a host-owned spawn's is, from its vector as given.
+        ...(execvp ? { execvp: true as const, argv: execvp, executablePath: execvp[0]! } : {}),
         credentials: options.credentials,
         cwd: options.cwd,
         env: typeof options.processToken === 'string'
@@ -2696,6 +2699,33 @@ function engineProgramFor(file: string, cwd?: string): string {
   return shellCommandNames().has(bare) ? bare : name;
 }
 
+/**
+ * POSIX `execvp`'s search on `tree`: a name with a slash is that path from `cwd`; any other is the first `dir/name`
+ * of `PATH` (an absent `PATH` the engine's default) the tree holds and `accepts`.
+ */
+function execvpPath(tree: VirtualFS | null, file: string, cwd: string | undefined, env: Record<string, string>,
+  accepts: (path: string) => boolean = () => true): string | undefined {
+  const holds = (path: string): boolean => { try { return tree !== null && tree.existsSync(path) && accepts(path); } catch { return false; } };
+  if (file.includes('/')) {
+    const path = __resolvePath(cwd ?? '/', file);
+    return holds(path) ? path : undefined;
+  }
+  for (const dir of (env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin').split(':')) {
+    const path = `${dir}/${file}`.replace(/\/+/gu, '/');
+    if (dir.length > 0 && holds(path)) return path;
+  }
+  return undefined;
+}
+
+/**
+ * Whether an argv run's `argv[0]` is the engine's Node (ADR-0012 §2): `execvp`'s search on the run's own tree reaches
+ * the engine's node entry, `process.execPath` (`__substrateExecPath`), which the tree's shell keeps there.
+ */
+export function execvpReachesEngineNode(tree: VirtualFS, file: string, cwd: string | undefined, env: Record<string, string>): boolean {
+  if (!shells.has(tree)) shellForRunTree(tree);
+  return execvpPath(tree, file, cwd, env) === __substrateExecPath;
+}
+
 /** Whether the engine's shell can find a program under this name. */
 function programExists(file: string, cwd: string | undefined, env: Record<string, string>): boolean {
   const name = __substrateProgramName(file);
@@ -2705,15 +2735,7 @@ function programExists(file: string, cwd: string | undefined, env: Record<string
   // what `spawn('/usr/bin/env', …)` means and what a Dockerfile's shebang
   // reaches. A file in the tree is a program too, and so is one on PATH.
   if (shellCommandNames().has(bare)) return true;
-  if (name.includes('/')) {
-    const path = __resolvePath(cwd ?? '/', name);
-    return existsInTree(path) && runsInEngine(path);
-  }
-  for (const dir of (env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin').split(':')) {
-    const path = `${dir}/${name}`.replace(/\/+/gu, '/');
-    if (dir.length > 0 && existsInTree(path) && runsInEngine(path)) return true;
-  }
-  return false;
+  return execvpPath(treeForRun(), name, cwd, env, runsInEngine) !== undefined;
 }
 
 /** A published host resolves every executable except the engine's Node. */

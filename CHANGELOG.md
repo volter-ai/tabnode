@@ -4,13 +4,12 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
-- **`container.run` takes an argv vector** (`run(argv, options?)`, ADR-0012). The program `argv[0]` names runs with
-  its exact words and no shell reading them: the engine's shell dispatches the list through its `command` builtin
-  as its own argv, and a host is given the list. An argv naming the engine's Node is that Node, as `runNode` starts
-  it, so a numbered run's pid is the Node's own; any other program is the process, and a `node` it runs is its child.
-  A command line is still a line, its process a shell. A line made for a host's shell from a program and its words
-  quotes a program word with `=` or one that is a reserved word, and a non-Node `spawn` reaches the engine's shell as
-  its list too.
+- **`container.run` takes an argv vector** (`run(argv, options?)`, ADR-0012), as `execvp` takes one: `argv[0]` is
+  resolved on the run's own tree (a name with a slash as it is, any other on `PATH`) and the vector reaches the
+  program untouched. The engine's shell takes it through its `command` builtin as its own argv, and a host is given
+  the executable and the vector to resolve itself. An argv whose resolution reaches the engine's node entry is that
+  Node, as `runNode` starts it, so a numbered run's pid is the Node's own; any other program, a shell included, is the
+  process, and a `node` it runs is its child. A command line is still a line, its process a shell.
 - **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
   offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
   table: a `'pipe'` (IPC or not) a socketpair with 64 KiB buffers, `'inherit'` and a number the parent's descriptor,
