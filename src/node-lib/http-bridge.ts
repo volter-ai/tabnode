@@ -47,7 +47,7 @@ export interface ResponseData {
  * server is the person's own program, on their own container's loopback, where nothing else can stand between them,
  * and its certificate is a development one that no root signs (ADR-0009 §3).
  */
-function connectLoopback(tree: object | undefined, port: number): Socket {
+export function connectLoopback(tree: object | undefined, port: number): Socket {
   const connect = (): Socket => {
     const sockets = callingSockets();
     if (sockets && listensWithTls(sockets, port)) {
@@ -59,7 +59,7 @@ function connectLoopback(tree: object | undefined, port: number): Socket {
 }
 
 /** Whether a connection failed because nothing listens where it went: the kernel's refusal. */
-function refused(error: unknown): boolean {
+export function refused(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   return code === 'ECONNREFUSED' || (error instanceof AggregateError && error.errors.every(refused));
 }
@@ -88,6 +88,8 @@ interface Collected {
   statusCode: number;
   statusMessage: string;
   headers: Record<string, string>;
+  /** The head's fields as sent, name and value alternating, as Node's `res.rawHeaders`. */
+  rawHeaders: string[];
   chunks: Uint8Array[];
   complete: boolean;
   upgrade: boolean;
@@ -109,6 +111,7 @@ function responseParser(collected: Collected, onHead?: () => void, onChunk?: (ch
     collected.statusCode = statusCode;
     collected.statusMessage = statusMessage;
     collected.upgrade = upgrade;
+    collected.rawHeaders = headers.slice();
     for (let index = 0; index + 1 < headers.length; index += 2) {
       const name = headers[index]!.toLowerCase();
       const value = headers[index + 1]!;
@@ -142,7 +145,7 @@ function responseParser(collected: Collected, onHead?: () => void, onChunk?: (ch
 }
 
 function emptyCollected(): Collected {
-  return { statusCode: 0, statusMessage: '', headers: {}, chunks: [], complete: false, upgrade: false };
+  return { statusCode: 0, statusMessage: '', headers: {}, rawHeaders: [], chunks: [], complete: false, upgrade: false };
 }
 
 /**
@@ -276,6 +279,8 @@ export interface UpgradeResult {
   /** Absent where the server sent none, as Node's `res.statusMessage` may be. */
   statusMessage?: string;
   headers: Record<string, string>;
+  /** The head's fields as sent, name and value alternating (a `Set-Cookie` sent twice is two entries). */
+  rawHeaders: string[];
   socket: Socket | null;
 }
 
@@ -301,10 +306,10 @@ export function __upgradeOverLoopback(
       settled = true;
       parser.free();
       if (collected.statusCode === 0 && refused(error)) {
-        resolve({ statusCode: 503, statusMessage: 'Service Unavailable', headers: {}, socket: null });
+        resolve({ statusCode: 503, statusMessage: 'Service Unavailable', headers: {}, rawHeaders: [], socket: null });
         return;
       }
-      resolve({ statusCode: collected.statusCode || 502, statusMessage: collected.statusMessage, headers: collected.headers, socket: null });
+      resolve({ statusCode: collected.statusCode || 502, statusMessage: collected.statusMessage, headers: collected.headers, rawHeaders: collected.rawHeaders, socket: null });
     };
     socket.on('data', (chunk: Uint8Array) => {
       if (settled) return;
@@ -318,7 +323,7 @@ export function __upgradeOverLoopback(
         const consumed = typeof read === 'number' ? read : chunk.length;
         const rest = chunk.subarray(consumed);
         if (rest.length > 0) (socket as unknown as { unshift(data: Uint8Array): void }).unshift(rest);
-        resolve({ statusCode: collected.statusCode, statusMessage: collected.statusMessage, headers: collected.headers, socket });
+        resolve({ statusCode: collected.statusCode, statusMessage: collected.statusMessage, headers: collected.headers, rawHeaders: collected.rawHeaders, socket });
         return;
       }
       if (collected.complete) { socket.destroy(); fail(); }
