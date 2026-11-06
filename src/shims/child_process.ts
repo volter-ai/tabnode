@@ -1602,6 +1602,7 @@ export function initChildProcess(vfs: VirtualFS): void {
         tree.chmodSync(__substrateExecPath, 0o755);
       }
     } catch { /* a tree that refuses the write keeps the command under its plain name */ }
+    installCommandEntries(tree);
   }
   if (typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined' || typeof (globalThis as Record<string, unknown>).document !== 'undefined') warmSyncChild();
   vfsAdapter = new VirtualFSAdapter(tree);
@@ -2755,6 +2756,27 @@ function execvpResolve(tree: VirtualFS, file: string, cwd: string, searchPath: s
     if (found.error === 'EACCES') refused = true;
   }
   return { error: refused ? 'EACCES' : 'ENOENT' };
+}
+
+/**
+ * Each command the engine's shell registers, as an executable file at its standard paths, `/bin/<name>` and
+ * `/usr/bin/<name>`, with the text just-bash's own `registerCommand` writes there where its filesystem takes a
+ * synchronous write (ADR-0012 §3). The shell's adapter offers it none, so the tree is given them here, through its own
+ * door, where none is already there: `execvp` then finds a command where a machine carries it, for an argv and a
+ * `spawn` alike, and its identity is that entry.
+ */
+function installCommandEntries(tree: VirtualFS): void {
+  for (const directory of ['/bin', '/usr/bin']) {
+    try { tree.mkdirSync(directory, { recursive: true }); } catch { continue; }
+    for (const name of shellCommandNames()) {
+      const entry = `${directory}/${name}`;
+      try {
+        if (tree.existsSync(entry)) continue;
+        tree.writeFileSync(entry, `#!/bin/bash\n# Built-in command: ${name}\n`);
+        tree.chmodSync(entry, 0o755);
+      } catch { /* a tree that refuses the write keeps the command where the shell's registry has it */ }
+    }
+  }
 }
 
 /** What an argv run that is not the engine's Node runs on the local route (ADR-0012 §3). */

@@ -78,9 +78,15 @@ A run that resolves nothing reports as a shell reports a program it could not ex
 format error` or `Too many levels of symbolic links`. So
 `['true']` with no `true` on `PATH` is `ENOENT`, and `['cd']` fails the same way.
 
-Tabnode's own trees carry the engine's node entry; their shell's adapter has no synchronous write, so just-bash
-installs no command entries in them, and an argv run there reaches a registered command only through an entry a tree
-really holds.
+**The tree presents its commands where a machine carries them.** On Linux `ls` is a file at `/bin/ls`, and `execvp`
+finds it there. just-bash's `registerCommand` lays its commands out so where its filesystem takes a synchronous write;
+the shell's adapter (`vfs-adapter.ts`) has none, so a tree the engine made is given, when its shell is made
+(`installCommandEntries`, beside the node entry at `process.execPath`), every registered command as an executable entry
+at `/bin/<name>` and `/usr/bin/<name>` with just-bash's own entry text, where nothing is there already. `execvp` then
+finds them for an argv and a `spawn` alike, and a command's identity is that installed entry. A tree a host supplied
+is the host's: the engine writes nothing into it, as it writes no node entry there, and what it presents is what runs.
+With `/usr/bin` present, just-bash's registry fallback (a command found by name where `/usr/bin` is absent) no longer
+answers a line whose `PATH` names neither `/bin` nor `/usr/bin`, as on a machine.
 
 ### 4. Which process the run is, and the route
 

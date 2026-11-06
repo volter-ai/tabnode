@@ -15,6 +15,9 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
     A script runs its `#!` interpreter, decided the same way. Anything else fails as a shell reports it: 127 for
     `ENOENT`, 126 for `EACCES` or `ENOEXEC`. An argv runs no shell builtin, so `['true']` with no `true` on `PATH`
     is `ENOENT`.
+  - **Command entries:** a tree the engine made carries every command its shell registers as an executable entry
+    at `/bin/<name>` and `/usr/bin/<name>`, with just-bash's own entry text, so `['ls']` finds `/bin/ls` as on a
+    machine.
   - **Hosts:** a host is given the executable and the vector to resolve itself.
   - **The npm shortcut is gone:** `npm -v` is answered only by the shell's own `npm`.
   - A command line is still a line, and its process a shell.
