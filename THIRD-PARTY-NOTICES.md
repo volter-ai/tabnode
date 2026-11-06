@@ -8,6 +8,7 @@ third-party bodies also retain their notices here.
 |---|---|---|---|
 | Node.js's own library files, unmodified | `src/node-lib/**/*.js` | `nodejs/node` v24.21.0, `lib/`, and `deps/undici/undici.js` (undici's bundle, llhttp's WebAssembly inside it) | MIT, `src/node-lib/LICENSE` |
 | llhttp compiled to WebAssembly, the build undici ships | `src/node-lib/binding/llhttp-wasm.ts` | undici 6.28.0, `lib/llhttp/llhttp-wasm.js` (`nodejs/llhttp`, `nodejs/undici`) | MIT |
+| Ada's `ada::idna`, compiled to WebAssembly by `scripts/build-ada-idna-wasm.sh` | `src/node-lib/binding/ada-idna-wasm.ts` | Node.js v24.21.0, `deps/ada` (Ada 4.0.0; `ada.h` 32-240, `ada.cpp` 140-6720) | MIT, Ada's notice below |
 | punycode 2.3.1, the library Node ships as its `punycode` builtin | `src/punycode-source.ts` | Mathias Bynens, `mathiasbynens/punycode.js` | MIT |
 | The engine this repository is a fork of | the tree | `macaly/almostnode` 0.2.14 | MIT, `LICENSE` |
 | SQLite 3.53.4 WebAssembly, embedded unchanged by `src/node-lib/sqlite-wasm.ts` | worker build | `@sqlite.org/sqlite-wasm` 3.53.4-build2, source `sqlite/sqlite-wasm` at `b30a8a19cab9a7928ac6b44bbc91f0b65e56324d` | SQLite public-domain dedication; Emscripten runtime notices below |
@@ -2958,4 +2959,33 @@ NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
 DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+## Ada notice
+
+The embedded WebAssembly in `src/node-lib/binding/ada-idna-wasm.ts` is compiled from the `ada::idna` sections of
+Node.js v24.21.0's `deps/ada/ada.h` (SHA-256 `0010b17b3ff489e13998e86d921b16e1643e370ee3276c584f1b0c4b72bdf628`) and
+`deps/ada/ada.cpp` (SHA-256 `1c722f8f5355d6bf2bf3601870684edc875aa8f56b4d4735440d96263dd0207c`), Ada 4.0.0. The
+licence below is that release's `deps/ada/LICENSE-MIT` (SHA-256
+`af0d7d2cef91fc243cf4ad98570b03d1f26f5e0227cad0f5f4a7376e2feb3160`), copied unchanged.
+
+```
+Copyright 2023 Yagiz Nizipli and Daniel Lemire
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```

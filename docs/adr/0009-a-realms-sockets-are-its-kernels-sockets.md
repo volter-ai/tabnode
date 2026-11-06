@@ -228,6 +228,11 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
     `ada.h` 32-240, `ada.cpp` 140-6720; pure C++, no system calls), compiled by wasi-sdk 34.0 to a plain WebAssembly
     module that a process instantiates synchronously on its first lookup (`src/node-lib/binding/ada-idna-wasm.ts`,
     `scripts/build-ada-idna-wasm.sh`). Its one import, WASI's `fd_write` (an assertion's message), answers `ENOSYS`.
+    The build script owns its scratch: it makes its own directory with `mktemp -d` and removes it with an `EXIT` trap,
+    and takes no argument. An embedded dependency's notice is carried by the repository's shipped notices file,
+    `THIRD-PARTY-NOTICES.md`, as every vendored body's is: Ada's is the release licence Node v24.21.0 pins beside it
+    (`deps/ada/LICENSE-MIT`, "Copyright 2023 Yagiz Nizipli and Daniel Lemire"), copied there unchanged, and the
+    generator's and the generated module's headers point at it.
     It is built without `ADA_USE_SIMDUTF`, so its UTF-8 transcoding is Ada's own rather than simdutf's; the input is
     always the well-formed UTF-8 a JavaScript string encodes to, as Node's `Utf8Value` makes it. `url.domainToASCII`
     is a different call in Node (`ada::url::set_hostname` on `ws://x`, `node_url.cc` 224-249), the WHATWG URL host

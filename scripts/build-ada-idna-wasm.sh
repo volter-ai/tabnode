@@ -1,11 +1,14 @@
 #!/bin/bash
 # Builds src/node-lib/binding/ada-idna-wasm.ts: Ada's own `ada::idna::to_ascii`, from Node v24.21.0's deps/ada
 # (Ada 4.0.0), compiled to a plain WebAssembly module by wasi-sdk 34.0 (ADR-0009 §3). Every input is pinned by digest.
-# Usage: scripts/build-ada-idna-wasm.sh <work directory>   (the work directory is removed when the module is written)
+# Ada's notice (its release LICENSE-MIT) is carried in THIRD-PARTY-NOTICES.md, "Ada notice".
+# Usage: scripts/build-ada-idna-wasm.sh
+# The script owns its scratch: a directory of its own from mktemp -d, removed by its EXIT trap however it ends.
 set -euo pipefail
-work=${1:?usage: build-ada-idna-wasm.sh <work directory>}
 out="$(cd "$(dirname "$0")/.." && pwd)/src/node-lib/binding/ada-idna-wasm.ts"
-mkdir -p "$work" && cd "$work"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cd "$work"
 fetch() { curl -sfL -o "$2" "$1"; echo "$3  $2" | shasum -a 256 -c - >/dev/null; }
 node=https://raw.githubusercontent.com/nodejs/node/v24.21.0/deps/ada
 fetch "$node/ada.cpp" ada.cpp 1c722f8f5355d6bf2bf3601870684edc875aa8f56b4d4735440d96263dd0207c
@@ -52,10 +55,9 @@ sum=$(shasum -a 256 idna.wasm | cut -d' ' -f1)
   echo " *"
   echo " *   bytes:   $bytes"
   echo " *   sha256:  $sum"
-  echo " *   license: Apache-2.0 OR MIT (ada-url/ada)"
+  echo " *   license: MIT, Copyright 2023 Yagiz Nizipli and Daniel Lemire; notice in THIRD-PARTY-NOTICES.md (\"Ada notice\")"
   echo " */"
   echo "export const ADA_IDNA_WASM_BASE64 ="
   base64 -i idna.wasm | tr -d '\n' | fold -w 100 | sed "s/.*/  '&' +/;\$ s/ +\$/;/"
 } > "$out"
-cd / && rm -rf "$work"
 echo "$out: $bytes bytes, sha256 $sum"
