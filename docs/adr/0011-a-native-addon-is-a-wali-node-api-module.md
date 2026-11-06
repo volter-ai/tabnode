@@ -153,37 +153,36 @@ and linked by ADR-0231's side-module link, which exports `napi_register_wasm_v1`
 environment, checks the module's Node-API version exactly as Node's `node_napi_env__::New` does (its supported maximum
 is 10, v24.21.0's), and calls the initializer.
 
-emnapi's runtime answers handles (indices into scope and reference tables), strings in the addon's memory, errors
-(`napi_get_last_error_info`, a pending exception thrown on return) and finalizers as Node does. Its `Buffer` is the
-process's (Node's `buffer`, the engine's), set on the process's context (§6).
+emnapi's runtime answers handles, strings in the addon's memory, errors and finalizers, and Tabnode adds nothing to
+them. Each rule below names its source: Node's own (`doc/api/n-api.md`, `src/node_api.cc`, `src/node_binding.cc` at
+v24.21.0) or the pinned emnapi's own behaviour, read in its 1.11.3 sources (`@emnapi/core` `dist/emnapi-core.js`,
+`@emnapi/runtime` `dist/emnapi.js`, `emnapi`'s `include/node/emnapi.h` and C).
 
-**The memory boundary, as pinned emnapi 1.11.3 behaves** (`dist/emnapi-core.js`):
-- A JavaScript `ArrayBuffer`, `SharedArrayBuffer` or view over one is not in the addon's memory. Asking its data
-  pointer (`napi_get_buffer_info`, `napi_get_arraybuffer_info`, `napi_get_typedarray_info`, `napi_get_dataview_info`
-  with `data`) gives the address of a copy emnapi keeps in the addon's memory, one per buffer (`malloc`'d at the first
-  ask, freed when the buffer is collected), refreshed from the JavaScript bytes at every ask (`getArrayBufferPointer`,
-  3737-3777, and `getViewPointer`, 3827-3838). Creating one with a data pointer (`napi_create_arraybuffer`,
-  `node_api_create_sharedarraybuffer`, `napi_create_buffer_copy` with `result_data`) gives the same kind of copy, and
-  `napi_create_external_arraybuffer` is a JavaScript copy of the addon's bytes, its data pointer their address
-  (6378-6446).
-- emnapi never copies the addon's writes back: its function wrapper (`emnapiCreateFunction`, 5285-5311) calls the
-  addon and closes its scope, and only `emnapi_sync_memory` (5944-5969), an emnapi call no Node addon makes, copies.
-- A `Buffer` the addon creates with a data pointer (`napi_create_buffer`, 6712-6771) or over its own bytes
-  (`napi_create_external_buffer`, `emnapi_create_memory_view`, 5753-5865) is a view of the addon's memory, not a copy:
-  both sides see every write, and since the process's memory is shared a view stays valid as the memory grows.
-- `napi_create_buffer_copy` makes its copy before it writes the JavaScript buffer (6775-6810), so the copy at
-  `result_data` holds zeros, not the bytes.
+**The memory boundary is emnapi's.**
+- *Node:* `napi_get_buffer_info` answers "the underlying data buffer of the `node::Buffer`" (`n-api.md:3443`, 3453),
+  and the other data-pointer answers the same of theirs: an addon's pointer is the buffer's own bytes.
+- *emnapi, at the pin:* a buffer whose bytes are JavaScript's (an `ArrayBuffer`, a `SharedArrayBuffer`, a view or
+  `Buffer` over one) is not in the addon's memory. Its data pointer is a copy emnapi keeps there, `malloc`'d at the
+  first ask and refreshed from the JavaScript bytes at every ask (`getArrayBufferPointer`, `emnapi-core.js:3737-3777`;
+  `getViewPointer`, 3827-3838), and the creating calls that answer a data pointer make the same kind of copy
+  (`napi_create_arraybuffer`, `node_api_create_sharedarraybuffer`, `napi_create_buffer_copy`, and the external ones,
+  `napi_create_external_arraybuffer`, 6378-6446, and `node_api_create_external_sharedarraybuffer`, 6450-6500, which copy
+  the addon's bytes into a new JavaScript buffer). emnapi's call wrapper never writes the copy back
+  (`emnapiCreateFunction`, 5285-5311). Bytes cross between a copy and JavaScript by emnapi's own calls,
+  `emnapi_sync_memory` and `emnapi_get_memory_address` (`emnapi.h:72-83`; `emnapi-core.js:5944-5969`, 6005), which an
+  addon built against emnapi's headers (every variant, ADR-0231) calls where it hands bytes back. A `Buffer` the
+  addon makes with a data pointer or over its own bytes (`napi_create_buffer`, 6712-6771; `napi_create_external_buffer`
+  and `emnapi_create_memory_view`, 5753-5865) is a view of the addon's memory, and both sides see every write.
+- *So:* Tabnode adds no copy, lending or write-back of its own. The difference from Node is emnapi's, and a variant
+  meets it as emnapi requires.
 
-**The Node-facing boundary the engine adds, with emnapi's own `syncMemory`.** Node gives an addon the buffer's own
-bytes, so its writes are the caller's the moment it makes them. Here a pointer to a JavaScript copy is lent for the
-outermost call into the process's addons in which it was asked (a call from JavaScript into an addon function, its
-initializer, a finalizer, a thread-safe function's call into JavaScript, a loop callback of §6): each data-pointer
-answer above records its buffer, `napi_create_buffer_copy`'s copy is refreshed from the bytes it was given as soon as it
-is made, and when that outermost call returns, by a value or a throw, every recorded buffer's copy is written back to
-its JavaScript bytes (`syncMemory(false, buffer)`), so an unchanged addon that writes through the pointer leaves the
-caller's `Buffer` holding what it wrote. Two things stay emnapi's and differ from Node: JavaScript that the addon calls
-inside that call (a callback) sees the bytes as they were when the pointer was asked, and a pointer an addon keeps past
-the call (written later by a thread) reaches JavaScript only through `emnapi_sync_memory`.
+**The `Buffer` is the process's.**
+- *Node:* `napi_create_buffer` "allocates a `node::Buffer`" (`n-api.md:2403`): the process's own class, so the
+  guest's `Buffer.isBuffer` is true of it.
+- *emnapi:* every buffer it makes is made with its context's `feature.Buffer` (`emnapi.js`, the `Context`
+  constructor's `feature`; `emnapi-core.js:6712-6771`).
+- *So:* the process's context (§6) has as `feature.Buffer` the `Buffer` of the process's own `buffer` module
+  (`loadNodeLibFor(process, 'buffer')`), the one its guest's global and `require('buffer')` answer.
 
 **Threads are the kernel's tasks, not emnapi's workers** (a departure). emnapi's clang path makes a thread by WASI's
 `thread-spawn` and a worker its `onCreateWorker` makes, and wakes the main thread by that worker's messages. A WALI
@@ -228,47 +227,59 @@ position-independent (ADR-0231: `emnapi-mt`, musl and the C++ runtime built PIC)
 
 ### 6. One process owns its addons' lifetime
 
-A process's addons are one record of that process (`native-addon.ts`), made at its first load, holding its emnapi
-context, its opened files (each its instance, its `napiModule`, its queue and receiver, the buffers lent in the current
-call) and its count of loop holds. Its lifetime is the process's, through the process owner every resource of a run
-already has (`node-lib/binding/handles.ts`): the record is one owned handle of the process, registered stopped, so it
-holds the loop only while its count of holds is above zero (`startHandle`/`stopHandle`), and closed with every other
-handle of the run when the run ends.
+Each rule names its source, as §4's do.
 
-- **The context is the process's, never the realm's.** `getDefaultContext()` is one context for the realm, whose
-  constructor subscribes its `destroy` to the `beforeExit` of whichever process is ambient when it is first made and
-  refs a `MessagePort` of its own while requests wait; two processes of a realm would share its stores, and the first
-  to reach `beforeExit` would stop the other's environments. Each process's context is its own `Context`, made with no
-  ambient `process` (so it subscribes to none and holds no loop of its own; its owner does both), with the process's
-  `Buffer` and its `setImmediate` going through the record (below).
-- **Every entry from the loop into an addon goes through the record**, which drops it once the process has ended and
-  otherwise runs it as the process (its run and its resource scope, a throw its uncaught exception, as Node's
-  `MakeCallback` reports one) inside the boundary of §4: a thread's `uv_async_send` (the queue's receiver), the main
-  thread's and emnapi's `uv_close` (`_emnapi_set_immediate`, which is the context's `setImmediate`) and
-  `_emnapi_next_tick`. Every other call into an addon (an addon function, its initializer, a finalizer emnapi drains)
-  is an environment's `callIntoModule`, which the record wraps for the process's environments, so it too runs as the
-  process inside that boundary.
-- **Every way a process ends closes the record**, through `__releaseOwnedHandles` of the run: `process.exit()`
-  (`shims/child_process.ts`, its exit), the end of the run's entry by a return, a throw or an exit (its `finally`), a
-  kill of the run (its `kill`), a kill of a shell job (`shims/shell-jobs.ts`) and the host's `stopProcess`
-  (`index.ts`). Closing marks the record ended (so nothing more is delivered), destroys the context (no call may enter
-  JavaScript, and every environment's cleanup hooks run, the addons' own among them, then each environment is
-  released, as Node's environment teardown does), stops every queue (its stop word set, its receiver woken by
-  `Atomics.notify` and returning without waiting again, a writer that waits on a full queue woken and dropping its
-  send) and releases the handle. A Runtime made outside any run has no end the engine sees: its addons live as long as
-  it does, as its other handles do.
-- **A failed load leaves nothing of itself**:
-  - a refusal of §2 (the magic, the compiler, the interface, the tree, an import) or the substrate's `{ error }`
-    happens before anything of the load exists;
-  - a Node-API version above the line's is refused by `napiModule.init` before it makes an environment; the file stays
-    open, as Node's library stays loaded after that refusal;
-  - an initializer that throws (a pending JavaScript exception, a trap) has made an environment and may have made what
-    holds the loop (a referenced thread-safe function, queued async work, a cleanup hook): that one environment is torn
-    down at once, its own cleanup hooks run newest first (which close its thread-safe functions and async work, whose
-    closes release their loop holds as they finish) and then the environment itself released, and the error is the
-    load's. Its peers, the process's other environments, are untouched, and the file stays open.
-- **Per process and per addon stay apart.** The process's end is the context's `destroy`; an addon's failed
-  initialization is its one environment's teardown. Nothing of one load can stop another's environment.
+- **One emnapi context per process.**
+  - *Node:* the environment a process runs in owns every `napi_env` made in it, and each `napi_env`'s teardown is a
+    cleanup hook of that environment (`node_api.cc:64`), run "once the current Node.js environment exits", with the
+    addon's own `napi_add_env_cleanup_hook` hooks (`n-api.md:1928-1929`).
+  - *emnapi:* a `Context` holds its environments and their cleanup queue, `newEnv` adds each environment's release to
+    it (`emnapi.js:821-834`), and `destroy` stops every call into JavaScript and runs that queue (1478-1482).
+    `getDefaultContext` is one context for the realm (1489-1493), and a context's constructor subscribes `destroy` to
+    the `beforeExit` of whichever `process` is ambient (1358-1365); `suppressDestroy` is emnapi's own door for an owner
+    that calls `destroy` itself (1367-1377).
+  - *So:* a process's first load makes its context with `createContext()`, calls `suppressDestroy()`, and its end
+    calls `destroy()`.
+- **One environment per initialization.**
+  - *Node:* each `process.dlopen` makes a new `napi_env` for the initializer it calls (`node_api.cc:790`), so an
+    initializer that loads another addon makes a second environment, and a later `dlopen` of the same file makes a
+    third over the one library (`node_binding.cc:445-522`).
+  - *emnapi:* a `napiModule`'s `init` makes one environment in its context and calls the initializer
+    (`emnapi-core.js:1096-1152`), and only once.
+  - *So:* each initialization is one emnapi module's `init` over the file's one instance, in the process's context:
+    the first is the module whose imports the instance was made with, each later one a `createNapiModule` of its own,
+    so a nested load and a reload each have an environment of their own.
+- **A failed initialization keeps its environment until the process ends.**
+  - *Node:* `napi_module_register_by_symbol` keeps the environment it made whatever the initializer does
+    (`node_api.cc:790-805`), and its teardown is the process environment's hook (64). A referenced thread-safe
+    function it made "will cause the event loop ... to remain alive until the thread-safe function is destroyed"
+    (`n-api.md:6692-6694`).
+  - *emnapi:* `init` throws with the environment it made (1131) still in its context, before `loaded` (1150).
+  - *So:* the loader tears nothing down; the error is the load's.
+- **The loop is held while emnapi-mt asks it.**
+  - *Node:* a referenced thread-safe function and queued async work hold the loop (`n-api.md:6692-6694`).
+  - *emnapi:* `emnapi-mt`'s C calls `_emnapi_runtime_keepalive_push` and `_pop` around both
+    (`threadsafe_function.c:99`, 146; `async_work.c:118`, 124), imports `emnapi-core.js` answers with nothing
+    (1312-1319) for its host to supply.
+  - *So:* the process's record answers them: a count of holds that starts and stops one owned handle of the process
+    (`node-lib/binding/handles.ts`, registered stopped).
+- **The process's end ends its addons.**
+  - *Node:* the environment's exit runs every `napi_env`'s teardown (above).
+  - *So:* the record's handle is closed with the run's other handles by `__releaseOwnedHandles`, which every end of a
+    run calls (`process.exit()`, the end of the run's entry, a kill of the run or of a shell job, the host's
+    `stopProcess`). Closing calls the context's `destroy` and stops the thread queues (§5). A Runtime made outside any
+    run has no end the engine sees, and its addons live as long as it does, as its other handles do.
+- **Callbacks into an addon are emnapi's.** Its main-thread `uv_async_send` and `uv_close` (`_emnapi_set_immediate`,
+  the context's `feature.setImmediate`, `emnapi-core.js:1323-1327`), its finalizer queue (`NodeEnv.enqueueFinalizer`
+  and its `_setImmediate`, `emnapi.js:800-812`, drained by `drainFinalizerQueue`, 813-818) and `_emnapi_next_tick` (1331-1336) are emnapi's own and Tabnode leaves
+  them as they are. After `destroy` an environment cannot call into JavaScript (`canCallIntoJs`, `emnapi.js:1471-1473`).
+  The one Tabnode supplies is the thread queue's receiver (§5), in place of emnapi's worker listener, which calls each
+  callback through the table as that listener does (`emnapi-core.js:1236-1239`), in the loading process's run, and stops
+  with the process.
+- **The loading process's tree loads the file.**
+  - *Node:* `DLOpen` loads into the calling environment (`node_binding.cc:446`).
+  - *So:* the tree's `TREE_NATIVE` is chosen, and its `load` called, inside the loading process's resource scope
+    (`withNodeResourceScope`), so `callingTree` answers that process's tree whatever is ambient.
 
 ### 7. What the substrate supplies
 
@@ -299,8 +310,8 @@ Under a tree capability beside `TREE_SOCKETS` (`TREE_NATIVE`, `src/host-native.t
   `wasm32-linux-muslwali`, and `bin/link-side-module`, which links and records a `-shared` side module.
 - **Extrapolation:** that one memory per addon-loading process keeps the tab's region count where it is, since the
   substrate's terminal processes are few; that compiling a file twice (§2) costs little beside its instantiation for an
-  addon of node-pty's size; and that writing lent copies back at each outermost call (§4) is cheap for a pty, whose
-  bytes move through descriptors, not buffers an addon is handed.
+  addon of node-pty's size; and that emnapi's copy boundary (§4) costs a pty nothing, since its bytes move through
+  descriptors, not buffers an addon is handed.
 - **Coded, not run.** `src/native-addon.ts`, `src/native-queue.ts`, `src/native-thread.ts`, `src/host-native.ts` and
   `runtime.ts`'s two entry points are §1-§7. No substrate on its main offers `TREE_NATIVE` yet (its `load`, over
   `WaliDynamicLinker`, is the kernel lane's), so every `.node` that is a WALI Node-API module fails `<path>: a tab runs

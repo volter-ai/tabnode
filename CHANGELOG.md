@@ -6,16 +6,15 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 - **A `.node` that is a WALI Node-API module loads** (ADR-0011). `require` of a `.node` caches its module and loads it
   through the `.node` extension, which is `process.dlopen(module, filename)` of the run's process, so a wrapper of
-  `process.dlopen` applies; `process.dlopen` initializes its own target's `module.exports` with a new environment
-  every time, over the one instance a process keeps per file. The file is validated by the engine's WebAssembly
-  compiler before anything of it is read, then loaded into its process's memory by the tree's dynamic linker
-  (`TREE_NATIVE`, `src/host-native.ts`); its Node-API is emnapi's (`@emnapi/core` and `@emnapi/runtime` 1.11.3) on a
-  context of its process's own, which the process's end tears down with every environment, its queues and its loop
-  hold, and a throwing initializer's environment is torn down at once. A JavaScript buffer's data pointer is emnapi's
-  copy, written back to the buffer when the outermost call into the addon returns. Threads wake the main thread
-  through a shared queue, and `@volter/tabnode/native-thread` is a thread worker's side of the imports. Any other
-  `.node` fails `ERR_DLOPEN_FAILED` as Node's `dlopen` does: `invalid ELF header`, the compiler's refusal, "Module did
-  not self-register", `cannot dynamically load executable`, `undefined symbol: <name>`, or, in a tree that offers no
+  `process.dlopen` applies; `process.dlopen` initializes its own target's `module.exports` with an environment of its
+  own every time, over the one instance a process keeps per file. The file is validated by the engine's WebAssembly
+  compiler before anything of it is read, then loaded into its process's memory by the loading process's tree
+  (`TREE_NATIVE`, `src/host-native.ts`). Its Node-API is emnapi's (`@emnapi/core` and `@emnapi/runtime` 1.11.3) as
+  emnapi behaves, its memory boundary included, on a context of the process's own with the process's `Buffer`, which
+  the process's end destroys. Threads wake the main thread through a shared queue, and
+  `@volter/tabnode/native-thread` is a thread worker's side of the imports. Any other `.node` fails
+  `ERR_DLOPEN_FAILED` as Node's `dlopen` does: `invalid ELF header`, the compiler's refusal, "Module did not
+  self-register", `cannot dynamically load executable`, `undefined symbol: <name>`, or, in a tree that offers no
   `TREE_NATIVE`, `a tab runs no native code`.
 - **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
   offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
