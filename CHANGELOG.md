@@ -4,11 +4,13 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
-- **A nested `node` the realm runs gives back what it took, on every exit.** A `node` a run's shell runs in the
-  same realm (`nestedNodeToken`: its pid under the run's, the run's streams registered under its token) that is
-  refused before it starts (an option without its value, no script, a missing module) now exits with that code, is
-  reaped by its parent and gives back its number and its streams registration; one that runs to its end gives back
-  its streams registration too, as a hosted one does.
+- **A nested `node` the realm runs gives back what it took, on every exit** (ADR-0010 §2). A `node` a run's shell runs
+  in the same realm (`nestedNodeToken`: its pid under the run's, the run's streams registered under its token) is
+  released by one scope from that moment. A refusal (an option without its value, no script, a missing module) exits
+  with its code, and its completion with its status. A startup that throws partway (its filesystem, its stderr sink,
+  its runtime, its input, its channel) is killed. Either way its parent reaps it, its number is forgotten, its
+  registration of the parent's streams goes, and whatever of its run record, runtime, input, terminal and channel was
+  started is released.
 - **`dns` takes Node's own front and Ada's own name conversion** (ADR-0009 §3).
   - **Node's own checks and answers:** names are validated with Node's own `validateStringWithoutNullBytes`.
     Literals are answered where Node's own `isIP` recognises the string as given, so `[::1]` is no longer

@@ -140,6 +140,15 @@ host, and:
   engine's shell) is a process of that table. Its stdio is the engine's in-memory pairing, which takes every write
   whole, so its output is complete when its write returns, as Node's file and terminal writes are, and nothing waits
   for it.
+- **The same-realm starter holds one scope from the nested identity to its release.** `launchNode` takes a nested
+  `node`'s identity (`nestedNodeToken`: its pid under its parent run's, and its registration of the parent's streams)
+  and, from that moment, everything it starts for the process (its run record, its runtime and process, its input,
+  terminal and channel, its rejection and exception reports) is released by one `finally`, however the start ends: a
+  returned outcome (a refusal of its options or script, or its completion) exits with that outcome's status, and a
+  thrown startup failure, partway through any of it, is killed (`SIGKILL`); either way its parent reaps it, its
+  number is forgotten and its registration of the parent's streams goes (only its own key, the parent's streams
+  untouched). Each release covers what was started and skips what was not. A child the Node process host admits is
+  the host's to end (`runHostedNode`'s branch).
 
 ### 3. A terminal's mode is set through the run's terminal
 

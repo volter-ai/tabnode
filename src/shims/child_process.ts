@@ -540,9 +540,27 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const nested = parentToken !== null && (shellRuns.has(parentToken) || hostedNodes.has(parentToken));
   const runToken = nested ? nestedNodeToken(parentToken!, args, launch.cwd, launch.env) : parentToken;
   const streams = runToken === null ? undefined : runStreamsFor(runToken);
+  // The starter's one scope (ADR-0010 §2): from the nested identity just taken to its release, everything started for
+  // the process is released by the one `finally` below, however the start ends. A returned outcome (a refusal or the
+  // completion) exits with its status; a thrown startup failure is killed. What is not yet started is skipped.
+  let ended: CommandOutcome | undefined;
+  let hosted = false;
+  let reaper: ProcessToken | null | undefined = nested ? parentToken : undefined;
+  let guest: ReturnType<Runtime['getProcess']> | undefined;
+  let releaseRun: (() => void) | null | undefined;
+  let detachRejections: (() => void) | undefined;
+  let detachUncaught: (() => void) | undefined;
+  let terminalMode: false | 'raw' | 'io' = false;
+  let stopResize: (() => void) | undefined;
+  let inputActive = true;
+  let inputIterator: AsyncIterator<Uint8Array> | undefined;
+  try {
+  ended = await (async (): Promise<CommandOutcome> => {
   const credentials = copyProcessCredentials(launch.credentials ?? streams?.credentials);
   const processHost = nodeProcessHostFor(runToken);
   if (processHost && runToken !== null) {
+    // The host's process ends it, and this branch releases what it took.
+    hosted = true;
     if (!nested) hostedNodes.add(runToken);
     // A nested node is its parent run's child: the host's realm reports its exit, and its end is the parent's wait.
     const own = nested ? { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! } : undefined;
@@ -565,19 +583,6 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       if (nested) releaseRunStreams(runToken);
     }
   }
-
-  // A nested node refused before it runs (its options, its script) has lived its whole life here: it exits with the
-  // refusal's code, its parent reaps it, and the number and the parent's streams nestedNodeToken gave it go back.
-  const unstarted = (outcome: CommandOutcome): CommandOutcome => {
-    if (nested && runToken !== null) {
-      const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
-      exitRunProcess(own.pid, own.waiter, outcome.exitCode, null, parentToken);
-      reapRunProcess(own.pid, own.waiter, outcome.exitCode, null, parentToken);
-      forgetRunPid(runToken);
-      releaseRunStreams(runToken);
-    }
-    return outcome;
-  };
 
   // Node reads its own options before the script: `node --turbo-fast-api-calls
   // file.js a b` runs file.js with `a b`, and the options it were given are
@@ -634,13 +639,13 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       break;
     }
     if (option === '-e' || option === '--eval' || option === '-p' || option === '--print' || option === '-pe') {
-      if (first + 1 >= args.length) return unstarted({ stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 });
+      if (first + 1 >= args.length) return { stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 };
       evaluated = { source: args[first + 1]!, print: option.includes('p') };
       execArgv.push(option, args[first + 1]!);
       first += 2;
       break;
     }
-    if ((option === '-r' || option === '--require' || option === '--import') && first + 1 >= args.length) return unstarted({ stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 });
+    if ((option === '-r' || option === '--require' || option === '--import') && first + 1 >= args.length) return { stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 };
     // An option that takes its value as the next word consumes it here, as Node's option parser does.
     if (NODE_VALUE_OPTIONS.has(option) && first + 1 < args.length) {
       execArgv.push(option, args[first + 1]!);
@@ -671,9 +676,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     streams.onStderrBytes(new TextEncoder().encode(text));
     return { stdout: '', stderr: '', exitCode: 1 };
   };
-  if (evaluated === null && !args[script]) return unstarted(refused('Usage: node <script.js> [args...]\n'));
+  if (evaluated === null && !args[script]) return refused('Usage: node <script.js> [args...]\n');
   if (evaluated === null && resolvedPath === null) {
-    return unstarted(refused(`Error: Cannot find module '${__resolvePath(launch.cwd, args[script]!)}'\n`));
+    return refused(`Error: Cannot find module '${__resolvePath(launch.cwd, args[script]!)}'\n`);
   }
 
   let stdout = '';
@@ -816,8 +821,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   if (forkedHere) setRunPid(runToken, mintPid(), 0, { argv: [...launch.argv], cwd: launch.cwd, env: launch.env });
   // Whose wait its end is: a nested node's parent run, a run forked here the realm's; any other run's parent is
   // elsewhere (the kernel's exec'd node: its own channel reports its exit) or is the host's.
-  const reaper: ProcessToken | null | undefined = nested ? parentToken : forkedHere ? null : undefined;
-  let runEnd: number | undefined;
+  if (forkedHere) reaper = null;
   // Create a runtime with output capture for both console.log AND process.stdout.write
   const runtime = new Runtime(tree, {
     ...(launch.moduleEvaluationObserver ? { moduleEvaluationObserver: launch.moduleEvaluationObserver } : {}),
@@ -862,7 +866,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // This run's number, recorded under its name, with the process that waits for it: `process.kill(pid, 0)` asks the
   // registry whether a pid is a live process.
   if (runToken !== null) setRunPid(runToken, proc.pid, runWaiterOf(runToken) ?? proc.ppid, { argv: [...launch.argv], cwd: launch.cwd, env: launch.env });
-  const releaseRun = runToken === null ? null : __recordRun(runToken, {
+  guest = proc;
+  releaseRun = runToken === null ? null : __recordRun(runToken, {
     process: proc,
     stdout: appendStdout,
     stderr: appendStderr,
@@ -989,9 +994,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   if (stdinRing) (proc as unknown as Record<symbol, unknown>)[kStdinRing] = stdinRing;
 
   const terminal = streams?.terminal;
-  // The terminal's mode is fd 0's termios, set by the host (ADR-0010 §3); the mode this run set is put back to normal
-  // at its end, as Node's ResetStdio restores its terminal.
-  let terminalMode: false | 'raw' | 'io' = false;
+  // The terminal's mode is fd 0's termios, set by the host (ADR-0010 §3); the mode this run set (`terminalMode`) is put
+  // back to normal at its end, as Node's ResetStdio restores its terminal.
   const runTerminal: RunTerminal | undefined = terminal && {
     get columns() { return terminal.columns; },
     get rows() { return terminal.rows; },
@@ -1026,9 +1030,6 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       stream.emit('resize');
     }
   };
-  let stopResize: (() => void) | undefined;
-  let inputActive = true;
-  let inputIterator: AsyncIterator<Uint8Array> | undefined;
   const readableInput = proc.stdin as unknown as { listenerCount(event: string): number; readableLength: number; readableHighWaterMark: number; readableFlowing: boolean | null; readableEnded?: boolean; _readableState?: { reading?: boolean; needReadable?: boolean } };
   const inputReading = () => readableInput.readableFlowing === true || readableInput._readableState?.reading === true
     || readableInput._readableState?.needReadable === true || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0;
@@ -1114,7 +1115,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     const status = exiting && typeof proc.exitCode === 'number' ? proc.exitCode : 1;
     try { proc.exit(status); } finally { syncExecution = wasSync; }
   };
-  const detachRejections = __listenForUnhandledRejections(proc, onUnhandledRejection,
+  detachRejections = __listenForUnhandledRejections(proc, onUnhandledRejection,
     runToken !== null && nodeProcessRealmToken() === runToken);
 
   // An exception nobody caught ends the program it was thrown in, as it ends
@@ -1162,8 +1163,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     const status = exiting && typeof proc.exitCode === 'number' ? proc.exitCode : 1;
     try { proc.exit(status); } finally { syncExecution = wasSync; }
   };
-  const detachUncaught = __onUncaughtException(proc, onUncaughtException);
-  try {
+  detachUncaught = __onUncaughtException(proc, onUncaughtException);
   // The host's pipe delivers bytes after the entry has attached its reader.
   // EOF closes that same run's stream, never the most recently started run.
   // A shared ring is drained into the guest's stdin when the stream asks for
@@ -1514,49 +1514,42 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     }
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
     if (typeof proc !== 'undefined') (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
-    return { stdout, stderr, exitCode: runEnd = exitCalled ? await exitPromise : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
+    return { stdout, stderr, exitCode: exitCalled ? await exitPromise : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
   } finally {
     if (streams) streams.stdin = null;
   }
+  })();
+  return ended;
   } finally {
-    detachRejections();
-    detachUncaught();
-    inputActive = false;
-    try { void Promise.resolve(inputIterator?.return?.()).catch(() => {}); } catch { /* producer cleanup cannot prevent process cleanup */ }
-    try { stopResize?.(); } catch { /* host cleanup cannot prevent handle release */ }
-    // ResetStdio: a terminal this run left raw is put back, its failure ignored.
-    if (terminalMode !== false) { try { terminal?.setRawMode?.(false); } catch { /* as tcsetattr's failure at exit is */ } }
-    // A process that ends releases its listening sockets, whatever ended it:
-    // a return from the entry, a throw, an exit. Only `process.exit` released
-    // them here, so `vite --host` — which opened 5173 and then died at startup
-    // with an ESLint error, exit 1 — left 5173 in the registry with nothing
-    // behind it, and the page went on previewing a port no process held.
-    // Safe twice: a run that exited already emptied its own entries.
-    if (runToken !== null) { __releaseOwnedServers(runToken, false); __releaseOwnedHandles(runToken); }
-    // A run this realm forked for itself exits with its end and, its end being its parent's wait, is reaped. One whose
-    // launch threw (the runtime's failure, thrown to the caller) passed no code: it is killed.
-    if (reaper !== undefined && runToken !== null) {
-      const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
-      const [code, signal] = runEnd === undefined ? [0, 'SIGKILL'] : [runEnd, null];
-      exitRunProcess(own.pid, own.waiter, code, signal, reaper);
-      reapRunProcess(own.pid, own.waiter, code, signal, reaper);
+    if (!hosted) {
+      detachRejections?.();
+      detachUncaught?.();
+      inputActive = false;
+      try { void Promise.resolve(inputIterator?.return?.()).catch(() => {}); } catch { /* producer cleanup cannot prevent process cleanup */ }
+      try { stopResize?.(); } catch { /* host cleanup cannot prevent handle release */ }
+      // ResetStdio: a terminal this run left raw is put back, its failure ignored.
+      if (terminalMode !== false) { try { streams?.terminal?.setRawMode?.(false); } catch { /* as tcsetattr's failure at exit is */ } }
+      // A process that ends releases its listening sockets and handles, whatever ended it: a return from the entry, a
+      // refusal, a throw, an exit. Safe twice: a run that exited already emptied its own entries.
+      if (runToken !== null) { __releaseOwnedServers(runToken, false); __releaseOwnedHandles(runToken); }
+      // Its parent reaps it (a nested node's run, or the realm for one forked here): with the status a returned
+      // outcome carries, or killed where the start threw.
+      if (reaper !== undefined && runToken !== null) {
+        const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
+        const [code, signal] = ended === undefined ? [0, 'SIGKILL'] : [ended.exitCode, null];
+        exitRunProcess(own.pid, own.waiter, code, signal, reaper);
+        reapRunProcess(own.pid, own.waiter, code, signal, reaper);
+      }
+      // A run that has ended is no longer a process: the number it wrote into
+      // a lock file answers ESRCH from here on, which is how a stale lock is
+      // stolen rather than waited on.
+      if (runToken !== null) forgetRunPid(runToken);
+      // A nested node's registration of its parent's streams (nestedNodeToken) goes with it, only its own key.
+      if (nested && runToken !== null) releaseRunStreams(runToken);
+      // A program that has ended holds no timers, as an ended Node process holds none.
+      if (guest) stopGuestTimers(guest);
+      releaseRun?.();
     }
-    // A run that has ended is no longer a process: the number it wrote into
-    // a lock file answers ESRCH from here on, which is how a stale lock is
-    // stolen rather than waited on.
-    if (runToken !== null) forgetRunPid(runToken);
-    // A nested node's registration of its parent's streams (nestedNodeToken) goes with it, as the hosted branch's does.
-    if (nested && runToken !== null) releaseRunStreams(runToken);
-    // A program that has ended holds no timers, as an ended Node process
-    // holds none. `process.exit` asked for them to be stopped on a tick of
-    // its own, and the run was taken out of the registry here before that
-    // tick came, so the stop found nothing: an `setInterval` whose callback
-    // threw ended its program and then went on firing forever, into a run
-    // that no longer had anywhere to report an exception, and out to the
-    // realm. The run's own timers stop here, while the process is still in
-    // hand; the scheduled stop then finds nothing left to do.
-    stopGuestTimers(proc);
-    releaseRun?.();
   }
 }
 
