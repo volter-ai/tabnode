@@ -35,7 +35,7 @@ import { kStdinRing, stdinRingWaitsAsync, type StdinReader } from '../../stdin-r
 // The guest stdin stream's engine-side read (shims/process.ts `kEngineStdinRead`),
 // named here so this binding does not import the process shim.
 const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
-import { allocateFd, handleForFd, kernelSocketType } from './fds';
+import { allocateFd, handleForFd } from './fds';
 import { treeDescriptorsOf, type TreeDescriptors, type TreeDescriptorStats, type TreeAdvisoryLocks } from '../../tree-descriptors';
 import { callingTree, treeSocketsOf } from '../../host-sockets';
 import { KernelStreamWrap, kHandleFd } from './kernel_stream';
@@ -437,11 +437,11 @@ export type DescriptorWriter = ((chunk: string | Uint8Array) => void) & {
   /** The child has ended: its own reference to the description goes (a dup the tree made). */
   release?(): void;
   /**
-   * A socket's writer: its kernel stream's `whenWritten`, settling once every byte given is written, failed or cancelled;
-   * none where nothing waits (ADR-0010 §2).
+   * Settles once every byte given so far is written, failed or cancelled: its kernel stream's `whenWritten`, or for
+   * the parent's own fd 1 or 2 the parent run's `outputWritten`; none where nothing waits (ADR-0010 §2).
    */
   settled?(): Promise<void> | undefined;
-  /** Its kernel stream's `writeBlocking`, for a realm that may block. */
+  /** The same, written out by a realm that may block. */
   settleBlocking?(): void;
 };
 
@@ -494,43 +494,29 @@ function descriptorWriterOf(fd: number, { sayFailures }: { sayFailures: boolean 
   // A description a tree owns is written through it: one offset, the
   // owner's, shared with the parent's copy as a dup'd descriptor's is.
   const owner = ownerOf(fd);
-  if (owner) {
-    // The child's own number for the description, taken now, while the parent's is open: the parent
-    // closing (or reusing) its number then changes nothing for the child (fork's copy plus dup2).
-    let own: number | undefined;
-    try { own = owner.dup?.(fd); } catch { own = undefined; }
-    return treeWriter(owner, own ?? fd, own, sayFailures);
-  }
+  if (owner) return ownedDescriptorWriter(owner, fd, false, sayFailures);
   // The parent's own fd 1 or 2 (or a descriptor it opened on /dev/stdout):
   // the child writes the parent's stream, read against the parent, whose
-  // code is the code running now.
+  // code is the code running now, and its bytes are written when the
+  // parent's are (ADR-0010 §2).
   const standard = stdioOf(fd);
   if (standard !== null && standard !== 0 && handleForFd(fd) === undefined) {
     const parent = currentOwner();
-    return (chunk) => { try { writeStdio(standard, bytesOf(chunk), parent); } catch { /* a closed stream drops the child's output */ } };
+    const writer: DescriptorWriter = (chunk) => { try { writeStdio(standard, bytesOf(chunk), parent); } catch { /* a closed stream drops the child's output */ } };
+    const run = parent === null ? undefined : __runFor(parent);
+    if (run?.outputWritten) writer.settled = () => run.outputWritten!();
+    if (run?.outputWrittenBlocking) writer.settleBlocking = () => { run.outputWrittenBlocking!(); };
+    return writer;
   }
   const stream = handleForFd(fd);
   // A kernel stream the engine holds, and a descriptor it holds no record of in a process whose tree owns its
   // descriptions (a kernel socket, a file its host gave it), are the kernel's (ADR-0010 §1): a dup says whether the
-  // process holds the description and is the child's own number for it. A socket is written by a kernel stream opened
-  // on the dup, the one owner of a socket's writes and their completion; any other description is the tree's write(2).
+  // process holds the description.
   const kernelFd = stream instanceof KernelStreamWrap && stream.kernelBacked ? stream[kHandleFd]
     : stream === undefined && !openFiles.has(fd) ? fd : undefined;
   if (kernelFd !== undefined) {
-    const tree = callingTree();
-    const kernel = treeDescriptorsOf(tree);
-    if (!kernel?.dup || kernelFd < 0) return null;
-    let own: number;
-    try { own = kernel.dup(kernelFd); } catch { return null; }
-    const sockets = treeSocketsOf(tree);
-    if (!sockets || kernelSocketType(sockets, own) === undefined) return treeWriter(kernel, own, own, sayFailures);
-    const output = KernelStreamWrap.forWriting(own);
-    if (!output) { try { kernel.close(own); } catch { /* gone already */ } return null; }
-    const writer: DescriptorWriter = (chunk) => { if (!output.closed) output.writeBuffer(new WriteWrap(), bytesOf(chunk)); };
-    writer.settled = () => output.whenWritten();
-    writer.settleBlocking = () => { output.writeBlocking(); };
-    writer.release = () => { output.close(); };
-    return writer;
+    const kernel = treeDescriptorsOf(callingTree());
+    return kernel?.dup && kernelFd >= 0 ? ownedDescriptorWriter(kernel, kernelFd, true, sayFailures) : null;
   }
   if (stream instanceof LibuvStreamWrap) {
     return (chunk) => { try { stream.writeBuffer(new WriteWrap(), bytesOf(chunk)); } catch { /* a closed stream drops the child's output, as a closed pipe does */ } };
@@ -561,6 +547,35 @@ function descriptorWriterOf(fd: number, { sayFailures }: { sayFailures: boolean 
   };
 }
 const descriptorCursors = new WeakMap<object, { position: number }>();
+
+/**
+ * A child's writes to `fd`, a description `owner` (a tree that owns its descriptions) holds, on the child's own
+ * duplicate of it, taken now while the parent's number is open, so the parent's close or reuse of it changes nothing
+ * for the child (fork's copy plus dup2). `held`: the dup is the kernel's answer whether the process holds `fd`, and none
+ * is a writer for nothing; else a tree without dup writes by the parent's number. Which mechanism writes is the
+ * description's kind, by its fstat (ADR-0010 §1): a regular file or block device the tree's write(2), which takes every
+ * byte; a socket, FIFO or pipe a kernel stream on the dup made non-blocking (uv_pipe_open), and a terminal or other
+ * character device one written with blocking writes, its flags left as they are (uv_tty_init without a reopen, and
+ * Node's file write of a character device), each counting its writes' progress and completing through its queue.
+ */
+function ownedDescriptorWriter(owner: TreeDescriptors, fd: number, held: boolean, sayFailures: boolean): DescriptorWriter | null {
+  let own: number | undefined;
+  try { own = owner.dup?.(fd); } catch { if (held) return null; }
+  if (held && own === undefined) return null;
+  let type: number | undefined;
+  try { type = Number(owner.fstat(own ?? fd).mode) & S_IFMT; } catch { type = undefined; }
+  const sockets = treeSocketsOf(callingTree());
+  if (own === undefined || !sockets || type === undefined || type === S_IFREG || type === S_IFBLK) return treeWriter(owner, own ?? fd, own, sayFailures);
+  const output = KernelStreamWrap.forWriting(own, type === S_IFSOCK, type === S_IFCHR ? 'blocking' : 'stream');
+  if (!output) { try { owner.close(own); } catch { /* gone already */ } return null; }
+  const writer: DescriptorWriter = (chunk) => {
+    if (!output.closed) output.writeBuffer(new WriteWrap(), typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk);
+  };
+  writer.settled = () => output.whenWritten();
+  writer.settleBlocking = () => { output.writeBlocking(); };
+  writer.release = () => { output.close(); };
+  return writer;
+}
 
 /** A child's writes through `owner`'s write(2) of `target`; `own` its own duplicate, closed when the child has ended. */
 function treeWriter(owner: TreeDescriptors, target: number, own: number | undefined, sayFailures: boolean): DescriptorWriter {

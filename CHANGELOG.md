@@ -11,11 +11,13 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   a child a host runs as its own process is started with them (`NodeProcessLaunch.descriptors`, the new
   `ChildProcessHostRequest.kernelDescriptors`), its fds 0 to 2 and its pipe ends blocking, and the parent closes the
   ends it made for it after the start and relays nothing of them (no sink, no input). A child the engine runs in its
-  own realm is served from the parent's ends; its normal end waits, while the run is still live and killable, for
-  every write the engine made for it (`RunRequest.outputWritten`): each socket write, to those ends or to an
-  inherited socket, is a kernel stream's (`KernelStreamWrap.whenWritten`, `writeBlocking` for a synchronous child).
-  Whether an inherited number is the parent's descriptor is the kernel's answer; an inherited description that is no
-  socket is the tree's `write(2)`. `spawn` and `spawnSync` share one preparation
+  own realm is served from the parent's ends. A run's process is ended at one place, `endRunProcess`, by the code that
+  numbered it: a normal end waits there, the run still a process (its pid live, signals delivered), for every write
+  the engine made for it (`RunStreams.outputWritten`, its parent's sink included for an inherited fd 1 or 2), and a
+  signal ends it at once. Every write a description can take in part (a socket, a FIFO or pipe, a terminal) is a
+  kernel stream's (`KernelStreamWrap`: `whenWritten` for the writes queued before it, `writeBlocking`); a regular
+  file is one `write(2)`. `TreeSockets` adds `write` (`write(2)`, the bytes taken or a negative errno). Whether an
+  inherited number is the parent's descriptor is the kernel's answer. `spawn` and `spawnSync` share one preparation
   (`child_stdio.ts`).
 - **A terminal's mode is its host's termios** (ADR-0010 §3). `RunStreams.terminal.setRawMode(false | 'raw' | 'io')`
   is fd 0's mode as `uv_tty_set_mode` sets it; a `TTY` on fd 0 sets it, and a run's `process.stdin.setRawMode` is

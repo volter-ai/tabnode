@@ -96,11 +96,16 @@ writes them in its loop (§4).
   - a regular file or a block device takes every byte of a `write(2)` (POSIX: a short write there is only a full disk
     or a signal), so it is written once, through the tree's `write(2)`, as is a file of the engine's own table;
   - every other description (a socket, a FIFO or pipe, a terminal or other character device) can take part of a write
-    or answer `EAGAIN`, so it is written by a kernel stream opened on the duplicate (`KernelStreamWrap`), made
-    non-blocking as `uv_pipe_open` and `uv_tty_init` make a descriptor Node writes, whose queue keeps what a write did
-    not take and counts each write's real progress: `sendto(2)` for a socket, `TreeSockets.write` (`write(2)`,
-    answering the bytes taken or a negative errno, never throwing) for any other. That queue is the one owner of
-    those writes, their readiness and their completion, as it is for the pipes the spawn makes.
+    or answer `EAGAIN`, so it is written by a kernel stream opened on the duplicate (`KernelStreamWrap`), whose queue
+    keeps what a write did not take and counts each write's real progress: `sendto(2)` for a socket,
+    `TreeSockets.write` (`write(2)`, answering the bytes taken or a negative errno, never throwing) for any other. That
+    queue is the one owner of those writes, their readiness and their completion, as it is for the pipes the spawn
+    makes.
+  - Its shared description's flags are changed exactly as libuv changes them for a descriptor Node writes: a socket,
+    FIFO or pipe is made non-blocking on the shared description, as `uv_pipe_open` makes it; a terminal or other
+    character device is left as it is and written with blocking writes, as `uv_tty_init` writes a terminal it does not
+    reopen (it reopens a slave by its `ttyname`, which the engine has no door to read) and as Node writes a character
+    device that is no terminal (`UV_FILE`).
 - **`'wrap'`** (a stream handed as stdio) is the stream's descriptor (`uv__stream_fd`), where it is a kernel one.
 - **`'ignore'` at 0 to 2 is `/dev/null`**, opened through the tree's descriptor calls (read-only for 0, read-write for
   1 and 2, close-on-exec as the tree's `open` makes every file) and given to the child at that number.
@@ -144,12 +149,15 @@ sinks (the child's writes are writes to its kernel end, the parent's writes to f
   - *One lifetime owner: the run's process entry* (`src/process-tokens.ts`): its pid in the process table, live and
     in its group, its signal receiver (`tokenOfPid`, `__signalOwnedProcess`), its run record and its streams. The run's
     starter makes it (`setRunPid`: `startChildRun` for a spawned child, `nestedNodeToken` for a node a shell runs,
-    `launchNode` for a run it forks itself, `runHostedNode`, `spawnSync`) and only the starter ends it, by one call,
-    `endRunProcess(token, end, output)`: a normal end waits, with the entry live, for `output`, then the entry is
-    exited (where this realm ran it), reaped and forgotten, and the run record released, in that order; a signal
-    delivered to the entry while it waits (`kill`, `process.kill`, a group's, the parent's `ChildProcess.kill`) ends
-    it at once with that signal, cancelling the wait. No other code forgets, exits, reaps or releases a run it did not
-    number: `launchNode`'s end for a run its caller numbered only says how the guest ended.
+    `launchNode` for a run it forks itself, `runNode` and `container.run` for a run their host numbered,
+    `runHostedNode`, `shell-jobs.ts` for a job, `spawnSync` for its children) and only the starter ends it, by one call,
+    `endRunProcess(token, code, signal, output, retire)`: a normal end waits, with the entry live, for `output`; then
+    `retire` (the starter's own exit, where this realm ran the run, and reap), the entry forgotten and the run record
+    released, in that order, and only then is the parent told. A signal that ends a process, delivered to the entry
+    while it waits (`kill`, `process.kill`, a group's, the parent's `ChildProcess.kill`), ends it at once with that
+    signal, cancelling the wait; one whose default is to be ignored, or to stop (not kept), changes nothing. No other
+    code forgets, exits, reaps or releases a run it did not number: `launchNode`'s end for a run its caller numbered
+    only says how the guest ended.
   - *One write mechanism* (§1): every write the engine makes for a child that a description can take in part is a
     `KernelStreamWrap`'s, to a child end the spawn made or to an inherited description. `whenWritten()` settles once
     every write queued before the call has been sent, failed or cancelled, so a run waits for its own bytes and not a
@@ -211,6 +219,11 @@ process with socket calls and for a child its host runs, does what `SyncProcessR
 - **What is captured is the stdio's choice**, made once: an output of the result is a pipe the child writes (Node's
   `writable`, by default every pipe but fd 0), read from the stdio the caller gave, whatever the loop did with it;
   readiness and end of file govern only the loop. Its bytes are what the loop kept, empty where it kept none.
+- **The engine's own synchronous worker** (`runSyncChild`, `src/shims/sync-child.ts`): a second engine on a thread
+  over the parent's tree, for a realm whose host gives no synchronous door (`runSync`), or does not own every child of
+  the run (`ownsAllSyncChildren`) and the program is the engine's own. Its child is numbered and ended through the
+  same owner (§2); its stdio is the bytes the worker hands back, written to the inherited sinks before it ends. A host
+  that offers the kernel's door and owns every child (the substrate's) never reaches it.
 - **`maxBuffer` is Node's on every route**: positive, it limits the captured bytes of fds 1 and 2 together; zero or
   none sets no limit. The binding reads it once and uses that for the kernel loop, the host's `runSync` request (where
   it counts) and the engine's own synchronous worker.

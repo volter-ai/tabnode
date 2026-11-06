@@ -20,7 +20,7 @@ import { UV_EPERM, UV_EINVAL, UV_ENOSYS, UV_ENOENT, UV_EACCES, UV_ENOBUFS, UV_ET
 import { runSyncChild, syncChildRefusal } from '../../shims/sync-child';
 import { __substrateArgvFor, __substrateHostRuns, __substrateLineFor, __substrateRunsNode, __substrateShellLine, __substrateShellWord } from '../../shims/command-line';
 import { inheritedWriter } from './process_wrap';
-import { __currentProcessToken, enterRun, exitRunProcess, forgetRunPid, mintPid, reapRunProcess, runPidOf, setRunPid, signalPid, type ProcessToken } from '../../process-tokens';
+import { __currentProcessToken, endRunProcess, enterRun, exitRunProcess, mintPid, reapRunProcess, runPidOf, setRunPid, signalPid, type ProcessToken } from '../../process-tokens';
 import { callingSockets, callingTree, linux, type PollDescriptor, type TreeSockets } from '../../host-sockets';
 import { prepareChildStdio, type ChildStdioEntry, type PreparedChildStdio } from './child_stdio';
 import { treeDescriptorsOf, type TreeDescriptors } from '../../tree-descriptors';
@@ -281,9 +281,13 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
     // Only a child with neither an image handoff nor an already posted end
     // permits a local launch failure. The kernel's actual end wins at reap;
     // a host rejection must not kill a handed image or replace a posted end.
-    if (!answer.started && answer.hostStarted !== true && answer.endPosted !== true) exitRunProcess(childPid, parentPid, 0, 'SIGKILL', owner);
-    const ended = reapRunProcess(childPid, parentPid, answer.status ?? 0, answer.signal, owner);
-    forgetRunPid(token);
+    // Its end is the one end of a process (ADR-0010 §2), as it is numbered here; its output is written already (the
+    // loop drained its pipes, the sinks above were written out), so it ends before this returns.
+    let ended = { code: answer.status ?? 0, signal: answer.signal };
+    void endRunProcess(token, answer.status ?? 0, answer.signal, undefined, () => {
+      if (!answer.started && answer.hostStarted !== true && answer.endPosted !== true) exitRunProcess(childPid, parentPid, 0, 'SIGKILL', owner);
+      ended = reapRunProcess(childPid, parentPid, answer.status ?? 0, answer.signal, owner);
+    });
     // A working directory that is not there is the child's ENOENT, as Node reports a bad `cwd` for a spawn.
     if (!answer.started && (answer.error === 'ENOENT' || answer.error === 'ENOTDIR')) return nothing(UV_ENOENT, childPid);
     if (!answer.started) return refusedBecause(answer.refusal ?? 'the host did not start the child', childPid);
@@ -324,6 +328,25 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
   // A realm that cannot run a synchronous child of the engine's own says which of its reasons it is.
   const refusal = syncChildRefusal();
   if (refusal !== null) { releaseSinks(); return refusedBecause(refusal); }
+  // The worker's child is a process too, numbered here and ended here by the one end of a process (ADR-0010 §2).
+  const workerOwner = __currentProcessToken();
+  const workerParent = runPidOf(workerOwner) ?? 0;
+  const workerToken = `sync-child-${nextSyncChild++}`;
+  let workerPid: number;
+  try { workerPid = mintPid(workerParent, false, workerOwner); }
+  catch (cause) {
+    releaseSinks();
+    const code = (cause as { code?: string })?.code;
+    if (code === 'EPERM' || code === 'EINVAL') return nothing(code === 'EPERM' ? UV_EPERM : UV_EINVAL, 0);
+    throw cause;
+  }
+  setRunPid(workerToken, workerPid, workerParent, { argv, ...(cwd ? { cwd } : {}), ...(env ? { env } : {}) }, workerOwner);
+  const endWorker = (status: number, signal: string | null): void => {
+    void endRunProcess(workerToken, status, signal, undefined, (code, ended) => {
+      exitRunProcess(workerPid, workerParent, code, ended, workerOwner);
+      reapRunProcess(workerPid, workerParent, code, ended, workerOwner);
+    });
+  };
   let answer;
   try {
     // A child that is the engine's Node goes by its argv, as `spawn` starts
@@ -342,9 +365,12 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
     });
   } catch {
     releaseSinks();
-    return nothing(UV_ENOSYS);
+    endWorker(0, 'SIGKILL');
+    return nothing(UV_ENOSYS, workerPid);
   }
+  // Its sinks are written out (releaseSinks blocks for a full description) before it ends.
   releaseSinks();
+  endWorker(answer.status ?? 0, answer.signal);
 
   // A program the shell has no command for is absent, as it is on a machine
   // that does not carry that binary; a path that is there and is not a program
@@ -353,10 +379,10 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
   const named = __substrateShellLine(options.file, argv) === null;
   const said = named && (answer.status === 127 || answer.status === 126) ? new TextDecoder().decode(answer.stderr) : '';
   if (named && answer.status === 127 && /command not found|No such file or directory/u.test(said)) {
-    return nothing(UV_ENOENT);
+    return nothing(UV_ENOENT, workerPid);
   }
   if (named && answer.status === 126 && /Permission denied|not executable/u.test(said)) {
-    return nothing(UV_EACCES);
+    return nothing(UV_EACCES, workerPid);
   }
 
   // Past `maxBuffer` the child is reported as having failed, and the bytes it
@@ -375,7 +401,7 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
   }
 
   return {
-    pid,
+    pid: workerPid,
     output,
     status: answer.status,
     signal: answer.signal,

@@ -96,6 +96,11 @@ export interface TreeSockets {
   /** fcntl(2), for `F_GETFL` and `F_SETFL`. */
   fcntl(fd: number, command: number, argument: number): number;
   /**
+   * write(2) of any description of the process: the bytes it took (a prefix where it took part) or a negative errno
+   * (`-EAGAIN` where a non-blocking one is full), never throwing (ADR-0010 §1, §5).
+   */
+  write(fd: number, data: Uint8Array): number;
+  /**
    * The descriptor's readiness, as poll(2) reports it: settles with its `revents` once any of `events`, or
    * `POLLERR`, `POLLHUP` or `POLLNVAL`, holds (at once if one does). Never rejects.
    */
