@@ -2480,8 +2480,24 @@ function emptyStdinStream(): AsyncIterable<Uint8Array> {
  * with the host's streams and its abort handle. This is `container.run`'s
  * half, not Node's `child_process.exec` -- Node's is its own file's, over the
  * binding, and it knows nothing of a run's name.
+ *
+ * Given an argv vector instead, the run is the program `argv[0]` names with
+ * those exact words, as `spawn(file, args)` makes one (`command-line.ts`): the
+ * line is the program and each word quoted, and a host that starts programs
+ * from a list is given the list.
  */
-export function runCommand(command: string, options: ExecOptions, callback?: ExecCallback): void {
+export function runCommand(given: string | readonly string[], options: ExecOptions, callback?: ExecCallback): void {
+  let command: string;
+  let argv: string[] | null = null;
+  if (typeof given === 'string') command = given;
+  else {
+    if (!Array.isArray(given) || given.length === 0 || given.some((word) => typeof word !== 'string')) {
+      throw new TypeError('runCommand: argv must be a non-empty array of strings');
+    }
+    const words = [...given];
+    command = __substrateLineFor(words[0]!, words, options.cwd);
+    argv = __substrateArgvFor(words[0]!, words, options.cwd);
+  }
   const ownCredentialsToken = options.credentials && !options.processToken ? `credentials-${__nextChildRun++}` : undefined;
   if (ownCredentialsToken) {
     options = { ...options, processToken: ownCredentialsToken };
@@ -2495,6 +2511,7 @@ export function runCommand(command: string, options: ExecOptions, callback?: Exe
     try {
       const outcome = await routeCommand({
         command,
+        ...(argv ? { argv } : {}),
         credentials: options.credentials,
         cwd: options.cwd,
         env: typeof options.processToken === 'string'

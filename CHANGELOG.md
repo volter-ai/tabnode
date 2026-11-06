@@ -4,6 +4,10 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
+- **`container.run` takes an argv vector** (`run(argv, options?)`): one of the engine's programs (its `npm`,
+  `node`, a tool on its tree) runs from its exact words, as `spawn(file, args)` makes a run (`command-line.ts`): the
+  program and each word quoted for the engine's shell, and the list itself to a host that starts programs from one.
+  A command line is still a line.
 - **The prepared format is `tabnode-prepared-8`, a minor release, 0.18.0** (CONTRIBUTING: a change to the lowered text
   moves the format). A guest body's free `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent`,
   `MessageEvent`, `URL` and `WebAssembly` are now rewritten to the guest's, so the same source lowers to different

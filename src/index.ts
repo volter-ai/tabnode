@@ -221,7 +221,12 @@ export function createContainer(options?: ContainerOptions): {
   serverBridge: ServerBridge;
   execute: (code: string, filename?: string) => { exports: unknown };
   runFile: (filename: string) => { exports: unknown };
-  run: (command: string, options?: RunOptions) => Promise<RunResult>;
+  /**
+   * Run a command line through the engine's shell, or, given an argv vector, one of the engine's programs (its
+   * `npm`, `node`, a tool on its tree) from its words, as `spawn(file, args)` does: the program and each word exactly
+   * as given, with no shell reading them.
+   */
+  run: (command: string | readonly string[], options?: RunOptions) => Promise<RunResult>;
   /**
    * Start the engine's Node from an argv vector, as `execve` starts a program:
    * `argv[0]` is the program's name (`process.argv0`), then Node's options,
@@ -351,14 +356,14 @@ export function createContainer(options?: ContainerOptions): {
     serverBridge,
     execute: (code: string, filename?: string) => runtime.execute(code, filename),
     runFile: (filename: string) => runtime.runFile(filename),
-    run: (command: string, runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, async (processToken) => {
+    run: (command: string | readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, async (processToken) => {
       const numbered = runOptions?.registry !== undefined || runOptions?.process !== undefined;
       try {
         // A run that is a process of a kernel's (its own connection): its registry and its numbers, as runNode's.
         if (runOptions?.registry) installRunRegistry(processToken, runOptions.registry);
-        if (runOptions?.process) claimRunPid(processToken, runOptions.process.pid, runOptions.process.ppid, { argv: ['sh', '-c', command], cwd: runOptions.cwd ?? '/' });
-        // That process is a shell: each `node` its line runs is its child, numbered through its registry, and the line
-        // is forgotten only here, at its own end (below).
+        if (runOptions?.process) claimRunPid(processToken, runOptions.process.pid, runOptions.process.ppid, { argv: typeof command === 'string' ? ['sh', '-c', command] : [...command], cwd: runOptions.cwd ?? '/' });
+        // That process is a shell, or the program its argv names: each `node` it runs is its child, numbered through
+        // its registry, and it is forgotten only here, at its own end (below).
         if (numbered) holdShellRun(processToken);
         // `container.run("cat", { stdin })` used to reach the engine's shell
         // without its stdin: the run dropped it before exec, and exec dropped
