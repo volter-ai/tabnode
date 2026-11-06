@@ -9,6 +9,18 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   refused before it starts (an option without its value, no script, a missing module) now exits with that code, is
   reaped by its parent and gives back its number and its streams registration; one that runs to its end gives back
   its streams registration too, as a hosted one does.
+- **`dns` takes Node's own front and Ada's own name conversion** (ADR-0009 §3).
+  - **Node's own checks and answers:** names are validated with Node's own `validateStringWithoutNullBytes`.
+    Literals are answered where Node's own `isIP` recognises the string as given, so `[::1]` is no longer
+    unbracketed. An empty name answers `null` on a later tick, on the callback and promise doors alike.
+  - **Ada's own conversion:** every name goes through `ada::idna::to_ascii` from Node v24.21.0's Ada, compiled to
+    WebAssembly (`scripts/build-ada-idna-wasm.sh`), which replaces the URL parser's conversion. The result is cut at
+    its first NUL, as Node passes `name.c_str()`. `lookup('DB')` finds a `db` hosts line.
+  - **Refusals:** a name no query can carry is refused and sends nothing, where before its labels were dropped or
+    cut. That is an empty label, a label over 63 bytes, or more than 253 bytes (255 for a query). A lookup refuses
+    with `ENOTFOUND` -3008, a query with `EBADNAME`.
+  - **`localhost`:** the engine no longer answers it itself. It resolves from the image's hosts line, or from the
+    resolver.
 - **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
   offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
   table: a `'pipe'` (IPC or not) a socketpair with 64 KiB buffers, `'inherit'` and a number the parent's descriptor,
