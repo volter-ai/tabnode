@@ -71,6 +71,8 @@ export class KernelStreamWrap extends LibuvStreamWrap {
   /** UV_HANDLE_SHUT: the write side was shut down. */
   #shut = false;
   #writes: QueuedWrite[] = [];
+  /** Waiting for the write queue to be empty (`whenWritten`). */
+  #written: (() => void)[] = [];
   #shutdown: { request: ShutdownWrap; release: () => void } | null = null;
   /** The readiness questions this handle has asked and not yet had answered. */
   #waitingIn = false;
@@ -137,6 +139,17 @@ export class KernelStreamWrap extends LibuvStreamWrap {
     this.setDescriptor(fd);
     this.setOpen(true, true);
     return 0;
+  }
+
+  /**
+   * A stream on a socket descriptor of the calling process (a duplicate the engine took for a child's output, ADR-0010
+   * §1), made non-blocking and belonging to no run; none where it cannot be opened.
+   */
+  static forWriting(fd: number): KernelStreamWrap | undefined {
+    const stream = new KernelStreamWrap(true);
+    __adoptHandle(stream, null);
+    if (stream.openDescriptor(fd) !== 0) { stream.close(); return undefined; }
+    return stream;
   }
 
   /** `other`'s descriptor becomes this handle's, as the end a child opens of a channel its parent made in its table. */
@@ -386,10 +399,30 @@ export class KernelStreamWrap extends LibuvStreamWrap {
     if (index < 0) return;
     this.#writes.splice(index, 1);
     this.writeQueueSize -= write.bytes.byteLength - write.sent;
+    if (this.#writes.length === 0) for (const done of this.#written.splice(0)) done();
     queueBindingTask(() => {
       try { invokeOwned(write.request, 'oncomplete', status); }
       finally { forgetNodeRequest(write.request); write.release(); }
     });
+  }
+
+  /**
+   * Settles once nothing given to this stream waits in its queue (each queued write sent, failed or cancelled); none
+   * where nothing waits. What the engine writes for a child is complete when this settles (ADR-0010 §2).
+   */
+  whenWritten(): Promise<void> | undefined {
+    if (!this.#kernel || this.#writes.length === 0) return undefined;
+    return new Promise(done => { this.#written.push(done); });
+  }
+
+  /** The queue written out by a realm that may block: poll(2) for writability, then the queue sent, until it is empty. */
+  writeBlocking(): void {
+    const sockets = this.#sockets;
+    while (this.#kernel && this.#writes.length && !this.closed && sockets && this.#fd >= 0) {
+      const ready = sockets.poll([{ fd: this.#fd, events: linux.POLLOUT, revents: 0 }], -1);
+      if (ready < 0 && ready !== -linux.EINTR) { this.cancelWrites(ready); return; }
+      this.#flushWrites();
+    }
   }
 
   /** Every queued write completes with `status` (a failed connect's, a close's ECANCELED). */

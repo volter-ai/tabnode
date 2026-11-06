@@ -35,9 +35,9 @@ import { kStdinRing, stdinRingWaitsAsync, type StdinReader } from '../../stdin-r
 // The guest stdin stream's engine-side read (shims/process.ts `kEngineStdinRead`),
 // named here so this binding does not import the process shim.
 const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
-import { allocateFd, handleForFd } from './fds';
+import { allocateFd, handleForFd, kernelSocketType } from './fds';
 import { treeDescriptorsOf, type TreeDescriptors, type TreeDescriptorStats, type TreeAdvisoryLocks } from '../../tree-descriptors';
-import { callingTree, linux, treeSocketsOf, type TreeSockets } from '../../host-sockets';
+import { callingTree, treeSocketsOf } from '../../host-sockets';
 import { KernelStreamWrap, kHandleFd } from './kernel_stream';
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
 import { traceOutput, traceReadingRequested } from '../../trace-output';
@@ -437,11 +437,11 @@ export type DescriptorWriter = ((chunk: string | Uint8Array) => void) & {
   /** The child has ended: its own reference to the description goes (a dup the tree made). */
   release?(): void;
   /**
-   * Where the description may take a write in part or answer `EAGAIN` (a kernel socket or pipe), what it has not taken
-   * yet is queued in order: this settles once every byte given is written, or the description has failed (ADR-0010 §2).
+   * A socket's writer: its kernel stream's `whenWritten`, settling once every byte given is written, failed or cancelled;
+   * none where nothing waits (ADR-0010 §2).
    */
-  settled?(): Promise<void>;
-  /** The same, for a realm that may block: returns once every byte given is written, blocking in poll(2) meanwhile. */
+  settled?(): Promise<void> | undefined;
+  /** Its kernel stream's `writeBlocking`, for a realm that may block. */
   settleBlocking?(): void;
 };
 
@@ -499,7 +499,7 @@ function descriptorWriterOf(fd: number, { sayFailures }: { sayFailures: boolean 
     // closing (or reusing) its number then changes nothing for the child (fork's copy plus dup2).
     let own: number | undefined;
     try { own = owner.dup?.(fd); } catch { own = undefined; }
-    return writerThrough(owner, fd, own, sayFailures, treeSocketsOf(callingTree()));
+    return treeWriter(owner, own ?? fd, own, sayFailures);
   }
   // The parent's own fd 1 or 2 (or a descriptor it opened on /dev/stdout):
   // the child writes the parent's stream, read against the parent, whose
@@ -512,7 +512,8 @@ function descriptorWriterOf(fd: number, { sayFailures }: { sayFailures: boolean 
   const stream = handleForFd(fd);
   // A kernel stream the engine holds, and a descriptor it holds no record of in a process whose tree owns its
   // descriptions (a kernel socket, a file its host gave it), are the kernel's (ADR-0010 §1): a dup says whether the
-  // process holds the description, and the child's bytes are the tree's write(2) of it.
+  // process holds the description and is the child's own number for it. A socket is written by a kernel stream opened
+  // on the dup, the one owner of a socket's writes and their completion; any other description is the tree's write(2).
   const kernelFd = stream instanceof KernelStreamWrap && stream.kernelBacked ? stream[kHandleFd]
     : stream === undefined && !openFiles.has(fd) ? fd : undefined;
   if (kernelFd !== undefined) {
@@ -521,14 +522,21 @@ function descriptorWriterOf(fd: number, { sayFailures }: { sayFailures: boolean 
     if (!kernel?.dup || kernelFd < 0) return null;
     let own: number;
     try { own = kernel.dup(kernelFd); } catch { return null; }
-    return writerThrough(kernel, kernelFd, own, sayFailures, treeSocketsOf(tree));
+    const sockets = treeSocketsOf(tree);
+    if (!sockets || kernelSocketType(sockets, own) === undefined) return treeWriter(kernel, own, own, sayFailures);
+    const output = KernelStreamWrap.forWriting(own);
+    if (!output) { try { kernel.close(own); } catch { /* gone already */ } return null; }
+    const writer: DescriptorWriter = (chunk) => { if (!output.closed) output.writeBuffer(new WriteWrap(), bytesOf(chunk)); };
+    writer.settled = () => output.whenWritten();
+    writer.settleBlocking = () => { output.writeBlocking(); };
+    writer.release = () => { output.close(); };
+    return writer;
   }
   if (stream instanceof LibuvStreamWrap) {
     return (chunk) => { try { stream.writeBuffer(new WriteWrap(), bytesOf(chunk)); } catch { /* a closed stream drops the child's output, as a closed pipe does */ } };
   }
   const file = openFiles.get(fd);
-  if (!file) return null;
-  if (file.directory || (file.flags & 3) === 0) return null;
+  if (!file || file.directory || (file.flags & 3) === 0) return null;
   const { tree, path } = file;
   const append = (file.flags & flagBits().append) !== 0;
   // One offset per open file, as a dup'd descriptor shares one: a child's
@@ -554,67 +562,18 @@ function descriptorWriterOf(fd: number, { sayFailures }: { sayFailures: boolean 
 }
 const descriptorCursors = new WeakMap<object, { position: number }>();
 
-/**
- * A child's writes through `owner` to its own number `own` for the description `fd` names, released at its end. A
- * write(2) that takes a part, or answers EAGAIN (a full kernel socket or pipe), leaves the rest queued in order, written
- * at the description's next writability (`sockets.wait`, or a blocking `poll` for `settleBlocking`), so every byte the
- * child gave is written before its run's normal end (ADR-0010 §2). A description that fails drops what is queued, as a
- * closed one drops the child's output.
- */
-function writerThrough(owner: TreeDescriptors, fd: number, own: number | undefined, sayFailures: boolean, sockets: TreeSockets | undefined): DescriptorWriter {
-  const target = own ?? fd;
-  const queue: Uint8Array[] = [];
-  let waiting = false;
-  const settledWaiters: (() => void)[] = [];
-  const settle = (): void => { if (queue.length === 0) for (const done of settledWaiters.splice(0)) done(); };
-  /** Writes the queue as far as the description takes it; true where it must wait for writability. */
-  const pump = (rethrow: boolean): boolean => {
-    while (queue.length) {
-      const head = queue[0]!;
-      let taken: number;
-      try { taken = owner.write(target, head, 0, head.byteLength, null); }
-      catch (cause) {
-        if ((cause as { code?: unknown } | null)?.code === 'EAGAIN' && sockets) return true;
-        queue.length = 0;
-        settle();
-        if (rethrow) throw cause;
-        return false;
-      }
-      if (taken <= 0) { queue.length = 0; break; }
-      if (taken < head.byteLength) queue[0] = head.subarray(taken); else queue.shift();
-    }
-    settle();
-    return false;
-  };
-  const resume = (): void => {
-    if (waiting || !sockets || !pump(false)) return;
-    waiting = true;
-    void sockets.wait(target, linux.POLLOUT).then(() => { waiting = false; resume(); });
-  };
+/** A child's writes through `owner`'s write(2) of `target`; `own` its own duplicate, closed when the child has ended. */
+function treeWriter(owner: TreeDescriptors, target: number, own: number | undefined, sayFailures: boolean): DescriptorWriter {
   const writer: DescriptorWriter = (chunk) => {
-    const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk.slice();
-    if (bytes.byteLength === 0) return;
-    queue.push(bytes);
-    if (waiting || queue.length > 1) return;
-    if (pump(sayFailures) && sockets) {
-      waiting = true;
-      void sockets.wait(target, linux.POLLOUT).then(() => { waiting = false; resume(); });
-    }
-  };
-  writer.settled = () => queue.length === 0 ? Promise.resolve() : new Promise<void>(done => { settledWaiters.push(done); });
-  writer.settleBlocking = () => {
-    while (queue.length && sockets) {
-      if (!pump(false)) break;
-      sockets.poll([{ fd: target, events: linux.POLLOUT, revents: 0 }], -1);
-    }
+    const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
+    try { owner.write(target, bytes, 0, bytes.length, null); }
+    catch (cause) { if (sayFailures) throw cause; /* a closed description drops the child's output */ }
   };
   if (own !== undefined) {
     let released = false;
     writer.release = () => {
       if (released) return;
       released = true;
-      queue.length = 0;
-      settle();
       try { owner.close(own); } catch { /* the tree has already let it go */ }
     };
   }

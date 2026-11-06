@@ -229,7 +229,10 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
       if (passedOn(entry)) sink(index)?.(bytes);
       else if (entry?.type !== 'ignore') keep(index, bytes.slice());
     };
-    const captured = (index: number): boolean => kernel ? kernel.pipes.some(pipe => pipe.index === index && pipe.reading)
+    // What is captured is the stdio's choice (ADR-0010 §4): a pipe the child writes, read from the stdio given,
+    // whatever the loop did with it.
+    const captured = (index: number): boolean => kernel ? (stdio[index]?.type === 'pipe' || stdio[index]?.type === 'overlapped')
+      && (stdio[index]!.writable ?? index !== 0)
       : (index === 1 || index === 2) && stdio[index]?.type !== 'ignore' && !passedOn(stdio[index]);
     const killSignal = typeof options.killSignal === 'number' ? options.killSignal : 15;
     let drained: DrainOutcome | undefined;

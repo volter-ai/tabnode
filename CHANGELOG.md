@@ -11,10 +11,11 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   a child a host runs as its own process is started with them (`NodeProcessLaunch.descriptors`, the new
   `ChildProcessHostRequest.kernelDescriptors`), its fds 0 to 2 and its pipe ends blocking, and the parent closes the
   ends it made for it after the start and relays nothing of them (no sink, no input). A child the engine runs in its
-  own realm is served from the parent's ends, and its normal end waits for every write the engine made for it, to
-  those ends and to inherited kernel descriptions (`DescriptorWriter.settled`; `settleBlocking` for a synchronous
-  child). Whether an inherited number is the parent's descriptor is the kernel's answer, and a kernel description the
-  engine holds is written through the tree's `write(2)`. `spawn` and `spawnSync` share one preparation
+  own realm is served from the parent's ends; its normal end waits, while the run is still live and killable, for
+  every write the engine made for it (`RunRequest.outputWritten`): each socket write, to those ends or to an
+  inherited socket, is a kernel stream's (`KernelStreamWrap.whenWritten`, `writeBlocking` for a synchronous child).
+  Whether an inherited number is the parent's descriptor is the kernel's answer; an inherited description that is no
+  socket is the tree's `write(2)`. `spawn` and `spawnSync` share one preparation
   (`child_stdio.ts`).
 - **A terminal's mode is its host's termios** (ADR-0010 §3). `RunStreams.terminal.setRawMode(false | 'raw' | 'io')`
   is fd 0's mode as `uv_tty_set_mode` sets it; a `TTY` on fd 0 sets it, and a run's `process.stdin.setRawMode` is

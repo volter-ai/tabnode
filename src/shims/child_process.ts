@@ -2882,8 +2882,18 @@ function startChildRun(request: RunRequest): StartedRun {
   // Its pipes past fd 2 are there the same way, at the numbers it was given.
   for (const { fd, pipe } of request.descriptors) registerRunFd(token, fd, 'PIPE', pipe);
 
+  /**
+   * The one place the run counts as ended (ADR-0010 §2). A normal end of a run this realm serves first waits, while the
+   * run is live (its pid, streams and descriptors held, a signal still delivered), for the output the engine still has
+   * to write for it (`outputWritten`); a signal's end, before or during that wait, retires it at once, cancelling the
+   * queues as its ends close, and the wait it cut short finds it ended.
+   */
   const end = (code: number, signal: string | null): void => {
     if (finished) return;
+    if (signal === null && !hosted && !hostRun) {
+      const written = request.outputWritten();
+      if (written) { void written.then(() => { end(code, signal); }); return; }
+    }
     finished = true;
     wakeInput?.();
     wakeInput = undefined;

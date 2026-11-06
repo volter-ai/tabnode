@@ -23,7 +23,7 @@ import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials
  * (ADR-0010).
  */
 import {
-  LibuvStreamWrap, WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
+  LibuvStreamWrap, WriteWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
 } from './stream_wrap';
 import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { nativeStreamFor } from '../../native-stream-binding';
@@ -137,6 +137,12 @@ export interface RunRequest {
    * them. Absent where `kernelDescriptors` is empty.
    */
   handOver?(): void;
+  /**
+   * What the engine still has to write for a child it runs in its own realm (ADR-0010 §2): settles once every child
+   * end's and every inherited writer's queue is empty; none where nothing waits. The runner's end waits for it before
+   * the run is retired, while it can still be signalled.
+   */
+  outputWritten(): Promise<void> | undefined;
   /** Called once, when the run has ended. */
   exit(code: number, signal: string | null): void;
 }
@@ -351,6 +357,7 @@ export class Process implements OwnedHandle {
       descriptors: [],
       kernelDescriptors: this.prepared ? this.prepared.placed.map(each => ({ ...each })) : [],
       ...(this.prepared ? { handOver: () => { this.handOver(); } } : {}),
+      outputWritten: () => this.outputWritten(),
       exit: (code, signal) => { this.reportExit(code, signal); },
     };
 
@@ -416,7 +423,7 @@ export class Process implements OwnedHandle {
           this.closeFarEnds();
           return UV_EBADF;
         }
-        if (inherited?.release || inherited?.settled) this.heldDescriptions.push(inherited);
+        if (inherited?.release) this.heldDescriptions.push(inherited);
         if (index === 1) request.stdout = inherited;
         else request.stderr = inherited;
       }
@@ -557,37 +564,35 @@ export class Process implements OwnedHandle {
     far.readStart();
   }
 
+  /** The child's output still queued: on each kernel end the spawn made, and in each inherited writer (ADR-0010 §2). */
+  private outputWritten(): Promise<void> | undefined {
+    const waits: Promise<void>[] = [];
+    for (const far of this.farEnds.values()) {
+      const written = far instanceof Pipe ? far.whenWritten() : undefined;
+      if (written) waits.push(written);
+    }
+    for (const writer of this.heldDescriptions) {
+      const written = writer.settled?.();
+      if (written) waits.push(written);
+    }
+    return waits.length ? Promise.all(waits).then(() => undefined) : undefined;
+  }
+
   /**
    * The run has ended. The child's ends of the pairings close, so the parent's
    * streams read EOF as they do when a real child's descriptors go, and
    * `onexit` fires once, after them: Node's `flushStdio` runs on the tick
    * after `onexit` and must find the bytes already delivered. A normal end
-   * (no signal) follows the child's output (ADR-0010 §2): a kernel end that
-   * still queues what the child wrote is shut down first, which completes
-   * once the queue is sent (uv_shutdown), and each writer to an inherited
-   * description settles, as a Linux child's write(2) returns only once its
-   * descriptor took the bytes. A signal ends it at once.
+   * comes here once the runner has waited for the child's output
+   * (`outputWritten`, ADR-0010 §2); a signal's end cancels what is queued.
    */
   private reportExit(code: number, signal: string | null): void {
     if (this.ended) return;
     this.ended = true;
-    const finish = (): void => {
-      this.closeFarEnds();
-      this.run = null;
-      invokeOwned(this, 'onexit', code, signal);
-      this.sayLateClose();
-    };
-    if (signal !== null) { finish(); return; }
-    const queued = [...this.farEnds.values()]
-      .filter((far): far is Pipe => far instanceof Pipe && far.kernelBacked && !far.closed && far.writeQueueSize > 0);
-    const writing = this.heldDescriptions.map(writer => writer.settled?.()).filter((settled): settled is Promise<void> => settled !== undefined);
-    if (queued.length === 0 && writing.length === 0) { finish(); return; }
-    const shutdowns = queued.map(far => new Promise<void>(done => {
-      const request = new ShutdownWrap();
-      request.oncomplete = () => { done(); };
-      if (far.shutdown(request) !== 0) done();
-    }));
-    void Promise.all([...shutdowns, ...writing]).then(finish);
+    this.closeFarEnds();
+    this.run = null;
+    invokeOwned(this, 'onexit', code, signal);
+    this.sayLateClose();
   }
 
   /**
