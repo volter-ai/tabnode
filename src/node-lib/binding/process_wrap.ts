@@ -27,7 +27,7 @@ import {
 } from './stream_wrap';
 import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { nativeStreamFor } from '../../native-stream-binding';
-import { UV_EBADF, UV_ENOENT, UV_ESRCH, UV_EPERM, UV_EINVAL } from './uv';
+import { UV_EACCES, UV_EBADF, UV_ENOENT, UV_ESRCH, UV_EPERM, UV_EINVAL } from './uv';
 import { traceReadingRequested, traceOutput } from '../../trace-output';
 import {
   registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle, observeNodeHandle, nodeHandleHasRef, nodeHandleIsInitialized,
@@ -440,20 +440,13 @@ export class Process implements OwnedHandle {
       if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-start-refused', at: Date.now(), file: request.file, args: request.args?.slice(0, 6), cwd: request.cwd ?? null, code: code ?? null, message: cause instanceof Error ? cause.message.slice(0, 300) : String(cause).slice(0, 300), stack: cause instanceof Error ? (cause.stack ?? '').split('\n').slice(0, 8).join(' | ') : null });
       if (code === 'EPERM') return UV_EPERM;
       if (code === 'EINVAL') return UV_EINVAL;
+      if (code === 'EACCES') return UV_EACCES;
       throw cause;
     }
     // Reference changes after initialization also govern the owned child run.
     if (!handleHasRef(this)) this.run.setRef?.(false);
     // Forked, the child holds its own copies of what was made for it.
     this.prepared?.closeMade();
-    // The child's output ends and the streams of its inherited descriptors are its own (ADR-0010 §2): where this realm
-    // serves them, their pending writes are its run's, so its loop ends after them, as libuv's write requests hold a
-    // Node process's loop.
-    const child = this.run.token;
-    if (child !== null) {
-      for (const [index, far] of this.farEnds) if (index !== 0 && far instanceof Pipe && far.kernelBacked && !far.closed) __adoptHandle(far, child);
-      for (const writer of this.heldDescriptions) if (writer.stream) __adoptHandle(writer.stream, child);
-    }
     // The number the parent reads off the handle is the child's own
     // `process.pid`, made at its fork, as it is in Node.
     this.pid = this.run.pid;

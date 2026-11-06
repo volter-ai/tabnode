@@ -2741,6 +2741,17 @@ function isBinaryImage(bytes: Uint8Array): boolean {
   return false;
 }
 
+/**
+ * Whether a host runs the child as its own process: a `node` the process host admits, any other child (or a `node`
+ * at a terminal) the host's executor runs. Anything else the engine would run in this realm.
+ */
+function runByHost(request: RunRequest): boolean {
+  const nodeChild = __substrateRunsNode(request.file, request.cwd);
+  if (nodeChild && nodeProcessHostInstalled()) return true;
+  if (hostExecutor() === null) return false;
+  return !nodeChild || request.terminal !== undefined;
+}
+
 /** The runs a `Process` handle started, so a later name never lands on a live one. */
 let __nextChildRun = 1;
 
@@ -2756,6 +2767,12 @@ let __nextChildRun = 1;
  * afterwards is nobody's.
  */
 function startChildRun(request: RunRequest): StartedRun {
+  // A child of a process with a kernel is its own process, run by its host (ADR-0010 §2): with no host to run it (a
+  // `node` with no process host, a program with no executor), the spawn fails as Node's does for a file it cannot
+  // run, and nothing runs it in this realm.
+  if (request.kernelDescriptors.length > 0 && !runByHost(request)) {
+    throw Object.assign(new Error(`spawn ${request.file} EACCES: this realm has no host to run it as its own process`), { code: 'EACCES' });
+  }
   const token: ProcessToken = `child-${__nextChildRun++}`;
   // A child is a process and has its own number, which its parent reads off
   // the handle and the child itself reports as `process.pid`; `ppid` is the
@@ -2784,10 +2801,9 @@ function startChildRun(request: RunRequest): StartedRun {
   // engine's shell, it was a second process under a shell run, and every
   // chunk it wrote was decoded to text on the way to its parent's pipe.
   const directNode = nodeChild && !admittedNode && !hostTerminal;
-  // A child a host runs as its own process (a Node child the process host admits, every child its executor runs) is
-  // started with the kernel descriptors its parent placed for it, and reads and writes them itself; a child the engine
-  // runs in this realm is served from its parent's ends (ADR-0010 §2).
-  const ownDescriptors = request.kernelDescriptors.length > 0 && (admittedNode || (!directNode && hostExecutor() !== null));
+  // A child of a process with a kernel is run by its host as its own process (above), started with the kernel
+  // descriptors its parent placed for it, which it reads and writes itself (ADR-0010 §2).
+  const ownDescriptors = request.kernelDescriptors.length > 0;
   // Forked above, it holds its own copies: the parent lets go of the ends it made for it before its host sees it.
   if (ownDescriptors) request.handOver?.();
   if (!admittedNode && !directNode) shellRuns.add(token);

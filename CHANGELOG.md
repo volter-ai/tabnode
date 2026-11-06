@@ -10,12 +10,10 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   a stream its descriptor, `'ignore'` at 0 to 2 /dev/null. `RunRequest.kernelDescriptors` lists them as `{ fd, from }`;
   a child a host runs as its own process is started with them (`NodeProcessLaunch.descriptors`, the new
   `ChildProcessHostRequest.kernelDescriptors`), its fds 0 to 2 and its pipe ends blocking, and the parent closes the
-  ends it made for it after the start and relays nothing of them (no sink, no input). A child the engine runs in its
-  own realm is served from the parent's ends, and its output ends are its run's, so their pending writes hold its loop
-  and a natural end follows its output, as Node's pending pipe writes hold its loop; its inherited descriptors are
-  written by kind (a file once; a socket, FIFO or terminal by a kernel stream, through the new `TreeSockets.write` for
-  any but a socket). Whether an inherited number is the parent's descriptor is the kernel's answer. `spawn` and
-  `spawnSync` share one preparation (`child_stdio.ts`).
+  ends it made for it after the start and relays nothing of them (no sink, no input). A child of a process with a
+  kernel is always its host's: with no host to run it, the spawn fails `EACCES` and nothing runs it in the realm.
+  Whether an inherited number is the parent's descriptor is the kernel's answer. `spawn` and `spawnSync` share one
+  preparation (`child_stdio.ts`).
 - **A terminal's mode is its host's termios** (ADR-0010 §3). `RunStreams.terminal.setRawMode(false | 'raw' | 'io')`
   is fd 0's mode as `uv_tty_set_mode` sets it; a `TTY` on fd 0 sets it, and a run's `process.stdin.setRawMode` is
   Node's own `tty.ReadStream.prototype.setRawMode` over the same binding operation, and a run's end

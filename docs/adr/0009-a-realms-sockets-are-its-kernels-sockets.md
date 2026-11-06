@@ -81,7 +81,6 @@ export interface TreeSockets {
   getsockopt(fd: number, level: number, name: number, value: Uint8Array): number;
   setsockopt(fd: number, level: number, name: number, value: Uint8Array): number;
   fcntl(fd: number, command: number, argument: number): number;
-  write(fd: number, data: Uint8Array): number; // ADR-0010 §1
   wait(fd: number, events: number): Promise<number>;
   poll(fds: PollDescriptor[], timeout: number): number; // ADR-0010 §4
   getifaddrs(): readonly InterfaceAddressEntry[];
@@ -331,7 +330,6 @@ Each method is its Linux call, answered in the caller's worker from kernel memor
 | `fcntl` | `fcntl(2)` for `F_GETFL` and `F_SETFL` |
 | `wait` | the description's poll operation, waited on with `Atomics.waitAsync` on its wait word, settled with `revents` |
 | `poll` | `poll(2)`, blocking the calling worker with `Atomics.wait` (ADR-0010 §4) |
-| `write` | `write(2)` of any description: the bytes taken or a negative errno, never thrown (ADR-0010 §1) |
 | `getifaddrs` | `getifaddrs(3)`'s answer: the namespace's interfaces (RTM_GETLINK, RTM_GETADDR) |
 
 And for a child's start: a Node child admitted with `NodeProcessLaunch.descriptors` has each `fd` made, in its own
