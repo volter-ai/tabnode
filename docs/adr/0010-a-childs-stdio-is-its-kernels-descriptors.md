@@ -92,10 +92,15 @@ writes them in its loop (§4).
   as a kernel stream (its channel) is that stream's descriptor. Whether the parent holds it is the kernel's answer
   (`fcntl(F_GETFL)`): its `EBADF` fails the spawn, as the child's `dup2` fails libuv's, and nothing else does. Where
   the engine serves the child in its own realm (§2), its writes to that descriptor are made on a duplicate taken for
-  the child (`TREE_DESCRIPTORS.dup`): a socket (`SO_TYPE` answers) through a kernel stream opened on the duplicate
-  (`KernelStreamWrap`, the one owner of a socket's writes, readiness and their completion, as for the pipes the spawn
-  makes); any other description through the tree's `write(2)`, which a file takes whole and a blocking description
-  blocks for. A file of the engine's own table goes through that table.
+  the child (`TREE_DESCRIPTORS.dup`), and which mechanism writes them is the description's kind, by its `fstat`:
+  - a regular file or a block device takes every byte of a `write(2)` (POSIX: a short write there is only a full disk
+    or a signal), so it is written once, through the tree's `write(2)`, as is a file of the engine's own table;
+  - every other description (a socket, a FIFO or pipe, a terminal or other character device) can take part of a write
+    or answer `EAGAIN`, so it is written by a kernel stream opened on the duplicate (`KernelStreamWrap`), made
+    non-blocking as `uv_pipe_open` and `uv_tty_init` make a descriptor Node writes, whose queue keeps what a write did
+    not take and counts each write's real progress: `sendto(2)` for a socket, `TreeSockets.write` (`write(2)`,
+    answering the bytes taken or a negative errno, never throwing) for any other. That queue is the one owner of
+    those writes, their readiness and their completion, as it is for the pipes the spawn makes.
 - **`'wrap'`** (a stream handed as stdio) is the stream's descriptor (`uv__stream_fd`), where it is a kernel one.
 - **`'ignore'` at 0 to 2 is `/dev/null`**, opened through the tree's descriptor calls (read-only for 0, read-write for
   1 and 2, close-on-exec as the tree's `open` makes every file) and given to the child at that number.
@@ -133,25 +138,34 @@ A child the engine runs in its own realm (the engine's own `node` without a proc
 shell) is no process with a table of its own: the parent's realm serves the child's ends for it, through the run's
 sinks (the child's writes are writes to its kernel end, the parent's writes to fd 0 reads of it).
 
-- **Its end follows its output, at one place.** A Linux child's `write(2)` returns only once its descriptor has taken
-  the bytes, so its exit follows everything it wrote, to a pipe its parent made or to a description it inherited.
-  - *One write mechanism.* Every socket write the engine makes for a child, to a child end the spawn made or to an
-    inherited socket, is a kernel stream's (`KernelStreamWrap`: `uv_write`, ADR-0009 §3): what the socket does not take
-    stays in that stream's queue, sent at its writability, and `whenWritten` settles once the queue is empty. A
-    realm that may block empties it with `writeBlocking`, blocking in `TreeSockets.poll`. No other queue writes a
-    socket.
-  - *One end point.* The runner's end of a same-realm run (`startChildRun`'s `end`) is the only place the run counts as
-    ended. A normal end (an exit with no signal) first waits there, while the run is still live (its pid, its streams
-    and descriptors held, signals delivered to it), for its output: `RunRequest.outputWritten`, every child end's and
-    every inherited writer's `whenWritten`, for fds 1, 2 and any other. Only then is the run retired (exited, reaped,
-    its token and streams released) and `reportExit` told, which closes the ends, releases the writers' duplicates and
-    calls `onexit` at once.
-  - *A signal ends it at once*, before or during that wait (`kill`, a signal from another process): the run is retired
-    with the signal, its ends close and its writers are released, cancelling what they still queue (`ECANCELED`), as a
-    killed child's unwritten output is lost; the wait it cut short ends with them and changes nothing.
-  - A child a host runs as its own process writes its own descriptors (§2 above): its end is the host's.
-  - A synchronous child the engine's own worker runs (`runSyncChild`) writes inherited sockets through the same
-    streams, and its call returns once each is empty (`writeBlocking`) and released.
+- **Its end follows its output.** A Linux child's `write(2)` returns only once its descriptor has taken the bytes, so
+  its exit follows everything it wrote, and until it exits, and is reaped, it is a process: `kill(pid, 0)` finds it,
+  and its group's and its siblings' signals reach it.
+  - *One lifetime owner: the run's process entry* (`src/process-tokens.ts`): its pid in the process table, live and
+    in its group, its signal receiver (`tokenOfPid`, `__signalOwnedProcess`), its run record and its streams. The run's
+    starter makes it (`setRunPid`: `startChildRun` for a spawned child, `nestedNodeToken` for a node a shell runs,
+    `launchNode` for a run it forks itself, `runHostedNode`, `spawnSync`) and only the starter ends it, by one call,
+    `endRunProcess(token, end, output)`: a normal end waits, with the entry live, for `output`, then the entry is
+    exited (where this realm ran it), reaped and forgotten, and the run record released, in that order; a signal
+    delivered to the entry while it waits (`kill`, `process.kill`, a group's, the parent's `ChildProcess.kill`) ends
+    it at once with that signal, cancelling the wait. No other code forgets, exits, reaps or releases a run it did not
+    number: `launchNode`'s end for a run its caller numbered only says how the guest ended.
+  - *One write mechanism* (§1): every write the engine makes for a child that a description can take in part is a
+    `KernelStreamWrap`'s, to a child end the spawn made or to an inherited description. `whenWritten()` settles once
+    every write queued before the call has been sent, failed or cancelled, so a run waits for its own bytes and not a
+    sibling's; `writeBlocking()` sends them from a realm that may block, in `TreeSockets.poll`.
+  - *A run's output is its streams' sinks, and their completion is the run's* (`RunStreams.outputWritten`,
+    `outputWrittenBlocking`): for a spawned child, every child end's and every inherited writer's `whenWritten`
+    (`RunRequest.outputWritten`); a node a shell runs shares its shell's streams, and so its completion; a child that
+    inherited its parent's fd 1 or 2 (directly, or through a descriptor opened on `/dev/stdout`) writes its parent's
+    sink, and its completion includes its parent's run's `outputWritten`, so a grandchild's bytes are complete when its
+    same-realm parent's queue has sent them; a run whose sink is its host's own (`onStdoutBytes`, a `write(2)` that
+    blocks) or its realm's `process.stdout` is complete when the write returns. A host that runs a child as its own
+    process writes its own descriptors (§2 above): the engine writes nothing for it and its end is the host's.
+  - *Forced ends cancel*: a signal's end closes the child's ends and releases its writers, cancelling what they queue
+    (`ECANCELED`), as a killed child's unwritten output is lost.
+  - A synchronous child the engine's own worker runs (`runSyncChild`) writes through the same writers, and its call
+    returns once each has sent its bytes (`writeBlocking`, `outputWrittenBlocking`) and is released.
 
 ### 3. A terminal's mode is set through the run's terminal
 
@@ -215,6 +229,10 @@ the host or worker hands back.
 - Deletes the child stdio relay (`CHILD_STDIO_RELAY`): a child's fds 0 to 2 and its pipes past 2 are its process's
   descriptors, read and written by its own image.
 - Accepts `'io'` in `KernelTerminal.setRawMode` (`cfmakeraw`).
+- **For a child's output, what Tabnode cannot supply itself:** `TreeSockets.write(fd, data)`, `write(2)` of any
+  description in the realm's own kernel instance, answering the bytes it took or a negative errno and never throwing,
+  so a write that takes a prefix and then would block says how much it took (the tree's `TREE_DESCRIPTORS.write`,
+  `writeAll`, throws `EAGAIN` after a prefix and so hides it).
 - **For `spawnSync`, what Tabnode cannot supply itself:**
   - `TreeSockets.poll` in its `KernelTreeSockets`: the kernel's `poll(2)` (`ks_` twin of the WALI import), run in the
     realm's own kernel instance, blocking the realm's worker on the descriptors' wait words with `Atomics.wait` until
