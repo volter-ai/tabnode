@@ -17,6 +17,12 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   `tty.ReadStream.setRawMode` does (validation, `'error'` with an `ErrnoException`, `isRaw`, `rawMode`), and a run's end
   puts a mode it set back to normal, as Node's `ResetStdio` does. A `TTY` on fd 0 to 2 answers `getWindowSize` from the
   run's terminal.
+- **A synchronous child's pipes are read by its parent's blocking loop** (ADR-0010 §4). `TreeSockets` adds `poll`
+  (`poll(2)` blocking the calling thread, `PollDescriptor`). In a process with socket calls `spawnSync` makes the
+  child's stdio as `spawn` does and hands the host's `runSync` `kernelDescriptors` and `drain` in place of `input`,
+  `captured`, `maxBuffer`, `onStdout` and `onStderr`; `drain` writes each input pipe and reads each output pipe to its
+  end with `poll`, as Node's `SyncProcessRunner` does, killing the child and closing the pipes at `timeout`
+  (`ETIMEDOUT`) or past `maxBuffer` (`ENOBUFS`), so a child that fills a 64 KiB pipe is read, not deadlocked.
 - **The prepared format is `tabnode-prepared-8`, a minor release, 0.18.0** (CONTRIBUTING: a change to the lowered text
   moves the format). A guest body's free `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent`,
   `MessageEvent`, `URL` and `WebAssembly` are now rewritten to the guest's, so the same source lowers to different

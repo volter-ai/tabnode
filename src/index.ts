@@ -79,7 +79,7 @@ import { stdinRingProblem, stdinRingWaitsAsync, type StdinReader } from './stdin
 export { TREE_DESCRIPTORS } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
 export { TREE_SOCKETS } from './host-sockets';
-export type { TreeSockets, InterfaceAddressEntry, SocketMessage } from './host-sockets';
+export type { TreeSockets, InterfaceAddressEntry, SocketMessage, PollDescriptor } from './host-sockets';
 export { TREE_TLS } from './host-tls';
 export type { TreeTls, TlsTransport, TlsPlainConnection, TlsSecureConnection, TlsClientSession, TlsClientOptions, TlsPeerCertificate,
   TlsServerOptions, TlsServerSecureConnection, TlsServerSession } from './host-tls';

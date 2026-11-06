@@ -5,7 +5,7 @@ Status: Accepted.
 Date: 2026-11-05. Served: browser-substrate ADR-0227 §7 and ROADMAP item 2 at 7cd0f130e3d, "Where it stops, read in
 item 2's code": "a Node realm's child keeps its stdio relay (output as messages, fd 0 as a ring, `CHILD_STDIO_RELAY`)
 until Tabnode's spawn makes a child's `'pipe'` stdio kernel socketpairs placed at the child's fds 0 to 2, which is
-Tabnode's change [...]. A realm's raw mode reaches the kernel once Tabnode's `setRawMode` calls the run's
+Tabnode's change; its `spawnSync` too. A realm's raw mode reaches the kernel once Tabnode's `setRawMode` calls the run's
 `terminal.setRawMode`, which the realm already gives (a TCSETSW of fd 0); until then a realm's terminal stays
 canonical with echo." Builds on ADR-0009 (a realm's sockets are its kernel's).
 
@@ -34,6 +34,12 @@ canonical with echo." Builds on ADR-0009 (a realm's sockets are its kernel's).
   (`TCGETS` answers), else by `fstat`. At exit Node restores the termios each terminal fd had at its start
   (`ResetStdio`, `tcsetattr(TCSANOW)`, its failure ignored), so a program that ends in raw mode leaves its terminal as
   it found it.
+- **`spawnSync` loops over its pipes until they close** (Node's `src/spawn_sync.cc`, `SyncProcessRunner`): it spawns
+  as `uv_spawn` does, writes each input pipe's `input` and shuts it down, reads every output pipe to its end on a
+  private loop, and counts the bytes read; when `timeout` runs out (`ETIMEDOUT`) or the count passes `maxBuffer`
+  (`ENOBUFS`), `Kill` signals the child with `killSignal` (SIGKILL where that signal cannot be sent; nothing to a
+  child already gone) and closes every pipe. The loop ends when the child has exited and every pipe has closed. A pipe's
+  failure (a write's `EPIPE`) is reported only where the runner has no error of its own (`GetError`).
 
 ### What the engine did
 
@@ -46,6 +52,8 @@ canonical with echo." Builds on ADR-0009 (a realm's sockets are its kernel's).
   nothing; an `'fd'` entry past 2 was given nothing.
 - `setRawMode` did nothing (`proc.stdin.setRawMode` returned the stream; `TTY.setRawMode` answered 0, or `ENOTSUP` on
   the engine's own pty endpoints), and a TTY handle's window was its engine pty's or 80 by 24.
+- A synchronous child the host ran (`runSync`) was blocked on whole: the host held this realm until the child ended,
+  wrote `input` to it, and handed its output to `onStdout` and `onStderr`, enforcing `maxBuffer` and `timeout` itself.
 
 ### What the substrate holds (browser-substrate at 7cd0f130e3d)
 
@@ -129,7 +137,35 @@ as before (the child's writes are writes to its kernel end, the parent's writes 
 The line discipline, echo and signal characters are the pty's (browser-substrate's pty.c); the engine keeps no mode
 of its own and reads its fd 0 as the kernel's `read(2)` delivers it.
 
-### 4. What the substrate does with it
+### 4. A synchronous child's pipes are read by its parent's blocking loop
+
+A realm runs in a worker, so it may block, and a kernel call runs in its caller (browser-substrate ADR-0227 §2): a
+blocking `poll(2)` there is the kernel's own wait. So `spawnSync` (`src/node-lib/binding/spawn_sync.ts`), in a
+process with socket calls and for a child its host runs, does what `SyncProcessRunner` does:
+
+- **Before the fork** each entry is made as `uv__process_init_stdio` makes it: a `'pipe'` a socketpair (close-on-exec,
+  64 KiB buffers, the parent's end non-blocking, the child's blocking), `'inherit'` or a number the parent's
+  descriptor (`EBADF` where it holds none; at 0 to 2 made blocking), an ignored or absent fd 0 to 2 /dev/null. Once the
+  registry has forked the child (`mintPid`) the parent closes its copies of the child's ends.
+- **The host starts the child with them**: `runSync` is given `kernelDescriptors` (the same `{ fd, from }` records)
+  and `drain`, and no `input`, `captured`, `maxBuffer`, `onStdout` or `onStderr`. It places the descriptors as
+  `readyKernelChild` does, calls `drain` once the child runs (after its exec, before it waits for the child's end),
+  then waits for the end as before, with `timeout` and `killSignal`.
+- **`drain` is the loop**: each pipe the child reads is written its `input` (`sendto`, non-blocking) and shut down
+  (`SHUT_WR`); each pipe it writes is read (`recvfrom`, 64 KiB at a time) to its end, every byte kept for the caller's
+  `output`; between, the realm blocks in `TreeSockets.poll` on every end still open, with the time left before
+  `timeout` (counted from the spawn). A timeout, or more than `maxBuffer` bytes read over all pipes, kills the child
+  with `killSignal` (`signalPid`, SIGKILL for a signal with no name) and closes every pipe, and the call answers
+  `ETIMEDOUT` or `ENOBUFS`; a pipe's failure is answered only where neither happened. `drain` returns once every end
+  is closed: a child that fills 64 KiB waits for this realm's read, as on Linux, and never for its own end.
+- **`TreeSockets.poll(fds, timeout)`** is the door this needs: `poll(2)` of `struct pollfd` records
+  (`PollDescriptor`), blocking the calling thread, answering how many are ready, 0 at the timeout, or a negative errno.
+  `wait` stays the engine loop's door; only a realm that may block calls `poll`.
+
+A realm without socket calls, and a child the engine's own synchronous worker runs (`runSyncChild`), keep the bytes
+the host or worker hands back.
+
+### 5. What the substrate does with it
 
 - Binds `kernelDescriptors` into the child's start: a Node child's `NodeProcessLaunch.descriptors` already reaches
   `issueChild`; a program child's `ChildProcessHostRequest.kernelDescriptors` is passed to `issueChild` beside its
@@ -137,6 +173,15 @@ of its own and reads its fd 0 as the kernel's `read(2)` delivers it.
 - Deletes the child stdio relay (`CHILD_STDIO_RELAY`): a child's fds 0 to 2 and its pipes past 2 are its process's
   descriptors, read and written by its own image.
 - Accepts `'io'` in `KernelTerminal.setRawMode` (`cfmakeraw`).
+- **For `spawnSync`, what Tabnode cannot supply itself:**
+  - `TreeSockets.poll` in its `KernelTreeSockets`: the kernel's `poll(2)` (`ks_` twin of the WALI import), run in the
+    realm's own kernel instance, blocking the realm's worker on the descriptors' wait words with `Atomics.wait` until
+    one is ready or the timeout passes, `struct pollfd` read and `revents` written as for a WALI program.
+  - The synchronous door (`requestChildSync`, `runSyncChildOverPort`, the page's `sync-child-processes.ts`), given
+    `kernelDescriptors`: passes them to `issueChild` beside the image, so the child is made ready with them; tells this
+    realm once the child has been exec'd (a "started" answer on the port before the end), on which `runSync` calls
+    `drain` and then waits for the end; and, for such a child, neither writes `input` nor relays or counts its output
+    (Tabnode's loop does both), keeping `timeout` and `killSignal` for its wait.
 
 ## Where the evidence stops
 
@@ -146,11 +191,10 @@ of its own and reads its fd 0 as the kernel's `read(2)` delivers it.
   `uv__process_open_stream`, `uv__process_child_init`), `deps/uv/src/unix/tty.c` (`uv_tty_set_mode`,
   `uv_tty_get_winsize`, `uv_guess_handle`), `src/tty_wrap.cc`, `src/node.cc` (`ResetStdio`) and `lib/tty.js`.
 - **Not run.** The engine side is written; nothing was run against a kernel.
-- **Not built: `spawnSync`.** libuv's synchronous spawn reads the parent's pipe ends in a loop of its own while the
-  child runs. The engine's synchronous child is the host's synchronous door (`runSync`), which blocks this realm
-  until the child ends and hands its output to `onStdout` and `onStderr`; with no blocking readiness call in
-  `TreeSockets` (its `wait` is a promise), a realm blocked there cannot read its own ends, and a child that filled a
-  64 KiB pipe would never end. Its stdio stays the host's door's, which is not the child stdio relay.
+- **Read for §4:** Node v24.21.0's `src/spawn_sync.cc` (`SyncProcessStdioPipe::OnRead`, `OnWriteDone`,
+  `SyncProcessRunner::Kill`, `IncrementBufferSizeAndCheckOverflow`, `OnKillTimerTimeout`, `GetError`), and
+  browser-substrate's `requestChildSync` at 7cd0f130e3d. Whether the page's synchronous door can answer "started"
+  before the end is the kernel lane's to build; not read in its page code.
 - **Extrapolation:** that every child a host's executor runs is forked by the realm's registry when the runner numbers
   it (`mintPid`; true of the substrate's `KernelRealmProcessRegistry`, read; not of a registry that forks later), so
   the parent's close at the hand-over never ends the child's copy.

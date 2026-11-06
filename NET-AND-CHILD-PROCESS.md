@@ -149,7 +149,10 @@ ownership that keeps a run alive while it holds a handle.
   signalCode)` once, when the run ends; `ref()`, `unref()`.
 - `spawn_sync`: `spawn(options)` answering `{ status, signal, output: [null,
   stdout, stderr], error, pid }` over the engine's synchronous command door
-  (`src/shims/sync-child.ts`), `UV_ENOSYS` in `error` where none exists.
+  (`src/shims/sync-child.ts`), `UV_ENOSYS` in `error` where none exists;
+  in a process with socket calls a child its host runs is given kernel
+  descriptors, and the binding reads and writes its own ends with
+  `TreeSockets.poll` until they close (ADR-0010 §4).
 - `tty_wrap`: `isTTY(fd)` and `TTY` for the stdio the engine reports as a
   terminal, and `guessHandleType(fd)` in `internal/util`'s bound object; a
   run's terminal's size and fd 0's mode (`setRawMode`) are its host's

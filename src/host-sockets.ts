@@ -100,8 +100,22 @@ export interface TreeSockets {
    * `POLLERR`, `POLLHUP` or `POLLNVAL`, holds (at once if one does). Never rejects.
    */
   wait(fd: number, events: number): Promise<number>;
+  /**
+   * poll(2), blocking the calling thread: waits until one of `fds` is ready or `timeout` milliseconds pass (-1 without
+   * end, 0 not at all), sets each entry's `revents` (`POLLERR`, `POLLHUP` and `POLLNVAL` always among what it may
+   * report), and answers how many are ready (0 at the timeout) or a negative errno. Only a realm that may block calls
+   * it, for a synchronous child's pipes (ADR-0010 §4); the engine's loop asks `wait`.
+   */
+  poll(fds: PollDescriptor[], timeout: number): number;
   /** getifaddrs(3): the addresses of the namespace's interfaces. */
   getifaddrs(): readonly InterfaceAddressEntry[];
+}
+
+/** A `struct pollfd`: the descriptor, the events asked of it, and the events `poll` found. */
+export interface PollDescriptor {
+  readonly fd: number;
+  readonly events: number;
+  revents: number;
 }
 
 /** The socket calls a tree offers, where it offers them. */
@@ -155,9 +169,9 @@ export const linux = Object.freeze({
   IPV6_UNICAST_HOPS: 16, IPV6_MULTICAST_IF: 17, IPV6_MULTICAST_HOPS: 18, IPV6_MULTICAST_LOOP: 19,
   IPV6_ADD_MEMBERSHIP: 20, IPV6_DROP_MEMBERSHIP: 21, IPV6_V6ONLY: 26, IPV6_TCLASS: 67,
   F_GETFL: 3, F_SETFL: 4, O_NONBLOCK: 0o4000,
-  POLLIN: 0x1, POLLOUT: 0x4,
+  POLLIN: 0x1, POLLOUT: 0x4, POLLERR: 0x8, POLLHUP: 0x10, POLLNVAL: 0x20,
   IFF_UP: 0x1, IFF_LOOPBACK: 0x8, IFF_RUNNING: 0x40,
-  EINTR: 4, EAGAIN: 11, EINVAL: 22, EOPNOTSUPP: 95, EAFNOSUPPORT: 97, EADDRINUSE: 98,
+  EINTR: 4, EAGAIN: 11, EINVAL: 22, EPIPE: 32, EOPNOTSUPP: 95, EAFNOSUPPORT: 97, EADDRINUSE: 98,
   ECONNREFUSED: 111, EINPROGRESS: 115,
 });
 
