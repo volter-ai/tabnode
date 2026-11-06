@@ -15,7 +15,7 @@
  * with the run that made it when it is constructed, `ref`/`unref` toggle it,
  * and closing it gives it up.
  */
-import { __currentProcessToken, __runFor, __tokenForProcess, enterRun, type ProcessToken } from '../../process-tokens';
+import { __currentProcessToken, __runFor, __stopOwnedProcess, __tokenForProcess, enterRun, type ProcessToken } from '../../process-tokens';
 import { withGuestCallback, queueBindingTask } from '../../guest-loop';
 import { handleOwnerSymbol } from './owner-symbol';
 import type { Process } from '../../shims/process';
@@ -348,18 +348,26 @@ export function __ownedServerPorts(token: ProcessToken): number[] {
  * same release as the handles below it -- a server IS a handle here -- kept
  * under its own name because the engine's own parts call it where a run ends.
  */
-export function __releaseOwnedServers(token: ProcessToken, stopTimers = true, stopProcess?: (token: ProcessToken) => void): void {
+export function __releaseOwnedServers(token: ProcessToken): void {
   const held = owners.get(token);
-  if (held) {
-    for (const handle of [...held]) {
-      const listening = handle as unknown as { listening?: boolean };
-      if (listening.listening !== true) continue;
-      try { handle.close(); } catch { /* already closed is already released */ }
-    }
+  if (!held) return;
+  for (const handle of [...held]) {
+    const listening = handle as unknown as { listening?: boolean };
+    if (listening.listening !== true) continue;
+    try { handle.close(); } catch { /* already closed is already released */ }
   }
-  // A run's own timers stop once its exit is recorded, not from inside the
-  // timer that called exit: the engine's runner waits on a tick of its own.
-  if (stopTimers && stopProcess) setTimeout(() => stopProcess(token), 0);
+}
+
+/**
+ * A process's end, however it ends (ADR-0011 §6, "A process's end"), in the order a Node worker's end takes
+ * (`FreeEnvironment`, `Environment::RunCleanup`): what it owns is released first, its servers and then every handle
+ * it held, an addon's runtime among them, whose release runs its native teardown to completion; then its ordinary
+ * guest work, its timers, immediates and ports, is cancelled. Synchronous, and a second call finds nothing to do.
+ */
+export function __endOwnedProcess(token: ProcessToken): void {
+  __releaseOwnedServers(token);
+  __releaseOwnedHandles(token);
+  __stopOwnedProcess(token);
 }
 
 /**

@@ -48,8 +48,8 @@ import type { VirtualFS } from '../virtual-fs';
 import { executableHeader, EXECUTABLE_HEADER_BYTES } from './executable-header';
 import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
 import { stackFormedBy } from '../stack-overrides';
-import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
-import { __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles } from '../node-lib/net-module';
+import { __endOwnedProcess, __ownedServerPorts } from '../node-lib/net-module';
+import { __ownedHandleCount, __ownedHandleKinds } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
 import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
@@ -70,7 +70,7 @@ import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __subs
 
 import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
 
-import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, runPidOf, runWaiterOf, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, type ProcessToken } from '../process-tokens';
+import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, enterRun, mintPid, setRunPid, claimRunPid, runPid, runPidOf, runWaiterOf, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, type ProcessToken } from '../process-tokens';
 import type { ProcessRegistry } from '../process-registry';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
 const __hostProcess: { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown } | null =
@@ -947,9 +947,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       }
       if (escaped) throw escaped.error;
     }
-    // `process.exit()` ends a Node process and everything it holds; a named
-    // run's servers and timers go with it.
-    if (runToken !== null) { __releaseOwnedServers(runToken); __releaseOwnedHandles(runToken); }
+    // `process.exit()` ends a Node process and everything it holds (ADR-0011 §6, "A process's end").
+    if (runToken !== null) __endOwnedProcess(runToken);
     // In sync context, throw to stop execution (like real process.exit)
     // In async context, return silently to avoid unhandled rejections
     if (syncExecution) {
@@ -1518,8 +1517,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // them here, so `vite --host` — which opened 5173 and then died at startup
     // with an ESLint error, exit 1 — left 5173 in the registry with nothing
     // behind it, and the page went on previewing a port no process held.
-    // Safe twice: a run that exited already emptied its own entries.
-    if (runToken !== null) { __releaseOwnedServers(runToken, false); __releaseOwnedHandles(runToken); }
+    // Safe twice: a run that exited already ended (ADR-0011 §6, "A process's end"). A run with no name has only its
+    // timers to stop.
+    if (runToken !== null) __endOwnedProcess(runToken);
+    else stopGuestTimers(proc);
     // A run this realm forked for itself exits with its end and, its end being its parent's wait, is reaped. One whose
     // launch threw (the runtime's failure, thrown to the caller) passed no code: it is killed.
     if (reaper !== undefined && runToken !== null) {
@@ -1532,15 +1533,6 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // a lock file answers ESRCH from here on, which is how a stale lock is
     // stolen rather than waited on.
     if (runToken !== null) forgetRunPid(runToken);
-    // A program that has ended holds no timers, as an ended Node process
-    // holds none. `process.exit` asked for them to be stopped on a tick of
-    // its own, and the run was taken out of the registry here before that
-    // tick came, so the stop found nothing: an `setInterval` whose callback
-    // threw ended its program and then went on firing forever, into a run
-    // that no longer had anywhere to report an exception, and out to the
-    // realm. The run's own timers stop here, while the process is still in
-    // hand; the scheduled stop then finds nothing left to do.
-    stopGuestTimers(proc);
     releaseRun?.();
   }
 }
@@ -3050,9 +3042,7 @@ function startChildRun(request: RunRequest): StartedRun {
       }
       killedBy = signal;
       controller.abort(signal);
-      __releaseOwnedServers(token, false);
-      __releaseOwnedHandles(token);
-      __stopOwnedProcess(token);
+      __endOwnedProcess(token);
       end(0, killedBy);
       return 0;
     },

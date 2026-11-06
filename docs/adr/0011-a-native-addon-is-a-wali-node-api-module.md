@@ -241,13 +241,14 @@ Each rule names its source, as §4's do.
     (195-203) and `globalThis` (`_global`, 74, `napi_get_global`'s answer). One evaluation shared by every process
     of a realm would give all of them whichever process was ambient.
   - *So:* `@emnapi/runtime` is evaluated once per process, by the path a process's builtins take
-    (`node-lib/load.ts`, `loadDependencyFor`), its `process`, `require`, `globalThis`, `setImmediate`,
-    `MessageChannel` and `Buffer` that process's own. Its context therefore subscribes to the loading process's own
-    `beforeExit`; its waiting requests ref a port of that process (`guest-message-ports.ts`), which holds that
-    process's loop while a thread-safe function or queued work is live, so emnapi-mt's `runtime_keepalive` imports
-    keep emnapi's empty answers; its immediates, finalizers and `uv_close` completions are that process's own
-    immediates (`guest-timers.ts`): counted in its loop, and a throw from one is its uncaught exception; its warnings
-    and fatal exceptions go to its process.
+    (`node-lib/load.ts`, `loadDependencyFor`), its `process`, `require`, `globalThis`, `MessageChannel` and `Buffer`
+    that process's own, and its `setImmediate` the process record's native immediates (below, "A process's end").
+    Its context therefore subscribes to the loading process's own `beforeExit`; its waiting requests ref a port of
+    that process (`guest-message-ports.ts`), which holds that process's loop while a thread-safe function or queued
+    work is live, so emnapi-mt's `runtime_keepalive` imports keep emnapi's empty answers; its immediates, finalizers
+    and `uv_close` completions are scheduled as that process's own immediates (`guest-timers.ts`) while it lives:
+    counted in its loop, and a throw from one is its uncaught exception; its warnings and fatal exceptions go to its
+    process.
   - *What a per-process evaluation does not redirect:* `@emnapi/core` stays one per realm (it requires
     `@emnapi/wasi-threads`, and holds nothing of a process but the context it is given). It reads `process.versions.node`
     when a module is made (`emnapi-core.js:1068`, `_emnapi_get_node_version`, 1293), the engine's one Node line for
@@ -273,15 +274,49 @@ Each rule names its source, as §4's do.
     alive until the thread-safe function is destroyed" (`n-api.md:6692-6694`).
   - *emnapi:* `init` throws with the environment it made (1131) still in its context, before `loaded` (1150).
   - *So:* the loader tears nothing down; the error is the load's.
-- **The process's end ends its addons.**
-  - *Node:* every exit of the environment runs every `napi_env`'s teardown (`node_api.cc:64`), `process.exit()`
-    included.
-  - *So:* an end that reaches `beforeExit` is emnapi's own `destroy`. Every end also closes the process's addon
-    record, one owned handle of the process registered stopped (`node-lib/binding/handles.ts`), which
-    `__releaseOwnedHandles` closes with the run's other handles (`process.exit()`, the end of the run's entry, a kill
-    of the run or of a shell job, the host's `stopProcess`): its close calls the context's `destroy` and stops the
-    thread queues (§5). A Runtime made outside any run has no end the engine sees, and its addons live as long as it
-    does, as its other handles do.
+- **A process's end.**
+  - *Purpose:* however a process ends, nothing it owned stays referenced or runs on its account afterwards, and every
+    native release its addons started has finished by the time the end returns.
+  - *Callers, by grep* (`__releaseOwnedHandles`, `__releaseOwnedServers`, `__stopOwnedProcess`, `stopGuestTimers`):
+    the run's `finally` (`shims/child_process.ts`, `launchNode`), which a return from the entry, a throwing entry,
+    a `process.exit` that unwinds and a caller's abort all reach; `process.exit()` itself; a kill of a child the realm
+    runs (its `kill`); a kill of a shell job (`shims/shell-jobs.ts`); and the host's `stopProcess` (`index.ts`). Each
+    needs one end it can call synchronously (`stopProcess` answers at once, a kill returns at once) and call twice
+    (`process.exit`, then the `finally`).
+  - *Node v24.21.0:* a Tabnode process shares its realm with others, as a worker shares its living OS process, so
+    Node's worker is the reference, not the main thread's `exit()`, which leaves release to the OS
+    (`api/environment.cc:1162-1184`, `node_process_methods.cc:502-511`). Every end of a worker, its loop draining,
+    `process.exit` (its exit handler, `node_worker.cc:391`, to `Worker::Exit` and `Stop`, 1325-1346) or `terminate()`,
+    leaves `Worker::Run`'s scope, whose environment's deleter is `FreeEnvironment` (298-330). `FreeEnvironment`
+    (`api/environment.cc:517-537`) disallows JavaScript, clears `can_call_into_js`, sets `stopping`, then runs
+    `RunCleanup` (`env.cc:1349-1377`): it closes the JavaScript timer and immediate handles (`ClosePerEnvHandles`),
+    so ordinary JavaScript work never runs again; runs the environment's native immediates, cancels requests, closes
+    handles and turns the loop until every close completes (`CleanupHandles`, 1279-1301); and, while cleanup hooks or
+    native immediates remain, drains the cleanup queue (each `napi_env`'s teardown and the addon's own hooks) and
+    runs `CleanupHandles` again. The native immediates (`native_immediates_`) are the environment's own queue, apart
+    from the JavaScript ones that close.
+  - *emnapi at the pin* defers its native releases through `_emnapi_set_immediate`: `uv_close`'s completion
+    (`uv/unix/core.c:29-47`), which runs a thread-safe function's finalize and destroy (`threadsafe_function.c:86-123`,
+    170-264); an async-cleanup environment unref (`async_cleanup_hook.c:85-98`); and the finalizer queue
+    (`emnapi.js:800-818`). These are Node's native immediates and close callbacks, which `RunCleanup` runs to
+    completion.
+  - *Interface:* one routine, `__endOwnedProcess(token)` (`node-lib/binding/handles.ts`), which every caller above
+    calls, synchronous and idempotent: (1) the process's servers and then every owned handle are released; the
+    addon record is one, and its close destroys the emnapi context (no call into JavaScript, `stopping`, every
+    environment's cleanup hooks), then runs every native immediate the record holds, those pending and those its
+    teardown schedules, until none is left, then stops the thread queues; (2) the process's ordinary guest work, its
+    timers, immediates and ports, is cancelled (`__stopOwnedProcess`, `stopGuestTimers`). emnapi's `setImmediate`
+    is the record's: while the process lives each is scheduled as the process's own immediate, and the record keeps
+    it until it runs, so the end runs it rather than cancelling it, as Node's `CleanupHandles` runs
+    `native_immediates_` while the JavaScript immediates close. That is the one place emnapi's work and the guest's
+    are told apart.
+  - *Invariants:* after the routine the process holds no handle, timer, port or pending immediate; every deferred
+    release emnapi scheduled before or during the end has run; nothing runs on its account afterwards; a second call
+    does nothing; a throw from a teardown callback is the run's uncaught exception, and the rest still run. A Runtime
+    made outside any run has no end the engine sees, and its addons live as long as it does, as its other handles do.
+  - *Deleted:* each path's own release-then-cancel sequence (the host's `stopProcess`, a shell job's kill, a child's
+    kill, `process.exit`'s release, the run's `finally` release and timer stop), each now the one call; and
+    `__releaseOwnedServers`'s `stopTimers` and `stopProcess` parameters, whose deferred stop no caller reached.
 - **The loading process's tree loads the file.**
   - *Node:* `DLOpen` loads into the calling environment (`node_binding.cc:446`).
   - *So:* the tree's `TREE_NATIVE` is chosen, and its `load` called, inside the loading process's resource scope

@@ -38,10 +38,10 @@ import { defineCommand } from 'just-bash';
 import type { Bash, CommandContext } from 'just-bash';
 import {
   PROCESS_TOKEN_ENV, enterRun, mintPid, setRunPid, runPidOf, forgetRunPid, pidIsLive, signalPid, exitRunProcess, reapRunProcess,
-  tokenOfPid, __signalOwnedProcess, __stopOwnedProcess, type ProcessToken,
+  tokenOfPid, __signalOwnedProcess, type ProcessToken,
 } from '../process-tokens';
 import { __substrateChildrenOf, __substrateSignals, __substrateSignalNames } from './process';
-import { __releaseOwnedServers, __releaseOwnedHandles } from '../node-lib/net-module';
+import { __endOwnedProcess } from '../node-lib/net-module';
 import type { RunStreams } from './child_process';
 import { unstreamedOutput } from './streamed-output';
 
@@ -257,9 +257,7 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
       // Nothing of the job's receives signals (a builtin, `sleep`): it ends
       // now, as a killed child's run ends, and reports the signal.
       controller.abort(signal);
-      __releaseOwnedServers(token, false);
-      __releaseOwnedHandles(token);
-      __stopOwnedProcess(token);
+      __endOwnedProcess(token);
       end(128 + signalNumber(signal));
       return true;
     },

@@ -11,7 +11,7 @@ import EMNAPI_RUNTIME from '@emnapi/runtime/dist/emnapi.cjs.min?raw';
 import { callingNative, NATIVE_THREAD_MODULE } from './host-native';
 import { createNativeQueue, receiveNative, stopNative } from './native-queue';
 import { __adoptHandle, ownedRun, ownerOf, registerHandle, releaseHandle, withNodeResourceScope, type OwnedHandle } from './node-lib/binding/handles';
-import { loadDependencyFor } from './node-lib/load';
+import { loadDependencyFor, nodeLibGlobalFor } from './node-lib/load';
 import { __tokenForProcess, type ProcessToken } from './process-tokens';
 import type { Process } from './shims/process';
 import { pathToFileURL } from './shims/url';
@@ -33,42 +33,66 @@ interface Library {
 const owners = new WeakMap<object, ProcessAddons>();
 
 /**
- * The process's own `@emnapi/runtime` (ADR-0011 §6): evaluated once for it, so the `process`, `setImmediate`,
- * `MessageChannel`, `Buffer` and global it takes from its host are that process's.
+ * The process's own `@emnapi/runtime` (ADR-0011 §6): evaluated once for it, so the `process`, `MessageChannel`,
+ * `Buffer` and global it takes from its host are that process's, and its `setImmediate` is the process record's.
  */
-const runtimeOf = (process: object): typeof EmnapiRuntime =>
-  loadDependencyFor(process, '@emnapi/runtime', EMNAPI_RUNTIME, ['setImmediate', 'MessageChannel', 'Buffer']) as typeof EmnapiRuntime;
+const runtimeOf = (process: object, setImmediate: (callback: () => void) => void): typeof EmnapiRuntime =>
+  loadDependencyFor(process, '@emnapi/runtime', EMNAPI_RUNTIME, ['setImmediate', 'MessageChannel', 'Buffer'], { setImmediate }) as typeof EmnapiRuntime;
+
+/** The process global's own `setImmediate` and `clearImmediate`: the process's immediates (`guest-timers.ts`). */
+type Immediates = { setImmediate(callback: () => void): unknown; clearImmediate(id: unknown): void };
 
 /**
- * One process's addons (ADR-0011 §6): its emnapi context and its opened files, as one owned handle of the process,
- * registered stopped, closed with the run's other handles however the run ends.
+ * One process's addons (ADR-0011 §6): its emnapi context, its opened files and emnapi's native immediates, as one
+ * owned handle of the process, registered stopped, closed by the process's end however it ends.
  */
 class ProcessAddons implements OwnedHandle {
   readonly context: EmnapiRuntime.Context;
   readonly libraries = new Map<string, Library>();
   readonly token: ProcessToken | null;
-  private ended = false;
+  /**
+   * emnapi's native immediates still to run (Node's `Environment::native_immediates_`): each scheduled as the process's
+   * own immediate while it lives, and run to completion by its end rather than cancelled with its ordinary work.
+   */
+  private readonly immediates = new Map<() => void, unknown>();
+  private ending = false;
 
-  constructor(readonly process: object) {
-    this.context = runtimeOf(process).createContext();
+  constructor(readonly process: object, private readonly guest: Immediates) {
+    this.context = runtimeOf(process, this.setImmediate).createContext();
     this.token = __tokenForProcess(process as Process);
     registerHandle(this, false, false);
     if (ownerOf(this) !== this.token) __adoptHandle(this, this.token);
     owners.set(process, this);
   }
 
+  /** emnapi's `setImmediate`: a native immediate of the process (`immediates`). */
+  readonly setImmediate = (callback: () => void): void => {
+    const run = (): void => { if (this.immediates.delete(run)) callback(); };
+    this.immediates.set(run, this.ending ? undefined : this.guest.setImmediate(run));
+  };
+
   /** A thread's `uv_async_send`, called through the table as emnapi's own listener calls it, in the process's run. */
   deliver(library: Library, callback: number, data: number): void {
     ownedRun(this.token, () => (library.loaded.table.get(callback) as (data: number) => void)(data), true, 'native-async');
   }
 
-  /** The process's end: its context destroyed (every environment's cleanup), its thread queues stopped. */
+  /**
+   * The process's end (ADR-0011 §6, "A process's end", as Node's `FreeEnvironment` and `RunCleanup`): its context
+   * destroyed (no call into JavaScript, every environment's cleanup hooks), then every native immediate run, those
+   * pending and those the teardown schedules, until none is left, then its thread queues stopped.
+   */
   close(): void {
-    if (this.ended) return;
-    this.ended = true;
+    if (this.ending) return;
+    this.ending = true;
     owners.delete(this.process);
     try { this.context.destroy(); }
     finally {
+      for (let next = this.immediates.entries().next(); !next.done; next = this.immediates.entries().next()) {
+        const [run, id] = next.value;
+        if (id !== undefined) this.guest.clearImmediate(id);
+        // A throw from one is the run's uncaught exception, and the rest still run.
+        try { ownedRun(this.token, run, true, 'native-teardown'); } catch { /* a run already gone has no owner to tell */ }
+      }
       for (const library of this.libraries.values()) stopNative(library.queue);
       releaseHandle(this);
     }
@@ -97,7 +121,7 @@ function openLibrary(process: object, path: string, bytes: Uint8Array): Library 
   if (!native) throw dlopenFailed(path + ': a tab runs no native code');
 
   const fresh = !owners.has(process);
-  const owner = owners.get(process) ?? new ProcessAddons(process);
+  const owner = owners.get(process) ?? new ProcessAddons(process, nodeLibGlobalFor(process) as Immediates);
   try {
     const napi = createNapiModule({ context: owner.context, filename: path });
     const env = napi.imports.env;

@@ -29,7 +29,7 @@ export { createProcess } from './shims/process';
 export type { Process, ProcessEnv } from './shims/process';
 export * as path from './shims/path';
 export { httpModule as http, httpsModule as https } from './node-lib/http-module';
-import { __releaseOwnedServers, __ownedServerPorts } from './node-lib/net-module';
+import { __endOwnedProcess, __ownedServerPorts } from './node-lib/net-module';
 export { netModule as net } from './node-lib/net-module';
 export { eventsModule as events } from './node-lib/events-module';
 export { streamModule as stream } from './node-lib/stream-module';
@@ -57,12 +57,12 @@ import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
 import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, type StdioKind } from './shims/child_process';
-import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
+import { Server as NetServer, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, type OwnedHandle } from './node-lib/binding/handles';
 import { withFilesystem } from './node-lib/binding/named-tree';
 import { nativeStreamHandles, type NativeStreamHandleView } from './native-stream-owner';
 
-import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid, installRunRegistry, claimRunPid, forgetRunPid } from './process-tokens';
+import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, runPid, processByPid, installRunRegistry, claimRunPid, forgetRunPid } from './process-tokens';
 export { runPid, processByPid };
 export { installProcessRegistry, installProcessIdAllocator } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
@@ -415,9 +415,7 @@ export function createContainer(options?: ContainerOptions): {
       const known = __runFor(token) !== undefined || __ownedServerPorts(token).length > 0;
       // The servers first, and their timers here rather than on a tick of
       // their own: a caller that asks is told what it may then read back.
-      __releaseOwnedServers(token, false);
-      __releaseOwnedHandles(token);
-      __stopOwnedProcess(token);
+      __endOwnedProcess(token);
       return known;
     },
     /**
