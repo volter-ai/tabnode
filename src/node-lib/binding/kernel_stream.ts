@@ -54,11 +54,7 @@ const WRITES_PER_READINESS = 32;
 const CMSG_FD_COUNT = 64;
 
 /** A queued write; `fd` the descriptor it sends (`req->send_handle`) until its first bytes are taken. */
-interface QueuedWrite {
-  request: WriteWrap; bytes: Uint8Array; sent: number; fd: number | undefined; release: () => void;
-  /** Waiting for this write and every one before it (`whenWritten`). */
-  done?: (() => void)[];
-}
+interface QueuedWrite { request: WriteWrap; bytes: Uint8Array; sent: number; fd: number | undefined; release: () => void }
 
 export class KernelStreamWrap extends LibuvStreamWrap {
   #kernel: boolean;
@@ -75,10 +71,6 @@ export class KernelStreamWrap extends LibuvStreamWrap {
   /** UV_HANDLE_SHUT: the write side was shut down. */
   #shut = false;
   #writes: QueuedWrite[] = [];
-  /** The descriptor is a socket, written with send(2); else write(2) (`TreeSockets.write`). */
-  #socket = true;
-  /** Writes block until taken (libuv's `UV_HANDLE_BLOCKING_WRITES`), the description's own flags left as they are. */
-  #blockingWrites = false;
   #shutdown: { request: ShutdownWrap; release: () => void } | null = null;
   /** The readiness questions this handle has asked and not yet had answered. */
   #waitingIn = false;
@@ -136,31 +128,15 @@ export class KernelStreamWrap extends LibuvStreamWrap {
   }
 
   /** uv_tcp_open, uv_pipe_open: a descriptor of this process's, made non-blocking, readable and writable. */
-  protected openDescriptor(fd: number, nonblocking = true): number {
+  protected openDescriptor(fd: number): number {
     const sockets = this.#sockets;
     if (!sockets) return UV_EBADF;
     if (this.#fd >= 0 && this.#fd !== fd) return UV_EBUSY;
-    const status = nonblocking ? setNonblocking(sockets, fd) : 0;
+    const status = setNonblocking(sockets, fd);
     if (status !== 0) return status;
     this.setDescriptor(fd);
     this.setOpen(true, true);
     return 0;
-  }
-
-  /**
-   * A stream on a descriptor of the calling process that the engine writes for a child (a duplicate it took for the
-   * child's output, ADR-0010 §1), belonging to no run; none where it cannot be opened. A socket is sent to and any other
-   * description written. `kind` is libuv's handling of it: `'stream'` (a socket, a FIFO or pipe) made non-blocking on
-   * its shared description, as `uv_pipe_open` makes it; `'blocking'` (a terminal or other character device) left as it
-   * is and written with blocking writes, as `uv_tty_init` writes a terminal it does not reopen.
-   */
-  static forWriting(fd: number, socket: boolean, kind: 'stream' | 'blocking'): KernelStreamWrap | undefined {
-    const stream = new KernelStreamWrap(true);
-    __adoptHandle(stream, null);
-    stream.#socket = socket;
-    stream.#blockingWrites = kind === 'blocking';
-    if (stream.openDescriptor(fd, kind === 'stream') !== 0) { stream.close(); return undefined; }
-    return stream;
   }
 
   /** `other`'s descriptor becomes this handle's, as the end a child opens of a channel its parent made in its table. */
@@ -315,17 +291,13 @@ export class KernelStreamWrap extends LibuvStreamWrap {
     invokeOwned(this, 'onread', null);
   }
 
-  /**
-   * send(2), never raising SIGPIPE (Node ignores it), so a closed peer is EPIPE; with `fd`, a sendmsg carrying it. A
-   * description that is no socket is write(2): the bytes it took, or its negative errno.
-   */
+  /** send(2), never raising SIGPIPE (Node ignores it), so a closed peer is EPIPE; with `fd`, a sendmsg carrying it. */
   #send(bytes: Uint8Array, fd: number | undefined): number {
     const sockets = this.#sockets!;
     const flags = linux.MSG_NOSIGNAL | linux.MSG_DONTWAIT;
     let sent: number;
     do {
-      sent = !this.#socket ? sockets.write(this.#fd, bytes)
-        : fd === undefined ? sockets.sendto(this.#fd, bytes, flags, null)
+      sent = fd === undefined ? sockets.sendto(this.#fd, bytes, flags, null)
         : sockets.sendmsg(this.#fd, { data: bytes, control: rightsControl([fd]) }, flags);
     } while (sent === -linux.EINTR);
     return sent;
@@ -362,7 +334,6 @@ export class KernelStreamWrap extends LibuvStreamWrap {
     req.async = true;
     streamBaseState[kLastWriteWasAsync] = 1;
     if (idle && fd !== undefined) this.#flushWrites();
-    else if (this.#blockingWrites) this.writeBlocking();
     else if (!this.writesHeld()) this.waitOut();
     return 0;
   }
@@ -392,13 +363,7 @@ export class KernelStreamWrap extends LibuvStreamWrap {
       const write = this.#writes[0]!;
       const taken = this.#send(write.bytes.subarray(write.sent), write.fd);
       if (taken === -linux.EAGAIN) { this.waitOut(); return; }
-      // A failed write completes with its error, and the queue behind it is tried at the next readiness, as
-      // uv__write leaves POLLOUT started while requests remain; a pending shutdown follows an emptied queue.
-      if (taken < 0) {
-        this.#finishWrite(write, taken);
-        if (this.#writes.length) this.waitOut(); else this.#drain();
-        return;
-      }
+      if (taken < 0) { this.#finishWrite(write, taken); return; }
       write.fd = undefined;
       write.sent += taken;
       this.bytesWritten += taken;
@@ -415,32 +380,10 @@ export class KernelStreamWrap extends LibuvStreamWrap {
     if (index < 0) return;
     this.#writes.splice(index, 1);
     this.writeQueueSize -= write.bytes.byteLength - write.sent;
-    for (const done of write.done ?? []) done();
     queueBindingTask(() => {
       try { invokeOwned(write.request, 'oncomplete', status); }
       finally { forgetNodeRequest(write.request); write.release(); }
     });
-  }
-
-  /**
-   * Settles once every write queued before the call has been sent, failed or cancelled (writes complete in order, so
-   * this is the last queued one's completion); none where nothing waits. What the engine wrote for a child is
-   * complete when this settles, whatever is queued after it (ADR-0010 §2).
-   */
-  whenWritten(): Promise<void> | undefined {
-    const last = this.#kernel ? this.#writes[this.#writes.length - 1] : undefined;
-    if (!last) return undefined;
-    return new Promise(done => { (last.done ??= []).push(done); });
-  }
-
-  /** The queue written out by a realm that may block: poll(2) for writability, then the queue sent, until it is empty. */
-  writeBlocking(): void {
-    const sockets = this.#sockets;
-    while (this.#kernel && this.#writes.length && !this.closed && sockets && this.#fd >= 0) {
-      const ready = sockets.poll([{ fd: this.#fd, events: linux.POLLOUT, revents: 0 }], -1);
-      if (ready < 0 && ready !== -linux.EINTR) { this.cancelWrites(ready); return; }
-      this.#flushWrites();
-    }
   }
 
   /** Every queued write completes with `status` (a failed connect's, a close's ECANCELED). */

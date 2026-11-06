@@ -43,10 +43,6 @@ export interface OwnedRun {
    * stderr and exit 1. False when the run no longer answers.
    */
   reportUncaught(error: unknown): boolean;
-  /** What the engine still writes for the run's fd 1 and 2, as its streams' sinks answer it (ADR-0010 §2). */
-  outputWritten?(): Promise<void> | undefined;
-  /** The same, written out by a realm that may block. */
-  outputWrittenBlocking?(): void;
 }
 
 const runs = new Map<ProcessToken, OwnedRun>();
@@ -142,9 +138,6 @@ export function __stopOwnedProcess(token: ProcessToken): void {
  * signal is not one Node names.
  */
 export function __signalOwnedProcess(token: ProcessToken, signal: string): boolean {
-  // A run whose end waits for its output is still a process (ADR-0010 §2): the signal ends it.
-  const ending = endings.get(token);
-  if (ending) { ending(signal); return true; }
   const run = runs.get(token);
   if (!run) return false;
   const guest = run.process as unknown as { pid: number; kill(pid: number, signal: string): unknown };
@@ -326,51 +319,8 @@ export function reapRunProcess(pid: number, parentPid: number, code: number, sig
   return registryFor(parent).reap(pid, parentPid, code, signal);
 }
 
-/** The runs whose normal end waits for their output, each with what a signal delivered meanwhile does. */
-const endings = new Map<ProcessToken, (signal: string) => void>();
-/** signal(7)'s signals whose default action is to ignore, or to stop, which is not kept: they end no waiting run. */
-const NOT_ENDING = new Set(['SIGCHLD', 'SIGCONT', 'SIGURG', 'SIGWINCH', 'SIGSTOP', 'SIGTSTP', 'SIGTTIN', 'SIGTTOU']);
-
-/**
- * The one end of a run's process (ADR-0010 §2), called only by the code that numbered the run (`setRunPid`'s or
- * `claimRunPid`'s caller). A normal end (`signal` null) waits, with the process live (its pid in the table and its
- * group, its signal receiver, its run record), for `output`: the writes the engine still makes for it. A signal that
- * ends a process, delivered to it meanwhile or passed to a second call, ends it at once with that signal. Then
- * `retire` (the numberer's own exit and reap) runs, the process is forgotten and its run record released, what
- * `retire` answered is called (the parent told, once the pid is nobody's), and the answer settles. With nothing to
- * wait for it all happens before the call returns.
- */
-export function endRunProcess(token: ProcessToken, code: number, signal: string | null,
-  output: (() => Promise<void> | undefined) | undefined, retire: (code: number, signal: string | null) => (() => void) | void): Promise<void> {
-  const ending = endings.get(token);
-  if (ending) {
-    if (signal !== null) ending(signal);
-    return Promise.resolve();
-  }
-  let ended = false;
-  let settle!: () => void;
-  const settled = new Promise<void>(done => { settle = done; });
-  const finish = (finalCode: number, finalSignal: string | null): void => {
-    if (ended) return;
-    ended = true;
-    endings.delete(token);
-    let told: (() => void) | void;
-    try { told = retire(finalCode, finalSignal); }
-    finally {
-      forgetRunPid(token);
-      runs.delete(token);
-    }
-    try { told?.(); } finally { settle(); }
-  };
-  const written = signal === null ? output?.() : undefined;
-  if (!written) { finish(code, signal); return settled; }
-  endings.set(token, (delivered) => { if (!NOT_ENDING.has(delivered)) finish(0, delivered); });
-  void written.then(() => { finish(code, null); });
-  return settled;
-}
-
 /** A run that has ended is no longer a process; its number is nobody's. */
-function forgetRunPid(token: ProcessToken): void {
+export function forgetRunPid(token: ProcessToken): void {
   registryFor(token).forget(token);
   runRegistries.delete(token);
   pidsOfRuns.delete(token);

@@ -62,7 +62,7 @@ import { __adoptHandle, type OwnedHandle } from './node-lib/binding/handles';
 import { withFilesystem } from './node-lib/binding/named-tree';
 import { nativeStreamHandles, type NativeStreamHandleView } from './native-stream-owner';
 
-import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid, installRunRegistry, claimRunPid, endRunProcess } from './process-tokens';
+import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid, installRunRegistry, claimRunPid, forgetRunPid } from './process-tokens';
 export { runPid, processByPid };
 export { installProcessRegistry, installProcessIdAllocator } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
@@ -377,10 +377,9 @@ export function createContainer(options?: ContainerOptions): {
           });
         });
       } finally {
-        // A shell line that has ended is no longer a process: numbered here, it is ended here, by the one end of a
-        // process (ADR-0010 §2), so its number goes back and the next run given it is not refused. Its sinks are the
-        // host's, written when they return.
-        if (numbered) await endRunProcess(processToken, 0, null, undefined, () => {});
+        // A shell line that has ended is no longer a process, as a node run that has ended is not (launchNode): its
+        // number goes back, so the next run given it is not refused, and its registry and numbers are dropped.
+        if (numbered) forgetRunPid(processToken);
       }
     }),
     runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {

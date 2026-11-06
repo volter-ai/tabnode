@@ -37,7 +37,7 @@
 import { defineCommand } from 'just-bash';
 import type { Bash, CommandContext } from 'just-bash';
 import {
-  PROCESS_TOKEN_ENV, enterRun, mintPid, setRunPid, runPidOf, pidIsLive, signalPid, exitRunProcess, reapRunProcess, endRunProcess,
+  PROCESS_TOKEN_ENV, enterRun, mintPid, setRunPid, runPidOf, forgetRunPid, pidIsLive, signalPid, exitRunProcess, reapRunProcess,
   tokenOfPid, __signalOwnedProcess, __stopOwnedProcess, type ProcessToken,
 } from '../process-tokens';
 import { __substrateChildrenOf, __substrateSignals, __substrateSignalNames } from './process';
@@ -238,9 +238,6 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
     // takes bytes, as a `node` of the parent's own shell does.
     onStdoutBytes: (bytes: Uint8Array) => { toRun(live(), 1, bytes); },
     onStderrBytes: (bytes: Uint8Array) => { toRun(live(), 2, bytes); },
-    // The job writes its shell's sinks: its bytes are written when its shell's are (ADR-0010 §2).
-    outputWritten: () => live()?.outputWritten?.(),
-    outputWrittenBlocking: () => { live()?.outputWrittenBlocking?.(); },
     signal: controller.signal,
     held: false,
   });
@@ -263,26 +260,20 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
       __releaseOwnedServers(token, false);
       __releaseOwnedHandles(token);
       __stopOwnedProcess(token);
-      end(128 + signalNumber(signal), signal);
+      end(128 + signalNumber(signal));
       return true;
     },
   };
-  /**
-   * The job's end, through the one end of a process (`endRunProcess`, ADR-0010 §2), since it is numbered here: a
-   * normal end waits, the job still a process, for what its shell's sinks still write of it; a signal ends it at once.
-   */
-  const end = (status: number, signal: string | null = null): void => {
+  const end = (status: number): void => {
     if (job.status !== null) return;
-    void endRunProcess(token, status, signal, () => live()?.outputWritten?.(), (endStatus, endSignal) => {
-      const finalStatus = endSignal !== null && endStatus === 0 ? 128 + signalNumber(endSignal) : endStatus;
-      job.status = finalStatus;
-      host.releaseRunStreams(token);
-      // The job ran in this realm's shell: it exits with its status, and its end is its shell's wait.
-      exitRunProcess(pid, liveParent, finalStatus, null, parent);
-      reapRunProcess(pid, liveParent, finalStatus, null, parent);
-      __substrateChildrenOf(parent).delete(pid);
-      return () => { settle(finalStatus); };
-    });
+    job.status = status;
+    host.releaseRunStreams(token);
+    // The job ran in this realm's shell: it exits with its status, and its end is its shell's wait.
+    exitRunProcess(pid, liveParent, status, null, parent);
+    reapRunProcess(pid, liveParent, status, null, parent);
+    forgetRunPid(token);
+    __substrateChildrenOf(parent).delete(pid);
+    settle(status);
   };
   const hold = (text: string, key: 'pendingOut' | 'pendingErr'): void => {
     if (!text) return;

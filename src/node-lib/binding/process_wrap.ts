@@ -137,14 +137,6 @@ export interface RunRequest {
    * them. Absent where `kernelDescriptors` is empty.
    */
   handOver?(): void;
-  /**
-   * What the engine still has to write for a child it runs in its own realm (ADR-0010 §2): settles once every write
-   * given so far to a child end or an inherited writer (its parent's sink included) is sent, failed or cancelled; none
-   * where nothing waits. The run's `endRunProcess` waits for it, the run still a process.
-   */
-  outputWritten(): Promise<void> | undefined;
-  /** The same, written out by a realm that may block. */
-  outputWrittenBlocking(): void;
   /** Called once, when the run has ended. */
   exit(code: number, signal: string | null): void;
 }
@@ -242,15 +234,9 @@ export function inheritedWriter(fd: number, token: ProcessToken | null): Descrip
   if (fd !== 1 && fd !== 2) return descriptorWriter(fd);
   // Inherit the descriptor's original sink, not a guest replacement of
   // process.stderr.write (a child commonly redirects its console over IPC).
-  // Its bytes are written when the parent's are: a child's completion includes its parent's (ADR-0010 §2).
   if (token !== null) {
     const parent = __runFor(token);
-    const sink = fd === 1 ? parent?.stdout : parent?.stderr;
-    if (!sink) return null;
-    const writer: DescriptorWriter = (chunk) => { sink(chunk); };
-    if (parent?.outputWritten) writer.settled = () => parent.outputWritten!();
-    if (parent?.outputWrittenBlocking) writer.settleBlocking = () => { parent.outputWrittenBlocking!(); };
-    return writer;
+    return (fd === 1 ? parent?.stdout : parent?.stderr) ?? null;
   }
   const realm = parentProcess(token);
   const stream = fd === 1 ? realm?.stdout : realm?.stderr;
@@ -365,8 +351,6 @@ export class Process implements OwnedHandle {
       descriptors: [],
       kernelDescriptors: this.prepared ? this.prepared.placed.map(each => ({ ...each })) : [],
       ...(this.prepared ? { handOver: () => { this.handOver(); } } : {}),
-      outputWritten: () => this.outputWritten(),
-      outputWrittenBlocking: () => { this.outputWrittenBlocking(); },
       exit: (code, signal) => { this.reportExit(code, signal); },
     };
 
@@ -432,7 +416,7 @@ export class Process implements OwnedHandle {
           this.closeFarEnds();
           return UV_EBADF;
         }
-        if (inherited?.release || inherited?.settled) this.heldDescriptions.push(inherited);
+        if (inherited?.release) this.heldDescriptions.push(inherited);
         if (index === 1) request.stdout = inherited;
         else request.stderr = inherited;
       }
@@ -462,6 +446,12 @@ export class Process implements OwnedHandle {
     if (!handleHasRef(this)) this.run.setRef?.(false);
     // Forked, the child holds its own copies of what was made for it.
     this.prepared?.closeMade();
+    // The child's output ends are its descriptors (ADR-0010 §2): where this realm serves them, their pending writes are
+    // its run's, so its loop ends after them, as libuv's write requests hold a Node process's loop.
+    const child = this.run.token;
+    if (child !== null) {
+      for (const [index, far] of this.farEnds) if (index !== 0 && far instanceof Pipe && far.kernelBacked && !far.closed) __adoptHandle(far, child);
+    }
     // The number the parent reads off the handle is the child's own
     // `process.pid`, made at its fork, as it is in Node.
     this.pid = this.run.pid;
@@ -573,33 +563,11 @@ export class Process implements OwnedHandle {
     far.readStart();
   }
 
-  /** Each kernel end the spawn made, and each inherited writer, written out by a realm that may block. */
-  private outputWrittenBlocking(): void {
-    for (const far of this.farEnds.values()) if (far instanceof Pipe) far.writeBlocking();
-    for (const writer of this.heldDescriptions) writer.settleBlocking?.();
-  }
-
-  /** The child's output still queued: on each kernel end the spawn made, and in each inherited writer (ADR-0010 §2). */
-  private outputWritten(): Promise<void> | undefined {
-    const waits: Promise<void>[] = [];
-    for (const far of this.farEnds.values()) {
-      const written = far instanceof Pipe ? far.whenWritten() : undefined;
-      if (written) waits.push(written);
-    }
-    for (const writer of this.heldDescriptions) {
-      const written = writer.settled?.();
-      if (written) waits.push(written);
-    }
-    return waits.length ? Promise.all(waits).then(() => undefined) : undefined;
-  }
-
   /**
    * The run has ended. The child's ends of the pairings close, so the parent's
    * streams read EOF as they do when a real child's descriptors go, and
    * `onexit` fires once, after them: Node's `flushStdio` runs on the tick
-   * after `onexit` and must find the bytes already delivered. A normal end
-   * comes here once the runner has waited for the child's output
-   * (`outputWritten`, ADR-0010 §2); a signal's end cancels what is queued.
+   * after `onexit` and must find the bytes already delivered.
    */
   private reportExit(code: number, signal: string | null): void {
     if (this.ended) return;

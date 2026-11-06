@@ -70,7 +70,7 @@ import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __subs
 
 import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
 
-import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, runPidOf, runWaiterOf, endRunProcess, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, type ProcessToken } from '../process-tokens';
+import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, runPidOf, runWaiterOf, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, type ProcessToken } from '../process-tokens';
 import type { ProcessRegistry } from '../process-registry';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
 const __hostProcess: { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown } | null =
@@ -233,14 +233,6 @@ export interface RunStreams {
    * nonzero code on that pipe writes one line to the host realm's console.
    */
   stderrIsPipe?: boolean;
-  /**
-   * What the engine still writes to this run's sinks (ADR-0010 §2): settles once every write given so far is sent,
-   * failed or cancelled; none where nothing waits, as with the host's own sinks, which return once written. A node a
-   * shell runs shares its shell's streams, and so this.
-   */
-  outputWritten?(): Promise<void> | undefined;
-  /** The same, written out by a realm that may block. */
-  outputWrittenBlocking?(): void;
 }
 
 /**
@@ -306,9 +298,8 @@ async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaun
     if (forked && !ran) { exitRunProcess(own.pid, own.waiter, 0, 'SIGKILL'); reapRunProcess(own.pid, own.waiter, 0, 'SIGKILL'); }
     if (streams) streams.stdin = null;
     input?.dispose();
-    // A run forked here is ended here, by the one end of a process (ADR-0010 §2); a run its caller numbered is its
-    // caller's to end. The host wrote its output itself.
-    if (forked) await endRunProcess(token, 0, null, undefined, () => {});
+    // Adoption moves owner registration; only the source-local lookup remains.
+    forgetRunPid(token);
   }
 }
 
@@ -571,11 +562,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         exitRunProcess(own.pid, own.waiter, 0, 'SIGKILL', parentToken);
         reapRunProcess(own.pid, own.waiter, 0, 'SIGKILL', parentToken);
       }
-      if (nested) {
-        releaseRunStreams(runToken);
-        // A nested node is numbered here (nestedNodeToken), so it is ended here; the host wrote its output.
-        await endRunProcess(runToken, 0, null, undefined, () => {});
-      }
+      if (nested) releaseRunStreams(runToken);
     }
   }
 
@@ -862,16 +849,13 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // This run's number, recorded under its name, with the process that waits for it: `process.kill(pid, 0)` asks the
   // registry whether a pid is a live process.
   if (runToken !== null) setRunPid(runToken, proc.pid, runWaiterOf(runToken) ?? proc.ppid, { argv: [...launch.argv], cwd: launch.cwd, env: launch.env });
-  // The run record is released by the run's one end (`endRunProcess`), by whoever numbered it (ADR-0010 §2).
-  if (runToken !== null) __recordRun(runToken, {
+  const releaseRun = runToken === null ? null : __recordRun(runToken, {
     process: proc,
     stdout: appendStdout,
     stderr: appendStderr,
     pendingTimers: () => pendingGuestTimers(proc),
     stopTimers: () => stopGuestTimers(proc),
     reportUncaught: (error: unknown) => __reportUncaughtException(proc, error),
-    ...(streams?.outputWritten ? { outputWritten: () => streams.outputWritten!() } : {}),
-    ...(streams?.outputWrittenBlocking ? { outputWrittenBlocking: () => { streams.outputWrittenBlocking!(); } } : {}),
   });
   let hostReceiptWritten = false;
   let lastUncaught: unknown;
@@ -1538,6 +1522,16 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     if (runToken !== null) { __releaseOwnedServers(runToken, false); __releaseOwnedHandles(runToken); }
     // A run this realm forked for itself exits with its end and, its end being its parent's wait, is reaped. One whose
     // launch threw (the runtime's failure, thrown to the caller) passed no code: it is killed.
+    if (reaper !== undefined && runToken !== null) {
+      const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
+      const [code, signal] = runEnd === undefined ? [0, 'SIGKILL'] : [runEnd, null];
+      exitRunProcess(own.pid, own.waiter, code, signal, reaper);
+      reapRunProcess(own.pid, own.waiter, code, signal, reaper);
+    }
+    // A run that has ended is no longer a process: the number it wrote into
+    // a lock file answers ESRCH from here on, which is how a stale lock is
+    // stolen rather than waited on.
+    if (runToken !== null) forgetRunPid(runToken);
     // A program that has ended holds no timers, as an ended Node process
     // holds none. `process.exit` asked for them to be stopped on a tick of
     // its own, and the run was taken out of the registry here before that
@@ -1547,18 +1541,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // realm. The run's own timers stop here, while the process is still in
     // hand; the scheduled stop then finds nothing left to do.
     stopGuestTimers(proc);
-    // A run this realm numbered itself (forked here, or a node its shell runs) is ended here, by the one end of a
-    // process (ADR-0010 §2): its output first, the process live, then its exit and its reap, its end being its parent's
-    // wait. One whose launch threw passed no code: it is killed. A run its caller numbered is its caller's to end; then
-    // the number it wrote into a lock file answers ESRCH, which is how a stale lock is stolen rather than waited on.
-    if (reaper !== undefined && runToken !== null) {
-      const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
-      const [code, signal] = runEnd === undefined ? [0, 'SIGKILL'] : [runEnd, null];
-      await endRunProcess(runToken, code, signal, streams?.outputWritten && (() => streams.outputWritten!()), (endCode, endSignal) => {
-        exitRunProcess(own.pid, own.waiter, endCode, endSignal, reaper);
-        reapRunProcess(own.pid, own.waiter, endCode, endSignal, reaper);
-      });
-    }
+    releaseRun?.();
   }
 }
 
@@ -2642,27 +2625,15 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
   delete env[PROCESS_TOKEN_ENV];
   if (options.registry) installRunRegistry(options.processToken, options.registry);
   if (options.process) claimRunPid(options.processToken, options.process.pid, options.process.ppid, { argv: [...argv], cwd: options.cwd ?? '/' });
-  let outcome: CommandOutcome | undefined;
-  try {
-    outcome = await launchNode(tree, {
-      ...(options.moduleEvaluationObserver ? { moduleEvaluationObserver: options.moduleEvaluationObserver } : {}),
-      argv: [...argv],
-      cwd: options.cwd ?? '/',
-      env,
-      ...(options.credentials ? { credentials: copyProcessCredentials(options.credentials) } : {}),
-      ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
-      token: options.processToken,
-    });
-    return outcome;
-  } finally {
-    // A process its host numbered (the kernel's exec'd node) is numbered here, so it is ended here, by the one end of a
-    // process (ADR-0010 §2); its exit is its host's. One launchNode forked itself it ended itself.
-    if (options.process) {
-      const streams = runStreamsFor(options.processToken);
-      await endRunProcess(options.processToken, outcome?.exitCode ?? 0, outcome ? outcome.signal ?? null : 'SIGKILL',
-        streams?.outputWritten && (() => streams.outputWritten!()), () => {});
-    }
-  }
+  return launchNode(tree, {
+    ...(options.moduleEvaluationObserver ? { moduleEvaluationObserver: options.moduleEvaluationObserver } : {}),
+    argv: [...argv],
+    cwd: options.cwd ?? '/',
+    env,
+    ...(options.credentials ? { credentials: copyProcessCredentials(options.credentials) } : {}),
+    ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
+    token: options.processToken,
+  });
 }
 
 /**
@@ -2890,8 +2861,6 @@ function startChildRun(request: RunRequest): StartedRun {
     stdinOpen: request.stdinIsPipe,
     stderrIsPipe: request.stderrIsPipe,
     terminal: request.terminal,
-    outputWritten: () => request.outputWritten(),
-    outputWrittenBlocking: () => { request.outputWrittenBlocking(); },
     get stdin(): RunStdin | null | undefined { return stdinSink; },
     set stdin(sink: RunStdin | null | undefined) {
       stdinSink = sink ?? null;
@@ -2913,27 +2882,21 @@ function startChildRun(request: RunRequest): StartedRun {
   // Its pipes past fd 2 are there the same way, at the numbers it was given.
   for (const { fd, pipe } of request.descriptors) registerRunFd(token, fd, 'PIPE', pipe);
 
-  /**
-   * The run's end, through the one end of a process (`endRunProcess`, ADR-0010 §2), since this runner numbered it. A
-   * normal end of a run this realm serves waits there, the run still a process, for the output the engine still writes
-   * for it; a signal (this end called with one, or delivered to its pid) ends it at once. A child a host ran wrote its
-   * own output.
-   */
   const end = (code: number, signal: string | null): void => {
     if (finished) return;
-    void endRunProcess(token, code, signal, !hosted && !hostRun ? () => request.outputWritten() : undefined, (endCode, endSignal) => {
-      finished = true;
-      wakeInput?.();
-      wakeInput = undefined;
-      releaseRunStreams(token);
-      releaseRunFds(token);
-      // The child's end is the kernel's: a child this realm ran itself (or that never started) exits here; one the
-      // host or a realm of its own ran reported its own exit. Its parent's wait takes the end the process table holds.
-      if (!started || (!hosted && !hostRun)) exitRunProcess(pid, parentPid, endCode, endSignal, request.owner);
-      const ended = reapRunProcess(pid, parentPid, endCode, endSignal, request.owner);
-      __substrateChildrenOf(request.owner).delete(pid);
-      return () => { request.exit(ended.code, ended.signal); };
-    });
+    finished = true;
+    wakeInput?.();
+    wakeInput = undefined;
+    releaseRunStreams(token);
+    releaseRunFds(token);
+    // The child's end is the kernel's: a child this realm ran itself (or that never started) exits here; one the host
+    // or a realm of its own ran reported its own exit. Its parent's wait takes the end the process table holds.
+    if (!started || (!hosted && !hostRun)) exitRunProcess(pid, parentPid, code, signal, request.owner);
+    const ended = reapRunProcess(pid, parentPid, code, signal, request.owner);
+    // A run that has ended is no longer a process: its number answers ESRCH.
+    forgetRunPid(token);
+    __substrateChildrenOf(request.owner).delete(pid);
+    request.exit(ended.code, ended.signal);
   };
 
   /**

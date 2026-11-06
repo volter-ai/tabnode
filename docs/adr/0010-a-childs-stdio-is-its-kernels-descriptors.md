@@ -67,9 +67,9 @@ canonical with echo." Builds on ADR-0009 (a realm's sockets are its kernel's).
   descriptor of the process is the kernel's answer.
 - **The binding** (`process_wrap`, `spawn_sync`, `tty_wrap`, `src/shims/child_process.ts`'s runner) owns what libuv
   owns: making the child's stdio (one preparation, `child_stdio.ts`, for `spawn` and `spawnSync` alike), the lifetime
-  of the parent's handles and the child's ends while this realm holds them, the completion of every write the engine
-  makes for a child (to a child end it made, and to a description the child inherited), the synchronous loop's
-  deadline and limits, and the native terminal operation (`setRawMode(UV_TTY_MODE_*)`, `getWindowSize`).
+  of the parent's handles and the child's ends while this realm holds them, the synchronous loop's deadline and limits,
+  and the native terminal operation (`setRawMode(UV_TTY_MODE_*)`, `getWindowSize`). A child's lifetime is not the
+  binding's: it is its process's (§2).
 - **Node's own library** (vendored, unmodified) owns how stdio is read (`getValidStdio`) and the TTY userland:
   `tty.ReadStream.prototype.setRawMode`'s validation, its error and its `isRaw` and `rawMode` fields, for a run's
   `process.stdin` as for any `ReadStream`.
@@ -90,22 +90,7 @@ writes them in its loop (§4).
   `SO_SNDBUF` at both ends): the parent's end non-blocking, the child's blocking.
 - **`'inherit'` and a number** are the parent's descriptor of that number. A number the parent's run was started with
   as a kernel stream (its channel) is that stream's descriptor. Whether the parent holds it is the kernel's answer
-  (`fcntl(F_GETFL)`): its `EBADF` fails the spawn, as the child's `dup2` fails libuv's, and nothing else does. Where
-  the engine serves the child in its own realm (§2), its writes to that descriptor are made on a duplicate taken for
-  the child (`TREE_DESCRIPTORS.dup`), and which mechanism writes them is the description's kind, by its `fstat`:
-  - a regular file or a block device takes every byte of a `write(2)` (POSIX: a short write there is only a full disk
-    or a signal), so it is written once, through the tree's `write(2)`, as is a file of the engine's own table;
-  - every other description (a socket, a FIFO or pipe, a terminal or other character device) can take part of a write
-    or answer `EAGAIN`, so it is written by a kernel stream opened on the duplicate (`KernelStreamWrap`), whose queue
-    keeps what a write did not take and counts each write's real progress: `sendto(2)` for a socket,
-    `TreeSockets.write` (`write(2)`, answering the bytes taken or a negative errno, never throwing) for any other. That
-    queue is the one owner of those writes, their readiness and their completion, as it is for the pipes the spawn
-    makes.
-  - Its shared description's flags are changed exactly as libuv changes them for a descriptor Node writes: a socket,
-    FIFO or pipe is made non-blocking on the shared description, as `uv_pipe_open` makes it; a terminal or other
-    character device is left as it is and written with blocking writes, as `uv_tty_init` writes a terminal it does not
-    reopen (it reopens a slave by its `ttyname`, which the engine has no door to read) and as Node writes a character
-    device that is no terminal (`UV_FILE`).
+  (`fcntl(F_GETFL)`): its `EBADF` fails the spawn, as the child's `dup2` fails libuv's, and nothing else does.
 - **`'wrap'`** (a stream handed as stdio) is the stream's descriptor (`uv__stream_fd`), where it is a kernel one.
 - **`'ignore'` at 0 to 2 is `/dev/null`**, opened through the tree's descriptor calls (read-only for 0, read-write for
   1 and 2, close-on-exec as the tree's `open` makes every file) and given to the child at that number.
@@ -139,41 +124,25 @@ host, and:
   the engine's pairings). Such a child always goes to the host: the executor's `bypass` is not read for it, since its
   descriptors are placed for a process.
 
-A child the engine runs in its own realm (the engine's own `node` without a process host, a command of the engine's
-shell) is no process with a table of its own: the parent's realm serves the child's ends for it, through the run's
-sinks (the child's writes are writes to its kernel end, the parent's writes to fd 0 reads of it).
-
-- **Its end follows its output.** A Linux child's `write(2)` returns only once its descriptor has taken the bytes, so
-  its exit follows everything it wrote, and until it exits, and is reaped, it is a process: `kill(pid, 0)` finds it,
-  and its group's and its siblings' signals reach it.
-  - *One lifetime owner: the run's process entry* (`src/process-tokens.ts`): its pid in the process table, live and
-    in its group, its signal receiver (`tokenOfPid`, `__signalOwnedProcess`), its run record and its streams. The run's
-    starter makes it (`setRunPid`: `startChildRun` for a spawned child, `nestedNodeToken` for a node a shell runs,
-    `launchNode` for a run it forks itself, `runNode` and `container.run` for a run their host numbered,
-    `runHostedNode`, `shell-jobs.ts` for a job, `spawnSync` for its children) and only the starter ends it, by one call,
-    `endRunProcess(token, code, signal, output, retire)`: a normal end waits, with the entry live, for `output`; then
-    `retire` (the starter's own exit, where this realm ran the run, and reap), the entry forgotten and the run record
-    released, in that order, and only then is the parent told. A signal that ends a process, delivered to the entry
-    while it waits (`kill`, `process.kill`, a group's, the parent's `ChildProcess.kill`), ends it at once with that
-    signal, cancelling the wait; one whose default is to be ignored, or to stop (not kept), changes nothing. No other
-    code forgets, exits, reaps or releases a run it did not number: `launchNode`'s end for a run its caller numbered
-    only says how the guest ended.
-  - *One write mechanism* (§1): every write the engine makes for a child that a description can take in part is a
-    `KernelStreamWrap`'s, to a child end the spawn made or to an inherited description. `whenWritten()` settles once
-    every write queued before the call has been sent, failed or cancelled, so a run waits for its own bytes and not a
-    sibling's; `writeBlocking()` sends them from a realm that may block, in `TreeSockets.poll`.
-  - *A run's output is its streams' sinks, and their completion is the run's* (`RunStreams.outputWritten`,
-    `outputWrittenBlocking`): for a spawned child, every child end's and every inherited writer's `whenWritten`
-    (`RunRequest.outputWritten`); a node a shell runs shares its shell's streams, and so its completion; a child that
-    inherited its parent's fd 1 or 2 (directly, or through a descriptor opened on `/dev/stdout`) writes its parent's
-    sink, and its completion includes its parent's run's `outputWritten`, so a grandchild's bytes are complete when its
-    same-realm parent's queue has sent them; a run whose sink is its host's own (`onStdoutBytes`, a `write(2)` that
-    blocks) or its realm's `process.stdout` is complete when the write returns. A host that runs a child as its own
-    process writes its own descriptors (§2 above): the engine writes nothing for it and its end is the host's.
-  - *Forced ends cancel*: a signal's end closes the child's ends and releases its writers, cancelling what they queue
-    (`ECANCELED`), as a killed child's unwritten output is lost.
-  - A synchronous child the engine's own worker runs (`runSyncChild`) writes through the same writers, and its call
-    returns once each has sent its bytes (`writeBlocking`, `outputWrittenBlocking`) and is released.
+- **A child's lifetime is its process's.** In the substrate every child of a Tabnode realm is a kernel process: the
+  realm's registry (browser-substrate's `KernelRealmProcessRegistry`) forks it at its numbering (`allocate`, the
+  kernel's fork), and its liveness, group and signals are the kernel's (`lookup` reads `/proc`, `signal` and
+  `signalGroup` are `kill(2)`), its exit a zombie with its status and its reap `wait4`. Every Node child is admitted by
+  the process host and runs as its own process, in its own instance, writing its own descriptors (browser-substrate
+  ADR-0227 §5.9, one instance per task), so the substrate has no child that the engine runs in its parent's realm. The
+  engine keeps, of a lifetime there, only which run a pid is (to raise a delivered signal on it) and the run's record.
+  Without a kernel host, `process-registry.ts`'s table is the process table (ADR-0009 §6), and a child the engine runs
+  in its own realm (the engine's own `node`, a command of the engine's shell) is a process of that table.
+- **Its output completes as Node's does.** Node's stdio contract (`doc/api/process.md`, "A note on process I/O";
+  `createWritableStdioStream`) writes a file synchronously (`SyncWriteStream`), a terminal synchronously on POSIX
+  (`tty.WriteStream` sets blocking), and a pipe or socket asynchronously on POSIX (`net.Socket` on a non-blocking
+  descriptor), whose pending writes are libuv requests that hold the process's event loop: a natural end follows the
+  output, and `process.exit()` or a signal does not wait for it. A child the engine serves in its own realm writes to
+  the ends the parent's realm serves for it (the child's writes are writes to its end, the parent's writes to its fd 0
+  reads of it), and its output ends are its run's (`Process.spawn` adopts them to the child's token): a write a kernel
+  end queues holds the child's run as its request (`holdRequest`), so its loop ends after its output, and its end
+  closes those ends, as a Linux exit closes its descriptors. Its stdin end, which the parent writes, is no part of the
+  child's loop. Without a kernel the ends are the engine's pairing, which takes every write whole.
 
 ### 3. A terminal's mode is set through the run's terminal
 
@@ -221,9 +190,9 @@ process with socket calls and for a child its host runs, does what `SyncProcessR
   readiness and end of file govern only the loop. Its bytes are what the loop kept, empty where it kept none.
 - **The engine's own synchronous worker** (`runSyncChild`, `src/shims/sync-child.ts`): a second engine on a thread
   over the parent's tree, for a realm whose host gives no synchronous door (`runSync`), or does not own every child of
-  the run (`ownsAllSyncChildren`) and the program is the engine's own. Its child is numbered and ended through the
-  same owner (§2); its stdio is the bytes the worker hands back, written to the inherited sinks before it ends. A host
-  that offers the kernel's door and owns every child (the substrate's) never reaches it.
+  the run (`ownsAllSyncChildren`) and the program is the engine's own. Its child's identity is the worker's own and its
+  stdio the bytes the worker hands back. A host that offers the kernel's door and owns every child (the substrate's)
+  never reaches it.
 - **`maxBuffer` is Node's on every route**: positive, it limits the captured bytes of fds 1 and 2 together; zero or
   none sets no limit. The binding reads it once and uses that for the kernel loop, the host's `runSync` request (where
   it counts) and the engine's own synchronous worker.
@@ -242,10 +211,6 @@ the host or worker hands back.
 - Deletes the child stdio relay (`CHILD_STDIO_RELAY`): a child's fds 0 to 2 and its pipes past 2 are its process's
   descriptors, read and written by its own image.
 - Accepts `'io'` in `KernelTerminal.setRawMode` (`cfmakeraw`).
-- **For a child's output, what Tabnode cannot supply itself:** `TreeSockets.write(fd, data)`, `write(2)` of any
-  description in the realm's own kernel instance, answering the bytes it took or a negative errno and never throwing,
-  so a write that takes a prefix and then would block says how much it took (the tree's `TREE_DESCRIPTORS.write`,
-  `writeAll`, throws `EAGAIN` after a prefix and so hides it).
 - **For `spawnSync`, what Tabnode cannot supply itself:**
   - `TreeSockets.poll` in its `KernelTreeSockets`: the kernel's `poll(2)` (`ks_` twin of the WALI import), run in the
     realm's own kernel instance, blocking the realm's worker on the descriptors' wait words with `Atomics.wait` until
@@ -263,6 +228,12 @@ the host or worker hands back.
   its revert 4411407ede4); Node v24.21.0's `deps/uv/src/unix/process.c` (`uv__process_init_stdio`,
   `uv__process_open_stream`, `uv__process_child_init`), `deps/uv/src/unix/tty.c` (`uv_tty_set_mode`,
   `uv_tty_get_winsize`, `uv_guess_handle`), `src/tty_wrap.cc`, `src/node.cc` (`ResetStdio`) and `lib/tty.js`.
+- **Read for §2:** browser-substrate's `kernel-realm-process-registry.ts` (`allocate`, `exit`, `reap`, `forget`,
+  `lookup`, `signal`, `signalGroup`) and `cross-origin-container-worker.ts`'s realm admission (the registry it installs,
+  the Node process host and the executor); Node v24.21.0's `doc/api/process.md` ("A note on process I/O"),
+  `lib/internal/bootstrap/switches/is_main_thread.js` (`createWritableStdioStream`), `lib/net.js` and `lib/tty.js`.
+  *Not read but taken from the kernel lane's decision:* that ordinary realms install the Node process host too, so
+  that no Node child of the substrate runs in its parent's realm.
 - **Not run.** The engine side is written; nothing was run against a kernel.
 - **Read for §4:** Node v24.21.0's `src/spawn_sync.cc` (`SyncProcessStdioPipe::OnRead`, `OnWriteDone`,
   `SyncProcessRunner::Kill`, `IncrementBufferSizeAndCheckOverflow`, `OnKillTimerTimeout`, `GetError`), and
