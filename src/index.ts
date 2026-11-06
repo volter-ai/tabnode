@@ -413,9 +413,9 @@ export function createContainer(options?: ContainerOptions): {
     /** End the named run: its timers stop and its servers are released. */
     stopProcess: (token: string): boolean => {
       const known = __runFor(token) !== undefined || __ownedServerPorts(token).length > 0;
-      // The servers first, and their timers here rather than on a tick of
-      // their own: a caller that asks is told what it may then read back.
-      __endOwnedProcess(token);
+      // Its servers, handles and timers are released here, so a caller that asks is told what it may then read back;
+      // its native teardown completes after (ADR-0011 §6), and the run's own end awaits it.
+      void __endOwnedProcess(token);
       return known;
     },
     /**

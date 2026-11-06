@@ -257,8 +257,8 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script
       // Nothing of the job's receives signals (a builtin, `sleep`): it ends
       // now, as a killed child's run ends, and reports the signal.
       controller.abort(signal);
-      __endOwnedProcess(token);
-      end(128 + signalNumber(signal));
+      // Its exit is reported once its end has completed (ADR-0011 §6).
+      void __endOwnedProcess(token).finally(() => end(128 + signalNumber(signal)));
       return true;
     },
   };

@@ -947,8 +947,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       }
       if (escaped) throw escaped.error;
     }
-    // `process.exit()` ends a Node process and everything it holds (ADR-0011 §6, "A process's end").
-    if (runToken !== null) __endOwnedProcess(runToken);
+    // `process.exit()` ends a Node process and everything it holds (ADR-0011 §6, "A process's end"); the run's
+    // `finally` awaits the same end.
+    if (runToken !== null) void __endOwnedProcess(runToken);
     // In sync context, throw to stop execution (like real process.exit)
     // In async context, return silently to avoid unhandled rejections
     if (syncExecution) {
@@ -1506,34 +1507,34 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   }
   } finally {
     detachRejections();
-    detachUncaught();
     inputActive = false;
     try { void Promise.resolve(inputIterator?.return?.()).catch(() => {}); } catch { /* producer cleanup cannot prevent process cleanup */ }
     try { stopResize?.(); } catch { /* host cleanup cannot prevent handle release */ }
     // ResetStdio: a terminal this run left raw is put back, its failure ignored.
     if (terminalMode !== false) { try { terminal?.setRawMode?.(false); } catch { /* as tcsetattr's failure at exit is */ } }
-    // A process that ends releases its listening sockets, whatever ended it:
-    // a return from the entry, a throw, an exit. Only `process.exit` released
-    // them here, so `vite --host` — which opened 5173 and then died at startup
-    // with an ESLint error, exit 1 — left 5173 in the registry with nothing
-    // behind it, and the page went on previewing a port no process held.
-    // Safe twice: a run that exited already ended (ADR-0011 §6, "A process's end"). A run with no name has only its
-    // timers to stop.
-    if (runToken !== null) __endOwnedProcess(runToken);
-    else stopGuestTimers(proc);
-    // A run this realm forked for itself exits with its end and, its end being its parent's wait, is reaped. One whose
-    // launch threw (the runtime's failure, thrown to the caller) passed no code: it is killed.
-    if (reaper !== undefined && runToken !== null) {
-      const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
-      const [code, signal] = runEnd === undefined ? [0, 'SIGKILL'] : [runEnd, null];
-      exitRunProcess(own.pid, own.waiter, code, signal, reaper);
-      reapRunProcess(own.pid, own.waiter, code, signal, reaper);
+    try {
+      // A process that ends releases what it holds, its listening sockets among them, whatever ended it: a return
+      // from the entry, a throw, an exit, an abort. Its end completes once its native teardown has (ADR-0011 §6), and
+      // until then its uncaught report stays attached, so a teardown's throw is this run's. A run that exited already
+      // ended, and this awaits the same end. A run with no name has only its timers to stop.
+      if (runToken !== null) await __endOwnedProcess(runToken);
+      else stopGuestTimers(proc);
+    } finally {
+      detachUncaught();
+      // A run this realm forked for itself exits with its end and, its end being its parent's wait, is reaped. One
+      // whose launch threw (the runtime's failure, thrown to the caller) passed no code: it is killed.
+      if (reaper !== undefined && runToken !== null) {
+        const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
+        const [code, signal] = runEnd === undefined ? [0, 'SIGKILL'] : [runEnd, null];
+        exitRunProcess(own.pid, own.waiter, code, signal, reaper);
+        reapRunProcess(own.pid, own.waiter, code, signal, reaper);
+      }
+      // A run that has ended is no longer a process: the number it wrote into
+      // a lock file answers ESRCH from here on, which is how a stale lock is
+      // stolen rather than waited on.
+      if (runToken !== null) forgetRunPid(runToken);
+      releaseRun?.();
     }
-    // A run that has ended is no longer a process: the number it wrote into
-    // a lock file answers ESRCH from here on, which is how a stale lock is
-    // stolen rather than waited on.
-    if (runToken !== null) forgetRunPid(runToken);
-    releaseRun?.();
   }
 }
 
@@ -3042,8 +3043,8 @@ function startChildRun(request: RunRequest): StartedRun {
       }
       killedBy = signal;
       controller.abort(signal);
-      __endOwnedProcess(token);
-      end(0, killedBy);
+      // Its exit is reported once its end has completed (ADR-0011 §6).
+      void __endOwnedProcess(token).finally(() => end(0, killedBy));
       return 0;
     },
     writeStdin(bytes: Uint8Array): void | Promise<void> {

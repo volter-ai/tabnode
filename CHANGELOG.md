@@ -11,8 +11,15 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   compiler before anything of it is read, then loaded into its process's memory by the loading process's tree
   (`TREE_NATIVE`, `src/host-native.ts`). Its Node-API is emnapi's (`@emnapi/core` and `@emnapi/runtime` 1.11.3) as
   emnapi behaves, its memory boundary included. `@emnapi/runtime` is evaluated once per process, so its `process`,
-  immediates, ports, `Buffer` and global are that process's, and its context is destroyed at that process's end. Threads wake the main thread through a shared queue, and
-  `@volter/tabnode/native-thread` is a thread worker's side of the imports. Any other `.node` fails
+  immediates, ports, `Buffer` and global are that process's. Threads wake the main thread through a shared queue, and
+  `@volter/tabnode/native-thread` is a thread worker's side of the imports.
+- **A process's end completes its native teardown** (ADR-0011 §6). `__endOwnedProcess` releases a process's servers
+  and handles and stops its timers at once, and answers a completion that settles when its addons' teardown is done:
+  the context destroyed, then native immediates, cleanup hooks and thread deliveries run turn after turn until no
+  native immediate is queued and no native request waits. The run awaits it before its uncaught report is detached,
+  so a teardown's throw is the run's, and the remaining hooks still run; a killed child or shell job reports its exit
+  at completion. A refused `dlopen` leaves the process's addon runtime as it was, and a `dlopen` once the end has
+  begun is refused. Any other `.node` fails
   `ERR_DLOPEN_FAILED` as Node's `dlopen` does: `invalid ELF header`, the compiler's refusal, "Module did not
   self-register", `cannot dynamically load executable`, `undefined symbol: <name>`, or, in a tree that offers no
   `TREE_NATIVE`, `a tab runs no native code`.

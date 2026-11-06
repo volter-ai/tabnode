@@ -29,12 +29,13 @@ interface Library {
   initialized: boolean;
 }
 
-/** Every process's addons (§6). */
+/** Every process's addon runtime (§6), kept for the process's whole life. */
 const owners = new WeakMap<object, ProcessAddons>();
 
 /**
  * The process's own `@emnapi/runtime` (ADR-0011 §6): evaluated once for it, so the `process`, `MessageChannel`,
- * `Buffer` and global it takes from its host are that process's, and its `setImmediate` is the process record's.
+ * `Buffer` and global it takes from its host are that process's, and its `setImmediate` is the process's addon
+ * runtime's, which lives as long as the evaluation does.
  */
 const runtimeOf = (process: object, setImmediate: (callback: () => void) => void): typeof EmnapiRuntime =>
   loadDependencyFor(process, '@emnapi/runtime', EMNAPI_RUNTIME, ['setImmediate', 'MessageChannel', 'Buffer'], { setImmediate }) as typeof EmnapiRuntime;
@@ -42,9 +43,59 @@ const runtimeOf = (process: object, setImmediate: (callback: () => void) => void
 /** The process global's own `setImmediate` and `clearImmediate`: the process's immediates (`guest-timers.ts`). */
 type Immediates = { setImmediate(callback: () => void): unknown; clearImmediate(id: unknown): void };
 
+type CleanupHook = EmnapiRuntime.CleanupHookCallbackFunction;
+
 /**
- * One process's addons (ADR-0011 §6): its emnapi context, its opened files and emnapi's native immediates, as one
- * owned handle of the process, registered stopped, closed by the process's end however it ends.
+ * The process's emnapi context (ADR-0011 §6, "One context per process"): emnapi's own, its public doors carrying what
+ * the process's end needs. Each cleanup hook runs in the process's run and counts as run whatever it does, so a
+ * throw from one is the run's and the rest still run, and one removed before its turn is skipped, as Node's
+ * `CleanupQueue::Drain` runs them; each native request emnapi-mt counts is counted for the end too.
+ */
+function processContext(runtime: typeof EmnapiRuntime, owner: ProcessAddons): EmnapiRuntime.Context {
+  const hooks = new Map<EmnapiRuntime.Env, Map<CleanupHook, Map<number, (arg: number) => void>>>();
+  const take = (env: EmnapiRuntime.Env, fn: CleanupHook, arg: number): ((arg: number) => void) | undefined => {
+    const byArg = hooks.get(env)?.get(fn);
+    const guarded = byArg?.get(arg);
+    byArg?.delete(arg);
+    return guarded;
+  };
+  class ProcessContext extends runtime.Context {
+    override addCleanupHook(env: EmnapiRuntime.Env, fn: CleanupHook, arg: number): void {
+      const guarded = (value: number): void => {
+        if (hooks.get(env)?.get(fn)?.get(arg) !== guarded) return;
+        take(env, fn, arg);
+        owner.teardownCall(() => { if (typeof fn === 'number') env.makeDynCall_vp(fn)(value); else fn(value); });
+      };
+      let byFn = hooks.get(env);
+      if (!byFn) { byFn = new Map(); hooks.set(env, byFn); }
+      let byArg = byFn.get(fn);
+      if (!byArg) { byArg = new Map(); byFn.set(fn, byArg); }
+      byArg.set(arg, guarded);
+      super.addCleanupHook(env, guarded, arg);
+    }
+
+    override removeCleanupHook(env: EmnapiRuntime.Env, fn: CleanupHook, arg: number): void {
+      const guarded = take(env, fn, arg);
+      if (guarded) super.removeCleanupHook(env, guarded, arg);
+    }
+
+    override increaseWaitingRequestCounter(): void {
+      owner.requestWaits();
+      super.increaseWaitingRequestCounter();
+    }
+
+    override decreaseWaitingRequestCounter(): void {
+      super.decreaseWaitingRequestCounter();
+      owner.requestDone();
+    }
+  }
+  return new ProcessContext();
+}
+
+/**
+ * One process's addon runtime (ADR-0011 §6): its emnapi evaluation and context, its opened files, emnapi's native
+ * immediates and its waiting native requests, as one owned handle of the process, registered stopped. It is made at
+ * the process's first open that reaches the linker and ended only by the process's end, however it ends.
  */
 class ProcessAddons implements OwnedHandle {
   readonly context: EmnapiRuntime.Context;
@@ -52,13 +103,22 @@ class ProcessAddons implements OwnedHandle {
   readonly token: ProcessToken | null;
   /**
    * emnapi's native immediates still to run (Node's `Environment::native_immediates_`): each scheduled as the process's
-   * own immediate while it lives, and run to completion by its end rather than cancelled with its ordinary work.
+   * own immediate while it lives, and run by its end rather than cancelled with its ordinary work.
    */
   private readonly immediates = new Map<() => void, unknown>();
-  private ending = false;
+  /** emnapi-mt's native requests in flight (Node's `request_waiting_`), counted through the context's doors. */
+  private waiting = 0;
+  /** Whether the process's end has begun. */
+  ending = false;
+  /** The end's native teardown, settled when it is done (`OwnedHandle.released`). */
+  released?: Promise<void>;
+  /** What the teardown waits on between turns: the next native event. */
+  private wake: (() => void) | null = null;
+  /** Throws no run could take as its own, which the teardown's completion carries. */
+  private readonly failures: unknown[] = [];
 
   constructor(readonly process: object, private readonly guest: Immediates) {
-    this.context = runtimeOf(process, this.setImmediate).createContext();
+    this.context = processContext(runtimeOf(process, this.setImmediate), this);
     this.token = __tokenForProcess(process as Process);
     registerHandle(this, false, false);
     if (ownerOf(this) !== this.token) __adoptHandle(this, this.token);
@@ -69,39 +129,70 @@ class ProcessAddons implements OwnedHandle {
   readonly setImmediate = (callback: () => void): void => {
     const run = (): void => { if (this.immediates.delete(run)) callback(); };
     this.immediates.set(run, this.ending ? undefined : this.guest.setImmediate(run));
+    this.wake?.();
   };
 
-  /** A thread's `uv_async_send`, called through the table as emnapi's own listener calls it, in the process's run. */
-  deliver(library: Library, callback: number, data: number): void {
-    ownedRun(this.token, () => (library.loaded.table.get(callback) as (data: number) => void)(data), true, 'native-async');
+  requestWaits(): void {
+    this.waiting += 1;
+  }
+
+  requestDone(): void {
+    if (this.waiting > 0) this.waiting -= 1;
+    this.wake?.();
   }
 
   /**
-   * The process's end (ADR-0011 §6, "A process's end", as Node's `FreeEnvironment` and `RunCleanup`): its context
-   * destroyed (no call into JavaScript, every environment's cleanup hooks), then every native immediate run, those
-   * pending and those the teardown schedules, until none is left, then its thread queues stopped.
+   * A call of the teardown's in the process's run: a throw is the run's uncaught exception, and one no run takes is
+   * kept for the teardown's completion; either way the teardown goes on.
    */
+  teardownCall(call: () => void): void {
+    try { ownedRun(this.token, call, true, 'native-teardown'); }
+    catch (error) { this.failures.push(error); }
+  }
+
+  /** A thread's `uv_async_send`, called through the table as emnapi's own listener calls it, in the process's run. */
+  deliver(library: Library, callback: number, data: number): void {
+    const call = (): void => (library.loaded.table.get(callback) as (data: number) => void)(data);
+    if (!this.ending) { ownedRun(this.token, call, true, 'native-async'); return; }
+    this.teardownCall(call);
+    this.wake?.();
+  }
+
+  /** The process's end (ADR-0011 §6, "A process's end"): its native teardown starts, settling `released`. */
   close(): void {
     if (this.ending) return;
     this.ending = true;
-    owners.delete(this.process);
-    try { this.context.destroy(); }
-    finally {
+    this.released = this.teardown();
+  }
+
+  /**
+   * As Node's `FreeEnvironment` and `RunCleanup`: the context destroyed (no call into JavaScript, every cleanup hook),
+   * then, turn after turn, every native immediate run and the cleanup queue run again while the thread queues keep
+   * delivering, until no native immediate is queued and no native request waits; then the thread queues stopped.
+   */
+  private async teardown(): Promise<void> {
+    this.teardownCall(() => this.context.destroy());
+    for (;;) {
       for (let next = this.immediates.entries().next(); !next.done; next = this.immediates.entries().next()) {
         const [run, id] = next.value;
         if (id !== undefined) this.guest.clearImmediate(id);
-        // A throw from one is the run's uncaught exception, and the rest still run.
-        try { ownedRun(this.token, run, true, 'native-teardown'); } catch { /* a run already gone has no owner to tell */ }
+        this.teardownCall(run);
       }
-      for (const library of this.libraries.values()) stopNative(library.queue);
-      releaseHandle(this);
+      this.teardownCall(() => this.context.runCleanup());
+      if (this.immediates.size === 0 && this.waiting === 0) break;
+      await new Promise<void>((resolve) => { this.wake = resolve; });
+      this.wake = null;
     }
+    for (const library of this.libraries.values()) stopNative(library.queue);
+    releaseHandle(this);
+    if (this.failures.length === 1) throw this.failures[0];
+    if (this.failures.length > 1) throw new AggregateError(this.failures, 'the process\'s native teardown failed');
   }
 }
 
 /**
  * Opens `path` in `process` (§2): validated, its imports answered, loaded by the loading process's tree, its queue
- * read. A refusal leaves nothing behind, the process's record included where this was its first.
+ * read. A refusal leaves the process's addon runtime as it was (§6).
  */
 function openLibrary(process: object, path: string, bytes: Uint8Array): Library {
   if (bytes.length < 8 || bytes[0] !== 0 || bytes[1] !== 0x61 || bytes[2] !== 0x73 || bytes[3] !== 0x6d) {
@@ -120,29 +211,23 @@ function openLibrary(process: object, path: string, bytes: Uint8Array): Library 
   const native = withNodeResourceScope(process, () => callingNative());
   if (!native) throw dlopenFailed(path + ': a tab runs no native code');
 
-  const fresh = !owners.has(process);
   const owner = owners.get(process) ?? new ProcessAddons(process, nodeLibGlobalFor(process) as Immediates);
-  try {
-    const napi = createNapiModule({ context: owner.context, filename: path });
-    const env = napi.imports.env;
-    // libuv's ABI is not Node-API's, and the engine has no libuv: a `uv_*` import is an unresolved symbol, as is a
-    // Node-API function emnapi does not have (an experimental one).
-    const answered: WebAssembly.Imports = { env, napi: napi.imports.napi, emnapi: napi.imports.emnapi };
-    for (const { module: from, name } of WebAssembly.Module.imports(compiled)) {
-      const offered = answered[from];
-      if (name.startsWith('uv_') || (from !== 'env' && offered && !(name in offered))) throw dlopenFailed(`${path}: undefined symbol: ${name}`);
-    }
-    const queue = createNativeQueue();
-    const loaded = withNodeResourceScope(process, () => native.load({ path, bytes, imports: answered, thread: { module: NATIVE_THREAD_MODULE, queue } }));
-    if ('error' in loaded) throw dlopenFailed(loaded.error);
-    const library: Library = { loaded, napi, queue, initialized: false };
-    owner.libraries.set(path, library);
-    receiveNative(queue, (callback, data) => owner.deliver(library, callback, data));
-    return library;
-  } catch (error) {
-    if (fresh && owner.libraries.size === 0) owner.close();
-    throw error;
+  const napi = createNapiModule({ context: owner.context, filename: path });
+  const env = napi.imports.env;
+  // libuv's ABI is not Node-API's, and the engine has no libuv: a `uv_*` import is an unresolved symbol, as is a
+  // Node-API function emnapi does not have (an experimental one).
+  const answered: WebAssembly.Imports = { env, napi: napi.imports.napi, emnapi: napi.imports.emnapi };
+  for (const { module: from, name } of WebAssembly.Module.imports(compiled)) {
+    const offered = answered[from];
+    if (name.startsWith('uv_') || (from !== 'env' && offered && !(name in offered))) throw dlopenFailed(`${path}: undefined symbol: ${name}`);
   }
+  const queue = createNativeQueue();
+  const loaded = withNodeResourceScope(process, () => native.load({ path, bytes, imports: answered, thread: { module: NATIVE_THREAD_MODULE, queue } }));
+  if ('error' in loaded) throw dlopenFailed(loaded.error);
+  const library: Library = { loaded, napi, queue, initialized: false };
+  owner.libraries.set(path, library);
+  receiveNative(queue, (callback, data) => owner.deliver(library, callback, data));
+  return library;
 }
 
 /**
@@ -152,6 +237,8 @@ function openLibrary(process: object, path: string, bytes: Uint8Array): Library 
  */
 export function dlopenNative(process: object, target: { exports?: unknown; filename?: unknown }, exports: object, path: string,
   bytes: Uint8Array): void {
+  // No JavaScript runs once Node's environment is being freed (§6).
+  if (owners.get(process)?.ending) throw dlopenFailed(path + ': the process is exiting');
   const library = owners.get(process)?.libraries.get(path) ?? openLibrary(process, path, bytes);
   const owner = owners.get(process)!;
   // Node names the environment by the target's `module.filename`, as a file URL.
