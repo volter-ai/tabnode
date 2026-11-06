@@ -179,10 +179,10 @@ v24.21.0) or the pinned emnapi's own behaviour, read in its 1.11.3 sources (`@em
 **The `Buffer` is the process's.**
 - *Node:* `napi_create_buffer` "allocates a `node::Buffer`" (`n-api.md:2403`): the process's own class, so the
   guest's `Buffer.isBuffer` is true of it.
-- *emnapi:* every buffer it makes is made with its context's `feature.Buffer` (`emnapi.js`, the `Context`
-  constructor's `feature`; `emnapi-core.js:6712-6771`).
-- *So:* the process's context (§6) has as `feature.Buffer` the `Buffer` of the process's own `buffer` module
-  (`loadNodeLibFor(process, 'buffer')`), the one its guest's global and `require('buffer')` answer.
+- *emnapi:* every buffer it makes is made with its context's `feature.Buffer`, which `@emnapi/runtime` takes from the
+  `Buffer` it sees when it is evaluated (`emnapi.js:195-203`).
+- *So:* the process's own `@emnapi/runtime` (§6) sees the process's `Buffer`, the one its guest's global and
+  `require('buffer')` answer.
 
 **Threads are the kernel's tasks, not emnapi's workers** (a departure). emnapi's clang path makes a thread by WASI's
 `thread-spawn` and a worker its `onCreateWorker` makes, and wakes the main thread by that worker's messages. A WALI
@@ -217,29 +217,48 @@ position-independent (ADR-0231: `emnapi-mt`, musl and the C++ runtime built PIC)
 - **Async work** (`napi_create_async_work`, `napi_queue_async_work`) runs `execute` on `emnapi-mt`'s pool of the
   process's threads and `complete` on the realm's loop through the same queue; queued work holds the loop until its
   `complete` has run, and `napi_cancel_async_work` removes work not yet started.
-- **The loop is held** while `emnapi-mt` asks it (`_emnapi_runtime_keepalive_push`/`_pop`: a live thread-safe
-  function, queued work), by the process's addon handle (§6).
+- **The loop is held** while `emnapi-mt` asks it (a live thread-safe function, queued work), by emnapi's
+  waiting-request counter on a port of the process (§6).
 - **libuv itself is not offered.** `napi_get_uv_event_loop` answers a non-NULL token that names the realm's loop and
   is valid only as an argument; a module that imports a `uv_*` function is refused at its load (§2), since libuv's ABI
   is not Node-API's and the engine has no libuv.
 - **A child is the kernel's spawn** (browser-substrate ADR-0231 §5): the variant's `forkpty` is `posix_spawn` through
   `wali.SYS_posix_spawn_v1`, and fork and vfork answer ENOSYS; the engine adds nothing.
 
-### 6. One process owns its addons' lifetime
+### 6. One process owns its addons' runtime
 
 Each rule names its source, as §4's do.
 
-- **One emnapi context per process.**
-  - *Node:* the environment a process runs in owns every `napi_env` made in it, and each `napi_env`'s teardown is a
-    cleanup hook of that environment (`node_api.cc:64`), run "once the current Node.js environment exits", with the
-    addon's own `napi_add_env_cleanup_hook` hooks (`n-api.md:1928-1929`).
-  - *emnapi:* a `Context` holds its environments and their cleanup queue, `newEnv` adds each environment's release to
-    it (`emnapi.js:821-834`), and `destroy` stops every call into JavaScript and runs that queue (1478-1482).
-    `getDefaultContext` is one context for the realm (1489-1493), and a context's constructor subscribes `destroy` to
-    the `beforeExit` of whichever `process` is ambient (1358-1365); `suppressDestroy` is emnapi's own door for an owner
-    that calls `destroy` itself (1367-1377).
-  - *So:* a process's first load makes its context with `createContext()`, calls `suppressDestroy()`, and its end
-    calls `destroy()`.
+- **Whose runtime it is.**
+  - *Node:* an addon's `napi_env` belongs to the environment of the process that loaded it (`node_api.cc:757-790`,
+    `Environment::GetCurrent`), whose exit tears it down (64); its callbacks run on that process's loop, and an
+    exception one throws is that process's uncaught exception.
+  - *emnapi:* `@emnapi/runtime` takes its host from what it sees when it is evaluated: `process` (a context's
+    `beforeExit` subscription and its waiting-request counter, 1358-1364; uncaught exceptions and warnings,
+    `NodeEnv.triggerFatalException` and `callbackIntoModule`, 743-784), `setImmediate` (`_setImmediate`, 176-194,
+    which runs `_emnapi_set_immediate`, every `uv_close` completion and the finalizer queue, `enqueueFinalizer`,
+    800-818), `MessageChannel` (167-175, the waiting-request counter's port and `_setImmediate`'s fallback), `Buffer`
+    (195-203) and `globalThis` (`_global`, 74, `napi_get_global`'s answer). One evaluation shared by every process
+    of a realm would give all of them whichever process was ambient.
+  - *So:* `@emnapi/runtime` is evaluated once per process, by the path a process's builtins take
+    (`node-lib/load.ts`, `loadDependencyFor`), its `process`, `require`, `globalThis`, `setImmediate`,
+    `MessageChannel` and `Buffer` that process's own. Its context therefore subscribes to the loading process's own
+    `beforeExit`; its waiting requests ref a port of that process (`guest-message-ports.ts`), which holds that
+    process's loop while a thread-safe function or queued work is live, so emnapi-mt's `runtime_keepalive` imports
+    keep emnapi's empty answers; its immediates, finalizers and `uv_close` completions are that process's own
+    immediates (`guest-timers.ts`): counted in its loop, and a throw from one is its uncaught exception; its warnings
+    and fatal exceptions go to its process.
+  - *What a per-process evaluation does not redirect:* `@emnapi/core` stays one per realm (it requires
+    `@emnapi/wasi-threads`, and holds nothing of a process but the context it is given). It reads `process.versions.node`
+    when a module is made (`emnapi-core.js:1068`, `_emnapi_get_node_version`, 1293), the engine's one Node line for
+    every process; and its `_emnapi_next_tick` (1331-1336) is a microtask of the frame that scheduled it, which is a
+    call already running as the process. The thread queue's receiver (§5) is Tabnode's, in place of emnapi's worker
+    listener (1236-1239): it calls each callback in the loading process's run (`ownedRun`), its throw that run's
+    uncaught exception.
+- **One context per process.** The process's first load makes its context with its own runtime's `createContext()`.
+  *emnapi:* a context holds its environments and their cleanup queue, `newEnv` adds each environment's release to it
+  (`emnapi.js:821-834`), and `destroy` stops every call into JavaScript and runs that queue (1478-1482); it destroys
+  itself at its process's `beforeExit` (1358-1364).
 - **One environment per initialization.**
   - *Node:* each `process.dlopen` makes a new `napi_env` for the initializer it calls (`node_api.cc:790`), so an
     initializer that loads another addon makes a second environment, and a later `dlopen` of the same file makes a
@@ -247,35 +266,22 @@ Each rule names its source, as §4's do.
   - *emnapi:* a `napiModule`'s `init` makes one environment in its context and calls the initializer
     (`emnapi-core.js:1096-1152`), and only once.
   - *So:* each initialization is one emnapi module's `init` over the file's one instance, in the process's context:
-    the first is the module whose imports the instance was made with, each later one a `createNapiModule` of its own,
-    so a nested load and a reload each have an environment of their own.
+    the first is the module whose imports the instance was made with, each later one a `createNapiModule` of its own.
 - **A failed initialization keeps its environment until the process ends.**
   - *Node:* `napi_module_register_by_symbol` keeps the environment it made whatever the initializer does
-    (`node_api.cc:790-805`), and its teardown is the process environment's hook (64). A referenced thread-safe
-    function it made "will cause the event loop ... to remain alive until the thread-safe function is destroyed"
-    (`n-api.md:6692-6694`).
+    (`node_api.cc:790-805`), and a referenced thread-safe function it made "will cause the event loop ... to remain
+    alive until the thread-safe function is destroyed" (`n-api.md:6692-6694`).
   - *emnapi:* `init` throws with the environment it made (1131) still in its context, before `loaded` (1150).
   - *So:* the loader tears nothing down; the error is the load's.
-- **The loop is held while emnapi-mt asks it.**
-  - *Node:* a referenced thread-safe function and queued async work hold the loop (`n-api.md:6692-6694`).
-  - *emnapi:* `emnapi-mt`'s C calls `_emnapi_runtime_keepalive_push` and `_pop` around both
-    (`threadsafe_function.c:99`, 146; `async_work.c:118`, 124), imports `emnapi-core.js` answers with nothing
-    (1312-1319) for its host to supply.
-  - *So:* the process's record answers them: a count of holds that starts and stops one owned handle of the process
-    (`node-lib/binding/handles.ts`, registered stopped).
 - **The process's end ends its addons.**
-  - *Node:* the environment's exit runs every `napi_env`'s teardown (above).
-  - *So:* the record's handle is closed with the run's other handles by `__releaseOwnedHandles`, which every end of a
-    run calls (`process.exit()`, the end of the run's entry, a kill of the run or of a shell job, the host's
-    `stopProcess`). Closing calls the context's `destroy` and stops the thread queues (§5). A Runtime made outside any
-    run has no end the engine sees, and its addons live as long as it does, as its other handles do.
-- **Callbacks into an addon are emnapi's.** Its main-thread `uv_async_send` and `uv_close` (`_emnapi_set_immediate`,
-  the context's `feature.setImmediate`, `emnapi-core.js:1323-1327`), its finalizer queue (`NodeEnv.enqueueFinalizer`
-  and its `_setImmediate`, `emnapi.js:800-812`, drained by `drainFinalizerQueue`, 813-818) and `_emnapi_next_tick` (1331-1336) are emnapi's own and Tabnode leaves
-  them as they are. After `destroy` an environment cannot call into JavaScript (`canCallIntoJs`, `emnapi.js:1471-1473`).
-  The one Tabnode supplies is the thread queue's receiver (§5), in place of emnapi's worker listener, which calls each
-  callback through the table as that listener does (`emnapi-core.js:1236-1239`), in the loading process's run, and stops
-  with the process.
+  - *Node:* every exit of the environment runs every `napi_env`'s teardown (`node_api.cc:64`), `process.exit()`
+    included.
+  - *So:* an end that reaches `beforeExit` is emnapi's own `destroy`. Every end also closes the process's addon
+    record, one owned handle of the process registered stopped (`node-lib/binding/handles.ts`), which
+    `__releaseOwnedHandles` closes with the run's other handles (`process.exit()`, the end of the run's entry, a kill
+    of the run or of a shell job, the host's `stopProcess`): its close calls the context's `destroy` and stops the
+    thread queues (§5). A Runtime made outside any run has no end the engine sees, and its addons live as long as it
+    does, as its other handles do.
 - **The loading process's tree loads the file.**
   - *Node:* `DLOpen` loads into the calling environment (`node_binding.cc:446`).
   - *So:* the tree's `TREE_NATIVE` is chosen, and its `load` called, inside the loading process's resource scope

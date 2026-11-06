@@ -10,8 +10,8 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   own every time, over the one instance a process keeps per file. The file is validated by the engine's WebAssembly
   compiler before anything of it is read, then loaded into its process's memory by the loading process's tree
   (`TREE_NATIVE`, `src/host-native.ts`). Its Node-API is emnapi's (`@emnapi/core` and `@emnapi/runtime` 1.11.3) as
-  emnapi behaves, its memory boundary included, on a context of the process's own with the process's `Buffer`, which
-  the process's end destroys. Threads wake the main thread through a shared queue, and
+  emnapi behaves, its memory boundary included. `@emnapi/runtime` is evaluated once per process, so its `process`,
+  immediates, ports, `Buffer` and global are that process's, and its context is destroyed at that process's end. Threads wake the main thread through a shared queue, and
   `@volter/tabnode/native-thread` is a thread worker's side of the imports. Any other `.node` fails
   `ERR_DLOPEN_FAILED` as Node's `dlopen` does: `invalid ELF header`, the compiler's refusal, "Module did not
   self-register", `cannot dynamically load executable`, `undefined symbol: <name>`, or, in a tree that offers no

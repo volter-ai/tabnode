@@ -6,12 +6,12 @@
  * `ERR_DLOPEN_FAILED`.
  */
 import { createNapiModule, type NapiModule } from '@emnapi/core';
-import { createContext, type Context } from '@emnapi/runtime';
+import type * as EmnapiRuntime from '@emnapi/runtime';
+import EMNAPI_RUNTIME from '@emnapi/runtime/dist/emnapi.cjs.min?raw';
 import { callingNative, NATIVE_THREAD_MODULE } from './host-native';
 import { createNativeQueue, receiveNative, stopNative } from './native-queue';
-import { __adoptHandle, ownedRun, ownerOf, registerHandle, releaseHandle, startHandle, stopHandle, withNodeResourceScope,
-  type OwnedHandle } from './node-lib/binding/handles';
-import { loadNodeLibFor } from './node-lib/load';
+import { __adoptHandle, ownedRun, ownerOf, registerHandle, releaseHandle, withNodeResourceScope, type OwnedHandle } from './node-lib/binding/handles';
+import { loadDependencyFor } from './node-lib/load';
 import { __tokenForProcess, type ProcessToken } from './process-tokens';
 import type { Process } from './shims/process';
 import { pathToFileURL } from './shims/url';
@@ -33,35 +33,32 @@ interface Library {
 const owners = new WeakMap<object, ProcessAddons>();
 
 /**
- * One process's addons (ADR-0011 §6): its emnapi context, its opened files and the loop holds emnapi-mt asks, as one
- * owned handle of the process, registered stopped, closed with the run's other handles when the run ends.
+ * The process's own `@emnapi/runtime` (ADR-0011 §6): evaluated once for it, so the `process`, `setImmediate`,
+ * `MessageChannel`, `Buffer` and global it takes from its host are that process's.
+ */
+const runtimeOf = (process: object): typeof EmnapiRuntime =>
+  loadDependencyFor(process, '@emnapi/runtime', EMNAPI_RUNTIME, ['setImmediate', 'MessageChannel', 'Buffer']) as typeof EmnapiRuntime;
+
+/**
+ * One process's addons (ADR-0011 §6): its emnapi context and its opened files, as one owned handle of the process,
+ * registered stopped, closed with the run's other handles however the run ends.
  */
 class ProcessAddons implements OwnedHandle {
-  readonly context: Context;
+  readonly context: EmnapiRuntime.Context;
   readonly libraries = new Map<string, Library>();
   readonly token: ProcessToken | null;
-  private holds = 0;
   private ended = false;
 
   constructor(readonly process: object) {
-    // Its own context, which its end destroys: emnapi's `suppressDestroy` is the door for that owner.
-    this.context = createContext();
-    this.context.suppressDestroy();
-    // The process's own `Buffer`, the one its guest sees.
-    this.context.feature.Buffer = (loadNodeLibFor(process, 'buffer') as { Buffer: Context['feature']['Buffer'] }).Buffer;
+    this.context = runtimeOf(process).createContext();
     this.token = __tokenForProcess(process as Process);
     registerHandle(this, false, false);
     if (ownerOf(this) !== this.token) __adoptHandle(this, this.token);
     owners.set(process, this);
   }
 
-  /** emnapi-mt's `runtime_keepalive`: the loop is held while any of the process's addons asks it. */
-  readonly push = (): void => { if (this.holds++ === 0 && !this.ended) startHandle(this); };
-  readonly pop = (): void => { if (this.holds > 0 && --this.holds === 0) stopHandle(this); };
-
   /** A thread's `uv_async_send`, called through the table as emnapi's own listener calls it, in the process's run. */
   deliver(library: Library, callback: number, data: number): void {
-    if (this.ended) return;
     ownedRun(this.token, () => (library.loaded.table.get(callback) as (data: number) => void)(data), true, 'native-async');
   }
 
@@ -73,7 +70,6 @@ class ProcessAddons implements OwnedHandle {
     try { this.context.destroy(); }
     finally {
       for (const library of this.libraries.values()) stopNative(library.queue);
-      this.holds = 0;
       releaseHandle(this);
     }
   }
@@ -104,7 +100,7 @@ function openLibrary(process: object, path: string, bytes: Uint8Array): Library 
   const owner = owners.get(process) ?? new ProcessAddons(process);
   try {
     const napi = createNapiModule({ context: owner.context, filename: path });
-    const env = { ...napi.imports.env, _emnapi_runtime_keepalive_push: owner.push, _emnapi_runtime_keepalive_pop: owner.pop };
+    const env = napi.imports.env;
     // libuv's ABI is not Node-API's, and the engine has no libuv: a `uv_*` import is an unresolved symbol, as is a
     // Node-API function emnapi does not have (an experimental one).
     const answered: WebAssembly.Imports = { env, napi: napi.imports.napi, emnapi: napi.imports.emnapi };
