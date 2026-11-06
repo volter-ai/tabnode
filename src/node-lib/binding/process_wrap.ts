@@ -530,7 +530,8 @@ export class Process implements OwnedHandle {
       return fd;
     } catch (cause) {
       const errno = (cause as { errno?: unknown } | null)?.errno;
-      return typeof errno === 'number' && errno !== 0 ? -Math.abs(errno) : UV_EBADF;
+      if (typeof errno !== 'number' || errno === 0) throw cause;
+      return -Math.abs(errno);
     }
   }
 

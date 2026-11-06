@@ -57,7 +57,8 @@ export function setRunTerminalMode(terminal: RunTerminal, mode: false | 'raw' | 
     return 0;
   } catch (cause) {
     const errno = (cause as { errno?: unknown } | null)?.errno;
-    return typeof errno === 'number' && errno < 0 ? errno : UV_EIO;
+    if (typeof errno !== 'number' || errno >= 0) throw cause;
+    return errno;
   }
 }
 
