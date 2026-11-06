@@ -446,11 +446,13 @@ export class Process implements OwnedHandle {
     if (!handleHasRef(this)) this.run.setRef?.(false);
     // Forked, the child holds its own copies of what was made for it.
     this.prepared?.closeMade();
-    // The child's output ends are its descriptors (ADR-0010 §2): where this realm serves them, their pending writes are
-    // its run's, so its loop ends after them, as libuv's write requests hold a Node process's loop.
+    // The child's output ends and the streams of its inherited descriptors are its own (ADR-0010 §2): where this realm
+    // serves them, their pending writes are its run's, so its loop ends after them, as libuv's write requests hold a
+    // Node process's loop.
     const child = this.run.token;
     if (child !== null) {
       for (const [index, far] of this.farEnds) if (index !== 0 && far instanceof Pipe && far.kernelBacked && !far.closed) __adoptHandle(far, child);
+      for (const writer of this.heldDescriptions) if (writer.stream) __adoptHandle(writer.stream, child);
     }
     // The number the parent reads off the handle is the child's own
     // `process.pid`, made at its fork, as it is in Node.

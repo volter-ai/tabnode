@@ -90,7 +90,22 @@ writes them in its loop (§4).
   `SO_SNDBUF` at both ends): the parent's end non-blocking, the child's blocking.
 - **`'inherit'` and a number** are the parent's descriptor of that number. A number the parent's run was started with
   as a kernel stream (its channel) is that stream's descriptor. Whether the parent holds it is the kernel's answer
-  (`fcntl(F_GETFL)`): its `EBADF` fails the spawn, as the child's `dup2` fails libuv's, and nothing else does.
+  (`fcntl(F_GETFL)`): its `EBADF` fails the spawn, as the child's `dup2` fails libuv's, and nothing else does. Where
+  the engine serves the child in its own realm (§2), its writes to that descriptor are made on a duplicate taken for
+  the child (`TREE_DESCRIPTORS.dup`), by the description's kind, by its `fstat`:
+  - a regular file or a block device takes every byte of a `write(2)`, so it is written once, through the tree's
+    `write(2)`, as is a file of the engine's own table;
+  - any other description (a socket, a FIFO or pipe, a terminal or other character device) can take part of a write
+    or answer `EAGAIN`, so it is written by a kernel stream opened on the duplicate (`KernelStreamWrap`), whose queue
+    keeps what a write did not take and counts each write's real progress: `sendto(2)` for a socket,
+    `TreeSockets.write` (`write(2)`, the bytes taken or a negative errno, never thrown) for any other;
+  - its shared description's flags change exactly as libuv changes them for a descriptor Node writes: a socket, FIFO
+    or pipe is made non-blocking, as `uv_pipe_open` makes it, when the engine first writes it; a terminal or other
+    character device is left as it is and written with blocking writes, as `uv_tty_init` writes a terminal it does not
+    reopen (it reopens a slave by its `ttyname`, which the engine has no door to read) and as Node writes a character
+    device that is no terminal (`UV_FILE`).
+  *These writers wait on the kernel lane's ruling on same-realm children (decisions b3ff7e3cb): they serve only a child
+  the engine runs in its own realm with kernel descriptors, which the substrate has only if that ruling keeps it.*
 - **`'wrap'`** (a stream handed as stdio) is the stream's descriptor (`uv__stream_fd`), where it is a kernel one.
 - **`'ignore'` at 0 to 2 is `/dev/null`**, opened through the tree's descriptor calls (read-only for 0, read-write for
   1 and 2, close-on-exec as the tree's `open` makes every file) and given to the child at that number.
@@ -132,16 +147,18 @@ host, and:
   ADR-0227 §5.9, one instance per task), so the substrate has no child that the engine runs in its parent's realm. The
   engine keeps, of a lifetime there, only which run a pid is (to raise a delivered signal on it) and the run's record.
   Without a kernel host, `process-registry.ts`'s table is the process table (ADR-0009 §6), and a child the engine runs
-  in its own realm (the engine's own `node`, a command of the engine's shell) is a process of that table.
+  in its own realm (the engine's own `node`, a command of the engine's shell) is a process of that table. *Whether the
+  substrate also runs a Node child in its parent's realm, a kernel process without an instance of its own, is the
+  kernel lane's to weigh (decisions b3ff7e3cb); its lifetime would be the kernel's all the same.*
 - **Its output completes as Node's does.** Node's stdio contract (`doc/api/process.md`, "A note on process I/O";
   `createWritableStdioStream`) writes a file synchronously (`SyncWriteStream`), a terminal synchronously on POSIX
   (`tty.WriteStream` sets blocking), and a pipe or socket asynchronously on POSIX (`net.Socket` on a non-blocking
   descriptor), whose pending writes are libuv requests that hold the process's event loop: a natural end follows the
   output, and `process.exit()` or a signal does not wait for it. A child the engine serves in its own realm writes to
   the ends the parent's realm serves for it (the child's writes are writes to its end, the parent's writes to its fd 0
-  reads of it), and its output ends are its run's (`Process.spawn` adopts them to the child's token): a write a kernel
-  end queues holds the child's run as its request (`holdRequest`), so its loop ends after its output, and its end
-  closes those ends, as a Linux exit closes its descriptors. Its stdin end, which the parent writes, is no part of the
+  reads of it), and its output ends and its inherited descriptors' streams are its run's (`Process.spawn` adopts them to
+  the child's token): a write a kernel stream queues holds the child's run as its request (`holdRequest`), so its loop
+  ends after its output, and its end closes those ends, as a Linux exit closes its descriptors. Its stdin end, which the parent writes, is no part of the
   child's loop. Without a kernel the ends are the engine's pairing, which takes every write whole.
 
 ### 3. A terminal's mode is set through the run's terminal
@@ -211,6 +228,9 @@ the host or worker hands back.
 - Deletes the child stdio relay (`CHILD_STDIO_RELAY`): a child's fds 0 to 2 and its pipes past 2 are its process's
   descriptors, read and written by its own image.
 - Accepts `'io'` in `KernelTerminal.setRawMode` (`cfmakeraw`).
+- **For a same-realm child's inherited descriptors, if the ruling keeps such a child:** `TreeSockets.write(fd, data)`,
+  `write(2)` of any description in the realm's own instance, the bytes it took or a negative errno, never thrown, so a
+  write that takes a prefix and then would block says how much it took.
 - **For `spawnSync`, what Tabnode cannot supply itself:**
   - `TreeSockets.poll` in its `KernelTreeSockets`: the kernel's `poll(2)` (`ks_` twin of the WALI import), run in the
     realm's own kernel instance, blocking the realm's worker on the descriptors' wait words with `Atomics.wait` until
