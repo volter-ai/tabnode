@@ -334,7 +334,7 @@ async function askServer(sockets: TreeSockets, server: { family: number; address
  * `timeout`; a reply from a server it was sent to, matched to a query by its id, is taken when it is NOERROR or
  * NXDOMAIN, sent again at once to the server that answered SERVFAIL (up to twice the number of queries in each slice,
  * shared among them), and otherwise (FORMERR, NOTIMP, REFUSED) ignored. musl takes a truncated reply again over TCP;
- * this exchange does not. Each query's taken answer, or undefined for one with none when `timeout` has passed.
+ * this exchange does not yet (a gap, browser-substrate ROADMAP 77). Each query's taken answer, or undefined for one with none when `timeout` has passed.
  */
 async function msend(sockets: TreeSockets, config: ResolverConfig, queries: Array<{ message: Uint8Array; id: number; type: number }>): Promise<Array<{ rcode: number; addresses: string[] } | undefined>> {
   const servers = (config.servers.length ? config.servers : ['127.0.0.1']).slice(0, 3)

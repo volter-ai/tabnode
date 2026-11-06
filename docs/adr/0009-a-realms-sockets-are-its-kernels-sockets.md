@@ -243,8 +243,9 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
     replies are checked in order, A then AAAA (`lookup_name.c` 174-178): the first that is missing when `timeout` has
     passed makes the lookup `EAI_AGAIN`, so a lone server that answers REFUSED is `EAI_AGAIN` once the timeout has
     passed, not at once, and the first that is NXDOMAIN makes it no answer, whichever comes first; if every reply is
-    NOERROR and none holds an address, it is `EAI_NODATA` (186-187). musl takes a truncated reply again over TCP (253-308); the shim does not. That and an
-    `attempts` of 0 are the shim's two departures from the exchange.
+    NOERROR and none holds an address, it is `EAI_NODATA` (186-187). An `attempts` of 0 is the shim's one departure
+    from the exchange. musl takes a truncated reply again over TCP (253-308); the shim does not yet, a gap owned by
+    browser-substrate ROADMAP 77, not a departure.
 - **`os.networkInterfaces`**: `getifaddrs`, by libuv's `uv_interface_addresses`: interfaces up and running, their IPv4
   and IPv6 addresses, `internal` for a loopback interface, `mac` from the hardware address, `scopeid` from
   `sin6_scope_id`.
