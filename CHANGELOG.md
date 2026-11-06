@@ -4,6 +4,29 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
+- **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
+  offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
+  table: a `'pipe'` (IPC or not) a socketpair with 64 KiB buffers, `'inherit'` and a number the parent's descriptor,
+  a stream its descriptor, `'ignore'` at 0 to 2 /dev/null. `RunRequest.kernelDescriptors` lists them as `{ fd, from }`;
+  a child a host runs as its own process is started with them (`NodeProcessLaunch.descriptors`, the new
+  `ChildProcessHostRequest.kernelDescriptors`), its fds 0 to 2 and its pipe ends blocking, and the parent closes the
+  ends it made for it after the start and relays nothing of them (no sink, no input). A child of a process with a
+  kernel is always its host's: with no host to run it, the spawn fails `EACCES` and nothing runs it in the realm.
+  Whether an inherited number is the parent's descriptor is the kernel's answer. `spawn` and `spawnSync` share one
+  preparation (`child_stdio.ts`).
+- **A terminal's mode is its host's termios** (ADR-0010 §3). `RunStreams.terminal.setRawMode(false | 'raw' | 'io')`
+  is fd 0's mode as `uv_tty_set_mode` sets it; a `TTY` on fd 0 sets it, and a run's `process.stdin.setRawMode` is
+  Node's own `tty.ReadStream.prototype.setRawMode` over the same binding operation, and a run's end
+  puts a mode it set back to normal, as Node's `ResetStdio` does. A `TTY` on fd 0 to 2 answers `getWindowSize` from the
+  run's terminal.
+- **A synchronous child's pipes are read by its parent's blocking loop** (ADR-0010 §4). `TreeSockets` adds `poll`
+  (`poll(2)` blocking the calling thread, `PollDescriptor`). In a process with socket calls `spawnSync` makes the
+  child's stdio as `spawn` does and hands the host's `runSync` `kernelDescriptors` and `drain` in place of `input`,
+  `captured`, `maxBuffer`, `onStdout` and `onStderr`; `drain` writes each input pipe and reads each output pipe to its
+  end with `poll`, one send and one read per ready pipe a round, as Node's `SyncProcessRunner` does, killing the
+  child and closing the pipes at `timeout` (`ETIMEDOUT`, whatever the pipes' readiness) or past `maxBuffer`
+  (`ENOBUFS`), so a child that fills a 64 KiB pipe is read, not deadlocked. `maxBuffer` is Node's on every
+  synchronous route: positive, it bounds stdout and stderr together; zero sets no limit.
 - **The prepared format is `tabnode-prepared-8`, a minor release, 0.18.0** (CONTRIBUTING: a change to the lowered text
   moves the format). A guest body's free `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent`,
   `MessageEvent`, `URL` and `WebAssembly` are now rewritten to the guest's, so the same source lowers to different

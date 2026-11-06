@@ -96,8 +96,9 @@ interface ProcessWritableStream extends ProcessStream {
  * `node script.js < file` does. Where a runner can still feed the guest
  * (a held run the host writes to with `sendStdin`), it leaves the stream open
  * instead, which is Node's pipe whose writer has not closed. A terminal is
- * not invented: `isTTY` stays false unless a runner says otherwise, and there
- * is no `setRawMode` that does anything, because there is no raw mode to set.
+ * not invented: `isTTY` stays false unless a runner says otherwise, and a
+ * `setRawMode` that does anything is the runner's, for a run whose host sets
+ * its terminal's mode (ADR-0010 §3).
  */
 /**
  * The guest's fd 0: a `Readable` the engine pushes into.
@@ -123,7 +124,7 @@ export interface ProcessStdin extends Readable {
    */
   readonly __substrateGuestRead: boolean;
   [kEngineStdinRead](size?: number): unknown;
-  setRawMode(mode: boolean): ProcessStdin;
+  setRawMode(mode: boolean | 'raw' | 'io'): ProcessStdin;
   __substrateStdinWrite(data: string | Uint8Array): void;
   __substrateStdinEnd(): void;
 }
@@ -160,8 +161,8 @@ function processStdinClass(ReadableClass: typeof Readable): new () => ProcessStd
     /** False: there is no terminal in a tab. A runner that drives an interactive program sets it. */
     isTTY = false;
 
-    /** Node's `tty.ReadStream.setRawMode`, which a tab has no terminal to put in raw mode. */
-    setRawMode(_mode: boolean): this {
+    /** Node's `tty.ReadStream.setRawMode`, for an fd 0 that is no terminal whose mode a host sets: no mode is claimed. */
+    setRawMode(_mode: boolean | 'raw' | 'io'): this {
       return this;
     }
 

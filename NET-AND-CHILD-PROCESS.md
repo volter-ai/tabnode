@@ -68,9 +68,12 @@ through the socket calls its tree offers (`TREE_SOCKETS`,
 `src/host-sockets.ts`, ADR-0009): the engine keeps no port, path, loopback,
 listener table or pairing of its own for them, and an IPC channel of such a
 process is a kernel AF_UNIX socketpair whose handles cross as `SCM_RIGHTS`
-(ADR-0009 §4). What else the engine does for a child stays and is the
-binding's implementation: the stdio pipes, the IPC channel of a process with
-no socket calls, the page bridge that hears a listening port and routes a
+(ADR-0009 §4). A child of such a process gets its stdio as libuv makes it,
+in the parent's kernel table: a `pipe` a socketpair, `inherit` or a number
+the parent's descriptor, `ignore` /dev/null, placed at the child's numbers
+by the host that runs it as its own process (ADR-0010). What else the engine
+does for a child stays and is the binding's implementation: the stdio pipes
+and IPC channel of a process with no socket calls, the page bridge that hears a listening port and routes a
 preview's requests and upgrades, the routing of a spawned command to the engine's
 `node`, a page-registered program, a WALI pack or the shell, and the run
 ownership that keeps a run alive while it holds a handle.
@@ -146,9 +149,14 @@ ownership that keeps a run alive while it holds a handle.
   signalCode)` once, when the run ends; `ref()`, `unref()`.
 - `spawn_sync`: `spawn(options)` answering `{ status, signal, output: [null,
   stdout, stderr], error, pid }` over the engine's synchronous command door
-  (`src/shims/sync-child.ts`), `UV_ENOSYS` in `error` where none exists.
+  (`src/shims/sync-child.ts`), `UV_ENOSYS` in `error` where none exists;
+  in a process with socket calls a child its host runs is given kernel
+  descriptors, and the binding reads and writes its own ends with
+  `TreeSockets.poll` until they close (ADR-0010 §4).
 - `tty_wrap`: `isTTY(fd)` and `TTY` for the stdio the engine reports as a
-  terminal, and `guessHandleType(fd)` in `internal/util`'s bound object.
+  terminal, and `guessHandleType(fd)` in `internal/util`'s bound object; a
+  run's terminal's size and fd 0's mode (`setRawMode`) are its host's
+  (`RunStreams.terminal`, ADR-0010 §3).
 - `cares_wrap`: `isIP`, `isIPv4`, `isIPv6` (Node's own from
   `internal/net.js` need only these); lookups are the engine's `dns`, a DNS
   exchange over the process's own UDP with its `/etc/resolv.conf`'s

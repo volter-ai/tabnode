@@ -139,25 +139,6 @@ export class KernelStreamWrap extends LibuvStreamWrap {
     return 0;
   }
 
-  /**
-   * uv_spawn's `UV_CREATE_PIPE` for a child's channel: `uv_socketpair(SOCK_STREAM)`, close-on-exec, this handle one end
-   * and `child`'s the other, each made non-blocking.
-   */
-  socketpair(child: KernelStreamWrap): number {
-    const sockets = this.#sockets;
-    if (!sockets || !child.#kernel) return UV_EINVAL;
-    const pair = new Int32Array(2);
-    const made = sockets.socketpair(linux.AF_UNIX, linux.SOCK_STREAM | linux.SOCK_CLOEXEC, 0, pair);
-    if (made < 0) return made;
-    let status = this.openDescriptor(pair[0]!);
-    if (status === 0) { child.#sockets = sockets; status = child.openDescriptor(pair[1]!); }
-    if (status !== 0) {
-      if (this.#fd !== pair[0]) sockets.close(pair[0]!);
-      if (child.#fd !== pair[1]) sockets.close(pair[1]!);
-    }
-    return status;
-  }
-
   /** `other`'s descriptor becomes this handle's, as the end a child opens of a channel its parent made in its table. */
   protected takeDescriptorFrom(other: KernelStreamWrap): void {
     this.setDescriptor(other.#fd, other.#sockets);
