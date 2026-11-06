@@ -5,11 +5,11 @@
  * process's own UDP sockets (`host-sockets.ts`): the namespace's resolver is a server in the namespace (Docker's
  * 127.0.0.11), answered by its kernel for every program, and this engine keeps no table, cache or answer of its own.
  *
- * A name the resolver does not hold (NXDOMAIN) is `ENOTFOUND`; it never becomes this host or a wildcard. A server
- * that fails, or does not answer within resolv.conf's `timeout` and `attempts` (glibc's 5 s and 2), is `EAI_AGAIN`
- * to a lookup; to a query it is c-ares's error for it (`ESERVFAIL`, `EREFUSED`, `ENOTIMP`, `EFORMERR`, `ETIMEOUT`,
- * `ECONNREFUSED`). `getServers()` is the process's `/etc/resolv.conf`'s nameservers. A process with no socket calls
- * can ask no server: a name not in its hosts file is `EAI_AGAIN`.
+ * A name the resolver does not hold (NXDOMAIN) is `ENOTFOUND`; it never becomes this host or a wildcard. A lookup
+ * whose servers give no NOERROR or NXDOMAIN within resolv.conf's `timeout`, as musl's `res_msend` waits for one
+ * (`msend`), is `EAI_AGAIN`; to a query a server's failure is c-ares's error for it (`ESERVFAIL`, `EREFUSED`,
+ * `ENOTIMP`, `EFORMERR`, `ETIMEOUT`, `ECONNREFUSED`). `getServers()` is the process's `/etc/resolv.conf`'s
+ * nameservers. A process with no socket calls can ask no server: a name not in its hosts file is `EAI_AGAIN`.
  *
  * A name is the one Node hands its libraries (`to_ascii`), checked as they check it before anything is sent: one
  * musl's getaddrinfo refuses (empty, 255 bytes or more, an empty label, a label over 63 bytes) is `ENOTFOUND` to a
@@ -156,15 +156,26 @@ function hostsAddresses(content: string, name: string, family: number): Array<{ 
  * as musl's `__get_resolv_conf` reads them, its search list (the last `search` or `domain` line) and `ndots` (1 unless
  * an `options` line names it, at most 15).
  */
-interface ResolverConfig { servers: string[]; timeoutMs: number; attempts: number; search: string[]; ndots: number }
+interface ResolverConfig {
+  servers: string[]; timeoutMs: number; attempts: number; search: string[]; ndots: number;
+  /** musl's `timeout` (seconds, at most 60) and `attempts` (at most 10), which its `res_msend` takes (`resolvconf.c`). */
+  lookup: { timeoutMs: number; attempts: number };
+}
 function resolverConfig(content: string | undefined): ResolverConfig {
   const servers: string[] = [];
-  let timeout = 5, attempts = 2, ndots = 1;
+  let timeout = 5, attempts = 2, ndots = 1, lookupTimeout = 5, lookupAttempts = 2;
   let search: string[] = [];
   for (const line of (content ?? '').split('\n')) {
     if (/^(?:search|domain)\s/u.test(line)) search = line.slice(7).split(/\s+/u).filter(domain => domain.length > 0);
-    const ndotsAt = /^options\s/u.test(line) ? line.indexOf('ndots:') : -1;
-    if (ndotsAt >= 0 && /\d/u.test(line[ndotsAt + 6] ?? '')) ndots = Math.min(15, parseInt(line.slice(ndotsAt + 6), 10));
+    if (!/^options\s/u.test(line)) continue;
+    // musl reads each option where it first stands on an `options` line, its digits as strtoul reads them.
+    const option = (name: string): number | undefined => {
+      const at = line.indexOf(`${name}:`);
+      return at >= 0 && /\d/u.test(line[at + name.length + 1] ?? '') ? parseInt(line.slice(at + name.length + 1), 10) : undefined;
+    };
+    ndots = Math.min(15, option('ndots') ?? ndots);
+    lookupAttempts = Math.min(10, option('attempts') ?? lookupAttempts);
+    lookupTimeout = Math.min(60, option('timeout') ?? lookupTimeout);
   }
   for (const line of (content ?? '').split(/\r?\n/)) {
     const words = line.split(/[#;]/, 1)[0]!.trim().split(/\s+/);
@@ -177,7 +188,7 @@ function resolverConfig(content: string | undefined): ResolverConfig {
       }
     }
   }
-  return { servers, timeoutMs: timeout * 1000, attempts, search, ndots };
+  return { servers, timeoutMs: timeout * 1000, attempts, search, ndots, lookup: { timeoutMs: lookupTimeout * 1000, attempts: lookupAttempts } };
 }
 
 /** A nameserver as resolv.conf or setServers names it (`1.2.3.4`, `1.2.3.4:5353`, `::1`, `[::1]:53`), as a sockaddr. */
@@ -317,6 +328,76 @@ async function askServer(sockets: TreeSockets, server: { family: number; address
   } finally { close(); }
 }
 
+/**
+ * musl's `res_msend` (`res_msend.c` 172-262), which a lookup's queries take: one UDP socket per family; every query not
+ * yet answered is sent to each of the first three servers at the start of each of `attempts` equal slices of
+ * `timeout`; a reply from a server it was sent to, matched to a query by its id, is taken when it is NOERROR or
+ * NXDOMAIN, sent again at once to the server that answered SERVFAIL (up to twice the number of queries in each slice,
+ * shared among them), and otherwise (FORMERR, NOTIMP, REFUSED) ignored. musl takes a truncated reply again over TCP;
+ * this exchange does not. Each query's taken answer, or undefined for one with none when `timeout` has passed.
+ */
+async function msend(sockets: TreeSockets, config: ResolverConfig, queries: Array<{ message: Uint8Array; id: number; type: number }>): Promise<Array<{ rcode: number; addresses: string[] } | undefined>> {
+  const servers = (config.servers.length ? config.servers : ['127.0.0.1']).slice(0, 3)
+    .map(server => serverAddress(server, sockets)).filter((server): server is { family: number; address: Uint8Array } => server !== undefined);
+  const answers: Array<{ rcode: number; addresses: string[] } | undefined> = queries.map(() => undefined);
+  const fds = new Map<number, number>();
+  for (const server of servers) {
+    if (fds.has(server.family)) continue;
+    const fd = sockets.socket(server.family, linux.SOCK_DGRAM | linux.SOCK_NONBLOCK | linux.SOCK_CLOEXEC, 0);
+    if (fd >= 0) fds.set(server.family, fd);
+  }
+  const send = (query: number, server: { family: number; address: Uint8Array }): void => {
+    const fd = fds.get(server.family);
+    if (fd !== undefined) sockets.sendto(fd, queries[query]!.message, linux.MSG_DONTWAIT, server.address);
+  };
+  // A reply is taken only from an address it was sent to: the family, port and address of the sockaddr.
+  const sameAddress = (from: Uint8Array, server: { family: number; address: Uint8Array }): boolean => {
+    const length = server.family === linux.AF_INET ? 8 : 24;
+    for (let index = 0; index < length; index += 1) if (from[index] !== server.address[index]) return false;
+    return true;
+  };
+  try {
+    if (fds.size === 0) return answers;
+    const timeout = config.lookup.timeoutMs, interval = timeout / Math.max(1, config.lookup.attempts);
+    const started = Date.now();
+    let sliceStart = started - interval, servfailRetry = 0;
+    const buffer = new Uint8Array(65536);
+    for (let now = Date.now(); now - started < timeout; now = Date.now()) {
+      if (answers.every(answer => answer !== undefined)) break;
+      if (now - sliceStart >= interval) {
+        answers.forEach((answer, query) => { if (!answer) for (const server of servers) send(query, server); });
+        sliceStart = now;
+        servfailRetry = 2 * queries.length;
+      }
+      for (const fd of fds.values()) {
+        for (;;) {
+          const from = socketAddressBuffer();
+          const read = sockets.recvfrom(fd, buffer, linux.MSG_DONTWAIT, from);
+          if (read < 0) break;
+          const server = servers.find(candidate => sameAddress(from, candidate));
+          if (!server || read < 4) continue;
+          const query = queries.findIndex((candidate, index) => !answers[index]
+            && buffer[0] === candidate.message[0] && buffer[1] === candidate.message[1]);
+          if (query < 0) continue;
+          const rcode = buffer[3]! & 15;
+          if (rcode === 2 && servfailRetry > 0) { servfailRetry -= 1; send(query, server); }
+          if (rcode !== 0 && rcode !== 3) continue;
+          answers[query] = readResponse(buffer.subarray(0, read), queries[query]!.id, queries[query]!.type);
+        }
+      }
+      if (answers.every(answer => answer !== undefined)) break;
+      const left = Math.max(0, Math.min(sliceStart + interval, started + timeout) - Date.now());
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        ...[...fds.values()].map(fd => sockets.wait(fd, linux.POLLIN)),
+        new Promise<void>(resolve => { timer = setTimeout(resolve, left); (timer as unknown as { unref?: () => void }).unref?.(); }),
+      ]);
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    return answers;
+  } finally { for (const fd of fds.values()) sockets.close(fd); }
+}
+
 /** rcodes a resolver takes as the server's failure, trying the next (RFC 1035 §4.1.1: FORMERR, SERVFAIL, NOTIMP, REFUSED). */
 const SERVER_FAILURES = new Set([1, 2, 4, 5]);
 /** c-ares's names for a server's failure, by rcode. */
@@ -454,12 +535,21 @@ function lookupWithHosts(
     const fromDns = async (name: string): Promise<0 | 'again' | 'nodata' | Array<{ address: string; family: number }>> => {
       const labels = nameLabels(name, 253);
       if (!labels?.length) return 0;
-      const addresses: Array<{ address: string; family: number }> = [];
+      if (!sockets) return 'again';
+      // A and AAAA together through res_msend, with distinct ids; read in order: none taken EAI_AGAIN, NXDOMAIN 0.
+      const queries: Array<{ message: Uint8Array; id: number; type: number }> = [];
       for (const family of families) {
-        const reply = await ask(sockets, config, labels, family === 6 ? 28 : 1);
-        if ('failed' in reply) return 'again';
+        let id = (Math.random() * 0x10000) & 0xffff;
+        if (queries.some(query => query.id === id)) id = (id + 1) & 0xffff;
+        const type = family === 6 ? 28 : 1;
+        queries.push({ message: queryMessage(id, labels, type), id, type });
+      }
+      const replies = await msend(sockets, config, queries);
+      const addresses: Array<{ address: string; family: number }> = [];
+      for (const [index, reply] of replies.entries()) {
+        if (!reply) return 'again';
         if (reply.rcode === 3) return 0;
-        addresses.push(...reply.addresses.map(address => ({ address, family })));
+        addresses.push(...reply.addresses.map(address => ({ address, family: families[index]! })));
       }
       return addresses.length ? addresses : 'nodata';
     };

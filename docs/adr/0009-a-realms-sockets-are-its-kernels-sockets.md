@@ -197,41 +197,54 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   else queued for `POLLOUT`, `recvStart` delivering each datagram (`onmessage(nread, handle, buffer, rinfo)`), and the
   options as their socket options (`SO_BROADCAST`, `IP_TTL`, `IP_MULTICAST_TTL`, `IP_MULTICAST_LOOP`,
   `IP_MULTICAST_IF`, memberships, `SO_RCVBUF` and `SO_SNDBUF`).
-- **`dns`**: a lookup is musl's `getaddrinfo`, which a WALI program gets (below), then DNS over UDP to
-  `/etc/resolv.conf`'s nameservers in order, each tried `attempts` times for `timeout` seconds (resolv.conf's `options`, glibc's defaults 5
-  and 2), A then AAAA as getaddrinfo asks. The answers and errors are the ones the code gave: NXDOMAIN is `ENOTFOUND`
-  (getaddrinfo's -3008), NOERROR with no record of the family `ENOTFOUND` -3007 to a lookup and `ENODATA` to a query, a
-  server that fails or does not answer `EAI_AGAIN` to a lookup; to a query, c-ares's name for the last failure
-  (`ESERVFAIL`, `EREFUSED`, `ENOTIMP`, `EFORMERR` by its rcode, `ECONNREFUSED`, `ETIMEOUT`); queries read A and AAAA
-  records, and a held name answers `ENODATA` for any other type; a resolv.conf naming no server is the
-  local one (127.0.0.1), as glibc and c-ares take it.
+- **`dns`**: `dns.lookup` is musl's `getaddrinfo` (1.2.5, the WALI libc), which a WALI program gets, and
+  `dns.resolve*` is c-ares (1.34.8 in Node v24.21.0); both exchange DNS over UDP with `/etc/resolv.conf`'s nameservers,
+  and a resolv.conf naming none is the local one (127.0.0.1, musl's `resolvconf.c` 86-89). A query asks each server in
+  order, `attempts` tries of `timeout` seconds each (resolv.conf's `options`; timeout 5 s and attempts 2 by default):
+  this is the shim's own exchange, not c-ares's, whose tries and timeout Node sets itself (`dns.md` 156-159). For a
+  query, NXDOMAIN is `ENOTFOUND`, NOERROR with no record of the type `ENODATA`, and a server that fails or does not
+  answer gives the name c-ares gives that failure (`ESERVFAIL`, `EREFUSED`, `ENOTIMP`, `EFORMERR` by its rcode,
+  `ECONNREFUSED`, `ETIMEOUT`); it reads A and AAAA records, and a held name answers `ENODATA` for any other type. A
+  lookup is musl's, below; its errors reach Node as `getaddrinfo`'s: `EAI_NONAME` and `EAI_NODATA` both `ENOTFOUND`
+  (`errors.js` 812-816; errno -3008 and -3007), `EAI_AGAIN` itself.
   A name is the one Node hands its libraries and is checked as they check it before any query leaves. Node converts
-  every name with `ada::idna::to_ascii` before `getaddrinfo` and before a c-ares query (v24.21.0 `src/cares_wrap.cc`
-  1976 and 1797), and a name it cannot convert is the empty name. `getaddrinfo` is musl's (1.2.5, the WALI libc):
-  an empty name or one of 255 bytes or more is `EAI_NONAME` before any source is read (`lookup_name.c` 313-318), a
-  name ending in two dots is `EAI_NONAME` (204-206), and a name `res_mkquery` will not encode, one longer than 253
-  bytes after its one trailing dot, with an empty label or with a label over 63 bytes, is no answer from DNS and so
-  `EAI_NONAME` (`res_mkquery.c` 14-28, `lookup_name.c` 157-161, 336), which Node reports as `ENOTFOUND` with errno
-  -3008 (`lib/internal/errors.js` 812-816). A query's name is c-ares's (1.34.8): one trailing dot is the root's, and an
-  empty label anywhere else, a label over 63 bytes or a name over 255 bytes is `ARES_EBADNAME`
-  (`ares_dns_name.c` `ares_split_dns_name`, 337-366), which Node reports as `EBADNAME` (`dns.BADNAME`, "misformatted
-  host name"). Such a name sends nothing.
-  After Node's own answers for an empty name and an IP literal (`lib/dns.js` 204-223), a lookup takes musl's sources
-  in musl's order (`__lookup_name`, `lookup_name.c` 309-336):
+  every name with `ada::idna::to_ascii` before `getaddrinfo` and before a c-ares query (`src/cares_wrap.cc` 1976 and
+  1797), and a name it cannot convert is the empty name. For a lookup, musl answers `EAI_NONAME` for an empty name or
+  one of 255 bytes or more, before any source is read (`lookup_name.c` 313-318), and for a name ending in two dots
+  (204-206); a name `res_mkquery` will not encode, one longer than 253 bytes after its one trailing dot, with an empty
+  label or with a label over 63 bytes (`res_mkquery.c` 15-30), is no answer from DNS (`lookup_name.c` 157-161), and so,
+  where the hosts file has not answered it, `EAI_NONAME` (336). A query's name is c-ares's: one trailing dot is the
+  root's, and among the names c-ares refuses with `ARES_EBADNAME` are those with an empty label anywhere else, a label
+  over 63 bytes, or more than 255 bytes (`ares_dns_name.c` `ares_split_dns_name`, 338-367); Node reports it as
+  `EBADNAME` (`dns.BADNAME`, "Misformatted host name", `dns.md` 1629). Such a name sends nothing.
+  After Node's own answers for an empty name and an IP literal it recognises (`lib/dns.js` 204-223), a lookup takes
+  musl's sources in musl's order (`__lookup_name`, `lookup_name.c` 308-336), with Node's default hints (0):
   - *numeric:* `inet_aton`'s forms are an IPv4 address, `127.1`, `0x7f.1`, `10` and `010.0.0.1` among them (each part
     decimal, `0` octal or `0x` hex, the last part filling the bytes left, `inet_aton.c`); one of the other family is
     `EAI_NODATA` (`lookup_ipliteral.c` 13-22), Node's `ENOTFOUND` -3007. None reaches DNS.
-  - *hosts:* `/etc/hosts` as `name_from_hosts` reads it (49-97): a line's text before `#`; the name as given, matched
+  - *hosts:* `/etc/hosts` as `name_from_hosts` reads it (49-99): a line's text before `#`; the name as given, matched
     exactly and case-sensitively where it stands between white space after the line's first character (`strstr`, so a
     name at the end of a last line with no newline is not matched); the line's first field its address, numeric by
-    the same rule; an address of the other family makes the lookup `EAI_NODATA` when no line answers, and DNS is not
-    asked. `localhost` is answered here or by the resolver, which answers it as RFC 6761 asks (browser-substrate
+    the same rule; an address of the other family makes the lookup `EAI_NODATA` when no line answers (98), and DNS is
+    not asked. `localhost` is answered here or by the resolver, which answers it as RFC 6761 asks (browser-substrate
     ADR-0227 §8); the engine adds no answer of its own.
   - *DNS with the search list:* resolv.conf's `search` or `domain` line (the last one given) and `options ndots:`
     (default 1, at most 15), read as musl's `__get_resolv_conf` reads them (`resolvconf.c`). A name with fewer dots than
     `ndots` and no trailing dot is asked with each search domain first, in order, and then as itself
-    (`name_from_dns_search`, 190-230); the first answer that is not "no such name" ends the lookup, an error or a held
+    (`name_from_dns_search`, 190-232); the first answer that is not "no such name" ends the lookup, an error or a held
     name with no address of the family included (`name_from_dns`, 143-188).
+  - *the exchange:* musl's `res_msend` (`res_msend.c` 172-308), once for each name asked, so a lookup with N search
+    domains can take up to (N+1) times `timeout`. A and AAAA (one of them where the family is asked) are sent to each
+    of the first three servers at the start of each of `attempts` equal slices of `timeout`, the first at once, each
+    time only the queries not yet answered (`options timeout:` at most 60 s and `attempts:` at most 10,
+    `resolvconf.c`; musl stores an `attempts` of 0 and divides by it, and the shim takes it as 1). A reply from a server it was sent to is matched to
+    its query by id and taken when it is NOERROR or NXDOMAIN; SERVFAIL is sent again at once to the server that gave
+    it, up to twice the number of queries in a slice, shared among them; FORMERR, NOTIMP and REFUSED are ignored. The
+    replies are checked in order, A then AAAA (`lookup_name.c` 174-178): the first that is missing when `timeout` has
+    passed makes the lookup `EAI_AGAIN`, so a lone server that answers REFUSED is `EAI_AGAIN` once the timeout has
+    passed, not at once, and the first that is NXDOMAIN makes it no answer, whichever comes first; if every reply is
+    NOERROR and none holds an address, it is `EAI_NODATA` (186-187). musl takes a truncated reply again over TCP (253-308); the shim does not. That and an
+    `attempts` of 0 are the shim's two departures from the exchange.
 - **`os.networkInterfaces`**: `getifaddrs`, by libuv's `uv_interface_addresses`: interfaces up and running, their IPv4
   and IPv6 addresses, `internal` for a loopback interface, `mac` from the hardware address, `scopeid` from
   `sin6_scope_id`.

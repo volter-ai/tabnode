@@ -16,6 +16,9 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   - **search list:** resolv.conf's `search` list and `ndots` apply, a short name asked with each search domain first;
   - **`localhost`:** the engine no longer answers `localhost` itself. It comes from the hosts file, or from the
     resolver, which answers it per RFC 6761.
+  - **the exchange:** a lookup's A and AAAA queries go to the servers as musl's `res_msend` sends them: together, to
+    the first three servers in each slice of `timeout`, SERVFAIL re-sent and REFUSED, FORMERR and NOTIMP ignored until
+    `timeout` has passed (then `EAI_AGAIN`).
 - **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
   offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
   table: a `'pipe'` (IPC or not) a socketpair with 64 KiB buffers, `'inherit'` and a number the parent's descriptor,
