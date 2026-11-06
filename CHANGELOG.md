@@ -4,6 +4,12 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
+- **A name is checked as the resolver libraries check it, before any query** (ADR-0009 §3). `dns.lookup` refuses
+  a name that musl's getaddrinfo refuses, with `ENOTFOUND` (errno -3008) and nothing sent: an empty name, one of 255
+  bytes or more, one with an empty label (`db..`, `.db`, `a..b`), or one with a label over 63 bytes. A query
+  (`dns.resolve*`) refuses a name that c-ares refuses with `EBADNAME`. Every name is converted to ASCII first, as Node's
+  `to_ascii` does, including before the hosts file is read. Before this, empty labels were dropped and long labels
+  cut, so `db..` asked for `db`.
 - **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
   offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
   table: a `'pipe'` (IPC or not) a socketpair with 64 KiB buffers, `'inherit'` and a number the parent's descriptor,

@@ -205,6 +205,17 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   (`ESERVFAIL`, `EREFUSED`, `ENOTIMP`, `EFORMERR` by its rcode, `ECONNREFUSED`, `ETIMEOUT`); queries read A and AAAA
   records, and a held name answers `ENODATA` for any other type; a resolv.conf naming no server is the
   local one (127.0.0.1), as glibc and c-ares take it.
+  A name is the one Node hands its libraries and is checked as they check it before any query leaves. Node converts
+  every name with `ada::idna::to_ascii` before `getaddrinfo` and before a c-ares query (v24.21.0 `src/cares_wrap.cc`
+  1976 and 1797), and a name it cannot convert is the empty name. `getaddrinfo` is musl's (1.2.5, the WALI libc):
+  an empty name or one of 255 bytes or more is `EAI_NONAME` before any source is read (`lookup_name.c` 313-318), a
+  name ending in two dots is `EAI_NONAME` (204-206), and a name `res_mkquery` will not encode, one longer than 253
+  bytes after its one trailing dot, with an empty label or with a label over 63 bytes, is no answer from DNS and so
+  `EAI_NONAME` (`res_mkquery.c` 14-28, `lookup_name.c` 157-161, 336), which Node reports as `ENOTFOUND` with errno
+  -3008 (`lib/internal/errors.js` 812-816). A query's name is c-ares's (1.34.8): one trailing dot is the root's, and an
+  empty label anywhere else, a label over 63 bytes or a name over 255 bytes is `ARES_EBADNAME`
+  (`ares_dns_name.c` `ares_split_dns_name`, 337-366), which Node reports as `EBADNAME` (`dns.BADNAME`, "misformatted
+  host name"). Such a name sends nothing.
 - **`os.networkInterfaces`**: `getifaddrs`, by libuv's `uv_interface_addresses`: interfaces up and running, their IPv4
   and IPv6 addresses, `internal` for a loopback interface, `mac` from the hardware address, `scopeid` from
   `sin6_scope_id`.

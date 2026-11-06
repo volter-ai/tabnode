@@ -10,6 +10,10 @@
  * to a lookup; to a query it is c-ares's error for it (`ESERVFAIL`, `EREFUSED`, `ENOTIMP`, `EFORMERR`, `ETIMEOUT`,
  * `ECONNREFUSED`). `getServers()` is the process's `/etc/resolv.conf`'s nameservers. A process with no socket calls
  * can ask no server: a name not in its hosts file is `EAI_AGAIN`.
+ *
+ * A name is the one Node hands its libraries (`to_ascii`), checked as they check it before anything is sent: one
+ * musl's getaddrinfo refuses (empty, 255 bytes or more, an empty label, a label over 63 bytes) is `ENOTFOUND` to a
+ * lookup, and one c-ares refuses is `EBADNAME` to a query (ADR-0009 §3).
  */
 import { heldWork } from '../host-globals';
 import { AsyncLocalStorage } from './async_hooks';
@@ -145,11 +149,31 @@ const RECORD_TYPES: Record<string, number> = {
   A: 1, NS: 2, CNAME: 5, SOA: 6, PTR: 12, MX: 15, TXT: 16, AAAA: 28, SRV: 33, NAPTR: 35, CAA: 257, TLSA: 52, ANY: 255,
 };
 
+/**
+ * The name Node hands its resolver libraries: `ada::idna::to_ascii` of what it was given (`cares_wrap.cc`), the WHATWG
+ * domain-to-ASCII a URL's host takes; a name that does not convert is the empty name, as `to_ascii` answers it.
+ */
+function asciiName(hostname: string): string {
+  if (!/[^\x00-\x7f]/u.test(hostname)) return hostname;
+  try { return new URL(`http://${hostname}/`).hostname; } catch { return ''; }
+}
+
+/**
+ * A name's labels as its query carries them (ADR-0009 §3), or undefined for a name the library refuses: one trailing
+ * dot is the root's; an empty label anywhere else, a label over 63 bytes, or a name of more than `limit` bytes without
+ * that dot is refused, as musl's `res_mkquery` (limit 253) and c-ares's `ares_split_dns_name` (limit 255) refuse it.
+ * The root is no labels.
+ */
+function nameLabels(ascii: string, limit: number): Uint8Array[] | undefined {
+  const name = ascii.endsWith('.') ? ascii.slice(0, -1) : ascii;
+  if (name === '') return [];
+  if (name.length > limit) return undefined;
+  const labels = name.split('.').map(label => new TextEncoder().encode(label));
+  return labels.every(label => label.byteLength > 0 && label.byteLength <= 63) ? labels : undefined;
+}
+
 /** A query message (RFC 1035 §4.1): one question, recursion desired. */
-function queryMessage(id: number, name: string, type: number): Uint8Array {
-  let ascii = name.replace(/\.$/u, '');
-  if (/[^\x00-\x7f]/u.test(ascii)) { try { ascii = new URL(`http://${ascii}/`).hostname; } catch { /* the name as given */ } }
-  const labels = ascii.split('.').filter(label => label.length > 0).map(label => new TextEncoder().encode(label).subarray(0, 63));
+function queryMessage(id: number, labels: readonly Uint8Array[], type: number): Uint8Array {
   const length = 12 + labels.reduce((total, label) => total + 1 + label.byteLength, 0) + 1 + 4;
   const out = new Uint8Array(length);
   const view = new DataView(out.buffer);
@@ -248,7 +272,7 @@ const QUERY_FAILURES: Record<number, string> = { 1: 'EFORMERR', 2: 'ESERVFAIL', 
  * A question to the process's resolver: each server in order, `attempts` rounds, until one answers NOERROR or
  * NXDOMAIN; otherwise the last failure, as c-ares names it.
  */
-async function ask(sockets: TreeSockets | undefined, config: ResolverConfig, hostname: string, type: number): Promise<{ rcode: number; addresses: string[] } | { failed: string }> {
+async function ask(sockets: TreeSockets | undefined, config: ResolverConfig, labels: readonly Uint8Array[], type: number): Promise<{ rcode: number; addresses: string[] } | { failed: string }> {
   if (!sockets) return { failed: 'ECONNREFUSED' };
   // A resolv.conf naming no server is the local one, as glibc and c-ares take it.
   const servers = (config.servers.length ? config.servers : ['127.0.0.1'])
@@ -257,7 +281,7 @@ async function ask(sockets: TreeSockets | undefined, config: ResolverConfig, hos
   for (let attempt = 0; attempt < config.attempts; attempt += 1) {
     for (const server of servers) {
       const id = (Math.random() * 0x10000) & 0xffff;
-      const outcome = await askServer(sockets, server, queryMessage(id, hostname, type), id, type, config.timeoutMs);
+      const outcome = await askServer(sockets, server, queryMessage(id, labels, type), id, type, config.timeoutMs);
       if ('answer' in outcome) {
         if (!SERVER_FAILURES.has(outcome.answer.rcode)) return outcome.answer;
         failed = QUERY_FAILURES[outcome.answer.rcode] ?? 'ESERVFAIL';
@@ -327,10 +351,14 @@ function lookupWithHosts(
       else (cb as LookupCallback)(null, address, family);
       return;
     }
+    // The name getaddrinfo is given (Node's to_ascii); musl refuses an empty one, or one of 255 bytes or more, before
+    // it reads any source (ADR-0009 §3).
+    const ascii = asciiName(hostname);
+    if (ascii === '' || ascii.length >= 255) { cb(notFound(hostname)); return; }
     // hosts(5) belongs to the requesting process. Preserve the actual addresses and families,
     // including aliases, rather than making every held name an IPv4/IPv6 wildcard.
     let fileAddresses: Array<{ address: string; family: number }> | undefined;
-    try { fileAddresses = readHosts ? hostsAddresses(readHosts(), hostname) : undefined; }
+    try { fileAddresses = readHosts ? hostsAddresses(readHosts(), ascii) : undefined; }
     catch (cause) {
       // nss_files reports an unreadable hosts source as unavailable; lookup continues with
       // the next resolver source. Kernel-owner/protocol, EIO transport and programming failures still surface.
@@ -351,20 +379,24 @@ function lookupWithHosts(
       return;
     }
     // localhost is the process's own loopback (RFC 6761), whatever its resolver holds.
-    if (hostname.toLowerCase().replace(/\.$/, '') === 'localhost') {
+    if (ascii.toLowerCase().replace(/\.$/, '') === 'localhost') {
       const families = requested ? [requested] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
       const addresses = families.map(family => ({ address: family === 6 ? '::1' : '127.0.0.1', family }));
       if (options.all) (cb as LookupAllCallback)(null, addresses);
       else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
       return;
     }
+    // A name res_mkquery will not encode (the root, an empty label, a label over 63 bytes, more than 253 bytes) is no
+    // answer from DNS, and getaddrinfo's EAI_NONAME: nothing is sent (ADR-0009 §3).
+    const labels = nameLabels(ascii, 253);
+    if (!labels?.length) { cb(notFound(hostname)); return; }
     // The resolver: A, then AAAA (or as `order` puts them), as getaddrinfo asks for an unspecified family.
     const families: Array<4 | 6> = requested ? [requested as 4 | 6] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
     const config = resolver();
     const asked = (async () => {
       const answers: Array<{ rcode: number; addresses: string[] }> = [];
       for (const family of families) {
-        const answer = await ask(sockets, config, hostname, family === 6 ? 28 : 1);
+        const answer = await ask(sockets, config, labels, family === 6 ? 28 : 1);
         if ('failed' in answer) return undefined;
         answers.push(answer);
       }
@@ -395,7 +427,10 @@ function query(resolver: ResolverDoor, hostname: string, rrtype: string, given: 
   const callback = inCallersContext(given);
   const sockets = callingSockets();
   const config = resolver();
-  answerLater(() => ask(sockets, config, hostname, type)
+  // A name c-ares will not encode is its ARES_EBADNAME, Node's EBADNAME: nothing is sent (ADR-0009 §3).
+  const labels = nameLabels(asciiName(hostname), 255);
+  if (!labels) { answerLater(() => callback(queryFailed(hostname, syscall, 'EBADNAME'))); return; }
+  answerLater(() => ask(sockets, config, labels, type)
     .then((outcome) => {
       if ('failed' in outcome) callback(queryFailed(hostname, syscall, outcome.failed));
       else if (outcome.rcode === 3) callback(notFound(hostname, syscall));
