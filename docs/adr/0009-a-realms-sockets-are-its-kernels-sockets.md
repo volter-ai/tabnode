@@ -264,10 +264,11 @@ Node's IPC channel is an AF_UNIX stream socket, and libuv sends a handle over it
 
 - **The channel is a socketpair.** An IPC pipe of a process whose tree offers socket calls is a kernel AF_UNIX socket.
   `spawn` makes the channel as `uv_spawn`'s `UV_CREATE_PIPE` does: `socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC)`
-  in the parent's table, the parent's pipe one end and the child's end the other, which the child's fork copies. A
-  child its parent's realm runs on its parent's tree opens that end; a child a host runs in another realm is started
-  with it at its `NODE_CHANNEL_FD` (`NodeProcessLaunch.descriptors`: the host dup2s it in the child's table before the
-  exec closes the close-on-exec ones, as `uv__process_child_init` does), and the parent closes its copy.
+  in the parent's table, the parent's pipe one end and the child's end the other, which the child's fork copies. The
+  child is its host's (ADR-0010 §2: a child of a process with a kernel is always its host's, and none with kernel
+  descriptors runs in its parent's realm): it is started with that end at its `NODE_CHANNEL_FD`
+  (`NodeProcessLaunch.descriptors`: the host dup2s it in the child's table before the exec closes the close-on-exec
+  ones, as `uv__process_child_init` does), and the parent closes its copy.
 - **A send is `sendmsg`.** A write that carries a handle sends the handle's descriptor (`uv__handle_fd`: a TCP, UDP
   or kernel pipe's) in an `SCM_RIGHTS` record with the write's first bytes, queued behind earlier writes and written
   at once where none is; a handle with no kernel descriptor is `EBADF`, a handle on a pipe that is not IPC `EINVAL`.

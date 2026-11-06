@@ -566,6 +566,19 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     }
   }
 
+  // A nested node refused before it runs (its options, its script) has lived its whole life here: it exits with the
+  // refusal's code, its parent reaps it, and the number and the parent's streams nestedNodeToken gave it go back.
+  const unstarted = (outcome: CommandOutcome): CommandOutcome => {
+    if (nested && runToken !== null) {
+      const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
+      exitRunProcess(own.pid, own.waiter, outcome.exitCode, null, parentToken);
+      reapRunProcess(own.pid, own.waiter, outcome.exitCode, null, parentToken);
+      forgetRunPid(runToken);
+      releaseRunStreams(runToken);
+    }
+    return outcome;
+  };
+
   // Node reads its own options before the script: `node --turbo-fast-api-calls
   // file.js a b` runs file.js with `a b`, and the options it were given are
   // its `execArgv`. Node's own suite spawns children that way, and the
@@ -621,13 +634,13 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       break;
     }
     if (option === '-e' || option === '--eval' || option === '-p' || option === '--print' || option === '-pe') {
-      if (first + 1 >= args.length) return { stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 };
+      if (first + 1 >= args.length) return unstarted({ stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 });
       evaluated = { source: args[first + 1]!, print: option.includes('p') };
       execArgv.push(option, args[first + 1]!);
       first += 2;
       break;
     }
-    if ((option === '-r' || option === '--require' || option === '--import') && first + 1 >= args.length) return { stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 };
+    if ((option === '-r' || option === '--require' || option === '--import') && first + 1 >= args.length) return unstarted({ stdout: '', stderr: `node: ${option} requires an argument\n`, exitCode: 9 });
     // An option that takes its value as the next word consumes it here, as Node's option parser does.
     if (NODE_VALUE_OPTIONS.has(option) && first + 1 < args.length) {
       execArgv.push(option, args[first + 1]!);
@@ -658,9 +671,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     streams.onStderrBytes(new TextEncoder().encode(text));
     return { stdout: '', stderr: '', exitCode: 1 };
   };
-  if (evaluated === null && !args[script]) return refused('Usage: node <script.js> [args...]\n');
+  if (evaluated === null && !args[script]) return unstarted(refused('Usage: node <script.js> [args...]\n'));
   if (evaluated === null && resolvedPath === null) {
-    return refused(`Error: Cannot find module '${__resolvePath(launch.cwd, args[script]!)}'\n`);
+    return unstarted(refused(`Error: Cannot find module '${__resolvePath(launch.cwd, args[script]!)}'\n`));
   }
 
   let stdout = '';
@@ -1532,6 +1545,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // a lock file answers ESRCH from here on, which is how a stale lock is
     // stolen rather than waited on.
     if (runToken !== null) forgetRunPid(runToken);
+    // A nested node's registration of its parent's streams (nestedNodeToken) goes with it, as the hosted branch's does.
+    if (nested && runToken !== null) releaseRunStreams(runToken);
     // A program that has ended holds no timers, as an ended Node process
     // holds none. `process.exit` asked for them to be stopped on a tick of
     // its own, and the run was taken out of the registry here before that

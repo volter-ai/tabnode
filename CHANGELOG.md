@@ -4,6 +4,11 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
+- **A nested `node` the realm runs gives back what it took, on every exit.** A `node` a run's shell runs in the
+  same realm (`nestedNodeToken`: its pid under the run's, the run's streams registered under its token) that is
+  refused before it starts (an option without its value, no script, a missing module) now exits with that code, is
+  reaped by its parent and gives back its number and its streams registration; one that runs to its end gives back
+  its streams registration too, as a hosted one does.
 - **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
   offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
   table: a `'pipe'` (IPC or not) a socketpair with 64 KiB buffers, `'inherit'` and a number the parent's descriptor,
