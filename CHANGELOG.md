@@ -11,10 +11,12 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   a child a host runs as its own process is started with them (`NodeProcessLaunch.descriptors`, the new
   `ChildProcessHostRequest.kernelDescriptors`), its fds 0 to 2 and its pipe ends blocking, and the parent closes the
   ends it made for it after the start and relays nothing of them (no sink, no input). A child the engine runs in its
-  own realm is served from the parent's ends.
+  own realm is served from the parent's ends, and its normal end waits for the output still queued on them. Whether
+  an inherited number is the parent's descriptor is the kernel's answer, and a descriptor the engine holds no record
+  of is written through the tree's `write(2)`.
 - **A terminal's mode is its host's termios** (ADR-0010 §3). `RunStreams.terminal.setRawMode(false | 'raw' | 'io')`
-  is fd 0's mode as `uv_tty_set_mode` sets it; `process.stdin.setRawMode` and a `TTY` on fd 0 set it as Node's
-  `tty.ReadStream.setRawMode` does (validation, `'error'` with an `ErrnoException`, `isRaw`, `rawMode`), and a run's end
+  is fd 0's mode as `uv_tty_set_mode` sets it; a `TTY` on fd 0 sets it, and a run's `process.stdin.setRawMode` is
+  Node's own `tty.ReadStream.prototype.setRawMode` over the same binding operation, and a run's end
   puts a mode it set back to normal, as Node's `ResetStdio` does. A `TTY` on fd 0 to 2 answers `getWindowSize` from the
   run's terminal.
 - **A synchronous child's pipes are read by its parent's blocking loop** (ADR-0010 §4). `TreeSockets` adds `poll`

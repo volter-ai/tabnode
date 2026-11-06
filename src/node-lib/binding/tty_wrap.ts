@@ -50,16 +50,28 @@ function runTerminalOf(): RunTerminal | undefined {
   return proc?.[kRunTerminal] as RunTerminal | undefined;
 }
 
-/** `uv_tty_set_mode` of fd 0 through the run's terminal: 0, or the call's negative errno. */
-export function setRunTerminalMode(terminal: RunTerminal, mode: false | 'raw' | 'io'): number {
+/**
+ * The binding's mode operation for a run's fd 0 (ADR-0010 §3): `uv_tty_set_mode` through the run's terminal,
+ * `UV_TTY_MODE_NORMAL` false, `UV_TTY_MODE_IO` io, `UV_TTY_MODE_RAW_VT` (and libuv's `UV_TTY_MODE_RAW`) raw; 0, or the
+ * call's negative errno.
+ */
+function setRunTerminalMode(terminal: RunTerminal, mode: number): number {
   try {
-    terminal.setRawMode!(mode);
+    terminal.setRawMode!(mode === UV_TTY_MODE_NORMAL ? false : mode === UV_TTY_MODE_IO ? 'io' : 'raw');
     return 0;
   } catch (cause) {
     const errno = (cause as { errno?: unknown } | null)?.errno;
     if (typeof errno !== 'number' || errno >= 0) throw cause;
     return errno;
   }
+}
+
+/**
+ * The handle Node's own `tty.ReadStream.prototype.setRawMode` drives for a run's `process.stdin` whose terminal's mode
+ * the host sets: that function's `this._handle.setRawMode(UV_TTY_MODE_*)`, answered by the binding's mode operation.
+ */
+export function runTerminalModeHandle(terminal: RunTerminal): { setRawMode(mode: number): number } {
+  return { setRawMode: mode => setRunTerminalMode(terminal, mode) };
 }
 
 /** One terminal endpoint, shared by independently owned descriptors. */
@@ -130,15 +142,14 @@ export class TTY extends LibuvStreamWrap {
   }
 
   /**
-   * uv_tty_set_mode: fd 0's mode through the run's terminal (ADR-0010 §3), `UV_TTY_MODE_RAW_VT` (and libuv's
-   * `UV_TTY_MODE_RAW`) raw, `UV_TTY_MODE_IO` io. ADR-0023: an engine pty endpoint has no termios, and a terminal
-   * whose host sets no mode claims no change.
+   * uv_tty_set_mode: fd 0's mode through the run's terminal (ADR-0010 §3). ADR-0023: an engine pty endpoint has no
+   * termios, and a terminal whose host sets no mode claims no change.
    */
   setRawMode(mode: number): number {
     if (this.endpoint) return UV_ENOTSUP;
     const terminal = this.fd === 0 ? runTerminalOf() : undefined;
     if (!terminal?.setRawMode) return 0;
-    return setRunTerminalMode(terminal, mode === UV_TTY_MODE_NORMAL ? false : mode === UV_TTY_MODE_IO ? 'io' : 'raw');
+    return setRunTerminalMode(terminal, mode);
   }
 
   static allocate(endpoint: TerminalEndpoint): TTY {

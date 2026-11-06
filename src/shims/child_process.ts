@@ -62,8 +62,8 @@ import {
   type LibuvStreamWrap,
 } from '../node-lib/binding/stream_wrap';
 import { UV_ESRCH } from '../node-lib/binding/uv';
-import { loadNodeLibFor, nodeLibInternalRequire } from '../node-lib/load';
-import { kRunTerminal, setRunTerminalMode, type RunTerminal } from '../node-lib/binding/tty_wrap';
+import { loadNodeLibFor } from '../node-lib/load';
+import { kRunTerminal, runTerminalModeHandle, type RunTerminal } from '../node-lib/binding/tty_wrap';
 import type { ChildProcessModule } from '../node-lib/child-process-module';
 import { getCommandNames } from 'just-bash';
 import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateArgvFor, __substrateShellLine, __substrateRunsNode, setProgramResolver, setHostRunsProgram } from './command-line';
@@ -240,28 +240,6 @@ export interface RunStreams {
  * before exec and releases it when the run ends.
  */
 const _runStreams = new Map<ProcessToken, RunStreams>();
-
-/**
- * Node's `tty.ReadStream.setRawMode` for a run's fd 0 that is a terminal: `true` is `'raw'`, a string other than
- * `'raw'` or `'io'` is refused, and the mode is the run's terminal's (`setRunTerminalMode`); a failure is an `'error'`
- * of the stream, and `isRaw` and `rawMode` say the mode set. A terminal whose host sets no mode claims none.
- */
-function setStdinRawMode(stdin: ProcessStdin, terminal: RunTerminal | undefined, mode: unknown): ProcessStdin {
-  if (typeof mode === 'string' && mode !== 'raw' && mode !== 'io') {
-    const { codes } = nodeLibInternalRequire('internal/errors') as { codes: { ERR_INVALID_ARG_VALUE: new (name: string, value: unknown, reason: string) => Error } };
-    throw new codes.ERR_INVALID_ARG_VALUE('mode', mode, "must be true, false, 'raw', or 'io'");
-  }
-  if (!terminal?.setRawMode) return stdin;
-  const rawMode: false | 'raw' | 'io' = mode === 'raw' || mode === 'io' ? mode : mode ? 'raw' : false;
-  const status = setRunTerminalMode(terminal, rawMode);
-  if (status !== 0) {
-    const { ErrnoException } = nodeLibInternalRequire('internal/errors') as { ErrnoException: new (status: number, syscall: string) => Error };
-    stdin.emit('error', new ErrnoException(status, 'setRawMode'));
-    return stdin;
-  }
-  Object.assign(stdin, { isRaw: rawMode !== false, rawMode });
-  return stdin;
-}
 
 /**
  * Submit before returning to a spawning parent; completion remains async. `placed` are the kernel descriptors the child
@@ -1013,7 +991,15 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // Each fd is a terminal only where the host said so.
   if (ttyFds[0]) {
     proc.stdin.isTTY = true;
-    proc.stdin.setRawMode = (mode: unknown) => setStdinRawMode(proc.stdin, runTerminal, mode);
+    // Node's own userland sets the mode (ADR-0010 §0, §3): `tty.ReadStream.prototype.setRawMode`, over the binding's
+    // mode operation as this stream's handle.
+    if (runTerminal?.setRawMode) {
+      Object.defineProperty(proc.stdin, '_handle', { value: runTerminalModeHandle(runTerminal), configurable: true, writable: true });
+      proc.stdin.setRawMode = function setRawMode(this: ProcessStdin, mode: boolean | 'raw' | 'io'): ProcessStdin {
+        const { ReadStream } = loadNodeLibFor(proc, 'tty') as { ReadStream: { prototype: { setRawMode(this: ProcessStdin, mode: unknown): ProcessStdin } } };
+        return ReadStream.prototype.setRawMode.call(this, mode);
+      };
+    }
   }
   if (ttyFds[1]) proc.stdout.isTTY = true;
   if (ttyFds[2]) proc.stderr.isTTY = true;

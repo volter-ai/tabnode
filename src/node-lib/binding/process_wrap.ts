@@ -23,7 +23,7 @@ import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials
  * (ADR-0010).
  */
 import {
-  LibuvStreamWrap, WriteWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
+  LibuvStreamWrap, WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
 } from './stream_wrap';
 import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { nativeStreamFor } from '../../native-stream-binding';
@@ -415,8 +415,9 @@ export class Process implements OwnedHandle {
         }
       } else if (entry.type === 'inherit' || entry.type === 'fd') {
         const inherited = inheritedWriter(entry.fd ?? index, ownerOf(this));
-        // A descriptor the caller names and does not hold fails the spawn (`spawn EBADF`), as libuv's does.
-        if (inherited === null && (entry.fd ?? index) > 2) {
+        // A descriptor the caller names and does not hold fails the spawn (`spawn EBADF`), as libuv's does; in a
+        // process with socket calls the kernel has answered that already (`placedFrom`).
+        if (inherited === null && (entry.fd ?? index) > 2 && !sockets) {
           this.closeFarEnds();
           return UV_EBADF;
         }
@@ -608,15 +609,31 @@ export class Process implements OwnedHandle {
    * The run has ended. The child's ends of the pairings close, so the parent's
    * streams read EOF as they do when a real child's descriptors go, and
    * `onexit` fires once, after them: Node's `flushStdio` runs on the tick
-   * after `onexit` and must find the bytes already delivered.
+   * after `onexit` and must find the bytes already delivered. A normal end
+   * (no signal) follows the child's output (ADR-0010 §2): a kernel end that
+   * still queues what the child wrote is shut down first, which completes
+   * once the queue is sent (uv_shutdown), as a Linux child's write(2)
+   * returns only once its pipe took the bytes. A signal ends it at once.
    */
   private reportExit(code: number, signal: string | null): void {
     if (this.ended) return;
     this.ended = true;
-    this.closeFarEnds();
-    this.run = null;
-    invokeOwned(this, 'onexit', code, signal);
-    this.sayLateClose();
+    const finish = (): void => {
+      this.closeFarEnds();
+      this.run = null;
+      invokeOwned(this, 'onexit', code, signal);
+      this.sayLateClose();
+    };
+    const queued = signal !== null ? [] : [...this.farEnds.values()]
+      .filter((far): far is Pipe => far instanceof Pipe && far.kernelBacked && !far.closed && far.writeQueueSize > 0);
+    let left = queued.length;
+    if (left === 0) { finish(); return; }
+    const sent = (): void => { if (--left === 0) finish(); };
+    for (const far of queued) {
+      const request = new ShutdownWrap();
+      request.oncomplete = sent;
+      if (far.shutdown(request) !== 0) sent();
+    }
   }
 
   /**

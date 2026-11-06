@@ -389,7 +389,13 @@ export class KernelStreamWrap extends LibuvStreamWrap {
       const write = this.#writes[0]!;
       const taken = this.#send(write.bytes.subarray(write.sent), write.fd);
       if (taken === -linux.EAGAIN) { this.waitOut(); return; }
-      if (taken < 0) { this.#finishWrite(write, taken); return; }
+      // A failed write completes with its error, and the queue behind it is tried at the next readiness, as
+      // uv__write leaves POLLOUT started while requests remain; a pending shutdown follows an emptied queue.
+      if (taken < 0) {
+        this.#finishWrite(write, taken);
+        if (this.#writes.length) this.waitOut(); else this.#drain();
+        return;
+      }
       write.fd = undefined;
       write.sent += taken;
       this.bytesWritten += taken;

@@ -170,9 +170,9 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
   const sink = (index: 1 | 2): ((bytes: Uint8Array) => void) | undefined => sinks[index - 1] ?? undefined;
   const releaseSinks = (): void => { for (const held of sinks) held?.release?.(); };
   // A descriptor the caller names and does not hold fails the spawn, as libuv's does (`spawnSync ... EBADF`, no
-  // pid, no output): the child's bytes were dropped in silence. The caller's own fd 1 and 2 always stand for its
-  // output, held or not.
-  if (([1, 2] as const).some((index) => passedOn(stdio[index]) && sinks[index - 1] === null && (stdio[index]!.fd ?? index) > 2)) {
+  // pid, no output). The caller's own fd 1 and 2 always stand for its output, held or not. In a process with socket
+  // calls the kernel answers whether it holds it (`kernelSyncStdio`).
+  if (!callingSockets() && ([1, 2] as const).some((index) => passedOn(stdio[index]) && sinks[index - 1] === null && (stdio[index]!.fd ?? index) > 2)) {
     releaseSinks();
     return nothing(UV_EBADF, 0);
   }
