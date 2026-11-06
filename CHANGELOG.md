@@ -11,9 +11,11 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   a child a host runs as its own process is started with them (`NodeProcessLaunch.descriptors`, the new
   `ChildProcessHostRequest.kernelDescriptors`), its fds 0 to 2 and its pipe ends blocking, and the parent closes the
   ends it made for it after the start and relays nothing of them (no sink, no input). A child the engine runs in its
-  own realm is served from the parent's ends, and its normal end waits for the output still queued on them. Whether
-  an inherited number is the parent's descriptor is the kernel's answer, and a descriptor the engine holds no record
-  of is written through the tree's `write(2)`.
+  own realm is served from the parent's ends, and its normal end waits for every write the engine made for it, to
+  those ends and to inherited kernel descriptions (`DescriptorWriter.settled`; `settleBlocking` for a synchronous
+  child). Whether an inherited number is the parent's descriptor is the kernel's answer, and a kernel description the
+  engine holds is written through the tree's `write(2)`. `spawn` and `spawnSync` share one preparation
+  (`child_stdio.ts`).
 - **A terminal's mode is its host's termios** (ADR-0010 §3). `RunStreams.terminal.setRawMode(false | 'raw' | 'io')`
   is fd 0's mode as `uv_tty_set_mode` sets it; a `TTY` on fd 0 sets it, and a run's `process.stdin.setRawMode` is
   Node's own `tty.ReadStream.prototype.setRawMode` over the same binding operation, and a run's end
@@ -23,8 +25,10 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   (`poll(2)` blocking the calling thread, `PollDescriptor`). In a process with socket calls `spawnSync` makes the
   child's stdio as `spawn` does and hands the host's `runSync` `kernelDescriptors` and `drain` in place of `input`,
   `captured`, `maxBuffer`, `onStdout` and `onStderr`; `drain` writes each input pipe and reads each output pipe to its
-  end with `poll`, as Node's `SyncProcessRunner` does, killing the child and closing the pipes at `timeout`
-  (`ETIMEDOUT`) or past `maxBuffer` (`ENOBUFS`), so a child that fills a 64 KiB pipe is read, not deadlocked.
+  end with `poll`, one send and one read per ready pipe a round, as Node's `SyncProcessRunner` does, killing the
+  child and closing the pipes at `timeout` (`ETIMEDOUT`, whatever the pipes' readiness) or past `maxBuffer`
+  (`ENOBUFS`), so a child that fills a 64 KiB pipe is read, not deadlocked. `maxBuffer` is Node's on every
+  synchronous route: positive, it bounds stdout and stderr together; zero sets no limit.
 - **The prepared format is `tabnode-prepared-8`, a minor release, 0.18.0** (CONTRIBUTING: a change to the lowered text
   moves the format). A guest body's free `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent`,
   `MessageEvent`, `URL` and `WebAssembly` are now rewritten to the guest's, so the same source lowers to different

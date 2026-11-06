@@ -19,7 +19,7 @@ import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap, type ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync } from './stream_wrap';
 import { __adoptHandle, holdRequest, ownerOf, invokeOwned, observeNodeRequest, forgetNodeRequest, startHandle, stopHandle, type OwnedHandle } from './handles';
 import { UV_EBADF, UV_EBUSY, UV_ECANCELED, UV_EINVAL, UV_ENOTCONN, UV_EOF, UV_EPIPE } from './uv';
-import { callingSockets, captureCallingSockets, intOption, linux, receivedRights, rightsControl, rightsSpace, type TreeSockets } from '../../host-sockets';
+import { callingSockets, captureCallingSockets, linux, receivedRights, rightsControl, rightsSpace, type TreeSockets } from '../../host-sockets';
 import { kernelSocketType, type HandleType } from './fds';
 
 /** libuv's `uv__handle_fd`: the kernel descriptor a handle is, -1 while it has none. */
@@ -52,8 +52,6 @@ const READS_PER_READINESS = 32;
 const WRITES_PER_READINESS = 32;
 /** UV__CMSG_FD_COUNT: the descriptors one IPC read has room for. */
 const CMSG_FD_COUNT = 64;
-/** uv__process_init_stdio's buffer size for each end of a child's socketpair. */
-const PIPE_BUFFER_BYTES = 64 * 1024;
 
 /** A queued write; `fd` the descriptor it sends (`req->send_handle`) until its first bytes are taken. */
 interface QueuedWrite { request: WriteWrap; bytes: Uint8Array; sent: number; fd: number | undefined; release: () => void }
@@ -139,30 +137,6 @@ export class KernelStreamWrap extends LibuvStreamWrap {
     this.setDescriptor(fd);
     this.setOpen(true, true);
     return 0;
-  }
-
-  /**
-   * uv_spawn's `UV_CREATE_PIPE` for a child's stdio or channel (`uv__process_init_stdio`): `uv_socketpair(SOCK_STREAM)`,
-   * close-on-exec, each end's `SO_RCVBUF` and `SO_SNDBUF` 64 KiB (a refusal ignored, as libuv ignores it), this handle
-   * one end and `child`'s the other, each made non-blocking while this realm holds it (ADR-0010 §2).
-   */
-  socketpair(child: KernelStreamWrap): number {
-    const sockets = this.#sockets;
-    if (!sockets || !child.#kernel) return UV_EINVAL;
-    const pair = new Int32Array(2);
-    const made = sockets.socketpair(linux.AF_UNIX, linux.SOCK_STREAM | linux.SOCK_CLOEXEC, 0, pair);
-    if (made < 0) return made;
-    for (const fd of pair) {
-      sockets.setsockopt(fd, linux.SOL_SOCKET, linux.SO_RCVBUF, intOption(PIPE_BUFFER_BYTES));
-      sockets.setsockopt(fd, linux.SOL_SOCKET, linux.SO_SNDBUF, intOption(PIPE_BUFFER_BYTES));
-    }
-    let status = this.openDescriptor(pair[0]!);
-    if (status === 0) { child.#sockets = sockets; status = child.openDescriptor(pair[1]!); }
-    if (status !== 0) {
-      if (this.#fd !== pair[0]) sockets.close(pair[0]!);
-      if (child.#fd !== pair[1]) sockets.close(pair[1]!);
-    }
-    return status;
   }
 
   /** `other`'s descriptor becomes this handle's, as the end a child opens of a channel its parent made in its table. */

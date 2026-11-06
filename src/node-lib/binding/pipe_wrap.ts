@@ -4,7 +4,7 @@
  * A pipe that is a socket is a kernel AF_UNIX socket of its process, as libuv's is: a server binds and listens on a
  * path (`sockaddr_un`, or an abstract name with a leading NUL), a client connects to one, and the kernel makes the
  * socket's node, refuses (`ENOENT`, `ECONNREFUSED`, `EADDRINUSE`) and accepts. A child's stdio pipe and its IPC
- * channel are each one end of a `socketpair` its parent made (`process_wrap`, ADR-0010 §1), and a handle crosses a
+ * channel are each one end of a `socketpair` its parent made (`child_stdio.ts`, ADR-0010 §1), and a handle crosses a
  * channel as `SCM_RIGHTS` into the receiver's own table (`kernel_stream.ts`, ADR-0009 §4). A pipe of a process whose
  * tree offers no socket calls has no AF_UNIX: a bind or connect is `EAFNOSUPPORT`, and its stdio pipes and IPC
  * channels are the engine's pairing, on which an IPC write may carry another pairing, set on the peer before the
@@ -98,20 +98,6 @@ export class Pipe extends KernelStreamWrap {
     if (fd < 0) return fd;
     this.setDescriptor(fd);
     return 0;
-  }
-
-  /**
-   * uv_spawn's `UV_CREATE_PIPE`: this pipe, made by Node for a child's stdio before it was known to be one, becomes a
-   * kernel socket of the calling process and the parent's end of a socketpair whose other end is `child`'s
-   * (`KernelStreamWrap.socketpair`); `EAFNOSUPPORT` where the process has no socket calls.
-   */
-  override socketpair(child: KernelStreamWrap): number {
-    if (!this.kernelBacked) {
-      if (!callingSockets()) return UV_EAFNOSUPPORT;
-      detachNativeStream(this);
-      this.becomeKernel();
-    }
-    return super.socketpair(child);
   }
 
   /**

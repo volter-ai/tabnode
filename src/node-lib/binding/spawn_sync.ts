@@ -21,7 +21,8 @@ import { runSyncChild, syncChildRefusal } from '../../shims/sync-child';
 import { __substrateArgvFor, __substrateHostRuns, __substrateLineFor, __substrateRunsNode, __substrateShellLine, __substrateShellWord } from '../../shims/command-line';
 import { inheritedWriter } from './process_wrap';
 import { __currentProcessToken, enterRun, exitRunProcess, forgetRunPid, mintPid, reapRunProcess, runPidOf, setRunPid, signalPid, type ProcessToken } from '../../process-tokens';
-import { callingSockets, callingTree, intOption, linux, type PollDescriptor, type TreeSockets } from '../../host-sockets';
+import { callingSockets, callingTree, linux, type PollDescriptor, type TreeSockets } from '../../host-sockets';
+import { prepareChildStdio, type ChildStdioEntry, type PreparedChildStdio } from './child_stdio';
 import { treeDescriptorsOf, type TreeDescriptors } from '../../tree-descriptors';
 import { __substrateSignalNames } from '../../shims/process';
 
@@ -168,16 +169,20 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
   const asking = __currentProcessToken();
   const sinks = ([1, 2] as const).map((index) => passedOn(stdio[index]) ? inheritedWriter(stdio[index]!.fd ?? index, asking) : null);
   const sink = (index: 1 | 2): ((bytes: Uint8Array) => void) | undefined => sinks[index - 1] ?? undefined;
-  const releaseSinks = (): void => { for (const held of sinks) held?.release?.(); };
+  // Each writer's bytes are written before it is let go (ADR-0010 §2): this realm blocks for a full description.
+  const releaseSinks = (): void => { for (const held of sinks) { held?.settleBlocking?.(); held?.release?.(); } };
   // A descriptor the caller names and does not hold fails the spawn, as libuv's does (`spawnSync ... EBADF`, no
   // pid, no output). The caller's own fd 1 and 2 always stand for its output, held or not. In a process with socket
-  // calls the kernel answers whether it holds it (`kernelSyncStdio`).
+  // calls the kernel answers whether it holds it (`prepareChildStdio`).
   if (!callingSockets() && ([1, 2] as const).some((index) => passedOn(stdio[index]) && sinks[index - 1] === null && (stdio[index]!.fd ?? index) > 2)) {
     releaseSinks();
     return nothing(UV_EBADF, 0);
   }
 
   const input = stdio[0]?.input;
+  // Node's limit (SyncProcessRunner::IncrementBufferSizeAndCheckOverflow): a positive maxBuffer bounds the captured
+  // bytes of every output pipe together; zero, or none, sets no limit (ADR-0010 §4).
+  const maxBuffer = typeof options.maxBuffer === 'number' && options.maxBuffer > 0 ? options.maxBuffer : Infinity;
   const realm = (globalThis as unknown as { process?: { cwd?: () => string; env?: Record<string, string> } & Record<symbol, unknown> }).process;
   // The tree of the run that asks, which a host may have given that run alone.
   const runTree = realm?.[Symbol.for('tabnode.run.vfs')] as Parameters<typeof runSyncChild>[0]['tree'];
@@ -199,19 +204,20 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
     // In a process with socket calls the child's stdio is made in this process's kernel table before its fork, as
     // uv__process_init_stdio makes it (ADR-0010 §4).
     const sockets = callingSockets();
-    const kernel = sockets ? kernelSyncStdio(stdio, sockets, treeDescriptorsOf(callingTree())) : undefined;
+    const kernel = sockets ? syncStdio(stdio, sockets, treeDescriptorsOf(callingTree())) : undefined;
     if (typeof kernel === 'number') { releaseSinks(); return nothing(kernel, 0); }
     let childPid: number;
     try { childPid = mintPid(parentPid, false, owner, declaredIdentity ? credentials : undefined); }
     catch (cause) {
       releaseSinks();
-      kernel?.close();
+      kernel?.prepared.closeAll();
       const code = (cause as { code?: string })?.code;
       if (code === 'EPERM' || code === 'EINVAL') return nothing(code === 'EPERM' ? UV_EPERM : UV_EINVAL, 0);
       throw cause;
     }
-    // Forked, the child holds its own copies of what was made for it, as libuv's parent closes the child's ends.
-    kernel?.closeChildEnds();
+    // Forked, the child holds its own copies of what was made for it, as at spawn's hand-over (ADR-0010 §2).
+    kernel?.prepared.makeBlocking();
+    kernel?.prepared.closeMade();
     setRunPid(token, childPid, parentPid, { argv, ...(cwd ? { cwd } : {}), ...(env ? { env } : {}) }, owner);
     const kept = new Map<number, Uint8Array[]>();
     const keep = (index: number, bytes: Uint8Array): void => {
@@ -223,7 +229,7 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
       if (passedOn(entry)) sink(index)?.(bytes);
       else if (entry?.type !== 'ignore') keep(index, bytes.slice());
     };
-    const captured = (index: number): boolean => kernel ? kernel.reads(index)
+    const captured = (index: number): boolean => kernel ? kernel.pipes.some(pipe => pipe.index === index && pipe.reading)
       : (index === 1 || index === 2) && stdio[index]?.type !== 'ignore' && !passedOn(stdio[index]);
     const killSignal = typeof options.killSignal === 'number' ? options.killSignal : 15;
     let drained: DrainOutcome | undefined;
@@ -247,19 +253,19 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
         ...(typeof options.timeout === 'number' && options.timeout > 0 ? { timeout: options.timeout } : {}),
         ...(typeof options.killSignal === 'number' ? { killSignal: options.killSignal } : {}),
         ...(kernel ? {
-          kernelDescriptors: kernel.placed.map(each => ({ ...each })),
+          kernelDescriptors: kernel.prepared.placed.map(each => ({ ...each })),
           drain: () => {
-            drained ??= kernel.drain(sockets!, {
+            drained ??= drainSyncPipes(kernel.pipes, sockets!, {
               deadline: typeof options.timeout === 'number' && options.timeout > 0 ? spawnedAt + options.timeout : Infinity,
-              maxBuffer: typeof options.maxBuffer === 'number' && options.maxBuffer >= 0 ? options.maxBuffer : Infinity,
+              maxBuffer,
               keep,
               kill: () => killChild(childPid, killSignal, owner),
-            });
+            }, kernel.prepared.closeAll);
           },
         } : {
           ...(input === undefined ? {} : { input: new Uint8Array(input) }),
           captured: [captured(1), captured(2)] as [boolean, boolean],
-          ...(typeof options.maxBuffer === 'number' && options.maxBuffer >= 0 && Number.isFinite(options.maxBuffer) ? { maxBuffer: options.maxBuffer } : {}),
+          ...(Number.isFinite(maxBuffer) ? { maxBuffer } : {}),
           onStdout: take(1),
           onStderr: take(2),
         }),
@@ -268,7 +274,7 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
       answer = { started: false, status: null, signal: null, refusal: cause instanceof Error ? cause.message : String(cause) };
     }
     releaseSinks();
-    kernel?.close();
+    kernel?.prepared.closeAll();
     // Only a child with neither an image handoff nor an already posted end
     // permits a local launch failure. The kernel's actual end wins at reap;
     // a host rejection must not kill a handed image or replace a posted end.
@@ -354,12 +360,11 @@ function spawn(options: SyncSpawnOptions, credentials: Readonly<ProcessCredentia
   // had already produced come back whole: libuv reads in blocks and hands
   // over what it read, which is why Node's own test says "we can have buffers
   // larger than maxBuffer".
-  const limit = typeof options.maxBuffer === 'number' && options.maxBuffer >= 0 ? options.maxBuffer : Infinity;
   const stdout = Buffer.from(answer.stdout);
   const stderr = Buffer.from(answer.stderr);
-  // Only bytes kept for the caller count: a descriptor passed on is not a buffer of this call's.
+  // Only bytes kept for the caller count, both fds together: a descriptor passed on is not a buffer of this call's.
   const kept = (index: 1 | 2): boolean => stdio[index]?.type !== 'ignore' && !passedOn(stdio[index]);
-  const overflowed = (kept(1) && stdout.length > limit) || (kept(2) && stderr.length > limit);
+  const overflowed = (kept(1) ? stdout.length : 0) + (kept(2) ? stderr.length : 0) > maxBuffer;
   const output: Array<Uint8Array | null> = [null];
   for (let index = 1; index < Math.max(3, stdio.length); index += 1) {
     const bytes = index === 1 ? stdout : index === 2 ? stderr : null;
@@ -393,77 +398,36 @@ interface SyncPipe {
   sent: number;
 }
 
-/** uv__process_init_stdio's buffer size for each end of a child's socketpair. */
-const PIPE_BUFFER_BYTES = 64 * 1024;
 /** One read's room, as libuv's sync runner allocates per read. */
 const READ_BYTES = 64 * 1024;
-const O_RDONLY = 0, O_RDWR = 2;
 
 /**
- * A synchronous child's stdio in the parent's kernel table, as `uv__process_init_stdio` makes it (ADR-0010 §4): a
- * `'pipe'` a socketpair (close-on-exec, 64 KiB buffers, this realm's end non-blocking and the child's blocking), an
- * `'inherit'` or number the parent's descriptor (its `EBADF` where it holds none; at 0 to 2 made blocking, as
- * `uv__process_child_init` makes them), an `'ignore'` or absent fd 0 to 2 /dev/null. A negative errno where one
- * cannot be made, with what was made closed.
+ * A synchronous child's stdio (ADR-0010 §4), made by the preparation `spawn` shares (`prepareChildStdio`), an absent
+ * fd 0 to 2 ignored: the pipes this realm's loop serves, by the child's fd, Node's `readable` (the child reads it) and
+ * `writable` (the child writes it) saying which way.
  */
-function kernelSyncStdio(stdio: readonly SyncStdioEntry[], sockets: TreeSockets, files: TreeDescriptors | undefined) {
-  const placed: { fd: number; from: number }[] = [];
-  const pipes: SyncPipe[] = [];
-  const childEnds: number[] = [];
-  const nullFiles: number[] = [];
-  const closeChildEnds = (): void => {
-    for (const fd of childEnds.splice(0)) sockets.close(fd);
-    for (const fd of nullFiles.splice(0)) { try { files!.close(fd); } catch { /* gone already */ } }
-  };
-  const closePipes = (): void => { for (const pipe of pipes.splice(0)) sockets.close(pipe.fd); };
-  const close = (): void => { closeChildEnds(); closePipes(); };
-  /** The child's fds that are pipes it writes, whose bytes are kept for the caller. */
-  const readers = new Set<number>();
-  const made = {
-    placed, closeChildEnds, close,
-    reads: (index: number): boolean => readers.has(index),
-    drain: (calls: TreeSockets, limits: DrainLimits): DrainOutcome => drainSyncPipes(pipes, calls, limits, closePipes),
-  };
-  for (let index = 0; index < Math.max(3, stdio.length); index += 1) {
-    const entry: SyncStdioEntry | undefined = stdio[index] ?? (index < 3 ? { type: 'ignore' } : undefined);
-    if (!entry) continue;
-    if (entry.type === 'pipe' || entry.type === 'overlapped') {
-      const pair = new Int32Array(2);
-      const status = sockets.socketpair(linux.AF_UNIX, linux.SOCK_STREAM | linux.SOCK_CLOEXEC, 0, pair);
-      if (status < 0) { close(); return status; }
-      for (const fd of pair) {
-        sockets.setsockopt(fd, linux.SOL_SOCKET, linux.SO_RCVBUF, intOption(PIPE_BUFFER_BYTES));
-        sockets.setsockopt(fd, linux.SOL_SOCKET, linux.SO_SNDBUF, intOption(PIPE_BUFFER_BYTES));
-      }
-      const flags = sockets.fcntl(pair[0]!, linux.F_GETFL, 0);
-      if (flags >= 0) sockets.fcntl(pair[0]!, linux.F_SETFL, flags | linux.O_NONBLOCK);
-      // Node's getValidStdio(stdio, true): fd 0's pipe is the child's to read, the others its to write.
-      const writing = entry.readable ?? index === 0;
-      const reading = entry.writable ?? index !== 0;
-      pipes.push({ fd: pair[0]!, index, reading, writing, input: writing ? entry.input ?? new Uint8Array(0) : new Uint8Array(0), sent: 0 });
-      if (reading) readers.add(index);
-      childEnds.push(pair[1]!);
-      placed.push({ fd: index, from: pair[1]! });
-    } else if (entry.type === 'inherit' || entry.type === 'fd') {
-      const from = entry.fd ?? index;
-      const flags = sockets.fcntl(from, linux.F_GETFL, 0);
-      if (flags < 0) { close(); return flags; }
-      if (index <= 2 && (flags & linux.O_NONBLOCK) !== 0) sockets.fcntl(from, linux.F_SETFL, flags & ~linux.O_NONBLOCK);
-      placed.push({ fd: index, from });
-    } else if (entry.type === 'ignore' && index <= 2 && files) {
-      let fd: number;
-      try { fd = files.open('/dev/null', index === 0 ? O_RDONLY : O_RDWR, 0); }
-      catch (cause) {
-        const errno = (cause as { errno?: unknown } | null)?.errno;
-        close();
-        if (typeof errno !== 'number' || errno === 0) throw cause;
-        return -Math.abs(errno);
-      }
-      nullFiles.push(fd);
-      placed.push({ fd: index, from: fd });
+function syncStdio(stdio: readonly SyncStdioEntry[], sockets: TreeSockets, files: TreeDescriptors | undefined): { prepared: PreparedChildStdio; pipes: SyncPipe[] } | number {
+  const entries = Array.from({ length: Math.max(3, stdio.length) }, (_, index): ChildStdioEntry => {
+    const entry = stdio[index];
+    if (!entry) return index < 3 ? { type: 'ignore' } : { type: 'none' };
+    switch (entry.type) {
+      case 'pipe': case 'overlapped': return { type: 'pipe' };
+      case 'inherit': case 'fd': return { type: 'inherit', fd: entry.fd ?? index };
+      case 'ignore': return { type: 'ignore' };
+      case 'wrap': return { type: 'none' };
     }
-  }
-  return made;
+  });
+  const prepared = prepareChildStdio(entries, sockets, files);
+  if (typeof prepared === 'number') return prepared;
+  const pipes: SyncPipe[] = [];
+  entries.forEach((entry, index) => {
+    const fd = entry.type === 'pipe' ? prepared.parentEnd(index) : undefined;
+    if (fd === undefined) return;
+    const given = stdio[index]!;
+    const writing = given.readable ?? index === 0;
+    pipes.push({ fd, index, writing, reading: given.writable ?? index !== 0, input: writing ? given.input ?? new Uint8Array(0) : new Uint8Array(0), sent: 0 });
+  });
+  return { prepared, pipes };
 }
 
 interface DrainLimits {
@@ -498,6 +462,8 @@ function drainSyncPipes(pipes: SyncPipe[], sockets: TreeSockets, limits: DrainLi
     pipe.reading = false;
     pipe.writing = false;
   };
+  // Each round serves every ready pipe once (one send, one read) and then reads the clock, so the deadline holds
+  // whatever the pipes' readiness and no pipe waits on another's flood (SyncProcessRunner's kill timer).
   for (;;) {
     for (const pipe of pipes) {
       if (pipe.writing && pipe.sent >= pipe.input.byteLength) {
@@ -509,31 +475,26 @@ function drainSyncPipes(pipes: SyncPipe[], sockets: TreeSockets, limits: DrainLi
     const asked: (PollDescriptor & { pipe: SyncPipe })[] = pipes.filter(pipe => pipe.reading || pipe.writing)
       .map(pipe => ({ fd: pipe.fd, events: (pipe.reading ? linux.POLLIN : 0) | (pipe.writing ? linux.POLLOUT : 0), revents: 0, pipe }));
     if (asked.length === 0) { closePipes(); return outcome; }
+    if (Date.now() >= limits.deadline) return end(UV_ETIMEDOUT);
     const wait = Number.isFinite(limits.deadline) ? Math.max(0, limits.deadline - Date.now()) : -1;
     const ready = sockets.poll(asked, wait);
-    if (ready === -linux.EINTR) continue;
+    if (ready === -linux.EINTR || ready === 0) continue;
     if (ready < 0) { for (const { pipe } of asked) fail(pipe, ready); continue; }
-    if (ready === 0) return end(UV_ETIMEDOUT);
     for (const { pipe, revents } of asked) {
       if (revents === 0) continue;
-      if (pipe.writing) {
-        while (pipe.sent < pipe.input.byteLength) {
-          const sent = sockets.sendto(pipe.fd, pipe.input.subarray(pipe.sent), linux.MSG_DONTWAIT | linux.MSG_NOSIGNAL, null);
-          if (sent === -linux.EAGAIN || sent === -linux.EINTR) break;
-          if (sent < 0) { fail(pipe, sent); break; }
-          pipe.sent += sent;
-        }
+      if (pipe.writing && pipe.sent < pipe.input.byteLength) {
+        const sent = sockets.sendto(pipe.fd, pipe.input.subarray(pipe.sent), linux.MSG_DONTWAIT | linux.MSG_NOSIGNAL, null);
+        if (sent >= 0) pipe.sent += sent;
+        else if (sent !== -linux.EAGAIN && sent !== -linux.EINTR) fail(pipe, sent);
       }
       if (!pipe.reading) continue;
-      for (;;) {
-        const read = sockets.recvfrom(pipe.fd, room, linux.MSG_DONTWAIT, null);
-        if (read === -linux.EAGAIN || read === -linux.EINTR) break;
-        if (read < 0) { fail(pipe, read); break; }
-        if (read === 0) { pipe.reading = false; break; }
-        limits.keep(pipe.index, room.slice(0, read));
-        buffered += read;
-        if (buffered > limits.maxBuffer) return end(UV_ENOBUFS);
-      }
+      const read = sockets.recvfrom(pipe.fd, room, linux.MSG_DONTWAIT, null);
+      if (read === -linux.EAGAIN || read === -linux.EINTR) continue;
+      if (read < 0) { fail(pipe, read); continue; }
+      if (read === 0) { pipe.reading = false; continue; }
+      limits.keep(pipe.index, room.slice(0, read));
+      buffered += read;
+      if (buffered > limits.maxBuffer) return end(UV_ENOBUFS);
     }
   }
 }
