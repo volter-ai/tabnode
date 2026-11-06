@@ -214,7 +214,10 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
     or literal answer, the family by Node's own `validateOneOf` on 0, 4 and 6 and then `all` and `verbatim` by its
     own `validateBoolean` (`lib/dns.js` 190-197, `internal/dns/promises.js` 225-232), with the one difference Node's
     doors have: the callback door also takes `'IPv4'` and `'IPv6'` in an options object (`lib/dns.js` 175-189), the
-    promise door does not (`internal/dns/promises.js` 220-224); and a query checks its record type, by Node's own `validateString`
+    promise door does not (`internal/dns/promises.js` 220-224). The checks Node runs that need
+    `internal/dns/utils.js`, `validateHints` on `options.hints` and `validDnsOrders` for `options.order`, are
+    browser-substrate ROADMAP 78's (with the `cares_wrap` binding's `AI_*` constants and the DEP0118 warning), and the
+    shim does not run them; and a query checks its record type, by Node's own `validateString`
     and `ERR_INVALID_ARG_VALUE` against the one table of record types the shim answers (`RECORD_TYPES`, whose own keys
     are both what a query admits and the type it asks; `internal/dns/callback_resolver.js` 85-105,
     `internal/dns/promises.js` 353-371), and then that its name is a string (Node's own
