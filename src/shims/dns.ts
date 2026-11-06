@@ -147,7 +147,11 @@ function serverAddress(server: string, sockets: TreeSockets | undefined): { fami
   return v6 ? { family: linux.AF_INET6, address: v6 } : undefined;
 }
 
-/** DNS's record types this resolver reads the data of; every other type a query asks for is answered by its rcode alone. */
+/**
+ * The record types a query admits (the types Node's `dns.resolve` takes) and the type number each asks for: the one
+ * table both admission (`checkedRrtype`) and the question read. Only A and AAAA records' data are read; any other
+ * type is answered by its rcode alone.
+ */
 const RECORD_TYPES: Record<string, number> = {
   A: 1, NS: 2, CNAME: 5, SOA: 6, PTR: 12, MX: 15, TXT: 16, AAAA: 28, SRV: 33, NAPTR: 35, CAA: 257, TLSA: 52, ANY: 255,
 };
@@ -464,7 +468,7 @@ function lookupWithHosts(
 function query(resolver: ResolverDoor, hostname: string, rrtype: string, given: ResolveCallback): void {
   validateQueryName(hostname);
   const syscall = `query${rrtype.charAt(0)}${rrtype.slice(1).toLowerCase()}`;
-  const type = RECORD_TYPES[rrtype] ?? 1;
+  const type = RECORD_TYPES[rrtype]!;
   const callback = inCallersContext(given);
   const sockets = callingSockets();
   const config = resolver();
@@ -480,12 +484,17 @@ function query(resolver: ResolverDoor, hostname: string, rrtype: string, given: 
     }));
 }
 
-/** The record types Node's `dns.resolve` takes; any other is `ERR_INVALID_ARG_VALUE`, thrown as Node throws it. */
-const RRTYPES = new Set(['A', 'AAAA', 'ANY', 'CAA', 'CNAME', 'MX', 'NAPTR', 'NS', 'PTR', 'SOA', 'SRV', 'TLSA', 'TXT']);
+/**
+ * A record type as Node's resolver admits it (`callback_resolver.js` 85-105, `promises.js` 353-371): a string, by Node's
+ * own `validateString`, that is one of `RECORD_TYPES`' own keys, else Node's own `ERR_INVALID_ARG_VALUE`.
+ */
 function checkedRrtype(rrtype: unknown): string {
-  if (typeof rrtype !== 'string') throw Object.assign(new TypeError(`The "rrtype" argument must be of type string. Received ${typeof rrtype}`), { code: 'ERR_INVALID_ARG_TYPE' });
-  if (!RRTYPES.has(rrtype)) throw Object.assign(new TypeError(`The argument 'rrtype' is invalid. Received '${rrtype}'`), { code: 'ERR_INVALID_ARG_VALUE' });
-  return rrtype;
+  nodeValidators().validateString(rrtype, 'rrtype');
+  if (!Object.hasOwn(RECORD_TYPES, rrtype as string)) {
+    const { codes } = libRequire('internal/errors') as { codes: { ERR_INVALID_ARG_VALUE: new (name: string, value: unknown) => Error } };
+    throw new codes.ERR_INVALID_ARG_VALUE('rrtype', rrtype);
+  }
+  return rrtype as string;
 }
 
 /** The resolve family over one resolver. */
@@ -568,7 +577,7 @@ function promisesOver(doLookup: typeof lookup, resolvers: ReturnType<typeof reso
         if (!hostname) { resolve(all ? [] : { address: null, family: family === 6 ? 6 : 4 }); return; }
         const literal = nodeIsIP(hostname);
         if (literal) { const result = { address: hostname, family: literal }; resolve(all ? [result] : result); return; }
-        if (typeof options === 'object' && options?.all) {
+        if (all) {
           doLookup(hostname, options, ((err: Error | null, addresses?: Array<{ address: string; family: number }>) => {
             if (err) reject(err);
             else resolve(addresses || []);
