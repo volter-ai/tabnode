@@ -41,20 +41,6 @@ canonical with echo." Builds on ADR-0009 (a realm's sockets are its kernel's).
   child already gone) and closes every pipe. The loop ends when the child has exited and every pipe has closed. A pipe's
   failure (a write's `EPIPE`) is reported only where the runner has no error of its own (`GetError`).
 
-### What the engine did
-
-- A child's `'pipe'` entry was the engine's pairing (`LibuvStreamWrap.pair`): only an IPC entry of a process with
-  socket calls was a kernel socketpair (ADR-0009 §4). The child's fd 1 and 2 reached the parent's handle through the
-  run's sinks (`RunRequest.stdout`, `stderr`), and the parent's writes to fd 0 through `writeStdin`; a child a host
-  ran in another realm got those sinks as `NodeProcessLaunch.streams` or `ChildProcessHostRequest`'s callbacks, and
-  the host relayed them as messages (browser-substrate's `CHILD_STDIO_RELAY`).
-- `'inherit'` and a number were the parent's sinks; `'ignore'` dropped the bytes; a `'wrap'` entry at 0 to 2 was given
-  nothing; an `'fd'` entry past 2 was given nothing.
-- `setRawMode` did nothing (`proc.stdin.setRawMode` returned the stream; `TTY.setRawMode` answered 0, or `ENOTSUP` on
-  the engine's own pty endpoints), and a TTY handle's window was its engine pty's or 80 by 24.
-- A synchronous child the host ran (`runSync`) was blocked on whole: the host held this realm until the child ended,
-  wrote `input` to it, and handed its output to `onStdout` and `onStderr`, enforcing `maxBuffer` and `timeout` itself.
-
 ### What the substrate holds (browser-substrate at 7cd0f130e3d)
 
 - Every host image reads and writes its fds 0 to 2 through its own instance of the kernel
@@ -70,6 +56,22 @@ canonical with echo." Builds on ADR-0009 (a realm's sockets are its kernel's).
 
 ## Decision
 
+### 0. Who owns what
+
+- **The kernel** owns every descriptor's identity and validity, the fork's copies, the `dup2` and exec placement, a
+  description's blocking state, a terminal's termios and its window size. The engine asks it (`TREE_SOCKETS`,
+  `TREE_DESCRIPTORS`) and keeps no descriptor table of its own for a process that has one: whether a number is a
+  descriptor of the process is the kernel's answer.
+- **The binding** (`process_wrap`, `spawn_sync`, `tty_wrap`, `src/shims/child_process.ts`'s runner) owns what libuv
+  owns: making the child's stdio, the lifetime of the parent's handles and the child's ends while this realm holds them,
+  the completion of what was written to them, and the native terminal operation (`setRawMode(UV_TTY_MODE_*)`,
+  `getWindowSize`).
+- **Node's own library** (vendored, unmodified) owns how stdio is read (`getValidStdio`) and the TTY userland:
+  `tty.ReadStream.prototype.setRawMode`'s validation, its error and its `isRaw` and `rawMode` fields, for a run's
+  `process.stdin` as for any `ReadStream`.
+- **The host** owns a run's admission: it applies the placements to the child it starts and gives each process its
+  terminal's callback (`RunStreams.terminal.setRawMode`).
+
 ### 1. A process with socket calls places its child's stdio as libuv does
 
 Where the spawning process's tree offers socket calls (`TREE_SOCKETS`, so its descriptors are a kernel's), `Process.spawn`
@@ -80,8 +82,11 @@ child's `fd` is the parent's descriptor `from`.
 - **`'pipe'` (IPC or not) is a kernel socketpair** (`AF_UNIX`, `SOCK_STREAM`, close-on-exec, 64 KiB `SO_RCVBUF` and
   `SO_SNDBUF` at both ends): Node's handle is the parent's end, non-blocking, and the other end is the child's.
 - **`'inherit'` and a number** are the parent's descriptor of that number. A number the parent's run was started with
-  as a kernel stream (its channel) is that stream's descriptor. A descriptor the parent does not hold fails the spawn
-  with the call's `EBADF`, as the child's `dup2` fails libuv's.
+  as a kernel stream (its channel) is that stream's descriptor. Whether the parent holds it is the kernel's answer
+  (`fcntl(F_GETFL)`): its `EBADF` fails the spawn, as the child's `dup2` fails libuv's, and nothing else does. Where
+  the engine serves the child in its own realm (§2), its writes to that fd go through the engine's record of the
+  descriptor where it has one, else through the tree's `write(2)` of the kernel's description (a duplicate taken for
+  the child, `TREE_DESCRIPTORS.dup`), so a kernel socket or a file the host gave the process is written as it is.
 - **`'wrap'`** (a stream handed as stdio) is the stream's descriptor (`uv__stream_fd`), where it is a kernel one.
 - **`'ignore'` at 0 to 2 is `/dev/null`**, opened through the tree's descriptor calls (read-only for 0, read-write for
   1 and 2, close-on-exec as the tree's `open` makes every file) and given to the child at that number.
@@ -116,19 +121,25 @@ host, and:
   descriptors are placed for a process.
 
 A child the engine runs in its own realm (the engine's own `node` without a process host, a command of the engine's
-shell) is no process with a table of its own: the parent's realm serves the child's ends for it, through the sinks
-as before (the child's writes are writes to its kernel end, the parent's writes to fd 0 reads of it).
+shell) is no process with a table of its own: the parent's realm serves the child's ends for it, through the run's
+sinks (the child's writes are writes to its kernel end, the parent's writes to fd 0 reads of it).
+
+- **Its normal end follows its output.** A Linux child's `write(2)` returns only once its pipe has taken the bytes,
+  so its exit follows everything it wrote. A write to a kernel end is queued where the socket is full (`uv_write`,
+  ADR-0009 §3), so the run's normal end (an exit with no signal) waits for each child end's queued writes:
+  `uv_shutdown` of that end, which completes once they are sent, then the ends close and `onexit` is called. A child
+  ended by a signal ends at once, its unsent bytes cancelled, as a killed child's unwritten output is lost.
 
 ### 3. A terminal's mode is set through the run's terminal
 
 - `RunStreams.terminal` gains `setRawMode?(mode: false | 'raw' | 'io')`: fd 0's terminal mode, set by the host as
   `uv_tty_set_mode` sets it (`'raw'` libuv's raw termios, `'io'` `cfmakeraw`, `false` the termios before the first
   change), throwing an error whose `errno` is the call's negative errno where it cannot (`ENOTTY`).
-- A run whose fd 0 is a terminal answers `process.stdin.setRawMode(mode)` as Node's `tty.ReadStream.setRawMode` does:
-  `true` is `'raw'`, another string than `'raw'` or `'io'` throws `ERR_INVALID_ARG_VALUE`, a failure emits `'error'`
-  with an `ErrnoException` for `setRawMode`, and `isRaw` and `rawMode` say the mode set. A `TTY` handle on fd 0
-  (`new tty.ReadStream(0)`) sets it the same way through `setRawMode(UV_TTY_MODE_*)`, answering the errno. A host that
-  gives no `setRawMode` keeps the old answer (no mode is claimed), and the engine's own pty endpoints keep `ENOTSUP`.
+- The binding's one mode operation (`tty_wrap`, `UV_TTY_MODE_NORMAL`, `UV_TTY_MODE_IO`, `UV_TTY_MODE_RAW_VT` to
+  `false`, `'io'`, `'raw'`, answering 0 or the errno) serves both callers of Node's userland: a `TTY` handle on fd 0
+  (`new tty.ReadStream(0)`), and a run's `process.stdin`, whose `setRawMode` is Node's own
+  `tty.ReadStream.prototype.setRawMode` over a handle that is that operation. A host that gives no `setRawMode` sets
+  no mode and claims none, and the engine's own pty endpoints answer `ENOTSUP`.
 - At a run's end a mode it set is put back to normal, as Node's `ResetStdio` restores its terminal, its failure
   ignored.
 - A `TTY` handle on fd 0, 1 or 2 answers `getWindowSize` from the run's terminal, whose `columns` and `rows` the host
@@ -150,7 +161,7 @@ process with socket calls and for a child its host runs, does what `SyncProcessR
 - **The host starts the child with them**: `runSync` is given `kernelDescriptors` (the same `{ fd, from }` records)
   and `drain`, and no `input`, `captured`, `maxBuffer`, `onStdout` or `onStderr`. It places the descriptors as
   `readyKernelChild` does, calls `drain` once the child runs (after its exec, before it waits for the child's end),
-  then waits for the end as before, with `timeout` and `killSignal`.
+  then waits for the end, with `timeout` and `killSignal`.
 - **`drain` is the loop**: each pipe the child reads is written its `input` (`sendto`, non-blocking) and shut down
   (`SHUT_WR`); each pipe it writes is read (`recvfrom`, 64 KiB at a time) to its end, every byte kept for the caller's
   `output`; between, the realm blocks in `TreeSockets.poll` on every end still open, with the time left before
