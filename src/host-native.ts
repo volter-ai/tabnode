@@ -1,5 +1,5 @@
 /**
- * A process's native addons, as its kernel's substrate loads them (ADR-0011 §5).
+ * A process's native addons, as its kernel's substrate loads them (ADR-0011 §7).
  *
  * On Linux `dlopen(3)` maps a shared object into the process's address space and binds its imports. A tab's addon is a
  * WALI Node-API side module (browser-substrate ADR-0231), and the substrate's own dynamic linker places it in the

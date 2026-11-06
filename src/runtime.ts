@@ -15,7 +15,7 @@ import { VirtualFS } from './virtual-fs';
 import { rememberCompiledSource } from './error-source';
 import { attachVmScriptEnvironment, VmScriptPreparationCache } from './vm-script-state';
 import type { VmScriptObserver, VmScriptPhase } from './vm-script-state';
-import { loadNativeAddon } from './native-addon';
+import { dlopenNative } from './native-addon';
 import { startGuestLoop, withGuestExecution, guestExecutionActiveMs, enableGuestEntryAccount, guestEntryAccount, guestEntryKinds } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { installHttpParserModule } from './http-parser-module';
@@ -2740,6 +2740,18 @@ function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string, env?: Record<s
 }
 
 /**
+ * A native addon whose surface the holder answers in JavaScript, named by the package the addon belongs to (`bcrypt` ->
+ * a module with the binding's exports): that module's path, for `require` and `process.dlopen` alike, where the holder
+ * names one and it exists (ADR-0011 §1).
+ */
+function __substrateNativeStandIn(vfs: VirtualFS, path: string): string | undefined {
+  const native = (globalThis as { __browserRuntimeNativeStandIns?: Record<string, string> }).__browserRuntimeNativeStandIns;
+  const name = native ? Object.keys(native).find((each) => path.includes('/node_modules/' + each + '/')) : undefined;
+  const answer = name !== undefined ? native![name] : undefined;
+  return answer && vfs.existsSync(answer) ? answer : undefined;
+}
+
+/**
  * Node's `module` builtin is the `Module` class: every module's `require` is
  * `Module.prototype.require`, and resolution goes through
  * `Module._resolveFilename`, so a program that replaces either, Next's require
@@ -2980,8 +2992,9 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     ".ts": builtinHandler,
     ".mts": builtinHandler,
     ".cts": builtinHandler,
-    // Node's `.node` loader is `process.dlopen` of the file; the load step reads its bytes (ADR-0011).
-    ".node": builtinHandler,
+    // Node's `.node` loader (loader.js): `process.dlopen(module, filename)` of the run's process, read at the call, so
+    // a program's wrapper of it (the native-binding prelude's) is what loads (ADR-0011 §1).
+    ".node": (module: any, filename: string) => requireFor(module).__process.dlopen(module, filename),
   });
   Module._pathCache = Object.create(null);
   Module.builtinModules = moduleShim.builtinModules;
@@ -3303,12 +3316,7 @@ function createRequire(
     // load (ADR-0011), and a file that is no WALI Node-API module fails there
     // with `ERR_DLOPEN_FAILED`, on which a package that probes for its addon,
     // chokidar for fsevents, takes its portable path.
-    if (resolvedPath.endsWith('.node')) {
-      const __native = (globalThis as { __browserRuntimeNativeStandIns?: Record<string, string> }).__browserRuntimeNativeStandIns;
-      const __package = __native ? Object.keys(__native).find((name) => resolvedPath.includes('/node_modules/' + name + '/')) : undefined;
-      const __answer = __package !== undefined && __native ? __native[__package] : undefined;
-      if (__answer && vfs.existsSync(__answer)) resolvedPath = __answer;
-    }
+    if (resolvedPath.endsWith('.node')) resolvedPath = __substrateNativeStandIn(vfs, resolvedPath) ?? resolvedPath;
     if (moduleCache[resolvedPath]) {
       return moduleCache[resolvedPath];
     }
@@ -3384,10 +3392,6 @@ function createRequire(
   let preparedSourceEvidence: ((module: Module, filename: string, digest: string) => (() => void) | undefined) | undefined;
   const builtinLoad = (module: Module, resolvedPath: string): void => {
     __substrateLoadPhase(process, vfs, 'read');
-    if (resolvedPath.endsWith('.node')) {
-      loadNativeAddon(module, resolvedPath, vfs.readFileSync(resolvedPath) as Uint8Array);
-      return;
-    }
     const Mod = __substrateModule();
     const resolvedAs = __substrateLoading.get(module)?.resolvedAs;
     // A module's source, and the format it is compiled in, are the load step.
@@ -4081,6 +4085,7 @@ function createRequire(
   };
   (require as any).__compileRaw = compileRaw;
   (require as any).__builtinLoad = builtinLoad;
+  (require as any).__process = process;
   (require as any).__resolveRaw = (id: string) => resolveModule(id, currentDir);
   // The doors `module.register`'s chain reaches this loader through: the run's
   // hooks, the engine's own resolution in the URL terms a hook speaks, the
@@ -4250,37 +4255,39 @@ export class Runtime {
     // Create fs shim with cwd getter for relative path resolution
     this.fsShim = createFsShim(vfs, () => this.process.cwd());
     this.options = options;
-    // Node's `process.dlopen(module, filename[, flags])`, which a loader calls
-    // in place of `require` when it wants its own flags: Prisma's library
-    // engine loads `libquery_engine-*.node` this way. The load is the one a
-    // `require` of that path makes: through the run's resolve hooks, where an
-    // image's binding map answers the addon with its prepared export, and
-    // otherwise the `.node` extension's, which loads a WALI Node-API module
-    // (ADR-0011) or fails ERR_DLOPEN_FAILED as Node's dlopen fails. The flags
-    // name dynamic-linker modes and have nothing to act on here.
+    // Node's `process.dlopen(module, filename[, flags])` (ADR-0011 §1), which a loader calls in place of `require`
+    // when it wants its own flags (Prisma's library engine), and which the `.node` extension calls for `require`. Its
+    // checks are DLOpen's; a host stand-in's package is answered as `require` answers it; every other path is opened
+    // in this process and its initializer called on this target's exports, however often the file was opened before.
+    // The binding map is the substrate prelude's wrapper of this function. The flags name dynamic-linker modes and
+    // have nothing to act on here.
     Object.defineProperty(this.process, 'dlopen', {
       configurable: true, enumerable: true, writable: true,
-      value: (target: { exports?: unknown }, filename: string, _flags?: number): void => {
-        if (target === null || typeof target !== 'object') {
-          throw Object.assign(new TypeError('The "module" argument must be of type object'), { code: 'ERR_INVALID_ARG_TYPE' });
+      value: (...args: unknown[]): void => {
+        if (args.length < 2) {
+          throw Object.assign(new TypeError('process.dlopen needs at least 2 arguments'), { code: 'ERR_MISSING_ARGS' });
         }
-        if (typeof filename !== 'string') {
-          throw Object.assign(new TypeError('The "filename" argument must be of type string'), { code: 'ERR_INVALID_ARG_TYPE' });
+        if (args.length > 2) {
+          try { void (+(args[2] as number) | 0); }
+          catch { throw Object.assign(new TypeError('flag argument must be an integer.'), { code: 'ERR_INVALID_ARG_TYPE' }); }
         }
-        const file = pathShim.resolve(this.process.cwd(), filename);
-        const load = createRequire(this.vfs, this.fsShim, this.process, pathShim.dirname(file), this.moduleCache, this.options, this.processedCodeCache);
-        try {
-          target.exports = load(file);
-        } catch (error) {
-          // Node's dlopen of a missing file fails as the dynamic linker
-          // reports it (the engine is linux to its guests), under
-          // ERR_DLOPEN_FAILED, which loaders read; require's MODULE_NOT_FOUND
-          // is a different failure. An addon that exists and cannot load
-          // already fails as ERR_DLOPEN_FAILED, and a prepared refusal keeps
-          // its own named reason.
-          if ((error as { code?: unknown } | null)?.code !== 'MODULE_NOT_FOUND') throw error;
-          throw Object.assign(new Error(file + ': cannot open shared object file: No such file or directory'), { code: 'ERR_DLOPEN_FAILED' });
+        // DLOpen's `ToObject(module)` and `ToObject(module.exports)`.
+        const object = (value: unknown): object => {
+          if (value === null || value === undefined) throw new TypeError('Cannot convert undefined or null to object');
+          return Object(value) as object;
+        };
+        const target = object(args[0]) as { exports?: unknown; filename?: unknown };
+        const exports = object(target.exports);
+        const file = pathShim.resolve(this.process.cwd(), `${args[1] as string}`);
+        const standIn = __substrateNativeStandIn(this.vfs, file);
+        if (standIn !== undefined) {
+          target.exports = createRequire(this.vfs, this.fsShim, this.process, pathShim.dirname(file), this.moduleCache, this.options, this.processedCodeCache)(standIn);
+          return;
         }
+        let bytes: Uint8Array;
+        try { bytes = this.vfs.readFileSync(file) as Uint8Array; }
+        catch { throw Object.assign(new Error(file + ': cannot open shared object file: No such file or directory'), { code: 'ERR_DLOPEN_FAILED' }); }
+        dlopenNative(this.process, target, exports, file, bytes);
       },
     });
 

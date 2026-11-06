@@ -1,11 +1,12 @@
 /**
- * A thread's side of an addon's imports (ADR-0011 §3, §4), made in the thread's own worker, which the substrate's
+ * A thread's side of an addon's imports (ADR-0011 §4, §5), made in the thread's own worker, which the substrate's
  * dynamic linker starts for the addon's process and in which it instantiates the addon again (`TREE_NATIVE`,
  * `host-native.ts`). The worker imports this module alone, with none of the engine.
  *
  * The imports are emnapi's child-thread module's (`createNapiModule({ childThread: true })`), whose one message to
- * the main thread, `uv_async_send`'s, goes to the load's queue (`native-queue.ts`). Node-API allows a thread no other
- * call into JavaScript, so every `napi` and `emnapi` import here aborts, as `napi_fatal_error` does.
+ * the main thread, `uv_async_send`'s (its callback and data), goes to the load's queue (`native-queue.ts`). Node-API
+ * allows a thread no other call into JavaScript, so every `napi` and `emnapi` import here aborts, as
+ * `napi_fatal_error` does.
  */
 import { createNapiModule } from '@emnapi/core';
 import { sendNative } from './native-queue';
@@ -23,7 +24,7 @@ export function threadImports(queue: SharedArrayBuffer): WebAssembly.Imports {
     postMessage: (message: AsyncSend): void => {
       const send = message?.__emnapi__;
       if (send?.type !== 'async-send') return;
-      sendNative(queue, 0, send.payload?.callback ?? 0, send.payload?.data ?? 0);
+      sendNative(queue, send.payload?.callback ?? 0, send.payload?.data ?? 0);
     },
   });
   const abortAll = (module: 'napi' | 'emnapi'): WebAssembly.ModuleImports =>
