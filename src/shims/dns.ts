@@ -16,6 +16,9 @@
  * lookup, and one c-ares refuses is `EBADNAME` to a query (ADR-0009 §3).
  */
 import { heldWork } from '../host-globals';
+import { queueGuestNextTick } from '../guest-loop';
+import { adaToAscii } from '../node-lib/binding/ada_idna';
+import { libRequire } from '../node-lib/require-hook';
 import { AsyncLocalStorage } from './async_hooks';
 import {
   callingSockets, captureCallingSockets, ipv6Text, linux, socketAddress, socketAddressBuffer, type TreeSockets,
@@ -150,13 +153,24 @@ const RECORD_TYPES: Record<string, number> = {
 };
 
 /**
- * The name Node hands its resolver libraries: `ada::idna::to_ascii` of what it was given (`cares_wrap.cc`), the WHATWG
- * domain-to-ASCII a URL's host takes, which lowercases it; a name that does not convert is the empty name, as
- * `to_ascii` answers it.
+ * The name Node hands its resolver libraries (ADR-0009 §3): Ada's own `ada::idna::to_ascii` of what it was given
+ * (`cares_wrap.cc` 1976, 1797), cut at its first NUL, since Node passes it to them as `name.c_str()`.
  */
 function asciiName(hostname: string): string {
-  if (!/[^\x00-\x7f]/u.test(hostname)) return hostname.toLowerCase();
-  try { return new URL(`http://${hostname}/`).hostname; } catch { return ''; }
+  const ascii = adaToAscii(hostname);
+  const nul = ascii.indexOf('\0');
+  return nul < 0 ? ascii : ascii.slice(0, nul);
+}
+
+/** Node's own `isIP` (`internal/net.js`), which `lib/dns.js` answers a literal by. */
+function nodeIsIP(hostname: string): number {
+  return (libRequire('internal/net') as { isIP(value: string): number }).isIP(hostname);
+}
+
+/** Node's own `validateStringWithoutNullBytes` (`internal/validators.js`), which `lib/dns.js` checks a name with. */
+function validateHostname(hostname: unknown): void {
+  (libRequire('internal/validators') as { validateStringWithoutNullBytes(value: unknown, name: string): void })
+    .validateStringWithoutNullBytes(hostname, 'hostname');
 }
 
 /**
@@ -335,24 +349,28 @@ function lookupWithHosts(
   // Node's net.js makes a listener's handle in this callback (listen(port, host)): it runs in the caller's process.
   const cb = inCallersContext(given as LookupCallback) as LookupCallback | LookupAllCallback;
   const sockets = callingSockets();
-  if (hostname && typeof hostname !== 'string') throw Object.assign(new TypeError('The hostname argument must be a string'), { code: 'ERR_INVALID_ARG_TYPE' });
+  if (hostname) validateHostname(hostname);
   const requested = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family ?? 0;
   if (![0, 4, 6].includes(requested)) throw Object.assign(new TypeError(`Invalid address family: ${requested}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  // Node's own answers (lib/dns.js 204-223), on a later tick: an empty name is null, and a string Node's isIP takes
+  // is itself, in its family.
+  if (!hostname) {
+    queueGuestNextTick(() => {
+      if (options.all) (cb as LookupAllCallback)(null, []);
+      else (cb as unknown as (err: null, address: null, family: number) => void)(null, null, requested === 6 ? 6 : 4);
+    });
+    return;
+  }
+  const literal = nodeIsIP(hostname);
+  if (literal) {
+    queueGuestNextTick(() => {
+      if (options.all) (cb as LookupAllCallback)(null, [{ address: hostname, family: literal }]);
+      else (cb as LookupCallback)(null, hostname, literal);
+    });
+    return;
+  }
 
   answerLater(() => {
-    if (!hostname) {
-      if (options.all) (cb as LookupAllCallback)(null, []);
-      else (cb as LookupCallback)(null, undefined, requested === 6 ? 6 : 4);
-      return;
-    }
-    // An IP literal is its own answer, in its own family, as Node's lookup short-circuits it: `::` must stay IPv6.
-    const family = literalFamily(hostname);
-    if (family) {
-      const address = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
-      if (options.all) (cb as LookupAllCallback)(null, [{ address, family }]);
-      else (cb as LookupCallback)(null, address, family);
-      return;
-    }
     // The name getaddrinfo is given (Node's to_ascii); musl refuses an empty one, or one of 255 bytes or more, before
     // it reads any source (ADR-0009 §3).
     const ascii = asciiName(hostname);
@@ -511,19 +529,29 @@ export function getDefaultResultOrder(): string {
 /** The promise forms over one lookup and one resolve family. */
 function promisesOver(doLookup: typeof lookup, resolvers: ReturnType<typeof resolveFunctions>, servers: { get(): string[]; set(servers: string[]): void }) {
   const promises = {
-    lookup: (hostname: string, options?: number | LookupOptions) => new Promise((resolve, reject) => {
-      if (typeof options === 'object' && options?.all) {
-        doLookup(hostname, options, ((err: Error | null, addresses?: Array<{ address: string; family: number }>) => {
+    lookup: (hostname: string, options?: number | LookupOptions) => {
+      if (hostname) validateHostname(hostname);
+      return new Promise((resolve, reject) => {
+        // Node's own answers (internal/dns/promises.js 138-150): an empty name is null, a literal is itself.
+        const all = typeof options === 'object' && options?.all === true;
+        const family = typeof options === 'number' ? options
+          : options?.family === 'IPv4' ? 4 : options?.family === 'IPv6' ? 6 : options?.family ?? 0;
+        if (!hostname) { resolve(all ? [] : { address: null, family: family === 6 ? 6 : 4 }); return; }
+        const literal = nodeIsIP(hostname);
+        if (literal) { const result = { address: hostname, family: literal }; resolve(all ? [result] : result); return; }
+        if (typeof options === 'object' && options?.all) {
+          doLookup(hostname, options, ((err: Error | null, addresses?: Array<{ address: string; family: number }>) => {
+            if (err) reject(err);
+            else resolve(addresses || []);
+          }) as LookupAllCallback);
+          return;
+        }
+        doLookup(hostname, options ?? {}, (err, address, family) => {
           if (err) reject(err);
-          else resolve(addresses || []);
-        }) as LookupAllCallback);
-        return;
-      }
-      doLookup(hostname, options ?? {}, (err, address, family) => {
-        if (err) reject(err);
-        else resolve({ address, family });
+          else resolve({ address, family });
+        });
       });
-    }),
+    },
     resolve: (hostname: string, rrtype = 'A') => {
       checkedRrtype(rrtype);
       return new Promise<string[]>((promiseResolve, promiseReject) => {

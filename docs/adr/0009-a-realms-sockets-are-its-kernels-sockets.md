@@ -207,26 +207,42 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
     written back and woken on the realm's loop through the load's queue. libc then does everything a lookup is: its
     name checks, numeric forms, `/etc/hosts`, search list, `res_msend` and result selection, reading the process's
     `/etc/hosts` and `/etc/resolv.conf` through its kernel's files and asking through its kernel's sockets (the
-    namespace's resolver, browser-substrate ADR-0227 §8). Node's own front stays in JavaScript, as Node has it: the
-    empty-name and IP-literal answers (`lib/dns.js` 204-223), `to_ascii` of the name (`cares_wrap.cc` 1976), `EAI_*`
-    as Node names it (`EAI_NONAME` and `EAI_NODATA` both `ENOTFOUND`, `lib/internal/errors.js` 812-816), and `order`.
+    namespace's resolver, browser-substrate ADR-0227 §8). Node's own front stays as Node has it, and is Node's own
+    code wherever the engine holds it rather than a re-derivation: the name is validated as `lib/dns.js` validates it
+    (`validateStringWithoutNullBytes`, `internal/validators.js`); an empty name answers `null` on a later tick, on the
+    callback door as `lib/dns.js` 204-212 and on the promise door as `internal/dns/promises.js` 138-142; an IP literal
+    is answered as given where Node's own `isIP` (`internal/net.js`, through `libRequire`) recognises the original
+    string (`lib/dns.js` 214-223); the name is converted by Ada's own `ada::idna::to_ascii` (`cares_wrap.cc` 1976),
+    compiled to WebAssembly (below), and cut at its first NUL, since Node hands the converted name to its libraries as
+    `name.c_str()` (`cares_wrap.cc` 1797-1803, 2020-2021); `EAI_*` is named as Node names it (`EAI_NONAME` and `EAI_NODATA` both
+    `ENOTFOUND`, `lib/internal/errors.js` 812-816); and `order` is applied as Node applies it.
+  - *`to_ascii` is Ada's own code:* the `ada::idna` section of Node v24.21.0's `deps/ada` amalgamation (Ada 4.0.0,
+    `ada.h` 32-240, `ada.cpp` 140-6720; pure C++, no system calls), compiled by wasi-sdk 34.0 to a plain WebAssembly
+    module that a process instantiates synchronously on its first lookup (`src/node-lib/binding/ada-idna-wasm.ts`,
+    `scripts/build-ada-idna-wasm.sh`). Its one import, WASI's `fd_write` (an assertion's message), answers `ENOSYS`.
+    It is built without `ADA_USE_SIMDUTF`, so its UTF-8 transcoding is Ada's own rather than simdutf's; the input is
+    always the well-formed UTF-8 a JavaScript string encodes to, as Node's `Utf8Value` makes it. `url.domainToASCII`
+    is a different call in Node (`ada::url::set_hostname` on `ws://x`, `node_url.cc` 224-249), the WHATWG URL host
+    parser the realm's `URL` implements, and stays the realm's.
     **Waiting on `TREE_NATIVE` with native threads**, the kernel lane's.
   - *Until then (today):* after Node's front, a lookup reads the process's `/etc/hosts` (an alias matched without
     case and without a trailing dot) and then asks its resolver over the process's kernel UDP sockets, A then AAAA,
     each server in order for `attempts` tries of `timeout` seconds (resolv.conf's `options`, 5 s and 2 by default). A
-    name no query can carry is refused before anything is sent, never cut or dropped: an empty label, a label over 63
-    bytes, or more than 253 bytes after one trailing dot is `ENOTFOUND` (errno -3008), as `getaddrinfo` answers it.
-    NXDOMAIN is `ENOTFOUND` -3008, NOERROR with no address of the family `ENOTFOUND` -3007, and a server that fails or
-    does not answer `EAI_AGAIN`. The engine answers no name itself: `localhost` resolves from the hosts line the image
-    carries, or from the resolver.
+    name no query can carry is refused before anything is sent, never cut or dropped: an empty name, one of 255 bytes
+    or more, an empty label, a label over 63 bytes, or more than 253 bytes after one trailing dot is `ENOTFOUND`
+    (errno -3008), as `getaddrinfo` answers it. NXDOMAIN is `ENOTFOUND` -3008, NOERROR with no address of the family
+    `ENOTFOUND` -3007, and a server that fails or does not answer `EAI_AGAIN`. The engine answers no name itself:
+    `localhost` resolves from the hosts line the image carries, or from the resolver.
   - *A realm with no kernel* (a tree that offers no `TREE_SOCKETS`, so no libc to delegate to) answers IP literals and
     its `/etc/hosts`, and nothing else, as a Linux system without a resolver does: any other name is `EAI_AGAIN`.
-  - *Queries* (`dns.resolve*`) keep the shim's own exchange until a separate decision on c-ares: each server in order,
-    `attempts` tries of `timeout` seconds; NXDOMAIN `ENOTFOUND`, NOERROR with no record of the type `ENODATA`, a
-    server's failure c-ares's name for it (`ESERVFAIL`, `EREFUSED`, `ENOTIMP`, `EFORMERR` by its rcode,
-    `ECONNREFUSED`, `ETIMEOUT`); A and AAAA records are read, and a held name answers `ENODATA` for any other type. A
-    name c-ares refuses (an empty label other than one trailing dot, a label over 63 bytes, more than 255 bytes) is
-    `EBADNAME` (`dns.BADNAME`, "Misformatted host name", `dns.md` 1629) and sends nothing.
+  - *Queries* (`dns.resolve*`) keep the shim's own exchange until a separate decision on c-ares, which by the same
+    principle is c-ares itself compiled to WebAssembly, not a port: each server in order, `attempts` tries of
+    `timeout` seconds; NXDOMAIN `ENOTFOUND`, NOERROR with no record of the type `ENODATA`, a server's failure c-ares's
+    name for it (`ESERVFAIL`, `EREFUSED`, `ENOTIMP`, `EFORMERR` by its rcode, `ECONNREFUSED`, `ETIMEOUT`); A and AAAA
+    records are read, and a held name answers `ENODATA` for any other type. The name is converted and cut at its first
+    NUL as a lookup's is, and one with an empty label other than one trailing dot, a label over 63 bytes or more than
+    255 bytes is refused `EBADNAME` (`dns.BADNAME`, "Misformatted host name", `dns.md` 1629) and sends nothing. The rest
+    of c-ares's name grammar, its escapes (`ares_dns_name.c`), is that decision's, not the shim's.
   - A resolv.conf naming no server is the local one (127.0.0.1).
 - **`os.networkInterfaces`**: `getifaddrs`, by libuv's `uv_interface_addresses`: interfaces up and running, their IPv4
   and IPv6 addresses, `internal` for a loopback interface, `mac` from the hardware address, `scopeid` from
@@ -312,7 +328,8 @@ Node's IPC channel is an AF_UNIX stream socket, and libuv sends a handle over it
 A tree with no `TREE_SOCKETS` (`VirtualFS`, a library user's) is a process on a Linux built without IPv4 and IPv6
 (`CONFIG_INET` unset): `socket(AF_INET)` and `socket(AF_INET6)` are `EAFNOSUPPORT`, so a listen, connect, bind or send
 fails `EAFNOSUPPORT` where libuv makes the socket; there are no interface addresses (`os.networkInterfaces()` is `{}`);
-a name resolves from `/etc/hosts`, `localhost` and literals, and otherwise is `EAI_AGAIN` (no server can be asked); a
+a name resolves from IP literals and its `/etc/hosts` only, and otherwise is `EAI_AGAIN` (no server can be asked;
+`localhost` is its hosts file's, §3); a
 TLS connect is refused. It has no AF_UNIX either (`CONFIG_UNIX` unset): a pipe's bind or connect to a path is
 `EAFNOSUPPORT`, and its IPC channels and stdio pipes are the engine's pairing. The engine makes no loopback for it: a loopback of the engine's would answer for a process its
 host did not connect, a namespace the kernel does not hold.
