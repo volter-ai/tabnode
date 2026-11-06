@@ -4,6 +4,19 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
+- **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
+  offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
+  table: a `'pipe'` (IPC or not) a socketpair with 64 KiB buffers, `'inherit'` and a number the parent's descriptor,
+  a stream its descriptor, `'ignore'` at 0 to 2 /dev/null. `RunRequest.kernelDescriptors` lists them as `{ fd, from }`;
+  a child a host runs as its own process is started with them (`NodeProcessLaunch.descriptors`, the new
+  `ChildProcessHostRequest.kernelDescriptors`), its fds 0 to 2 and its pipe ends blocking, and the parent closes the
+  ends it made for it after the start and relays nothing of them (no sink, no input). A child the engine runs in its
+  own realm is served from the parent's ends.
+- **A terminal's mode is its host's termios** (ADR-0010 §3). `RunStreams.terminal.setRawMode(false | 'raw' | 'io')`
+  is fd 0's mode as `uv_tty_set_mode` sets it; `process.stdin.setRawMode` and a `TTY` on fd 0 set it as Node's
+  `tty.ReadStream.setRawMode` does (validation, `'error'` with an `ErrnoException`, `isRaw`, `rawMode`), and a run's end
+  puts a mode it set back to normal, as Node's `ResetStdio` does. A `TTY` on fd 0 to 2 answers `getWindowSize` from the
+  run's terminal.
 - **The prepared format is `tabnode-prepared-8`, a minor release, 0.18.0** (CONTRIBUTING: a change to the lowered text
   moves the format). A guest body's free `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent`,
   `MessageEvent`, `URL` and `WebAssembly` are now rewritten to the guest's, so the same source lowers to different

@@ -187,7 +187,7 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   bind leaves no socket. `listen` starts the handle and accepts as TCP's does; a connect completes through its
   request on a later turn (`ECANCELED` where the handle closed first); `fchmod` adds read or write for everyone to the
   bound path's mode (`uv_pipe_chmod`); `close` unlinks a path the handle bound. A pipe opened on an AF_UNIX descriptor of its
-  process is that socket. The rest of `stream.c` is the kernel stream's (§4). A stdio pipe is the engine's pairing.
+  process is that socket. The rest of `stream.c` is the kernel stream's (§4). A stdio pipe is a socketpair as a channel is (ADR-0010).
 - **`udp_wrap`, and Node's own `dgram.js` and `internal/dgram.js`** (v24.21.0, vendored unmodified) in place of the
   stub: `bind` (`SO_REUSEADDR` for `UV_UDP_REUSEADDR`, `SO_REUSEPORT`, `IPV6_V6ONLY`), `connect`, `disconnect`
   (a connect to `AF_UNSPEC`), `send` tried at once (`uv_udp_try_send`: taken whole it answers its size plus one) and

@@ -150,7 +150,14 @@ export interface RunOptions {
    * kill and lookup go through it (`installRunRegistry`).
    */
   registry?: ProcessRegistry;
-  terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void };
+  /**
+   * The run's terminal: its size, which the host keeps current (its `TIOCGWINSZ`), and its resizes. `setRawMode` is
+   * fd 0's mode as libuv's `uv_tty_set_mode` sets it (`'raw'` its raw termios, `'io'` `cfmakeraw`, false the termios
+   * before the first change), throwing an error whose `errno` is the negative errno where it cannot; the guest's
+   * `process.stdin.setRawMode` reaches it, and the run's end puts a mode it set back to normal (ADR-0010 §3).
+   */
+  terminal?: { columns: number; rows: number; onResize?: (listener: (columns: number, rows: number) => void) => () => void;
+    setRawMode?(mode: false | 'raw' | 'io'): void };
   /** Callback for streaming stdout chunks as they arrive (for long-running commands like vitest watch) */
   onStdout?: (data: string) => void;
   /** Callback for streaming stderr chunks as they arrive */

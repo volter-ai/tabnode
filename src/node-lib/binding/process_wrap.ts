@@ -17,7 +17,10 @@ import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials
  * stdio entry is paired with an end of its own here, so the child's writes to
  * fd 1 are reads on the parent's handle and the parent's writes to the stdin
  * handle are the child's fd 0 -- which is what a `uv_stdio_container_t` with
- * `UV_CREATE_PIPE` is.
+ * `UV_CREATE_PIPE` is. In a process with socket calls each entry is what
+ * libuv makes it in the parent's kernel table (a socketpair, the parent's
+ * descriptor, /dev/null) and the child is started with them at its numbers
+ * (ADR-0010).
  */
 import {
   LibuvStreamWrap, WriteWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
@@ -33,6 +36,9 @@ import {
 import { __runFor, type ProcessToken } from '../../process-tokens';
 import { withGuestCallback, queueBindingTask } from '../../guest-loop';
 import { handleForFd } from './fds';
+import { KernelStreamWrap, kHandleFd } from './kernel_stream';
+import { callingSockets, callingTree, linux, type TreeSockets } from '../../host-sockets';
+import { treeDescriptorsOf, type TreeDescriptors } from '../../tree-descriptors';
 import { descriptorWriter, type DescriptorWriter } from './fs';
 import { TTY, type TerminalState } from './tty_wrap';
 
@@ -117,6 +123,20 @@ export interface RunRequest {
    * number the child reads or writes it by, with the child's end of it.
    */
   descriptors: { fd: number; pipe: Pipe }[];
+  /**
+   * The child's descriptors as its own process is started with them, where the spawning process has socket calls
+   * (ADR-0010 §1): each `fd` of the child's table is the parent's descriptor `from` (a socketpair's child end, an
+   * inherited or named descriptor, a stream's, /dev/null), which the child's fork copies. Empty where the process has
+   * none.
+   */
+  kernelDescriptors: { fd: number; from: number }[];
+  /**
+   * The child is started as its own process with `kernelDescriptors` (a host runs it, ADR-0010 §2): called by the
+   * runner once the child is forked and before anything of it reaches its host. Each of its fds 0 to 2 and each pipe end
+   * made for it becomes blocking, and the parent closes its copies of what it made for the child, so it serves none of
+   * them. Absent where `kernelDescriptors` is empty.
+   */
+  handOver?(): void;
   /** Called once, when the run has ended. */
   exit(code: number, signal: string | null): void;
 }
@@ -159,6 +179,9 @@ export function setProcessRunner(next: ProcessRunner): void {
 }
 
 let nextAsyncId = 1;
+
+/** The `open(2)` modes `uv__process_child_init` opens /dev/null with: read-only for fd 0, read-write for 1 and 2. */
+const O_RDONLY = 0, O_RDWR = 2;
 
 /** `envPairs` is `KEY=value` strings; the engine's shell takes a record. */
 function environmentOf(envPairs: string[] | undefined): Record<string, string> {
@@ -254,6 +277,8 @@ export class Process implements OwnedHandle {
   private farEnds = new Map<number, TTY | Pipe>();
   /** Writers holding their own reference to a parent's description (fd stdio), released at the child's end. */
   private heldDescriptions: DescriptorWriter[] = [];
+  /** The /dev/null descriptors opened in the parent's table for the child's ignored fds 0 to 2, until its start. */
+  private nullFiles: { files: TreeDescriptors; fd: number }[] = [];
   /** The file this process was spawned from, for the instrument below. */
   private spawned = '';
   private readonly asyncId = nextAsyncId++;
@@ -304,6 +329,9 @@ export class Process implements OwnedHandle {
     this.stdio = options.stdio ?? [];
     this.spawned = options.file;
 
+    // The spawning process's socket calls: where it has them its descriptors are a kernel's, and the child's stdio is
+    // made in its table as libuv makes it.
+    const sockets = callingSockets();
     const request: RunRequest = {
       credentials,
       ...(uid != null || gid != null ? { runAs: credentials } : {}),
@@ -318,6 +346,8 @@ export class Process implements OwnedHandle {
       stderrIsPipe: false,
       stdinIsPipe: false,
       descriptors: [],
+      kernelDescriptors: [],
+      ...(sockets ? { handOver: () => { this.handOver(request.kernelDescriptors, sockets); } } : {}),
       exit: (code, signal) => { this.reportExit(code, signal); },
     };
 
@@ -341,11 +371,18 @@ export class Process implements OwnedHandle {
           continue;
         }
       }
-      const far = this.pairFarEnd(entry, index);
+      const far = this.pairFarEnd(entry, index, sockets);
       if (typeof far === 'number') {
-        for (const held of this.heldDescriptions.splice(0)) held.release?.();
         this.closeFarEnds();
         return far;
+      }
+      if (sockets) {
+        const from = this.placedFrom(entry, index, far, sockets);
+        if (from !== null && from < 0) {
+          this.closeFarEnds();
+          return from;
+        }
+        if (from !== null) request.kernelDescriptors.push({ fd: index, from });
       }
       if (entry.ipc) {
         if (far) {
@@ -380,7 +417,6 @@ export class Process implements OwnedHandle {
         const inherited = inheritedWriter(entry.fd ?? index, ownerOf(this));
         // A descriptor the caller names and does not hold fails the spawn (`spawn EBADF`), as libuv's does.
         if (inherited === null && (entry.fd ?? index) > 2) {
-          for (const held of this.heldDescriptions.splice(0)) held.release?.();
           this.closeFarEnds();
           return UV_EBADF;
         }
@@ -412,10 +448,12 @@ export class Process implements OwnedHandle {
     }
     // Reference changes after initialization also govern the owned child run.
     if (!handleHasRef(this)) this.run.setRef?.(false);
+    this.closeNullFiles();
     // The number the parent reads off the handle is the child's own
     // `process.pid`, made at its fork, as it is in Node.
     this.pid = this.run.pid;
-    if (stdinFar) this.readStdinFrom(stdinFar);
+    // A child that reads its own fd 0 was handed its end at its hand-over, which closed it here.
+    if (stdinFar && !stdinFar.closed) this.readStdinFrom(stdinFar);
     return 0;
   }
 
@@ -441,21 +479,83 @@ export class Process implements OwnedHandle {
   /**
    * The other half of a `pipe` entry: the end the child holds. It belongs to
    * no run -- the parent holds the handle Node gave it and the child holds the
-   * one it opens; this is the wire between them. A kernel IPC pipe's is the
-   * other end of a `socketpair` in the parent's table, which the child's fork
-   * copies (uv_spawn's `UV_CREATE_PIPE`); a failure to make it is the spawn's.
+   * one it opens; this is the wire between them. In a process with socket
+   * calls it is the other end of a `socketpair` in the parent's table, which
+   * the child's fork copies (uv_spawn's `UV_CREATE_PIPE`), whether the entry
+   * is stdio or IPC; a failure to make it is the spawn's.
    */
-  private pairFarEnd(entry: StdioEntry, index: number): Pipe | number | null {
+  private pairFarEnd(entry: StdioEntry, index: number, sockets: TreeSockets | undefined): Pipe | number | null {
     if (entry.type !== 'pipe' && entry.type !== 'overlapped') return null;
     if (!entry.handle) return null;
-    const far = new Pipe(entry.ipc ? pipeConstants.IPC : pipeConstants.SOCKET);
-    __adoptHandle(far, null);
-    if (entry.handle instanceof Pipe && entry.handle.kernelBacked) {
+    if (sockets && entry.handle instanceof Pipe) {
+      const far = entry.ipc ? new Pipe(pipeConstants.IPC) : Pipe.forDescriptor();
+      __adoptHandle(far, null);
       const status = entry.handle.socketpair(far);
       if (status !== 0) { far.close(); return status; }
       this.farEnds.set(index, far);
-    } else LibuvStreamWrap.pair(entry.handle, far);
+      return far;
+    }
+    const far = new Pipe(entry.ipc ? pipeConstants.IPC : pipeConstants.SOCKET);
+    __adoptHandle(far, null);
+    LibuvStreamWrap.pair(entry.handle, far);
     return far;
+  }
+
+  /**
+   * The parent's descriptor the child's fd `index` is, as `uv__process_init_stdio` picks it (ADR-0010 §1): a
+   * socketpair's child end; an `inherit` or numbered entry's descriptor (a number the parent's run was started with as
+   * a kernel stream being that stream's), refused with its `EBADF` where the parent holds none; a kernel stream's
+   * (`uv__stream_fd`); for an ignored fd 0 to 2, /dev/null opened for it (`uv__process_child_init`). Null where the
+   * child is given nothing at `index`; a negative errno where the spawn fails.
+   */
+  private placedFrom(entry: StdioEntry, index: number, far: Pipe | null, sockets: TreeSockets): number | null {
+    if (far) return far.kernelBacked ? far[kHandleFd] : null;
+    if (entry.type === 'inherit' || entry.type === 'fd') {
+      const fd = entry.fd ?? index;
+      const held = handleForFd(fd);
+      const from = held instanceof KernelStreamWrap && held.kernelBacked ? held[kHandleFd] : fd;
+      const flags = sockets.fcntl(from, linux.F_GETFL, 0);
+      return flags < 0 ? flags : from;
+    }
+    if (entry.type === 'wrap') {
+      const handle = entry.handle;
+      return handle instanceof KernelStreamWrap && handle.kernelBacked && handle[kHandleFd] >= 0 ? handle[kHandleFd] : null;
+    }
+    if (entry.type !== 'ignore' || index > 2) return null;
+    const files = treeDescriptorsOf(callingTree());
+    if (!files) return null;
+    try {
+      const fd = files.open('/dev/null', index === 0 ? O_RDONLY : O_RDWR, 0);
+      this.nullFiles.push({ files, fd });
+      return fd;
+    } catch (cause) {
+      const errno = (cause as { errno?: unknown } | null)?.errno;
+      return typeof errno === 'number' && errno !== 0 ? -Math.abs(errno) : UV_EBADF;
+    }
+  }
+
+  /**
+   * The child is its own process, started with `placed` (ADR-0010 §2): each of its fds 0 to 2 and each socketpair end
+   * made for it is made blocking, as `uv__process_child_init` and `uv_socketpair(..., 0, 0)` leave them, on the
+   * parent's number for the description; then the parent closes the ends it made for the child, whose fork holds its
+   * own copies, as libuv's parent closes a child's end after the fork.
+   */
+  private handOver(placed: readonly { fd: number; from: number }[], sockets: TreeSockets): void {
+    const ends = [...this.farEnds.values()].filter((far): far is Pipe => far instanceof Pipe && far.kernelBacked);
+    const endFds = new Set(ends.map(far => far[kHandleFd]));
+    for (const { fd, from } of placed) {
+      if (fd > 2 && !endFds.has(from)) continue;
+      const flags = sockets.fcntl(from, linux.F_GETFL, 0);
+      if (flags >= 0 && (flags & linux.O_NONBLOCK) !== 0) sockets.fcntl(from, linux.F_SETFL, flags & ~linux.O_NONBLOCK);
+    }
+    for (const far of ends) far.close();
+  }
+
+  /** The /dev/null descriptors opened for the child: its fork holds its copies once it has started. */
+  private closeNullFiles(): void {
+    for (const { files, fd } of this.nullFiles.splice(0)) {
+      try { files.close(fd); } catch { /* a descriptor already gone is closed */ }
+    }
   }
 
   /** The far end of fd `index`, whoever holds it now. */
@@ -466,6 +566,7 @@ export class Process implements OwnedHandle {
   private closeFarEnds(): void {
     // The child's own references to the parent's descriptions it wrote (fd stdio) end with it.
     for (const writer of this.heldDescriptions.splice(0)) writer.release?.();
+    this.closeNullFiles();
     for (let index = 0; index < this.stdio.length; index += 1) {
       const far = this.farEndAt(index);
       if (!far) continue;

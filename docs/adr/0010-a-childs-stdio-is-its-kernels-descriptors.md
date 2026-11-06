@@ -85,8 +85,9 @@ A process whose tree offers no socket calls keeps the engine's pairing and its s
 
 The runner (`startChildRun`, `src/shims/child_process.ts`) knows at the start which child it hands to a host that
 runs it as its own process: a Node child the process host admits (`runHostedNode`), and any child the host's
-executor runs (every program but the engine's own Node). For such a child the start answers
-`StartedRun.startedWithDescriptors`, and:
+executor runs (every program but the engine's own Node). For such a child the runner calls `RunRequest.handOver`
+once the child is forked (the registry forks it when the runner numbers it) and before anything of it reaches the
+host, and:
 
 - **The host places them.** A Node child's `NodeProcessLaunch.descriptors` is `kernelDescriptors`; any other child's
   is `ChildProcessHostRequest.kernelDescriptors`, the same `{ fd, from }` records. The host makes the child ready as
@@ -95,10 +96,10 @@ executor runs (every program but the engine's own Node). For such a child the st
   `uv__process_child_init` makes 0 to 2 and as `uv_socketpair(..., 0, 0)` makes a pipe's child end: a host image
   writes its fd 1 with `write(2)` and reads its fd 0 with `read(2)` (ADR-0227 §7), which must block where a pipe is
   full or empty. The flag is the description's, so this is done on the parent's number for it.
-- **The parent closes what it made for the child** (each socketpair's child end and each `/dev/null`) once the
-  start has returned: the child's fork holds its own copies (the registry forks it when the runner numbers it, before
-  the start returns), as libuv's parent closes the child's end after `fork`. Node's handles keep only the parent's
-  ends, which read the child's output and EOF when the last copy of the child's end closes, as on Linux.
+- **The parent closes what it made for the child** at the hand-over (each socketpair's child end; each `/dev/null`
+  once the start has returned): the child's fork holds its own copies, as libuv's parent closes the child's end after
+  `fork`. Node's handles keep only the parent's ends, which read the child's output and EOF when the last copy of the
+  child's end closes, as on Linux.
 - **Nothing of a placed fd crosses the run's sinks.** The parent reads none of the child's fd 0 into `writeStdin`; a
   hosted Node child's `streams` carries no sink for an fd it was given (`onStdout`, `onStdoutBytes`, `onStderr`,
   `onStderrBytes`, `stderrIsPipe`, `stdinOpen`), and no input stream is made for its fd 0; a host executor's child is
@@ -150,6 +151,6 @@ of its own and reads its fd 0 as the kernel's `read(2)` delivers it.
   until the child ends and hands its output to `onStdout` and `onStderr`; with no blocking readiness call in
   `TreeSockets` (its `wait` is a promise), a realm blocked there cannot read its own ends, and a child that filled a
   64 KiB pipe would never end. Its stdio stays the host's door's, which is not the child stdio relay.
-- **Extrapolation:** that every child a host's executor runs is forked by the realm's registry before the start
-  returns (true of the substrate's `KernelRealmProcessRegistry`, read; not of a host that numbers a child later), so
-  the parent's close after the start never ends the child's copy.
+- **Extrapolation:** that every child a host's executor runs is forked by the realm's registry when the runner numbers
+  it (`mintPid`; true of the substrate's `KernelRealmProcessRegistry`, read; not of a registry that forks later), so
+  the parent's close at the hand-over never ends the child's copy.
