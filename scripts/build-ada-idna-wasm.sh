@@ -1,7 +1,8 @@
 #!/bin/bash
 # Builds src/node-lib/binding/ada-idna-wasm.ts: Ada's own `ada::idna::to_ascii`, from Node v24.21.0's deps/ada
 # (Ada 4.0.0), compiled to a plain WebAssembly module by wasi-sdk 34.0 (ADR-0009 §3). Every input is pinned by digest.
-# Ada's notice (its release LICENSE-MIT) is carried in THIRD-PARTY-NOTICES.md, "Ada notice".
+# Ada's notice (its release LICENSE-MIT) and its linked runtime's (wasi-libc, libc++, libc++abi, compiler-rt builtins)
+# are carried in THIRD-PARTY-NOTICES.md, "Ada notice" and "Ada module runtime notices".
 # Usage: scripts/build-ada-idna-wasm.sh
 # The script owns its scratch: a directory of its own from mktemp -d, removed by its EXIT trap however it ends.
 set -euo pipefail
@@ -56,6 +57,7 @@ sum=$(shasum -a 256 idna.wasm | cut -d' ' -f1)
   echo " *   bytes:   $bytes"
   echo " *   sha256:  $sum"
   echo " *   license: MIT, Copyright 2023 Yagiz Nizipli and Daniel Lemire; notice in THIRD-PARTY-NOTICES.md (\"Ada notice\")"
+  echo " *   runtime: wasi-libc, libc++, libc++abi, compiler-rt builtins; THIRD-PARTY-NOTICES.md (\"Ada module runtime notices\")"
   echo " */"
   echo "export const ADA_IDNA_WASM_BASE64 ="
   base64 -i idna.wasm | tr -d '\n' | fold -w 100 | sed "s/.*/  '&' +/;\$ s/ +\$/;/"

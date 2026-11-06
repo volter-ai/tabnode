@@ -6,6 +6,7 @@
  *   bytes:   109168
  *   sha256:  a57bc2569497be5d19be919cce876493acc9cdc526fd8b65662f6418fe157218
  *   license: MIT, Copyright 2023 Yagiz Nizipli and Daniel Lemire; notice in THIRD-PARTY-NOTICES.md ("Ada notice")
+ *   runtime: wasi-libc, libc++, libc++abi, compiler-rt builtins; THIRD-PARTY-NOTICES.md ("Ada module runtime notices")
  */
 export const ADA_IDNA_WASM_BASE64 =
   'AGFzbQEAAAABXw9gAX8Bf2ADf39/AX9gAX8AYAAAYAJ/fwBgA39/fwBgAn9/AX9gAAF/YAR/f39/AX9gBn9/f39/fwBgBH9/f38A' +
