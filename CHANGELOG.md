@@ -4,6 +4,13 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
+- **`stopProcess` is `kill(pid, 'SIGTERM')`** (ADR-0013 §1). It delivers SIGTERM to the named run: its listeners run,
+  else its default action ends it and `run()` settles with `exitCode: null, signal: 'SIGTERM'`, as a held run now does.
+  A run that receives no signals ends at once, as before.
+- **A program's stream under TLS is called in its caller's context** (ADR-0013 §2), as Node's `JSStreamSocket` calls
+  it: a write is one `write` of the whole buffer inside the writer's call, a chunk is read inside the stream's `data`
+  listener, `readStop` and `readStart` pause and resume it, `shutdown` ends it on a tick after a pending write, and an
+  error carries the stream's own code.
 - **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
   offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
   table: a `'pipe'` (IPC or not) a socketpair with 64 KiB buffers, `'inherit'` and a number the parent's descriptor,
