@@ -1,6 +1,6 @@
 # ADR-0011: A native addon is a WALI module of Node-API, loaded over the realm's kernel process
 
-Status: Proposed.
+Status: Accepted (design); not coded, waiting on the toolchain (Where the evidence stops).
 
 Date: 2026-11-06. Served: browser-substrate ADR-0218 §1, layer 4: "a native addon is its WebAssembly variant pack".
 The first consumer is Conduit's terminal in a tab, which needs node-pty's own C, built for WALI and loaded by Tabnode.
@@ -99,10 +99,35 @@ Nothing in the loader names a package; a variant is recognised by its own bytes.
   user memory), so an addon's system calls copy in and out of it as a WALI program's do. The realm's own `ks_` calls
   keep using the kernel scratch.
 
-### 3. Node-API over the engine's own values
+### 3. Node-API is emnapi's
 
-`napi_*` is implemented once, in the engine (`src/node-api/`), over the realm's JavaScript values, as Node implements
-it over V8's:
+*Amended (decisions fdd3a53d5):* the substrate already implements Node-API for addons through emnapi (ADR-0151's
+producer compiles addon variants with Emscripten and emnapi; sqlite3 is one). emnapi's runtime (`@emnapi/runtime`,
+`@emnapi/core`) answers Node's own wasm ABI (the `napi` imports, `napi_register_wasm_v1`) over JavaScript values and
+has a clang path beside Emscripten. So the loader takes emnapi's runtime as its Node-API implementation: the `napi`
+and `emnapi` imports are emnapi's, made by its `instantiateNapiModule` over the module and the process memory, and no
+second Node-API is written in the engine. A variant is therefore linked as emnapi's clang path links one (its
+`include/node` headers and its threaded library `emnapi-mt`, `-mexec-model=reactor`, `--import-memory
+--shared-memory`, exporting `napi_register_wasm_v1`, `emnapi_create_env`, `malloc` and `free`), for the WALI target.
+
+What the engine adds around it, and the parts emnapi cannot serve here:
+- **Threads are the kernel's tasks, not emnapi's workers** (a departure). emnapi's clang path makes a thread by WASI's
+  `thread-spawn` import and a worker its `onCreateWorker` makes, and wakes the main thread by that worker's messages.
+  A WALI module's `pthread_create` is WALI's `clone`, answered by a kernel task in a worker the substrate starts
+  (ADR-0227 §6), so `thread-spawn` is not offered and the thread side of the imports emnapi's threaded library needs
+  (its wakes of the main thread for `uv_async_send`, which its async work and thread-safe functions are built on) is
+  the engine's own, in that worker: a queue in the shared memory, `Atomics.notify` to wake the main side, and on the
+  main side `Atomics.waitAsync` (no timer) to run emnapi's callbacks on the realm's loop. Async work's pool and
+  thread-safe functions are then emnapi's own C over WALI's pthreads.
+- **One memory per process needs position-independent variants** (§2). emnapi's documented clang link is a reactor
+  at fixed addresses, so two such variants in one memory would overlap. A variant is loaded into the process memory
+  at its own base only where it is linked position-independent (`-fPIC`, `--experimental-pic -shared`, with
+  `emnapi-mt`, musl and its C++ runtime built PIC); emnapi's runtime is given that memory and the module's base, as it
+  is given any imported memory.
+- What §3's remainder says of handles, bytes, errors and the version is what emnapi's runtime does; the version the
+  loader accepts is still the engine's Node line's (v24.21.0).
+
+The original §3, kept as what emnapi's runtime must answer:
 - **Handles are indices.** A `napi_value` is an index into the current handle scope's table (0 reserved for NULL),
   freed when its scope closes; `napi_ref` is an index into a reference table holding a strong value, or a `WeakRef`
   when its count is 0; `napi_env` is one per loaded module. `napi_wrap`, `napi_add_finalizer` and external values run
@@ -156,9 +181,27 @@ Under a tree capability beside `TREE_SOCKETS` (`TREE_NATIVE`):
   and `js_native_api.h` (installed, v26.12.0, the wasm lines equal to v24.21.0's); node-pty's `src/unix/pty.cc`;
   browser-substrate ADR-0227 §2, §5.12 and §6, ADR-0132, ADR-0138, ADR-0218 §1 and `worker-memory.ts` at 7cd0f130e3d;
   Tabnode's `runtime.ts` addon paths at 5224b95.
-- **Not read:** how the WALI toolchain builds a `-shared` PIC module with its own musl and whether node-addon-api's
-  C++ (exceptions, `std::thread`) builds for it; whether the vfork of a host image keeps node-pty's `setuid`/`setgid`
-  in the child (§5.12's list does not name them).
+- **Read for the toolchain** (browser-substrate at 7cd0f130e3d), whether a WALI shared module with libc++, C++
+  exceptions and `std::thread` can be built today:
+  - *pthreads:* yes. The canonical `20261012-pthread` SDK's musl is built `-fPIC -pthread -matomics -mbulk-memory`
+    (`toolchains/wali/scripts/prepare-wali-musl.py`).
+  - *Position-independent modules:* the pinned clang-24 links them (ADR-0132's `--experimental-pic -pie`), and a
+    side module's form is written (`toolchains/wali/README.md`: "Side bodies use dylink.0 and import that
+    memory/table/stack"), but no recipe builds a `-shared` side module: the dlopen sysroot recipe "neither builds them
+    nor qualifies a load".
+  - *libc++, libc++abi, libunwind with Wasm exceptions and threads:* they exist only in Blender's program-local
+    sysroot overlay (`programs/blender/deps/build-sysroot.sh` stage 2, reused by MariaDB), built `-fwasm-exceptions
+    -pthread` at `-O0` with `CMAKE_POSITION_INDEPENDENT_CODE=OFF` and `LIBCXXABI_ENABLE_PIC=OFF`, with the
+    `__cpp_exception` tag object `cpp_exception.o`. Non-PIC archives cannot be linked into a `-shared` module.
+  - *emnapi's `emnapi-mt` library for the WALI target:* not built anywhere in the repository.
+  - *node-pty needs the C++ runtime whatever its exceptions:* it uses `std::thread` and `std::string`, and its
+    `src/unix/pty.cc` `throw`s `Napi::Error`, so `NAPI_DISABLE_CPP_EXCEPTIONS` does not remove C++ exceptions.
+  - **So it cannot be built today.** Missing, for the kernel lane's toolchain: a PIC build of libc++, libc++abi,
+    libunwind and `cpp_exception.o` (with `-fwasm-exceptions` and `-pthread`) in the SDK; `emnapi-mt` built PIC for
+    `wasm32-linux-muslwali`; and a recipe that links and records a `-shared` side module. The loader is not coded
+    until they exist.
+- **Not read:** whether the vfork of a host image keeps node-pty's `setuid`/`setgid` in the child (§5.12's list does
+  not name them; Conduit passes no credentials).
 - **Extrapolation:** that one memory per addon-loading process keeps the tab's region count where it is, since the
   substrate's terminal processes are few; and that the copy-back of addon-made buffers at call boundaries is cheap
   enough for a pty's traffic, which is small.
