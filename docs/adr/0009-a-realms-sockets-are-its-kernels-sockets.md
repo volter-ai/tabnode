@@ -197,8 +197,8 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   else queued for `POLLOUT`, `recvStart` delivering each datagram (`onmessage(nread, handle, buffer, rinfo)`), and the
   options as their socket options (`SO_BROADCAST`, `IP_TTL`, `IP_MULTICAST_TTL`, `IP_MULTICAST_LOOP`,
   `IP_MULTICAST_IF`, memberships, `SO_RCVBUF` and `SO_SNDBUF`).
-- **`dns`**: `/etc/hosts`, `localhost` (RFC 6761) and literals, then DNS over UDP to `/etc/resolv.conf`'s
-  nameservers in order, each tried `attempts` times for `timeout` seconds (resolv.conf's `options`, glibc's defaults 5
+- **`dns`**: a lookup is musl's `getaddrinfo`, which a WALI program gets (below), then DNS over UDP to
+  `/etc/resolv.conf`'s nameservers in order, each tried `attempts` times for `timeout` seconds (resolv.conf's `options`, glibc's defaults 5
   and 2), A then AAAA as getaddrinfo asks. The answers and errors are the ones the code gave: NXDOMAIN is `ENOTFOUND`
   (getaddrinfo's -3008), NOERROR with no record of the family `ENOTFOUND` -3007 to a lookup and `ENODATA` to a query, a
   server that fails or does not answer `EAI_AGAIN` to a lookup; to a query, c-ares's name for the last failure
@@ -216,6 +216,22 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   empty label anywhere else, a label over 63 bytes or a name over 255 bytes is `ARES_EBADNAME`
   (`ares_dns_name.c` `ares_split_dns_name`, 337-366), which Node reports as `EBADNAME` (`dns.BADNAME`, "misformatted
   host name"). Such a name sends nothing.
+  After Node's own answers for an empty name and an IP literal (`lib/dns.js` 204-223), a lookup takes musl's sources
+  in musl's order (`__lookup_name`, `lookup_name.c` 309-336):
+  - *numeric:* `inet_aton`'s forms are an IPv4 address, `127.1`, `0x7f.1`, `10` and `010.0.0.1` among them (each part
+    decimal, `0` octal or `0x` hex, the last part filling the bytes left, `inet_aton.c`); one of the other family is
+    `EAI_NODATA` (`lookup_ipliteral.c` 13-22), Node's `ENOTFOUND` -3007. None reaches DNS.
+  - *hosts:* `/etc/hosts` as `name_from_hosts` reads it (49-97): a line's text before `#`; the name as given, matched
+    exactly and case-sensitively where it stands between white space after the line's first character (`strstr`, so a
+    name at the end of a last line with no newline is not matched); the line's first field its address, numeric by
+    the same rule; an address of the other family makes the lookup `EAI_NODATA` when no line answers, and DNS is not
+    asked. `localhost` is answered here or by the resolver, which answers it as RFC 6761 asks (browser-substrate
+    ADR-0227 §8); the engine adds no answer of its own.
+  - *DNS with the search list:* resolv.conf's `search` or `domain` line (the last one given) and `options ndots:`
+    (default 1, at most 15), read as musl's `__get_resolv_conf` reads them (`resolvconf.c`). A name with fewer dots than
+    `ndots` and no trailing dot is asked with each search domain first, in order, and then as itself
+    (`name_from_dns_search`, 190-230); the first answer that is not "no such name" ends the lookup, an error or a held
+    name with no address of the family included (`name_from_dns`, 143-188).
 - **`os.networkInterfaces`**: `getifaddrs`, by libuv's `uv_interface_addresses`: interfaces up and running, their IPv4
   and IPv6 addresses, `internal` for a loopback interface, `mac` from the hardware address, `scopeid` from
   `sin6_scope_id`.

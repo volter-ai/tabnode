@@ -10,6 +10,12 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   (`dns.resolve*`) refuses a name that c-ares refuses with `EBADNAME`. Every name is converted to ASCII first, as Node's
   `to_ascii` does, including before the hosts file is read. Before this, empty labels were dropped and long labels
   cut, so `db..` asked for `db`.
+- **`dns.lookup` is musl's getaddrinfo** (ADR-0009 §3), which a WALI program gets:
+  - **numeric forms:** `inet_aton`'s forms (`127.1`, `0x7f.1`, `10`) are addresses and never reach DNS;
+  - **hosts file:** `/etc/hosts` is matched exactly and case-sensitively, as `name_from_hosts` matches;
+  - **search list:** resolv.conf's `search` list and `ndots` apply, a short name asked with each search domain first;
+  - **`localhost`:** the engine no longer answers `localhost` itself. It comes from the hosts file, or from the
+    resolver, which answers it per RFC 6761.
 - **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
   offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
   table: a `'pipe'` (IPC or not) a socketpair with 64 KiB buffers, `'inherit'` and a number the parent's descriptor,

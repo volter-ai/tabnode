@@ -94,24 +94,78 @@ function literalFamily(hostname: string): 4 | 6 | 0 {
   return 0;
 }
 
-/** /etc/hosts aliases from this process's mounted file, in file order. */
-function hostsAddresses(content: string, hostname: string): Array<{ address: string; family: number }> | undefined {
-  const name = hostname.toLowerCase().replace(/\.$/, '');
-  const addresses: Array<{ address: string; family: number }> = [];
-  for (const line of content.split(/\r?\n/)) {
-    const [address, ...names] = line.split('#', 1)[0].trim().split(/\s+/);
-    const family = literalFamily(address ?? '');
-    if (family && names.some(alias => alias.toLowerCase().replace(/\.$/, '') === name)
-      && !addresses.some(row => row.address === address && row.family === family)) addresses.push({ address, family });
+/**
+ * musl's `inet_aton` (`inet_aton.c`): one to four parts, each decimal, `0` octal or `0x` hex, the last filling the bytes
+ * left; the dotted address, or undefined for text that is not one.
+ */
+function inetAton(text: string): string | undefined {
+  const parts = text.split('.');
+  if (parts.length > 4) return undefined;
+  const values: number[] = [];
+  for (const part of parts) {
+    const match = /^(?:0[xX]([0-9a-fA-F]+)|(0[0-7]*)|([1-9][0-9]*))$/u.exec(part);
+    if (!match) return undefined;
+    values.push(match[1] !== undefined ? parseInt(match[1], 16) : match[2] !== undefined ? parseInt(match[2], 8) : Number(match[3]));
   }
-  return addresses.length ? addresses : undefined;
+  const last = values.pop()!;
+  if (values.some(value => value > 255) || last >= 2 ** (8 * (4 - values.length))) return undefined;
+  const bytes = [...values];
+  for (let shift = 8 * (3 - values.length); shift >= 0; shift -= 8) bytes.push(Math.floor(last / 2 ** shift) % 256);
+  return bytes.join('.');
 }
 
-/** What `/etc/resolv.conf` says: its nameservers in order, and the `timeout` and `attempts` options (glibc's limits). */
-interface ResolverConfig { servers: string[]; timeoutMs: number; attempts: number }
+/** musl's `__lookup_ipliteral` for an address: `inet_aton`'s forms as IPv4, else an IPv6 literal. */
+function numericAddress(text: string): { address: string; family: 4 | 6 } | undefined {
+  const v4 = inetAton(text);
+  if (v4 !== undefined) return { address: v4, family: 4 };
+  return literalFamily(text) === 6 && !text.startsWith('[') ? { address: text, family: 6 } : undefined;
+}
+
+const isSpace = (character: string | undefined): boolean => character !== undefined && ' \t\n\v\f\r'.includes(character);
+
+/**
+ * musl's `name_from_hosts` (`lookup_name.c` 49-97): each line's text before `#`; the name as given, matched exactly
+ * where it stands between white space after the line's first character; the line's first field its address. The
+ * addresses of `family` (0 for either) in file order, `'nodata'` where a line named it only with another family's.
+ */
+function hostsAddresses(content: string, name: string, family: number): Array<{ address: string; family: number }> | 'nodata' | undefined {
+  const addresses: Array<{ address: string; family: number }> = [];
+  let otherFamily = false;
+  const lines = content.split('\n');
+  for (let index = 0; index < lines.length && addresses.length < 48; index += 1) {
+    const raw = lines[index]!;
+    const ended = index < lines.length - 1;
+    const hash = raw.indexOf('#');
+    // fgets keeps the newline; musl puts one where `#` was.
+    const line = hash >= 0 ? `${raw.slice(0, hash)}\n` : ended ? `${raw}\n` : raw;
+    let at = line.indexOf(name, 1);
+    while (at >= 0 && (!isSpace(line[at - 1]) || !isSpace(line[at + name.length]))) at = line.indexOf(name, at + 1);
+    if (at < 0) continue;
+    let end = 0;
+    while (end < line.length && !isSpace(line[end])) end += 1;
+    const numeric = numericAddress(line.slice(0, end));
+    if (!numeric) continue;
+    if (family && numeric.family !== family) { otherFamily = true; continue; }
+    addresses.push(numeric);
+  }
+  return addresses.length ? addresses : otherFamily ? 'nodata' : undefined;
+}
+
+/**
+ * What `/etc/resolv.conf` says: its nameservers in order, the `timeout` and `attempts` options (glibc's limits), and,
+ * as musl's `__get_resolv_conf` reads them, its search list (the last `search` or `domain` line) and `ndots` (1 unless
+ * an `options` line names it, at most 15).
+ */
+interface ResolverConfig { servers: string[]; timeoutMs: number; attempts: number; search: string[]; ndots: number }
 function resolverConfig(content: string | undefined): ResolverConfig {
   const servers: string[] = [];
-  let timeout = 5, attempts = 2;
+  let timeout = 5, attempts = 2, ndots = 1;
+  let search: string[] = [];
+  for (const line of (content ?? '').split('\n')) {
+    if (/^(?:search|domain)\s/u.test(line)) search = line.slice(7).split(/\s+/u).filter(domain => domain.length > 0);
+    const ndotsAt = /^options\s/u.test(line) ? line.indexOf('ndots:') : -1;
+    if (ndotsAt >= 0 && /\d/u.test(line[ndotsAt + 6] ?? '')) ndots = Math.min(15, parseInt(line.slice(ndotsAt + 6), 10));
+  }
   for (const line of (content ?? '').split(/\r?\n/)) {
     const words = line.split(/[#;]/, 1)[0]!.trim().split(/\s+/);
     if (words[0] === 'nameserver' && words[1] && literalFamily(words[1])) servers.push(words[1]);
@@ -123,7 +177,7 @@ function resolverConfig(content: string | undefined): ResolverConfig {
       }
     }
   }
-  return { servers, timeoutMs: timeout * 1000, attempts };
+  return { servers, timeoutMs: timeout * 1000, attempts, search, ndots };
 }
 
 /** A nameserver as resolv.conf or setServers names it (`1.2.3.4`, `1.2.3.4:5353`, `::1`, `[::1]:53`), as a sockaddr. */
@@ -296,7 +350,8 @@ async function ask(sockets: TreeSockets | undefined, config: ResolverConfig, lab
 type ResolverDoor = () => ResolverConfig;
 
 /**
- * Node's getaddrinfo shape: the process's hosts file, `localhost`, then its resolver.
+ * Node's `dns.lookup`: its own answers for an empty name and an IP literal, then musl's getaddrinfo (ADR-0009 §3):
+ * `inet_aton`'s numeric forms, the process's hosts file, then its resolver with resolv.conf's search list.
  */
 export function lookup(
   hostname: string,
@@ -352,13 +407,27 @@ function lookupWithHosts(
       return;
     }
     // The name getaddrinfo is given (Node's to_ascii); musl refuses an empty one, or one of 255 bytes or more, before
-    // it reads any source (ADR-0009 §3).
+    // it reads any source, then takes its sources in order (ADR-0009 §3).
     const ascii = asciiName(hostname);
     if (ascii === '' || ascii.length >= 255) { cb(notFound(hostname)); return; }
-    // hosts(5) belongs to the requesting process. Preserve the actual addresses and families,
-    // including aliases, rather than making every held name an IPv4/IPv6 wildcard.
-    let fileAddresses: Array<{ address: string; family: number }> | undefined;
-    try { fileAddresses = readHosts ? hostsAddresses(readHosts(), ascii) : undefined; }
+    const answer = (addresses: Array<{ address: string; family: number }>): void => {
+      if (options.order === 'ipv4first' || options.order === 'ipv6first') {
+        const first = options.order === 'ipv6first' ? 6 : 4;
+        addresses = [...addresses.filter(row => row.family === first), ...addresses.filter(row => row.family !== first)];
+      }
+      if (options.all) (cb as LookupAllCallback)(null, addresses);
+      else (cb as LookupCallback)(null, addresses[0]!.address, addresses[0]!.family);
+    };
+    // Numeric: inet_aton's forms; one of the other family is EAI_NODATA.
+    const numeric = numericAddress(ascii);
+    if (numeric) {
+      if (requested && numeric.family !== requested) cb(notFound(hostname, 'getaddrinfo', 'ENOTFOUND', -3007));
+      else answer([numeric]);
+      return;
+    }
+    // hosts(5) belongs to the requesting process, read as musl reads it.
+    let fileAddresses: ReturnType<typeof hostsAddresses> = undefined;
+    try { fileAddresses = readHosts ? hostsAddresses(readHosts(), ascii, requested) : undefined; }
     catch (cause) {
       // nss_files reports an unreadable hosts source as unavailable; lookup continues with
       // the next resolver source. Kernel-owner/protocol, EIO transport and programming failures still surface.
@@ -367,51 +436,47 @@ function lookupWithHosts(
         cb(cause instanceof Error ? cause : new Error(String(cause))); return;
       }
     }
-    if (fileAddresses !== undefined) {
-      let addresses = fileAddresses.filter(row => !requested || row.family === requested);
-      if (options.order === 'ipv4first' || options.order === 'ipv6first') {
-        const first = options.order === 'ipv6first' ? 6 : 4;
-        addresses = [...addresses.filter(row => row.family === first), ...addresses.filter(row => row.family !== first)];
-      }
-      if (!addresses.length) { cb(notFound(hostname, 'getaddrinfo', 'ENOTFOUND', -3007)); return; }
-      if (options.all) (cb as LookupAllCallback)(null, addresses);
-      else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
-      return;
-    }
-    // localhost is the process's own loopback (RFC 6761), whatever its resolver holds.
-    if (ascii.toLowerCase().replace(/\.$/, '') === 'localhost') {
-      const families = requested ? [requested] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
-      const addresses = families.map(family => ({ address: family === 6 ? '::1' : '127.0.0.1', family }));
-      if (options.all) (cb as LookupAllCallback)(null, addresses);
-      else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
-      return;
-    }
-    // A name res_mkquery will not encode (the root, an empty label, a label over 63 bytes, more than 253 bytes) is no
-    // answer from DNS, and getaddrinfo's EAI_NONAME: nothing is sent (ADR-0009 §3).
-    const labels = nameLabels(ascii, 253);
-    if (!labels?.length) { cb(notFound(hostname)); return; }
-    // The resolver: A, then AAAA (or as `order` puts them), as getaddrinfo asks for an unspecified family.
-    const families: Array<4 | 6> = requested ? [requested as 4 | 6] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
+    if (fileAddresses === 'nodata') { cb(notFound(hostname, 'getaddrinfo', 'ENOTFOUND', -3007)); return; }
+    if (fileAddresses !== undefined) { answer(fileAddresses); return; }
+    // DNS with the search list (musl's name_from_dns_search): a name with fewer dots than ndots and no trailing dot is
+    // asked with each search domain first; a name ending in two dots is EAI_NONAME.
     const config = resolver();
-    const asked = (async () => {
-      const answers: Array<{ rcode: number; addresses: string[] }> = [];
+    const trailing = ascii.endsWith('.');
+    const base = trailing ? ascii.slice(0, -1) : ascii;
+    if (base === '' || base.endsWith('.')) { cb(notFound(hostname)); return; }
+    const dots = ascii.split('.').length - 1;
+    const names = [...(dots >= config.ndots || trailing ? [] : config.search
+      .filter(domain => domain.length < 256 - base.length - 1).map(domain => `${base}.${domain}`)), ascii];
+    // A, then AAAA (or as `order` puts them), as getaddrinfo asks for an unspecified family.
+    const families: Array<4 | 6> = requested ? [requested as 4 | 6] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
+    // musl's name_from_dns: a name res_mkquery will not encode, or one the server does not hold, is no answer (0, and
+    // nothing is sent for the first); a failed server ends the lookup EAI_AGAIN, a held name with no address EAI_NODATA.
+    const fromDns = async (name: string): Promise<0 | 'again' | 'nodata' | Array<{ address: string; family: number }>> => {
+      const labels = nameLabels(name, 253);
+      if (!labels?.length) return 0;
+      const addresses: Array<{ address: string; family: number }> = [];
       for (const family of families) {
-        const answer = await ask(sockets, config, labels, family === 6 ? 28 : 1);
-        if ('failed' in answer) return undefined;
-        answers.push(answer);
+        const reply = await ask(sockets, config, labels, family === 6 ? 28 : 1);
+        if ('failed' in reply) return 'again';
+        if (reply.rcode === 3) return 0;
+        addresses.push(...reply.addresses.map(address => ({ address, family })));
       }
-      return answers;
+      return addresses.length ? addresses : 'nodata';
+    };
+    const asked = (async () => {
+      for (const name of names) {
+        const found = await fromDns(name);
+        if (found !== 0) return found;
+      }
+      return 0 as const;
     })();
-    // The callback runs outside the resolver's settlement, so what it throws is its own (answerLater).
-    return asked.then((answers) => {
-      // A server that failed or did not answer is EAI_AGAIN.
-      if (!answers) { cb(tryAgain(hostname)); return; }
-      const addresses = answers.flatMap((answer, index) => answer.addresses.map(address => ({ address, family: families[index]! })));
-      // A name nobody holds (NXDOMAIN) is EAI_NONAME; a held name with no address of the asked family EAI_NODATA. Node
-      // reports both as ENOTFOUND, with their own errno.
-      if (!addresses.length) { cb(notFound(hostname, 'getaddrinfo', 'ENOTFOUND', answers.some(answer => answer.rcode === 0) ? -3007 : -3008)); return; }
-      if (options.all) (cb as LookupAllCallback)(null, addresses);
-      else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
+    // The callback runs outside the resolver's settlement, so what it throws is its own (answerLater). No answer is
+    // EAI_NONAME, a held name with none of the family EAI_NODATA: Node reports both as ENOTFOUND, with their own errno.
+    return asked.then((found) => {
+      if (found === 'again') cb(tryAgain(hostname));
+      else if (found === 0) cb(notFound(hostname));
+      else if (found === 'nodata') cb(notFound(hostname, 'getaddrinfo', 'ENOTFOUND', -3007));
+      else answer(found);
     });
   });
 }
