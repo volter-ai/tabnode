@@ -316,7 +316,9 @@ Each rule names its source, as §4's do.
     made outside any run has no end the engine sees, and its addons live as long as it does, as its other handles do.
   - *Deleted:* each path's own release-then-cancel sequence (the host's `stopProcess`, a shell job's kill, a child's
     kill, `process.exit`'s release, the run's `finally` release and timer stop), each now the one call; and
-    `__releaseOwnedServers`'s `stopTimers` and `stopProcess` parameters, whose deferred stop no caller reached.
+    `__releaseOwnedServers`'s `stopTimers` and `stopProcess` parameters, whose deferred stop no caller reached. The
+    servers' release becomes the end's own first step, internal to `handles.ts`, and `net-module`'s re-exports of it
+    and of `__releaseOwnedHandles`, which no caller reads once each path is the one call, go.
 - **The loading process's tree loads the file.**
   - *Node:* `DLOpen` loads into the calling environment (`node_binding.cc:446`).
   - *So:* the tree's `TREE_NATIVE` is chosen, and its `load` called, inside the loading process's resource scope

@@ -50,7 +50,7 @@ export interface TreeNative {
 }
 
 /** The addon loads a tree offers, where it offers them. */
-export function treeNativeOf(tree: unknown): TreeNative | undefined {
+function treeNativeOf(tree: unknown): TreeNative | undefined {
   if (tree === null || (typeof tree !== 'object' && typeof tree !== 'function')) return undefined;
   const offered = (tree as Record<symbol, unknown>)[TREE_NATIVE];
   return offered !== null && typeof offered === 'object' ? offered as TreeNative : undefined;

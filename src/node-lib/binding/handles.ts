@@ -344,11 +344,11 @@ export function __ownedServerPorts(token: ProcessToken): number[] {
 }
 
 /**
- * A process that ends closes the servers it was listening on. This is the
- * same release as the handles below it -- a server IS a handle here -- kept
- * under its own name because the engine's own parts call it where a run ends.
+ * A process that ends closes the servers it was listening on first: a server
+ * is a handle here, closed by its own `close` so its port is given back
+ * before the rest of what the process held (`__endOwnedProcess`).
  */
-export function __releaseOwnedServers(token: ProcessToken): void {
+function releaseOwnedServers(token: ProcessToken): void {
   const held = owners.get(token);
   if (!held) return;
   for (const handle of [...held]) {
@@ -365,7 +365,7 @@ export function __releaseOwnedServers(token: ProcessToken): void {
  * guest work, its timers, immediates and ports, is cancelled. Synchronous, and a second call finds nothing to do.
  */
 export function __endOwnedProcess(token: ProcessToken): void {
-  __releaseOwnedServers(token);
+  releaseOwnedServers(token);
   __releaseOwnedHandles(token);
   __stopOwnedProcess(token);
 }
