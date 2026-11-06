@@ -176,6 +176,7 @@ const nodeValidators = (): {
   validateStringWithoutNullBytes(value: unknown, name: string): void;
   validateString(value: unknown, name: string): void;
   validateOneOf(value: unknown, name: string, oneOf: readonly unknown[]): void;
+  validateBoolean(value: unknown, name: string): void;
 } => libRequire('internal/validators') as ReturnType<typeof nodeValidators>;
 
 /** A lookup's name as `lib/dns.js` checks it (`validateStringWithoutNullBytes`). */
@@ -189,10 +190,10 @@ function validateQueryName(name: unknown): void {
 }
 
 /**
- * A lookup's options, checked before any answer (ADR-0009 §3): the family asked (4, 6, or 0 for either), by Node's own
- * `validateOneOf` on 0, 4 and 6. The one difference is the door's, as Node's: the callback door also takes the family
- * names `'IPv4'` and `'IPv6'` in an options object (`lib/dns.js` 175-189), the promise door does not
- * (`internal/dns/promises.js` 220-224).
+ * A lookup's options, checked before any answer (ADR-0009 §3), in Node's order: the family asked (4, 6, or 0 for
+ * either), by Node's own `validateOneOf` on 0, 4 and 6, then `all` and then `verbatim` by Node's own `validateBoolean`
+ * (`lib/dns.js` 175-197, `internal/dns/promises.js` 220-232). The one difference is the door's, as Node's: the callback
+ * door also takes the family names `'IPv4'` and `'IPv6'` in an options object, the promise door does not.
  */
 function lookupOptions(given: number | LookupOptions | undefined, door: 'callback' | 'promise'): { options: LookupOptions; requested: number } {
   if (typeof given === 'number') {
@@ -200,11 +201,17 @@ function lookupOptions(given: number | LookupOptions | undefined, door: 'callbac
     return { options: { family: given }, requested: given + 0 };
   }
   const options = typeof given === 'object' && given ? given : {};
-  if (options.family == null) return { options, requested: 0 };
-  if (door === 'callback' && options.family === 'IPv4') return { options, requested: 4 };
-  if (door === 'callback' && options.family === 'IPv6') return { options, requested: 6 };
-  nodeValidators().validateOneOf(options.family, 'options.family', [0, 4, 6]);
-  return { options, requested: (options.family as number) + 0 };
+  let requested = 0;
+  if (door === 'callback' && options.family === 'IPv4') requested = 4;
+  else if (door === 'callback' && options.family === 'IPv6') requested = 6;
+  else if (options.family != null) {
+    nodeValidators().validateOneOf(options.family, 'options.family', [0, 4, 6]);
+    requested = (options.family as number) + 0;
+  }
+  const flags = options as { all?: unknown; verbatim?: unknown };
+  if (flags.all != null) nodeValidators().validateBoolean(flags.all, 'options.all');
+  if (flags.verbatim != null) nodeValidators().validateBoolean(flags.verbatim, 'options.verbatim');
+  return { options, requested };
 }
 
 /**

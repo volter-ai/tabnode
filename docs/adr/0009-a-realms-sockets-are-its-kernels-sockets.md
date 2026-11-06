@@ -211,9 +211,10 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
     code wherever the engine holds it rather than a re-derivation. Node's argument checks come first, before any
     conversion or fast answer, on every door (the engine's `dns` and each process's, callback and promise): a lookup
     checks its name and then its family (`lib/dns.js` 151-202, `internal/dns/promises.js` 197-239) before its empty-name
-    or literal answer, the family by Node's own `validateOneOf` on 0, 4 and 6, with the one difference Node's doors have:
-    the callback door also takes `'IPv4'` and `'IPv6'` in an options object (`lib/dns.js` 175-189), the promise door
-    does not (`internal/dns/promises.js` 220-224); and a query checks its record type, by Node's own `validateString`
+    or literal answer, the family by Node's own `validateOneOf` on 0, 4 and 6 and then `all` and `verbatim` by its
+    own `validateBoolean` (`lib/dns.js` 190-197, `internal/dns/promises.js` 225-232), with the one difference Node's
+    doors have: the callback door also takes `'IPv4'` and `'IPv6'` in an options object (`lib/dns.js` 175-189), the
+    promise door does not (`internal/dns/promises.js` 220-224); and a query checks its record type, by Node's own `validateString`
     and `ERR_INVALID_ARG_VALUE` against the one table of record types the shim answers (`RECORD_TYPES`, whose own keys
     are both what a query admits and the type it asks; `internal/dns/callback_resolver.js` 85-105,
     `internal/dns/promises.js` 353-371), and then that its name is a string (Node's own
@@ -225,8 +226,8 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
     is answered as given where Node's own `isIP` (`internal/net.js`, through `libRequire`) recognises the original
     string (`lib/dns.js` 214-223); the name is converted by Ada's own `ada::idna::to_ascii` (`cares_wrap.cc` 1976),
     compiled to WebAssembly (below), and cut at its first NUL, since Node hands the converted name to its libraries as
-    `name.c_str()` (`cares_wrap.cc` 1797-1803, 2020-2021); `EAI_*` is named as Node names it (`EAI_NONAME` and `EAI_NODATA` both
-    `ENOTFOUND`, `lib/internal/errors.js` 812-816); and `order` is applied as Node applies it.
+    `name.c_str()` (`cares_wrap.cc` 1797-1803, 2020-2021); `EAI_*` is named as Node names it (`EAI_NONAME` and
+    `EAI_NODATA` both `ENOTFOUND`, `lib/internal/errors.js` 812-816); and `order` is applied as Node applies it.
   - *`to_ascii` is Ada's own code:* the `ada::idna` section of Node v24.21.0's `deps/ada` amalgamation (Ada 4.0.0,
     `ada.h` 32-240, `ada.cpp` 140-6720; pure C++, no system calls), compiled by wasi-sdk 34.0 to a plain WebAssembly
     module that a process instantiates synchronously on its first lookup (`src/node-lib/binding/ada-idna-wasm.ts`,
