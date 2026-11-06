@@ -211,7 +211,9 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
     code wherever the engine holds it rather than a re-derivation. Node's argument checks come first, before any
     conversion or fast answer, on every door (the engine's `dns` and each process's, callback and promise): a lookup
     checks its name and then its family (`lib/dns.js` 151-202, `internal/dns/promises.js` 197-239) before its empty-name
-    or literal answer, and a query checks its record type and then that its name is a string (Node's own
+    or literal answer, the family by Node's own `validateOneOf` on 0, 4 and 6, with the one difference Node's doors have:
+    the callback door also takes `'IPv4'` and `'IPv6'` in an options object (`lib/dns.js` 175-189), the promise door
+    does not (`internal/dns/promises.js` 220-224); and a query checks its record type and then that its name is a string (Node's own
     `validateString(name, 'name')`, `internal/dns/callback_resolver.js` 55-63, `internal/dns/promises.js` 341-346)
     before the name is converted; a query's name may still hold a NUL, which the conversion's cut takes. The name is
     validated as `lib/dns.js` validates it

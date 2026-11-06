@@ -168,8 +168,11 @@ function nodeIsIP(hostname: string): number {
 }
 
 /** Node's own validators (`internal/validators.js`). */
-const nodeValidators = (): { validateStringWithoutNullBytes(value: unknown, name: string): void; validateString(value: unknown, name: string): void } =>
-  libRequire('internal/validators') as ReturnType<typeof nodeValidators>;
+const nodeValidators = (): {
+  validateStringWithoutNullBytes(value: unknown, name: string): void;
+  validateString(value: unknown, name: string): void;
+  validateOneOf(value: unknown, name: string, oneOf: readonly unknown[]): void;
+} => libRequire('internal/validators') as ReturnType<typeof nodeValidators>;
 
 /** A lookup's name as `lib/dns.js` checks it (`validateStringWithoutNullBytes`). */
 function validateHostname(hostname: unknown): void {
@@ -182,14 +185,22 @@ function validateQueryName(name: unknown): void {
 }
 
 /**
- * A lookup's options as the callback door reads them, checked before any answer (ADR-0009 §3): the family asked
- * (4, 6, or 0 for either), or `ERR_INVALID_ARG_VALUE`.
+ * A lookup's options, checked before any answer (ADR-0009 §3): the family asked (4, 6, or 0 for either), by Node's own
+ * `validateOneOf` on 0, 4 and 6. The one difference is the door's, as Node's: the callback door also takes the family
+ * names `'IPv4'` and `'IPv6'` in an options object (`lib/dns.js` 175-189), the promise door does not
+ * (`internal/dns/promises.js` 220-224).
  */
-function lookupOptions(given: number | LookupOptions | undefined): { options: LookupOptions; requested: number } {
-  const options = typeof given === 'number' ? { family: given } : typeof given === 'object' && given ? given : {};
-  const requested = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family ?? 0;
-  if (![0, 4, 6].includes(requested as number)) throw Object.assign(new TypeError(`Invalid address family: ${requested}`), { code: 'ERR_INVALID_ARG_VALUE' });
-  return { options, requested: requested as number };
+function lookupOptions(given: number | LookupOptions | undefined, door: 'callback' | 'promise'): { options: LookupOptions; requested: number } {
+  if (typeof given === 'number') {
+    nodeValidators().validateOneOf(given, 'family', [0, 4, 6]);
+    return { options: { family: given }, requested: given + 0 };
+  }
+  const options = typeof given === 'object' && given ? given : {};
+  if (options.family == null) return { options, requested: 0 };
+  if (door === 'callback' && options.family === 'IPv4') return { options, requested: 4 };
+  if (door === 'callback' && options.family === 'IPv6') return { options, requested: 6 };
+  nodeValidators().validateOneOf(options.family, 'options.family', [0, 4, 6]);
+  return { options, requested: (options.family as number) + 0 };
 }
 
 /**
@@ -368,7 +379,7 @@ function lookupWithHosts(
   const cb = inCallersContext(given as LookupCallback) as LookupCallback | LookupAllCallback;
   const sockets = callingSockets();
   if (hostname) validateHostname(hostname);
-  const { options, requested } = lookupOptions(typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
+  const { options, requested } = lookupOptions(typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback, 'callback');
   // Node's own answers (lib/dns.js 204-223), on a later tick: an empty name is null, and a string Node's isIP takes
   // is itself, in its family.
   if (!hostname) {
@@ -550,7 +561,7 @@ function promisesOver(doLookup: typeof lookup, resolvers: ReturnType<typeof reso
     lookup: (hostname: string, options?: number | LookupOptions) => {
       // Node's checks first (internal/dns/promises.js 197-239): the name, then the family.
       if (hostname) validateHostname(hostname);
-      const { requested: family } = lookupOptions(options);
+      const { requested: family } = lookupOptions(options, 'promise');
       return new Promise((resolve, reject) => {
         // Node's own answers (internal/dns/promises.js 138-150): an empty name is null, a literal is itself.
         const all = typeof options === 'object' && options?.all === true;
