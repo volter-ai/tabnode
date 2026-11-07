@@ -123,8 +123,7 @@ export function __currentProcessToken(): ProcessToken | null {
 }
 
 /**
- * End a named run's timers. The servers it owns are released by `http`'s own
- * half, `__releaseOwnedServers`, which calls this for the timers.
+ * End a named run's timers: the last step of its end (`__endOwnedProcess`), after its servers and handles are released.
  */
 export function __stopOwnedProcess(token: ProcessToken): void {
   runs.get(token)?.stopTimers();

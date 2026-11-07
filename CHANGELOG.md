@@ -11,6 +11,32 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   it: a write is one `write` of the whole buffer inside the writer's call, a chunk is read inside the stream's `data`
   listener, `readStop` and `readStart` pause and resume it, `shutdown` ends it on a tick after a pending write, and an
   error carries the stream's own code.
+- **A nested `node` the realm runs gives back what it took, on every exit** (ADR-0010 §2). A `node` a run's shell runs
+  in the same realm (`nestedNodeToken`: its pid under the run's, the run's streams registered under its token) is
+  released by one scope from that moment. A refusal (an option without its value, no script, a missing module) exits
+  with its code, and its completion with its status. A startup that throws partway (its filesystem, its stderr sink,
+  its runtime, its input, its channel) is killed. Either way its parent reaps it, its number is forgotten, its
+  registration of the parent's streams goes, and whatever of its run record, runtime, input, terminal and channel was
+  started is released.
+- **A `.node` that is a WALI Node-API module loads** (ADR-0011). `require` of a `.node` caches its module and loads it
+  through the `.node` extension, which is `process.dlopen(module, filename)` of the run's process, so a wrapper of
+  `process.dlopen` applies; `process.dlopen` initializes its own target's `module.exports` with an environment of its
+  own every time, over the one instance a process keeps per file. The file is validated by the engine's WebAssembly
+  compiler before anything of it is read, then loaded into its process's memory by the loading process's tree
+  (`TREE_NATIVE`, `src/host-native.ts`). Its Node-API is emnapi's (`@emnapi/core` and `@emnapi/runtime` 1.11.3) as
+  emnapi behaves, its memory boundary included. `@emnapi/runtime` is evaluated once per process, so its `process`,
+  immediates, ports, `Buffer` and global are that process's. Threads wake the main thread through a shared queue, and
+  `@volter/tabnode/native-thread` is a thread worker's side of the imports.
+- **A process's end completes its native teardown** (ADR-0011 §6). `__endOwnedProcess` releases a process's servers
+  and handles and stops its timers at once, and answers a completion that settles when its addons' teardown is done:
+  the context destroyed, then native immediates, cleanup hooks and thread deliveries run turn after turn until no
+  native immediate is queued and no native request waits. The run awaits it before its uncaught report is detached,
+  so a teardown's throw is the run's, and the remaining hooks still run; a killed child or shell job reports its exit
+  at completion. A refused `dlopen` leaves the process's addon runtime as it was, and a `dlopen` once the end has
+  begun is refused. Any other `.node` fails
+  `ERR_DLOPEN_FAILED` as Node's `dlopen` does: `invalid ELF header`, the compiler's refusal, "Module did not
+  self-register", `cannot dynamically load executable`, `undefined symbol: <name>`, or, in a tree that offers no
+  `TREE_NATIVE`, `a tab runs no native code`.
 - **`dns` takes Node's own front and Ada's own name conversion** (ADR-0009 §3).
   - **Node's own checks and answers:** names are validated with Node's own `validateStringWithoutNullBytes`.
     Literals are answered where Node's own `isIP` recognises the string as given, so `[::1]` is no longer
