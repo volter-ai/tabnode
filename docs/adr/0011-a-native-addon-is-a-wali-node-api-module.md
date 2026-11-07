@@ -275,6 +275,12 @@ Each rule names its source, as §4's do.
   itself at its process's `beforeExit` (1358-1364). Its public doors carry what the end needs (below, "A process's
   end"): `addCleanupHook` and `removeCleanupHook`, which every environment's and addon's cleanup hook goes through, and
   `increaseWaitingRequestCounter` and `decreaseWaitingRequestCounter`, which `emnapi-mt` calls for every native request.
+  A cleanup hook's registration is its (env, fn, arg), as Node's `CleanupQueue` keys one (`cleanup_queue.cc`): adding
+  a live one again is refused by emnapi's own queue ("Can not add same fn and arg twice"); a removed one is skipped,
+  and one added again after its removal is a new registration. emnapi's `CleanupQueue.drain` snapshots its hooks and,
+  after each, splices the entry it finds by `indexOf` (`emnapi.js:1289-1302`), so a hook removed while the queue drains
+  stays in emnapi's queue, skipped, until the drain takes it; removed at once, the drain's `indexOf` would answer -1 and
+  splice another hook.
 - **One environment per initialization.**
   - *Node:* each `process.dlopen` makes a new `napi_env` for the initializer it calls (`node_api.cc:790`), so an
     initializer that loads another addon makes a second environment, and a later `dlopen` of the same file makes a
@@ -340,27 +346,30 @@ Each rule names its source, as §4's do.
          - every native immediate runs, those queued and those they queue;
          - the cleanup queue runs again, for hooks added meanwhile;
          - each thread queue keeps delivering its sends as they arrive;
-         - this continues until no native immediate is queued and no native request is waiting, and between turns it
-           waits for the next native event (an immediate queued, a send delivered, a request completing), as
-           `CleanupHandles` turns the loop;
+         - while a native immediate is queued (one the cleanup queue's run queued among them) it goes again at
+           once, as `RunCleanup` repeats `CleanupHandles` while native immediates remain; while only a native
+           request is waiting it waits for the next native event (an immediate queued, a send delivered, a request
+           completing), as `CleanupHandles` turns the loop; with neither, it is done;
       3. then its thread queues are stopped and the runtime is released.
     - **The end is asynchronous.** `CleanupHandles` blocks its thread in `uv_run`, but a Tabnode process shares its
       realm's thread, and its native completions arrive as that thread's events (`Atomics.waitAsync`, §5). So the
       native part of an end completes on later turns, and each caller that reports the process's exit does so at
       completion:
-      - the run's `finally` awaits it before its uncaught report is detached and the run is released;
+      - the run's `finally` awaits it before it releases the rest of what the run holds;
       - a child's and a shell job's kill report their exit when it settles;
       - the host's `stopProcess` answers at once, since it reports only whether the run was known.
   - *Failures:*
-    - **A hook's throw.** Every cleanup hook goes through the context's `addCleanupHook`, which wraps it so that it
-      runs in the process's run (`ownedRun`) and counts as run whatever it does. A throw from it is the run's
-      uncaught exception, and the remaining hooks still run, as `CleanupQueue::Drain` runs every hook. A hook removed
-      before its turn is skipped, as `Drain` skips one.
-    - **Native immediates and deliveries** are reported the same way.
-    - **A throw the run cannot report** (no run attached) rejects the end's completion after every remaining step
-      has run. It reaches the caller that awaits it (the run's `finally` rethrows it after releasing the run) or,
-      unawaited, the realm as an unhandled rejection.
-    - **A handle's close that throws** is disposed the same way.
+    - **A cleanup call's throw.** Every cleanup hook goes through the context's `addCleanupHook`, which wraps it so
+      that it runs in the process's run (`ownedRun`) and counts as run whatever it does, so the remaining hooks still
+      run, as `CleanupQueue::Drain` runs every hook; native immediates and deliveries of the teardown are run the same
+      way. While the process lives (emnapi's own `beforeExit` destroy, above), a throw is the process's uncaught
+      exception. Once its end has begun the process has exited: Node runs `RunCleanup` under
+      `DisallowJavascriptExecutionScope`, where nothing of the program reports anything, so a throw is not offered to
+      the run's uncaught report and is the end's failure instead.
+    - **The end's failures** (those, a throw the run did not take while it lived, and a handle's close that throws)
+      reject the end's completion after every remaining step has run. The run's `finally` awaits it, releases the rest
+      of what the run holds, and rejects the run with it, so a run whose teardown failed never reports a clean result.
+      Unawaited (a kill's report, a host's stop), the rejection reaches the realm as an unhandled rejection.
   - *Every end:*
     - **A normal return.** The loop drains only once no native request waits (their port holds it, §5), emnapi's
       `beforeExit` destroys the context, and the `finally`'s end completes the teardown.

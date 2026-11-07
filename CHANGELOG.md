@@ -67,9 +67,10 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 - **A process's end completes its native teardown** (ADR-0011 §6). `__endOwnedProcess` releases a process's servers
   and handles and stops its timers at once, and answers a completion that settles when its addons' teardown is done:
   the context destroyed, then native immediates, cleanup hooks and thread deliveries run turn after turn until no
-  native immediate is queued and no native request waits. The run awaits it before its uncaught report is detached,
-  so a teardown's throw is the run's, and the remaining hooks still run; a killed child or shell job reports its exit
-  at completion. A refused `dlopen` leaves the process's addon runtime as it was, and a `dlopen` once the end has
+  native immediate is queued and no native request waits, going again at once while one is queued. A cleanup hook
+  removed or added again while the queue drains keeps every other hook in it. A throw during the end leaves the
+  remaining hooks to run and fails the end, and the run fails with it rather than reporting a clean result; a killed
+  child or shell job reports its exit at completion. A refused `dlopen` leaves the process's addon runtime as it was, and a `dlopen` once the end has
   begun is refused. Any other `.node` fails
   `ERR_DLOPEN_FAILED` as Node's `dlopen` does: `invalid ELF header`, the compiler's refusal, "Module did not
   self-register", `cannot dynamically load executable`, `undefined symbol: <name>`, or, in a tree that offers no

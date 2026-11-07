@@ -1528,8 +1528,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     if (!hosted) {
       try {
         // 13: what the program opened, its listening sockets among them, whatever ended it. Its end completes once
-        // its native teardown has (ADR-0011 §6); until then its uncaught report stays attached, so a teardown's
-        // throw is this run's. A run that exited already ended, and this awaits the same end.
+        // its native teardown has (ADR-0011 §6), and a teardown's failure rejects it: the rest is released, and the
+        // run fails with it. A run that exited already ended, and this awaits the same end.
         if (runToken !== null) await __endOwnedProcess(runToken);
         else if (guest) stopGuestTimers(guest);
       } finally {
