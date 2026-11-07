@@ -21,12 +21,6 @@ connections it makes to the guest's port as its container's process (ADR-0009). 
   (`tabnode-runtime.ts`, `local-preview.ts`), and `createVirtualWebSocketRelay`, which puts a cross-origin page's
   messages on the channel from the engine's worker (`cross-origin-container-worker.ts`).
 
-At 42e8a5ae the bridge spoke RFC 6455 itself: it wrote its own handshake, framed and masked with `Math.random`,
-parsed frames with no RSV, opcode, control-frame, continuation or size check, decoded text with a non-fatal decoder,
-answered a received Close by destroying the socket, reported a Close with no body as 1000 and a lost connection as a
-clean 1000, destroyed 50 ms after its own Close, upgraded every `connect` on the origin-wide channel, and found only
-established sockets on `disconnect`.
-
 ### The reference, read from source
 
 Node v24.21.0's WebSocket client is undici 7.29.1's (`deps/undici/src/lib/web/websocket/`), which Tabnode already
@@ -86,7 +80,10 @@ unedited, loaded at the first one), `binaryType` `arraybuffer`:
   httpsProxy: '' })` (no proxy is ever taken from the engine's environment):
   - `connect` opens `connectLoopback(tree, guestPort)` (ADR-0009 §3, the same door the bridge's requests take) and
     answers it once it is connected (`secureConnect` for a TLS server's port), or answers its error, recording a
-    refusal (`ECONNREFUSED`) for §3;
+    refusal (`ECONNREFUSED`) for §3. Until that answer the connection is the client's, not undici's (undici has no
+    HTTP context for it before its callback): a cancel (§2) or the bridge's close (§5) destroys it and answers the
+    connect with an error, so undici fails the request; a connect asked for a client already cancelled is answered
+    with that error at once;
   - `webSocketOptions` is `{ maxPayloadSize: 32 MiB }` (browser-substrate ADR-0099 *Kept*, the size limit,
     `MAX_VIRTUAL_WEBSOCKET_FRAME_BYTES`), so a received message over it fails with 1009;
   - `dispatch(opts, handler)` hands undici's handler on with its `onUpgrade` and `onRequestUpgrade` observed: the
@@ -109,8 +106,9 @@ The connector (C) and the bridge (B) speak, on `vite-ws-channel`:
   - `kind: 'fail'`, with a code or none, closes the connection with no Close (RFC 6455 §7.1.1): `socket.destroy()` on
     the socket §1's dispatcher saw once the connection is open; a code is *Kept* (2);
   - while the connection is still being made, either kind cancels it: `close()`, which undici answers by failing the
-    connection and aborting its fetch, and a socket already upgraded, or one whose 101 arrives for a client already
-    gone, is destroyed and sends no `connected`.
+    connection and aborting its fetch; a loopback connection not yet answered is destroyed as §1 says; and a socket
+    already upgraded, or one whose 101 arrives for a client already gone, is destroyed. No `connected` follows, and
+    the client's one `close` is undici's failure, 1006, not clean.
 - B → C `connected { targetClient, protocol, extensions, setCookie }`: at the socket's `open`, its `protocol` and
   `extensions` and the 101's `Set-Cookie` values, for the jar (ADR-0099 "A 101's `Set-Cookie` headers are stored in
   the jar").
@@ -136,15 +134,24 @@ a bridge whose port answers anything else answers for itself.
 A `connect` with `framing: 'none'` asks for no frames (VS Code's remote protocol, whose server writes its own 101 and
 then bytes): the bridge makes the upgrade request over `__upgradeOverLoopback` with the connector's headers and the
 WebSocket handshake headers, and carries each read as one `message` and each `message` as one write. Its 101's
-`Set-Cookie` is read from the response's raw headers. `disconnect` `close` ends the connection (FIN) and `fail`
-destroys it. RFC 6455 does not apply, and a byte pipe has no closing handshake: its end is reported `close` 1005, clean,
+`Set-Cookie` is read from the response's raw headers. The request's connection is the request's until its 101 hands it
+to the client: a `disconnect` before then cancels the request through `__upgradeOverLoopback`'s abort signal, which
+destroys that connection, and answers the client's one `close`, 1006, not clean; a result that arrives for a cancelled
+client is destroyed. Once connected, `disconnect` `close` ends the connection (FIN) and `fail` destroys it. RFC 6455 does not apply, and a byte pipe has no closing handshake: its end is reported `close` 1005, clean,
 when the connection ended without error, and 1006, not clean, when it errored.
 
 ### 5. The bridge's close
 
 A bridge that closes (its container disposed) tells each of its clients `close` 1006, not clean, while its channel can
-carry it, and gives back its channel; then each connection is ended as *Kept* (1) ends one at the runtime's release,
-and each byte pipe is destroyed.
+carry it, and gives back its channel; then each connection is ended by its state, as browser-substrate ADR-0099's
+runtime release ends a socket:
+- CONNECTING is cancelled as §2 cancels it;
+- OPEN is closed as *Kept* (1) closes one at the runtime's release;
+- CLOSING is aborted: its upgraded socket is destroyed. undici's `close` does nothing for a CLOSING socket
+  (`closeWebSocketConnection`, bundle 14820-14825), and ADR-0099 *Kept* aborts CLOSING because the carriers go with
+  the runtime;
+- each byte pipe is destroyed, and one whose upgrade request is outstanding has that request cancelled as §4 cancels
+  it.
 
 ### Kept
 
@@ -164,14 +171,6 @@ and each byte pipe is destroyed.
   an extension it did not offer).
 - **undici's global dispatcher.** Loading the bundle in the engine's scope defines the two global-dispatcher symbols on
   the realm's global where they are absent. The bridge never uses that dispatcher: every connection names its own.
-
-### Deleted
-
-The bridge's own RFC 6455: `__substrateFrame`, `__substrateParseFrames`, `FrameState`, `__substrateUpgradeSocket` and
-its `UpgradeSocket`, the handshake headers it wrote for a WebSocket, the `Math.random` masks and the 50 ms destroy.
-The channel's former carrier, `__substrateListenForUpgrades`, `__substrateChannelSockets`, `__substrateRawUpgradeSocket`,
-`UpgradeEntry`, `UpgradeSignal`, `UpgradeTarget` and `UpgradeEnd`, is §2's `SocketChannel` and §4's byte pipe; the silent
-503 and the `connect` fields `origin` and `host`, which `headers` carries, go.
 
 ## Where the evidence stops
 

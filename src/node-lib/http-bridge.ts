@@ -291,17 +291,21 @@ export interface UpgradeResult {
  * page holds this one, which is exactly what the real `ws` needs on both
  * sides. The bytes llhttp had already read past the head are pushed back
  * onto this end, because they are the first frame. A port nothing listens on
- * (the kernel refuses the connection) answers 503 with no socket.
+ * (the kernel refuses the connection) answers 503 with no socket. The
+ * connection is this request's until its 101 hands it over: `signal` aborts
+ * the request before then, its connection destroyed and its answer no socket.
  */
 export function __upgradeOverLoopback(
   tree: object | undefined, port: number, method: string, url: string, headers: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<UpgradeResult> {
   return new Promise<UpgradeResult>((resolve) => {
     const collected = emptyCollected();
     let settled = false;
     const parser = responseParser(collected);
     const socket = connectLoopback(tree, port);
-    const fail = (error?: unknown): void => {
+    signal?.addEventListener('abort', () => { if (!settled) { socket.destroy(); fail(); } }, { once: true });
+    function fail(error?: unknown): void {
       if (settled) return;
       settled = true;
       parser.free();
@@ -310,7 +314,7 @@ export function __upgradeOverLoopback(
         return;
       }
       resolve({ statusCode: collected.statusCode || 502, statusMessage: collected.statusMessage, headers: collected.headers, rawHeaders: collected.rawHeaders, socket: null });
-    };
+    }
     socket.on('data', (chunk: Uint8Array) => {
       if (settled) return;
       const read = parser.execute(chunk);
