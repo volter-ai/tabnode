@@ -5,9 +5,8 @@ const HOST_MARKER = '\0Volter-host-executable-v1\n';
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 
 /** The installed npm's metadata, never this engine's or the application's version. */
-export function installedNpmVersion(tree: VirtualFS, cwd: string, environment: Record<string, string>, executable = 'npm'): string {
-  const paths = executable.includes('/') ? [resolve(cwd, executable)]
-    : (environment.PATH ?? '/usr/local/bin:/usr/bin:/bin').split(':').map(directory => resolve(cwd, directory || '.', executable));
+export function installedNpmVersion(tree: VirtualFS, cwd: string, environment: Record<string, string>): string {
+  const paths = (environment.PATH ?? '/usr/local/bin:/usr/bin:/bin').split(':').map(directory => resolve(cwd, directory || '.', 'npm'));
   const installations = new Map<string, string>();
   const manifests = new Set<string>();
 

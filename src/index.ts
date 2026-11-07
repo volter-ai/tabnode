@@ -56,7 +56,7 @@ import { VirtualFS } from './virtual-fs';
 import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
-import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, type StdioKind } from './shims/child_process';
+import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, execvpExecution, type ArgvExecution, type StdioKind } from './shims/child_process';
 import { Server as NetServer, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, type OwnedHandle } from './node-lib/binding/handles';
 import { withFilesystem } from './node-lib/binding/named-tree';
@@ -77,6 +77,7 @@ export const RUN_SIGNAL_DISPOSITIONS = 1;
 export const RUN_LINE_FILESYSTEM = 1;
 import { stdinRingProblem, stdinRingWaitsAsync, type StdinReader } from './stdin-ring';
 export { TREE_DESCRIPTORS } from './tree-descriptors';
+import { treeDescriptorsOf } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
 export { TREE_SOCKETS } from './host-sockets';
 export type { TreeSockets, InterfaceAddressEntry, SocketMessage, PollDescriptor } from './host-sockets';
@@ -230,7 +231,13 @@ export function createContainer(options?: ContainerOptions): {
   serverBridge: ServerBridge;
   execute: (code: string, filename?: string) => { exports: unknown };
   runFile: (filename: string) => { exports: unknown };
-  run: (command: string, options?: RunOptions) => Promise<RunResult>;
+  /**
+   * Run a command line through the engine's shell, or, given an argv vector, that vector as `execvp` is given it: its
+   * words untouched, no shell reading them, and `argv[0]` resolved as musl's `execvp` resolves it on the run's tree, or
+   * by the kernel in a kernel's tree (ADR-0012). What runs is what the resolved file is: the engine's node entry is
+   * that Node, as `runNode` starts it; any other program is itself, and a `node` it runs is its child.
+   */
+  run: (command: string | readonly string[], options?: RunOptions) => Promise<RunResult>;
   /**
    * Start the engine's Node from an argv vector, as `execve` starts a program:
    * `argv[0]` is the program's name (`process.argv0`), then Node's options,
@@ -353,6 +360,20 @@ export function createContainer(options?: ContainerOptions): {
     };
   };
 
+  /** The engine's Node from its argv, the run itself: `runNode`, and `run` given an argv that names Node (ADR-0012 §2). */
+  const startNodeRun = (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {
+    ...(runOptions?.moduleEvaluationObserver ? { moduleEvaluationObserver: runOptions.moduleEvaluationObserver } : {}),
+    credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()),
+    ...(runOptions?.filesystem ? { filesystem: runOptions.filesystem } : {}),
+    ...(runOptions?.process ? { process: { pid: runOptions.process.pid, ppid: runOptions.process.ppid } } : {}),
+    ...(runOptions?.registry ? { registry: runOptions.registry } : {}),
+    cwd: runOptions?.cwd,
+    env: runOptions?.env,
+    ...(runOptions?.stdin !== undefined ? { stdin: runOptions.stdin } : {}),
+    processToken,
+    vfs,
+  }));
+
   let disposed = false;
   const container: ReturnType<typeof createContainer> = {
     vfs,
@@ -361,42 +382,42 @@ export function createContainer(options?: ContainerOptions): {
     serverBridge,
     execute: (code: string, filename?: string) => runtime.execute(code, filename),
     runFile: (filename: string) => runtime.runFile(filename),
-    run: (command: string, runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, async (processToken) => {
-      const numbered = runOptions?.registry !== undefined || runOptions?.process !== undefined;
-      try {
-        // A run that is a process of a kernel's (its own connection): its registry and its numbers, as runNode's.
-        if (runOptions?.registry) installRunRegistry(processToken, runOptions.registry);
-        if (runOptions?.process) claimRunPid(processToken, runOptions.process.pid, runOptions.process.ppid, { argv: ['sh', '-c', command], cwd: runOptions.cwd ?? '/' });
-        // That process is a shell: each `node` its line runs is its child, numbered through its registry, and the line
-        // is forgotten only here, at its own end (below).
-        if (numbered) holdShellRun(processToken);
-        // `container.run("cat", { stdin })` used to reach the engine's shell
-        // without its stdin: the run dropped it before exec, and exec dropped
-        // it before the shell. Both forward it, so a builtin reads what was
-        // piped, as it does in a Node shell.
-        return await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-          runCommand(command, { credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()), cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, vfs: runOptions?.filesystem ?? vfs }, (error, stdout, stderr) => {
-            resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
-          });
-        });
-      } finally {
-        // A shell line that has ended is no longer a process, as a node run that has ended is not (launchNode): its
-        // number goes back, so the next run given it is not refused, and its registry and numbers are dropped.
-        if (numbered) forgetRunPid(processToken);
+    run: (command: string | readonly string[], runOptions?: RunOptions): Promise<RunResult> => {
+      // An argv outside a kernel tree runs as what the file `execvp` resolves on the run's own tree is (ADR-0012 §2, §3):
+      // where that is the engine's Node, runNode's launch, its pid the one the host gave. In a kernel tree the kernel
+      // resolves it, and Tabnode does not search.
+      let execution: ArgvExecution | undefined;
+      const tree = runOptions?.filesystem ?? vfs;
+      if (Array.isArray(command) && command.length > 0 && command.every((word) => typeof word === 'string')
+        && treeDescriptorsOf(tree) === undefined) {
+        const decided = execvpExecution(tree, command, runOptions?.cwd ?? '/', runOptions?.env ?? {});
+        if ('node' in decided) return startNodeRun(decided.node, runOptions);
+        execution = decided;
       }
-    }),
-    runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startRun(runOptions, (processToken) => runNode(argv, {
-      ...(runOptions?.moduleEvaluationObserver ? { moduleEvaluationObserver: runOptions.moduleEvaluationObserver } : {}),
-      credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()),
-      ...(runOptions?.filesystem ? { filesystem: runOptions.filesystem } : {}),
-      ...(runOptions?.process ? { process: { pid: runOptions.process.pid, ppid: runOptions.process.ppid } } : {}),
-      ...(runOptions?.registry ? { registry: runOptions.registry } : {}),
-      cwd: runOptions?.cwd,
-      env: runOptions?.env,
-      ...(runOptions?.stdin !== undefined ? { stdin: runOptions.stdin } : {}),
-      processToken,
-      vfs,
-    })),
+      return startRun(runOptions, async (processToken) => {
+        const numbered = runOptions?.registry !== undefined || runOptions?.process !== undefined;
+        try {
+          // A run that is a process of a kernel's (its own connection): its registry and its numbers, as runNode's.
+          if (runOptions?.registry) installRunRegistry(processToken, runOptions.registry);
+          if (runOptions?.process) claimRunPid(processToken, runOptions.process.pid, runOptions.process.ppid, { argv: typeof command === 'string' ? ['sh', '-c', command] : [...command], cwd: runOptions.cwd ?? '/' });
+          // That process is a shell, or the program other than Node its argv names: each `node` it runs is its child,
+          // numbered through its registry, and it is forgotten only here, at its own end (below) (ADR-0012 §2).
+          if (numbered) holdShellRun(processToken);
+          // The run's stdin reaches the shell or the program, so a builtin reads what was piped, as it does in a Node
+          // shell.
+          return await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
+            runCommand(command, { credentials: runOptions?.credentials ?? processCredentialsOf(runtime.getProcess()), cwd: runOptions?.cwd, env: runOptions?.env, stdin: typeof runOptions?.stdin === 'string' ? runOptions.stdin : runOptions?.stdin instanceof Uint8Array ? new TextDecoder().decode(runOptions.stdin) : undefined, processToken, ...(execution ? { execution } : {}), vfs: tree }, (error, stdout, stderr) => {
+              resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? (error.code ?? 1) : 0 });
+            });
+          });
+        } finally {
+          // A shell line that has ended is no longer a process, as a node run that has ended is not (launchNode): its
+          // number goes back, so the next run given it is not refused, and its registry and numbers are dropped.
+          if (numbered) forgetRunPid(processToken);
+        }
+      });
+    },
+    runNode: (argv: readonly string[], runOptions?: RunOptions): Promise<RunResult> => startNodeRun(argv, runOptions),
     // What a host that named a run can ask about it, and the one thing it can
     // do to it. A run nobody named, and a name nothing runs under, answer as
     // an absent process does: no timers, no ports, and a stop that does
