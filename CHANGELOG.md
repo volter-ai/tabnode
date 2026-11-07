@@ -8,11 +8,12 @@ A minor release: `run(argv)`, `ServerBridge.registerConnector`, the `vite-ws-cha
 and `RunStreams.terminal` doors change the exported surface.
 
 - **A shell's `&` job is a process of its own** (browser-substrate ADR-0227, "What a page program is"). It is a spawn
-  of `/bin/sh -c` through the engine's child start, the host's to run, carrying the shell's state as a forked subshell
-  has it: its options, unexported variables, aliases and functions written ahead of the job's text, its `$0` and
-  positional parameters as the spawn's words. `$!` names that process, and `wait` and `kill` act on it; its `$$` and
-  `$PPID` are its own, and a variable it sets does not reach the shell. With no host to run it, the job is refused
-  (`bash: fork: Function not implemented`); nothing runs it in the realm.
+  of the shell's own program (`$BASH`, `/bin/bash`) with `-c`, as bash's fork runs the same shell, through the engine's
+  child start. It carries the shell's state as a forked subshell has it: its options, unexported variables, aliases
+  and functions written ahead of the job's text, its `$0` and positional parameters as the spawn's words. The job is
+  the host's to run, and no bypass leaves it to the engine's shell. `$!` names that process, and `wait` and `kill` act
+  on it; its `$$` and `$PPID` are its own, and a variable it sets does not reach the shell. With no host to run it,
+  the job fails as a failed fork does (`bash: fork: …`), and nothing runs it in the realm.
 - **A virtual WebSocket is Node's own WebSocket client** (ADR-0014; browser-substrate ROADMAP 55). The server bridge
   opens undici's `WebSocket` (the bundle Node ships, unedited) to the guest's port over the container's loopback, so
   the handshake and its 101 checks, masking, every frame check, the close-code table, the closing handshake, 1005,

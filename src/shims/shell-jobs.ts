@@ -18,15 +18,17 @@
  *   variable `__tabnode_bg` sets, and the `wait` builtin (which answers 0 at
  *   once and cannot be overridden) to `__tabnode_wait`.
  * - `__tabnode_bg` starts the job as bash runs one in a forked subshell, which
- *   no host image can fork (ADR-0227 §6, ENOSYS): a spawn of `/bin/sh -c`
- *   through the engine's own child start (the door `spawn` takes), carrying the
+ *   no host image can fork (ADR-0227 §6, ENOSYS): a spawn of the shell's own
+ *   program (`$BASH`, `SHELL_PROGRAM`) with `-c`, as bash's fork runs the same
+ *   shell, through the engine's own child start (the door `spawn` takes), carrying the
  *   shell's state as a forked subshell has it, written ahead of the job's text:
  *   its variables, functions, options (`SHELLOPTS`, `BASHOPTS`) and aliases, with
  *   its `$0` and positional parameters as the spawn's words. just-bash keeps no
  *   traps, so none is written. A spawn is a new process, not a copy: the job's
  *   `$$` and `$PPID` are its own, and a variable it sets does not reach the
- *   shell. The child is the host's to run; with no host to run it, the job is
- *   refused, never run in this realm.
+ *   shell. The child is its own process, the host's to run, which no bypass
+ *   leaves to the engine's shell; with no host to run it, the start refuses it
+ *   and the job fails as a fork does, never run in this realm.
  * - `__tabnode_wait` waits for the jobs of the shell it runs in (all, `-n` the
  *   next, or the pids named) and answers the status of the last one: an exit
  *   code, or 128 plus the signal that ended it. `kill` delivers a signal to any
@@ -58,9 +60,15 @@ export interface JobStart {
 export interface ShellJobsHost {
   runTokenOf(ctx: CommandContext): ProcessToken | null;
   runStreamsFor(token: ProcessToken): RunStreams | undefined;
-  /** The job started as a child of its shell's run, the host's to run; null where no host can run it. */
-  startJob(start: JobStart): StartedRun | null;
+  /** The job started as a child of its shell's run, its own process, the host's to run; it throws where none can. */
+  startJob(start: JobStart): StartedRun;
 }
+
+/**
+ * The engine's shell's own program, where its tree carries it (`/bin/bash`, ADR-0012 §3's installed entry; a host's
+ * image carries its own bash there): the shell's `$BASH`, and what runs its jobs.
+ */
+export const SHELL_PROGRAM = '/bin/bash';
 
 /** The variable `$!` is read from once the plugin has renamed it. */
 const LAST_JOB_VAR = '__TABNODE_LAST_JOB_PID';
@@ -222,10 +230,10 @@ function toRun(streams: RunStreams | undefined, fd: 1 | 2, chunk: string | Uint8
 const quoted = (word: string): string => `'${word.replace(/'/gu, "'\\''")}'`;
 
 /** Variables the job's shell sets for itself, or that are this module's or the engine's own. */
-const OWN_VARIABLES = new Set([SHELL_VAR, LAST_JOB_VAR, PROCESS_TOKEN_ENV, 'SHELLOPTS', 'BASHOPTS', 'PPID', 'UID', 'EUID', 'BASHPID', 'BASH_VERSINFO', 'RANDOM', 'SECONDS', 'LINENO']);
+const OWN_VARIABLES = new Set([SHELL_VAR, LAST_JOB_VAR, PROCESS_TOKEN_ENV, 'BASH', 'SHELLOPTS', 'BASHOPTS', 'PPID', 'UID', 'EUID', 'BASHPID', 'BASH_VERSINFO', 'RANDOM', 'SECONDS', 'LINENO']);
 
 /**
- * The job's script for `/bin/sh -c`: the shell's state as a forked subshell has it, written ahead of the job's text
+ * The job's script for the shell's own `-c`: the shell's state as a forked subshell has it, written ahead of the job's text
  * (ADR-0227, "One task per worker", *Kept*): its `shopt` options (`expand_aliases` among them), its variables that are
  * not exported (the exported ones are the spawn's environment), its aliases and its functions, then its `set -o`
  * options, last so that `errexit` and `xtrace` take hold where the shell's own commands begin; then the job.
@@ -255,10 +263,10 @@ function environmentOf(ctx: CommandContext): Record<string, string> {
 }
 
 /**
- * The job, a spawn of `/bin/sh -c` as a child of the shell's run, with the shell's `$0` and positional parameters as
- * its words. Null where no host can run it.
+ * The job, a spawn of the shell's own program with `-c` as a child of the shell's run, with the shell's `$0` and
+ * positional parameters as its words. It throws where no host can run it.
  */
-function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, functions: string, job: string): Job | null {
+function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, functions: string, job: string): Job {
   const parent = host.runTokenOf(ctx);
   const live = (): RunStreams | undefined => (parent === null ? undefined : host.runStreamsFor(parent));
   const positional = Array.from({ length: Number(ctx.env.get('#') ?? 0) }, (_, index) => ctx.env.get(String(index + 1)) ?? '');
@@ -271,7 +279,7 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, functi
   };
   const started = host.startJob({
     owner: parent,
-    argv: ['/bin/sh', '-c', jobScript(ctx, functions, job), ctx.env.get('0') ?? 'bash', ...positional],
+    argv: [SHELL_PROGRAM, '-c', jobScript(ctx, functions, job), ctx.env.get('0') ?? 'bash', ...positional],
     cwd: ctx.cwd,
     env: environmentOf(ctx),
     output: (fd, chunk) => {
@@ -284,7 +292,6 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, functi
       settle(status);
     },
   });
-  if (started === null) return null;
   entry.pid = started.pid;
   return entry;
 }
@@ -306,9 +313,11 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
     const job = args[0] ?? '';
     if (!job) return { stdout: '', stderr: `bash: ${BG_COMMAND}: not a job\n`, exitCode: 2 };
     const { shell } = shellOf(ctx);
-    const started = startJob(host, ctx, shell, args[1] ?? '', job);
-    // No host can run it: bash's subshell is a fork, which this realm has not (ADR-0227 §6), and nothing runs the job here.
-    if (started === null) return { stdout: '', stderr: 'bash: fork: Function not implemented\n', exitCode: 1 };
+    let started: Job;
+    // Refused where no host can run it: bash's subshell is a fork, which this realm has not (ADR-0227 §6), and nothing
+    // runs the job here. The job fails as bash's failed fork does.
+    try { started = startJob(host, ctx, shell, args[1] ?? '', job); }
+    catch (error) { return { stdout: '', stderr: `bash: fork: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 }; }
     shell.jobs.set(started.pid, started);
     shell.order.push(started.pid);
     ctx.env.set(LAST_JOB_VAR, String(started.pid));

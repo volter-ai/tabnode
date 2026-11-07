@@ -131,6 +131,11 @@ export interface RunRequest {
    */
   kernelDescriptors: { fd: number; from: number }[];
   /**
+   * The child is its own process whatever its descriptors (a shell's `&` job, `shell-jobs.ts`): the host's to run, never
+   * left to the engine's shell by a bypass, and refused where no host runs it, as a child with `kernelDescriptors` is.
+   */
+  ownProcess?: true;
+  /**
    * The child is started as its own process with `kernelDescriptors` (a host runs it, ADR-0010 §2): called by the
    * runner once the child is forked and before anything of it reaches its host. Each of its fds 0 to 2 and each pipe end
    * made for it becomes blocking, and the parent closes its copies of what it made for the child, so it serves none of
