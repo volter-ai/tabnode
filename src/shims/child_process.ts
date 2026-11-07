@@ -48,8 +48,8 @@ import type { VirtualFS } from '../virtual-fs';
 import { executableHeader, EXECUTABLE_HEADER_BYTES } from './executable-header';
 import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
 import { stackFormedBy } from '../stack-overrides';
-import { __releaseOwnedServers, __ownedServerPorts } from '../node-lib/net-module';
-import { __ownedHandleCount, __ownedHandleKinds, __releaseOwnedHandles } from '../node-lib/net-module';
+import { __endOwnedProcess, __ownedServerPorts } from '../node-lib/net-module';
+import { __ownedHandleCount, __ownedHandleKinds } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
 import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
@@ -70,7 +70,7 @@ import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __subs
 
 import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
 
-import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, __stopOwnedProcess, enterRun, mintPid, setRunPid, claimRunPid, runPid, runPidOf, runWaiterOf, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, type ProcessToken } from '../process-tokens';
+import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, enterRun, mintPid, setRunPid, claimRunPid, runPid, runPidOf, runWaiterOf, forgetRunPid, exitRunProcess, reapRunProcess, signalPid, signalsThroughKernel, installRunRegistry, type ProcessToken } from '../process-tokens';
 import type { ProcessRegistry } from '../process-registry';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
 const __hostProcess: { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown } | null =
@@ -966,9 +966,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       }
       if (escaped) throw escaped.error;
     }
-    // `process.exit()` ends a Node process and everything it holds; a named
-    // run's servers and timers go with it.
-    if (runToken !== null) { __releaseOwnedServers(runToken); __releaseOwnedHandles(runToken); }
+    // `process.exit()` ends a Node process and everything it holds (ADR-0011 §6, "A process's end"); the run's
+    // `finally` awaits the same end.
+    if (runToken !== null) void __endOwnedProcess(runToken);
     // In sync context, throw to stop execution (like real process.exit)
     // In async context, return silently to avoid unhandled rejections
     if (syncExecution) {
@@ -1525,34 +1525,39 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   } finally {
     // ADR-0010 §2's table, in reverse order of acquisition.
     if (!hosted) {
-      // 13: what the program opened. Safe twice: a run that exited already emptied its own entries.
-      if (runToken !== null) { __releaseOwnedServers(runToken, false); __releaseOwnedHandles(runToken); }
-      if (guest) stopGuestTimers(guest);
-      // 12: the resize handler.
-      try { stopResize?.(); } catch { /* host cleanup cannot prevent handle release */ }
-      // 11: the input, which stops at its next wake.
-      inputActive = false;
-      try { void Promise.resolve(inputIterator?.return?.()).catch(() => {}); } catch { /* producer cleanup cannot prevent process cleanup */ }
-      // 10, 9: the reports.
-      detachUncaught?.();
-      detachRejections?.();
-      // 8 is row 13's handles. 7: ResetStdio, a terminal this run left raw put back, its failure ignored.
-      if (terminalMode !== false) { try { streams?.terminal?.setRawMode?.(false); } catch { /* as tcsetattr's failure at exit is */ } }
-      // 6: the stdin sink, put back only where it is still this child's.
-      if (stdinSink && streams && streams.stdin === stdinSink.installed) streams.stdin = stdinSink.replaced;
-      // 5: the run record.
-      releaseRun?.();
-      // 4, 2, 1: its parent reaps it (a nested node's run, or the realm for one forked here), with the status a
-      // returned outcome carries or killed where the start threw; its number is forgotten, so the number it wrote
-      // into a lock file answers ESRCH; a nested node's registration of its parent's streams goes, only its own key.
-      if (reaper !== undefined && runToken !== null) {
-        const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
-        const [code, signal] = ended === undefined ? [0, 'SIGKILL'] : [ended.exitCode, null];
-        exitRunProcess(own.pid, own.waiter, code, signal, reaper);
-        reapRunProcess(own.pid, own.waiter, code, signal, reaper);
+      try {
+        // 13: what the program opened, its listening sockets among them, whatever ended it. Its end completes once
+        // its native teardown has (ADR-0011 §6); until then its uncaught report stays attached, so a teardown's
+        // throw is this run's. A run that exited already ended, and this awaits the same end.
+        if (runToken !== null) await __endOwnedProcess(runToken);
+        else if (guest) stopGuestTimers(guest);
+      } finally {
+        // 12: the resize handler.
+        try { stopResize?.(); } catch { /* host cleanup cannot prevent handle release */ }
+        // 11: the input, which stops at its next wake.
+        inputActive = false;
+        try { void Promise.resolve(inputIterator?.return?.()).catch(() => {}); } catch { /* producer cleanup cannot prevent process cleanup */ }
+        // 10, 9: the reports.
+        detachUncaught?.();
+        detachRejections?.();
+        // 8 is row 13's handles. 7: ResetStdio, a terminal this run left raw put back, its failure ignored.
+        if (terminalMode !== false) { try { streams?.terminal?.setRawMode?.(false); } catch { /* as tcsetattr's failure at exit is */ } }
+        // 6: the stdin sink, put back only where it is still this child's.
+        if (stdinSink && streams && streams.stdin === stdinSink.installed) streams.stdin = stdinSink.replaced;
+        // 5: the run record.
+        releaseRun?.();
+        // 4, 2, 1: its parent reaps it (a nested node's run, or the realm for one forked here), with the status a
+        // returned outcome carries or killed where the start threw; its number is forgotten, so the number it wrote
+        // into a lock file answers ESRCH; a nested node's registration of its parent's streams goes, only its own key.
+        if (reaper !== undefined && runToken !== null) {
+          const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
+          const [code, signal] = ended === undefined ? [0, 'SIGKILL'] : [ended.exitCode, null];
+          exitRunProcess(own.pid, own.waiter, code, signal, reaper);
+          reapRunProcess(own.pid, own.waiter, code, signal, reaper);
+        }
+        if (runToken !== null) forgetRunPid(runToken);
+        if (nested && runToken !== null) releaseRunStreams(runToken);
       }
-      if (runToken !== null) forgetRunPid(runToken);
-      if (nested && runToken !== null) releaseRunStreams(runToken);
     }
   }
 }
@@ -3062,10 +3067,8 @@ function startChildRun(request: RunRequest): StartedRun {
       }
       killedBy = signal;
       controller.abort(signal);
-      __releaseOwnedServers(token, false);
-      __releaseOwnedHandles(token);
-      __stopOwnedProcess(token);
-      end(0, killedBy);
+      // Its exit is reported once its end has completed (ADR-0011 §6).
+      void __endOwnedProcess(token).finally(() => end(0, killedBy));
       return 0;
     },
     writeStdin(bytes: Uint8Array): void | Promise<void> {
