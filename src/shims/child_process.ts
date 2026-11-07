@@ -2568,9 +2568,7 @@ export function runCommand(given: string | readonly string[], options: ExecOptio
   let execvp: string[] | undefined;
   if (typeof given === 'string') command = given;
   else {
-    if (!Array.isArray(given) || given.length === 0 || given.some((word) => typeof word !== 'string')) {
-      throw new TypeError('runCommand: argv must be a non-empty array of strings');
-    }
+    // Admitted once, at the public door (`admittedArgv`).
     execvp = [...given];
     command = execvp.map((word) => "'" + word.replaceAll("'", "'\\''") + "'").join(' ');
   }
@@ -2728,52 +2726,70 @@ function engineProgramFor(file: string, cwd?: string): string {
 /** `execvp`'s `PATH` where the environment has none (musl 1.2.5, `src/process/execvp.c:21`). */
 const EXECVP_DEFAULT_PATH = '/usr/local/bin:/bin:/usr/bin';
 
-/** Why `execvp` found nothing it could run, and what a shell reports for it (POSIX XCU 2.8.2). */
-type ExecFailure = 'ENOENT' | 'EACCES' | 'ENAMETOOLONG' | 'ENOEXEC' | 'ELOOP';
+/**
+ * Why `execvp` found nothing it could run, and what a shell reports for it (POSIX XCU 2.8.2): an `execve` error, kept
+ * as the tree answered it; a tree error of any other kind is `EIO`, a failure to read the file.
+ */
+type ExecFailure = 'ENOENT' | 'ENOTDIR' | 'EACCES' | 'ENAMETOOLONG' | 'ENOEXEC' | 'ELOOP' | 'EIO';
 const EXEC_FAILURES: Record<ExecFailure, { exitCode: number; message: string }> = {
   ENOENT: { exitCode: 127, message: 'No such file or directory' },
   ENAMETOOLONG: { exitCode: 127, message: 'File name too long' },
+  ENOTDIR: { exitCode: 126, message: 'Not a directory' },
   EACCES: { exitCode: 126, message: 'Permission denied' },
   ENOEXEC: { exitCode: 126, message: 'Exec format error' },
   ELOOP: { exitCode: 126, message: 'Too many levels of symbolic links' },
+  EIO: { exitCode: 126, message: 'Input/output error' },
 };
+
+/** The `execve` error a tree's own error is. */
+function execFailureOf(error: unknown): ExecFailure {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && Object.hasOwn(EXEC_FAILURES, code) ? code as ExecFailure : 'EIO';
+}
 
 /** A file `execve` would take, as the name it was given (`path`) and the file it is (`real`), or why not. */
 type Resolved = { path: string; real: string } | { error: ExecFailure };
 
 /**
  * The file at `path` (relative to `cwd`), as `execve` takes it: a regular file with an execute bit, by the tree's own
- * `statSync` (which follows links) and `realpathSync`; a directory or a file without execute permission is `EACCES`.
+ * `statSync` (which follows links) and `realpathSync`; a directory or a file without execute permission is `EACCES`,
+ * and the tree's own error (`ENOTDIR`, `ELOOP`, ...) is kept.
  */
-function executableAt(tree: VirtualFS, path: string, cwd: string, accepts: (path: string) => boolean): Resolved {
+function executableAt(tree: VirtualFS, path: string, cwd: string, accepts: (path: string) => boolean = () => true): Resolved {
   const absolute = path.startsWith('/') ? path : `${cwd}/${path}`;
-  let stats: { isFile(): boolean; mode: number } | undefined;
-  try { stats = tree.statSync(absolute, { throwIfNoEntry: false }); } catch { return { error: 'ENOENT' }; }
-  if (!stats) return { error: 'ENOENT' };
-  if (!stats.isFile() || (stats.mode & 0o111) === 0) return { error: 'EACCES' };
-  if (!accepts(absolute)) return { error: 'ENOENT' };
-  return { path, real: tree.realpathSync(absolute) };
+  try {
+    const stats = tree.statSync(absolute, { throwIfNoEntry: false });
+    if (!stats) return { error: 'ENOENT' };
+    if (!stats.isFile() || (stats.mode & 0o111) === 0) return { error: 'EACCES' };
+    if (!accepts(absolute)) return { error: 'ENOENT' };
+    return { path, real: tree.realpathSync(absolute) };
+  } catch (error) { return { error: execFailureOf(error) }; }
 }
 
 /**
- * musl's `__execvpe` (`src/process/execvp.c:9-53`) on `tree`: an empty name is `ENOENT` and a name with a slash is that
- * path; any other is tried in each entry of `searchPath` in order, an empty entry the working directory and a relative
- * one taken against it, skipping a candidate that is absent or that `execve` refuses with `EACCES`, and ending `EACCES`
- * where one was refused so, else `ENOENT`. `accepts` is a caller's own rule over a candidate (`programExists`'s stubs).
+ * musl's `__execvpe` walk (`src/process/execvp.c:9-53`): an empty name is `ENOENT` and a name with a slash is that path,
+ * admitted once; any other is admitted in each entry of `searchPath` in order, an empty entry the working directory and
+ * a relative one taken against it. `admit` is the whole `execve` of a candidate. The walk goes on past a candidate
+ * whose admission failed `ENOENT`, `ENOTDIR` or `EACCES`, remembering `EACCES`, and ends at any other failure with it;
+ * with no candidate left it ends `EACCES` where one was refused so, else `ENOENT`.
  */
-function execvpResolve(tree: VirtualFS, file: string, cwd: string, searchPath: string,
-  accepts: (path: string) => boolean = () => true): Resolved {
+function execvpWalk<T extends object>(file: string, searchPath: string, admit: (candidate: string) => T | { error: ExecFailure }):
+  T | { error: ExecFailure } {
   if (file.length === 0) return { error: 'ENOENT' };
-  if (file.includes('/')) return executableAt(tree, file, cwd, accepts);
+  if (file.includes('/')) return admit(file);
   if (new TextEncoder().encode(file).length > 255) return { error: 'ENAMETOOLONG' };
   let refused = false;
   for (const entry of searchPath.split(':')) {
-    const found = executableAt(tree, entry.length === 0 ? file : `${entry}/${file}`, cwd, accepts);
-    if (!('error' in found)) return found;
-    if (found.error === 'EACCES') refused = true;
+    const admitted = admit(entry.length === 0 ? file : `${entry}/${file}`);
+    if (!('error' in admitted)) return admitted;
+    if (admitted.error === 'EACCES') refused = true;
+    else if (admitted.error !== 'ENOENT' && admitted.error !== 'ENOTDIR') return admitted;
   }
   return { error: refused ? 'EACCES' : 'ENOENT' };
 }
+
+/** The text just-bash's `registerCommand` writes at a command's installed entry. */
+const commandEntryText = (name: string): string => `#!/bin/bash\n# Built-in command: ${name}\n`;
 
 /**
  * Each command the engine's shell registers, as an executable file at its standard paths, `/bin/<name>` and
@@ -2789,7 +2805,7 @@ function installCommandEntries(tree: VirtualFS): void {
       const entry = `${directory}/${name}`;
       try {
         if (tree.existsSync(entry)) continue;
-        tree.writeFileSync(entry, `#!/bin/bash\n# Built-in command: ${name}\n`);
+        tree.writeFileSync(entry, commandEntryText(name));
         tree.chmodSync(entry, 0o755);
       } catch { /* a tree that refuses the write keeps the command where the shell's registry has it */ }
     }
@@ -2804,28 +2820,58 @@ function registeredEntry(tree: VirtualFS, real: string): string | undefined {
   const name = real.slice(real.lastIndexOf('/') + 1);
   const directory = real.slice(0, real.lastIndexOf('/'));
   if ((directory !== '/bin' && directory !== '/usr/bin') || !shellCommandNames().has(name)) return undefined;
-  try { return tree.readFileSync(real, 'utf8') === `#!/bin/bash\n# Built-in command: ${name}\n` ? name : undefined; }
+  try { return tree.readFileSync(real, 'utf8') === commandEntryText(name) ? name : undefined; }
   catch { return undefined; }
 }
 
-/** A script's `#!` line, as Linux's `binfmt_script` reads it: the interpreter and at most one argument. */
-function shebangOf(tree: VirtualFS, path: string): { interpreter: string; argument?: string } | undefined {
-  let head: string;
-  try { head = tree.readFileSync(path, 'utf8').slice(0, 256); } catch { return undefined; }
-  if (!head.startsWith('#!')) return undefined;
-  const line = head.slice(2).split('\n', 1)[0]!.replace(/^[ \t]+|[ \t]+$/gu, '');
-  const at = line.search(/[ \t]/u);
-  if (line.length === 0) return undefined;
-  if (at < 0) return { interpreter: line };
-  const argument = line.slice(at).replace(/^[ \t]+/u, '');
-  return { interpreter: line.slice(0, at), ...(argument ? { argument } : {}) };
+/**
+ * A script's `#!` line as Linux's `load_script` reads it (`fs/binfmt_script.c`), from the header `execve` reads
+ * (`executableHeader`, `BINPRM_BUF_SIZE` bytes, the rest NUL): the line ends at a newline found before any NUL; with
+ * none, the interpreter must end at a space, tab or NUL inside the header, else it is taken for truncated and refused.
+ * The interpreter ends at its first space, tab or NUL, and the rest of the line, trimmed and cut at a NUL, is its one
+ * argument. Anything that is not such a line is `ENOEXEC`.
+ */
+function scriptLineOf(head: Uint8Array): { interpreter: string; argument?: string } | { error: ExecFailure } {
+  const buf = new Uint8Array(EXECUTABLE_HEADER_BYTES);
+  buf.set(head.subarray(0, EXECUTABLE_HEADER_BYTES));
+  const notScript = { error: 'ENOEXEC' as const };
+  if (buf[0] !== 0x23 || buf[1] !== 0x21) return notScript;
+  const spacetab = (byte: number): boolean => byte === 0x20 || byte === 0x09;
+  const nextNonSpacetab = (first: number, last: number): number => {
+    for (let at = first; at <= last; at += 1) if (!spacetab(buf[at]!)) return at;
+    return -1;
+  };
+  const nextTerminator = (first: number, last: number): number => {
+    for (let at = first; at <= last; at += 1) if (spacetab(buf[at]!) || buf[at] === 0) return at;
+    return -1;
+  };
+  const bufEnd = buf.length - 1;
+  let end = -1;
+  for (let at = 0; at < buf.length && buf[at] !== 0; at += 1) if (buf[at] === 0x0a) { end = at; break; }
+  if (end < 0) {
+    const first = nextNonSpacetab(2, bufEnd);
+    if (first < 0 || nextTerminator(first, bufEnd) < 0) return notScript;
+    end = bufEnd;
+  }
+  while (spacetab(buf[end - 1]!)) end -= 1;
+  const name = nextNonSpacetab(2, end);
+  if (name < 0 || name === end) return notScript;
+  const separator = nextTerminator(name, end);
+  const argumentAt = separator >= 0 && buf[separator] !== 0 ? nextNonSpacetab(separator, end) : -1;
+  const text = (from: number, to: number): string => {
+    const nul = buf.subarray(from, to).indexOf(0);
+    return new TextDecoder().decode(buf.subarray(from, nul < 0 ? to : from + nul));
+  };
+  const interpreter = text(name, separator >= 0 ? separator : end);
+  return argumentAt >= 0 ? { interpreter, argument: text(argumentAt, end) } : { interpreter };
 }
 
 /**
- * What an argv runs as on `tree` (ADR-0012 §3), decided by the file `execvp` resolves, never by its name: the engine's
- * Node where its realpath is the node entry; a registered command where it is that command's installed entry; a script's
- * interpreter, decided the same way, with `[interpreter, argument?, path, ...words]` (up to four levels, as
- * `binfmt_script`); anything else `ENOEXEC`.
+ * What an argv runs as on `tree` (ADR-0012 §2, §3): musl's walk, each candidate admitted as `execve` admits it, whole.
+ * A candidate is decided by the file it is, never by its name: the engine's Node where its realpath is the node entry; a
+ * registered command where it is that command's installed entry; a script's interpreter, decided the same way, with
+ * `[interpreter, argument?, path, ...words]` (up to four levels, as `binfmt_script`); anything else `ENOEXEC`. A
+ * candidate whose interpreter is missing fails as that interpreter does, so the walk goes on to the next.
  */
 export function execvpExecution(tree: VirtualFS, argv: readonly string[], cwd: string, env: Record<string, string>):
   { node: string[] } | ArgvExecution {
@@ -2833,20 +2879,34 @@ export function execvpExecution(tree: VirtualFS, argv: readonly string[], cwd: s
   if (!shells.has(tree)) shellForRunTree(tree);
   let nodeEntry: string | undefined;
   try { nodeEntry = tree.realpathSync(__substrateExecPath); } catch { nodeEntry = undefined; }
-  let found = execvpResolve(tree, argv[0]!, cwd, env.PATH ?? EXECVP_DEFAULT_PATH);
-  let name = argv[0]!;
-  let words = argv.slice(1);
-  for (let depth = 0; ; depth += 1) {
-    if ('error' in found) return { failure: found.error };
-    if (found.real === nodeEntry) return { node: [name, ...words] };
-    if (registeredEntry(tree, found.real) !== undefined) return { command: found.real, words };
-    const script = shebangOf(tree, found.real);
-    if (!script) return { failure: 'ENOEXEC' };
-    if (depth === 4) return { failure: 'ELOOP' };
-    words = [...(script.argument !== undefined ? [script.argument] : []), found.path, ...words];
-    name = script.interpreter;
-    found = executableAt(tree, script.interpreter, cwd, () => true);
+  const execve = (candidate: string): { node: string[] } | { command: string; words: string[] } | { error: ExecFailure } => {
+    let path = candidate;
+    let name = argv[0]!;
+    let words = argv.slice(1);
+    for (let depth = 0; ; depth += 1) {
+      const found = executableAt(tree, path, cwd);
+      if ('error' in found) return found;
+      if (found.real === nodeEntry) return { node: [name, ...words] };
+      if (registeredEntry(tree, found.real) !== undefined) return { command: found.real, words };
+      let script: ReturnType<typeof scriptLineOf>;
+      try { script = scriptLineOf(executableHeader(tree, found.real)); } catch (error) { return { error: execFailureOf(error) }; }
+      if ('error' in script) return script;
+      if (depth === 4) return { error: 'ELOOP' };
+      words = [...(script.argument !== undefined ? [script.argument] : []), found.path, ...words];
+      name = script.interpreter;
+      path = script.interpreter;
+    }
+  };
+  const decided = execvpWalk(argv[0]!, env.PATH ?? EXECVP_DEFAULT_PATH, execve);
+  return 'error' in decided ? { failure: decided.error } : decided;
+}
+
+/** The one admission of a public argv (ADR-0012 §1): a non-empty array of strings, else `TypeError`. */
+export function admittedArgv(given: readonly unknown[]): string[] {
+  if (!Array.isArray(given) || given.length === 0 || given.some((word) => typeof word !== 'string')) {
+    throw new TypeError('run: argv must be a non-empty array of strings');
   }
+  return [...given] as string[];
 }
 
 /** What a run reports for an argv `execvp` could not run: what a shell says of it, and its status. */
@@ -2867,7 +2927,8 @@ function programExists(file: string, cwd: string | undefined, env: Record<string
   const tree = treeForRun();
   if (!tree) return false;
   // `spawn`'s own `PATH` default and stub rule; a file found without execute permission is there, and its run fails.
-  const found = execvpResolve(tree, name, cwd ?? '/', env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin', runsInEngine);
+  const found = execvpWalk(name, env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin',
+    (candidate) => executableAt(tree, candidate, cwd ?? '/', runsInEngine));
   return !('error' in found) || found.error === 'EACCES';
 }
 

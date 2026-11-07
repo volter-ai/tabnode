@@ -33,12 +33,14 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   reaches the program untouched.
   - **Resolution:** `argv[0]` is resolved as musl's `execvp` resolves it, on the run's own tree: a name with a slash
     is that path; any other walks `PATH` in order, relative entries against the working directory, counting only a
-    regular file with an execute bit. In a kernel tree the kernel's `posix_spawnp` resolves it, and Tabnode does not
-    search.
+    regular file with an execute bit. Each candidate is admitted whole, as `execve` admits it: one that fails
+    `ENOENT`, `ENOTDIR` or `EACCES` (its script's interpreter included) is passed over, and any other failure ends the
+    walk. In a kernel tree the kernel's `posix_spawnp` resolves it, and Tabnode does not search.
   - **What runs:** the resolved file decides it, never its name. The engine's node entry is that Node, as `runNode`
     starts it, so a numbered run's pid is the Node's own. A registered command's installed entry runs that command.
-    A script runs its `#!` interpreter, decided the same way. Anything else fails as a shell reports it: 127 for
-    `ENOENT`, 126 for `EACCES` or `ENOEXEC`. An argv runs no shell builtin, so `['true']` with no `true` on `PATH`
+    A script runs its `#!` interpreter, read from its first 256 bytes as Linux reads them (a truncated interpreter
+    path is `ENOEXEC`), and decided the same way. Anything else fails as a shell reports it: 127 for `ENOENT`, 126 for
+    `ENOTDIR`, `EACCES`, `ENOEXEC`, `ELOOP` or a read failure. An argv runs no shell builtin, so `['true']` with no `true` on `PATH`
     is `ENOENT`.
   - **Command entries:** a tree the engine made carries every command its shell registers as an executable entry
     at `/bin/<name>` and `/usr/bin/<name>`, with just-bash's own entry text, so `['ls']` finds `/bin/ls` as on a
