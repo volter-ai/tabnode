@@ -1696,8 +1696,7 @@ export function initChildProcess(vfs: VirtualFS): void {
     },
     customCommands: [nodeCommand, npmCommand],
   });
-  // A statement ending in `&` is a fork this host-less shell refuses, and `kill` reaches the engine's process table
-  // (`shell-jobs.ts` says why).
+  // The shell's `sh`, `bash`, `exec` and `kill` over the engine's process table (`shell-jobs.ts`).
   installShellJobs(bashInstance, { runTokenOf });
   shells.set(tree, { bash: bashInstance, adapter: vfsAdapter });
 

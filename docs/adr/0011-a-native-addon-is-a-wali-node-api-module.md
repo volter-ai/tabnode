@@ -303,7 +303,8 @@ Each rule names its source, as §4's do.
     return from the entry, a throwing entry, a `process.exit` that unwinds and a caller's abort all reach;
     `process.exit()` itself; a kill of a child the realm runs (its `kill`); and the host's `stopProcess` (`index.ts`).
     A shell's `&` job is none of these: in the substrate every shell line is the catalog's shell, and its `&` is that
-    shell's own fork; the host-less engine refuses it as a failed fork (`shims/shell-jobs.ts`). A process may be ended twice
+    shell's own fork. *Kept:* with no host there is no fork, and the engine's shell runs a `&` statement in the
+    foreground in the realm, as just-bash runs it. A process may be ended twice
     (`process.exit`, then the `finally`).
   - *Node v24.21.0:* a Tabnode process shares its realm with others, as a worker shares its living OS process, so
     Node's worker is the reference, not the main thread's `exit()`, which leaves release to the OS

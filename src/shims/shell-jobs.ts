@@ -1,14 +1,12 @@
 /**
- * The engine's shell (just-bash) runs a line only where no host runs it (`routeCommand`): in the substrate every line,
- * `exec`, `shell: true` spawn and synchronous child is the catalog's own `/bin/sh -c` through the host's child start,
- * so a statement there that ends in `&` is that shell's own fork. Here, with no host, a background job is a fork this
- * realm cannot make (browser-substrate ADR-0227 §6, ENOSYS, and "One task per worker"): the plugin replaces each
- * background statement with `__tabnode_bg`, which fails as a failed fork does and runs nothing.
+ * The engine's shell's own commands for a run's processes: `sh` and `bash` that carry a run's name, `exec`, and a
+ * `kill` that reaches any process of the engine by pid, built on the doors just-bash offers (custom commands) rather
+ * than on a patched copy of it.
  *
- * This is built on the doors just-bash offers rather than on a patched copy of it: a transform plugin, which runs on
- * every script the shell executes (the top-level line, `sh -c`, `bash -c`, a script file), and custom commands. The
- * same module gives the shell `sh` and `bash` that carry a run's name, `exec`, and a `kill` that reaches any process of
- * the engine by pid.
+ * The engine's shell runs a line only where no host runs it (`routeCommand`): in the substrate every shell line is the
+ * catalog's own `/bin/sh -c` through the host's child start, so a `&` there is that shell's own fork. With no host
+ * there is no fork, and a statement ending in `&` runs in the foreground in the realm, as just-bash runs it
+ * (browser-substrate decisions, "with no host, Tabnode's `&` runs in the foreground").
  */
 import { defineCommand } from 'just-bash';
 import type { Bash, CommandContext } from 'just-bash';
@@ -18,55 +16,6 @@ import { __substrateChildrenOf, __substrateSignals, __substrateSignalNames } fro
 /** What the engine's process model gives this module. */
 export interface ShellJobsHost {
   runTokenOf(ctx: CommandContext): ProcessToken | null;
-}
-
-const BG_COMMAND = '__tabnode_bg';
-
-type Node = Record<string, unknown>;
-
-function isNode(value: unknown): value is Node {
-  return typeof value === 'object' && value !== null;
-}
-
-/** The refused fork that stands where a background statement was. */
-function refusedFork(statement: Node): Node {
-  return {
-    type: 'Statement',
-    pipelines: [{
-      type: 'Pipeline',
-      commands: [{ type: 'SimpleCommand', name: { type: 'Word', parts: [{ type: 'Literal', value: BG_COMMAND }] }, args: [], assignments: [], redirections: [] }],
-      negated: false,
-      timed: false,
-      timePosix: false,
-    }],
-    operators: [],
-    background: false,
-    ...(typeof statement.sourceText === 'string' ? { sourceText: statement.sourceText } : {}),
-  };
-}
-
-/** The rewrite, in place: every background statement becomes the refused fork. */
-function rewrite(node: unknown): void {
-  if (Array.isArray(node)) {
-    for (let index = 0; index < node.length; index += 1) {
-      const child = node[index];
-      if (isNode(child) && child.type === 'Statement' && child.background === true) node[index] = refusedFork(child);
-      else rewrite(child);
-    }
-    return;
-  }
-  if (!isNode(node)) return;
-  for (const key of Object.keys(node)) {
-    const child = node[key];
-    if (isNode(child) && child.type === 'Statement' && child.background === true) node[key] = refusedFork(child);
-    else rewrite(child);
-  }
-}
-
-/** The plugin: every script is rewritten. */
-function transform({ ast }: { ast: Node }): { ast: Node } {
-  if (Array.isArray(ast.statements) && JSON.stringify(ast).includes('"background":true')) rewrite(ast.statements);
-  return { ast };
 }
 
 /** `-TERM`, `-SIGTERM`, `TERM`, `15`, `-15` to Node's name, or null. */
@@ -82,14 +31,8 @@ function signalName(spec: string): string | null {
   return __substrateSignals[name] !== undefined ? name : null;
 }
 
-/** The engine's shell, given its refused background jobs, `sh`, `bash`, `exec` and `kill`. */
+/** The engine's shell, given `sh`, `bash`, `exec` and `kill`. */
 export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
-  (bash as unknown as { registerTransformPlugin(plugin: { name: string; transform: typeof transform }): void })
-    .registerTransformPlugin({ name: 'tabnode-background-jobs', transform });
-
-  bash.registerCommand(defineCommand(BG_COMMAND, async () => (
-    { stdout: '', stderr: 'bash: fork: Function not implemented\n', exitCode: 1 })));
-
   // `sh file`, `sh -c line` and `sh` on stdin: the shell's own ran the script
   // with the caller's exported variables alone, and a run's name travels in
   // a variable the shell never exports, so a `node` on any line of a script
