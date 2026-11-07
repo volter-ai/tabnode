@@ -62,6 +62,8 @@ export default defineConfig({
         // imports this same module.
         'stdin-ring': resolve(__dirname, 'src/stdin-ring.ts'),
         'prepared-key': resolve(__dirname, 'src/prepared-key.ts'),
+        // A thread's side of an addon's imports, which the substrate's thread worker imports alone (ADR-0011 §4).
+        'native-thread': resolve(__dirname, 'src/native-thread.ts'),
       },
       name: 'Tabnode',
       formats: ['es'],

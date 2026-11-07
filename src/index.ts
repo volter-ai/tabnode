@@ -29,7 +29,7 @@ export { createProcess } from './shims/process';
 export type { Process, ProcessEnv } from './shims/process';
 export * as path from './shims/path';
 export { httpModule as http, httpsModule as https } from './node-lib/http-module';
-import { __releaseOwnedServers, __ownedServerPorts } from './node-lib/net-module';
+import { __endOwnedProcess, __ownedServerPorts } from './node-lib/net-module';
 export { netModule as net } from './node-lib/net-module';
 export { eventsModule as events } from './node-lib/events-module';
 export { streamModule as stream } from './node-lib/stream-module';
@@ -57,12 +57,12 @@ import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
 import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, execvpExecution, type ArgvExecution, type StdioKind } from './shims/child_process';
-import { Server as NetServer, __releaseOwnedHandles, type Socket as NetSocket } from './node-lib/net-module';
+import { Server as NetServer, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, type OwnedHandle } from './node-lib/binding/handles';
 import { withFilesystem } from './node-lib/binding/named-tree';
 import { nativeStreamHandles, type NativeStreamHandleView } from './native-stream-owner';
 
-import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, __stopOwnedProcess, runPid, processByPid, installRunRegistry, claimRunPid, forgetRunPid } from './process-tokens';
+import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, runPid, processByPid, installRunRegistry, claimRunPid, forgetRunPid } from './process-tokens';
 export { runPid, processByPid };
 export { installProcessRegistry, installProcessIdAllocator } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
@@ -81,6 +81,8 @@ import { treeDescriptorsOf } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
 export { TREE_SOCKETS } from './host-sockets';
 export type { TreeSockets, InterfaceAddressEntry, SocketMessage, PollDescriptor } from './host-sockets';
+export { TREE_NATIVE, NATIVE_THREAD_MODULE } from './host-native';
+export type { TreeNative, NativeLoadRequest, NativeLoaded } from './host-native';
 export { TREE_TLS } from './host-tls';
 export type { TreeTls, TlsTransport, TlsPlainConnection, TlsSecureConnection, TlsClientSession, TlsClientOptions, TlsPeerCertificate,
   TlsServerOptions, TlsServerSecureConnection, TlsServerSession } from './host-tls';
@@ -432,11 +434,9 @@ export function createContainer(options?: ContainerOptions): {
     /** End the named run: its timers stop and its servers are released. */
     stopProcess: (token: string): boolean => {
       const known = __runFor(token) !== undefined || __ownedServerPorts(token).length > 0;
-      // The servers first, and their timers here rather than on a tick of
-      // their own: a caller that asks is told what it may then read back.
-      __releaseOwnedServers(token, false);
-      __releaseOwnedHandles(token);
-      __stopOwnedProcess(token);
+      // Its servers, handles and timers are released here, so a caller that asks is told what it may then read back;
+      // its native teardown completes after (ADR-0011 §6), and the run's own end awaits it.
+      void __endOwnedProcess(token);
       return known;
     },
     /**
