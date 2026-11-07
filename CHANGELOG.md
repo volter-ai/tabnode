@@ -2,7 +2,10 @@
 
 What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## Unreleased
+## 0.19.0 — 2026-11-06
+
+A minor release: `run(argv)`, `ServerBridge.registerConnector`, the `vite-ws-channel` fields and the `TreeSockets`
+and `RunStreams.terminal` doors change the exported surface.
 
 - **A virtual WebSocket is Node's own WebSocket client** (ADR-0014; browser-substrate ROADMAP 55). The server bridge
   opens undici's `WebSocket` (the bundle Node ships, unedited) to the guest's port over the container's loopback, so
@@ -110,6 +113,9 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   child and closing the pipes at `timeout` (`ETIMEDOUT`, whatever the pipes' readiness) or past `maxBuffer`
   (`ENOBUFS`), so a child that fills a 64 KiB pipe is read, not deadlocked. `maxBuffer` is Node's on every
   synchronous route: positive, it bounds stdout and stderr together; zero sets no limit.
+
+## 0.18.0 — 2026-11-05
+
 - **The prepared format is `tabnode-prepared-8`, a minor release, 0.18.0** (CONTRIBUTING: a change to the lowered text
   moves the format). A guest body's free `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent`,
   `MessageEvent`, `URL` and `WebAssembly` are now rewritten to the guest's, so the same source lowers to different

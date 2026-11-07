@@ -6,7 +6,8 @@
 
 # Class: ServerBridge
 
-Server Bridge manages virtual HTTP servers and routes requests
+The page's requests answered by a guest's own servers, over connections the bridge makes as its container's process,
+and the page's virtual WebSockets carried to them (ADR-0014).
 
 ## Extends
 
@@ -296,6 +297,24 @@ method where it has one, else its buffered answer is delivered whole.
 
 ***
 
+### hasConnector()
+
+> **hasConnector**(`id`): `boolean`
+
+Whether a connector's id is registered with this bridge.
+
+#### Parameters
+
+##### id
+
+`string`
+
+#### Returns
+
+`boolean`
+
+***
+
 ### initServiceWorker()
 
 > **initServiceWorker**(`options?`): `Promise`\<`void`\>
@@ -431,6 +450,25 @@ A guest's listener (a request adapter) is answered over a connection to its port
 #### Inherited from
 
 [`PortBridge`](PortBridge.md).[`once`](PortBridge.md#once)
+
+***
+
+### registerConnector()
+
+> **registerConnector**(`id`): () => `void`
+
+Registers a connector's random id with this bridge (ADR-0014 §3): the bridge answers that connector's `connect`s,
+and only registered ones. Answers the call that removes it.
+
+#### Parameters
+
+##### id
+
+`string`
+
+#### Returns
+
+() => `void`
 
 ***
 

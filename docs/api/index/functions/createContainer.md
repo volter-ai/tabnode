@@ -172,11 +172,16 @@ The numbers a live process carries, looked up by its own pid.
 
 > **run**: (`command`, `options?`) => `Promise`\<[`RunResult`](../interfaces/RunResult.md)\>
 
+Run a command line through the engine's shell, or, given an argv vector, that vector as `execvp` is given it: its
+words untouched, no shell reading them, and `argv[0]` resolved as musl's `execvp` resolves it on the run's tree, or
+by the kernel in a kernel's tree (ADR-0012). What runs is what the resolved file is: the engine's node entry is
+that Node, as `runNode` starts it; any other program is itself, and a `node` it runs is its child.
+
 #### Parameters
 
 ##### command
 
-`string`
+`string` \| readonly `string`[]
 
 ##### options?
 
@@ -296,6 +301,8 @@ Deliver a signal to the named run as another process's `kill(pid)` does; false w
 ### stopProcess
 
 > **stopProcess**: (`token`) => `boolean`
+
+`kill(pid, 'SIGTERM')` delivered to the named run; a run that receives no signals ends at once.
 
 #### Parameters
 
