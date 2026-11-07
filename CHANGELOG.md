@@ -4,6 +4,13 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
+- **`stopProcess` is `kill(pid, 'SIGTERM')`** (ADR-0013 §1). It delivers SIGTERM to the named run: its listeners run,
+  else its default action ends it and `run()` settles with `exitCode: null, signal: 'SIGTERM'`, as a held run now does.
+  A run that receives no signals ends at once, as before.
+- **A program's stream under TLS is called in its caller's context** (ADR-0013 §2), as Node's `JSStreamSocket` calls
+  it: a write is one `write` of the whole buffer inside the writer's call, a chunk is read inside the stream's `data`
+  listener, `readStop` and `readStart` pause and resume it, `shutdown` ends it on a tick after a pending write, and an
+  error carries the stream's own code.
 - **`container.run` takes an argv vector** (`run(argv, options?)`, ADR-0012), as `execvp` takes one, and the vector
   reaches the program untouched.
   - **Resolution:** `argv[0]` is resolved as musl's `execvp` resolves it, on the run's own tree: a name with a slash

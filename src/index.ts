@@ -252,6 +252,7 @@ export function createContainer(options?: ContainerOptions): {
   streamHandles: () => NativeStreamHandleView[];
   /** Deliver a signal to the named run as another process's `kill(pid)` does; false when the run is gone. */
   signalProcess: (token: string, signal: string) => boolean;
+  /** `kill(pid, 'SIGTERM')` delivered to the named run; a run that receives no signals ends at once. */
   stopProcess: (token: string) => boolean;
   /**
    * Input for one run's guest, by its process token; without a token, the most
@@ -431,12 +432,17 @@ export function createContainer(options?: ContainerOptions): {
      * the guest's listeners for it run, else its default action ends the run.
      */
     signalProcess: (token: string, signal: string): boolean => __signalOwnedProcess(token, signal),
-    /** End the named run: its timers stop and its servers are released. */
+    /**
+     * `kill(pid, 'SIGTERM')` delivered to the named run (ADR-0013 §1): its SIGTERM listeners run, else its default
+     * action ends it, inside this call. A run nothing of which receives signals ends now, as a job's kill ends a
+     * builtin, so a caller that asks is told what it may then read back.
+     */
     stopProcess: (token: string): boolean => {
       const known = __runFor(token) !== undefined || __ownedServerPorts(token).length > 0;
-      // Its servers, handles and timers are released here, so a caller that asks is told what it may then read back;
-      // its native teardown completes after (ADR-0011 §6), and the run's own end awaits it.
-      void __endOwnedProcess(token);
+      // Its SIGTERM listeners run; with none, its default action ends it. Its servers, handles and timers are released
+      // here, so a caller that asks is told what it may then read back; its native teardown completes after
+      // (ADR-0011 §6), and the run's own end awaits it.
+      if (!__signalOwnedProcess(token, 'SIGTERM')) void __endOwnedProcess(token);
       return known;
     },
     /**
