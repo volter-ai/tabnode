@@ -7,11 +7,13 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 A minor release: `run(argv)`, `ServerBridge.registerConnector`, the `vite-ws-channel` fields and the `TreeSockets`
 and `RunStreams.terminal` doors change the exported surface.
 
-- **A shell's `&` job is never run in the realm** (browser-substrate ADR-0227, "What a page program is"). In the
+- **A shell's `&` job is the catalog shell's own fork** (browser-substrate ADR-0227, "What a page program is"). In the
   substrate every shell line, `exec`, `shell: true` spawn and synchronous child is the catalog's own `/bin/sh -c`, so
-  a `&` there is that shell's own fork. The engine's shell runs a line only where no host runs it, and there a `&`
-  fails as a failed fork does (`bash: fork: Function not implemented`) and runs nothing. The host executor's `bypass`
-  count is gone: no host ever set it.
+  a `&` there is that shell's own fork. The engine's shell runs a line only where no host runs it, and there, with no
+  fork, a `&` statement runs in the foreground in the realm, as just-bash runs it. The host executor's `bypass` count
+  is gone: no host ever set it.
+- **`currentProcessToken()`** names the run whose call is executing, as a container's `currentProcessToken` does, for
+  a host realm that has no container (a Node worker thread's, whose children its kernel forks under that run).
 - **A virtual WebSocket is Node's own WebSocket client** (ADR-0014; browser-substrate ROADMAP 55). The server bridge
   opens undici's `WebSocket` (the bundle Node ships, unedited) to the guest's port over the container's loopback, so
   the handshake and its 101 checks, masking, every frame check, the close-code table, the closing handshake, 1005,

@@ -64,7 +64,7 @@ import { nativeStreamHandles, type NativeStreamHandleView } from './native-strea
 
 import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, runPid, processByPid, installRunRegistry, claimRunPid, forgetRunPid } from './process-tokens';
 export { runPid, processByPid };
-export { installProcessRegistry, installProcessIdAllocator } from './process-tokens';
+export { installProcessRegistry, installProcessIdAllocator, __currentProcessToken as currentProcessToken } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
