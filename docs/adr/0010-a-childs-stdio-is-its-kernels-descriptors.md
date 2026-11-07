@@ -141,15 +141,33 @@ host, and:
   whole, so its output is complete when its write returns, as Node's file and terminal writes are, and nothing waits
   for it.
 - **The same-realm starter holds one scope from the nested identity to its release.** `launchNode` takes a nested
-  `node`'s identity (`nestedNodeToken`: its pid under its parent run's, and its registration of the parent's streams)
-  and, from that moment, everything it starts for the process (its run record, its runtime and process, its input,
-  terminal and channel, its rejection and exception reports) is released by one `finally`, however the start ends: a
-  returned outcome (a refusal of its options or script, or its completion) exits with that outcome's status, and a
-  thrown startup failure, partway through any of it, is killed (`SIGKILL`); either way its parent reaps it, its
-  number is forgotten and its registration of the parent's streams goes (only its own key, the parent's streams
-  untouched). Each release covers what was started and skips what was not. A child the Node process host admits is
-  the host's to end (`runHostedNode`'s branch).
+  `node`'s identity and, from that moment to its return, everything it acquires for the process is released by one
+  `finally`. The release runs in the reverse order of acquisition, and each step only where this start acquired it.
+  A returned outcome (a refusal of its options or script, an exit, the entry's end, a printed or held completion)
+  exits with that outcome's status, and a thrown startup failure is killed (`SIGKILL`). A child the Node process host
+  admits is the host's to end (`runHostedNode`'s branch, which releases what it takes). Every acquisition between the
+  identity and the return, by grep of the assignments, registrations and `add`s in it:
 
+  | # | Acquired | Where | Released |
+  | --- | --- | --- | --- |
+  | 1 | The nested identity: a child token, its pid under the parent run's (`setRunPid`), and the parent's `RunStreams` registered under the child's own key | `nestedNodeToken` | the parent's exit and reap of it (`exitRunProcess`, `reapRunProcess`, with the outcome's status or `SIGKILL`), then `forgetRunPid`, then `releaseRunStreams` of the child's key alone |
+  | 2 | A pid for a named run not yet numbered | `forkedHere`'s `mintPid` | the realm's exit and reap of it, then `forgetRunPid` |
+  | 3 | The `Runtime` and its process, with what they key by that process (its run filesystem, hostname and hosts readers, `stdioKinds`, `kStdinRing`, `kRunTerminal`, `process.exit`, `argv`, the stdin `_handle`, `setRawMode` and `_read`) | `new Runtime`, `getProcess` and the assignments after it | nothing outside the process holds them; the process's guest timers stop (`stopGuestTimers`) |
+  | 4 | The run's pid record (`setRunPid` with the process's pid) | after `getProcess` | `forgetRunPid` (row 1 or 2) |
+  | 5 | The run record (`__recordRun`) | after the pid record | `releaseRun` |
+  | 6 | The stdin sink installed on the run's `RunStreams` (`streams.stdin`, the parent's object for a nested child) | where fd 0 is not a ring | put back to what it replaced, only where it is still this child's, so a later replacement and the parent's registration stand |
+  | 7 | The terminal's raw mode (`terminal.setRawMode` through the run's terminal) | when the program sets it | set back to normal where this run set it (`ResetStdio`) |
+  | 8 | The IPC channel (its pipe handle, made in the run by Node's `_forkChild`) | `attachChannel` | the run's handles are released (`__releaseOwnedHandles`) |
+  | 9 | The unhandled-rejection report | `__listenForUnhandledRejections` | `detachRejections` |
+  | 10 | The uncaught-exception report | `__onUncaughtException` | `detachUncaught` |
+  | 11 | The input: the ring's drain on fd 0, or an iterator of the run's `stdinStream` and its pump | after the reports | `inputActive` cleared, so each stops at its next wake, and the iterator's `return` |
+  | 12 | The resize handler (`terminal.onResize`) | after the input | `stopResize` |
+  | 13 | What the program itself opens: servers, handles, timers | while it runs | `__releaseOwnedServers` and `__releaseOwnedHandles`, then `stopGuestTimers` |
+
+  Every exit of the start is one of the scope's two ends, and each step is guarded by its own acquisition, so the
+  exits need no list of their own: a partial publication stops between rows 3 and 5; a preload's failure, an entry's
+  synchronous or asynchronous exit, and a printed or held completion all return after row 12, and a throw anywhere
+  after row 1 is the killed end.
 ### 3. A terminal's mode is set through the run's terminal
 
 - `RunStreams.terminal` gains `setRawMode?(mode: false | 'raw' | 'io')`: fd 0's terminal mode, set by the host as

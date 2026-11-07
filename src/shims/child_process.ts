@@ -540,9 +540,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   const nested = parentToken !== null && (shellRuns.has(parentToken) || hostedNodes.has(parentToken));
   const runToken = nested ? nestedNodeToken(parentToken!, args, launch.cwd, launch.env) : parentToken;
   const streams = runToken === null ? undefined : runStreamsFor(runToken);
-  // The starter's one scope (ADR-0010 §2): from the nested identity just taken to its release, everything started for
-  // the process is released by the one `finally` below, however the start ends. A returned outcome (a refusal or the
-  // completion) exits with its status; a thrown startup failure is killed. What is not yet started is skipped.
+  // The starter's one scope (ADR-0010 §2, its table): from the nested identity just taken to the return, everything
+  // acquired for the process is released by the one `finally` below, in reverse order, each only where it was
+  // acquired. A returned outcome exits with its status; a thrown startup failure is killed.
   let ended: CommandOutcome | undefined;
   let hosted = false;
   let reaper: ProcessToken | null | undefined = nested ? parentToken : undefined;
@@ -554,6 +554,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   let stopResize: (() => void) | undefined;
   let inputActive = true;
   let inputIterator: AsyncIterator<Uint8Array> | undefined;
+  let stdinSink: { installed: RunStdin; replaced: RunStdin | null | undefined } | undefined;
   try {
   ended = await (async (): Promise<CommandOutcome> => {
   const credentials = copyProcessCredentials(launch.credentials ?? streams?.credentials);
@@ -990,7 +991,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // run's prompt, through `sendStdin`, or a parent writing to the stdin pipe
   // of a child it spawned.
   // A run whose fd 0 is a shared ring has no other writer.
-  if (streams && !stdinRing) streams.stdin = proc.stdin;
+  if (streams && !stdinRing) {
+    stdinSink = { installed: proc.stdin as unknown as RunStdin, replaced: streams.stdin };
+    streams.stdin = stdinSink.installed;
+  }
   if (stdinRing) (proc as unknown as Record<symbol, unknown>)[kStdinRing] = stdinRing;
 
   const terminal = streams?.terminal;
@@ -1334,7 +1338,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // No output yet — script likely has async work (e.g. vitest test runner).
   // Wait for process.exit() or until output stabilizes.
 
-  try {
+  {
     // Poll until process.exit is called, output stabilizes, or we time out
     const MAX_TOTAL_MS = 60000;
     const SILENT_IDLE_TIMEOUT_MS = 2000;
@@ -1515,40 +1519,40 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
     if (typeof proc !== 'undefined') (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
     return { stdout, stderr, exitCode: exitCalled ? await exitPromise : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
-  } finally {
-    if (streams) streams.stdin = null;
   }
   })();
   return ended;
   } finally {
+    // ADR-0010 §2's table, in reverse order of acquisition.
     if (!hosted) {
-      detachRejections?.();
-      detachUncaught?.();
+      // 13: what the program opened. Safe twice: a run that exited already emptied its own entries.
+      if (runToken !== null) { __releaseOwnedServers(runToken, false); __releaseOwnedHandles(runToken); }
+      if (guest) stopGuestTimers(guest);
+      // 12: the resize handler.
+      try { stopResize?.(); } catch { /* host cleanup cannot prevent handle release */ }
+      // 11: the input, which stops at its next wake.
       inputActive = false;
       try { void Promise.resolve(inputIterator?.return?.()).catch(() => {}); } catch { /* producer cleanup cannot prevent process cleanup */ }
-      try { stopResize?.(); } catch { /* host cleanup cannot prevent handle release */ }
-      // ResetStdio: a terminal this run left raw is put back, its failure ignored.
+      // 10, 9: the reports.
+      detachUncaught?.();
+      detachRejections?.();
+      // 8 is row 13's handles. 7: ResetStdio, a terminal this run left raw put back, its failure ignored.
       if (terminalMode !== false) { try { streams?.terminal?.setRawMode?.(false); } catch { /* as tcsetattr's failure at exit is */ } }
-      // A process that ends releases its listening sockets and handles, whatever ended it: a return from the entry, a
-      // refusal, a throw, an exit. Safe twice: a run that exited already emptied its own entries.
-      if (runToken !== null) { __releaseOwnedServers(runToken, false); __releaseOwnedHandles(runToken); }
-      // Its parent reaps it (a nested node's run, or the realm for one forked here): with the status a returned
-      // outcome carries, or killed where the start threw.
+      // 6: the stdin sink, put back only where it is still this child's.
+      if (stdinSink && streams && streams.stdin === stdinSink.installed) streams.stdin = stdinSink.replaced;
+      // 5: the run record.
+      releaseRun?.();
+      // 4, 2, 1: its parent reaps it (a nested node's run, or the realm for one forked here), with the status a
+      // returned outcome carries or killed where the start threw; its number is forgotten, so the number it wrote
+      // into a lock file answers ESRCH; a nested node's registration of its parent's streams goes, only its own key.
       if (reaper !== undefined && runToken !== null) {
         const own = { pid: runPidOf(runToken)!, waiter: runWaiterOf(runToken)! };
         const [code, signal] = ended === undefined ? [0, 'SIGKILL'] : [ended.exitCode, null];
         exitRunProcess(own.pid, own.waiter, code, signal, reaper);
         reapRunProcess(own.pid, own.waiter, code, signal, reaper);
       }
-      // A run that has ended is no longer a process: the number it wrote into
-      // a lock file answers ESRCH from here on, which is how a stale lock is
-      // stolen rather than waited on.
       if (runToken !== null) forgetRunPid(runToken);
-      // A nested node's registration of its parent's streams (nestedNodeToken) goes with it, only its own key.
       if (nested && runToken !== null) releaseRunStreams(runToken);
-      // A program that has ended holds no timers, as an ended Node process holds none.
-      if (guest) stopGuestTimers(guest);
-      releaseRun?.();
     }
   }
 }
