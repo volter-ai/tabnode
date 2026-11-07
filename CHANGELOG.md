@@ -4,6 +4,13 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
+- **A nested `node` the realm runs gives back what it took, on every exit** (ADR-0010 §2). A `node` a run's shell runs
+  in the same realm (`nestedNodeToken`: its pid under the run's, the run's streams registered under its token) is
+  released by one scope from that moment. A refusal (an option without its value, no script, a missing module) exits
+  with its code, and its completion with its status. A startup that throws partway (its filesystem, its stderr sink,
+  its runtime, its input, its channel) is killed. Either way its parent reaps it, its number is forgotten, its
+  registration of the parent's streams goes, and whatever of its run record, runtime, input, terminal and channel was
+  started is released.
 - **A `.node` that is a WALI Node-API module loads** (ADR-0011). `require` of a `.node` caches its module and loads it
   through the `.node` extension, which is `process.dlopen(module, filename)` of the run's process, so a wrapper of
   `process.dlopen` applies; `process.dlopen` initializes its own target's `module.exports` with an environment of its
