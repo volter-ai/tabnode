@@ -4,6 +4,21 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 ## Unreleased
 
+- **A virtual WebSocket is Node's own WebSocket client** (ADR-0014; browser-substrate ROADMAP 55). The server bridge
+  opens undici's `WebSocket` (the bundle Node ships, unedited) to the guest's port over the container's loopback, so
+  the handshake and its 101 checks, masking, every frame check, the close-code table, the closing handshake, 1005,
+  1006 and `wasClean`, permessage-deflate and a 32 MiB message limit are undici's. The bridge carries only the
+  `vite-ws-channel` channel:
+  - **Scoped:** `ServerBridge.registerConnector(id)` registers a connector, and a bridge answers only its registered
+    connectors' `connect`s. A connect every registered bridge refuses (nothing listens) is answered `close` 1006.
+  - **New fields:** `connect` carries `connector`, `protocols` and the request's `headers` (Host, Origin and Cookie
+    among them; `origin` and `host` are gone). `disconnect` carries `kind` (`close` or `fail`) and a code or none.
+    `connected` carries `protocol`, `extensions` and the 101's `setCookie`. `close` carries `code`, `reason` and
+    `wasClean`.
+  - **Ends:** a disconnect while the connection is being made cancels it. A `close` with 1001 sends a Close with no
+    body and a `fail` sends no Close (ADR-0014 *Kept*). A closing bridge reports `close` 1006 to each client.
+  - **Byte pipes** (`framing: 'none'`) carry the same headers and `Set-Cookie`, and report their end as 1005 (clean)
+    or 1006.
 - **`stopProcess` is `kill(pid, 'SIGTERM')`** (ADR-0013 §1). It delivers SIGTERM to the named run: its listeners run,
   else its default action ends it and `run()` settles with `exitCode: null, signal: 'SIGTERM'`, as a held run now does.
   A run that receives no signals ends at once, as before.
