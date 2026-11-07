@@ -19,6 +19,30 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
     body and a `fail` sends no Close (ADR-0014 *Kept*). A closing bridge reports `close` 1006 to each client.
   - **Byte pipes** (`framing: 'none'`) carry the same headers and `Set-Cookie`, and report their end as 1005 (clean)
     or 1006.
+- **`stopProcess` is `kill(pid, 'SIGTERM')`** (ADR-0013 §1). It delivers SIGTERM to the named run: its listeners run,
+  else its default action ends it and `run()` settles with `exitCode: null, signal: 'SIGTERM'`, as a held run now does.
+  A run that receives no signals ends at once, as before.
+- **A program's stream under TLS is called in its caller's context** (ADR-0013 §2), as Node's `JSStreamSocket` calls
+  it: a write is one `write` of the whole buffer inside the writer's call, a chunk is read inside the stream's `data`
+  listener, `readStop` and `readStart` pause and resume it, `shutdown` ends it on a tick after a pending write, and an
+  error carries the stream's own code.
+- **`container.run` takes an argv vector** (`run(argv, options?)`, ADR-0012), as `execvp` takes one, and the vector
+  reaches the program untouched.
+  - **Resolution:** `argv[0]` is resolved as musl's `execvp` resolves it, on the run's own tree: a name with a slash
+    is that path; any other walks `PATH` in order, relative entries against the working directory, counting only a
+    regular file with an execute bit. In a kernel tree the kernel's `posix_spawnp` resolves it, and Tabnode does not
+    search.
+  - **What runs:** the resolved file decides it, never its name. The engine's node entry is that Node, as `runNode`
+    starts it, so a numbered run's pid is the Node's own. A registered command's installed entry runs that command.
+    A script runs its `#!` interpreter, decided the same way. Anything else fails as a shell reports it: 127 for
+    `ENOENT`, 126 for `EACCES` or `ENOEXEC`. An argv runs no shell builtin, so `['true']` with no `true` on `PATH`
+    is `ENOENT`.
+  - **Command entries:** a tree the engine made carries every command its shell registers as an executable entry
+    at `/bin/<name>` and `/usr/bin/<name>`, with just-bash's own entry text, so `['ls']` finds `/bin/ls` as on a
+    machine.
+  - **Hosts:** a host is given the executable and the vector to resolve itself.
+  - **The npm shortcut is gone:** `npm -v` is answered only by the shell's own `npm`.
+  - A command line is still a line, and its process a shell.
 - **A nested `node` the realm runs gives back what it took, on every exit** (ADR-0010 §2). A `node` a run's shell runs
   in the same realm (`nestedNodeToken`: its pid under the run's, the run's streams registered under its token) is
   released by one scope from that moment. A refusal (an option without its value, no script, a missing module) exits
