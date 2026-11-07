@@ -252,6 +252,11 @@ file or a character device). Where given, `stdioIsTTY` is not read.
 
 > `optional` **terminal?**: `object`
 
+The run's terminal: its size, which the host keeps current (its `TIOCGWINSZ`), and its resizes. `setRawMode` is
+fd 0's mode as libuv's `uv_tty_set_mode` sets it (`'raw'` its raw termios, `'io'` `cfmakeraw`, false the termios
+before the first change), throwing an error whose `errno` is the negative errno where it cannot; the guest's
+`process.stdin.setRawMode` reaches it, and the run's end puts a mode it set back to normal (ADR-0010 §3).
+
 #### columns
 
 > **columns**: `number`
@@ -273,3 +278,17 @@ file or a character device). Where given, `stdioIsTTY` is not read.
 #### rows
 
 > **rows**: `number`
+
+#### setRawMode()?
+
+> `optional` **setRawMode**(`mode`): `void`
+
+##### Parameters
+
+###### mode
+
+`false` \| `"raw"` \| `"io"`
+
+##### Returns
+
+`void`

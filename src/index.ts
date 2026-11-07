@@ -56,7 +56,7 @@ import { VirtualFS } from './virtual-fs';
 import { Runtime, RuntimeOptions } from './runtime';
 import { PackageManager } from './npm';
 import { ServerBridge, getServerBridge } from './server-bridge';
-import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, execvpExecution, type ArgvExecution, type StdioKind } from './shims/child_process';
+import { runCommand, runNode, registerRunStreams, releaseRunStreams, holdShellRun, sendStdin, adoptEngineTree, execvpExecution, admittedArgv, type ArgvExecution, type StdioKind } from './shims/child_process';
 import { Server as NetServer, type Socket as NetSocket } from './node-lib/net-module';
 import { __adoptHandle, type OwnedHandle } from './node-lib/binding/handles';
 import { withFilesystem } from './node-lib/binding/named-tree';
@@ -64,7 +64,7 @@ import { nativeStreamHandles, type NativeStreamHandleView } from './native-strea
 
 import { __currentProcessToken, __runFor, __signalOwnedProcess, __takeTermination, runPid, processByPid, installRunRegistry, claimRunPid, forgetRunPid } from './process-tokens';
 export { runPid, processByPid };
-export { installProcessRegistry, installProcessIdAllocator } from './process-tokens';
+export { installProcessRegistry, installProcessIdAllocator, __currentProcessToken as currentProcessToken } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
@@ -388,8 +388,10 @@ export function createContainer(options?: ContainerOptions): {
       // resolves it, and Tabnode does not search.
       let execution: ArgvExecution | undefined;
       const tree = runOptions?.filesystem ?? vfs;
-      if (Array.isArray(command) && command.length > 0 && command.every((word) => typeof word === 'string')
-        && treeDescriptorsOf(tree) === undefined) {
+      if (typeof command !== 'string') {
+        try { command = admittedArgv(command); } catch (error) { return Promise.reject(error); }
+      }
+      if (typeof command !== 'string' && treeDescriptorsOf(tree) === undefined) {
         const decided = execvpExecution(tree, command, runOptions?.cwd ?? '/', runOptions?.env ?? {});
         if ('node' in decided) return startNodeRun(decided.node, runOptions);
         execution = decided;

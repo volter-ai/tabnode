@@ -110,10 +110,14 @@ interface UndiciDispatcher {
   destroy(): Promise<void>;
 }
 interface Undici {
-  WebSocket: (new (url: string, init: { protocols: string[]; dispatcher: object; headers: [string, string][] }) => UndiciWebSocket) & { CONNECTING: number };
+  WebSocket: (new (url: string, init: { protocols: string[]; dispatcher: object; headers: [string, string][] }) => UndiciWebSocket)
+    & { CONNECTING: number; OPEN: number };
   EnvHttpProxyAgent: new (options: object) => UndiciDispatcher;
 }
 const engineUndici = (): Undici => loadNodeLib('internal/deps/undici/undici') as Undici;
+
+/** The error a cancelled connection is answered with, as an aborted connection is answered. */
+const cancelled = (): Error => Object.assign(new Error('The connection was cancelled'), { code: 'ECONNABORTED' });
 
 /** A `HeadersInit` as name and value pairs: a list of pairs or a record of strings; anything else is refused. */
 function headerPairs(init: unknown): [string, string][] {
@@ -187,23 +191,27 @@ function carryWebSocket(link: ClientLink, tree: object | undefined, port: number
   let setCookie: string[] = [];
   let gone = false;
   let released = false;
+  let connecting: { connection: Socket; answer: (error: Error | null, connected: Socket | null) => void } | null = null;
   const agent = new undici.EnvHttpProxyAgent({
     // No proxy is ever taken from the engine's environment.
     httpProxy: '',
     httpsProxy: '',
     // The connection is the container's, to the guest's port, whatever authority the URL names.
+    // The connection is this client's until its answer hands it to undici (§1): a cancel before then destroys it.
     connect: (_options: unknown, answer: (error: Error | null, connected: Socket | null) => void): void => {
+      if (gone || released) { answer(cancelled(), null); return; }
       const connection = connectLoopback(tree, port);
       const ready = (connection as unknown as { encrypted?: boolean }).encrypted === true ? 'secureConnect' : 'connect';
-      let answered = false;
+      const attempt = { connection, answer };
+      connecting = attempt;
       connection.once(ready, () => {
-        if (answered) return;
-        answered = true;
+        if (connecting !== attempt) return;
+        connecting = null;
         answer(null, connection);
       });
       connection.once('error', (error: Error) => {
-        if (answered) return;
-        answered = true;
+        if (connecting !== attempt) return;
+        connecting = null;
         if (refused(error)) refusedHere = true;
         answer(error, null);
       });
@@ -237,11 +245,18 @@ function carryWebSocket(link: ClientLink, tree: object | undefined, port: number
     const closed = event as CloseEvent;
     link.post({ type: 'close', code: closed.code, reason: closed.reason, wasClean: closed.wasClean });
   });
-  // While the connection is being made, a close or a fail cancels it: undici fails it, and a socket already upgraded
-  // is destroyed before undici takes it.
+  // While the connection is being made, a close or a fail cancels it (§2): undici fails it, a loopback connection not
+  // yet handed to undici is destroyed and its connect answered with the cancel, and a socket already upgraded is
+  // destroyed before undici takes it.
   const cancel = (): void => {
     gone = true;
     ws.close();
+    const attempt = connecting;
+    connecting = null;
+    if (attempt) {
+      attempt.connection.destroy();
+      attempt.answer(cancelled(), null);
+    }
     socket?.destroy();
   };
   return {
@@ -256,10 +271,13 @@ function carryWebSocket(link: ClientLink, tree: object | undefined, port: number
       if (code === 1001) ws.close();
       else ws.close(code, reason);
     },
+    // By its state, as the runtime's release ends a socket (§5): CONNECTING cancelled, OPEN closed (*Kept* (1)), and
+    // CLOSING aborted, since undici's `close` does nothing for a CLOSING socket and the carrier goes with the runtime.
     release: () => {
       released = true;
       if (ws.readyState === undici.WebSocket.CONNECTING) cancel();
-      else ws.close();
+      else if (ws.readyState === undici.WebSocket.OPEN) ws.close();
+      else socket?.destroy();
     },
   };
 }
@@ -274,6 +292,8 @@ function carryBytePipe(link: ClientLink, tree: object | undefined, port: number,
   let socket: Socket | null = null;
   let gone = false;
   let released = false;
+  // The upgrade request's connection is the request's until its 101 hands it here; this aborts it before then.
+  const upgrade = new AbortController();
   const request: Record<string, string> = {};
   for (const [name, value] of pairs) if (name.toLowerCase() !== 'host') request[name] = value;
   Object.assign(request, {
@@ -283,7 +303,7 @@ function carryBytePipe(link: ClientLink, tree: object | undefined, port: number,
     'Sec-WebSocket-Key': uint8ToBase64(crypto.getRandomValues(new Uint8Array(16))),
     ...(protocols.length ? { 'Sec-WebSocket-Protocol': protocols.join(', ') } : {}),
   });
-  void __upgradeOverLoopback(tree, port, 'GET', target, request).then((result) => {
+  void __upgradeOverLoopback(tree, port, 'GET', target, request, upgrade.signal).then((result) => {
     if (gone || released) { result.socket?.destroy(); return; }
     if (result.statusCode === 503 && !result.socket) { link.forget(); link.refused(); return; }
     if (result.statusCode !== 101 || !result.socket) {
@@ -318,8 +338,9 @@ function carryBytePipe(link: ClientLink, tree: object | undefined, port: number,
     },
     disconnect: (kind) => {
       if (!socket) {
-        // Still being made: cancelled, its connection destroyed when it arrives.
+        // Still being made: the upgrade request is cancelled, and this is the client's one `close`.
         gone = true;
+        upgrade.abort();
         link.forget();
         link.post({ type: 'close', code: 1006, reason: '', wasClean: false });
         return;
@@ -329,6 +350,7 @@ function carryBytePipe(link: ClientLink, tree: object | undefined, port: number,
     },
     release: () => {
       released = true;
+      upgrade.abort();
       socket?.destroy();
     },
   };

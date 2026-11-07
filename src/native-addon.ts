@@ -47,36 +47,47 @@ type CleanupHook = EmnapiRuntime.CleanupHookCallbackFunction;
 
 /**
  * The process's emnapi context (ADR-0011 §6, "One context per process"): emnapi's own, its public doors carrying what
- * the process's end needs. Each cleanup hook runs in the process's run and counts as run whatever it does, so a
- * throw from one is the run's and the rest still run, and one removed before its turn is skipped, as Node's
- * `CleanupQueue::Drain` runs them; each native request emnapi-mt counts is counted for the end too.
+ * the process's end needs. Each cleanup hook runs as a teardown call of the process (`teardownCall`), so a throw from
+ * one leaves the rest to run. A registration is one (env, fn, arg), as Node's `CleanupQueue` keys one: a duplicate of a
+ * live one is refused by emnapi's own queue, one removed is skipped, and one re-added after its removal is a new
+ * registration; one removed while the queue drains stays in emnapi's queue until the drain takes it, so the drain's
+ * own removal finds it, and is skipped there.
  */
 function processContext(runtime: typeof EmnapiRuntime, owner: ProcessAddons): EmnapiRuntime.Context {
-  const hooks = new Map<EmnapiRuntime.Env, Map<CleanupHook, Map<number, (arg: number) => void>>>();
+  const live = new Map<EmnapiRuntime.Env, Map<CleanupHook, Map<number, (arg: number) => void>>>();
   const take = (env: EmnapiRuntime.Env, fn: CleanupHook, arg: number): ((arg: number) => void) | undefined => {
-    const byArg = hooks.get(env)?.get(fn);
+    const byArg = live.get(env)?.get(fn);
     const guarded = byArg?.get(arg);
     byArg?.delete(arg);
     return guarded;
   };
+  let draining = false;
   class ProcessContext extends runtime.Context {
     override addCleanupHook(env: EmnapiRuntime.Env, fn: CleanupHook, arg: number): void {
+      let byFn = live.get(env);
+      if (!byFn) { byFn = new Map(); live.set(env, byFn); }
+      let byArg = byFn.get(fn);
+      if (!byArg) { byArg = new Map(); byFn.set(fn, byArg); }
+      const current = byArg.get(arg);
+      // A duplicate of a live registration is emnapi's queue's to refuse ("Can not add same fn and arg twice").
+      if (current) { super.addCleanupHook(env, current, arg); return; }
       const guarded = (value: number): void => {
-        if (hooks.get(env)?.get(fn)?.get(arg) !== guarded) return;
+        if (live.get(env)?.get(fn)?.get(arg) !== guarded) return;
         take(env, fn, arg);
         owner.teardownCall(() => { if (typeof fn === 'number') env.makeDynCall_vp(fn)(value); else fn(value); });
       };
-      let byFn = hooks.get(env);
-      if (!byFn) { byFn = new Map(); hooks.set(env, byFn); }
-      let byArg = byFn.get(fn);
-      if (!byArg) { byArg = new Map(); byFn.set(fn, byArg); }
       byArg.set(arg, guarded);
       super.addCleanupHook(env, guarded, arg);
     }
 
     override removeCleanupHook(env: EmnapiRuntime.Env, fn: CleanupHook, arg: number): void {
       const guarded = take(env, fn, arg);
-      if (guarded) super.removeCleanupHook(env, guarded, arg);
+      if (guarded && !draining) super.removeCleanupHook(env, guarded, arg);
+    }
+
+    override runCleanup(): void {
+      draining = true;
+      try { super.runCleanup(); } finally { draining = false; }
     }
 
     override increaseWaitingRequestCounter(): void {
@@ -142,11 +153,12 @@ class ProcessAddons implements OwnedHandle {
   }
 
   /**
-   * A call of the teardown's in the process's run: a throw is the run's uncaught exception, and one no run takes is
-   * kept for the teardown's completion; either way the teardown goes on.
+   * A call of the runtime's cleanup, in the process's run. While the process lives (emnapi's own `beforeExit` destroy)
+   * a throw is its uncaught exception, one no run takes kept for the end; once the end has begun the process has
+   * exited and runs no report of its own, so a throw is the end's failure. Either way the cleanup goes on.
    */
   teardownCall(call: () => void): void {
-    try { ownedRun(this.token, call, true, 'native-teardown'); }
+    try { ownedRun(this.token, call, !this.ending, 'native-teardown'); }
     catch (error) { this.failures.push(error); }
   }
 
@@ -167,8 +179,9 @@ class ProcessAddons implements OwnedHandle {
 
   /**
    * As Node's `FreeEnvironment` and `RunCleanup`: the context destroyed (no call into JavaScript, every cleanup hook),
-   * then, turn after turn, every native immediate run and the cleanup queue run again while the thread queues keep
-   * delivering, until no native immediate is queued and no native request waits; then the thread queues stopped.
+   * then every native immediate run and the cleanup queue run again, at once while either left a native immediate
+   * queued, and on the next native event while only a native request waits (the thread queues keep delivering); then
+   * the thread queues stopped.
    */
   private async teardown(): Promise<void> {
     this.teardownCall(() => this.context.destroy());
@@ -179,7 +192,9 @@ class ProcessAddons implements OwnedHandle {
         this.teardownCall(run);
       }
       this.teardownCall(() => this.context.runCleanup());
-      if (this.immediates.size === 0 && this.waiting === 0) break;
+      // Runnable work goes again now, as `RunCleanup` repeats `CleanupHandles` while native immediates remain.
+      if (this.immediates.size > 0) continue;
+      if (this.waiting === 0) break;
       await new Promise<void>((resolve) => { this.wake = resolve; });
       this.wake = null;
     }

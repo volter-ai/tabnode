@@ -2,8 +2,18 @@
 
 What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## Unreleased
+## 0.19.0 — 2026-11-06
 
+A minor release: `run(argv)`, `ServerBridge.registerConnector`, the `vite-ws-channel` fields and the `TreeSockets`
+and `RunStreams.terminal` doors change the exported surface.
+
+- **A shell's `&` job is the catalog shell's own fork** (browser-substrate ADR-0227, "What a page program is"). In the
+  substrate every shell line, `exec`, `shell: true` spawn and synchronous child is the catalog's own `/bin/sh -c`, so
+  a `&` there is that shell's own fork. The engine's shell runs a line only where no host runs it, and there, with no
+  fork, a `&` statement runs in the foreground in the realm, as just-bash runs it. The host executor's `bypass` count
+  is gone: no host ever set it.
+- **`currentProcessToken()`** names the run whose call is executing, as a container's `currentProcessToken` does, for
+  a host realm that has no container (a Node worker thread's, whose children its kernel forks under that run).
 - **A virtual WebSocket is Node's own WebSocket client** (ADR-0014; browser-substrate ROADMAP 55). The server bridge
   opens undici's `WebSocket` (the bundle Node ships, unedited) to the guest's port over the container's loopback, so
   the handshake and its 101 checks, masking, every frame check, the close-code table, the closing handshake, 1005,
@@ -15,27 +25,32 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
     among them; `origin` and `host` are gone). `disconnect` carries `kind` (`close` or `fail`) and a code or none.
     `connected` carries `protocol`, `extensions` and the 101's `setCookie`. `close` carries `code`, `reason` and
     `wasClean`.
-  - **Ends:** a disconnect while the connection is being made cancels it. A `close` with 1001 sends a Close with no
-    body and a `fail` sends no Close (ADR-0014 *Kept*). A closing bridge reports `close` 1006 to each client.
+  - **Ends:** a disconnect while the connection is being made cancels it, its loopback connection or upgrade request
+    included. A `close` with 1001 sends a Close with no body and a `fail` sends no Close (ADR-0014 *Kept*). A closing
+    bridge reports `close` 1006 to each client and ends each by its state, a CLOSING one aborted.
   - **Byte pipes** (`framing: 'none'`) carry the same headers and `Set-Cookie`, and report their end as 1005 (clean)
     or 1006.
 - **`stopProcess` is `kill(pid, 'SIGTERM')`** (ADR-0013 §1). It delivers SIGTERM to the named run: its listeners run,
-  else its default action ends it and `run()` settles with `exitCode: null, signal: 'SIGTERM'`, as a held run now does.
+  else its default action ends it inside the call, its servers, handles and timers released, and `run()` settles with
+  `exitCode: 143, signal: 'SIGTERM'`, as a held run now does. A second stop before the run is reaped delivers nothing.
   A run that receives no signals ends at once, as before.
 - **A program's stream under TLS is called in its caller's context** (ADR-0013 §2), as Node's `JSStreamSocket` calls
   it: a write is one `write` of the whole buffer inside the writer's call, a chunk is read inside the stream's `data`
-  listener, `readStop` and `readStart` pause and resume it, `shutdown` ends it on a tick after a pending write, and an
-  error carries the stream's own code.
+  listener, `readStop` and `readStart` pause and resume it, `shutdown` ends it on a tick of the caller's process after a
+  pending write, and an error carries the stream's own code. Every write and shutdown is answered once: a close, or
+  the stream's own close, cancels what is held, and a late callback is ignored.
 - **`container.run` takes an argv vector** (`run(argv, options?)`, ADR-0012), as `execvp` takes one, and the vector
   reaches the program untouched.
   - **Resolution:** `argv[0]` is resolved as musl's `execvp` resolves it, on the run's own tree: a name with a slash
     is that path; any other walks `PATH` in order, relative entries against the working directory, counting only a
-    regular file with an execute bit. In a kernel tree the kernel's `posix_spawnp` resolves it, and Tabnode does not
-    search.
+    regular file with an execute bit. Each candidate is admitted whole, as `execve` admits it: one that fails
+    `ENOENT`, `ENOTDIR` or `EACCES` (its script's interpreter included) is passed over, and any other failure ends the
+    walk. In a kernel tree the kernel's `posix_spawnp` resolves it, and Tabnode does not search.
   - **What runs:** the resolved file decides it, never its name. The engine's node entry is that Node, as `runNode`
     starts it, so a numbered run's pid is the Node's own. A registered command's installed entry runs that command.
-    A script runs its `#!` interpreter, decided the same way. Anything else fails as a shell reports it: 127 for
-    `ENOENT`, 126 for `EACCES` or `ENOEXEC`. An argv runs no shell builtin, so `['true']` with no `true` on `PATH`
+    A script runs its `#!` interpreter, read from its first 256 bytes as Linux reads them (a truncated interpreter
+    path is `ENOEXEC`), and decided the same way. Anything else fails as a shell reports it: 127 for `ENOENT`, 126 for
+    `ENOTDIR`, `EACCES`, `ENOEXEC`, `ELOOP` or a read failure. An argv runs no shell builtin, so `['true']` with no `true` on `PATH`
     is `ENOENT`.
   - **Command entries:** a tree the engine made carries every command its shell registers as an executable entry
     at `/bin/<name>` and `/usr/bin/<name>`, with just-bash's own entry text, so `['ls']` finds `/bin/ls` as on a
@@ -62,9 +77,10 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 - **A process's end completes its native teardown** (ADR-0011 §6). `__endOwnedProcess` releases a process's servers
   and handles and stops its timers at once, and answers a completion that settles when its addons' teardown is done:
   the context destroyed, then native immediates, cleanup hooks and thread deliveries run turn after turn until no
-  native immediate is queued and no native request waits. The run awaits it before its uncaught report is detached,
-  so a teardown's throw is the run's, and the remaining hooks still run; a killed child or shell job reports its exit
-  at completion. A refused `dlopen` leaves the process's addon runtime as it was, and a `dlopen` once the end has
+  native immediate is queued and no native request waits, going again at once while one is queued. A cleanup hook
+  removed or added again while the queue drains keeps every other hook in it. A throw during the end leaves the
+  remaining hooks to run and fails the end, and the run fails with it rather than reporting a clean result; a killed
+  child reports its exit at completion. A refused `dlopen` leaves the process's addon runtime as it was, and a `dlopen` once the end has
   begun is refused. Any other `.node` fails
   `ERR_DLOPEN_FAILED` as Node's `dlopen` does: `invalid ELF header`, the compiler's refusal, "Module did not
   self-register", `cannot dynamically load executable`, `undefined symbol: <name>`, or, in a tree that offers no
@@ -104,6 +120,9 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
   child and closing the pipes at `timeout` (`ETIMEDOUT`, whatever the pipes' readiness) or past `maxBuffer`
   (`ENOBUFS`), so a child that fills a 64 KiB pipe is read, not deadlocked. `maxBuffer` is Node's on every
   synchronous route: positive, it bounds stdout and stderr together; zero sets no limit.
+
+## 0.18.0 — 2026-11-05
+
 - **The prepared format is `tabnode-prepared-8`, a minor release, 0.18.0** (CONTRIBUTING: a change to the lowered text
   moves the format). A guest body's free `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent`,
   `MessageEvent`, `URL` and `WebAssembly` are now rewritten to the guest's, so the same source lowers to different

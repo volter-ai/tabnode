@@ -332,7 +332,7 @@ class TLSSocket extends NetSocket {
       } else {
         // A stream with no handle of its own (an unconnected socket, a JS Duplex) runs as a stream handle, as Node's
         // JSStreamSocket makes one.
-        parent = new DuplexStreamHandle(socket as ConstructorParameters<typeof DuplexStreamHandle>[0]) as unknown as StreamHandle;
+        parent = new DuplexStreamHandle(socket as ConstructorParameters<typeof DuplexStreamHandle>[0], processOf() as ConstructorParameters<typeof DuplexStreamHandle>[1]) as unknown as StreamHandle;
       }
     } else {
       const { TCP, constants } = nodeLibBindingFor(processOf(), 'tcp_wrap') as { TCP: new (type: number) => StreamHandle; constants: { SOCKET: number } };
