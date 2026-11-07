@@ -9,8 +9,11 @@ and `RunStreams.terminal` doors change the exported surface.
 
 - **A shell's `&` job is a process of its own** (browser-substrate ADR-0227, "What a page program is"). It is a spawn
   of the shell's own program (`$BASH`, `/bin/bash`) with `-c`, as bash's fork runs the same shell, through the engine's
-  child start. It carries the shell's state as a forked subshell has it: its options, unexported variables, aliases
-  and functions written ahead of the job's text, its `$0` and positional parameters as the spawn's words. The job is
+  child start. It carries the shell's live state at the `&`, as a forked subshell has it: its options, its variables
+  with their attributes and arrays (the interpreter's `declare -p` there), its aliases and its functions as last
+  defined (the interpreter's `declare -F` there), written ahead of the job's text, with its `$0` and positional
+  parameters as the spawn's words. A function defined by `eval` or a sourced file, whose text the engine's shell does
+  not keep, refuses the job, naming it. The job is
   the host's to run, and no bypass leaves it to the engine's shell. `$!` names that process, and `wait` and `kill` act
   on it; its `$$` and `$PPID` are its own, and a variable it sets does not reach the shell. With no host to run it,
   the job fails as a failed fork does (`bash: fork: …`), and nothing runs it in the realm.

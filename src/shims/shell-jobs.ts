@@ -13,18 +13,28 @@
  * top-level line, `sh -c`, `bash -c`, a script file), and custom commands.
  *
  * - The plugin replaces each background statement with a call of
- *   `__tabnode_bg`, carrying the statement's own text and the text of the
- *   functions the script defines, which a job may call; it renames `$!` to the
- *   variable `__tabnode_bg` sets, and the `wait` builtin (which answers 0 at
- *   once and cannot be overridden) to `__tabnode_wait`.
+ *   `__tabnode_bg` carrying the statement's own text and two answers the
+ *   interpreter gives at that moment, where the `&` runs: `declare -p` (its
+ *   variables, their attributes, arrays and associative arrays) and
+ *   `declare -F` (its functions). After each function definition it runs, it
+ *   keeps the definition's text in a shell variable of that function's
+ *   (`FUNCTION_TEXT`), as live as the function, since just-bash's `declare -f`
+ *   prints no bodies. It renames `$!` to the variable `__tabnode_bg` sets, and
+ *   the `wait` builtin (which answers 0 at once and cannot be overridden) to
+ *   `__tabnode_wait`.
  * - `__tabnode_bg` starts the job as bash runs one in a forked subshell, which
  *   no host image can fork (ADR-0227 §6, ENOSYS): a spawn of the shell's own
  *   program (`$BASH`, `SHELL_PROGRAM`) with `-c`, as bash's fork runs the same
- *   shell, through the engine's own child start (the door `spawn` takes), carrying the
- *   shell's state as a forked subshell has it, written ahead of the job's text:
- *   its variables, functions, options (`SHELLOPTS`, `BASHOPTS`) and aliases, with
- *   its `$0` and positional parameters as the spawn's words. just-bash keeps no
- *   traps, so none is written. A spawn is a new process, not a copy: the job's
+ *   shell, through the engine's own child start (the door `spawn` takes). It
+ *   carries the shell's state at the `&` as a forked subshell has it, written
+ *   ahead of the job's text: its options (`SHELLOPTS`, `BASHOPTS`), its
+ *   variables as `declare -p` named them, valued from the live variables, its
+ *   aliases, and its functions as `declare -F` named them, each as its
+ *   definition last ran; its `$0` and positional parameters are the spawn's
+ *   words. just-bash keeps no traps, so none is written. just-bash applies its
+ *   transform plugins only in `Bash.exec`, so a function defined by `eval` or
+ *   a sourced file has no text kept: a job that would need to carry one is
+ *   refused, naming it. A spawn is a new process, not a copy: the job's
  *   `$$` and `$PPID` are its own, and a variable it sets does not reach the
  *   shell. The child is its own process, the host's to run, which no bypass
  *   leaves to the engine's shell; with no host to run it, the start refuses it
@@ -39,12 +49,13 @@
  * concatenation of its commands' results. What the plugin cannot see, it leaves
  * as it was: `eval`'s text is not a script the plugin is shown.
  */
-import { defineCommand } from 'just-bash';
+import { defineCommand, parse } from 'just-bash';
 import type { Bash, CommandContext } from 'just-bash';
 import { PROCESS_TOKEN_ENV, pidIsLive, signalPid, tokenOfPid, __signalOwnedProcess, type ProcessToken } from '../process-tokens';
 import { __substrateChildrenOf, __substrateSignals, __substrateSignalNames } from './process';
 import type { RunStreams } from './child_process';
 import type { StartedRun } from '../node-lib/binding/process_wrap';
+import { __substrateShellWord } from './command-line';
 
 /** A background job's start, as the engine's child start takes one. */
 export interface JobStart {
@@ -75,6 +86,12 @@ const LAST_JOB_VAR = '__TABNODE_LAST_JOB_PID';
 /** The variable naming the shell a job belongs to; `sh -c` does not inherit it (it is not exported), a subshell copy does. */
 const SHELL_VAR = '__TABNODE_SHELL';
 const BG_COMMAND = '__tabnode_bg';
+/**
+ * A function's definition as the shell last ran it, kept beside the definition in a shell variable of the function's
+ * own (its name in hex after this prefix), so it is as live as the function: a subshell's copy and a later redefinition
+ * follow it. just-bash's `declare -p` lists no `BASH_` variable, so it is the shell's own and no program's.
+ */
+const FUNCTION_TEXT = 'BASH_TABNODE_FN_';
 const WAIT_COMMAND = '__tabnode_wait';
 /** How much of its jobs' output a shell holds for its next `wait`; the rest still reached the host's streams. */
 const PENDING_LIMIT = 1 << 20;
@@ -105,46 +122,43 @@ function wordLiteral(word: unknown): string | null {
   return isNode(part) && part.type === 'Literal' && typeof part.value === 'string' ? part.value : null;
 }
 
-/** A statement whose one command defines a function. */
-function definesFunction(statement: Node): boolean {
+/** The function a statement defines, where its one command is a function definition. */
+function definedFunction(statement: Node): string | null {
   const pipelines = statement.pipelines;
-  return Array.isArray(pipelines) && pipelines.some((pipeline) => isNode(pipeline) && Array.isArray(pipeline.commands)
-    && pipeline.commands.some((command) => isNode(command) && command.type === 'FunctionDef'));
+  if (!Array.isArray(pipelines) || pipelines.length !== 1 || !isNode(pipelines[0]) || !Array.isArray(pipelines[0].commands)) return null;
+  const commands = pipelines[0].commands;
+  const command = commands.length === 1 ? commands[0] : undefined;
+  return isNode(command) && command.type === 'FunctionDef' && typeof command.name === 'string' ? command.name : null;
+}
+
+const hex = (text: string): string => Array.from(new TextEncoder().encode(text), (byte) => byte.toString(16).padStart(2, '0')).join('');
+
+/** The one statement a line of the shell's own syntax is. */
+function statementOf(line: string): Node {
+  return (parse(line).statements as unknown as Node[])[0]!;
+}
+
+/** After a function's definition runs, its text is kept in its own shell variable (`FUNCTION_TEXT`). */
+function keepsDefinition(name: string, text: string): Node {
+  return statementOf(`${FUNCTION_TEXT}${hex(name)}=${__substrateShellWord(text)}`);
 }
 
 /**
- * The text of every function definition in a script, outside the background statements (a job's own text holds its
- * own), each whole: a definition's body is not searched again.
+ * The rewrite, in place: a background statement becomes a call of `__tabnode_bg` (its own subtree is not descended
+ * into: its text is the job's), a function's definition is followed by the statement that keeps its text, `$!` reads
+ * the job variable, `wait` is the job table's.
  */
-function functionDefinitions(node: unknown, found: string[] = []): string[] {
-  if (Array.isArray(node)) { for (const child of node) functionDefinitions(child, found); return found; }
-  if (!isNode(node)) return found;
-  if (node.type === 'Statement' && node.background === true) return found;
-  if (node.type === 'Statement' && definesFunction(node) && typeof node.sourceText === 'string') {
-    found.push(node.sourceText);
-    return found;
-  }
-  for (const key of Object.keys(node)) functionDefinitions(node[key], found);
-  return found;
-}
-
-/** A background statement's own text, as the parser kept it, without its `&`; empty where it kept none. */
-function jobText(statement: Node): string {
-  return typeof statement.sourceText === 'string' ? statement.sourceText.replace(/\s*&\s*$/u, '') : '';
-}
-
-/**
- * The rewrite, in place: a background statement becomes a call of
- * `__tabnode_bg` (its own subtree is not descended into: its text is the
- * job's), `$!` reads the job variable, `wait` is the job table's.
- */
-function rewrite(node: unknown, functions: string): void {
+function rewrite(node: unknown): void {
   if (Array.isArray(node)) {
     for (let index = 0; index < node.length; index += 1) {
       const child = node[index];
       if (isNode(child) && child.type === 'Statement' && child.background === true) {
-        node[index] = backgroundCall(child, functions);
-      } else rewrite(child, functions);
+        node[index] = backgroundCall(child);
+        continue;
+      }
+      rewrite(child);
+      const name = isNode(child) && child.type === 'Statement' ? definedFunction(child) : null;
+      if (name !== null && typeof child.sourceText === 'string') node.splice(++index, 0, keepsDefinition(name, child.sourceText));
     }
     return;
   }
@@ -153,38 +167,25 @@ function rewrite(node: unknown, functions: string): void {
   if (node.type === 'SimpleCommand' && wordLiteral(node.name) === 'wait') node.name = literalWord(WAIT_COMMAND);
   for (const key of Object.keys(node)) {
     const child = node[key];
-    if (isNode(child) && child.type === 'Statement' && child.background === true) node[key] = backgroundCall(child, functions);
-    else rewrite(child, functions);
+    if (isNode(child) && child.type === 'Statement' && child.background === true) node[key] = backgroundCall(child);
+    else rewrite(child);
   }
 }
 
-function backgroundCall(statement: Node, functions: string): Node {
-  const job = jobText(statement);
-  return {
-    type: 'Statement',
-    pipelines: [{
-      type: 'Pipeline',
-      commands: [{
-        type: 'SimpleCommand',
-        name: literalWord(BG_COMMAND),
-        args: [{ type: 'Word', parts: [{ type: 'SingleQuoted', value: job }] }, { type: 'Word', parts: [{ type: 'SingleQuoted', value: functions }] }],
-        assignments: [],
-        redirections: [],
-      }],
-      negated: false,
-      timed: false,
-      timePosix: false,
-    }],
-    operators: [],
-    background: false,
-    ...(typeof statement.sourceText === 'string' ? { sourceText: statement.sourceText } : {}),
-  };
+/**
+ * The job's start, made where the `&` was: its text, and the interpreter's own answers at that moment for its
+ * variables (`declare -p`: their attributes, arrays and associative arrays) and its functions (`declare -F`).
+ */
+function backgroundCall(statement: Node): Node {
+  const job = typeof statement.sourceText === 'string' ? statement.sourceText.replace(/\s*&\s*$/u, '') : '';
+  return statementOf(`${BG_COMMAND} ${__substrateShellWord(job)} "$(declare -p)" "$(declare -F)"`);
 }
 
 /** The plugin: every script is rewritten. */
 function transform({ ast }: { ast: Node }): { ast: Node } {
-  if (!Array.isArray(ast.statements) || !JSON.stringify(ast).match(/"background":true|"parameter":"!"|"value":"wait"/u)) return { ast };
-  rewrite(ast.statements, functionDefinitions(ast.statements).join('\n'));
+  if (!Array.isArray(ast.statements)
+    || !JSON.stringify(ast).match(/"background":true|"parameter":"!"|"value":"wait"|"FunctionDef"/u)) return { ast };
+  rewrite(ast.statements);
   return { ast };
 }
 
@@ -226,29 +227,72 @@ function toRun(streams: RunStreams | undefined, fd: 1 | 2, chunk: string | Uint8
   text?.(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
 }
 
-/** A word the job's shell reads as itself. */
-const quoted = (word: string): string => `'${word.replace(/'/gu, "'\\''")}'`;
-
 /** Variables the job's shell sets for itself, or that are this module's or the engine's own. */
 const OWN_VARIABLES = new Set([SHELL_VAR, LAST_JOB_VAR, PROCESS_TOKEN_ENV, 'BASH', 'SHELLOPTS', 'BASHOPTS', 'PPID', 'UID', 'EUID', 'BASHPID', 'BASH_VERSINFO', 'RANDOM', 'SECONDS', 'LINENO']);
 
 /**
- * The job's script for the shell's own `-c`: the shell's state as a forked subshell has it, written ahead of the job's text
- * (ADR-0227, "One task per worker", *Kept*): its `shopt` options (`expand_aliases` among them), its variables that are
- * not exported (the exported ones are the spawn's environment), its aliases and its functions, then its `set -o`
- * options, last so that `errexit` and `xtrace` take hold where the shell's own commands begin; then the job.
+ * The interpreter's variables at the `&`, from its own `declare -p` there: each line names a variable and its
+ * attributes (`declare -ax name=…`), and its value is read from the shell's live variables (`ctx.env`), where an
+ * indexed or associative array's elements are `name_<key>`. Each is written back as bash reads it, its words quoted
+ * by the engine's one quoting (`__substrateShellWord`), since `declare -p`'s own value text leaves `$` and backquotes
+ * to expand again.
  */
-function jobScript(ctx: CommandContext, functions: string, job: string): string {
+function variableDeclarations(ctx: CommandContext, declared: string): string[] {
+  const lines: string[] = [];
+  for (const match of declared.matchAll(/^declare (-[A-Za-z-]*) ([A-Za-z_][A-Za-z0-9_]*)/gmu)) {
+    const [, attributes, name] = match as unknown as [string, string, string];
+    if (OWN_VARIABLES.has(name)) continue;
+    const indexed = attributes.includes('a');
+    const associative = attributes.includes('A');
+    if (indexed || associative) {
+      const elements: string[] = [];
+      for (const [key, value] of ctx.env) {
+        if (!key.startsWith(`${name}_`) || key.endsWith('__length')) continue;
+        const element = key.slice(name.length + 1);
+        if (indexed && !/^\d+$/u.test(element)) continue;
+        elements.push(`[${indexed ? element : __substrateShellWord(element)}]=${__substrateShellWord(value)}`);
+      }
+      lines.push(`declare ${attributes} ${name}=(${elements.join(' ')})`);
+      continue;
+    }
+    const value = ctx.env.get(name);
+    lines.push(value === undefined ? `declare ${attributes} ${name}` : `declare ${attributes} ${name}=${__substrateShellWord(value)}`);
+  }
+  return lines;
+}
+
+/**
+ * The interpreter's functions at the `&`, from its own `declare -F` there, each as its definition last ran
+ * (`FUNCTION_TEXT`). A function defined by text the plugin never sees (`eval`'s, a sourced file's: just-bash applies
+ * its transform plugins only in `Bash.exec`) has no definition kept, and the job is refused naming it rather than run
+ * without it.
+ */
+function functionDefinitions(ctx: CommandContext, listed: string): { definitions: string[] } | { missing: string } {
+  const definitions: string[] = [];
+  for (const match of listed.matchAll(/^declare -f (\S+)$/gmu)) {
+    const name = match[1]!;
+    const text = ctx.env.get(`${FUNCTION_TEXT}${hex(name)}`);
+    if (text === undefined) return { missing: name };
+    definitions.push(text);
+  }
+  return { definitions };
+}
+
+/**
+ * The job's script for the shell's own `-c`: the shell's state at the `&`, as a forked subshell has it, written ahead
+ * of the job's text (ADR-0227, "One task per worker", *Kept*): its `shopt` options (`expand_aliases` among them), its
+ * variables with their attributes, its aliases and its functions, then its `set -o` options, last so that `errexit`
+ * and `xtrace` take hold where the shell's own commands begin; then the job.
+ */
+function jobScript(ctx: CommandContext, variables: string[], functions: string[], job: string): string {
   const lines: string[] = [];
   const shopts = (ctx.env.get('BASHOPTS') ?? '').split(':').filter(Boolean);
   if (shopts.length > 0) lines.push(`shopt -s ${shopts.join(' ')}`);
-  const exported = ctx.exportedEnv ?? {};
+  lines.push(...variables);
   for (const [name, value] of ctx.env) {
-    if (name.startsWith('BASH_ALIAS_')) { lines.push(`alias ${name.slice(11)}=${quoted(value)}`); continue; }
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) || OWN_VARIABLES.has(name) || Object.hasOwn(exported, name)) continue;
-    lines.push(`${name}=${quoted(value)}`);
+    if (name.startsWith('BASH_ALIAS_')) lines.push(`alias ${name.slice(11)}=${__substrateShellWord(value)}`);
   }
-  if (functions) lines.push(functions);
+  lines.push(...functions);
   const shellOptions = (ctx.env.get('SHELLOPTS') ?? '').split(':').filter(Boolean);
   if (shellOptions.length > 0) lines.push(`set ${shellOptions.map((option) => `-o ${option}`).join(' ')}`);
   lines.push(job);
@@ -266,7 +310,7 @@ function environmentOf(ctx: CommandContext): Record<string, string> {
  * The job, a spawn of the shell's own program with `-c` as a child of the shell's run, with the shell's `$0` and
  * positional parameters as its words. It throws where no host can run it.
  */
-function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, functions: string, job: string): Job {
+function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script: string): Job {
   const parent = host.runTokenOf(ctx);
   const live = (): RunStreams | undefined => (parent === null ? undefined : host.runStreamsFor(parent));
   const positional = Array.from({ length: Number(ctx.env.get('#') ?? 0) }, (_, index) => ctx.env.get(String(index + 1)) ?? '');
@@ -279,7 +323,7 @@ function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, functi
   };
   const started = host.startJob({
     owner: parent,
-    argv: [SHELL_PROGRAM, '-c', jobScript(ctx, functions, job), ctx.env.get('0') ?? 'bash', ...positional],
+    argv: [SHELL_PROGRAM, '-c', script, ctx.env.get('0') ?? 'bash', ...positional],
     cwd: ctx.cwd,
     env: environmentOf(ctx),
     output: (fd, chunk) => {
@@ -310,13 +354,17 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
     .registerTransformPlugin({ name: 'tabnode-background-jobs', transform });
 
   bash.registerCommand(defineCommand(BG_COMMAND, async (args, ctx) => {
-    const job = args[0] ?? '';
+    const [job = '', declared = '', listed = ''] = args;
     if (!job) return { stdout: '', stderr: `bash: ${BG_COMMAND}: not a job\n`, exitCode: 2 };
+    const functions = functionDefinitions(ctx, listed);
+    if ('missing' in functions) {
+      return { stdout: '', stderr: `bash: ${functions.missing}: a function defined by eval or source cannot be carried into a background job\n`, exitCode: 1 };
+    }
     const { shell } = shellOf(ctx);
     let started: Job;
     // Refused where no host can run it: bash's subshell is a fork, which this realm has not (ADR-0227 §6), and nothing
     // runs the job here. The job fails as bash's failed fork does.
-    try { started = startJob(host, ctx, shell, args[1] ?? '', job); }
+    try { started = startJob(host, ctx, shell, jobScript(ctx, variableDeclarations(ctx, declared), functions.definitions, job)); }
     catch (error) { return { stdout: '', stderr: `bash: fork: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 }; }
     shell.jobs.set(started.pid, started);
     shell.order.push(started.pid);
