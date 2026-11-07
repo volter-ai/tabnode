@@ -80,5 +80,5 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
 }
 
 export {
-  __ownedHandleCount, __releaseOwnedHandles, __adoptHandle, currentOwner,
+  __ownedHandleCount, __adoptHandle, currentOwner,
 } from './handles';

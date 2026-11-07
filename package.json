@@ -45,6 +45,10 @@
     "./prepared-key": {
       "types": "./dist/prepared-key.d.ts",
       "default": "./dist/prepared-key.mjs"
+    },
+    "./native-thread": {
+      "types": "./dist/native-thread.d.ts",
+      "default": "./dist/native-thread.mjs"
     }
   },
   "files": [
@@ -64,6 +68,8 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "@emnapi/core": "1.11.3",
+    "@emnapi/runtime": "1.11.3",
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.3.0",
     "@noble/hashes": "2.3.0",
