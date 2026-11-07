@@ -168,6 +168,7 @@ host, and:
   exits need no list of their own: a partial publication stops between rows 3 and 5; a preload's failure, an entry's
   synchronous or asynchronous exit, and a printed or held completion all return after row 12, and a throw anywhere
   after row 1 is the killed end.
+
 ### 3. A terminal's mode is set through the run's terminal
 
 - `RunStreams.terminal` gains `setRawMode?(mode: false | 'raw' | 'io')`: fd 0's terminal mode, set by the host as

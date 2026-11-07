@@ -91,8 +91,8 @@ the shell's adapter (`vfs-adapter.ts`) has none, so a tree the engine made is gi
 at `/bin/<name>` and `/usr/bin/<name>` with just-bash's own entry text, where nothing is there already. `execvp` then
 finds them for an argv and a `spawn` alike, and a command's identity is that installed entry. A tree a host supplied
 is the host's: the engine writes nothing into it, as it writes no node entry there, and what it presents is what runs.
-With `/usr/bin` present, just-bash's registry fallback (a command found by name where `/usr/bin` is absent) no longer
-answers a line whose `PATH` names neither `/bin` nor `/usr/bin`, as on a machine.
+With `/usr/bin` present, just-bash's registry fallback (a command found by name where `/usr/bin` is absent) does not
+answer a line whose `PATH` names neither `/bin` nor `/usr/bin`, as on a machine.
 
 ### 4. Which process the run is, and the route
 
