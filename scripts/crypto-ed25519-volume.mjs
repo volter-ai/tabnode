@@ -2,26 +2,13 @@
 // accepting and the refusing side, with RFC 8032's first three vectors. Verification here is written out (crypto-ec.ts
 // verifyEd25519, OpenSSL's rule), so it is compared at volume and not only on chosen vectors. An instrument.
 //   node scripts/crypto-ed25519-volume.mjs [keys, default 3000]        (about 15 s for 3,000)
-import * as fs from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
+import { bundleSource } from './source-bundle.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import real from 'node:crypto';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const { build } = await import(pathToFileURL(resolve(root, 'node_modules/esbuild/lib/main.js')).href);
-const raw = { name: 'raw', setup(b) {
-  // A relative `?raw` is a file beside its importer; a bare one is a package's file, resolved as the package exports it.
-  b.onResolve({ filter: /\?raw$/ }, (a) => {
-    const specifier = a.path.replace(/\?raw$/, '');
-    const path = /^\.{0,2}\//.test(specifier) ? resolve(a.resolveDir, specifier) : createRequire(resolve(a.resolveDir, 'importer.js')).resolve(specifier);
-    return { path, namespace: 'raw' };
-  });
-  b.onLoad({ filter: /.*/, namespace: 'raw' }, (a) => ({ contents: fs.readFileSync(a.path, 'utf8'), loader: 'text' }));
-} };
-const bundle = resolve(fs.mkdtempSync(resolve(tmpdir(), 'crypto-shim-')), 'crypto.mjs');
-await build({ entryPoints: [resolve(root, 'src/shims/crypto.ts')], bundle: true, format: 'esm', platform: 'node', outfile: bundle, logLevel: 'error', plugins: [raw], external: ['*.node'],
-  banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" } });
+const bundle = await bundleSource('crypto-shim', 'crypto.mjs', { entryPoints: [resolve(root, 'src/shims/crypto.ts')], logLevel: 'error' });
 const ours = (await import(pathToFileURL(bundle).href)).createCryptoModule(createRequire(import.meta.url));
 const N = Number(process.argv[2] || 3000);
 let checks = 0, bad = 0; const failed = [];

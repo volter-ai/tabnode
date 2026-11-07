@@ -9,34 +9,19 @@
 import * as fs from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
+import { bundleSource } from './source-bundle.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const arg = (name, fallback) => { const at = process.argv.indexOf(`--${name}`); return at < 0 ? fallback : process.argv[at + 1]; };
 const inventory = JSON.parse(fs.readFileSync(resolve(arg('inventory', 'measurement/native.json')), 'utf8'));
 const output = resolve(arg('out', 'measurement/native-probe.json'));
 const hostLog = console.log.bind(console), hostExit = process.exit.bind(process), hostWrite = fs.writeFileSync.bind(fs);
-const { build } = await import(pathToFileURL(resolve(root, 'node_modules/esbuild/lib/main.js')).href);
-const raw = { name: 'raw', setup(b) {
-  // A relative `?raw` is a file beside its importer; a bare one is a package's file, resolved as the package exports it.
-  b.onResolve({ filter: /\?raw$/ }, (a) => {
-    const specifier = a.path.replace(/\?raw$/, '');
-    const path = /^\.{0,2}\//.test(specifier) ? resolve(a.resolveDir, specifier) : createRequire(resolve(a.resolveDir, 'importer.js')).resolve(specifier);
-    return { path, namespace: 'raw' };
-  });
-  b.onLoad({ filter: /.*/, namespace: 'raw' }, (a) => ({ contents: fs.readFileSync(a.path, 'utf8'), loader: 'text' }));
-} };
-const bundle = resolve(fs.mkdtempSync(resolve(tmpdir(), 'native-probe-')), 'registries.mjs');
-await build({
+const bundle = await bundleSource('native-probe', 'registries.mjs', {
   stdin: { contents: `import ${JSON.stringify(resolve(root, 'src/index.ts'))};\nexport { nodeLibBinding } from ${JSON.stringify(resolve(root, 'src/node-lib/binding/index.ts'))};\nexport { nodeLibInternal } from ${JSON.stringify(resolve(root, 'src/node-lib/internals/index.ts'))};\n`, resolveDir: root, loader: 'ts' },
-  bundle: true, format: 'esm', platform: 'node', outfile: bundle, logLevel: 'silent', plugins: [raw],
+  logLevel: 'silent',
   // Inline Wasm imports carry the same data URL as Vite's library build. The binding reads those bytes, not a path
   // to fetch, and the source registry bundle must preserve that representation too.
   loader: { '.wasm': 'dataurl' },
-  // A dependency's compiled addon is not part of what is probed: left as the require it was, which nothing here runs.
-  // (A clean install builds @mongodb-js/zstd's, and bundling it failed: no loader for `.node`.)
-  external: ['*.node'],
-  banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
 });
 if (typeof globalThis.window === 'undefined') globalThis.window = { navigator: { serviceWorker: {} } };
 const { nodeLibBinding, nodeLibInternal } = await import(pathToFileURL(bundle).href);
