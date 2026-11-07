@@ -15,17 +15,20 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
     among them; `origin` and `host` are gone). `disconnect` carries `kind` (`close` or `fail`) and a code or none.
     `connected` carries `protocol`, `extensions` and the 101's `setCookie`. `close` carries `code`, `reason` and
     `wasClean`.
-  - **Ends:** a disconnect while the connection is being made cancels it. A `close` with 1001 sends a Close with no
-    body and a `fail` sends no Close (ADR-0014 *Kept*). A closing bridge reports `close` 1006 to each client.
+  - **Ends:** a disconnect while the connection is being made cancels it, its loopback connection or upgrade request
+    included. A `close` with 1001 sends a Close with no body and a `fail` sends no Close (ADR-0014 *Kept*). A closing
+    bridge reports `close` 1006 to each client and ends each by its state, a CLOSING one aborted.
   - **Byte pipes** (`framing: 'none'`) carry the same headers and `Set-Cookie`, and report their end as 1005 (clean)
     or 1006.
 - **`stopProcess` is `kill(pid, 'SIGTERM')`** (ADR-0013 §1). It delivers SIGTERM to the named run: its listeners run,
-  else its default action ends it and `run()` settles with `exitCode: null, signal: 'SIGTERM'`, as a held run now does.
+  else its default action ends it inside the call, its servers, handles and timers released, and `run()` settles with
+  `exitCode: 143, signal: 'SIGTERM'`, as a held run now does. A second stop before the run is reaped delivers nothing.
   A run that receives no signals ends at once, as before.
 - **A program's stream under TLS is called in its caller's context** (ADR-0013 §2), as Node's `JSStreamSocket` calls
   it: a write is one `write` of the whole buffer inside the writer's call, a chunk is read inside the stream's `data`
-  listener, `readStop` and `readStart` pause and resume it, `shutdown` ends it on a tick after a pending write, and an
-  error carries the stream's own code.
+  listener, `readStop` and `readStart` pause and resume it, `shutdown` ends it on a tick of the caller's process after a
+  pending write, and an error carries the stream's own code. Every write and shutdown is answered once: a close, or
+  the stream's own close, cancels what is held, and a late callback is ignored.
 - **`container.run` takes an argv vector** (`run(argv, options?)`, ADR-0012), as `execvp` takes one, and the vector
   reaches the program untouched.
   - **Resolution:** `argv[0]` is resolved as musl's `execvp` resolves it, on the run's own tree: a name with a slash

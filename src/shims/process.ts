@@ -875,6 +875,9 @@ export function createProcess(options?: {
         child.kill(name);
         return true;
       }
+      // A process that has ended and is not yet reaped (a Linux zombie) takes the signal, and nothing of it runs: no
+      // handler and no default action (ADR-0013 §1).
+      if (ended) return true;
       if (name !== "SIGKILL" && name !== "SIGSTOP" && emitter.listenerCount(name) > 0) {
         // A handler's throw is the process's uncaught exception, as Node's signal callback's is (v26.12.0: printed, exit
         // 1); a `process.exit` inside it is the stop it is.
