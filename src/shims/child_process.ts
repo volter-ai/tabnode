@@ -82,7 +82,7 @@ import { Runtime, pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers, _
 import { __nodeResolverFor } from '../node-resolver';
 import { resolve as __resolvePath } from './path';
 import { setSyncChildVfs, warmSyncChild } from './sync-child';
-import { installShellJobs } from './shell-jobs';
+import { installShellJobs, type JobStart } from './shell-jobs';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
 import { installedNpmVersion } from '../npm/version';
@@ -1698,7 +1698,7 @@ export function initChildProcess(vfs: VirtualFS): void {
   });
   // A statement ending in `&` runs in the background, with `$!`, `wait` and
   // `kill` over the engine's process table (`shell-jobs.ts` says how).
-  installShellJobs(bashInstance, { runTokenOf, runStreamsFor, registerRunStreams, releaseRunStreams });
+  installShellJobs(bashInstance, { runTokenOf, runStreamsFor, startJob: startShellJob });
   shells.set(tree, { bash: bashInstance, adapter: vfsAdapter });
 
   if (processRunnerInstalled) return;
@@ -2989,6 +2989,32 @@ function runByHost(request: RunRequest): boolean {
   if (nodeChild && nodeProcessHostInstalled()) return true;
   if (hostExecutor() === null) return false;
   return !nodeChild || request.terminal !== undefined;
+}
+
+/**
+ * A shell's `&` job (`shell-jobs.ts`): a child of the shell's run, started through the same door a `Process` handle's
+ * child takes, with its fds 0 to 2 those of a job with no terminal (fd 0 empty, fds 1 and 2 its shell's). It is the
+ * host's to run; where no host runs it, it is refused and nothing runs it in this realm (browser-substrate ADR-0227,
+ * "One task per worker").
+ */
+function startShellJob(start: JobStart): StartedRun | null {
+  const request: RunRequest = {
+    credentials: copyProcessCredentials(start.owner === null ? undefined : runStreamsFor(start.owner)?.credentials),
+    owner: start.owner,
+    file: start.argv[0]!,
+    args: start.argv,
+    cwd: start.cwd,
+    env: start.env,
+    detached: false,
+    stdout: (chunk) => start.output(1, chunk),
+    stderr: (chunk) => start.output(2, chunk),
+    stderrIsPipe: false,
+    stdinIsPipe: false,
+    descriptors: [],
+    kernelDescriptors: [],
+    exit: start.exit,
+  };
+  return runByHost(request) ? startChildRun(request) : null;
 }
 
 /** The runs a `Process` handle started, so a later name never lands on a live one. */

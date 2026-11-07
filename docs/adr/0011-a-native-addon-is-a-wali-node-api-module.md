@@ -301,8 +301,8 @@ Each rule names its source, as §4's do.
     then has the process ended, and only then is its exit reported.
   - *Callers, by grep* (`__endOwnedProcess`): the run's `finally` (`shims/child_process.ts`, `launchNode`), which a
     return from the entry, a throwing entry, a `process.exit` that unwinds and a caller's abort all reach;
-    `process.exit()` itself; a kill of a child the realm runs (its `kill`); a kill of a shell job
-    (`shims/shell-jobs.ts`); and the host's `stopProcess` (`index.ts`). A process may be ended twice
+    `process.exit()` itself; a kill of a child the realm runs (its `kill`, a shell's `&` job among them); and the
+    host's `stopProcess` (`index.ts`). A process may be ended twice
     (`process.exit`, then the `finally`).
   - *Node v24.21.0:* a Tabnode process shares its realm with others, as a worker shares its living OS process, so
     Node's worker is the reference, not the main thread's `exit()`, which leaves release to the OS
@@ -360,7 +360,7 @@ Each rule names its source, as §4's do.
       native part of an end completes on later turns, and each caller that reports the process's exit does so at
       completion:
       - the run's `finally` awaits it before it releases the rest of what the run holds;
-      - a child's and a shell job's kill report their exit when it settles;
+      - a child's kill reports its exit when it settles;
       - the host's `stopProcess` answers at once, since it reports only whether the run was known.
   - *Failures:*
     - **A cleanup call's throw.** Every cleanup hook goes through the context's `addCleanupHook`, which wraps it so
@@ -383,7 +383,7 @@ Each rule names its source, as §4's do.
       `beforeExit` destroys the context, and the `finally`'s end completes the teardown.
     - **`process.exit`.** Its end, then the `finally`'s, share one completion.
     - **A throwing entry or a caller's abort** reaches the `finally`.
-    - **A child's or a shell job's kill** ends the process and reports its exit at completion.
+    - **A child's kill** ends the process and reports its exit at completion.
     - **The host's stop** ends it at once, the run's `finally` awaiting the same completion.
     - **A refused first open** leaves the runtime as it was.
     - **A failed initialization's environment** is torn down with the rest at step 1.

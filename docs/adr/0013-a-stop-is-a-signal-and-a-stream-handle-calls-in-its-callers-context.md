@@ -10,9 +10,9 @@ Date: 2026-11-06.
 and the run settles as it ends: by the signal's default action, or by its own handler's `exit`.
 
 **Callers, by grep.** In Tabnode, `container.stopProcess(token)` (`index.ts`) is a public door with no internal
-caller. Its siblings deliver signals first: `signalProcess` is `__signalOwnedProcess`; a job's `kill`
-(`shims/child_process.ts`) and a shell job's `kill` (`shims/shell-jobs.ts`) call `__signalOwnedProcess`/`signalPid`
-first and end the job at once only where nothing of it receives signals (a builtin). In browser-substrate (at
+caller. Its siblings deliver signals first: `signalProcess` is `__signalOwnedProcess`; a child's `kill`
+(`shims/child_process.ts`, a shell's `&` job among them) calls `signalPid` first and ends the child at once only where
+nothing of it receives signals (a builtin). In browser-substrate (at
 `kernel-step2`), its callers are the container worker's `abort` (`packages/node/src/cross-origin-container-worker.ts`,
 Docker's kill, which also aborts the run with the signal) and the toolchain's run (`packages/node/src/tabnode-toolchain.ts`:
 `stopOnKill`, which also aborts the run, and the cleanup of a run whose execution has settled, which holds no ports).

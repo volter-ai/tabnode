@@ -7,6 +7,12 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 A minor release: `run(argv)`, `ServerBridge.registerConnector`, the `vite-ws-channel` fields and the `TreeSockets`
 and `RunStreams.terminal` doors change the exported surface.
 
+- **A shell's `&` job is a process of its own** (browser-substrate ADR-0227, "What a page program is"). It is a spawn
+  of `/bin/sh -c` through the engine's child start, the host's to run, carrying the shell's state as a forked subshell
+  has it: its options, unexported variables, aliases and functions written ahead of the job's text, its `$0` and
+  positional parameters as the spawn's words. `$!` names that process, and `wait` and `kill` act on it; its `$$` and
+  `$PPID` are its own, and a variable it sets does not reach the shell. With no host to run it, the job is refused
+  (`bash: fork: Function not implemented`); nothing runs it in the realm.
 - **A virtual WebSocket is Node's own WebSocket client** (ADR-0014; browser-substrate ROADMAP 55). The server bridge
   opens undici's `WebSocket` (the bundle Node ships, unedited) to the guest's port over the container's loopback, so
   the handshake and its 101 checks, masking, every frame check, the close-code table, the closing handshake, 1005,
@@ -73,7 +79,7 @@ and `RunStreams.terminal` doors change the exported surface.
   native immediate is queued and no native request waits, going again at once while one is queued. A cleanup hook
   removed or added again while the queue drains keeps every other hook in it. A throw during the end leaves the
   remaining hooks to run and fails the end, and the run fails with it rather than reporting a clean result; a killed
-  child or shell job reports its exit at completion. A refused `dlopen` leaves the process's addon runtime as it was, and a `dlopen` once the end has
+  child reports its exit at completion. A refused `dlopen` leaves the process's addon runtime as it was, and a `dlopen` once the end has
   begun is refused. Any other `.node` fails
   `ERR_DLOPEN_FAILED` as Node's `dlopen` does: `invalid ELF header`, the compiler's refusal, "Module did not
   self-register", `cannot dynamically load executable`, `undefined symbol: <name>`, or, in a tree that offers no

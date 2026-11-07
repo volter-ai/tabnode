@@ -1,29 +1,32 @@
 /**
  * The engine's shell runs a statement that ends in `&` in the background, as
- * a POSIX shell does.
+ * a POSIX shell does, as a process of its own (browser-substrate ADR-0227,
+ * "What a page program is", "One task per worker").
  *
  * just-bash, the engine's shell, parses `&` (a statement's `background` flag)
- * and its interpreter never reads it: `node -e '…setTimeout…' & c=$!; echo
- * "bg pid=$c"; wait "$c"` ran the child to its end first, printed its output
- * before `bg pid=0`, `$!` was always 0, `wait` returned 0 at once, and `kill`
- * was "command not found". On a machine the job starts and the script goes on,
- * `$!` is the job's pid, `wait` waits for it and returns its status, and
- * `kill` reaches it.
+ * and its interpreter never reads it. On a machine the job starts and the
+ * script goes on, `$!` is the job's pid, `wait` waits for it and returns its
+ * status, and `kill` reaches it.
  *
  * This is built on the doors just-bash offers rather than on a patched copy of
  * it: a transform plugin, which runs on every script the shell executes (the
  * top-level line, `sh -c`, `bash -c`, a script file), and custom commands.
  *
  * - The plugin replaces each background statement with a call of
- *   `__tabnode_bg`, carrying the statement's syntax tree (and the functions the
- *   script defines, which a job may call) as JSON; it renames `$!` to the
+ *   `__tabnode_bg`, carrying the statement's own text and the text of the
+ *   functions the script defines, which a job may call; it renames `$!` to the
  *   variable `__tabnode_bg` sets, and the `wait` builtin (which answers 0 at
  *   once and cannot be overridden) to `__tabnode_wait`.
- * - `__tabnode_bg` starts the statement as a run of the engine's own: a pid
- *   minted in the engine's process table (the one `child_process`, `kill -0`
- *   and `process.kill` read), a run name that a `node` inside the job takes as
- *   its own, so its `process.pid` is `$!`, and a copy of the shell's variables,
- *   as a forked subshell has. It returns at once.
+ * - `__tabnode_bg` starts the job as bash runs one in a forked subshell, which
+ *   no host image can fork (ADR-0227 §6, ENOSYS): a spawn of `/bin/sh -c`
+ *   through the engine's own child start (the door `spawn` takes), carrying the
+ *   shell's state as a forked subshell has it, written ahead of the job's text:
+ *   its variables, functions, options (`SHELLOPTS`, `BASHOPTS`) and aliases, with
+ *   its `$0` and positional parameters as the spawn's words. just-bash keeps no
+ *   traps, so none is written. A spawn is a new process, not a copy: the job's
+ *   `$$` and `$PPID` are its own, and a variable it sets does not reach the
+ *   shell. The child is the host's to run; with no host to run it, the job is
+ *   refused, never run in this realm.
  * - `__tabnode_wait` waits for the jobs of the shell it runs in (all, `-n` the
  *   next, or the pids named) and answers the status of the last one: an exit
  *   code, or 128 plus the signal that ended it. `kill` delivers a signal to any
@@ -36,21 +39,27 @@
  */
 import { defineCommand } from 'just-bash';
 import type { Bash, CommandContext } from 'just-bash';
-import {
-  PROCESS_TOKEN_ENV, enterRun, mintPid, setRunPid, runPidOf, forgetRunPid, pidIsLive, signalPid, exitRunProcess, reapRunProcess,
-  tokenOfPid, __signalOwnedProcess, type ProcessToken,
-} from '../process-tokens';
+import { PROCESS_TOKEN_ENV, pidIsLive, signalPid, tokenOfPid, __signalOwnedProcess, type ProcessToken } from '../process-tokens';
 import { __substrateChildrenOf, __substrateSignals, __substrateSignalNames } from './process';
-import { __endOwnedProcess } from '../node-lib/net-module';
 import type { RunStreams } from './child_process';
-import { unstreamedOutput } from './streamed-output';
+import type { StartedRun } from '../node-lib/binding/process_wrap';
+
+/** A background job's start, as the engine's child start takes one. */
+export interface JobStart {
+  owner: ProcessToken | null;
+  argv: string[];
+  cwd: string;
+  env: Record<string, string>;
+  output(fd: 1 | 2, chunk: string | Uint8Array): void;
+  exit(code: number, signal: string | null): void;
+}
 
 /** What the engine's process model gives this module. */
 export interface ShellJobsHost {
   runTokenOf(ctx: CommandContext): ProcessToken | null;
   runStreamsFor(token: ProcessToken): RunStreams | undefined;
-  registerRunStreams(token: ProcessToken, streams: RunStreams): void;
-  releaseRunStreams(token: ProcessToken): void;
+  /** The job started as a child of its shell's run, the host's to run; null where no host can run it. */
+  startJob(start: JobStart): StartedRun | null;
 }
 
 /** The variable `$!` is read from once the plugin has renamed it. */
@@ -59,28 +68,20 @@ const LAST_JOB_VAR = '__TABNODE_LAST_JOB_PID';
 const SHELL_VAR = '__TABNODE_SHELL';
 const BG_COMMAND = '__tabnode_bg';
 const WAIT_COMMAND = '__tabnode_wait';
-const JOB_PLACEHOLDER = '__tabnode_job';
 /** How much of its jobs' output a shell holds for its next `wait`; the rest still reached the host's streams. */
 const PENDING_LIMIT = 1 << 20;
-/** Signals whose default action is to do nothing. */
-const IGNORED_BY_DEFAULT = new Set(['SIGCHLD', 'SIGCONT', 'SIGURG', 'SIGWINCH']);
 
 interface Job {
   pid: number;
-  token: ProcessToken;
   status: number | null;
   done: Promise<number>;
-  kill(signal: string): boolean;
 }
 interface Shell { jobs: Map<number, Job>; order: number[]; pendingOut: string; pendingErr: string }
 
 type Node = Record<string, unknown>;
 
 const shells = new Map<string, Shell>();
-/** A job's script, from `__tabnode_bg` to the plugin, taken once. */
-const handoff = new Map<string, Node>();
 let nextShell = 1;
-let nextJob = 1;
 
 function isNode(value: unknown): value is Node {
   return typeof value === 'object' && value !== null;
@@ -103,21 +104,31 @@ function definesFunction(statement: Node): boolean {
     && pipeline.commands.some((command) => isNode(command) && command.type === 'FunctionDef'));
 }
 
-/** Every function definition in a script, outside the background statements (a job carries its own). */
-function functionDefinitions(node: unknown, found: Node[] = []): Node[] {
+/**
+ * The text of every function definition in a script, outside the background statements (a job's own text holds its
+ * own), each whole: a definition's body is not searched again.
+ */
+function functionDefinitions(node: unknown, found: string[] = []): string[] {
   if (Array.isArray(node)) { for (const child of node) functionDefinitions(child, found); return found; }
   if (!isNode(node)) return found;
   if (node.type === 'Statement' && node.background === true) return found;
-  if (node.type === 'Statement' && definesFunction(node)) found.push(node);
+  if (node.type === 'Statement' && definesFunction(node) && typeof node.sourceText === 'string') {
+    found.push(node.sourceText);
+    return found;
+  }
   for (const key of Object.keys(node)) functionDefinitions(node[key], found);
   return found;
 }
 
+/** A background statement's own text, as the parser kept it, without its `&`; empty where it kept none. */
+function jobText(statement: Node): string {
+  return typeof statement.sourceText === 'string' ? statement.sourceText.replace(/\s*&\s*$/u, '') : '';
+}
+
 /**
  * The rewrite, in place: a background statement becomes a call of
- * `__tabnode_bg` (its own subtree is not descended into; the job's script is
- * rewritten when it runs), `$!` reads the job variable, `wait` is the job
- * table's.
+ * `__tabnode_bg` (its own subtree is not descended into: its text is the
+ * job's), `$!` reads the job variable, `wait` is the job table's.
  */
 function rewrite(node: unknown, functions: string): void {
   if (Array.isArray(node)) {
@@ -140,7 +151,7 @@ function rewrite(node: unknown, functions: string): void {
 }
 
 function backgroundCall(statement: Node, functions: string): Node {
-  const job = JSON.stringify({ ...statement, background: false });
+  const job = jobText(statement);
   return {
     type: 'Statement',
     pipelines: [{
@@ -162,24 +173,11 @@ function backgroundCall(statement: Node, functions: string): Node {
   };
 }
 
-/** The plugin: a job's own script is taken from the handoff, and every script is rewritten. */
+/** The plugin: every script is rewritten. */
 function transform({ ast }: { ast: Node }): { ast: Node } {
-  let script = ast;
-  const statements = Array.isArray(ast.statements) ? ast.statements : [];
-  if (statements.length === 1 && isNode(statements[0])) {
-    const pipelines = statements[0].pipelines;
-    const command = Array.isArray(pipelines) && isNode(pipelines[0]) && Array.isArray(pipelines[0].commands) ? pipelines[0].commands[0] : undefined;
-    if (isNode(command) && command.type === 'SimpleCommand' && wordLiteral(command.name) === ':' && Array.isArray(command.args)
-      && command.args.length === 2 && wordLiteral(command.args[0]) === JOB_PLACEHOLDER) {
-      const token = wordLiteral(command.args[1]);
-      const own = token === null ? undefined : handoff.get(token);
-      if (own && token !== null) { handoff.delete(token); script = own; }
-    }
-  }
-  if (!Array.isArray(script.statements) || !JSON.stringify(script).match(/"background":true|"parameter":"!"|"value":"wait"/u)) return { ast: script };
-  const functions = JSON.stringify(functionDefinitions(script.statements));
-  rewrite(script.statements, functions);
-  return { ast: script };
+  if (!Array.isArray(ast.statements) || !JSON.stringify(ast).match(/"background":true|"parameter":"!"|"value":"wait"/u)) return { ast };
+  rewrite(ast.statements, functionDefinitions(ast.statements).join('\n'));
+  return { ast };
 }
 
 function shellOf(ctx: CommandContext): { id: string; shell: Shell } {
@@ -220,100 +218,75 @@ function toRun(streams: RunStreams | undefined, fd: 1 | 2, chunk: string | Uint8
   text?.(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
 }
 
-function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, script: Node, sourceText: string): Job {
-  const token: ProcessToken = `job-${nextJob++}`;
+/** A word the job's shell reads as itself. */
+const quoted = (word: string): string => `'${word.replace(/'/gu, "'\\''")}'`;
+
+/** Variables the job's shell sets for itself, or that are this module's or the engine's own. */
+const OWN_VARIABLES = new Set([SHELL_VAR, LAST_JOB_VAR, PROCESS_TOKEN_ENV, 'SHELLOPTS', 'BASHOPTS', 'PPID', 'UID', 'EUID', 'BASHPID', 'BASH_VERSINFO', 'RANDOM', 'SECONDS', 'LINENO']);
+
+/**
+ * The job's script for `/bin/sh -c`: the shell's state as a forked subshell has it, written ahead of the job's text
+ * (ADR-0227, "One task per worker", *Kept*): its `shopt` options (`expand_aliases` among them), its variables that are
+ * not exported (the exported ones are the spawn's environment), its aliases and its functions, then its `set -o`
+ * options, last so that `errexit` and `xtrace` take hold where the shell's own commands begin; then the job.
+ */
+function jobScript(ctx: CommandContext, functions: string, job: string): string {
+  const lines: string[] = [];
+  const shopts = (ctx.env.get('BASHOPTS') ?? '').split(':').filter(Boolean);
+  if (shopts.length > 0) lines.push(`shopt -s ${shopts.join(' ')}`);
+  const exported = ctx.exportedEnv ?? {};
+  for (const [name, value] of ctx.env) {
+    if (name.startsWith('BASH_ALIAS_')) { lines.push(`alias ${name.slice(11)}=${quoted(value)}`); continue; }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) || OWN_VARIABLES.has(name) || Object.hasOwn(exported, name)) continue;
+    lines.push(`${name}=${quoted(value)}`);
+  }
+  if (functions) lines.push(functions);
+  const shellOptions = (ctx.env.get('SHELLOPTS') ?? '').split(':').filter(Boolean);
+  if (shellOptions.length > 0) lines.push(`set ${shellOptions.map((option) => `-o ${option}`).join(' ')}`);
+  lines.push(job);
+  return lines.join('\n');
+}
+
+/** The job's environment: the shell's exported variables, without the names of this module's and the engine's own. */
+function environmentOf(ctx: CommandContext): Record<string, string> {
+  const env = { ...(ctx.exportedEnv ?? {}) };
+  for (const name of OWN_VARIABLES) delete env[name];
+  return env;
+}
+
+/**
+ * The job, a spawn of `/bin/sh -c` as a child of the shell's run, with the shell's `$0` and positional parameters as
+ * its words. Null where no host can run it.
+ */
+function startJob(host: ShellJobsHost, ctx: CommandContext, shell: Shell, functions: string, job: string): Job | null {
   const parent = host.runTokenOf(ctx);
-  const parentPid = runPidOf(parent);
-  const liveParent = parentPid !== undefined && pidIsLive(parentPid, parent) ? parentPid : 0;
-  const pid = mintPid(liveParent, false, parent);
-  setRunPid(token, pid, liveParent, { argv: ['sh', '-c', sourceText], cwd: ctx.cwd }, parent);
-  const controller = new AbortController();
-  let streamedOut: string[] = [];
-  let streamedErr: string[] = [];
   const live = (): RunStreams | undefined => (parent === null ? undefined : host.runStreamsFor(parent));
-  host.registerRunStreams(token, {
-    onStdout: (data: string) => { streamedOut.push(data); toRun(live(), 1, data); },
-    onStderr: (data: string) => { streamedErr.push(data); toRun(live(), 2, data); },
-    // A `node` of the job writes the parent's fds as bytes where the parent
-    // takes bytes, as a `node` of the parent's own shell does.
-    onStdoutBytes: (bytes: Uint8Array) => { toRun(live(), 1, bytes); },
-    onStderrBytes: (bytes: Uint8Array) => { toRun(live(), 2, bytes); },
-    signal: controller.signal,
-    held: false,
-  });
+  const positional = Array.from({ length: Number(ctx.env.get('#') ?? 0) }, (_, index) => ctx.env.get(String(index + 1)) ?? '');
   let settle: (status: number) => void = () => {};
-  const job: Job = {
-    pid,
-    token,
-    status: null,
-    done: new Promise<number>((resolve) => { settle = resolve; }),
-    kill(signal: string): boolean {
-      if (job.status !== null) return false;
-      // A `node` of the job, here or in a realm of its own, takes the signal
-      // as a process does: its listeners, else its default action, which ends
-      // the job with it.
-      if (__signalOwnedProcess(token, signal) || signalPid(pid, signal, parent)) return true;
-      if (IGNORED_BY_DEFAULT.has(signal)) return true;
-      // Nothing of the job's receives signals (a builtin, `sleep`): it ends
-      // now, as a killed child's run ends, and reports the signal.
-      controller.abort(signal);
-      // Its exit is reported once its end has completed (ADR-0011 §6).
-      void __endOwnedProcess(token).finally(() => end(128 + signalNumber(signal)));
-      return true;
-    },
-  };
-  const end = (status: number): void => {
-    if (job.status !== null) return;
-    job.status = status;
-    host.releaseRunStreams(token);
-    // The job ran in this realm's shell: it exits with its status, and its end is its shell's wait.
-    exitRunProcess(pid, liveParent, status, null, parent);
-    reapRunProcess(pid, liveParent, status, null, parent);
-    forgetRunPid(token);
-    __substrateChildrenOf(parent).delete(pid);
-    settle(status);
-  };
+  const entry: Job = { pid: 0, status: null, done: new Promise<number>((resolve) => { settle = resolve; }) };
   const hold = (text: string, key: 'pendingOut' | 'pendingErr'): void => {
     if (!text) return;
     const room = PENDING_LIMIT - shell[key].length;
     if (room > 0) shell[key] += text.slice(0, room);
   };
-  const env: Record<string, string> = Object.fromEntries(ctx.env);
-  delete env[SHELL_VAR];
-  env[PROCESS_TOKEN_ENV] = token;
-  handoff.set(token, script);
-  __substrateChildrenOf(parent).set(pid, {
-    get exitCode() { return job.status; },
-    signalCode: null,
-    kill: (signal = 'SIGTERM') => job.kill(signal),
-  } as { exitCode: number | null; signalCode: string | null; kill(signal?: string): boolean });
-  const run = ctx.exec
-    ? enterRun(token, () => ctx.exec!(`: ${JOB_PLACEHOLDER} ${token}`, { env, cwd: ctx.cwd, replaceEnv: true, signal: controller.signal }))
-    : Promise.resolve({ stdout: '', stderr: 'bash: background jobs need a shell that can run a script\n', exitCode: 1 });
-  void Promise.resolve(run).then(
-    (result) => {
-      handoff.delete(token);
-      const stdout = result.stdout ?? '';
-      const stderr = result.stderr ?? '';
-      const restOut = unstreamedOutput(stdout, streamedOut);
-      const restErr = unstreamedOutput(stderr, streamedErr);
-      if (restOut) toRun(live(), 1, restOut);
-      if (restErr) toRun(live(), 2, restErr);
-      hold(stdout, 'pendingOut');
-      hold(stderr, 'pendingErr');
-      streamedOut = [];
-      streamedErr = [];
-      end(result.exitCode ?? 0);
+  const started = host.startJob({
+    owner: parent,
+    argv: ['/bin/sh', '-c', jobScript(ctx, functions, job), ctx.env.get('0') ?? 'bash', ...positional],
+    cwd: ctx.cwd,
+    env: environmentOf(ctx),
+    output: (fd, chunk) => {
+      toRun(live(), fd, chunk);
+      hold(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk), fd === 1 ? 'pendingOut' : 'pendingErr');
     },
-    (error: unknown) => {
-      handoff.delete(token);
-      const text = `${error instanceof Error ? error.message : String(error)}\n`;
-      toRun(live(), 2, text);
-      hold(text, 'pendingErr');
-      end(1);
+    exit: (code, signal) => {
+      const status = signal === null ? code : 128 + signalNumber(signal);
+      entry.status = status;
+      settle(status);
     },
-  );
-  return job;
+  });
+  if (started === null) return null;
+  entry.pid = started.pid;
+  return entry;
 }
 
 /** The job's output held for the shell's next `wait`, taken. */
@@ -330,20 +303,15 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
     .registerTransformPlugin({ name: 'tabnode-background-jobs', transform });
 
   bash.registerCommand(defineCommand(BG_COMMAND, async (args, ctx) => {
-    let statement: Node;
-    let functions: Node[];
-    try {
-      statement = JSON.parse(args[0] ?? '') as Node;
-      functions = JSON.parse(args[1] ?? '[]') as Node[];
-    } catch {
-      return { stdout: '', stderr: `bash: ${BG_COMMAND}: not a job\n`, exitCode: 2 };
-    }
+    const job = args[0] ?? '';
+    if (!job) return { stdout: '', stderr: `bash: ${BG_COMMAND}: not a job\n`, exitCode: 2 };
     const { shell } = shellOf(ctx);
-    const script: Node = { type: 'Script', statements: [...functions, statement] };
-    const job = startJob(host, ctx, shell, script, typeof statement.sourceText === 'string' ? statement.sourceText : '');
-    shell.jobs.set(job.pid, job);
-    shell.order.push(job.pid);
-    ctx.env.set(LAST_JOB_VAR, String(job.pid));
+    const started = startJob(host, ctx, shell, args[1] ?? '', job);
+    // No host can run it: bash's subshell is a fork, which this realm has not (ADR-0227 §6), and nothing runs the job here.
+    if (started === null) return { stdout: '', stderr: 'bash: fork: Function not implemented\n', exitCode: 1 };
+    shell.jobs.set(started.pid, started);
+    shell.order.push(started.pid);
+    ctx.env.set(LAST_JOB_VAR, String(started.pid));
     return { stdout: '', stderr: '', exitCode: 0 };
   }));
 
