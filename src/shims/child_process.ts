@@ -82,7 +82,7 @@ import { Runtime, pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers, _
 import { __nodeResolverFor } from '../node-resolver';
 import { resolve as __resolvePath } from './path';
 import { setSyncChildVfs, warmSyncChild } from './sync-child';
-import { installShellJobs, SHELL_PROGRAM, type JobStart } from './shell-jobs';
+import { installShellJobs } from './shell-jobs';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
 import { installedNpmVersion } from '../npm/version';
@@ -1693,14 +1693,12 @@ export function initChildProcess(vfs: VirtualFS): void {
       HOME: '/home/user',
       USER: 'user',
       PATH: '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin',
-      // The running shell's own program, as bash sets `$BASH`: its job is run by it (`shell-jobs.ts`).
-      BASH: SHELL_PROGRAM,
     },
     customCommands: [nodeCommand, npmCommand],
   });
   // A statement ending in `&` runs in the background, with `$!`, `wait` and
   // `kill` over the engine's process table (`shell-jobs.ts` says how).
-  installShellJobs(bashInstance, { runTokenOf, runStreamsFor, startJob: startShellJob });
+  installShellJobs(bashInstance, { runTokenOf });
   shells.set(tree, { bash: bashInstance, adapter: vfsAdapter });
 
   if (processRunnerInstalled) return;
@@ -2191,14 +2189,12 @@ interface ChildProcessHostRequest {
 /** The executor a host publishes on the well-known global symbol. */
 interface ChildProcessHost {
   run(command: string, request: ChildProcessHostRequest): Promise<ChildProcessHostResult>;
-  /** Runs the host leaves to just-bash instead, one per count. */
-  bypass: number;
   parentSignal?: AbortSignal;
 }
 
 const __browserRuntimeChildProcessExecutorSymbol = engineSymbolFor("@volter/browser-runtime/child-process-executor");
 
-/** The host's executor, where one is published and has not bypassed this run. */
+/** The host's executor, where one is published. */
 function hostExecutor(): ChildProcessHost | null {
   const bridge = (globalThis as unknown as Record<symbol, ChildProcessHost | undefined>)[__browserRuntimeChildProcessExecutorSymbol];
   if (!bridge || typeof bridge.run !== 'function') return null;
@@ -2231,8 +2227,6 @@ interface CommandRun {
   execution?: ArgvExecution;
   /** Use the private compatibility shell only where no host owns this run. */
   engineFirst?: boolean;
-  /** A process the host runs (a shell's `&` job): no bypass leaves it to the engine's shell (`RunRequest.ownProcess`). */
-  ownProcess?: true;
   cwd?: string;
   env?: Record<string, string>;
   stdin?: string;
@@ -2278,11 +2272,8 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
   }
   const bash = shell?.bash ?? bashInstance;
   const bridge = run.engineFirst === true && bash !== null ? null : hostExecutor();
-  // A run started with kernel descriptors, an argv in a kernel tree, or a shell's `&` job is a process the host runs: no
-  // bypass leaves it to the engine's shell (ADR-0012 §2).
   const kernelArgv = run.execvp === true && tree !== null && treeDescriptorsOf(tree) !== undefined;
-  if (bridge !== null && bridge.bypass > 0 && run.kernelDescriptors === undefined && !kernelArgv && run.ownProcess !== true) bridge.bypass -= 1;
-  else if (bridge !== null) {
+  if (bridge !== null) {
     const controller = new AbortController();
     const abortWithParent = (): void => {
       if (!controller.signal.aborted) controller.abort(bridge.parentSignal?.reason);
@@ -2995,33 +2986,6 @@ function runByHost(request: RunRequest): boolean {
   return !nodeChild || request.terminal !== undefined;
 }
 
-/**
- * A shell's `&` job (`shell-jobs.ts`): a child of the shell's run, started through the same door a `Process` handle's
- * child takes, with its fds 0 to 2 those of a job with no terminal (fd 0 empty, fds 1 and 2 its shell's). It is its own
- * process (`ownProcess`), the host's to run; where no host runs it, the start refuses it and nothing runs it in this
- * realm (browser-substrate ADR-0227, "One task per worker").
- */
-function startShellJob(start: JobStart): StartedRun {
-  const request: RunRequest = {
-    credentials: copyProcessCredentials(start.owner === null ? undefined : runStreamsFor(start.owner)?.credentials),
-    owner: start.owner,
-    file: start.argv[0]!,
-    args: start.argv,
-    cwd: start.cwd,
-    env: start.env,
-    detached: false,
-    stdout: (chunk) => start.output(1, chunk),
-    stderr: (chunk) => start.output(2, chunk),
-    stderrIsPipe: false,
-    stdinIsPipe: false,
-    descriptors: [],
-    kernelDescriptors: [],
-    ownProcess: true,
-    exit: start.exit,
-  };
-  return startChildRun(request);
-}
-
 /** The runs a `Process` handle started, so a later name never lands on a live one. */
 let __nextChildRun = 1;
 
@@ -3040,7 +3004,7 @@ function startChildRun(request: RunRequest): StartedRun {
   // A child of a process with a kernel is its own process, run by its host (ADR-0010 §2): with no host to run it (a
   // `node` with no process host, a program with no executor), the spawn fails as Node's does for a file it cannot
   // run, and nothing runs it in this realm.
-  if ((request.kernelDescriptors.length > 0 || request.ownProcess === true) && !runByHost(request)) {
+  if (request.kernelDescriptors.length > 0 && !runByHost(request)) {
     throw Object.assign(new Error(`spawn ${request.file} EACCES: this realm has no host to run it as its own process`), { code: 'EACCES' });
   }
   const token: ProcessToken = `child-${__nextChildRun++}`;
@@ -3246,7 +3210,6 @@ function startChildRun(request: RunRequest): StartedRun {
           onStderrBytes: streams.onStderrBytes,
           descriptors: request.descriptors,
           ...(ownDescriptors ? { kernelDescriptors: request.kernelDescriptors } : {}),
-          ...(request.ownProcess ? { ownProcess: true as const } : {}),
           onHostRun: () => { hostRun = true; },
           onHostRunRejected: cause => {
             // A transport rejection does not mean a live child has died. Only

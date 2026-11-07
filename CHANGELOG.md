@@ -7,16 +7,11 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 A minor release: `run(argv)`, `ServerBridge.registerConnector`, the `vite-ws-channel` fields and the `TreeSockets`
 and `RunStreams.terminal` doors change the exported surface.
 
-- **A shell's `&` job is a process of its own** (browser-substrate ADR-0227, "What a page program is"). It is a spawn
-  of the shell's own program (`$BASH`, `/bin/bash`) with `-c`, as bash's fork runs the same shell, through the engine's
-  child start. It carries the shell's live state at the `&`, as a forked subshell has it: its options, its variables
-  with their attributes and arrays (the interpreter's `declare -p` there), its aliases and its functions as last
-  defined (the interpreter's `declare -F` there), written ahead of the job's text, with its `$0` and positional
-  parameters as the spawn's words. A function defined by `eval` or a sourced file, whose text the engine's shell does
-  not keep, refuses the job, naming it. The job is
-  the host's to run, and no bypass leaves it to the engine's shell. `$!` names that process, and `wait` and `kill` act
-  on it; its `$$` and `$PPID` are its own, and a variable it sets does not reach the shell. With no host to run it,
-  the job fails as a failed fork does (`bash: fork: …`), and nothing runs it in the realm.
+- **A shell's `&` job is never run in the realm** (browser-substrate ADR-0227, "What a page program is"). In the
+  substrate every shell line, `exec`, `shell: true` spawn and synchronous child is the catalog's own `/bin/sh -c`, so
+  a `&` there is that shell's own fork. The engine's shell runs a line only where no host runs it, and there a `&`
+  fails as a failed fork does (`bash: fork: Function not implemented`) and runs nothing. The host executor's `bypass`
+  count is gone: no host ever set it.
 - **A virtual WebSocket is Node's own WebSocket client** (ADR-0014; browser-substrate ROADMAP 55). The server bridge
   opens undici's `WebSocket` (the bundle Node ships, unedited) to the guest's port over the container's loopback, so
   the handshake and its 101 checks, masking, every frame check, the close-code table, the closing handshake, 1005,

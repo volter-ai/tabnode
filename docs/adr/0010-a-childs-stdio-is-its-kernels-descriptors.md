@@ -121,8 +121,7 @@ host, and:
   hosted Node child's `streams` carries no sink for an fd it was given (`onStdout`, `onStdoutBytes`, `onStderr`,
   `onStderrBytes`, `stderrIsPipe`, `stdinOpen`), and no input stream is made for its fd 0; a host executor's child is
   given no live input, and none of its pipes past fd 2 is relayed (`ChildProcessHostRequest.descriptors` names only
-  the engine's pairings). Such a child always goes to the host: the executor's `bypass` is not read for it, since its
-  descriptors are placed for a process.
+  the engine's pairings). Such a child always goes to the host, since its descriptors are placed for a process.
 
 - **A child of a process with a kernel is always its host's.** A `node` child goes to the Node process host and any
   other child to the host's executor (`runByHost`); where neither is installed for it, the spawn fails `EACCES`, as

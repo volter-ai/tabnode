@@ -104,8 +104,8 @@ answer a line whose `PATH` names neither `/bin` nor `/usr/bin`, as on a machine.
 
 | Route | When | A line | An argv |
 | --- | --- | --- | --- |
-| **Host** | a published host executor (`hostExecutor()`), unless its bypass is taken (never for an argv in a kernel tree) | `bridge.run(line)` | `bridge.run(text, { executablePath: argv[0], argv })`: the host resolves the executable (in a kernel tree, its kernel's `posix_spawnp`) and the vector is its program's; `text` is the words each single-quoted, only for a host that has nothing but a shell |
-| **Local engine** | no host executor, or the host's bypass | `bash.exec(line)` | §3's decision on the run's tree: a registered command's entry is `bash.exec('command --', { args: [entry, ...argv[1:]] })`, the path naming the command; anything that resolves nothing reports 127 or 126; in a kernel tree, `EACCES` |
+| **Host** | a published host executor (`hostExecutor()`) | `bridge.run(line)` | `bridge.run(text, { executablePath: argv[0], argv })`: the host resolves the executable (in a kernel tree, its kernel's `posix_spawnp`) and the vector is its program's; `text` is the words each single-quoted, only for a host that has nothing but a shell |
+| **Local engine** | no host executor | `bash.exec(line)` | §3's decision on the run's tree: a registered command's entry is `bash.exec('command --', { args: [entry, ...argv[1:]] })`, the path naming the command; anything that resolves nothing reports 127 or 126; in a kernel tree, `EACCES` |
 | **Node** | §3 decides the engine's Node | the shell's `node` command, a child of the shell | `runNode`'s launch on the run's tree |
 
 `spawn`, `spawnSync` and `exec` are not argv runs and keep their own paths.

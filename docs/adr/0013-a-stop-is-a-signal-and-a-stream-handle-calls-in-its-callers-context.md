@@ -12,8 +12,8 @@ and the run settles as it ends: by the signal's default action, or by its own ha
 **Callers, by grep.** In Tabnode, `container.stopProcess(token)` (`index.ts`) is a public door with no internal
 caller. Its siblings deliver signals first: `signalProcess` is `__signalOwnedProcess`; a child's `kill`
 (`shims/child_process.ts`) calls `signalPid` first and ends the child at once only where nothing of it receives signals
-(a builtin the realm runs). A shell's `&` job is a child its host runs (`shims/shell-jobs.ts`), which takes the
-signal there. In browser-substrate (at
+(a builtin the realm runs). A shell's `&` job is no child of the realm's: in the substrate it is the catalog shell's
+own fork, which takes the signal from the kernel, and the host-less engine refuses it (`shims/shell-jobs.ts`). In browser-substrate (at
 `kernel-step2`), its callers are the container worker's `abort` (`packages/node/src/cross-origin-container-worker.ts`,
 Docker's kill, which also aborts the run with the signal) and the toolchain's run (`packages/node/src/tabnode-toolchain.ts`:
 `stopOnKill`, which also aborts the run, and the cleanup of a run whose execution has settled, which holds no ports).
