@@ -11,7 +11,12 @@ import real from 'node:crypto';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { build } = await import(pathToFileURL(resolve(root, 'node_modules/esbuild/lib/main.js')).href);
 const raw = { name: 'raw', setup(b) {
-  b.onResolve({ filter: /\?raw$/ }, (a) => ({ path: resolve(a.resolveDir, a.path.replace(/\?raw$/, '')), namespace: 'raw' }));
+  // A relative `?raw` is a file beside its importer; a bare one is a package's file, resolved as the package exports it.
+  b.onResolve({ filter: /\?raw$/ }, (a) => {
+    const specifier = a.path.replace(/\?raw$/, '');
+    const path = /^\.{0,2}\//.test(specifier) ? resolve(a.resolveDir, specifier) : createRequire(resolve(a.resolveDir, 'importer.js')).resolve(specifier);
+    return { path, namespace: 'raw' };
+  });
   b.onLoad({ filter: /.*/, namespace: 'raw' }, (a) => ({ contents: fs.readFileSync(a.path, 'utf8'), loader: 'text' }));
 } };
 const bundle = resolve(fs.mkdtempSync(resolve(tmpdir(), 'crypto-shim-')), 'crypto.mjs');
