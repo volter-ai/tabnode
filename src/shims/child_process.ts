@@ -48,7 +48,7 @@ import type { VirtualFS } from '../virtual-fs';
 import { executableHeader, EXECUTABLE_HEADER_BYTES } from './executable-header';
 import { setShellReadWatch, VirtualFSAdapter } from './vfs-adapter';
 import { stackFormedBy } from '../stack-overrides';
-import { __endOwnedProcess, __ownedServerPorts } from '../node-lib/net-module';
+import { __endOwnedProcess, __forgetOwnedProcessEnd, __ownedServerPorts } from '../node-lib/net-module';
 import { __ownedHandleCount, __ownedHandleKinds } from '../node-lib/net-module';
 import { setProcessRunner, type RunRequest, type StartedRun } from '../node-lib/binding/process_wrap';
 import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/binding/fds';
@@ -1556,7 +1556,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
           exitRunProcess(own.pid, own.waiter, code, signal, reaper);
           reapRunProcess(own.pid, own.waiter, code, signal, reaper);
         }
-        if (runToken !== null) forgetRunPid(runToken);
+        // The end's outcome, read above, is no longer kept once its process is reaped.
+        if (runToken !== null) { forgetRunPid(runToken); __forgetOwnedProcessEnd(runToken); }
         if (nested && runToken !== null) releaseRunStreams(runToken);
       }
     }

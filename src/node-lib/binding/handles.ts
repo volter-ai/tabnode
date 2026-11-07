@@ -346,12 +346,12 @@ export function __ownedServerPorts(token: ProcessToken): number[] {
 }
 
 /**
- * A handle's close at its process's end: a throw is the run's uncaught exception, and one no run takes is kept for the
- * end's completion (ADR-0011 §6, "Failures").
+ * A handle's close at its process's end. The process has exited and reports nothing of its own, so a throw is the end's
+ * failure, kept for its completion (ADR-0011 §6, "Failures").
  */
-function closeAtEnd(token: ProcessToken, handle: OwnedHandle, failures: unknown[]): void {
+function closeAtEnd(handle: OwnedHandle, failures: unknown[]): void {
   try { handle.close(); }
-  catch (error) { if (!__runFor(token)?.reportUncaught(error)) failures.push(error); }
+  catch (error) { failures.push(error); }
 }
 
 /**
@@ -364,7 +364,7 @@ function releaseOwnedServers(token: ProcessToken, failures: unknown[]): void {
   if (!held) return;
   for (const handle of [...held]) {
     const listening = handle as unknown as { listening?: boolean };
-    if (listening.listening === true) closeAtEnd(token, handle, failures);
+    if (listening.listening === true) closeAtEnd(handle, failures);
   }
 }
 
@@ -384,13 +384,16 @@ function releaseOwnedHandles(token: ProcessToken, failures: unknown[]): Promise<
   owners.delete(token);
   const releases: Promise<void>[] = [];
   for (const handle of [...held]) {
-    closeAtEnd(token, handle, failures);
+    closeAtEnd(handle, failures);
     if (handle.released) releases.push(handle.released);
   }
   return releases;
 }
 
-/** The completion of each process's end still in progress. */
+/**
+ * The completion of each process's end, pending or settled, until the process's run owner has reaped it
+ * (`__forgetOwnedProcessEnd`): a later end answers the same outcome, a failure included.
+ */
 const endings = new Map<ProcessToken, Promise<void>>();
 
 /**
@@ -398,7 +401,8 @@ const endings = new Map<ProcessToken, Promise<void>>();
  * (`FreeEnvironment`, `Environment::RunCleanup`): what it owns is released first, its servers and then every handle
  * it held, an addon runtime among them, whose release starts its native teardown; then its ordinary guest work, its
  * timers, immediates and ports, is cancelled. Answers the end's completion, settled when every release that outlives
- * its close has finished, and rejected with what no run could take as its own; a repeated end answers the same.
+ * its close has finished, and rejected with every failure of the end; a repeated end, before or after it settled,
+ * answers the same until the run owner forgets it.
  */
 export function __endOwnedProcess(token: ProcessToken): Promise<void> {
   const failures: unknown[] = [];
@@ -408,13 +412,19 @@ export function __endOwnedProcess(token: ProcessToken): Promise<void> {
   const previous = endings.get(token);
   if (releases.length === 0 && failures.length === 0) return previous ?? Promise.resolve();
   const ended = Promise.allSettled([...(previous ? [previous] : []), ...releases]).then((settled) => {
-    if (endings.get(token) === ended) endings.delete(token);
     const errors = [...failures, ...settled.flatMap((each) => each.status === 'rejected' ? [each.reason] : [])];
     if (errors.length === 1) throw errors[0];
     if (errors.length > 1) throw new AggregateError(errors, 'the process did not end cleanly');
   });
+  // The outcome is the run owner's to read, whenever it reaches it: held here, it is no realm's unhandled rejection.
+  ended.catch(() => undefined);
   endings.set(token, ended);
   return ended;
+}
+
+/** The run owner has read its process's end and reaped it: the end's completion is no longer kept. */
+export function __forgetOwnedProcessEnd(token: ProcessToken): void {
+  endings.delete(token);
 }
 
 /**

@@ -170,7 +170,7 @@ export const isIPv6 = netModule.isIPv6;
 export { __ownedHandleCount, __ownedHandleKinds };
 
 /** The ports a run is listening on, and its end, which releases them with everything else it holds. */
-export { __ownedServerPorts, __endOwnedProcess } from './binding/handles';
+export { __ownedServerPorts, __endOwnedProcess, __forgetOwnedProcessEnd } from './binding/handles';
 
 /**
  * A socket another run received over IPC is that run's: its handle moves, so

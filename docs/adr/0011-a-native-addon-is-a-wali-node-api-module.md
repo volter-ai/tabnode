@@ -338,8 +338,12 @@ Each rule names its source, as §4's do.
     - **One door.** `__endOwnedProcess(token)` (`node-lib/binding/handles.ts`) is every caller's. Synchronously, it
       releases the process's servers and then every owned handle, and cancels its ordinary guest work (its timers,
       immediates and ports: `__stopOwnedProcess`, `stopGuestTimers`). It answers the end's completion, a promise
-      that settles when every owned handle whose release outlives its close (`OwnedHandle.released`) has finished. A
-      repeated end answers the same completion.
+      that settles when every owned handle whose release outlives its close (`OwnedHandle.released`) has finished.
+    - **The completion is the process's until its run owner reaps it.** It is kept, pending or settled, a failure
+      included, so a repeated end answers the same outcome: `process.exit` starts the end without awaiting it, and
+      the run's `finally` reads that same outcome however much later it gets there. The run's `finally` forgets it
+      (`__forgetOwnedProcessEnd`) only once it has read it and reaped the process (ADR-0010 §2, row 1); kept until
+      then, it is no realm's unhandled rejection.
     - **The addon runtime's close** starts its native teardown, and its `released` settles when the teardown is done:
       1. its context is destroyed: stopping, no call into JavaScript, its cleanup queue drained;
       2. then, turn after turn, as `RunCleanup` repeats `CleanupHandles`:
@@ -366,10 +370,14 @@ Each rule names its source, as §4's do.
       exception. Once its end has begun the process has exited: Node runs `RunCleanup` under
       `DisallowJavascriptExecutionScope`, where nothing of the program reports anything, so a throw is not offered to
       the run's uncaught report and is the end's failure instead.
+    - **A handle's close at the end** (`releaseOwnedServers`, `releaseOwnedHandles`) is past the process's exit as
+      well: a throw from it is the end's failure, never offered to the run's uncaught report, whose writes after the
+      exit go nowhere.
     - **The end's failures** (those, a throw the run did not take while it lived, and a handle's close that throws)
       reject the end's completion after every remaining step has run. The run's `finally` awaits it, releases the rest
       of what the run holds, and rejects the run with it, so a run whose teardown failed never reports a clean result.
-      Unawaited (a kill's report, a host's stop), the rejection reaches the realm as an unhandled rejection.
+      A kill's report (`.finally` on the completion) carries the rejection on to the realm as an unhandled rejection;
+      the completion itself, kept for its run owner, is not one.
   - *Every end:*
     - **A normal return.** The loop drains only once no native request waits (their port holds it, §5), emnapi's
       `beforeExit` destroys the context, and the `finally`'s end completes the teardown.
@@ -383,7 +391,7 @@ Each rule names its source, as §4's do.
     - After completion the process holds no handle, timer, port, native immediate or waiting native request.
     - Every deferred release emnapi scheduled before or during the end has run, and nothing runs on its account
       afterwards.
-    - A second end answers the first's completion.
+    - A second end, before or after the first settled, answers the first's completion until the run owner reaps.
     - A Runtime made outside any run has no end the engine sees, and its addons live as long as it does, as its other
       handles do.
 - **The loading process's tree loads the file.**
