@@ -472,6 +472,33 @@ export function nativeModuleFor(owner: object, name: string, create: () => unkno
   return scopeFor(owner).surface(name, create);
 }
 
+/** The global object a process's builtins run in (`setNodeLibGlobal`), the realm's where none is named. */
+export function nodeLibGlobalFor(owner: object): object {
+  return processGlobalOf?.(owner) ?? globalThis;
+}
+
+const compiledDependencies = new Map<string, Function>();
+/**
+ * A dependency's CommonJS file evaluated once per process, as its builtins are (`compileNodeLib`): its `process`,
+ * `require` and `globalThis` are that process's, and each name of `globals` is that process's global's value of the
+ * name, or the value `given` names for it, so what the file takes from its host when it is evaluated is that process's.
+ */
+export function loadDependencyFor(owner: object, name: string, source: string, globals: readonly string[],
+  given: Readonly<Record<string, unknown>> = {}): unknown {
+  return scopeFor(owner).surface(name, () => {
+    let compiled = compiledDependencies.get(name);
+    if (!compiled) {
+      // eslint-disable-next-line no-new-func
+      compiled = new Function('globalThis', `return function (exports, require, module, process, ${globals.join(', ')}) {${source}\n}\n//# sourceURL=${name}`);
+      compiledDependencies.set(name, compiled);
+    }
+    const global = nodeLibGlobalFor(owner) as Record<string, unknown>;
+    const module = { exports: {} as unknown };
+    compiled(global)(module.exports, scopeFor(owner).require, module, owner, ...globals.map((key) => key in given ? given[key] : global[key]));
+    return module.exports;
+  });
+}
+
 function newNodeLibRecord(name: string): NodeLibModule {
   if (NODE_LIB_SOURCES[name] === undefined) throw new Error(`node-lib: no vendored file for '${name}'`);
   return { exports: {}, id: name, filename: `node:${name}`, loaded: false };

@@ -15,7 +15,7 @@
  * with the run that made it when it is constructed, `ref`/`unref` toggle it,
  * and closing it gives it up.
  */
-import { __currentProcessToken, __runFor, __tokenForProcess, enterRun, type ProcessToken } from '../../process-tokens';
+import { __currentProcessToken, __runFor, __stopOwnedProcess, __tokenForProcess, enterRun, type ProcessToken } from '../../process-tokens';
 import { withGuestCallback, queueBindingTask } from '../../guest-loop';
 import { handleOwnerSymbol } from './owner-symbol';
 import type { Process } from '../../shims/process';
@@ -23,6 +23,8 @@ import type { Process } from '../../shims/process';
 /** What the count needs of a handle: a way to close it when its run ends. */
 export interface OwnedHandle {
   close(callback?: () => void): void;
+  /** Where a handle's release outlives its close (an addon runtime's native teardown, ADR-0011 §6): its completion. */
+  readonly released?: Promise<void>;
 }
 
 const owners = new Map<ProcessToken, Set<OwnedHandle>>();
@@ -344,41 +346,75 @@ export function __ownedServerPorts(token: ProcessToken): number[] {
 }
 
 /**
- * A process that ends closes the servers it was listening on. This is the
- * same release as the handles below it -- a server IS a handle here -- kept
- * under its own name because the engine's own parts call it where a run ends.
+ * A handle's close at its process's end: a throw is the run's uncaught exception, and one no run takes is kept for the
+ * end's completion (ADR-0011 §6, "Failures").
  */
-export function __releaseOwnedServers(token: ProcessToken, stopTimers = true, stopProcess?: (token: ProcessToken) => void): void {
-  const held = owners.get(token);
-  if (held) {
-    for (const handle of [...held]) {
-      const listening = handle as unknown as { listening?: boolean };
-      if (listening.listening !== true) continue;
-      try { handle.close(); } catch { /* already closed is already released */ }
-    }
-  }
-  // A run's own timers stop once its exit is recorded, not from inside the
-  // timer that called exit: the engine's runner waits on a tick of its own.
-  if (stopTimers && stopProcess) setTimeout(() => stopProcess(token), 0);
+function closeAtEnd(token: ProcessToken, handle: OwnedHandle, failures: unknown[]): void {
+  try { handle.close(); }
+  catch (error) { if (!__runFor(token)?.reportUncaught(error)) failures.push(error); }
 }
 
 /**
- * A process that ends closes the handles it held, as Node closes its fds.
- * Called where the run's servers and timers are released.
+ * A process that ends closes the servers it was listening on first: a server
+ * is a handle here, closed by its own `close` so its port is given back
+ * before the rest of what the process held.
  */
-export function __releaseOwnedHandles(token: ProcessToken): void {
+function releaseOwnedServers(token: ProcessToken, failures: unknown[]): void {
+  const held = owners.get(token);
+  if (!held) return;
+  for (const handle of [...held]) {
+    const listening = handle as unknown as { listening?: boolean };
+    if (listening.listening === true) closeAtEnd(token, handle, failures);
+  }
+}
+
+/**
+ * A process that ends closes the handles it held, as Node closes its fds, and answers the releases that outlive their
+ * close.
+ */
+function releaseOwnedHandles(token: ProcessToken, failures: unknown[]): Promise<void>[] {
   const process = __runFor(token)?.process;
   const scope = process && scopeIds.get(process);
   if (scope) { handleRows.delete(scope); requestRows.delete(scope); }
   handleRows.delete(token);
   requestRows.delete(token);
   const held = allOwned.get(token);
-  if (!held) return;
+  if (!held) return [];
   allOwned.delete(token);
   owners.delete(token);
+  const releases: Promise<void>[] = [];
   for (const handle of [...held]) {
-    try { handle.close(); } catch { /* a handle already closed is already released */ }
+    closeAtEnd(token, handle, failures);
+    if (handle.released) releases.push(handle.released);
   }
+  return releases;
+}
+
+/** The completion of each process's end still in progress. */
+const endings = new Map<ProcessToken, Promise<void>>();
+
+/**
+ * A process's end, however it ends (ADR-0011 §6, "A process's end"), in the order a Node worker's end takes
+ * (`FreeEnvironment`, `Environment::RunCleanup`): what it owns is released first, its servers and then every handle
+ * it held, an addon runtime among them, whose release starts its native teardown; then its ordinary guest work, its
+ * timers, immediates and ports, is cancelled. Answers the end's completion, settled when every release that outlives
+ * its close has finished, and rejected with what no run could take as its own; a repeated end answers the same.
+ */
+export function __endOwnedProcess(token: ProcessToken): Promise<void> {
+  const failures: unknown[] = [];
+  releaseOwnedServers(token, failures);
+  const releases = releaseOwnedHandles(token, failures);
+  __stopOwnedProcess(token);
+  const previous = endings.get(token);
+  if (releases.length === 0 && failures.length === 0) return previous ?? Promise.resolve();
+  const ended = Promise.allSettled([...(previous ? [previous] : []), ...releases]).then((settled) => {
+    if (endings.get(token) === ended) endings.delete(token);
+    const errors = [...failures, ...settled.flatMap((each) => each.status === 'rejected' ? [each.reason] : [])];
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'the process did not end cleanly');
+  });
+  endings.set(token, ended);
+  return ended;
 }
 
 /**

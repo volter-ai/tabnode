@@ -164,12 +164,13 @@ ownership that keeps a run alive while it holds a handle.
 
 Run ownership: a handle registers with the current run token when it is
 created, `ref`/`unref` toggle it, and a run is alive while it holds a ref'd
-handle or a pending timer, as libuv's loop is; this replaces the socket and
-server registries and the `__ownsHandles` rule of .40. The names the
-substrate's bridge and `http.ts` read today (`__ownedServerPorts`,
-`_registerServer`, `__releaseOwnedServers`, `__adoptSocket`,
-`__pairLoopbackSockets`'s effect) are served by the binding under the same
-names until `http` is ported the same way.
+handle or a pending timer, as libuv's loop is. A handle made outside the run
+it belongs to is counted in that run's loop by `__adoptHandle` (a socket by
+`__adoptSocket`), and `__ownedServerPorts` answers the ports a run's servers
+listen on. A run's end is `__endOwnedProcess` (`node-lib/binding/handles.ts`,
+ADR-0011 §6): its servers and then every handle it holds are closed and its
+timers stopped, and the end completes when every release that outlives its
+close (an addon runtime's native teardown) has finished.
 
 ## The process's sockets
 

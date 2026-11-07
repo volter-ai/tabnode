@@ -52,7 +52,7 @@ export const STDIN_RING = {
 /** `Atomics.waitAsync` (ES2024), declared here because the build's library is ES2022. */
 type WaitAsync = (typedArray: Int32Array, index: number, value: number) =>
   { async: false; value: 'not-equal' | 'timed-out' } | { async: true; value: Promise<'ok' | 'timed-out'> };
-const waitAsync: WaitAsync | undefined = typeof Atomics === 'object'
+export const waitAsync: WaitAsync | undefined = typeof Atomics === 'object'
   ? (Atomics as { waitAsync?: WaitAsync }).waitAsync
   : undefined;
 
