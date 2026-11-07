@@ -129,6 +129,7 @@
 - [createProcess](functions/createProcess.md)
 - [createRuntime](functions/createRuntime.md)
 - [createStdinRing](functions/createStdinRing.md)
+- [currentProcessToken](functions/currentProcessToken.md)
 - [execute](functions/execute.md)
 - [getPortBridge](functions/getPortBridge.md)
 - [getServerBridge](functions/getServerBridge.md)
