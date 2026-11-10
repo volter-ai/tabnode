@@ -55,7 +55,7 @@ export interface TreeSystem {
 }
 
 /** The system a tree offers, where it offers one. */
-export function treeSystemOf(tree: unknown): TreeSystem | undefined {
+function treeSystemOf(tree: unknown): TreeSystem | undefined {
   if (tree === null || (typeof tree !== 'object' && typeof tree !== 'function')) return undefined;
   const offered = (tree as Record<symbol, unknown>)[TREE_SYSTEM];
   return offered !== null && typeof offered === 'object' ? offered as TreeSystem : undefined;

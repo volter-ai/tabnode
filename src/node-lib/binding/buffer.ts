@@ -14,7 +14,6 @@
  * passes it from both buffer.js and internal/buffer.js.
  */
 import { markUntransferable } from '../../transfer-ownership';
-import { atob as decodeBase64, btoa as encodeBase64 } from '../../utils/base64-text';
 
 /** libuv has no say here: these are V8's, and the engine's realm is V8's. */
 export const kMaxLength = 4294967296 - 1;
@@ -464,14 +463,50 @@ export function isAscii(buf: Uint8Array): boolean {
   return true;
 }
 
+function invalidCharacter(message: string): Error {
+  return Object.assign(new Error(message), { name: 'InvalidCharacterError', code: 5 });
+}
+
+/** A binary string's bytes as one string of latin1 characters. */
+function latin1Text(bytes: Uint8Array): string {
+  let out = '';
+  for (let at = 0; at < bytes.length; at += 0x8000) out += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  return out;
+}
+
+/**
+ * HTML's `atob` (forgiving-base64 decode) over this binding's own decoder: ASCII whitespace removed, one or two `=`
+ * dropped from a length divisible by four, then a length of one past four, or a character outside the alphabet, is an
+ * `InvalidCharacterError`; the bytes are answered as a latin1 string. The engine's own code takes it from here: a
+ * kernel's host program's realm holds no window or worker functions (ADR-0017).
+ */
+export function htmlAtob(data: string): string {
+  let text = String(data).replace(/[\t\n\f\r ]/gu, '');
+  if (text.length % 4 === 0) text = text.replace(/==?$/u, '');
+  if (text.length % 4 === 1 || /[^A-Za-z0-9+/]/u.test(text)) throw invalidCharacter('The string to be decoded is not correctly encoded.');
+  return latin1Text(base64Bytes(text));
+}
+
+/** HTML's `btoa` over this binding's own encoder: a character past latin1 is an `InvalidCharacterError`. */
+export function htmlBtoa(data: string): string {
+  const text = String(data);
+  const bytes = new Uint8Array(text.length);
+  for (let at = 0; at < text.length; at++) {
+    const code = text.charCodeAt(at);
+    if (code > 255) throw invalidCharacter('The string to be encoded contains characters outside of the Latin1 range.');
+    bytes[at] = code;
+  }
+  return base64Text(bytes, false);
+}
+
 /** Node's `Atob`: the string a base64 one stands for, -1 for one that is not. */
 export function atob(input: string): string | number {
-  try { return decodeBase64(input); } catch { return -1; }
+  try { return htmlAtob(input); } catch { return -1; }
 }
 
 /** Node's `Btoa`: the base64 of a latin1 string, -1 for a character outside it. */
 export function btoa(input: string): string | number {
-  try { return encodeBase64(input); } catch { return -1; }
+  try { return htmlBtoa(input); } catch { return -1; }
 }
 
 /**

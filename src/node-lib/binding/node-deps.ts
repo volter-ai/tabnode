@@ -8,7 +8,7 @@
  */
 import { NODE_DEPS_WASM_BASE64 } from './node-deps-wasm';
 import { randomFill, system } from '../../system';
-import { atob } from '../../utils/base64-text';
+import { htmlAtob as atob } from './buffer';
 
 /** The module's exports (scripts/node-deps/tabnode_deps.cc). Pointers and sizes are wasm32 numbers. */
 interface NodeDepsExports {

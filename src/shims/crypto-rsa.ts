@@ -1,4 +1,4 @@
-import { atob, btoa } from '../utils/base64-text';
+import { htmlAtob as atob, htmlBtoa as btoa } from '../node-lib/binding/buffer';
 /**
  * RSA signatures made and checked on the caller's own thread: RSASSA-PKCS1-v1_5 (RFC 8017, section 8.2), which is
  * what `createSign('RSA-SHA256').sign(pem)`, `crypto.sign('sha256', data, pem)` and a JWT's RS256 ask for.

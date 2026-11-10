@@ -1,4 +1,4 @@
-import { atob, btoa } from './base64-text';
+import { htmlAtob as atob, htmlBtoa as btoa } from '../node-lib/binding/buffer';
 /**
  * Shared binary encoding utilities.
  * Replaces O(n²) string concatenation patterns used throughout the codebase.

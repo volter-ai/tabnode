@@ -32,7 +32,7 @@ import { copyProcessCredentials, type ProcessCredentials } from '../process-cred
  */
 
 import type { VirtualFS } from '../virtual-fs';
-import { atob, btoa } from '../utils/base64-text';
+import { htmlAtob as atob, htmlBtoa as btoa } from '../node-lib/binding/buffer';
 import { realmHost, realmProcess } from '../system';
 
 /** The tree a synchronous child runs on: the parent's own. */

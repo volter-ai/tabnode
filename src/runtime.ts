@@ -101,7 +101,7 @@ import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typ
 import * as acorn from 'acorn';
 
 import { observerDescriptor, observerHasOwn, observerRecord, observerWrite, observerFreeze } from './module-observer-records';
-import { atob } from './utils/base64-text';
+import { htmlAtob as atob } from './node-lib/binding/buffer';
 import { availableParallelism as osAvailableParallelism } from './shims/os';
 import { clearTimeout, engineTrace, monotonicMs, onKernel, performance, setImmediate, setTimeout, useTreeSystem } from './system';
 /** The realm's console, taken when this module loads: a page's or a library host's; a kernel's host program's realm has none. */
