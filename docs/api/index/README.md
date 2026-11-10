@@ -72,12 +72,15 @@
 - [SocketMessage](interfaces/SocketMessage.md)
 - [Stats](interfaces/Stats.md)
 - [StdinReader](interfaces/StdinReader.md)
+- [SystemInfo](interfaces/SystemInfo.md)
+- [SystemUname](interfaces/SystemUname.md)
 - [TreeAdvisoryLocks](interfaces/TreeAdvisoryLocks.md)
 - [TreeDescriptors](interfaces/TreeDescriptors.md)
 - [TreeDescriptorStats](interfaces/TreeDescriptorStats.md)
 - [TreeNative](interfaces/TreeNative.md)
 - [TreeRecordLock](interfaces/TreeRecordLock.md)
 - [TreeSockets](interfaces/TreeSockets.md)
+- [TreeSystem](interfaces/TreeSystem.md)
 - [VFSSnapshot](interfaces/VFSSnapshot.md)
 
 ## Type Aliases
@@ -108,6 +111,7 @@
 - [TREE\_DESCRIPTORS](variables/TREE_DESCRIPTORS.md)
 - [TREE\_NATIVE](variables/TREE_NATIVE.md)
 - [TREE\_SOCKETS](variables/TREE_SOCKETS.md)
+- [TREE\_SYSTEM](variables/TREE_SYSTEM.md)
 - [util](variables/util.md)
 
 ## Functions
