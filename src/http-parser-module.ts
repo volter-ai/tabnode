@@ -6,6 +6,7 @@ import { traceReadingRequested, traceOutput } from './trace-output';
  * sends the module in each realm's RuntimeOptions.httpParserModule.
  */
 import { LLHTTP_WASM_BASE64 } from './node-lib/binding/llhttp-wasm';
+import { atob } from './utils/base64-text';
 
 // Hoisted storage also works through the engine's builtin import cycles.
 var compilation: Promise<WebAssembly.Module> | undefined;

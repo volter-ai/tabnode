@@ -4,6 +4,7 @@
  * synchronously the first time a name is converted. A name Ada cannot convert answers the empty string, as Ada does.
  */
 import { ADA_IDNA_WASM_BASE64 } from './ada-idna-wasm';
+import { atob } from '../../utils/base64-text';
 
 interface AdaIdna {
   memory: WebAssembly.Memory;

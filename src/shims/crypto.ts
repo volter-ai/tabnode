@@ -28,7 +28,11 @@ import type { NodeCryptoExport, NodeCryptoUnavailable } from './crypto-exports';
 import * as asymmetric from './crypto-ec';
 import * as rsa from './crypto-rsa';
 import type { AsymmetricKey, DsaEncoding, KeyEncodingType } from './crypto-ec';
+import { randomFill as systemRandomFill, randomUUID as systemRandomUUID, setTimeout } from '../system';
 export { constants };
+
+/** The realm's SubtleCrypto, taken when this module loads (`webcrypto` below). */
+const realmSubtle = (globalThis as { crypto?: { subtle?: SubtleCrypto } }).crypto?.subtle;
 
 interface DigestState {
   update(data: Uint8Array): DigestState;
@@ -66,6 +70,18 @@ function kMaxPossibleLengthOf(): number { return Math.min(bufferModule.kMaxLengt
 const kRandomChunk = 65536;
 
 /**
+ * Node's Web Crypto, `globalThis.crypto` and `crypto.webcrypto`: its randomness is the system's (getrandom, ADR-0017),
+ * never the realm's `crypto.getRandomValues`. Its SubtleCrypto is still the realm's, taken when this module loads: the
+ * one realm interface a kernel's host program keeps until Node's own webcrypto runs over node-deps' OpenSSL
+ * (browser-substrate ADR-0227 §4, what the strip keeps and why).
+ */
+const webcrypto = {
+  getRandomValues: <T extends ArrayBufferView>(array: T): T => getRandomValues(array),
+  randomUUID: (): string => systemRandomUUID(),
+  get subtle(): SubtleCrypto { return realmSubtle as SubtleCrypto; },
+};
+
+/**
  * Random bytes into any view. WebCrypto has a per-call limit and refuses a
  * view over a SharedArrayBuffer, both of which Node's own `randomFillSync`
  * accepts, so the bytes are drawn into a plain array and copied.
@@ -76,7 +92,8 @@ function __fillRandomBytes(target: Uint8Array): void {
   for (let offset = 0; offset < target.length; offset += kRandomChunk) {
     const span = Math.min(kRandomChunk, target.length - offset);
     const source = span === chunk.length ? chunk : chunk.subarray(0, span);
-    crypto.getRandomValues(source);
+    // getrandom(2), the system's random pool (ADR-0017).
+    systemRandomFill(source);
     target.set(source, offset);
   }
 }
@@ -218,7 +235,7 @@ function randomFill(
 }
 
 function randomUUID(): string {
-  return crypto.randomUUID();
+  return systemRandomUUID();
 }
 
 /** Node's `randomInt` draws from six bytes, so this is its largest range. */
@@ -277,7 +294,9 @@ function randomInt(
 }
 
 function getRandomValues<T extends ArrayBufferView>(array: T): T {
-  return crypto.getRandomValues(array);
+  // Web Crypto's rule: at most 65536 bytes, of an integer array.
+  if (array.byteLength > 65536) throw Object.assign(new Error(`The ArrayBufferView's byte length (${array.byteLength}) exceeds the number of bytes of entropy available via this API (65536)`), { name: 'QuotaExceededError', code: 22 });
+  return systemRandomFill(array);
 }
 
 // ============================================================================
@@ -1789,8 +1808,8 @@ const nodeExports = {
   createPrivateKey,
   generateKeyPair,
   // Node's Web Crypto: the same object globalThis.crypto is in Node, and its SubtleCrypto
-  webcrypto: crypto,
-  subtle: crypto.subtle,
+  webcrypto,
+  subtle: webcrypto.subtle,
 } satisfies Record<NodeCryptoExport, unknown>;
 // `unsupported` is this engine's own, beside Node's names: what an implemented export throws for an algorithm it lacks.
 const module = { ...nodeExports, unsupported };

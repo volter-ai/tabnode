@@ -13,6 +13,9 @@
  * no network request and has no alternate host-injected binary route.
  */
 import SQLITE_WASM_DATA_URL from '@sqlite.org/sqlite-wasm/sqlite3.wasm?inline';
+import { atob } from '../utils/base64-text';
+import { performance } from '../system';
+import { engineConsole as console } from '../system';
 
 const ENOSYS = 52;
 

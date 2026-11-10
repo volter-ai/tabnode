@@ -101,6 +101,11 @@ import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typ
 import * as acorn from 'acorn';
 
 import { observerDescriptor, observerHasOwn, observerRecord, observerWrite, observerFreeze } from './module-observer-records';
+import { atob } from './utils/base64-text';
+import { availableParallelism as osAvailableParallelism } from './shims/os';
+import { clearTimeout, engineTrace, monotonicMs, onKernel, performance, setImmediate, setTimeout, useTreeSystem } from './system';
+/** The realm's console, taken when this module loads: a page's or a library host's; a kernel's host program's realm has none. */
+const realmConsole = (globalThis as { console?: Console }).console;
 
 /**
  * A prepared root's native-binding map (the substrate's ADR-0094), given to the engine once by the realm's prelude
@@ -467,6 +472,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   /** What a guest assigned to `process`, where it is not the run's own process object (the `set` trap). */
   let assignedProcess: { value: unknown } | undefined;
   const boundGlobals = new Map<string | symbol, { original: unknown; bound: unknown }>();
+  let processTimers: ReturnType<typeof guestTimerFunctions> | undefined;
   // A key the guest defined that the host would not take (a name the host
   // holds non-configurable, `navigator` under a worker's authority) lives on
   // the proxy's own target, and is this guest's from then on.
@@ -513,6 +519,11 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     ['MessagePort', () => guestMessageGlobals(process).MessagePort],
     // `perf_hooks`'s own object.
     ['performance', () => perfHooksShim.performance],
+    // Node's Web Crypto, whose randomness is the system's (shims/crypto.ts `webcrypto`).
+    ['crypto', () => cryptoShim.webcrypto],
+    // The timers are the engine's own list's, counted for the process (guest-timers.ts; ADR-0017): no realm timer.
+    ...(["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"] as const)
+      .map((name): [string, () => unknown] => [name, () => (processTimers ??= guestTimerFunctions(process))[name]]),
     // `atob` and `btoa` are the `buffer` module's own, as in Node, where the global IS `require('buffer').atob`.
     ['atob', () => (loadNodeLibFor(process, 'buffer') as Record<string, unknown>).atob],
     ['btoa', () => (loadNodeLibFor(process, 'buffer') as Record<string, unknown>).btoa],
@@ -532,14 +543,6 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
             return value.call(host, input, options);
           },
         });
-        return boundGlobals.get(key)!.bound;
-      }
-      if (["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"].includes(key as string) && typeof value === "function") {
-        // The guest's timers, counted for it; rebuilt if the host's own change.
-        if (boundGlobals.get(key)?.original !== value) {
-          const timers = guestTimerFunctions(process, host);
-          for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"] as const) boundGlobals.set(name, { original: Reflect.get(host, name, host), bound: timers[name] });
-        }
         return boundGlobals.get(key)!.bound;
       }
       // A namespace whose asynchronous calls the guest waits on: the calls are
@@ -2181,7 +2184,7 @@ const builtinModules: Record<string, unknown> = {
   prettier: prettierShim,
   // Some packages explicitly require 'console' (with Console constructor)
   console: {
-    ...console,
+    ...realmConsole,
     Console: class Console {
       private _stdout: { write: (s: string) => void } | null;
       private _stderr: { write: (s: string) => void } | null;
@@ -2205,8 +2208,8 @@ const builtinModules: Record<string, unknown> = {
         const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ') + '\n';
         const target = stream === 'err' ? this._stderr : this._stdout;
         if (target) target.write(msg);
-        else if (stream === 'err') console.error(...args);
-        else console.log(...args);
+        else if (stream === 'err') realmConsole?.error(...args);
+        else realmConsole?.log(...args);
       }
       log(...args: unknown[]) { this._write('out', args); }
       error(...args: unknown[]) { this._write('err', args); }
@@ -2473,9 +2476,8 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
   };
 
   extend("os", {
-    // A tab reports the parallelism the browser gives it; a worker with no
-    // navigator answers one, as Node does on a machine it cannot ask.
-    availableParallelism: () => (typeof navigator === "object" && navigator && Number(navigator.hardwareConcurrency)) || 1
+    // uv_available_parallelism: the CPUs the process may run on, its system's (ADR-0017).
+    availableParallelism: () => osAvailableParallelism()
   });
 
   table["dns/promises"] = table.dns.promises;
@@ -3989,11 +3991,11 @@ function createRequire(
       // Intercept rollup and esbuild - always use our shims
       // These packages have native binaries that don't work in browser
       if (id === 'rollup' || id.startsWith('rollup/') || id.startsWith('@rollup/rollup-')) {
-        console.log('[runtime] Intercepted rollup:', id);
+        engineTrace('[runtime] Intercepted rollup:', id);
         return __substrateGuestRollup(process);
       }
       if (id === 'esbuild' || id.startsWith('esbuild/') || id.startsWith('@esbuild/')) {
-        console.log('[runtime] Intercepted esbuild:', id);
+        engineTrace('[runtime] Intercepted esbuild:', id);
         return __substrateGuestEsbuild(process);
       }
       // Intercept prettier - uses createRequire which doesn't work in our runtime
@@ -4175,53 +4177,49 @@ function runtimeConsole(options: { onConsole?: (method: string, args: unknown[])
 }
 
 /**
- * Create a console wrapper that can capture output
+ * Create a console wrapper that can capture output. A program's console is its own output (`onConsole`: its fd 1 and 2);
+ * on a kernel nothing else hears it (ADR-0017: no realm console), and over no kernel the realm's console is told too,
+ * as it always was. Its timers, counters and groups are its own, on the system's clock.
  */
 function createConsoleWrapper(
   onConsole?: (method: string, args: unknown[]) => void
 ): Console {
+  let indent = '';
+  const echo = onKernel() ? undefined : realmConsole;
   const emit = (method: 'log' | 'error' | 'warn' | 'info' | 'debug' | 'trace', args: unknown[]): void => {
     // Owned instrumentation is evidence, so the host's R5 owner delivers it
     // once after HTTP. Ordinary console calls keep both existing output paths.
     if ((method === 'log' || method === 'info' || method === 'warn' || method === 'error' || method === 'debug')
       && captureTraceConsoleLine(args, method === 'debug' ? 'log' : method)) return;
-    console[method](...args);
-    onConsole?.(method, args);
+    const said = indent && args.length > 0 ? [`${indent}${typeof args[0] === 'string' ? args[0] : String(args[0])}`, ...args.slice(1)] : args;
+    echo?.[method]?.(...said);
+    onConsole?.(method, said);
+  };
+  const timers = new Map<string, number>();
+  const counts = new Map<string, number>();
+  const elapsed = (label: string): string | undefined => {
+    const began = timers.get(label);
+    return began === undefined ? undefined : `${label}: ${(monotonicMs() - began).toFixed(3)}ms`;
   };
   const wrapper = {
-    log: (...args: unknown[]) => {
-      emit('log', args);
-    },
-    error: (...args: unknown[]) => {
-      emit('error', args);
-    },
-    warn: (...args: unknown[]) => {
-      emit('warn', args);
-    },
-    info: (...args: unknown[]) => {
-      emit('info', args);
-    },
-    debug: (...args: unknown[]) => {
-      emit('debug', args);
-    },
-    trace: (...args: unknown[]) => {
-      emit('trace', args);
-    },
-    dir: (obj: unknown) => {
-      console.dir(obj);
-      onConsole?.('dir', [obj]);
-    },
-    time: console.time.bind(console),
-    timeEnd: console.timeEnd.bind(console),
-    timeLog: console.timeLog.bind(console),
-    assert: console.assert.bind(console),
-    clear: console.clear.bind(console),
-    count: console.count.bind(console),
-    countReset: console.countReset.bind(console),
-    group: console.group.bind(console),
-    groupCollapsed: console.groupCollapsed.bind(console),
-    groupEnd: console.groupEnd.bind(console),
-    table: console.table.bind(console),
+    log: (...args: unknown[]) => { emit('log', args); },
+    error: (...args: unknown[]) => { emit('error', args); },
+    warn: (...args: unknown[]) => { emit('warn', args); },
+    info: (...args: unknown[]) => { emit('info', args); },
+    debug: (...args: unknown[]) => { emit('debug', args); },
+    trace: (...args: unknown[]) => { emit('trace', args); },
+    dir: (obj: unknown) => { emit('log', [obj]); },
+    time: (label = 'default') => { timers.set(String(label), monotonicMs()); },
+    timeEnd: (label = 'default') => { const said = elapsed(String(label)); timers.delete(String(label)); if (said) emit('log', [said]); },
+    timeLog: (label = 'default', ...rest: unknown[]) => { const said = elapsed(String(label)); if (said) emit('log', [said, ...rest]); },
+    assert: (value: unknown, ...args: unknown[]) => { if (!value) emit('warn', args.length ? [`Assertion failed: ${String(args[0])}`, ...args.slice(1)] : ['Assertion failed']); },
+    clear: () => {},
+    count: (label = 'default') => { const n = (counts.get(String(label)) ?? 0) + 1; counts.set(String(label), n); emit('log', [`${String(label)}: ${n}`]); },
+    countReset: (label = 'default') => { counts.set(String(label), 0); },
+    group: (...args: unknown[]) => { if (args.length) emit('log', args); indent += '  '; },
+    groupCollapsed: (...args: unknown[]) => { if (args.length) emit('log', args); indent += '  '; },
+    groupEnd: () => { indent = indent.slice(2); },
+    table: (data: unknown) => { emit('log', [data]); },
   };
 
   return wrapper as unknown as Console;
@@ -4686,14 +4684,6 @@ export default Runtime;
  * Each is registered here when this module loads and installed by the first
  * `Runtime`, so that a host that only imported the engine keeps its own.
  */
-// Polyfill setImmediate/clearImmediate (Node.js globals not available in browsers)
-forGuestRealm(() => {
-  if (typeof globalThis.setImmediate === 'undefined') {
-    takeFromHost(globalThis, 'setImmediate', (fn: (...args: unknown[]) => void, ...args: unknown[]) => setTimeout(fn, 0, ...args));
-    takeFromHost(globalThis, 'clearImmediate', (id: number) => clearTimeout(id));
-  }
-});
-
 // Node's timers answer a `Timeout` object and a browser's answer a number.
 // That correction used to be made on the realm, which replaced the
 // `setTimeout` of any Node process that imported the engine. It is the
@@ -4973,7 +4963,7 @@ function __substrateStackTracePolyfill(): void {
       try {
         target.stack = savedPrepare(target, callSites);
       } catch (e) {
-        console.warn('[tabnode] Error.prepareStackTrace threw:', e);
+        engineTrace('[tabnode] Error.prepareStackTrace threw:', e);
         target.stack = rawStack;
       }
     } else {

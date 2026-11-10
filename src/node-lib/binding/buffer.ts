@@ -14,6 +14,7 @@
  * passes it from both buffer.js and internal/buffer.js.
  */
 import { markUntransferable } from '../../transfer-ownership';
+import { atob as decodeBase64, btoa as encodeBase64 } from '../../utils/base64-text';
 
 /** libuv has no say here: these are V8's, and the engine's realm is V8's. */
 export const kMaxLength = 4294967296 - 1;
@@ -465,12 +466,12 @@ export function isAscii(buf: Uint8Array): boolean {
 
 /** Node's `Atob`: the string a base64 one stands for, -1 for one that is not. */
 export function atob(input: string): string | number {
-  try { return globalThis.atob(input); } catch { return -1; }
+  try { return decodeBase64(input); } catch { return -1; }
 }
 
 /** Node's `Btoa`: the base64 of a latin1 string, -1 for a character outside it. */
 export function btoa(input: string): string | number {
-  try { return globalThis.btoa(input); } catch { return -1; }
+  try { return encodeBase64(input); } catch { return -1; }
 }
 
 /**

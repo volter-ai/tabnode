@@ -1,5 +1,6 @@
 import { traceValueReplacer } from './trace-values';
 import { engineSymbolFor } from './engine-symbol';
+import { onKernel, system } from './system';
 const requestedKey = engineSymbolFor('tabnode.trace-requested');
 const readingKey = engineSymbolFor('browser-substrate.trace-readings');
 // Found once, not at each ask: a traced realm asks at every read and stat, and each ask resolved its names in the
@@ -8,6 +9,8 @@ const outputKey = engineSymbolFor('tabnode.trace-output');
 const costsKey = engineSymbolFor('browser-substrate.trace-costs');
 /** Host-selected diagnostics; retain standalone/file-host behavior unless a host supplied its selection. */
 export function traceReadingRequested(): boolean {
+  // On a kernel the process's trace is its system's (ADR-0017): a reading is asked exactly when a trace is selected.
+  if (onKernel()) return system().trace !== null;
   const selected = Reflect.get(globalThis, requestedKey);
   if (typeof selected === 'boolean') return selected;
   const asked = Reflect.get(globalThis, readingKey);
@@ -30,6 +33,7 @@ const instrumentLine = /^\[(?:boot-trace|wali-boot|kernel-[^\]]+|reap-trace|load
  * that immutable string once, instead of also forwarding it as guest stdout. */
 export function captureTraceConsoleLine(args: unknown[], level: 'log' | 'info' | 'warn' | 'error'): boolean {
   if (!traceReadingRequested()) return false;
+  if (onKernel()) return false;
   if (args.length !== 1 || typeof args[0] !== 'string' || !instrumentLine.test(args[0])) return false;
   const sink = Reflect.get(globalThis, outputKey) as ((prefix: string, payload: unknown, level: string) => void) | undefined;
   if (!sink) return false;
@@ -39,6 +43,7 @@ export function captureTraceConsoleLine(args: unknown[], level: 'log' | 'info' |
 /** Host evidence seam only: guest console and Node semantics are unchanged. */
 export function traceOutput(prefix: string, payload: unknown, level: 'log' | 'info' | 'warn' = 'log'): void {
   if (!traceReadingRequested() && level !== 'warn') return;
+  if (onKernel()) { system().trace?.(`${prefix} ${JSON.stringify(payload, traceValueReplacer)}`); return; }
   const sink = Reflect.get(globalThis, outputKey) as ((prefix: string, payload: unknown, level: string) => void) | undefined;
   if (sink) sink(prefix, payload, level);
   else console[level](`${prefix} ${JSON.stringify(payload, traceValueReplacer)}`);
@@ -48,6 +53,7 @@ export function traceOutput(prefix: string, payload: unknown, level: 'log' | 'in
  * never transports the callback or its source inputs across a trace port. */
 export function deferredTraceOutput(prefix: string, payload: () => unknown, level: 'log' | 'info' | 'warn' = 'log', captured?: { retained: unknown; input?: object }): void {
   if (!traceReadingRequested() && level !== 'warn') return;
+  if (onKernel()) { traceOutput(prefix, payload(), level); return; }
   const sink = Reflect.get(globalThis, engineSymbolFor('tabnode.trace-output-deferred')) as ((prefix: string, payload: () => unknown, level: string, captured?: { retained: unknown; input?: object }) => void) | undefined;
   if (sink) sink(prefix, payload, level, captured);
   else traceOutput(prefix, payload(), level);

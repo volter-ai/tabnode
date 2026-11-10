@@ -8,6 +8,7 @@
 import { heldWork } from '../host-globals';
 import * as acorn from 'acorn';
 import { ROLLUP_BROWSER_CDN, ROLLUP_BROWSER_VERSION } from '../config/cdn';
+import { engineConsole as console } from '../system';
 
 /** What a rollup build is handed, and what it answers. */
 export interface RollupBuildOptions { fs?: unknown; [key: string]: unknown }

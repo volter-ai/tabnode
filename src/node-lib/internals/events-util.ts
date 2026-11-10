@@ -1,4 +1,5 @@
 import { readlineModule as nodeLibPublicReadline } from './readline-access';
+import { engineConsole } from '../../system';
 
 /**
  * The internals Node's `events`, `util` and `internal/util/inspect` name that
@@ -10,15 +11,11 @@ import { readlineModule as nodeLibPublicReadline } from './readline-access';
  * walks the path that asks.
  */
 
-/** `internal/console/global`: the realm's console, which `util.debuglog` logs through. */
-export const internalConsoleGlobal = new Proxy({} as Record<string, unknown>, {
-  get: (_target, key) => Reflect.get(globalThis.console as unknown as object, key),
-  ownKeys: () => Reflect.ownKeys(globalThis.console),
-  getOwnPropertyDescriptor: (_target, key) => ({
-    configurable: true, enumerable: true,
-    get: () => Reflect.get(globalThis.console as unknown as object, key),
-  }),
-});
+/**
+ * `internal/console/global`, which `util.debuglog` logs through: the engine's diagnostics (system.ts `engineConsole`),
+ * a line each on the process's trace. No realm console stands behind it (ADR-0017).
+ */
+export const internalConsoleGlobal = engineConsole as unknown as Record<string, unknown>;
 
 /**
  * `internal/process/execution`: the one call `internal/util.js` makes into
@@ -41,7 +38,7 @@ export const internalProcessWarning = {
   emitWarningSync: (warning: unknown, type?: string, code?: string): void => {
     const realm = (globalThis as { process?: { emitWarning?: (w: unknown, t?: string, c?: string) => void } }).process;
     if (typeof realm?.emitWarning === 'function') { realm.emitWarning(warning, type, code); return; }
-    try { console.error(String(warning)); } catch { /* a console that refuses is no reason to fail */ }
+    engineConsole.error(String(warning));
   },
 };
 

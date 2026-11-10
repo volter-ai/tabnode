@@ -28,6 +28,7 @@
  */
 import { LLHTTP_WASM_BASE64 } from './llhttp-wasm';
 import { suppliedHttpParserModule, httpParserUnavailable } from '../../http-parser-module';
+import { atob } from '../../utils/base64-text';
 
 /** llhttp's `llhttp_type`. */
 const TYPE_REQUEST = 1;

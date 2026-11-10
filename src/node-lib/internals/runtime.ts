@@ -5,6 +5,7 @@ import { kCancelTimer } from '../../timer-cancellation';
 import { handleOwnerSymbol } from '../binding/owner-symbol';
 import { traceSocketConnect } from '../../socket-connect-trace';
 import { registerHandle, refHandle, unrefHandle, releaseHandle, currentOwner, __adoptHandle } from '../binding/handles';
+import { engineTimers } from '../../system';
 /**
  * The internals Node's `net` names that are neither vendored nor a binding:
  * async ids, timers, stream defaults, the option table, and the three
@@ -110,13 +111,13 @@ function realmSetTimeout(fn: () => void, ms: number): unknown {
   const realm = globalThis as unknown as {
     __browserRuntimeNativeSetTimeout?: (fn: () => void, ms: number) => unknown;
   };
-  return (realm.__browserRuntimeNativeSetTimeout ?? globalThis.setTimeout).call(globalThis, fn, ms);
+  return realm.__browserRuntimeNativeSetTimeout ? realm.__browserRuntimeNativeSetTimeout.call(globalThis, fn, ms) : engineTimers.setTimeout(fn, ms);
 }
 function realmClearTimeout(id: unknown): void {
   const realm = globalThis as unknown as {
     __browserRuntimeNativeClearTimeout?: (id: unknown) => void;
   };
-  (realm.__browserRuntimeNativeClearTimeout ?? globalThis.clearTimeout).call(globalThis, id as number);
+  if (realm.__browserRuntimeNativeClearTimeout) realm.__browserRuntimeNativeClearTimeout.call(globalThis, id); else engineTimers.clearTimeout(id);
 }
 
 /**

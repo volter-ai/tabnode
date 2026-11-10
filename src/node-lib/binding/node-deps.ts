@@ -7,6 +7,8 @@
  * `setTlsCallbacks` when the engine loads; only its connections raise them.
  */
 import { NODE_DEPS_WASM_BASE64 } from './node-deps-wasm';
+import { randomFill, system } from '../../system';
+import { atob } from '../../utils/base64-text';
 
 /** The module's exports (scripts/node-deps/tabnode_deps.cc). Pointers and sizes are wasm32 numbers. */
 interface NodeDepsExports {
@@ -55,19 +57,15 @@ export function nodeDeps(): NodeDepsExports {
   const bytes = (at: number, length: number) => new Uint8Array(exports!.memory.buffer, at >>> 0, length >>> 0);
   const enosys = () => WASI_ENOSYS;
   const wasi = {
-    // The engine's one randomness source and clock, taken as they are (ADR-0016 §2): the same
-    // `crypto.getRandomValues` the `crypto` module's randomness calls, `Date.now()` for the realtime clock
-    // OpenSSL checks a certificate's validity against, and `performance.now()` for the monotonic one.
+    // The process's system (ADR-0016 §2, ADR-0017): getrandom for OpenSSL's randomness, as the `crypto` module's is,
+    // and clock_gettime's CLOCK_REALTIME (a certificate's validity is checked against it) and CLOCK_MONOTONIC.
     random_get(at: number, length: number) {
-      for (let offset = 0; offset < length; offset += 65536) {
-        crypto.getRandomValues(bytes(at + offset, Math.min(65536, length - offset)));
-      }
+      randomFill(bytes(at, length));
       return WASI_ESUCCESS;
     },
     clock_time_get(id: number, _precision: bigint, at: number) {
       let ns: bigint;
-      if (id === 0) ns = BigInt(Date.now()) * 1_000_000n;
-      else if (id === 1) ns = BigInt(Math.round(performance.now() * 1e6));
+      if (id === 0 || id === 1) ns = system().clock(id);
       else return WASI_EINVAL;
       view().setBigUint64(at >>> 0, ns, true);
       return WASI_ESUCCESS;

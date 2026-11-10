@@ -23,6 +23,7 @@ import { AsyncLocalStorage } from './async_hooks';
 import {
   callingSockets, captureCallingSockets, ipv6Text, linux, socketAddress, socketAddressBuffer, type TreeSockets,
 } from '../host-sockets';
+import { setTimeout, clearTimeout, setImmediate } from '../system';
 
 // DNS lookup callback type
 type LookupCallback = (err: Error | null, address?: string, family?: number) => void;

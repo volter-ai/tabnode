@@ -1,3 +1,4 @@
+import { atob, btoa } from './base64-text';
 /**
  * Shared binary encoding utilities.
  * Replaces O(n²) string concatenation patterns used throughout the codebase.

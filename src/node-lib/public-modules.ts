@@ -37,7 +37,7 @@ import { AsyncResource } from './internals/runtime';
 var __table: Record<string, () => unknown> | undefined;
 export function nodeLibPublic(name: string, require?: (name: string) => any, _process?: object): (() => unknown) | undefined {
   if (_process && name === 'dns') return () => createDnsModule(processHostsReaderOf(_process));
-  if (_process && name === 'timers') return () => createTimersModule(guestTimerFunctions(_process, globalThis as unknown as Record<string, unknown>));
+  if (_process && name === 'timers') return () => createTimersModule(guestTimerFunctions(_process));
   if (require && name === 'crypto') return () => cryptoShim.createCryptoModule(require);
   // `url`'s URL is the process's, whose `createObjectURL` is Node's.
   if (_process && name === 'url') return () => processUrlModule(_process);
