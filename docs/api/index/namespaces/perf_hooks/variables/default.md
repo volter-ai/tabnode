@@ -24,13 +24,199 @@
 
 ### performance
 
-> **performance**: `Performance` & `object`
+> **performance**: `object`
 
-#### Type Declaration
+#### performance.clearMarks
 
-##### eventLoopUtilization
+> **clearMarks**: (`name?`) => `void`
+
+##### Parameters
+
+###### name?
+
+`string`
+
+##### Returns
+
+`void`
+
+#### performance.clearMeasures
+
+> **clearMeasures**: (`name?`) => `void`
+
+##### Parameters
+
+###### name?
+
+`string`
+
+##### Returns
+
+`void`
+
+#### performance.clearResourceTimings
+
+> **clearResourceTimings**: () => `void`
+
+##### Returns
+
+`void`
+
+#### performance.eventLoopUtilization
 
 > **eventLoopUtilization**: *typeof* `eventLoopUtilization`
+
+#### performance.getEntries
+
+> **getEntries**: () => `TimelineEntry`[]
+
+##### Returns
+
+`TimelineEntry`[]
+
+#### performance.getEntriesByName
+
+> **getEntriesByName**: (`name`, `type?`) => `TimelineEntry`[]
+
+##### Parameters
+
+###### name
+
+`string`
+
+###### type?
+
+`string`
+
+##### Returns
+
+`TimelineEntry`[]
+
+#### performance.getEntriesByType
+
+> **getEntriesByType**: (`type`) => `TimelineEntry`[]
+
+##### Parameters
+
+###### type
+
+`string`
+
+##### Returns
+
+`TimelineEntry`[]
+
+#### performance.markResourceTiming
+
+> **markResourceTiming**: () => `undefined`
+
+Node records a PerformanceResourceTiming for each fetch undici makes; this engine keeps no resource timeline.
+
+##### Returns
+
+`undefined`
+
+#### performance.now
+
+> **now**: () => `number`
+
+##### Returns
+
+`number`
+
+#### performance.setResourceTimingBufferSize
+
+> **setResourceTimingBufferSize**: () => `void`
+
+##### Returns
+
+`void`
+
+#### performance.timeOrigin
+
+> `readonly` **timeOrigin**: `number`
+
+#### performance.timerify
+
+> **timerify**: \<`T`\>(`fn`) => `T`
+
+##### Type Parameters
+
+###### T
+
+`T` *extends* (...`args`) => `unknown`
+
+##### Parameters
+
+###### fn
+
+`T`
+
+##### Returns
+
+`T`
+
+#### performance.mark()
+
+> **mark**(`name`, `options?`): `TimelineEntry`
+
+##### Parameters
+
+###### name
+
+`string`
+
+###### options?
+
+###### detail?
+
+`unknown`
+
+###### startTime?
+
+`number`
+
+##### Returns
+
+`TimelineEntry`
+
+#### performance.measure()
+
+> **measure**(`name`, `start?`, `end?`): `TimelineEntry`
+
+##### Parameters
+
+###### name
+
+`string`
+
+###### start?
+
+`string` \| `number` \| \{ `detail?`: `unknown`; `duration?`: `number`; `end?`: `string` \| `number`; `start?`: `string` \| `number`; \}
+
+###### end?
+
+`string` \| `number`
+
+##### Returns
+
+`TimelineEntry`
+
+#### performance.toJSON()
+
+> **toJSON**(): `object`
+
+##### Returns
+
+`object`
+
+###### eventLoopUtilization
+
+> **eventLoopUtilization**: `ReturnType`\<*typeof* `eventLoopUtilization`\>
+
+###### timeOrigin
+
+> **timeOrigin**: `number`
 
 ### PerformanceObserver
 
