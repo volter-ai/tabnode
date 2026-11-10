@@ -6,6 +6,6 @@
 
 # Variable: PREPARED\_MODULES\_FORMAT
 
-> `const` **PREPARED\_MODULES\_FORMAT**: `"tabnode-prepared-8"` = `"tabnode-prepared-8"`
+> `const` **PREPARED\_MODULES\_FORMAT**: `"tabnode-prepared-9"` = `"tabnode-prepared-9"`
 
 The key derivation's own name: part of every key, and of the name of any store that keeps bodies by key.
