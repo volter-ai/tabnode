@@ -1,3 +1,6 @@
+// First, so a file compiled while the bundle is still evaluating finds them evaluated (ADR-0015).
+import { guestScopedText } from '../code-transforms';
+import { guestScopesOf, leftToRealm, NODE_LIB_PARAMETERS } from '../guest-scope';
 import { createOsBinding } from './binding/misc';
 import { createProcessBinding } from './binding/process_wrap';
 import { createSpawnSyncBinding } from './binding/spawn_sync';
@@ -86,7 +89,7 @@ interface NodeLibModule {
 var cache: Map<string, NodeLibModule> | undefined;
 var builtInternals: Map<string, unknown> | undefined;
 /** A builtin's file compiled once a realm (compiledNodeLibFor), kept for the realm's life. */
-var compiledNodeLib: Map<string, Function> | undefined;
+var compiledNodeLib: Map<string, ScopedFunction> | undefined;
 /** Each process's global object, as the engine makes it (setNodeLibGlobal). */
 var processGlobalOf: ((process: object) => object) | undefined;
 var builtBindings: Map<string, unknown> | undefined;
@@ -477,24 +480,53 @@ export function nodeLibGlobalFor(owner: object): object {
   return processGlobalOf?.(owner) ?? globalThis;
 }
 
-const compiledDependencies = new Map<string, Function>();
+/**
+ * A file compiled as the body of a function whose outer parameters are `globalThis` and the scope objects its free
+ * names resolve through (ADR-0015 §2), and whether its names were rewritten onto the read scope (`scoped`) or it runs
+ * inside `with` of the global scope object because they are dynamic.
+ */
+interface ScopedFunction { compiled: Function; scoped: boolean }
+/**
+ * Compiles `source` as the body of `function (parameters) {…}` with every free name resolved on the global it is
+ * later given: the realm's own names, `globalThis`, `arguments` and the parameters are left as written, every other is
+ * rewritten onto `__substrateGuestScope` and `__substrateGuestTypeof`, and a file the rewrite declines runs inside
+ * `with (__substrateGuestScope)`, given the global scope object instead. Nothing a process lacks is read from the realm.
+ * The function's parameter list and the names left as written are one list.
+ */
+function compileScoped(parameters: readonly string[], source: string, sourceURL: string): ScopedFunction {
+  const bound = new Set([...parameters, 'globalThis', 'arguments']);
+  const prefix = `return function (${parameters.join(', ')}) {`;
+  const rewritten = guestScopedText(source, (key) => leftToRealm(key) || bound.has(key));
+  const body = rewritten === undefined
+    ? `with (__substrateGuestScope) { ${prefix}${source}\n} }\n//# sourceURL=${sourceURL}`
+    : `${prefix}${rewritten}\n}\n//# sourceURL=${sourceURL}`;
+  // eslint-disable-next-line no-new-func
+  return { compiled: new Function('globalThis', '__substrateGuestScope', '__substrateGuestTypeof', body), scoped: rewritten !== undefined };
+}
+/** Calls a compiled file's outer function with a global and the scope objects over it. */
+function withGlobal(file: ScopedFunction, global: object): Function {
+  const scopes = guestScopesOf(global);
+  return file.compiled(global, file.scoped ? scopes.read : scopes.withGlobal, scopes.typeOf) as Function;
+}
+
+const compiledDependencies = new Map<string, ScopedFunction>();
 /**
  * A dependency's CommonJS file evaluated once per process, as its builtins are (`compileNodeLib`): its `process`,
  * `require` and `globalThis` are that process's, and each name of `globals` is that process's global's value of the
  * name, or the value `given` names for it, so what the file takes from its host when it is evaluated is that process's.
+ * Every other free name it reads is that process's global's too (ADR-0015).
  */
 export function loadDependencyFor(owner: object, name: string, source: string, globals: readonly string[],
   given: Readonly<Record<string, unknown>> = {}): unknown {
   return scopeFor(owner).surface(name, () => {
     let compiled = compiledDependencies.get(name);
     if (!compiled) {
-      // eslint-disable-next-line no-new-func
-      compiled = new Function('globalThis', `return function (exports, require, module, process, ${globals.join(', ')}) {${source}\n}\n//# sourceURL=${name}`);
+      compiled = compileScoped(['exports', 'require', 'module', 'process', ...globals], source, name);
       compiledDependencies.set(name, compiled);
     }
     const global = nodeLibGlobalFor(owner) as Record<string, unknown>;
     const module = { exports: {} as unknown };
-    compiled(global)(module.exports, scopeFor(owner).require, module, owner, ...globals.map((key) => key in given ? given[key] : global[key]));
+    withGlobal(compiled, global)(module.exports, scopeFor(owner).require, module, owner, ...globals.map((key) => key in given ? given[key] : global[key]));
     return module.exports;
   });
 }
@@ -518,15 +550,16 @@ export function setNodeLibGlobal(of: (process: object) => object): void {
  * at their first require, on its own start (LibreChat run 4: 332 ms of `compileNodeLib` self time over its 20 Node
  * realms). Compiling runs nothing: each load still calls it into a module scope of its own, given its process's
  * global as `globalThis` (a scope around the file's own, so a file that declares the name keeps its declaration).
+ *
+ * Every other free name the file reads is its process's global's too (ADR-0015), as Node compiles a builtin inside
+ * its process's context. The file's text is rewritten for it once a realm, here (a spare pays it in
+ * `precompileNodeLib`); the vendored file itself is unedited.
  */
-function compiledNodeLibFor(name: string): Function {
-  compiledNodeLib ??= new Map<string, Function>();
+function compiledNodeLibFor(name: string): ScopedFunction {
+  compiledNodeLib ??= new Map<string, ScopedFunction>();
   let compiled = compiledNodeLib.get(name);
   if (!compiled) {
-    // eslint-disable-next-line no-new-func
-    compiled = new Function('globalThis',
-      `return function (exports, require, module, process, internalBinding, primordials) {${NODE_LIB_SOURCES[name]}\n}\n//# sourceURL=node:${name}`,
-    );
+    compiled = compileScoped(NODE_LIB_PARAMETERS, NODE_LIB_SOURCES[name]!, `node:${name}`);
     compiledNodeLib.set(name, compiled);
   }
   return compiled;
@@ -545,8 +578,7 @@ export function precompileNodeLib(name: string): boolean {
 /** The scope Node's `BuiltinModule.compileForInternalLoader` gives a builtin. */
 function compileNodeLib(name: string, record: NodeLibModule, require: NodeLibRequire = nodeLibRequire,
   process: object = nodeLibProcessOf(), binding: (name: string) => unknown = internalBinding, global: object = globalThis): void {
-  const compiled = compiledNodeLibFor(name);
-  compiled(global)(record.exports, require, record, process, binding, primordialsOf());
+  withGlobal(compiledNodeLibFor(name), global)(record.exports, require, record, process, binding, primordialsOf());
   // lib/buffer.js defines `transcode` only where Node is built with ICU, which this engine is not; the one
   // function is bound here (binding/transcode.ts) rather than left undefined.
   if (name === 'buffer') {

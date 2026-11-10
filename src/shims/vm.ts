@@ -2,14 +2,25 @@
  * vm shim - Basic VM functionality using eval
  *
  * `vm.runInNewContext(code, sandbox)` runs the code with the sandbox as its
- * global: what the code writes on `globalThis` lands on the sandbox, and a name
- * the sandbox lacks reads from the host's global. This passed the sandbox's
+ * global: what the code writes on `globalThis` lands on the sandbox. This passed the sandbox's
  * keys as parameters, so `globalThis.x = ...` wrote to the real global and the
  * caller read nothing back. Next's server evaluates each client-reference
- * manifest exactly that way and read an empty object.
+ * manifest exactly that way and read an empty object. A name the sandbox lacks
+ * is V8's own global where it is one, else undefined (`contextHolds`).
  */
 
 import { prepareVmScript, vmScriptPhase, vmScriptRun } from '../vm-script-state';
+import { isLanguageGlobal } from '../guest-scope';
+
+/**
+ * What a fresh context's global holds besides its sandbox: V8's own globals (ECMAScript's, `WebAssembly`, `console`),
+ * which the engine answers with the realm's (ADR-0015 §3). Node's names and the realm's others are no context's: a
+ * fresh context in Node has no `Buffer`, no `setTimeout` and no `window`, and `typeof` of each is "undefined".
+ */
+const contextHolds = (name: string | symbol): boolean =>
+  typeof name === 'string' && (isLanguageGlobal(name) || name === 'Promise' || name === 'WebAssembly' || name === 'console');
+const realmValue = (name: string | symbol): unknown =>
+  contextHolds(name) ? (globalThis as unknown as Record<string | symbol, unknown>)[name] : undefined;
 
 // One host evaluator per realm. Each call still has its own activation,
 // direct eval and sandbox scope; no guest code or globals are closed over.
@@ -55,27 +66,29 @@ export class Script {
         own = new Set([...prepared.own].filter(name => !declared.includes(name) || !kept(name)));
       } else declaredForRun = copyDeclarations(declared);
       // The context's global as the script sees it through `globalThis`: the
-      // sandbox's own properties answer `in`, a read of a name it lacks
-      // falls back to the host's, a write lands on the sandbox.
+      // sandbox's own properties answer `in`, a read of a name it lacks is
+      // V8's own global of that name or undefined, a write lands on the sandbox.
       const globalView: Record<string | symbol, unknown> = new Proxy(sandbox, {
         has: (target, name) => name in target,
         get: (target, name) => {
           if (name === 'globalThis' || name === 'global' || name === 'self') return name in target ? target[name] : globalView;
-          return name in target ? target[name] : (globalThis as unknown as Record<string | symbol, unknown>)[name];
+          return name in target ? target[name] : realmValue(name);
         },
         set: (target, name, value) => { target[name] = value; return true; },
         deleteProperty: (target, name) => { delete target[name]; return true; },
       });
-      // The scope every bare name resolves through: the sandbox first, the
-      // host's global after, and the evaluator's own names and the script's
-      // declarations left to the function that holds them.
+      // The scope every bare name resolves through: the sandbox first, V8's
+      // own globals after, any other name undefined (Node: a ReferenceError,
+      // which a `with` object cannot give without breaking `typeof`), and the
+      // evaluator's own names and the script's declarations left to the
+      // function that holds them.
       const scope = new Proxy(sandbox, {
         has: (_target, name) => !own.has(name as string),
         get: (target, name) => {
           if (name === Symbol.unscopables) return void 0;
           if (name === 'globalThis' || name === 'global' || name === 'self') return name in target ? target[name] : globalView;
           if (name in target) return target[name];
-          return (globalThis as unknown as Record<string | symbol, unknown>)[name];
+          return realmValue(name);
         },
         set: (target, name, value) => { target[name] = value; return true; },
         deleteProperty: (target, name) => { delete target[name]; return true; },
