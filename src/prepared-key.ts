@@ -4,7 +4,7 @@
  * engine's loader names bodies by the same functions.
  */
 
-// 9: every free name of a body is rewritten onto its process's scope objects, not 28 of them (ADR-0015).
+// 9: every free name of a body is rewritten onto its process's scope objects (ADR-0015).
 /** The key derivation's own name: part of every key, and of the name of any store that keeps bodies by key. */
 export const PREPARED_MODULES_FORMAT = 'tabnode-prepared-9';
 /** The list, in the bodies' directory, of the keys of bodies prepared and kept where they run: one a line. No body has this name. */

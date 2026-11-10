@@ -95,7 +95,7 @@ import { createWasiModule, type WasiHostFs, type WasiModule } from './shims/wasi
 
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
 import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __cjsObject, __substrateHasEsmSyntax, __substrateGuestNameEdits } from './code-transforms';
-import { guestScopesOf, guestHolds, leftToRealm, isEnginePlumbing, MODULE_SCOPE_NAMES, NODE_GLOBAL_NAMES, OBJECT_PROTOTYPE_NAMES } from './guest-scope';
+import { guestScopesOf, guestHolds, leftToRealm, isEnginePlumbing, MODULE_SCOPE_NAMES, MODULE_WRAPPER_PARAMETERS, OBJECT_PROTOTYPE_NAMES } from './guest-scope';
 import { applySourceEdits } from './source-edits';
 import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typescript-module';
 import * as acorn from 'acorn';
@@ -243,7 +243,7 @@ function __substrateGuestVm(process: Process): unknown {
     override runInThisContext(_options?: object): unknown { return run((this as unknown as { code: string }).code); }
   }
   // `vm.compileFunction` makes its function in the calling process's context, as the function a guest's `Function`
-  // makes is (ADR-0015 §3); the shim's made it at the realm's scope.
+  // makes is (ADR-0015 §3).
   const compileFunction = (code: string, params?: readonly string[], _options?: object): unknown =>
     __substrateMadeFunction(process, `function (${(params ?? []).join(', ')}) {\n${String(code)}\n}`);
   vm = { ...vmShim, Script, compileFunction, runInThisContext: (code: string, _options?: object) => run(code),
@@ -417,8 +417,6 @@ const UNDICI_GLOBALS = new Set(['FormData', 'Headers', 'Request', 'Response', 'M
 const NODE_ENUMERABLE_GLOBALS = new Set(['global', 'clearImmediate', 'setImmediate', 'clearInterval', 'clearTimeout', 'setInterval', 'setTimeout', 'queueMicrotask', 'structuredClone', 'atob', 'btoa', 'performance', 'fetch', 'crypto', 'navigator']);
 /** The names whose shape the guest's global takes from Node: those fifteen and two it does not enumerate, `Buffer` and `globalThis`. `process` is not among them: see the `get` trap. `navigator` is among them and is the guest's own accessor from the start. */
 const NODE_GLOBALS = new Set([...NODE_ENUMERABLE_GLOBALS, 'Buffer', 'globalThis']);
-/** The names `standing` answers with the engine's own object whether the realm holds the name or not. */
-const ENGINE_ANSWERED_GLOBALS = new Set([...UNDICI_GLOBALS, 'fetch', 'URL', 'Buffer', 'MessageChannel', 'MessagePort', 'performance', 'atob', 'btoa']);
 function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   let guest = __substrateGuestGlobals.get(process);
   if (guest) return guest;
@@ -501,19 +499,30 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     });
   }
   /** What stands behind a name the guest has not made its own. */
+  /**
+   * The names the engine answers itself, whatever the realm holds: `standing` reads them here and `has` asks this map,
+   * so the two cannot disagree.
+   */
+  const engineAnswered = new Map<string, () => unknown>([
+    ['global', () => guest], ['globalThis', () => guest], ['fetch', () => fetch],
+    ...[...UNDICI_GLOBALS].map((name): [string, () => unknown] => [name, () => undici()[name]]),
+    ['URL', () => processUrl(process)],
+    // The guest's `Buffer` is the one `require('buffer')` answers with, read when the guest asks, so the two are one
+    // object.
+    ['Buffer', () => loadNodeLibFor(process, 'buffer').Buffer],
+    ['MessageChannel', () => guestMessageGlobals(process).MessageChannel],
+    ['MessagePort', () => guestMessageGlobals(process).MessagePort],
+    // `perf_hooks`'s own object.
+    ['performance', () => perfHooksShim.performance],
+    // `atob` and `btoa` are the `buffer` module's own, as in Node, where the global IS `require('buffer').atob`.
+    ['atob', () => (loadNodeLibFor(process, 'buffer') as Record<string, unknown>).atob],
+    ['btoa', () => (loadNodeLibFor(process, 'buffer') as Record<string, unknown>).btoa],
+    // What a Node global inherits from `Object.prototype`, found as Node finds it, not on the realm's own chain.
+    ...[...OBJECT_PROTOTYPE_NAMES].map((name): [string, () => unknown] => [name, () => Reflect.get(Object.prototype, name, guest)]),
+  ]);
   const standing = (key: string | symbol): unknown => {
-      if (key === "global" || key === "globalThis") return guest;
-      if (key === "fetch") return fetch;
-      if (UNDICI_GLOBALS.has(key as string)) return undici()[key as string];
-      if (key === "URL") return processUrl(process);
-      // The guest's `Buffer` is the one `require('buffer')` answers with, read when the guest asks rather than when
-      // this closure is made: a guest that compared the two found two objects.
-      if (key === "Buffer") return loadNodeLibFor(process, 'buffer').Buffer;
-      if (key === "MessageChannel" || key === "MessagePort") return guestMessageGlobals(process)[key as "MessageChannel" | "MessagePort"];
-      // `perf_hooks`'s own object.
-      if (key === "performance") return perfHooksShim.performance;
-      // What a Node global inherits from `Object.prototype`, found as Node finds it, not on the realm's own chain.
-      if (typeof key === "string" && OBJECT_PROTOTYPE_NAMES.has(key) && !NODE_GLOBAL_NAMES.has(key) && !leftToRealm(key)) return Reflect.get(Object.prototype, key, guest);
+      const answer = typeof key === "string" ? engineAnswered.get(key) : undefined;
+      if (answer) return answer();
       const value = Reflect.get(host, key, host);
       if (key === "structuredClone" && typeof value === "function") {
         if (boundGlobals.get(key)?.original !== value) boundGlobals.set(key, {
@@ -551,9 +560,6 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
         }
         return boundGlobals.get(key)!.bound;
       }
-      // `atob` and `btoa` are the `buffer` module's own, as in Node, where the global IS `require('buffer').atob`:
-      // a program that compares the two (Node's test/common does, to know its globals) found two functions.
-      if (key === "atob" || key === "btoa") return (loadNodeLibFor(process, 'buffer') as Record<string, unknown>)[key];
       if (["structuredClone", "queueMicrotask"].includes(key as string) && typeof value === "function") {
         if (boundGlobals.get(key)?.original !== value) boundGlobals.set(key, { original: value, bound: value.bind(host) });
         return boundGlobals.get(key)!.bound;
@@ -587,7 +593,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       // One of Node's value globals, not yet the guest's own: it becomes so, with the shape it had.
       if (typeof key === 'string' && NODE_GLOBALS.has(key)) return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: key !== 'globalThis' });
       // ECMAScript's names and the engine's plumbing are the realm's, so a bare `Map` (left as written, read from the
-      // realm) and `globalThis.Map` stay one value; a symbol-keyed property is the realm's, as it was (ADR-0015 §1).
+      // realm) and `globalThis.Map` stay one value; a symbol-keyed property is the realm's (ADR-0015 §1).
       if ((typeof key !== 'string' || leftToRealm(key)) && Reflect.set(host, key, value, host)) return true;
       // Any other name is the process's own, as each Node process has its own global: a name Node does not give, one
       // of Node's interfaces the guest replaces, or one the realm holds read-only (a confined realm's `WebSocket`,
@@ -598,7 +604,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       if (removed.has(key)) return false;
       if (shadowed(target, key)) return true;
       if (!standsBehind(key)) return false;
-      return (typeof key === 'string' && (NODE_GLOBALS.has(key) || ENGINE_ANSWERED_GLOBALS.has(key))) || key in host;
+      return (typeof key === 'string' && (NODE_GLOBALS.has(key) || engineAnswered.has(key))) || key in host;
     },
     ownKeys(target) {
       const keys = Reflect.ownKeys(target);
@@ -674,10 +680,8 @@ setNodeLibGlobal((process) => __substrateGuestGlobal(process as Process));
 /**
  * The objects a process's bodies resolve free names through (ADR-0015, `guest-scope.ts`), one set a process: a
  * rewritten body reads `__substrateGuestScope.X` and `typeof __substrateGuestTypeof.X`, a declined one runs inside
- * `with` of the module scope. They were an object literal of accessors in every body's wrapper, so V8 parsed 2,300
- * characters and 38 accessor functions again for each body it compiled, and made 38 closures again for each body it
- * ran: Cal's server compiled 8,456 bodies to its first page (S2 K1, compile 743 ms). One set a process serves every
- * body of it, read live.
+ * `with` of the module scope. One set a process serves every body of it, read live, so a body's wrapper makes nothing
+ * per body (S2 K1: Cal's server compiled 8,456 bodies to its first page).
  */
 function __substrateGuestScopes(process: Process) {
   return guestScopesOf(__substrateGuestGlobal(process));
@@ -911,8 +915,8 @@ function __substrateUnfollowAwaits(source: string): string {
  * `__substrateGuestTypeof` or `__substrateGuestConstructor`, which a rewritten body never names itself
  * (__substrateScopeGlobalCalls), and each of its shapes is told apart by its own text (__substrateGuestNameEdits): the
  * constructor wrap around a callee, a bare call `(0,__substrateGuestScope["X"])`, a shorthand
- * `X: __substrateGuestScope['X']`, a read `__substrateGuestScope.X`, a typeof operand `__substrateGuestTypeof.X`. Since
- * ADR-0015 X is any free name, so the shapes match any identifier. Guest text around them is never read as one.
+ * `X: __substrateGuestScope['X']`, a read `__substrateGuestScope.X`, a typeof operand `__substrateGuestTypeof.X`. X is
+ * any free name, so the shapes match any identifier. Guest text around them is never read as one.
  */
 const __substrateGuestNameText = '[\\p{ID_Start}$_][\\p{ID_Continue}$\\u200c\\u200d]*';
 // Its shape names the arguments both rewrites pass (__substrateGuestConstructArgs), and the process-only form a body
@@ -1794,8 +1798,10 @@ function __substrateBodyKind(code: string, strictBody: boolean): 'sync' | 'gener
  * guest's global was parsed and compiled again for each body (S2 AC-LC15: 1,025 characters and 25 statements a body,
  * some 6 MB over a server's 6,171 bodies). The `$` names are the ones a lowered body's own text uses.
  */
+/** The wrapper's parameters: the module's scope (`MODULE_WRAPPER_PARAMETERS`, which the rewrite leaves as written), then the engine's own. */
+const __substrateWrapperParameters = [...MODULE_WRAPPER_PARAMETERS, '__substrateGuestGlobal', '__substrateGuestConstructor', '__substrateGuestScope', '__substrateGuestTypeof'].join(', ');
 function __substrateWrapBody(code: string, guestScoped: boolean, strictBody: boolean, sourceURL: string): string {
-  return `(function($exports, exports, $require, require, $module, module, __filename, __dirname, $process, process, console, import_meta, $dynamicImport, __dynamicImport, globalThis, global, Buffer, queueMicrotask, atob, btoa, structuredClone, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope, __substrateGuestTypeof) { globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
+  return `(function(${__substrateWrapperParameters}) { globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
 }
@@ -4610,13 +4616,14 @@ export class Runtime {
       'Buffer',
       '__substrateReplScope',
       // The REPL's free names are its process's global's, as a Node REPL's are its context's (ADR-0015 §3): the
-      // module scope's `with` object leaves its own require, console, process and Buffer to these parameters.
-      `var __code, __result;
+      // module scope's `with` object leaves its own require, console, process and Buffer to these parameters, and its
+      // engine-named locals to the generator.
+      `var __substrateReplCode, __substrateReplResult;
 with (__substrateReplScope) while (true) {
-  __code = yield;
+  __substrateReplCode = yield;
   try {
-    __result = eval(__code);
-    yield { value: __result, error: null };
+    __substrateReplResult = eval(__substrateReplCode);
+    yield { value: __substrateReplResult, error: null };
   } catch (e) {
     yield { value: undefined, error: e };
   }

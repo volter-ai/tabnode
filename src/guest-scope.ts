@@ -3,9 +3,7 @@
  *
  * Node compiles every builtin and every module inside its process's context, so a free name a file reads is that
  * process's global's, and a name the global does not hold is a `ReferenceError`. The engine runs many processes in
- * one realm and compiled each kind of code with a list of names bound and the rest left to the realm: undici's bundle
- * read the realm's `Buffer`, which a browser worker has not (Rallly: `ReferenceError: Buffer is not defined` at
- * `lib/dispatcher/client-h1.js`), and a guest's `typeof XMLHttpRequest` found the browser's.
+ * one realm, so no free name of a process's code is resolved on the realm's global except the realm's own intrinsics.
  *
  * Here are the name sets every compile site shares, and the objects a free name is resolved through:
  * - a rewritten body reads `__substrateGuestScope.X` (a `ReferenceError` where the global does not hold X) and
@@ -41,7 +39,7 @@ export const NODE_GLOBAL_NAMES: ReadonlySet<string> = new Set([
  * `Uint8Array` pays a lookup through the guest. `Promise`, `WebAssembly` and `globalThis` are the process's own
  * answers and are not here.
  */
-export const REALM_NAMES: ReadonlySet<string> = new Set([
+const REALM_NAMES: ReadonlySet<string> = new Set([
   'Object', 'Function', 'Array', 'Number', 'parseFloat', 'parseInt', 'Infinity', 'NaN', 'undefined', 'Boolean',
   'String', 'Symbol', 'Date', 'RegExp', 'Error', 'AggregateError', 'EvalError', 'RangeError', 'ReferenceError',
   'SyntaxError', 'TypeError', 'URIError', 'SuppressedError', 'JSON', 'Math', 'Intl', 'ArrayBuffer',
@@ -55,6 +53,11 @@ export const REALM_NAMES: ReadonlySet<string> = new Set([
 /** The engine's own helpers, which lowered text calls by bare name on the realm (`__browserRuntimeObject`, `__substrateContext`). */
 export function isEnginePlumbing(name: string): boolean {
   return name.startsWith('__substrate') || name.startsWith('__browserRuntime');
+}
+
+/** Whether a name is one of ECMAScript's or V8's globals, which a fresh V8 context holds. */
+export function isLanguageGlobal(name: string): boolean {
+  return REALM_NAMES.has(name);
 }
 
 /** A free name every compile site leaves as written: the realm answers it for every process alike. */
@@ -74,18 +77,21 @@ export function guestHolds(name: string): boolean {
   return NODE_GLOBAL_NAMES.has(name) || leftToRealm(name) || OBJECT_PROTOTYPE_NAMES.has(name);
 }
 
-/** The names a module body's wrapper binds (`runtime.ts` `__substrateWrapBody`), and `arguments`, its function's own. */
-export const MODULE_SCOPE_NAMES: ReadonlySet<string> = new Set([
+/**
+ * A module body's wrapper's parameters, in the order the loader passes them (`runtime.ts` `__substrateWrapBody` is
+ * built from this list): the module's scope, which the rewrite leaves as written.
+ */
+export const MODULE_WRAPPER_PARAMETERS: readonly string[] = [
   '$exports', 'exports', '$require', 'require', '$module', 'module', '__filename', '__dirname', '$process', 'process',
   'console', 'import_meta', '$dynamicImport', '__dynamicImport', 'globalThis', 'global', 'Buffer', 'queueMicrotask',
   'atob', 'btoa', 'structuredClone', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'setImmediate',
-  'clearImmediate', 'arguments',
-]);
+  'clearImmediate',
+];
+/** The names a module body binds itself: its wrapper's parameters and `arguments`, its function's own. */
+export const MODULE_SCOPE_NAMES: ReadonlySet<string> = new Set([...MODULE_WRAPPER_PARAMETERS, 'arguments']);
 
-/** The names Node's `BuiltinModule` wrapper binds for a library file, with the engine's `globalThis`. */
-export const NODE_LIB_SCOPE_NAMES: ReadonlySet<string> = new Set([
-  'exports', 'require', 'module', 'process', 'internalBinding', 'primordials', 'globalThis', 'arguments',
-]);
+/** Node's `BuiltinModule` wrapper's parameters for a library file, in order (`load.ts` `compiledNodeLibFor` is built from it). */
+export const NODE_LIB_PARAMETERS: readonly string[] = ['exports', 'require', 'module', 'process', 'internalBinding', 'primordials'];
 
 /** The global-scope `with` object's own outer names, which only the engine's evaluators declare. */
 const GLOBAL_SCOPE_NAMES: ReadonlySet<string> = new Set(['__dynamicImport']);

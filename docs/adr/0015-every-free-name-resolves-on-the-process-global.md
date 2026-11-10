@@ -59,12 +59,12 @@ localStorage` took its browser path in a Node program.
 ### 1. What the guest global holds
 
 A process's global holds exactly what Node v24.21.0's global holds with no flags, plus what the process itself puts
-there; it is no longer a view of the realm.
+there.
 - **Node's names** (`NODE_GLOBAL_NAMES`, `guest-scope.ts`): the globals Node's bootstrap installs
   (`internal/bootstrap/node.js`, `internal/bootstrap/web/exposed-wildcard.js` and `exposed-window-or-worker.js`):
   `global`, `process`, `Buffer`, the timers, `queueMicrotask`, `structuredClone`, `atob`, `btoa`, `performance`,
   `fetch`, `crypto`, `navigator`, `console`, and the interfaces (`URL`, `TextDecoder`, `AbortController`, the web
-  streams, `WebSocket`, …). Each is answered as before: the engine's own where it has one (`Buffer`, `URL`, `fetch`
+  streams, `WebSocket`, …). Each is answered by the engine's own where it has one (`Buffer`, `URL`, `fetch`
   and undici's interfaces, `MessageChannel`, `performance`, `navigator`, the timers, `atob`, `btoa`,
   `WebAssembly`), else the realm's value of the same name, read live.
 - **ECMAScript's names** (`REALM_NAMES`): the language's own globals and V8's (`Object`, `Array`, `Symbol`, `JSON`,
@@ -78,13 +78,11 @@ there; it is no longer a view of the realm.
 - **Anything else the realm holds is not the guest's**: `window`, `document`, `self`, `importScripts`,
   `XMLHttpRequest`, `localStorage`, `indexedDB`, `postMessage`, `onmessage`, `WorkerGlobalScope`, `Temporal` (which
   Node v24 lacks), and whatever a host page adds. `get` answers `undefined`, `has` false, and the name is neither an
-  own key nor described. The stand-ins that hid `Worker`, `self` and the worker's messaging names are gone: the rule
-  hides them.
-- **What a process assigns or defines is its own**, on its global's target, enumerable as defined, whatever the name
-  (before, a name Node does not give went onto the realm, shared by every process in it and seen by the engine).
-  Two exceptions keep their old route: an assignment to one of ECMAScript's names (`globalThis.Map = …`) is the
+  own key nor described. `Worker`, `self` and the worker's messaging names are hidden by this rule.
+- **What a process assigns or defines is its own**, on its global's target, enumerable as defined, whatever the name,
+  so no process's global is shared with another or seen by the engine. Two exceptions are the realm's: an assignment to one of ECMAScript's names (`globalThis.Map = …`) is the
   realm's, so that a bare `Map` and `globalThis.Map` stay one value (see *Divergences*); a symbol-keyed property is the
-  realm's, as before.
+  realm's.
 
 ### 2. How a free name reaches it: a tree rewrite, with `with` only where names are dynamic
 
@@ -111,7 +109,7 @@ So for rewritten code the answer is exact: a read of a name the guest does not h
 `typeof` is `"undefined"`.
 
 **The intrinsics cost nothing.** `Object`, `Array`, `Math`, `JSON`, `Symbol`, `Uint8Array`, `undefined` and every
-other name of `REALM_NAMES` are left as written, so V8 resolves them through its global load cache as before: no
+other name of `REALM_NAMES` are left as written, so V8 resolves them through its global load cache: no
 lookup through the guest on any hot reference. Neither do the wrapper's parameters (`require`, `module`, `exports`,
 `process`, `Buffer`, `console`, the timers, `queueMicrotask`, `structuredClone`, `atob`, `btoa`, `global`,
 `globalThis`), which a body reads most.
@@ -150,21 +148,21 @@ Nothing is captured when a scope is made: the guest's held set is a fixed rule (
 plumbing, and its own), and every answer is read when asked. A name the realm gains later is the guest's only if it is
 one of Node's or ECMAScript's names, and is then read live; any other (a page's script, a host's helper) never
 reaches a process, and `W` shadows it as soon as the realm holds it. A name the guest gains is answered at once by the
-scope objects, which forward to the guest global. The enumeration snapshot of the realm's keys at the guest's start
-(`hostAtStart`) is gone: what is enumerated is Node's enumerable names and the guest's own.
+scope objects, which forward to the guest global. What is enumerated is read when asked too: Node's enumerable names and the
+guest's own.
 
 ### Costs
 
 - **Preparation.** A module body is parsed for the rewrite unless every identifier-like word of its text is a name
-  left as written or a keyword (before: unless it named `new`, `eval`, `with` or one of the 28 names). Most bodies
-  were parsed already, for `new`. Prepared bodies are kept in the image and the tab's tree, so this is paid once a
+  left as written or a keyword, and it names neither `eval` nor `Function`. Most bodies contain `new`, which
+  the constructor wrap parses for anyway. Prepared bodies are kept in the image and the tab's tree, so this is paid once a
   body.
-- **The prepared format** moves to `tabnode-prepared-9`: every body prepared before is prepared again once, and a
+- **The prepared format** moves to `tabnode-prepared-9`: every body kept under an earlier format is prepared again once, and a
   consumer that keeps prepared bodies takes a minor release.
 - **Node's library** is parsed once a realm per file at its first compile (undici's bundle is the largest).
 - **A read of a rewritten name** runs two proxy traps (the scope, then the guest global) and the guest's answer;
   `undefined` costs one `has` trap more. Intrinsics and wrapper parameters run none.
-- **`with` code** keeps its dynamic lookups, as before; `W.has` answers an intrinsic from a set without touching the
+- **`with` code** looks every free name up dynamically; `W.has` answers an intrinsic from a set without touching the
   guest global.
 - **Columns.** A rewritten name lengthens its line, so a stack frame's column on such a line differs; lines do not
   move.
@@ -174,7 +172,7 @@ scope objects, which forward to the guest global. The enumeration snapshot of th
 - **In `with` code**, a realm-only name the guest does not hold reads `undefined` instead of throwing (its `typeof`
   is exact). A name neither holds still throws.
 - **A strict assignment to an undeclared name** creates it on the guest global instead of throwing.
-- **An ECMAScript name assigned on the global** is the realm's, shared by the realm's processes, as it was.
+- **An ECMAScript name assigned on the global** is the realm's, shared by the realm's processes.
 - **Indirect `eval`** (`(0, eval)(s)`, `globalThis.eval(s)`) and a function made through a constructor reached by
   property (`fn.constructor(…)`, `(async () => {}).constructor(…)`) compile at the realm's scope.
 - **A sloppy function's `this`** with no receiver is the realm's global, as a function belongs to its realm:

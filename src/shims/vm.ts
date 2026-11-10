@@ -2,8 +2,7 @@
  * vm shim - Basic VM functionality using eval
  *
  * `vm.runInNewContext(code, sandbox)` runs the code with the sandbox as its
- * global: what the code writes on `globalThis` lands on the sandbox, and a name
- * the sandbox lacks reads from the host's global. This passed the sandbox's
+ * global: what the code writes on `globalThis` lands on the sandbox. This passed the sandbox's
  * keys as parameters, so `globalThis.x = ...` wrote to the real global and the
  * caller read nothing back. Next's server evaluates each client-reference
  * manifest exactly that way and read an empty object. A name the sandbox lacks
@@ -11,16 +10,15 @@
  */
 
 import { prepareVmScript, vmScriptPhase, vmScriptRun } from '../vm-script-state';
-import { leftToRealm } from '../guest-scope';
+import { isLanguageGlobal } from '../guest-scope';
 
 /**
  * What a fresh context's global holds besides its sandbox: V8's own globals (ECMAScript's, `WebAssembly`, `console`),
  * which the engine answers with the realm's (ADR-0015 §3). Node's names and the realm's others are no context's: a
- * fresh context in Node has no `Buffer`, no `setTimeout` and no `window`, and `typeof` of each is "undefined". It
- * read the realm's global for any name the sandbox lacked, so a script saw the browser's.
+ * fresh context in Node has no `Buffer`, no `setTimeout` and no `window`, and `typeof` of each is "undefined".
  */
 const contextHolds = (name: string | symbol): boolean =>
-  typeof name === 'string' && (leftToRealm(name) || name === 'Promise' || name === 'WebAssembly' || name === 'console');
+  typeof name === 'string' && (isLanguageGlobal(name) || name === 'Promise' || name === 'WebAssembly' || name === 'console');
 const realmValue = (name: string | symbol): unknown =>
   contextHolds(name) ? (globalThis as unknown as Record<string | symbol, unknown>)[name] : undefined;
 

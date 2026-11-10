@@ -594,8 +594,7 @@ export function guestScopedText(code: string, kept: (name: string) => boolean): 
 /** The names a scope of the body binds, each shadowing the same name of the scopes around it. */
 interface Visible { has(name: string): boolean; bound(name: string): boolean }
 /**
- * EVERY FREE NAME, RESOLVED ON THE PROCESS'S GLOBAL (ADR-0015; before it, S2 K1 and lead ruling m-71c68f37 for 28
- * names). Node compiles a body inside its process's context: every free name resolves lexically, then on that
+ * EVERY FREE NAME, RESOLVED ON THE PROCESS'S GLOBAL (ADR-0015). Node compiles a body inside its process's context: every free name resolves lexically, then on that
  * process's global, and a name the global does not hold is a `ReferenceError`. The engine runs many processes in one
  * realm, so each free reference of a body becomes a property of the process's scope objects (`guest-scope.ts`), as
  * reads, writes, update and `delete` operands (`<scope>.<name>`), a bare call keeping Node's undefined receiver

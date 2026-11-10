@@ -1,6 +1,6 @@
 // First, so a file compiled while the bundle is still evaluating finds them evaluated (ADR-0015).
 import { guestScopedText } from '../code-transforms';
-import { guestScopesOf, leftToRealm, NODE_LIB_SCOPE_NAMES } from '../guest-scope';
+import { guestScopesOf, leftToRealm, NODE_LIB_PARAMETERS } from '../guest-scope';
 import { createOsBinding } from './binding/misc';
 import { createProcessBinding } from './binding/process_wrap';
 import { createSpawnSyncBinding } from './binding/spawn_sync';
@@ -487,13 +487,16 @@ export function nodeLibGlobalFor(owner: object): object {
  */
 interface ScopedFunction { compiled: Function; scoped: boolean }
 /**
- * Compiles `prefix{source}\n}` (the function the prefix opens, closed) with every free name of the source resolved on the global it is later given: the
- * names `kept` are left as written (the realm's own, and the parameters the prefix binds), every other is rewritten
- * onto `__substrateGuestScope` and `__substrateGuestTypeof`, and a file the rewrite declines runs inside
+ * Compiles `source` as the body of `function (parameters) {…}` with every free name resolved on the global it is
+ * later given: the realm's own names, `globalThis`, `arguments` and the parameters are left as written, every other is
+ * rewritten onto `__substrateGuestScope` and `__substrateGuestTypeof`, and a file the rewrite declines runs inside
  * `with (__substrateGuestScope)`, given the global scope object instead. Nothing a process lacks is read from the realm.
+ * The function's parameter list and the names left as written are one list.
  */
-function compileScoped(prefix: string, source: string, sourceURL: string, kept: (name: string) => boolean): ScopedFunction {
-  const rewritten = guestScopedText(source, kept);
+function compileScoped(parameters: readonly string[], source: string, sourceURL: string): ScopedFunction {
+  const bound = new Set([...parameters, 'globalThis', 'arguments']);
+  const prefix = `return function (${parameters.join(', ')}) {`;
+  const rewritten = guestScopedText(source, (key) => leftToRealm(key) || bound.has(key));
   const body = rewritten === undefined
     ? `with (__substrateGuestScope) { ${prefix}${source}\n} }\n//# sourceURL=${sourceURL}`
     : `${prefix}${rewritten}\n}\n//# sourceURL=${sourceURL}`;
@@ -518,9 +521,7 @@ export function loadDependencyFor(owner: object, name: string, source: string, g
   return scopeFor(owner).surface(name, () => {
     let compiled = compiledDependencies.get(name);
     if (!compiled) {
-      const parameters = new Set(['exports', 'require', 'module', 'process', 'globalThis', 'arguments', ...globals]);
-      compiled = compileScoped(`return function (exports, require, module, process, ${globals.join(', ')}) {`, source,
-        name, (key) => leftToRealm(key) || parameters.has(key));
+      compiled = compileScoped(['exports', 'require', 'module', 'process', ...globals], source, name);
       compiledDependencies.set(name, compiled);
     }
     const global = nodeLibGlobalFor(owner) as Record<string, unknown>;
@@ -551,17 +552,14 @@ export function setNodeLibGlobal(of: (process: object) => object): void {
  * global as `globalThis` (a scope around the file's own, so a file that declares the name keeps its declaration).
  *
  * Every other free name the file reads is its process's global's too (ADR-0015), as Node compiles a builtin inside
- * its process's context: undici's bundle read the realm's `Buffer`, which a browser worker has not, and Rallly's server
- * died on `ReferenceError: Buffer is not defined` at `lib/dispatcher/client-h1.js`. The file's text is rewritten for
- * it once a realm, here (a spare pays it in `precompileNodeLib`); the vendored file itself is unedited.
+ * its process's context. The file's text is rewritten for it once a realm, here (a spare pays it in
+ * `precompileNodeLib`); the vendored file itself is unedited.
  */
-function keptByNodeLib(key: string): boolean { return leftToRealm(key) || NODE_LIB_SCOPE_NAMES.has(key); }
 function compiledNodeLibFor(name: string): ScopedFunction {
   compiledNodeLib ??= new Map<string, ScopedFunction>();
   let compiled = compiledNodeLib.get(name);
   if (!compiled) {
-    compiled = compileScoped('return function (exports, require, module, process, internalBinding, primordials) {',
-      NODE_LIB_SOURCES[name]!, `node:${name}`, keptByNodeLib);
+    compiled = compileScoped(NODE_LIB_PARAMETERS, NODE_LIB_SOURCES[name]!, `node:${name}`);
     compiledNodeLib.set(name, compiled);
   }
   return compiled;
