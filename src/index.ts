@@ -134,7 +134,7 @@ export interface RunOptions {
    * its sockets (`TREE_SOCKETS`, ADR-0009) are that process's. The engine
    * writes nothing into it on its own account. `runNode`, and `run`, whose
    * shell line, its builtins and the children it runs in this realm read and
-   * write it (browser-substrate ADR-0129 5f.1: a line that is a kernel
+   * write it (browser-substrate ADR-0129: a line that is a kernel
    * process's is on that process's tree, as its `node` is).
    */
   filesystem?: VirtualFS;

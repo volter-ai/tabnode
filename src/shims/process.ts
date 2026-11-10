@@ -630,7 +630,7 @@ export function createProcess(options?: {
   // Create an EventEmitter for process events
   const emitter = new EventEmitter();
   // A signal's disposition is the process's listeners for it: told to its registry as they come and go, so a kernel
-  // that delivers its signals knows them (browser-substrate ADR-0129 4.4).
+  // that delivers its signals knows them (browser-substrate ADR-0129).
   const publishDisposition = (name: string | symbol, adding: boolean): void => {
     if (typeof name !== 'string' || !Object.hasOwn(__substrateSignals, name) || name === 'SIGKILL' || name === 'SIGSTOP') return;
     try { publishSignalDisposition(proc, __substrateSignals[name]!, adding || emitter.listenerCount(name) > 0); } catch { /* a registry that refuses keeps its own view */ }

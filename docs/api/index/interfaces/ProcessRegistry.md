@@ -57,7 +57,7 @@ as fork (and setsid) do (browser-substrate ADR-0129); tabnode's own ignores both
 > `optional` **disposition**(`pid`, `signal`, `handled`): `void`
 
 `signal` of process `pid` is now handled (a listener for it) or not: a kernel's registry records it as the
-process's disposition, from which the kernel protects a namespace's init (browser-substrate ADR-0129 4.4).
+process's disposition, from which the kernel protects a namespace's init (browser-substrate ADR-0129).
 
 #### Parameters
 

@@ -2259,7 +2259,7 @@ interface CommandRun {
  * handle, a `runCommand` and a synchronous child all reach the world through.
  */
 async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
-  // A run handed its own tree (a kernel process's, browser-substrate ADR-0129 5f) gets that tree's shell, as runNode
+  // A run handed its own tree (a kernel process's, browser-substrate ADR-0129) gets that tree's shell, as runNode
   // makes one: without it the line ran on whichever tree's shell came last.
   if (run.vfs && !shells.has(run.vfs)) shellForRunTree(run.vfs);
   const tree = run.vfs ?? treeForRun();
@@ -3273,8 +3273,8 @@ function startChildRun(request: RunRequest): StartedRun {
       // A child the host runs takes the signal there (the abort carries it) and ends when the program does,
       // as a Linux child stays live and waitable until it exits: a postmaster's SIGINT is its fast shutdown,
       // which still writes a checkpoint, and a handler may survive the signal. Its end is the host's result.
-      // A child the host runs is a kernel process where this run's registry is a kernel's (browser-substrate ADR-0129
-      // step 4): the signal is the kernel's kill, as a shell's is, and the kernel delivers it to the image that runs
+      // A child the host runs is a kernel process where this run's registry is a kernel's (browser-substrate ADR-0129):
+      // the signal is the kernel's kill, as a shell's is, and the kernel delivers it to the image that runs
       // the child, which takes it by its own dispositions. Only without a kernel does the abort carry it to the host.
       if (hostRun && signalsThroughKernel(request.owner) && signalPid(pid, signal, request.owner)) return 0;
       if (hostRun) {
