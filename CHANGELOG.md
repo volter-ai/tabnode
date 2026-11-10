@@ -2,6 +2,32 @@
 
 What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
+## Unreleased
+
+A minor release: the prepared format moves to `tabnode-prepared-9`.
+
+- **Every free name a process's code reads resolves on that process's global** (ADR-0015), as Node compiles every
+  builtin and module inside its process's context. Each compile site bound a list of names and left the rest to the
+  realm: undici's bundle read the realm's `Buffer`, which a browser worker has not, and Rallly's server died on
+  `ReferenceError: Buffer is not defined` at `lib/dispatcher/client-h1.js`; a guest's `typeof XMLHttpRequest`,
+  `typeof importScripts` or `typeof localStorage` found the browser's.
+  - **The process's global holds Node's names**: Node v24.21.0's globals, ECMAScript's (the realm's own), the
+    engine's helpers, and what the process puts there. Any other name of the realm (`window`, `self`,
+    `XMLHttpRequest`, `localStorage`, `importScripts`, a worker's `postMessage`) is not the process's: `undefined`,
+    not `in`, not listed. What a process assigns or defines is its own, not the realm's; an assignment to an
+    ECMAScript name stays the realm's, as before.
+  - **Rewritten where free**: every free name of a module body, of Node's library files (once a realm per file) and
+    of `@emnapi/runtime` reads the process's global, except the realm's intrinsics and the names the wrapper binds,
+    which stay as written at no cost. A read of a name the global does not hold is `ReferenceError: X is not
+    defined`; `typeof` of one is `"undefined"`. A free `Function(...)` call makes its function as `new Function` does.
+  - **Inside `with`, where names are dynamic** (a body with `with` or a direct `eval`, a function a program makes, a
+    `vm.runInThisContext` script, `vm.compileFunction`, the REPL): a name the global holds is its, a realm-only name
+    reads `undefined`, and a script's top-level `this` is the process's global.
+  - **`vm.runInNewContext`**: a name the sandbox lacks is V8's own global or `undefined`, never the realm's.
+  - **Kept** (ADR-0015 *Divergences*): in `with` code a realm-only name reads `undefined` rather than throwing; a
+    strict assignment to an undeclared name creates it; indirect `eval` and a constructor reached by property compile
+    at the realm's scope; a sloppy function's `this` is the realm's global.
+
 ## 0.19.0 — 2026-11-06
 
 A minor release: `run(argv)`, `ServerBridge.registerConnector`, the `vite-ws-channel` fields and the `TreeSockets`
