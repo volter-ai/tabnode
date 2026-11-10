@@ -76,11 +76,10 @@ browser has no V8 binary wire codec; serialize/deserialize throw
 ERR_UNSUPPORTED_OPERATION with capability ipc.v8-serialization on use,
 while default JSON IPC retains its upstream protocol. Native key comparison
 likewise refuses synchronously rather than inventing key identity/bytes.
-TCP type-of-service returns UV_ENOTSUP because virtual streams have no IP
-packet headers. Keepalive accepts the new interval/count arguments but
-virtual in-realm/owner pairings still have no TCP probe packets; it does not
-configure OS idle probes. TTY enum values follow libuv; ADR-0023's actual
-terminal mode refusal remains. No Windows HANDLE can be imported on the
+On the machine, TCP type-of-service and keepalive (with its interval and
+count) are the kernel socket's options (`tcp_wrap`). TTY enum values follow
+libuv; TTY mode on the machine is the run terminal's, and only the engine's
+own pty refuses it. No Windows HANDLE can be imported on the
 engine's Linux platform.
 
 Diagnostics native links and subscriber counts belong to each process's
