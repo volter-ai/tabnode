@@ -28,12 +28,12 @@ export function nodeVersions(node: string = NODE_LTS_VERSION): {
   amaro: string;
 } {
   // `https.js` calls `assertCrypto()`, which is `!process.versions.openssl`.
-  // The engine has crypto (the noble-hashes binding); Node reports openssl
-  // whenever it does. A worker compiles `internal/util` against this table
-  // before any guest process exists, so the name has to live here.
+  // `openssl` names the OpenSSL that runs: 3.5.8 in node-deps.wasm, built from
+  // Node v24.21.0's deps/ (ADR-0016). A worker compiles `internal/util` against
+  // this table before any guest process exists, so the name has to live here.
   // `amaro` is the type stripper a `.ts` file runs through, the release Node
   // v24.21.0 carries; `internal/util` reads it for `assertTypeScript()`.
-  return { node, v8: "11.3.244.8", uv: "1.44.2", webcontainer: "1", openssl: "3.0.15", amaro: "1.1.11" };
+  return { node, v8: "11.3.244.8", uv: "1.44.2", webcontainer: "1", openssl: "3.5.8", amaro: "1.1.11" };
 }
 
 /**

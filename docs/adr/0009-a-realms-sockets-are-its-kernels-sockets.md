@@ -269,33 +269,20 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
 - **`os.networkInterfaces`**: `getifaddrs`, by libuv's `uv_interface_addresses`: interfaces up and running, their IPv4
   and IPv6 addresses, `internal` for a loopback interface, `mac` from the hardware address, `scopeid` from
   `sin6_scope_id`.
-- **`tls`**: a process's TLS is its host's, offered under `TREE_TLS` beside `TREE_SOCKETS` (`src/host-tls.ts`), as a
-  Linux process's is the library inside it over a connection the kernel only carries. `connect(transport, {
-  servername, ca, rejectUnauthorized, protocols })` starts a client handshake and `serve(transport, { key, cert,
-  protocols })` answers one, each over the bytes the engine hands it, and each answers a session: `plain`, the
-  decrypted connection, and `secure`, which settles with the handshake's outcome (`alpnProtocol`, `version`, `cipher`;
-  a client's `authorized`, `authorizationError` and the server's certificates as Node's `getPeerCertificate`
-  describes them, `subject`, `issuer`, `subjectaltname`, `ca`, `valid_from`, `valid_to`, the fingerprints,
-  `serialNumber` and `raw`; a server's `servername` from the client's SNI), or with the failure that ended it. The
-  engine runs it where Node's `lib/internal/tls/wrap.js` (v24.21.0) runs OpenSSL: a `TLSSocket` is a `net.Socket`
-  whose handle is a TLSWrap over the TCP handle of a kernel connection: one it makes with Node's own `net` to any
-  destination (a name with several addresses tries each on a handle of its own, `kReinitializeHandle`), one a TLS
-  server accepted, or the socket it was given. A client's handshake starts once the connection is made and
-  `secureConnect` follows Node's `onConnectSecure`; its roots are the image's `/etc/ssl/certs/ca-certificates.crt` and
-  the file `NODE_EXTRA_CA_CERTS` names, read through the process's files, unless the program passes `ca` (or a
-  `secureContext` holding one); the client verifies the chain and the name by Node's `checkServerIdentity` rules and
-  ends the handshake on a failure unless `rejectUnauthorized` is false (`NODE_TLS_REJECT_UNAUTHORIZED=0` makes it
-  false); a program's own `checkServerIdentity` is asked about a chain that verified. A TLS server is a net server
-  whose connections are server-side TLS sockets (Node's `tlsConnectionListener`), answered with the program's own
-  `key` and `cert` (PEM; an RSA, EC or Ed25519 key); a handshake done is `secureConnection`, one that fails
-  `tlsClientError`. A TLS server says, once listening, that its port answers TLS, to the page bridge of the socket
-  calls its handle was made with, as `tcp_wrap` tells that bridge the port itself; the bridge reaches such a port as a
-  TLS client over its tree's TLS and sends its HTTP inside, and any other port as plain HTTP. It does not verify the
-  server's certificate (`rejectUnauthorized: false`), the rule a development server's proxy applies to a local target
-  (Vite's and webpack-dev-server's `secure: false`): the page is the person's own, the server is the person's own
-  program on their own container's loopback with nothing between the two, and its certificate is a development one no
-  root signs, so verifying it would refuse exactly the server being previewed and protect against no one. A tree that
-  offers no TLS is a Node without TLS: a handshake fails `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
+- **`tls`**: a process's TLS is Node's own `lib/tls.js` and `lib/internal/tls/*.js` over OpenSSL 3.5.8 in the
+  realm's node-deps.wasm, driven through memory BIOs as Node's `TLSWrap` drives it (ADR-0016), so it is the library
+  inside the process over a connection the kernel only carries, as a Linux process's is. A `TLSSocket` is a
+  `net.Socket` whose handle is a TLSWrap over the TCP handle of a kernel connection: one it makes with Node's own `net`
+  to any destination, one a TLS server accepted, or the socket it was given (a JavaScript stream through Node's own
+  `JSStreamSocket`, ADR-0013 §2). A client's roots are the image's `/etc/ssl/certs/ca-certificates.crt` and the file
+  `NODE_EXTRA_CA_CERTS` names, as Node's `--use-openssl-ca` makes them (ADR-0016 §4). A TLS server's port is known to
+  the page bridge by its listening handle's owner, a `net.Server` holding Node's `_sharedCreds` SecureContext
+  (`listensWithTls`, `node-lib/binding/tls_wrap.ts`); the bridge reaches such a port as a TLS client and sends its
+  HTTP inside, and any other port as plain HTTP. It does not verify the server's certificate
+  (`rejectUnauthorized: false`), the rule a development server's proxy applies to a local target (Vite's and
+  webpack-dev-server's `secure: false`): the page is the person's own, the server is the person's own program on their
+  own container's loopback with nothing between the two, and its certificate is a development one no root signs, so
+  verifying it would refuse exactly the server being previewed and protect against no one.
 - **HTTP**: Node's `http.Agent` and `https.Agent` are unpatched: a request is a `net` or `tls` connection of the
   process.
 - **`fetch`**: a guest's `fetch`, `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent` and

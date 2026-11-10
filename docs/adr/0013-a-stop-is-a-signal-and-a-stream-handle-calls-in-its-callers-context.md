@@ -58,13 +58,14 @@ handler and no second end.
 ## 2. A program's stream handle calls it in its caller's guest context
 
 **Purpose.** A TLS socket over a stream with no handle of its own (a JavaScript Duplex, an unconnected socket) runs that
-stream as a libuv stream handle (`node-lib/binding/duplex_stream.ts`, `DuplexStreamHandle`), as Node's
-`JSStreamSocket` does, and every call the handle makes into the program's stream runs in the guest context of the call
-that caused it.
+stream through Node's own `JSStreamSocket` (`lib/internal/js_stream_socket.js`, vendored) over the engine's `js_stream`
+binding (`node-lib/binding/js_stream.ts`, Node's `JSStream`; ADR-0016), and every call into the program's stream runs
+in the guest context of the call that caused it.
 
-**Callers, by grep.** One constructor, `shims/tls.ts` (`new DuplexStreamHandle(socket, process)`, the process that made
-the TLS socket). Its handle methods are called by the TLS wrap and by `LibuvStreamWrap`'s writers, readers and close:
-`readStart`, `readStop`, `writeBuffer` (its `dispatchWrite`), `shutdown` and `close` (its `onCloseHandle`).
+**Callers, by grep.** One constructor, Node's `internal/tls/wrap.js` (`new JSStreamSocket(socket)`, inside the process
+that made the TLS socket, whose binding surface constructs the `JSStream`). Its handle methods are called by the TLS
+wrap (`node-lib/binding/tls_wrap.ts`) and by `LibuvStreamWrap`'s writers and readers: `readStart`, `readStop`,
+`writeBuffer` (its `dispatchWrite`) and `shutdown`; `close` is the one `JSStreamSocket` installs.
 
 **Reference.** Node v24.21.0, `lib/internal/js_stream_socket.js:48-266` and `src/js_stream.cc`:
 - A `data` chunk is `handle.readBuffer`, which emits the read synchronously inside the stream's own listener
@@ -83,33 +84,26 @@ the TLS socket). Its handle methods are called by the TLS wrap and by `LibuvStre
 - `doClose` destroys the stream at once and finishes a held write and shutdown `UV_ECANCELED` a turn later (242-266);
   the stream's own `close` destroys the socket, which closes the handle (88-92).
 
-**Interface.** `dispatchWrite` calls the stream's `write` once with a copy of the whole buffer, synchronously inside the
-writer's call, so in the writer's guest context; its completion is the binding's `oncomplete` on the next turn, as the
-engine's stream writes complete; a stream error's code is `UV_<code>`, else `UV_EPIPE`. A `data` chunk is delivered at
-once inside the stream's `data` listener and `end` is EOF; `readStop` pauses the stream and `readStart` resumes it, in
-the reader's call, and no chunk pauses it.
+**Interface.** The binding is `JSStream`'s C++ half and nothing more: `dispatchWrite` calls `onwrite(req, [copy])`,
+`shutdown` calls `onshutdown(req)`, `readStart`/`readStop` call `onreadstart`/`onreadstop`, each synchronously inside
+the caller's call and in the handle's owning process's run (`invokeOwned`, as Node's `MakeCallback`); a callback's
+non-number answer is `UV_EPROTO`, as Node's `Int32Value` failure is. `readBuffer` emits the read at once and
+`emitEOF` the EOF at once, inside the stream's own listener. `finishWrite` and `finishShutdown` are the request's
+`oncomplete` with the code given.
 
-- **Requests are held from admission to their one answer.** The handle holds at most one write, one shutdown waiting
-  on it and one current shutdown, Node's three slots. A write is held from its `write`'s return (a `write` that
-  throws holds nothing, and its throw is the writer's) to its completion. A waiting shutdown is held until that
-  write completes, and is then dispatched. A dispatched shutdown is held from its call, through its tick, to its
-  `end` callback. `close`, and the stream's own `close`, take every request held and answer each `UV_ECANCELED` on
-  the next turn, the write before the shutdowns. An answer that arrives for a request no longer held (a late write
-  or `end` callback after a cancel) is ignored.
-- **Each deferred call carries its context.** A shutdown with no write held queues the stream's `end` on the making
-  process's `process.nextTick`, which carries the shutdown caller's context and its process (its frame, its uncaught
-  report, its end), as Node's `doShutdown` does. A waiting shutdown is dispatched inside the context its write
-  completed in, captured at the stream's write callback, as Node's `finishWrite` dispatches it from the write's
-  completion; its tick then carries that context.
+- **Requests are held from admission to their one answer**, by Node's own `JSStreamSocket`: its three slots
+  (`kCurrentWriteRequest`, `kPendingShutdownRequest`, `kCurrentShutdownRequest`), its `doClose` cancelling each
+  `UV_ECANCELED` a turn later, and its refusal of a late answer for a request no longer held.
+- **Each deferred call carries its context**, as Node's code defers it: `doShutdown`'s `process.nextTick`, and
+  `finishWrite`'s dispatch of a waiting shutdown from the write's completion.
 
-**Invariants.** No call into the stream is made from a binding task; each runs in the guest context of the call that
-caused it; one write request is one `write` of the stream; every request held gets exactly one answer.
+**Invariants.** Every call into the stream is Node's own code, in the guest context it runs in; one write request is
+one `onwrite`; every request held gets exactly one answer.
 
 ## Where the evidence stops
 
 - **Read:** the Node v24.21.0 files named above; Tabnode's `index.ts`, `process-tokens.ts`, `shims/process.ts`,
-  `shims/child_process.ts`, `shims/shell-jobs.ts`, `shims/tls.ts`, `node-lib/binding/duplex_stream.ts`,
-  `stream_wrap.ts` and `uv.ts`; browser-substrate `kernel-step2`'s callers named in §1 and moby's `daemon/stop.go`
+  `shims/child_process.ts`, `shims/shell-jobs.ts`, `node-lib/binding/js_stream.ts`, `stream_wrap.ts` and `uv.ts`; browser-substrate `kernel-step2`'s callers named in §1 and moby's `daemon/stop.go`
   (`containerStop`) and `daemon/config/config.go` (`defaultStopTimeout = 10`) at master `402d0a16f131`; browser-substrate
   `@volter/browser-runtime`'s `shellStatus`.
 - **Not run.**

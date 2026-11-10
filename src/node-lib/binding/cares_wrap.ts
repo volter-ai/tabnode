@@ -8,6 +8,7 @@
  * `dns`, a DNS exchange over the process's own UDP with its resolver.
  */
 import { libRequire } from '../require-hook';
+import { ipv6Text } from '../../host-sockets';
 
 /** Node's own `isIP` family, from the vendored `internal/net.js`. */
 function internalNet(): { isIP(s: string): number; isIPv4(s: string): boolean; isIPv6(s: string): boolean } {
@@ -49,7 +50,21 @@ export function convertIpv6StringToBuffer(address: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * Node's `CanonicalizeIP` (cares_wrap.cc:1933-1946): `uv_inet_pton` of the string as IPv4, else IPv6 (Node's own
+ * `isIPv4`/`isIPv6` accept what it accepts), and `uv_inet_ntop` of the bytes (`ipv6Text`). Undefined where neither
+ * parses.
+ */
+function canonicalizeIP(input: unknown): string | undefined {
+  const ip = `${input}`;
+  const net = internalNet();
+  if (net.isIPv4(ip)) return ip;
+  if (!net.isIPv6(ip)) return undefined;
+  return ipv6Text(convertIpv6StringToBuffer(ip));
+}
+
 export default {
+  canonicalizeIP,
   get isIP() { return internalNet().isIP; },
   get isIPv4() { return internalNet().isIPv4; },
   get isIPv6() { return internalNet().isIPv6; },

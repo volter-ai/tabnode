@@ -52,6 +52,13 @@ import INTERNAL_CONSTANTS from './internal/constants.js?raw';
 import INTERNAL_MIME from './internal/mime.js?raw';
 import HTTP from './http.js?raw';
 import HTTPS from './https.js?raw';
+import TLS from './tls.js?raw';
+import TLS_COMMON_LEGACY from './_tls_common.js?raw';
+import TLS_WRAP_LEGACY from './_tls_wrap.js?raw';
+import INTERNAL_TLS_COMMON from './internal/tls/common.js?raw';
+import INTERNAL_TLS_SECURE_CONTEXT from './internal/tls/secure-context.js?raw';
+import INTERNAL_TLS_WRAP from './internal/tls/wrap.js?raw';
+import INTERNAL_JS_STREAM_SOCKET from './internal/js_stream_socket.js?raw';
 import HTTP_COMMON from './_http_common.js?raw';
 import HTTP_INCOMING from './_http_incoming.js?raw';
 import HTTP_OUTGOING from './_http_outgoing.js?raw';
@@ -197,6 +204,13 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/mime': INTERNAL_MIME,
   'http': HTTP,
   'https': HTTPS,
+  'tls': TLS,
+  '_tls_common': TLS_COMMON_LEGACY,
+  '_tls_wrap': TLS_WRAP_LEGACY,
+  'internal/tls/common': INTERNAL_TLS_COMMON,
+  'internal/tls/secure-context': INTERNAL_TLS_SECURE_CONTEXT,
+  'internal/tls/wrap': INTERNAL_TLS_WRAP,
+  'internal/js_stream_socket': INTERNAL_JS_STREAM_SOCKET,
   '_http_common': HTTP_COMMON,
   '_http_incoming': HTTP_INCOMING,
   '_http_outgoing': HTTP_OUTGOING,

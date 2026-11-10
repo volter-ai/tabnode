@@ -72,22 +72,12 @@
 - [SocketMessage](interfaces/SocketMessage.md)
 - [Stats](interfaces/Stats.md)
 - [StdinReader](interfaces/StdinReader.md)
-- [TlsClientOptions](interfaces/TlsClientOptions.md)
-- [TlsClientSession](interfaces/TlsClientSession.md)
-- [TlsPeerCertificate](interfaces/TlsPeerCertificate.md)
-- [TlsPlainConnection](interfaces/TlsPlainConnection.md)
-- [TlsSecureConnection](interfaces/TlsSecureConnection.md)
-- [TlsServerOptions](interfaces/TlsServerOptions.md)
-- [TlsServerSecureConnection](interfaces/TlsServerSecureConnection.md)
-- [TlsServerSession](interfaces/TlsServerSession.md)
-- [TlsTransport](interfaces/TlsTransport.md)
 - [TreeAdvisoryLocks](interfaces/TreeAdvisoryLocks.md)
 - [TreeDescriptors](interfaces/TreeDescriptors.md)
 - [TreeDescriptorStats](interfaces/TreeDescriptorStats.md)
 - [TreeNative](interfaces/TreeNative.md)
 - [TreeRecordLock](interfaces/TreeRecordLock.md)
 - [TreeSockets](interfaces/TreeSockets.md)
-- [TreeTls](interfaces/TreeTls.md)
 - [VFSSnapshot](interfaces/VFSSnapshot.md)
 
 ## Type Aliases
@@ -118,7 +108,6 @@
 - [TREE\_DESCRIPTORS](variables/TREE_DESCRIPTORS.md)
 - [TREE\_NATIVE](variables/TREE_NATIVE.md)
 - [TREE\_SOCKETS](variables/TREE_SOCKETS.md)
-- [TREE\_TLS](variables/TREE_TLS.md)
 - [util](variables/util.md)
 
 ## Functions

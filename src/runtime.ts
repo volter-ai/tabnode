@@ -83,7 +83,7 @@ import { createSqliteModule } from './node-lib/sqlite';
 import { registerHandle, unrefHandle, releaseHandle, ownedRun } from './node-lib/binding/handles';
 import * as rollupShim from './shims/rollup';
 import * as v8Shim from './shims/v8';
-import * as tlsShim from './shims/tls';
+import { lazyModule } from './node-lib/lazy';
 import * as http2Shim from './shims/http2';
 import * as clusterShim from './shims/cluster';
 import * as replShim from './shims/repl';
@@ -2158,7 +2158,8 @@ const builtinModules: Record<string, unknown> = {
   rollup: rollupShim,
   v8: v8Shim,
   readline: readlineModule,
-  tls: tlsShim,
+  // Node's own `lib/tls.js` over node-deps.wasm (ADR-0016); a process's `tls` is its own graph's (loadNodeLibFor).
+  tls: lazyModule<Record<string, unknown>>('tls'),
   http2: http2Shim,
   cluster: clusterShim,
   // A stand-in for Node's surface that refuses the REPL by name (shims/repl.ts says why it is not Node's file).

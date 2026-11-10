@@ -6,6 +6,19 @@ What each release changed, newest first. `RELEASING.md` owns publication of the 
 
 A minor release: the prepared format moves to `tabnode-prepared-9`.
 
+- **`tls` is Node's own over OpenSSL 3.5.8 in the realm's node-deps.wasm** (ADR-0016). Node v24.21.0's `tls.js`,
+  `_tls_common.js`, `_tls_wrap.js`, `internal/tls/*.js` and `internal/js_stream_socket.js` run unmodified over
+  `tls_wrap`, `crypto`'s `SecureContext` and `js_stream` bindings, which carry the V8 half of Node's
+  `crypto_tls.cc`/`crypto_context.cc`; OpenSSL, ncrypto and the export layer are one WebAssembly module built from
+  Node's `deps/` by `scripts/build-node-deps-wasm.sh`, driven through memory BIOs as Node's TLSWrap drives it. The tab
+  had no TLS: a handshake failed `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, and Rallly's `prisma migrate deploy` exited 1
+  on a missing `TLSSocket.secureConnecting`. A client verifies against the image's bundle and `NODE_EXTRA_CA_CERTS`,
+  as `--use-openssl-ca` makes it. `process.versions.openssl` is `3.5.8`; the `constants` binding's `crypto` group is
+  OpenSSL's own. Refused by name: `getPeerX509Certificate()` until `crypto` is OpenSSL's, a server's session
+  resumption events, PSK, OCSP stapling, `enableTrace`, `pfx`, certificate compression, `getSharedSigalgs()`.
+- **`TREE_TLS` and its types are no longer exported** (ADR-0016 §4): a process's TLS is the library inside it, so a
+  host offers none. `src/shims/tls.ts`, `src/host-tls.ts` and `DuplexStreamHandle` are deleted; a TLS socket over a
+  JavaScript stream is Node's own `JSStreamSocket` (ADR-0013 §2).
 - **Every free name a process's code reads resolves on that process's global** (ADR-0015), as Node compiles every
   builtin and module inside its process's context. Each compile site bound a list of names and left the rest to the
   realm: undici's bundle read the realm's `Buffer`, which a browser worker has not, and Rallly's server died on
