@@ -13,6 +13,7 @@
 import { internalUtilTypes } from './util';
 import * as acorn from 'acorn';
 import { internalCryptoKeys } from './crypto-keys';
+import { internalCryptoUtil, internalCryptoX509 } from './crypto-tls';
 import {
   internalConsoleGlobal, internalProcessExecution,
   internalProcessWarning, internalSourceMapCache, internalReadlineInterface, internalJsTransferable,
@@ -38,6 +39,8 @@ import { locksOf } from './locks';
 var __table: Record<string, () => unknown> | undefined;
 export function nodeLibInternal(name: string, require?: (name: string) => any, process?: any): (() => unknown) | undefined {
   if (name === 'internal/crypto/keys') return () => internalCryptoKeys;
+  if (name === 'internal/crypto/util') return () => internalCryptoUtil;
+  if (name === 'internal/crypto/x509') return () => internalCryptoX509;
   if (name === 'internal/deps/acorn/acorn/dist/acorn') return () => acorn;
   if (name === 'internal/modules/helpers') return () => ({
     // Node's: a file URL as its path, anything else as it is (lib/internal/modules/helpers.js).

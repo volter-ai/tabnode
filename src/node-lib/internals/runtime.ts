@@ -1,4 +1,5 @@
 import { withGuestExecution, withGuestCallback, drainGuestNextTicks } from '../../guest-loop';
+import { nodeCryptoConstants } from '../binding/node-deps';
 import { AsyncLocalStorage } from '../../shims/async_hooks';
 import { kCancelTimer } from '../../timer-cancellation';
 import { handleOwnerSymbol } from '../binding/owner-symbol';
@@ -308,6 +309,21 @@ const optionValues: Record<string, unknown> = {
   '--enable-source-maps': false,
   '--use-env-proxy': false,
   '--experimental-transform-types': false,
+  // TLS (node_options.h:228-372), Node's defaults, but the CA store: the engine's is the image's bundle as
+  // `--use-openssl-ca` makes it (ADR-0016 §4), so the option says so and tls.getCACertificates() agrees.
+  '--tls-min-v1.0': false,
+  '--tls-min-v1.1': false,
+  '--tls-min-v1.2': false,
+  '--tls-min-v1.3': false,
+  '--tls-max-v1.2': false,
+  '--tls-max-v1.3': false,
+  '--tls-keylog': '',
+  '--trace-tls': false,
+  '--use-openssl-ca': true,
+  '--use-bundled-ca': false,
+  '--use-system-ca': false,
+  // DEFAULT_CIPHER_LIST_CORE (node_constants.h:52-76), as node-deps.wasm compiled it.
+  get '--tls-cipher-list'() { return nodeCryptoConstants().defaultCoreCipherList; },
 };
 
 /**

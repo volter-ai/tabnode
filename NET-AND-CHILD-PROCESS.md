@@ -186,7 +186,7 @@ which namespaces exist, what listens or where a connect goes: a refusal, a
 route, a drop and an egress are the kernel's. A handle keeps the calls of the
 process that made it, an accepted one its listener's, a received one its
 receiver's. HTTP is a `net` or `tls` connection like any other (a process's
-TLS, client and server, is its host's, `TREE_TLS`), and a guest's `fetch` is Node's own
+TLS, client and server, is Node's own over OpenSSL in node-deps.wasm, ADR-0016), and a guest's `fetch` is Node's own
 undici over the process's `net` and `tls`, so nothing leaves around the
 network.
 

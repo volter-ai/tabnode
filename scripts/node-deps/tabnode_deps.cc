@@ -21,6 +21,7 @@
 #include <openssl/x509v3.h>
 
 #include <cctype>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -963,4 +964,74 @@ EXPORT(tn_ssl_set_key_cert) int tn_ssl_set_key_cert(TnSsl* w, TnContext* sc) {
   if (SSL_set1_verify_cert_store(w->ssl, SSL_CTX_get_cert_store(sc->ctx)) != 1) return 0;
   SSL_set_client_CA_list(w->ssl, SSL_dup_CA_list(SSL_CTX_get_client_CA_list(sc->ctx)));
   return 1;
+}
+
+// ---- Node's crypto constants (node_constants.cc DefineCryptoConstants, 865-1092) -------------------------
+
+// The body is Node's, extracted by the build; each definition is written as a line: "n NAME VALUE" for a number
+// (Node's NODE_DEFINE_CONSTANT is a Number of the value) and "s NAME VALUE" for a string. Answers the text,
+// malloc'd, its length in *length.
+#include "default_cipher_list.inc"
+EXPORT(tn_crypto_constants) char* tn_crypto_constants(size_t* length) {
+  std::string target;
+  char line[512];
+#define HAVE_OPENSSL 1
+#define NODE_DEFINE_CONSTANT(target, name)                                                     \
+  do {                                                                                         \
+    snprintf(line, sizeof(line), "n %s %.17g\n", #name, static_cast<double>(name));            \
+    target.append(line);                                                                       \
+  } while (0)
+#define NODE_DEFINE_STRING_CONSTANT(target, name, value)                                       \
+  do {                                                                                         \
+    target.append("s ").append(name).append(" ").append(value).append("\n");                   \
+  } while (0)
+#include "crypto_constants_body.inc"
+#undef NODE_DEFINE_CONSTANT
+#undef NODE_DEFINE_STRING_CONSTANT
+  return Copy(target.data(), target.size(), length);
+}
+
+// GetBIOError (crypto_tls.cc:397-406): the first line ERR_print_errors_cb gives, malloc'd (the queue is consumed as
+// Node's is), its length in *length.
+EXPORT(tn_err_bio_error) char* tn_err_bio_error(size_t* length) {
+  std::string ret;
+  ERR_print_errors_cb(
+      [](const char* str, size_t len, void* opaque) {
+        static_cast<std::string*>(opaque)->assign(str, len);
+        return 0;
+      },
+      static_cast<void*>(&ret));
+  return Copy(ret.data(), ret.size(), length);
+}
+
+// ClearOut's and ClearIn's MarkPopErrorOnReturn and SetVerifyMode's ClearErrorOnReturn are the binding's, through
+// tn_err_set_mark / tn_err_pop_to_mark / tn_err_clear above.
+
+// SecureContext::SetDHParam (crypto_context.cc:1998-2061). `pem` null is "auto" (the JavaScript passes true).
+// Answers 1 set; 2 set, with "DH parameter is less than 2048 bits"; 0 not DH parameters, silently discarded as
+// Node discards them; -1 "DH parameter is less than 1024 bits"; -2 "Error setting temp DH parameter".
+EXPORT(tn_ctx_set_dh_param) int tn_ctx_set_dh_param(TnContext* sc, const char* pem, size_t length) {
+  ERR_set_mark();
+  if (pem == nullptr) {
+    if (!SSL_CTX_set_dh_auto(sc->ctx, 1)) abort();
+    ERR_pop_to_mark();
+    return 1;
+  }
+  BIO* bio = BIO_new_mem_buf(pem, static_cast<int>(length));
+  EVP_PKEY* params = bio ? PEM_read_bio_Parameters(bio, nullptr) : nullptr;
+  if (bio) BIO_free(bio);
+  if (params && EVP_PKEY_id(params) != EVP_PKEY_DH) { EVP_PKEY_free(params); params = nullptr; }
+  if (params == nullptr) { ERR_pop_to_mark(); return 0; }
+  int size = EVP_PKEY_get_bits(params);
+  if (size < 1024) { EVP_PKEY_free(params); ERR_pop_to_mark(); return -1; }
+  if (!SSL_CTX_set0_tmp_dh_pkey(sc->ctx, params)) { EVP_PKEY_free(params); ERR_pop_to_mark(); return -2; }
+  ERR_pop_to_mark();
+  return size < 2048 ? 2 : 1;
+}
+
+// ResetRootCertStore's release of the process's store (crypto_context.cc:1260-1321): the next ask builds a new one;
+// a context already holding the old store keeps its reference.
+EXPORT(tn_root_reset) void tn_root_reset() {
+  if (root_store != nullptr) X509_STORE_free(root_store);
+  root_store = nullptr;
 }

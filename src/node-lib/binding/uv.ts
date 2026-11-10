@@ -99,6 +99,7 @@ export const UV_ENOENT = codes.UV_ENOENT[0];
 export const UV_ENOTDIR = codes.UV_ENOTDIR[0];
 export const UV_ENOTSOCK = codes.UV_ENOTSOCK[0];
 export const UV_EPIPE = codes.UV_EPIPE[0];
+export const UV_EPROTO = codes.UV_EPROTO[0];
 export const UV_EINVAL = codes.UV_EINVAL[0];
 export const UV_ENOTCONN = codes.UV_ENOTCONN[0];
 export const UV_ECANCELED = codes.UV_ECANCELED[0];

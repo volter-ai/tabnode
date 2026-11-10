@@ -22,7 +22,13 @@ esac
 fetch "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/$sdk.tar.gz" sdk.tar.gz "$digest"
 tar xzf sdk.tar.gz && rm sdk.tar.gz
 node=node-v24.21.0
-tar xJf node.tar.xz "$node/deps/openssl/openssl" "$node/deps/ncrypto" "$node/src/node_root_certs.h" && rm node.tar.xz
+tar xJf node.tar.xz "$node/deps/openssl/openssl" "$node/deps/ncrypto" "$node/src/node_root_certs.h" \
+  "$node/src/node_constants.cc" "$node/src/node_constants.h" && rm node.tar.xz
+# Node's crypto constants, compiled as Node writes them: the body of DefineCryptoConstants
+# (node_constants.cc:866-1091) and DEFAULT_CIPHER_LIST_CORE (node_constants.h:52-76).
+mkdir -p generated
+sed -n '866,1091p' "$node/src/node_constants.cc" > generated/crypto_constants_body.inc
+sed -n '52,76p' "$node/src/node_constants.h" > generated/default_cipher_list.inc
 SDK="$work/$sdk"
 CFLAGS="--target=wasm32-wasip1 --sysroot=$SDK/share/wasi-sysroot -O2 -D_WASI_EMULATED_SIGNAL \
 -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID"
@@ -44,7 +50,7 @@ cd "$work"
 
 cxx() { "$SDK/bin/clang++" $CFLAGS -std=c++20 -fno-exceptions -I"$openssl/include" -I"$node/deps/ncrypto" "$@"; }
 cxx -c "$node/deps/ncrypto/ncrypto.cc" -o ncrypto.o
-cxx -I"$node/src" -c "$repo/scripts/node-deps/tabnode_deps.cc" -o tabnode_deps.o
+cxx -I"$node/src" -I"$work/generated" -c "$repo/scripts/node-deps/tabnode_deps.cc" -o tabnode_deps.o
 cxx -mexec-model=reactor -Wl,--strip-all -o node-deps.wasm tabnode_deps.o ncrypto.o \
   "$openssl/libssl.a" "$openssl/libcrypto.a" \
   -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-mman -lwasi-emulated-getpid
@@ -63,7 +69,10 @@ sum=$(shasum -a 256 node-deps.wasm | cut -d' ' -f1)
   echo " *   license: Apache-2.0 (OpenSSL), MIT (Node.js, ncrypto); notices in THIRD-PARTY-NOTICES.md"
   echo " *   runtime: wasi-libc, libc++, libc++abi, compiler-rt builtins; THIRD-PARTY-NOTICES.md"
   echo " */"
+  # One string literal, not a concatenation of lines: a bundler folds `'…' + '…'` pairwise, and over a module of
+  # this size (40,000 lines) that folding allocates the growing prefix at each step, quadratic in the module's length
+  # (an esbuild service reached 13.5 GB on 2026-11-10). One literal parses in one pass.
   echo "export const NODE_DEPS_WASM_BASE64 ="
-  base64 -i node-deps.wasm | tr -d '\n' | fold -w 100 | sed "s/.*/  '&' +/;\$ s/ +\$/;/"
+  printf "  '%s';\n" "$(base64 -i node-deps.wasm | tr -d '\n')"
 } > "$out"
 echo "$out: $bytes bytes, sha256 $sum"

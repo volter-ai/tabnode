@@ -193,3 +193,30 @@ export function opensslError(message: string, code = nodeDeps().tn_err_get() >>>
   deps.tn_err_clear();
   return error;
 }
+
+let cryptoConstants: Record<string, number | string> | undefined;
+/**
+ * Node's crypto constants (node_constants.cc `DefineCryptoConstants`), the body compiled as Node writes it against
+ * the built OpenSSL (tabnode_deps.cc `tn_crypto_constants`). The same object every time, as Node's binding is.
+ */
+export function nodeCryptoConstants(): Record<string, number | string> {
+  if (cryptoConstants) return cryptoConstants;
+  const deps = nodeDeps();
+  const text = withScratch(4, (lengthAt) => {
+    const at = deps.tn_crypto_constants(lengthAt) >>> 0;
+    const length = new DataView(deps.memory.buffer).getUint32(lengthAt, true);
+    const value = new TextDecoder().decode(new Uint8Array(deps.memory.buffer, at, length));
+    deps.tn_free(at);
+    return value;
+  });
+  const table: Record<string, number | string> = {};
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    const kind = line[0];
+    const space = line.indexOf(' ', 2);
+    const name = line.slice(2, space);
+    const value = line.slice(space + 1);
+    table[name] = kind === 'n' ? Number(value) : value;
+  }
+  return cryptoConstants = table;
+}

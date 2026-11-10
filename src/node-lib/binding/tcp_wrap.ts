@@ -85,6 +85,12 @@ export function watchListens(sockets: TreeSockets, onListen: ListenWatcher['onLi
  * sender did).
  */
 const announced = new WeakMap<TreeSockets, Map<number, number>>();
+/** The handles listening on each port of a process's calls, for a bridge that asks what listens there. */
+const listening = new WeakMap<TreeSockets, Map<number, Set<TCP>>>();
+/** The handles of `sockets`'s process listening on `port`. */
+export function listeningHandles(sockets: TreeSockets, port: number): TCP[] {
+  return [...listening.get(sockets)?.get(port) ?? []];
+}
 
 interface PendingConnect { request: TCPConnectWrap; complete: (status: number) => void; release: () => void }
 
@@ -212,6 +218,11 @@ export class TCP extends KernelStreamWrap {
     const sockets = this.sockets;
     if (!sockets || port === null) return;
     this.#announcedPort = port;
+    let handles = listening.get(sockets);
+    if (!handles) listening.set(sockets, handles = new Map());
+    let onPort = handles.get(port);
+    if (!onPort) handles.set(port, onPort = new Set());
+    onPort.add(this);
     let ports = announced.get(sockets);
     if (!ports) announced.set(sockets, ports = new Map());
     const listeners = ports.get(port) ?? 0;
@@ -444,6 +455,11 @@ export class TCP extends KernelStreamWrap {
     this.onconnection = null;
     const port = this.#announcedPort, sockets = this.sockets;
     this.#announcedPort = null;
+    if (sockets && port !== null) {
+      const onPort = listening.get(sockets)?.get(port);
+      onPort?.delete(this);
+      if (onPort?.size === 0) listening.get(sockets)!.delete(port);
+    }
     const ports = sockets && announced.get(sockets);
     if (port === null || !ports) return;
     const listeners = (ports.get(port) ?? 1) - 1;

@@ -20,7 +20,6 @@ import asyncHooksShim from '../shims/async_hooks';
 import stringDecoderShim, { createStringDecoderModule } from '../shims/string_decoder';
 import v8Shim from '../shims/v8';
 import * as pathShim from '../shims/path';
-import * as tlsShim from '../shims/tls';
 import * as cryptoShim from '../shims/crypto';
 import * as vmShim from '../shims/vm';
 import * as workerThreadsShim from '../shims/worker_threads';
@@ -40,7 +39,6 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   if (_process && name === 'dns') return () => createDnsModule(processHostsReaderOf(_process));
   if (_process && name === 'timers') return () => createTimersModule(guestTimerFunctions(_process, globalThis as unknown as Record<string, unknown>));
   if (require && name === 'crypto') return () => cryptoShim.createCryptoModule(require);
-  if (require && name === 'tls') return () => tlsShim.createTlsModule(require);
   // `url`'s URL is the process's, whose `createObjectURL` is Node's.
   if (_process && name === 'url') return () => processUrlModule(_process);
   if (require && name === 'string_decoder') return () => createStringDecoderModule(() => require('buffer').Buffer);
@@ -54,7 +52,6 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   // binding's `AsyncResource`. The shim's class answers `asyncId` 0, which
   // is not an id a resource has.
   async_hooks: () => ({ ...asyncHooksShim, AsyncResource }),
-  tls: () => tlsShim,
   crypto: () => cryptoShim,
   vm: () => vmShim,
   worker_threads: () => workerThreadsShim,
