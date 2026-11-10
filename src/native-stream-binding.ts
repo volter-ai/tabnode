@@ -7,6 +7,7 @@ import type { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, type WriteWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './node-lib/binding/stream_wrap';
 import { __adoptHandle, holdRequest, ownerOf, releaseHandle, observeNodeRequest, forgetNodeRequest } from './node-lib/binding/handles';
 import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EPIPE, UV_ENOSYS, errname } from './node-lib/binding/uv';
+import { performance } from './system';
 
 const UV_EAGAIN = uv.UV_EAGAIN as number;
 

@@ -165,7 +165,10 @@ function classes(process: object, Channel: any, PortConstructor: any) {
 export function guestMessageGlobals(process: object): { MessageChannel: any; MessagePort: any } {
   let result = globals.get(process);
   if (!result) {
-    result = classes(process, globalThis.MessageChannel, globalThis.MessagePort);
+    // The worker's own port interface, read from a port: a kernel's host program's realm holds MessageChannel and not
+    // the MessagePort name (browser-substrate ADR-0227 §4).
+    const HostMessagePort = (globalThis as { MessagePort?: unknown }).MessagePort ?? Object.getPrototypeOf(new MessageChannel().port1).constructor;
+    result = classes(process, globalThis.MessageChannel, HostMessagePort);
     globals.set(process, result);
   }
   return result;

@@ -14,6 +14,7 @@ import type { Socket } from './node-lib/net-module';
 import { Buffer } from './node-lib/buffer-module';
 import { uint8ToBase64 } from './utils/binary-encoding';
 import { PortBridge, type IVirtualServer, type VirtualServer, type BridgeOptions } from './port-bridge';
+import { randomFill } from './system';
 
 const _encoder = new TextEncoder();
 
@@ -300,7 +301,7 @@ function carryBytePipe(link: ClientLink, tree: object | undefined, port: number,
     Host: authorityOf(pairs, port),
     Upgrade: 'websocket',
     'Sec-WebSocket-Version': '13',
-    'Sec-WebSocket-Key': uint8ToBase64(crypto.getRandomValues(new Uint8Array(16))),
+    'Sec-WebSocket-Key': uint8ToBase64(randomFill(new Uint8Array(16))),
     ...(protocols.length ? { 'Sec-WebSocket-Protocol': protocols.join(', ') } : {}),
   });
   void __upgradeOverLoopback(tree, port, 'GET', target, request, upgrade.signal).then((result) => {

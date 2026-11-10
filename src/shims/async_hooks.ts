@@ -5,6 +5,7 @@
 
 import { forGuestRealm, takeFromHost } from '../host-globals';
 import { withGuestExecution, withGuestCallback, resumeGuestTurn, setGuestTurnEnd, isBindingTask } from '../guest-loop';
+import { carryTimerCallbacks } from '../system';
 
 /**
  * The context a continuation runs in: every storage's store, as one frame.
@@ -177,6 +178,8 @@ forGuestRealm(() => {
       }), kind, call);
     } as T;
   };
+  // The engine's own timers (system.ts), which every process's timers are: their callbacks carry as the realm's did.
+  carryTimerCallbacks((callback, kind) => carried(callback, true, true, kind));
   for (const name of ["setTimeout", "setInterval", "setImmediate", "queueMicrotask"]) {
     const original = (globalThis as unknown as Record<string, unknown>)[name];
     if (typeof original !== "function") continue;

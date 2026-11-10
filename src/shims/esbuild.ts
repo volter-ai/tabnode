@@ -7,6 +7,7 @@ import { heldWork } from '../host-globals';
 import type { VirtualFS } from '../virtual-fs';
 import { ESBUILD_WASM_BINARY_CDN, ESBUILD_WASM_BROWSER_CDN, ESBUILD_WASM_VERSION } from '../config/cdn';
 import { __nodeResolverFor } from '../node-resolver';
+import { realmHost } from '../system';
 
 /**
  * Node.js built-in module names. Used by the VFS plugin to provide empty stubs
@@ -747,7 +748,7 @@ function __syncServiceStart(): SyncService {
   const source = __syncWorkerSource();
   // A browser realm starts the worker from a blob of its own origin; Node
   // takes the module as a data: URL.
-  const inBrowser = typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined' || typeof (globalThis as Record<string, unknown>).document !== 'undefined';
+  const inBrowser = realmHost === 'worker' || realmHost === 'window';
   const url = inBrowser && typeof Blob === 'function' && typeof URL.createObjectURL === 'function'
     ? URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
     : new URL(`data:text/javascript,${encodeURIComponent(source)}`);

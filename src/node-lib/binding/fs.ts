@@ -79,6 +79,7 @@ import { constantsBinding } from './misc';
 import { Buffer as NodeBuffer } from '../buffer-module';
 import { unsharedBytes } from './buffer';
 import { namedTree, withFilesystem } from './named-tree';
+import { setInterval, clearInterval } from '../../system';
 
 /** The key the engine hangs a run's filesystem off its guest process. */
 export const kRunFilesystem = Symbol.for('tabnode.run.vfs');

@@ -9,6 +9,8 @@
  *
  * No observer, sampling timer or handle is created. Importing starts nothing.
  */
+import { monotonicMs } from './system';
+
 let clock: (() => number) | undefined;
 let started = 0;
 let active = 0;
@@ -160,8 +162,8 @@ export function isBindingTask(task: unknown): boolean {
 
 export function startGuestLoop(): void {
   if (clock) return;
-  // Capture the host clock before a guest can replace its performance view.
-  clock = globalThis.performance.now.bind(globalThis.performance);
+  // The system's monotonic clock (ADR-0017), which a guest cannot replace.
+  clock = monotonicMs;
   started = clock();
 }
 

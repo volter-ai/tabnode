@@ -11,6 +11,7 @@ import { UV_ENOSYS } from './uv';
 import * as osShim from '../../shims/os';
 import { treeSocketsOf, type TreeSockets } from '../../host-sockets';
 import { nodeLibInternalRequire } from '../load';
+import { setTimeout } from '../../system';
 
 /**
  * `internalBinding('constants')`: the engine's own constants module, which

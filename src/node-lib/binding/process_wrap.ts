@@ -41,6 +41,7 @@ import { treeDescriptorsOf } from '../../tree-descriptors';
 import { prepareChildStdio, type ChildStdioEntry, type PreparedChildStdio } from './child_stdio';
 import { descriptorWriter, type DescriptorWriter } from './fs';
 import { TTY, type TerminalState } from './tty_wrap';
+import { setTimeout, clearTimeout } from '../../system';
 
 /** One entry of Node's `options.stdio`, as `getValidStdio` builds it. */
 export interface StdioEntry {

@@ -29,6 +29,7 @@ import { ownCertificate, peerCertificate } from './x509_object';
 import { listeningHandles } from './tcp_wrap';
 import { handleOwnerSymbol } from './owner-symbol';
 import type { TreeSockets } from '../../host-sockets';
+import { performance } from '../../system';
 
 const SSL_ERROR_SSL = 1;
 const SSL_ERROR_ZERO_RETURN = 6;

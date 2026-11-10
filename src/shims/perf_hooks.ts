@@ -1,39 +1,67 @@
 /**
- * perf_hooks shim - Performance measurement APIs
- * Wraps browser Performance API
+ * perf_hooks: Node's `performance`, the engine's own (ADR-0017). Its clock is the system's monotonic one, counted from
+ * the engine's start (`system.ts` `performance`), and its timeline of marks and measures is the process's, as Node keeps
+ * it; no realm's `performance` stands behind it.
  */
-import { forGuestRealm } from '../host-globals';
 import { eventLoopUtilization } from '../guest-loop';
+import { performance as clock } from '../system';
 export type { EventLoopUtilization } from '../guest-loop';
 
-const hostPerformance = globalThis.performance || {
-  now: () => Date.now(),
-  timeOrigin: Date.now(),
-  mark: () => {},
-  measure: () => {},
-  getEntries: () => [],
-  getEntriesByName: () => [],
-  getEntriesByType: () => [],
-  clearMarks: () => {},
-  clearMeasures: () => {},
-  clearResourceTimings: () => {},
+/** One entry of the timeline, Node's PerformanceMark and PerformanceMeasure shape. */
+class TimelineEntry {
+  constructor(readonly name: string, readonly entryType: 'mark' | 'measure', readonly startTime: number,
+    readonly duration: number, readonly detail: unknown = null) {}
+  toJSON() { return { name: this.name, entryType: this.entryType, startTime: this.startTime, duration: this.duration, detail: this.detail }; }
+}
+
+const timeline: TimelineEntry[] = [];
+const byName = (name?: string, type?: string) => timeline.filter((entry) =>
+  (name === undefined || entry.name === name) && (type === undefined || entry.entryType === type));
+const remove = (type: 'mark' | 'measure', name?: string): void => {
+  for (let at = timeline.length - 1; at >= 0; at--)
+    if (timeline[at]!.entryType === type && (name === undefined || timeline[at]!.name === name)) timeline.splice(at, 1);
+};
+/** A mark's time by its name, or a time given as a number. */
+const timeOf = (point: unknown, fallback: number): number => {
+  if (point === undefined) return fallback;
+  if (typeof point === 'number') return point;
+  const found = byName(String(point), 'mark').at(-1);
+  if (!found) throw new SyntaxError(`The "${String(point)}" performance mark has not been set`);
+  return found.startTime;
 };
 
-
-/** Bind browser Performance methods to their actual receiver; add only the
- * engine-accounted method without mutating a host that imported the engine. */
-const performanceMethods = new Map<PropertyKey, { original: Function; bound: Function }>();
-export const performance = new Proxy(hostPerformance, {
-  get(target, key) {
-    if (key === 'eventLoopUtilization') return eventLoopUtilization;
-    const value = Reflect.get(target, key, target);
-    if (typeof value !== 'function') return value;
-    if (performanceMethods.get(key)?.original !== value) {
-      performanceMethods.set(key, { original: value, bound: value.bind(target) });
-    }
-    return performanceMethods.get(key)!.bound;
+export const performance = {
+  now: (): number => clock.now(),
+  get timeOrigin(): number { return clock.timeOrigin; },
+  mark(name: string, options?: { startTime?: number; detail?: unknown }): TimelineEntry {
+    const entry = new TimelineEntry(String(name), 'mark', options?.startTime ?? clock.now(), 0, options?.detail ?? null);
+    timeline.push(entry);
+    return entry;
   },
-}) as typeof hostPerformance & { eventLoopUtilization: typeof eventLoopUtilization };
+  measure(name: string, start?: string | number | { start?: string | number; end?: string | number; duration?: number; detail?: unknown }, end?: string | number): TimelineEntry {
+    const now = clock.now();
+    const options = start !== null && typeof start === 'object' ? start : undefined;
+    const from = timeOf(options ? options.start : start, 0);
+    const to = options?.duration !== undefined ? from + options.duration : timeOf(options ? options.end : end, now);
+    const entry = new TimelineEntry(String(name), 'measure', from, to - from, options?.detail ?? null);
+    timeline.push(entry);
+    return entry;
+  },
+  getEntries: (): TimelineEntry[] => [...timeline],
+  getEntriesByName: (name: string, type?: string): TimelineEntry[] => byName(String(name), type),
+  getEntriesByType: (type: string): TimelineEntry[] => byName(undefined, String(type)),
+  clearMarks: (name?: string): void => remove('mark', name),
+  clearMeasures: (name?: string): void => remove('measure', name),
+  clearResourceTimings: (): void => {},
+  /** Node records a PerformanceResourceTiming for each fetch undici makes; this engine keeps no resource timeline. */
+  markResourceTiming: (): undefined => undefined,
+  setResourceTimingBufferSize: (): void => {},
+  timerify: <T extends (...args: never[]) => unknown>(fn: T): T => fn,
+  eventLoopUtilization,
+  toJSON(): { timeOrigin: number; eventLoopUtilization: ReturnType<typeof eventLoopUtilization> } {
+    return { timeOrigin: clock.timeOrigin, eventLoopUtilization: eventLoopUtilization() };
+  },
+};
 
 /** Node24.5.0 src/node_perf.h and V8's GCType/GCCallbackFlags enum values.
  * Constants describe kinds; they do not claim the browser emits GC entries. */
@@ -49,23 +77,6 @@ export const constants = Object.freeze({
   NODE_PERFORMANCE_GC_FLAGS_ALL_AVAILABLE_GARBAGE: 16,
   NODE_PERFORMANCE_GC_FLAGS_ALL_EXTERNAL_MEMORY: 32,
   NODE_PERFORMANCE_GC_FLAGS_SCHEDULE_IDLE: 64,
-});
-
-/**
- * Node's `performance.markResourceTiming`, which a browser's `performance`
- * does not have. undici's fetch reads it off the global `performance` at load
- * and calls it after every response, so each fetch through an undici a
- * program installed (Pi's does) threw once the body was read. Node records a
- * PerformanceResourceTiming entry there; this engine keeps no resource
- * timeline for a guest's own HTTP, so the call records nothing.
- */
-forGuestRealm(() => {
-  const own = globalThis.performance as (Performance & { markResourceTiming?: unknown }) | undefined;
-  if (own && typeof own.markResourceTiming !== 'function') {
-    try {
-      Object.defineProperty(own, 'markResourceTiming', { value: () => undefined, writable: true, configurable: true, enumerable: false });
-    } catch { /* a performance object that refuses the name keeps its own shape */ }
-  }
 });
 
 export class PerformanceObserver {

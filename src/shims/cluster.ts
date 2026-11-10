@@ -4,6 +4,7 @@
  */
 
 import { EventEmitter } from '../node-lib/events-module';
+import { setTimeout } from '../system';
 
 export const isMaster = true;
 export const isPrimary = true;
