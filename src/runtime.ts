@@ -498,7 +498,6 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       configurable: true, enumerable: shape!.enumerable,
     });
   }
-  /** What stands behind a name the guest has not made its own. */
   /**
    * The names the engine answers itself, whatever the realm holds: `standing` reads them here and `has` asks this map,
    * so the two cannot disagree.
@@ -520,6 +519,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     // What a Node global inherits from `Object.prototype`, found as Node finds it, not on the realm's own chain.
     ...[...OBJECT_PROTOTYPE_NAMES].map((name): [string, () => unknown] => [name, () => Reflect.get(Object.prototype, name, guest)]),
   ]);
+  /** What stands behind a name the guest has not made its own. */
   const standing = (key: string | symbol): unknown => {
       const answer = typeof key === "string" ? engineAnswered.get(key) : undefined;
       if (answer) return answer();
@@ -1792,14 +1792,14 @@ function __substrateBodyKind(code: string, strictBody: boolean): 'sync' | 'gener
   if (code.endsWith(__substrateTopLevelAwaitMarker)) return 'async';
   return strictBody && code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
 }
+/** The wrapper's parameters: the module's scope (`MODULE_WRAPPER_PARAMETERS`, which the rewrite leaves as written), then the engine's own. */
+const __substrateWrapperParameters = [...MODULE_WRAPPER_PARAMETERS, '__substrateGuestGlobal', '__substrateGuestConstructor', '__substrateGuestScope', '__substrateGuestTypeof'].join(', ');
 /**
  * A module's wrapper, one line as Node's `Module.wrap` is. Its scope is its parameters, given their values by
  * `__substrateRunWrapped` at the call: a header of `var` statements that took them from other parameters and from the
  * guest's global was parsed and compiled again for each body (S2 AC-LC15: 1,025 characters and 25 statements a body,
  * some 6 MB over a server's 6,171 bodies). The `$` names are the ones a lowered body's own text uses.
  */
-/** The wrapper's parameters: the module's scope (`MODULE_WRAPPER_PARAMETERS`, which the rewrite leaves as written), then the engine's own. */
-const __substrateWrapperParameters = [...MODULE_WRAPPER_PARAMETERS, '__substrateGuestGlobal', '__substrateGuestConstructor', '__substrateGuestScope', '__substrateGuestTypeof'].join(', ');
 function __substrateWrapBody(code: string, guestScoped: boolean, strictBody: boolean, sourceURL: string): string {
   return `(function(${__substrateWrapperParameters}) { globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }

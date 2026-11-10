@@ -18,7 +18,7 @@
  * `Promise`, `WebAssembly`, `console` and `globalThis`, which the process answers itself. `EventSource`,
  * `localStorage`, `sessionStorage` and `Storage` are behind flags in v24 and are not among them.
  */
-export const NODE_GLOBAL_NAMES: ReadonlySet<string> = new Set([
+const NODE_GLOBAL_NAMES: ReadonlySet<string> = new Set([
   'global', 'globalThis', 'process', 'Buffer', 'console', 'Promise', 'WebAssembly',
   'queueMicrotask', 'clearImmediate', 'setImmediate', 'clearInterval', 'clearTimeout', 'setInterval', 'setTimeout',
   'structuredClone', 'atob', 'btoa', 'performance', 'fetch', 'crypto', 'navigator', 'Navigator',
