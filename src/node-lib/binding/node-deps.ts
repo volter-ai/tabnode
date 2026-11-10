@@ -188,6 +188,17 @@ export function copyOut(at: number, length: number): Uint8Array {
   return new Uint8Array(nodeDeps().memory.buffer, at >>> 0, length >>> 0).slice();
 }
 
+/**
+ * An OpenSSL error code's `library` and `reason` strings, and the reason as Node writes it into a code, upper-cased
+ * with underscores (crypto_util.cc:566-575, crypto_tls.cc:889-897).
+ */
+export function errorDetail(code: number): { library: string | null; reason: string | null; reasonCode: string | null } {
+  const deps = nodeDeps();
+  const library = code ? cString(deps.tn_err_lib_string(code)) : null;
+  const reason = code ? cString(deps.tn_err_reason_string(code)) : null;
+  return { library, reason, reasonCode: reason === null ? null : reason.toUpperCase().replace(/ /g, '_') };
+}
+
 /** The libraries `error::Decorate` names (crypto_util.cc:583-627, OSSL_ERROR_CODES_MAP), by `ERR_LIB_*` number. */
 const ERROR_LIBRARIES: Record<number, string> = {
   2: 'SYS', 3: 'BN', 4: 'RSA', 5: 'DH', 6: 'EVP', 7: 'BUF', 8: 'OBJ', 9: 'PEM', 10: 'DSA', 11: 'X509', 13: 'ASN1',
@@ -210,15 +221,14 @@ export function opensslError(message: string, code = nodeDeps().tn_err_get() >>>
   }) : message;
   const error = new Error(text) as Error & Record<string, unknown>;
   if (code) {
-    const library = cString(deps.tn_err_lib_string(code));
-    const reason = cString(deps.tn_err_reason_string(code));
+    const { library, reason, reasonCode } = errorDetail(code);
     if (library) error.library = library;
     if (reason) {
       error.reason = reason;
       const name = ERROR_LIBRARIES[deps.tn_err_lib(code)];
       const lib = name ? `${name}_` : '';
       const prefix = lib === 'SSL_' ? '' : 'OSSL_';
-      error.code = `ERR_${prefix}${lib}${reason.toUpperCase().replace(/ /g, '_')}`;
+      error.code = `ERR_${prefix}${lib}${reasonCode}`;
     }
   }
   deps.tn_err_clear();

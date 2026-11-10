@@ -22,7 +22,7 @@ import { forgetNodeHandle, invokeOwned, unrefHandle } from './handles';
 import { UV_ECANCELED, UV_EOF, UV_EPROTO } from './uv';
 import { queueBindingTask } from '../../guest-loop';
 import {
-  copyOut, cString, mallocAnswer, nodeDeps, opensslError, outAnswer, setTlsCallbacks, withBytes, withScratch,
+  copyOut, cString, errorDetail, mallocAnswer, nodeDeps, opensslError, outAnswer, setTlsCallbacks, withBytes, withScratch,
 } from './node-deps';
 import { SecureContext, errorCodes, refusal } from './crypto';
 import { ownCertificate, peerCertificate } from './x509_object';
@@ -239,15 +239,12 @@ export class TLSWrap extends LibuvStreamWrap {
 
   /** ClearOut's error object (874-905): GetBIOError's message; library, reason, and `ERR_SSL_` + the reason. */
   #sslError(): Error {
-    const deps = nodeDeps();
-    const code = deps.tn_err_peek() >>> 0;
-    const library = code ? cString(deps.tn_err_lib_string(code)) : null;
-    const reason = code ? cString(deps.tn_err_reason_string(code)) : null;
+    const { library, reason, reasonCode } = errorDetail(nodeDeps().tn_err_peek() >>> 0);
     const error = new Error(this.#bioError()) as Error & Record<string, unknown>;
     error.library = library ?? undefined;
     error.function = undefined;
     error.reason = reason ?? undefined;
-    if (reason !== null) error.code = `ERR_SSL_${reason.toUpperCase().replace(/ /g, '_')}`;
+    if (reasonCode !== null) error.code = `ERR_SSL_${reasonCode}`;
     return error;
   }
 

@@ -358,25 +358,31 @@ function evalOption(): string {
   return '';
 }
 
-let warnOnAllowUnauthorized = true;
+interface OptionsProcess { env?: Record<string, string | undefined>; emitWarning?(message: string): void }
+/** The processes Node's `warnOnAllowUnauthorized` has already warned (a module-level flag of each process's). */
+const warnedAllowUnauthorized = new WeakSet<object>();
+/**
+ * Node's `getAllowUnauthorized` (lib/internal/options.js) over `process`: NODE_TLS_REJECT_UNAUTHORIZED=0 turns
+ * verification off, with Node's warning, once per process.
+ */
+export function allowUnauthorizedOf(process: OptionsProcess | undefined): boolean {
+  const allowUnauthorized = process?.env?.NODE_TLS_REJECT_UNAUTHORIZED === '0';
+  if (allowUnauthorized && process && !warnedAllowUnauthorized.has(process)) {
+    warnedAllowUnauthorized.add(process);
+    process.emitWarning?.(
+      'Setting the NODE_TLS_REJECT_UNAUTHORIZED ' +
+      'environment variable to \'0\' makes TLS connections ' +
+      'and HTTPS requests insecure by disabling ' +
+      'certificate verification.');
+  }
+  return allowUnauthorized;
+}
 export const internalOptions = {
   getOptionValue: (name: string): unknown => (optionOverrides !== null && name in optionOverrides ? optionOverrides[name]
     : name === '--eval' ? evalOption() : optionValues[name]),
   getEmbedderOptions: () => ({ shouldNotRegisterESMLoader: false, noGlobalSearchPaths: false, noBrowserGlobals: false }),
-  /**
-   * Node's `getAllowUnauthorized` (lib/internal/options.js) for the realm's own graph; a process's `internal/options`
-   * answers it over that process (internals/index.ts).
-   */
-  getAllowUnauthorized: (): boolean => {
-    const process = (globalThis as { process?: { env?: Record<string, string | undefined>; emitWarning?(m: string): void } }).process;
-    const allowUnauthorized = process?.env?.NODE_TLS_REJECT_UNAUTHORIZED === '0';
-    if (allowUnauthorized && warnOnAllowUnauthorized) {
-      warnOnAllowUnauthorized = false;
-      process?.emitWarning?.('Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to \'0\' makes TLS ' +
-        'connections and HTTPS requests insecure by disabling certificate verification.');
-    }
-    return allowUnauthorized;
-  },
+  /** Node's `getAllowUnauthorized` for the realm's own graph; a process's `internal/options` answers it over itself. */
+  getAllowUnauthorized: (): boolean => allowUnauthorizedOf((globalThis as { process?: OptionsProcess }).process),
 };
 
 /** `internal/perf/observe`: nothing observes `net` in the engine. */

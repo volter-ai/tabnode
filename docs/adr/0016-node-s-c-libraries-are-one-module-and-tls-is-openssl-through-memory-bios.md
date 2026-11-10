@@ -196,7 +196,7 @@ name what runs (browser-substrate ADR-0218 §3).
 - Run in the tab on 2026-11-10 through browser-substrate's fast-try door (`dev/image-tab/try.mjs`, Chrome, the
   `small` image), each a `node -e` with a `tls.createServer`/`https.createServer` on 127.0.0.1:8443 (a throwaway
   self-signed EC certificate for `localhost`) and a client over a kernel TCP connection; readings under
-  `~/Library/Caches/browser-substrate/try/runs/2026-11-10T19-2*`:
+  `~/Library/Caches/browser-substrate/try/runs/2026-11-10T19-32-*`, on the pack of this record's head:
   - `ca` given: `client got: hello over TLSv1.3 authorized: true cipher: TLS_AES_256_GCM_SHA384`;
   - no `ca`: `client error: DEPTH_ZERO_SELF_SIGNED_CERT | self-signed certificate`;
   - `rejectUnauthorized: false`: `client got: hello over TLSv1.3 authorized: false authorizationError:

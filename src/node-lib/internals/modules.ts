@@ -9,6 +9,7 @@
  * list its `module.builtinModules` reports, so a hook that reads `node:fs`
  * reads the name the guest's own `module.isBuiltin` agrees with.
  */
+import { errorCodes } from '../binding/crypto';
 import * as moduleShim from '../../shims/module';
 import { fileURLToPath, pathToFileURL } from '../../shims/url';
 
@@ -67,9 +68,8 @@ export const internalUrl = {
    */
   domainToASCII(...args: unknown[]): string {
     if (args.length < 1) {
-      const error = new TypeError('The "domain" argument must be specified') as TypeError & { code?: string };
-      error.code = 'ERR_MISSING_ARGS';
-      throw error;
+      const { ERR_MISSING_ARGS } = errorCodes();
+      throw new ERR_MISSING_ARGS('domain');
     }
     const input = `${args[0]}`;
     if (input === '') return '';
