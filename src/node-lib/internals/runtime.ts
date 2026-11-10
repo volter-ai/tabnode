@@ -358,10 +358,25 @@ function evalOption(): string {
   return '';
 }
 
+let warnOnAllowUnauthorized = true;
 export const internalOptions = {
   getOptionValue: (name: string): unknown => (optionOverrides !== null && name in optionOverrides ? optionOverrides[name]
     : name === '--eval' ? evalOption() : optionValues[name]),
   getEmbedderOptions: () => ({ shouldNotRegisterESMLoader: false, noGlobalSearchPaths: false, noBrowserGlobals: false }),
+  /**
+   * Node's `getAllowUnauthorized` (lib/internal/options.js) for the realm's own graph; a process's `internal/options`
+   * answers it over that process (internals/index.ts).
+   */
+  getAllowUnauthorized: (): boolean => {
+    const process = (globalThis as { process?: { env?: Record<string, string | undefined>; emitWarning?(m: string): void } }).process;
+    const allowUnauthorized = process?.env?.NODE_TLS_REJECT_UNAUTHORIZED === '0';
+    if (allowUnauthorized && warnOnAllowUnauthorized) {
+      warnOnAllowUnauthorized = false;
+      process?.emitWarning?.('Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to \'0\' makes TLS ' +
+        'connections and HTTPS requests insecure by disabling certificate verification.');
+    }
+    return allowUnauthorized;
+  },
 };
 
 /** `internal/perf/observe`: nothing observes `net` in the engine. */

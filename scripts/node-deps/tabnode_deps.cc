@@ -50,12 +50,10 @@ EXPORT(tn_free) void tn_free(void* p) { free(p); }
 
 EXPORT(tn_err_get) uint32_t tn_err_get() { return static_cast<uint32_t>(ERR_get_error()); }
 EXPORT(tn_err_peek) uint32_t tn_err_peek() { return static_cast<uint32_t>(ERR_peek_error()); }
-EXPORT(tn_err_peek_last) uint32_t tn_err_peek_last() { return static_cast<uint32_t>(ERR_peek_last_error()); }
 EXPORT(tn_err_clear) void tn_err_clear() { ERR_clear_error(); }
 EXPORT(tn_err_set_mark) void tn_err_set_mark() { ERR_set_mark(); }
 EXPORT(tn_err_pop_to_mark) void tn_err_pop_to_mark() { ERR_pop_to_mark(); }
 EXPORT(tn_err_lib) int tn_err_lib(uint32_t code) { return ERR_GET_LIB(code); }
-EXPORT(tn_err_reason) int tn_err_reason(uint32_t code) { return ERR_GET_REASON(code); }
 EXPORT(tn_err_lib_string) const char* tn_err_lib_string(uint32_t code) { return ERR_lib_error_string(code); }
 EXPORT(tn_err_reason_string) const char* tn_err_reason_string(uint32_t code) { return ERR_reason_error_string(code); }
 // ThrowCryptoError's message (crypto_util.cc): ERR_error_string_n of the code.
@@ -75,8 +73,6 @@ EXPORT(tn_err_print) char* tn_err_print() {
   BIO_free(bio);
   return out;
 }
-
-EXPORT(tn_openssl_version) const char* tn_openssl_version() { return OPENSSL_VERSION_STR; }
 
 // ---- The root store ---------------------------------------------------------------------------------------
 
@@ -120,6 +116,18 @@ struct TnContext {
   unsigned char ticket_key_aes[16];
 };
 
+// A TnContext lives as long as its SSL_CTX: Node's SecureContext is kept alive by every TLSWrap holding its context
+// (`sc_`), so the ticket callback below always finds it. Here the SSL_CTX's own ex_data owns it, and frees it when the
+// last SSL holding the SSL_CTX is freed.
+static void FreeTnContext(void* parent, void* ptr, CRYPTO_EX_DATA* ad, int idx, long argl, void* argp) {
+  delete static_cast<TnContext*>(ptr);
+}
+static int ContextIndex() {
+  static int index = SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, FreeTnContext);
+  return index;
+}
+static TnContext* ContextOf(const SSL_CTX* ctx) { return static_cast<TnContext*>(SSL_CTX_get_ex_data(ctx, ContextIndex())); }
+
 // InitTicketHmac, crypto_context.cc:2472-2483.
 static bool InitTicketHmac(EVP_MAC_CTX* hctx, const unsigned char* key, size_t key_len) {
   const char* md_name = EVP_MD_get0_name(EVP_sha256());
@@ -134,7 +142,7 @@ static bool InitTicketHmac(EVP_MAC_CTX* hctx, const unsigned char* key, size_t k
 // SecureContext::TicketCompatibilityCallback, crypto_context.cc:2586-2623.
 static int TicketCompatibilityCallback(SSL* ssl, unsigned char* name, unsigned char* iv, EVP_CIPHER_CTX* ectx,
                                        EVP_MAC_CTX* hctx, int enc) {
-  TnContext* sc = static_cast<TnContext*>(SSL_CTX_get_app_data(SSL_get_SSL_CTX(ssl)));
+  TnContext* sc = ContextOf(SSL_get_SSL_CTX(ssl));
   if (enc) {
     memcpy(name, sc->ticket_key_name, sizeof(sc->ticket_key_name));
     if (!ncrypto::CSPRNG(iv, 16) ||
@@ -160,7 +168,7 @@ EXPORT(tn_ctx_new) TnContext* tn_ctx_new(int method) {
   if (ctx == nullptr) return nullptr;
   TnContext* sc = new TnContext();
   sc->ctx = ctx;
-  SSL_CTX_set_app_data(ctx, sc);
+  SSL_CTX_set_ex_data(ctx, ContextIndex(), sc);
   return sc;
 }
 
@@ -189,11 +197,11 @@ EXPORT(tn_ctx_init) int tn_ctx_init(TnContext* sc, int min_version, int max_vers
   return 1;
 }
 
-// SecureContext::Close, crypto_context.cc:2258-2263.
+// SecureContext::Close, crypto_context.cc:2258-2263: this reference to the SSL_CTX goes; the TnContext goes with the
+// SSL_CTX's last reference (FreeTnContext).
 EXPORT(tn_ctx_free) void tn_ctx_free(TnContext* sc) {
   if (sc == nullptr) return;
   SSL_CTX_free(sc->ctx);
-  delete sc;
 }
 
 // The passphrase redirection of SetKey (crypto_context.cc:1731-1737) and PasswordCallback (crypto_util.cc).
@@ -397,7 +405,6 @@ struct TnSsl {
   TnContext* sc = nullptr;
   bool is_server = false;
   bool session_callbacks = false;
-  bool cert_cb_enabled = false;
   bool alpn_callback_enabled = false;
   std::vector<unsigned char> alpn_protos;
 };
@@ -431,11 +438,11 @@ static int NewSessionCallback(SSL* s, SSL_SESSION* sess) {
   return 0;
 }
 
-// SSLCertCallback, crypto_tls.cc:210-247: the binding keeps the "waiting" and "running" state and answers 1 to
-// continue or -1 to suspend the handshake (SSL_ERROR_WANT_X509_LOOKUP).
+// SSLCertCallback, crypto_tls.cc:210-247: the binding keeps the "waiting" and "running" state (EnableCertCb) and
+// answers 1 to continue or -1 to suspend the handshake (SSL_ERROR_WANT_X509_LOOKUP).
 static int SSLCertCallback(SSL* s, void* arg) {
   TnSsl* w = static_cast<TnSsl*>(SSL_get_app_data(s));
-  if (!w->is_server || !w->cert_cb_enabled) return 1;
+  if (!w->is_server) return 1;
   const char* servername = SSL_get_servername(s, TLSEXT_NAMETYPE_host_name);
   return tn_host_cert(w, servername ? servername : "", servername ? strlen(servername) : 0,
                       SSL_get_tlsext_status_type(s) == TLSEXT_STATUSTYPE_ocsp);
@@ -501,8 +508,6 @@ EXPORT(tn_ssl_free) void tn_ssl_free(TnSsl* w) {
 EXPORT(tn_ssl_enc_in) int tn_ssl_enc_in(TnSsl* w, const void* data, size_t length) {
   return BIO_write(w->enc_in, data, static_cast<int>(length));
 }
-// The underlying stream's EOF: enc_in answers EOF once drained.
-EXPORT(tn_ssl_enc_in_eof) void tn_ssl_enc_in_eof(TnSsl* w) { BIO_set_mem_eof_return(w->enc_in, 0); }
 
 // EncOut's view of enc_out (crypto_tls.cc:641-735): the pending bytes, peeked; the binding writes them to the
 // underlying stream and commits them once the write completes (OnStreamAfterWrite, 737-784).
@@ -532,7 +537,6 @@ EXPORT(tn_ssl_write) int tn_ssl_write(TnSsl* w, const void* data, size_t length)
 }
 EXPORT(tn_ssl_get_error) int tn_ssl_get_error(TnSsl* w, int ret) { return SSL_get_error(w->ssl, ret); }
 EXPORT(tn_ssl_shutdown) int tn_ssl_shutdown(TnSsl* w) { return SSL_shutdown(w->ssl); }
-EXPORT(tn_ssl_do_handshake) int tn_ssl_do_handshake(TnSsl* w) { return SSL_do_handshake(w->ssl); }
 
 // TLSWrap::SetVerifyMode, crypto_tls.cc:1219-1249.
 EXPORT(tn_ssl_set_verify_mode) void tn_ssl_set_verify_mode(TnSsl* w, int request_cert, int reject_unauthorized) {
@@ -551,7 +555,7 @@ EXPORT(tn_ssl_set_verify_mode) void tn_ssl_set_verify_mode(TnSsl* w, int request
 }
 
 // TLSWrap::EnableSessionCallbacks, crypto_tls.cc:1251-1265 (the ClientHello parser is not carried: see the
-// binding), EnableKeylogCallback 1267-1282, EnableCertCb 1336-1340, EnableALPNCb 1353-1361.
+// binding), EnableKeylogCallback 1267-1282, EnableALPNCb 1353-1361 (EnableCertCb is the binding's alone).
 EXPORT(tn_ssl_enable_session_callbacks) void tn_ssl_enable_session_callbacks(TnSsl* w) {
   w->session_callbacks = true;
   SSL_CTX_sess_set_new_cb(w->sc->ctx, NewSessionCallback);
@@ -559,7 +563,6 @@ EXPORT(tn_ssl_enable_session_callbacks) void tn_ssl_enable_session_callbacks(TnS
 EXPORT(tn_ssl_enable_keylog) void tn_ssl_enable_keylog(TnSsl* w) {
   SSL_CTX_set_keylog_callback(w->sc->ctx, KeylogCallback);
 }
-EXPORT(tn_ssl_enable_cert_cb) void tn_ssl_enable_cert_cb(TnSsl* w) { w->cert_cb_enabled = true; }
 EXPORT(tn_ssl_enable_alpn_cb) void tn_ssl_enable_alpn_cb(TnSsl* w) {
   w->alpn_callback_enabled = true;
   SSL_CTX_set_alpn_select_cb(SSL_get_SSL_CTX(w->ssl), SelectALPNCallback, nullptr);
@@ -859,10 +862,6 @@ EXPORT(tn_x509_text) char* tn_x509_text(X509* x, int field, size_t* length) {
 }
 
 EXPORT(tn_x509_is_ca) int tn_x509_is_ca(X509* x) { return ncrypto::X509View(x).isCA(); }
-EXPORT(tn_x509_valid_from_time) int64_t tn_x509_valid_from_time(X509* x) {
-  return ncrypto::X509View(x).getValidFromTime();
-}
-EXPORT(tn_x509_valid_to_time) int64_t tn_x509_valid_to_time(X509* x) { return ncrypto::X509View(x).getValidToTime(); }
 
 // bits: the RSA modulus's bit count (BignumPointer::GetBitCount) or the EC group's order bits
 // (GetECGroupBits, 703-712); -1 for "undefined".
@@ -938,29 +937,17 @@ EXPORT(tn_ssl_issuer_from_store) X509* tn_ssl_issuer_from_store(TnSsl* w, X509* 
   return ncrypto::X509Pointer::IssuerFrom(SSL_get_SSL_CTX(w->ssl), ncrypto::X509View(x)).release();
 }
 
-// CertCbDone's context switch (crypto_tls.cc:1595-1657): SSLPointer::setSniContext (ncrypto.cc:4226-4243) then
-// TLSWrap::SetCACerts (crypto_tls.cc:1429-1443). Answers 1; 0 where setSniContext succeeded and SetCACerts failed
-// (Node throws the queue's error, "CertCbDone"); 2 where setSniContext failed (Node goes on without the switch).
-EXPORT(tn_ssl_set_sni_context) int tn_ssl_set_sni_context(TnSsl* w, TnContext* sc) {
+// The context switch CertCbDone (crypto_tls.cc:1595-1657) and SetKeyCert (1678-1703) both make:
+// SSLPointer::setSniContext (ncrypto.cc:4226-4243), then TLSWrap::SetCACerts (crypto_tls.cc:1429-1443). Answers 1;
+// 2 where setSniContext failed (CertCbDone goes on without the switch, SetKeyCert throws); 0 where SetCACerts failed
+// (both throw the queue's error).
+EXPORT(tn_ssl_use_context) int tn_ssl_use_context(TnSsl* w, TnContext* sc) {
   ncrypto::SSLPointer ssl(w->ssl);
   ncrypto::SSLCtxPointer ctx(sc->ctx);
   bool switched = ssl.setSniContext(ctx);
   ctx.release();
   ssl.release();
   if (!switched) return 2;
-  if (SSL_set1_verify_cert_store(w->ssl, SSL_CTX_get_cert_store(sc->ctx)) != 1) return 0;
-  SSL_set_client_CA_list(w->ssl, SSL_dup_CA_list(SSL_CTX_get_client_CA_list(sc->ctx)));
-  return 1;
-}
-
-// TLSWrap::SetKeyCert (crypto_tls.cc:1678-1703): the context's certificate and key on this connection.
-EXPORT(tn_ssl_set_key_cert) int tn_ssl_set_key_cert(TnSsl* w, TnContext* sc) {
-  ncrypto::SSLPointer ssl(w->ssl);
-  ncrypto::SSLCtxPointer ctx(sc->ctx);
-  bool ok = ssl.setSniContext(ctx);
-  ctx.release();
-  ssl.release();
-  if (!ok) return 0;
   if (SSL_set1_verify_cert_store(w->ssl, SSL_CTX_get_cert_store(sc->ctx)) != 1) return 0;
   SSL_set_client_CA_list(w->ssl, SSL_dup_CA_list(SSL_CTX_get_client_CA_list(sc->ctx)));
   return 1;

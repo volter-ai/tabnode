@@ -16,8 +16,6 @@ function status(value: unknown): number {
 }
 
 export class JSStream extends LibuvStreamWrap {
-  isStreamBase = true;
-
   /** IsClosing (44-58). */
   isClosing(): boolean { return Boolean(invokeOwned(this, 'isclosing')); }
 

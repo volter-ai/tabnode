@@ -49,7 +49,52 @@ export function convertIpv6StringToBuffer(address: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * Node's `CanonicalizeIP` (cares_wrap.cc:1933-1946): `uv_inet_pton` of the string as IPv4, else IPv6 (Node's own
+ * `isIPv4`/`isIPv6` accept what it accepts), and `uv_inet_ntop` of the bytes, so the IPv6 form is libuv's
+ * `inet_ntop6` (libuv src/inet.c): the longest run of two or more zero words is `::`, the first such where runs tie,
+ * hex in lower case, and an IPv4-compatible or IPv4-mapped tail written dotted. Undefined where neither parses.
+ */
+function canonicalizeIP(input: unknown): string | undefined {
+  const ip = `${input}`;
+  const net = internalNet();
+  if (net.isIPv4(ip)) return ip;
+  if (!net.isIPv6(ip)) return undefined;
+  const src = convertIpv6StringToBuffer(ip);
+  const words: number[] = [];
+  for (let i = 0; i < 16; i += 2) words.push((src[i]! << 8) | src[i + 1]!);
+  let best = { base: -1, len: 0 };
+  let cur = { base: -1, len: 0 };
+  for (let i = 0; i < 8; i++) {
+    if (words[i] === 0) {
+      if (cur.base === -1) cur = { base: i, len: 1 }; else cur.len++;
+    } else if (cur.base !== -1) {
+      if (best.base === -1 || cur.len > best.len) best = cur;
+      cur = { base: -1, len: 0 };
+    }
+  }
+  if (cur.base !== -1 && (best.base === -1 || cur.len > best.len)) best = cur;
+  if (best.base !== -1 && best.len < 2) best = { base: -1, len: 0 };
+  let out = '';
+  for (let i = 0; i < 8; i++) {
+    if (best.base !== -1 && i >= best.base && i < best.base + best.len) {
+      if (i === best.base) out += ':';
+      continue;
+    }
+    if (i !== 0) out += ':';
+    if (i === 6 && best.base === 0 &&
+        (best.len === 6 || (best.len === 7 && words[7] !== 0x0001) || (best.len === 5 && words[5] === 0xffff))) {
+      out += `${src[12]}.${src[13]}.${src[14]}.${src[15]}`;
+      return out;
+    }
+    out += words[i]!.toString(16);
+  }
+  if (best.base !== -1 && best.base + best.len === 8) out += ':';
+  return out;
+}
+
 export default {
+  canonicalizeIP,
   get isIP() { return internalNet().isIP; },
   get isIPv4() { return internalNet().isIPv4; },
   get isIPv6() { return internalNet().isIPv6; },

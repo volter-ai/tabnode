@@ -59,6 +59,28 @@ export const internalBootstrapRealm = {
  * turn a URL into the options a request is made from.
  */
 export const internalUrl = {
+  /**
+   * Node's `domainToASCII` (lib/internal/url.js:1443-1449 over node_url.cc:224-249): Ada's `set_hostname` on a
+   * `ws://x` URL, which is the URL Standard's hostname setter on a special URL. The realm's `URL` runs that setter;
+   * a setter that fails leaves the host as it was, so the set is made on two hosts and a failure is where neither
+   * changed: Node's empty string.
+   */
+  domainToASCII(...args: unknown[]): string {
+    if (args.length < 1) {
+      const error = new TypeError('The "domain" argument must be specified') as TypeError & { code?: string };
+      error.code = 'ERR_MISSING_ARGS';
+      throw error;
+    }
+    const input = `${args[0]}`;
+    if (input === '') return '';
+    const set = (initial: string): string => {
+      const url = new URL(`ws://${initial}`);
+      url.hostname = input;
+      return url.hostname;
+    };
+    const first = set('x');
+    return first === set('y') ? first : '';
+  },
   fileURLToPath,
   pathToFileURL,
   /**

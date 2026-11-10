@@ -3,20 +3,20 @@
  * instantiated once for the realm, which every `SecureContext` and `TLSWrap` of the realm then lives in. Its memory
  * is its own and not shared; bytes cross by copy, and no `Buffer` is ever placed in it (ADR-0016 §2).
  *
- * Its imports are WASI's and the engine's TLS callbacks (`tabnode`). The callbacks are bound by the `tls_wrap`
- * binding through `setTlsCallbacks`; until it does, a callback is a no-op that lets the handshake continue.
+ * Its imports are WASI's and the engine's TLS callbacks (`tabnode`), which the `tls_wrap` binding binds through
+ * `setTlsCallbacks` when the engine loads; only its connections raise them.
  */
 import { NODE_DEPS_WASM_BASE64 } from './node-deps-wasm';
 
 /** The module's exports (scripts/node-deps/tabnode_deps.cc). Pointers and sizes are wasm32 numbers. */
-export interface NodeDepsExports {
+interface NodeDepsExports {
   memory: WebAssembly.Memory;
   _initialize(): void;
   [name: `tn_${string}`]: (...args: any[]) => any;
 }
 
 /** The engine's side of the module's `tabnode` imports (tabnode_deps.cc, "The engine's callbacks"). */
-export interface TlsCallbacks {
+interface TlsCallbacks {
   handshake(ssl: number, done: number): void;
   keylog(ssl: number, line: Uint8Array): void;
   newSession(ssl: number, id: Uint8Array, der: Uint8Array): void;
@@ -97,16 +97,15 @@ export function nodeDeps(): NodeDepsExports {
   };
   const string = (at: number, length: number) => new TextDecoder().decode(bytes(at, length));
   const tabnode = {
-    handshake: (ssl: number, done: number) => callbacks?.handshake(ssl >>> 0, done),
-    keylog: (ssl: number, at: number, length: number) => callbacks?.keylog(ssl >>> 0, bytes(at, length).slice()),
+    handshake: (ssl: number, done: number) => callbacks!.handshake(ssl >>> 0, done),
+    keylog: (ssl: number, at: number, length: number) => callbacks!.keylog(ssl >>> 0, bytes(at, length).slice()),
     new_session: (ssl: number, id: number, idLength: number, der: number, derLength: number) => {
-      callbacks?.newSession(ssl >>> 0, bytes(id, idLength).slice(), bytes(der, derLength).slice());
+      callbacks!.newSession(ssl >>> 0, bytes(id, idLength).slice(), bytes(der, derLength).slice());
       return 0;
     },
     cert: (ssl: number, at: number, length: number, ocsp: number) =>
-      callbacks ? callbacks.cert(ssl >>> 0, string(at, length), ocsp !== 0) : 1,
-    alpn: (ssl: number, at: number, length: number) =>
-      callbacks ? callbacks.alpn(ssl >>> 0, bytes(at, length).slice()) : -1,
+      callbacks!.cert(ssl >>> 0, string(at, length), ocsp !== 0),
+    alpn: (ssl: number, at: number, length: number) => callbacks!.alpn(ssl >>> 0, bytes(at, length).slice()),
   };
   const made = new WebAssembly.Instance(compiled, { wasi_snapshot_preview1: wasi, tabnode });
   exports = made.exports as unknown as NodeDepsExports;
@@ -150,6 +149,38 @@ export function withScratch<T>(length: number, use: (at: number) => T): T {
   } finally {
     deps.tn_free(at);
   }
+}
+
+/**
+ * A malloc'd answer of the module, `(…, size_t* length) => char*`, copied out and freed: `call` is given the address
+ * the length is written to. Null where the answer is null ("undefined" in Node's object).
+ */
+export function mallocAnswer(call: (lengthAt: number) => number): Uint8Array | null {
+  const deps = nodeDeps();
+  return withScratch(4, (lengthAt) => {
+    const at = call(lengthAt) >>> 0;
+    if (!at) return null;
+    const bytes = copyOut(at, new DataView(deps.memory.buffer).getUint32(lengthAt, true));
+    deps.tn_free(at);
+    return bytes;
+  });
+}
+
+/**
+ * An out-pointer answer of the module, `(…, unsigned char** out) => size_t`, copied out and freed when `owned` (a
+ * malloc'd answer); a borrowed one (a pointer into OpenSSL's own object) is only copied. Null for an empty answer.
+ */
+export function outAnswer(call: (outAt: number) => number, owned = true): Uint8Array | null {
+  const deps = nodeDeps();
+  return withScratch(4, (outAt) => {
+    new DataView(deps.memory.buffer).setUint32(outAt, 0, true);
+    const length = call(outAt) >>> 0;
+    const at = new DataView(deps.memory.buffer).getUint32(outAt, true);
+    if (!at) return null;
+    const bytes = copyOut(at, length);
+    if (owned) deps.tn_free(at);
+    return bytes;
+  });
 }
 
 /** Copies `length` bytes at `at` out of the module's memory. */
@@ -201,14 +232,7 @@ let cryptoConstants: Record<string, number | string> | undefined;
  */
 export function nodeCryptoConstants(): Record<string, number | string> {
   if (cryptoConstants) return cryptoConstants;
-  const deps = nodeDeps();
-  const text = withScratch(4, (lengthAt) => {
-    const at = deps.tn_crypto_constants(lengthAt) >>> 0;
-    const length = new DataView(deps.memory.buffer).getUint32(lengthAt, true);
-    const value = new TextDecoder().decode(new Uint8Array(deps.memory.buffer, at, length));
-    deps.tn_free(at);
-    return value;
-  });
+  const text = new TextDecoder().decode(mallocAnswer((lengthAt) => nodeDeps().tn_crypto_constants(lengthAt))!);
   const table: Record<string, number | string> = {};
   for (const line of text.split('\n')) {
     if (!line) continue;

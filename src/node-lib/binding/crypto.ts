@@ -2,8 +2,8 @@
  * `internalBinding('crypto')`, as far as Node's own `tls` reaches it (ADR-0016 §4): `SecureContext`, an `SSL_CTX` in
  * the realm's node-deps.wasm, and the root-certificate and cipher calls of `lib/tls.js`. Each method is the V8 half
  * of Node's `src/crypto/crypto_context.cc` over the export layer's OpenSSL half (scripts/node-deps/tabnode_deps.cc),
- * and names the lines it carries. The rest of Node's `crypto` binding is not here: `crypto` is still the engine's own
- * module until it moves onto the same OpenSSL (ADR-0016 §5).
+ * and names the lines it carries. The `crypto` module is the engine's own (BUILTINS.md, Kind 2); its binding names
+ * that Node's `crypto` files read are not here (ADR-0016 §5).
  *
  * The root store is the image's bundle (`/etc/ssl/certs/ca-certificates.crt`, where an image lays its World's CA)
  * and the file `NODE_EXTRA_CA_CERTS` names, as Node's `--use-openssl-ca` makes it (ADR-0016 §4), read once for the
@@ -22,8 +22,9 @@ function bioBytes(value: unknown): Bytes {
   throw new TypeError('The argument must be a string or an ArrayBufferView');
 }
 
-function errors(): any {
-  return nodeLibInternalRequire('internal/errors');
+/** Node's `internal/errors` codes, for the errors Node's JavaScript-facing bindings throw. */
+export function errorCodes(): any {
+  return (nodeLibInternalRequire('internal/errors') as { codes: unknown }).codes;
 }
 
 /** An error as Node's C++ `THROW_ERR_*` makes it (node_errors.h): the message as given, with its `code`. */
@@ -33,11 +34,18 @@ function cppError(Kind: ErrorConstructor, code: string, message: string): Error 
   return error;
 }
 
-/** A refusal by name, for what the module's OpenSSL is built without (ADR-0016 §1). */
+/** A refusal by name, for what the engine's TLS does not carry (ADR-0016 §4). */
 export function refusal(what: string): Error {
-  const { ERR_FEATURE_UNAVAILABLE_ON_PLATFORM } = errors().codes;
+  const { ERR_FEATURE_UNAVAILABLE_ON_PLATFORM } = errorCodes();
   return new ERR_FEATURE_UNAVAILABLE_ON_PLATFORM(what);
 }
+
+/**
+ * A context's `SSL_CTX` reference, released when the `SecureContext` is collected, as Node's `SecureContext` frees its
+ * `ctx_` when the object goes; `close()` releases it at once. A connection holding the context keeps the `SSL_CTX`
+ * itself (the export layer's `FreeTnContext`).
+ */
+const contexts = new FinalizationRegistry<number>((ctx) => nodeDeps().tn_ctx_free(ctx));
 
 const SYSTEM_CA_FILE = '/etc/ssl/certs/ca-certificates.crt';
 const PEM_CERTIFICATE = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/gu;
@@ -115,6 +123,7 @@ export class SecureContext {
     const ctx = deps.tn_ctx_new(method) >>> 0;
     if (!ctx) throw opensslError('SSL_CTX_new');
     this._ctx = ctx;
+    contexts.register(this, ctx, this);
     if (!deps.tn_ctx_init(ctx, minVersion, maxVersion)) {
       throw cppError(Error, 'ERR_CRYPTO_OPERATION_FAILED', 'Error generating ticket keys');
     }
@@ -167,7 +176,6 @@ export class SecureContext {
   /** SecureContext::SetCipherSuites, 1944-1957. */
   setCipherSuites(suites: string): void {
     const deps = nodeDeps();
-    deps.tn_err_set_mark();
     try {
       if (!withBytes(String(suites), (at) => deps.tn_ctx_set_cipher_suites(this._ctx, at))) {
         throw opensslError('Failed to set ciphers');
@@ -252,8 +260,8 @@ export class SecureContext {
   }
 
   /**
-   * SecureContext::SetCertificateCompression, 2167-2243: the module is built without zlib, brotli and zstd until
-   * they enter it, so a preference is refused by name (ADR-0016 §1). The TLS 1.3 check is Node's, first.
+   * SecureContext::SetCertificateCompression, 2167-2243: the module is built without zlib, brotli and zstd
+   * (ADR-0016 §1), so a preference is refused by name. The TLS 1.3 check is Node's, first.
    */
   setCertificateCompression(_packed: number): void {
     const max = this.getMaxProto();
@@ -279,6 +287,7 @@ export class SecureContext {
   /** SecureContext::Close, 2258-2263. */
   close(): void {
     if (!this._ctx) return;
+    contexts.unregister(this);
     nodeDeps().tn_ctx_free(this._ctx);
     this._ctx = 0;
   }
@@ -326,7 +335,7 @@ function resetRootCertStore(certificates: string[]): void {
 /** StartLoadingCertificatesOffThread, 975-1030: Node's optimisation; the store is read on first use here. */
 function startLoadingCertificatesOffThread(): void {}
 
-/** GetCertificateCompressionAlgorithms, 2245-2256: none until zlib, brotli and zstd enter the module. */
+/** GetCertificateCompressionAlgorithms, 2245-2256: none, the module having no zlib, brotli or zstd (ADR-0016 §1). */
 function getCertificateCompressionAlgorithms(): string[] { return []; }
 
 /** CipherBase::GetSSLCiphers (crypto_cipher.cc:166-188): the default context's cipher names. */

@@ -135,6 +135,9 @@ shape (`ThrowCryptoError`: the message is `ERR_error_string_n`'s, with `library`
   binding's `crypto` constants group is Node's `DefineCryptoConstants`, compiled against the built OpenSSL
   (`node_constants.cc:866-1091`, extracted by the build); the options table answers Node's TLS options, with
   `--tls-cipher-list` Node's `DEFAULT_CIPHER_LIST_CORE` from the same source.
+- **A context lives as Node's does.** A `SecureContext`'s `SSL_CTX` reference is released by `close()` or when the
+  object is collected (a `FinalizationRegistry`), and a connection holding the context keeps the `SSL_CTX`, whose own
+  ex_data owns the context's ticket keys, so a connection never outlives what its callbacks read.
 - **`internalBinding('js_stream')`** is Node's `JSStream`, which Node's own `JSStreamSocket` drives (ADR-0013 §2).
 - **The root store is the image's bundle plus `NODE_EXTRA_CA_CERTS`, as Node's `--use-openssl-ca` makes it.** The
   store a client verifies against is `/etc/ssl/certs/ca-certificates.crt` with the file `NODE_EXTRA_CA_CERTS` names,
@@ -183,15 +186,23 @@ name what runs (browser-substrate ADR-0218 §3).
 - Built on 2026-11-10 (themachine, wasi-sdk 34.0 arm64-macos) by `scripts/build-node-deps-wasm.sh`, about 40 s:
   OpenSSL 3.5.8 from Node v24.21.0's `deps/openssl` with the configuration in §1 (`libcrypto.a` 6,197,218 bytes,
   `libssl.a` 902,392 bytes, no compiler warning), ncrypto and the export layer, linked into `node-deps.wasm`,
-  3,004,103 bytes (4.0 MB as the base64 the bundle carries). Two builds in different scratch directories gave the
+  3,002,593 bytes (4.0 MB as the base64 the bundle carries, one string literal). Two builds in different scratch directories gave the
   same bytes. Its imports are WASI's (`random_get`, `clock_time_get`, `environ_*`, `proc_exit`, and the file calls
   OpenSSL's loaders reach) and the five `tabnode` callbacks. Its compile and instantiation times are not yet read in
   a tab.
 - Built: the module, its realm loader (`src/node-lib/binding/node-deps.ts`), the `tls_wrap`, `crypto` and
   `js_stream` bindings, the vendored tls files, and the rewiring (§4). The engine builds with the repository's build;
   no suite, test or typecheck was run (AGENTS.md).
-- Nothing here has run in a tab. The proof is a product run: a TLS client's handshake from a realm in the tab
-  (Rallly's `prisma migrate deploy` against a granted host, or the World's TLS twin).
+- Run in the tab on 2026-11-10 through browser-substrate's fast-try door (`dev/image-tab/try.mjs`, Chrome, the
+  `small` image), each a `node -e` with a `tls.createServer`/`https.createServer` on 127.0.0.1:8443 (a throwaway
+  self-signed EC certificate for `localhost`) and a client over a kernel TCP connection; readings under
+  `~/Library/Caches/browser-substrate/try/runs/2026-11-10T19-2*`:
+  - `ca` given: `client got: hello over TLSv1.3 authorized: true cipher: TLS_AES_256_GCM_SHA384`;
+  - no `ca`: `client error: DEPTH_ZERO_SELF_SIGNED_CERT | self-signed certificate`;
+  - `rejectUnauthorized: false`: `client got: hello over TLSv1.3 authorized: false authorizationError:
+    DEPTH_ZERO_SELF_SIGNED_CERT`;
+  - `https.get` with `ca`: `https status: 200 body: hello over TLSv1.3 for GET /probe authorized: true`.
+  Not yet run: a client to a World twin or a granted host (Rallly's `prisma migrate deploy`).
 - The cost of wasm against native crypto is not measured: WebCrypto and the browser's TLS run native, and WebAssembly
   has no AES or SHA instructions. ADR-0218 §0 makes speed the objective, so the asynchronous WebCrypto answers are
   not retired before that number is read.

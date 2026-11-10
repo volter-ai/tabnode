@@ -108,6 +108,8 @@ class StreamEndpoint {
  * what `readStart` and `readStop` mean.
  */
 export class LibuvStreamWrap implements OwnedHandle {
+  /** StreamBase::AddMethods (stream_base.cc:582-584): every StreamBase says it is one; `tls` asserts it. */
+  declare readonly isStreamBase: true;
   /** Set by `net.js` to `onStreamRead`; the only way bytes reach a stream. */
   onread: ((arrayBuffer: ArrayBuffer | null) => unknown) | null = null;
   /** `net.js` owns this flag; `readStart`/`readStop` follow it. */
@@ -544,3 +546,5 @@ export default {
   kBytesWritten,
   kLastWriteWasAsync,
 };
+
+Object.defineProperty(LibuvStreamWrap.prototype, 'isStreamBase', { value: true, writable: false, enumerable: false, configurable: true });

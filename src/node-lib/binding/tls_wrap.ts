@@ -20,13 +20,12 @@ import {
 } from './stream_wrap';
 import { forgetNodeHandle, invokeOwned, unrefHandle } from './handles';
 import { UV_ECANCELED, UV_EOF, UV_EPROTO } from './uv';
-import { nodeLibInternalRequire } from '../load';
 import { queueBindingTask } from '../../guest-loop';
 import {
-  copyOut, cString, nodeDeps, opensslError, setTlsCallbacks, withBytes, withScratch,
+  copyOut, cString, mallocAnswer, nodeDeps, opensslError, outAnswer, setTlsCallbacks, withBytes, withScratch,
 } from './node-deps';
-import { SecureContext, refusal } from './crypto';
-import { derAnswer, ownCertificate, peerCertificate } from './x509_object';
+import { SecureContext, errorCodes, refusal } from './crypto';
+import { ownCertificate, peerCertificate } from './x509_object';
 import { listeningHandles } from './tcp_wrap';
 import { handleOwnerSymbol } from './owner-symbol';
 import type { TreeSockets } from '../../host-sockets';
@@ -50,7 +49,6 @@ export class TLSWrap extends LibuvStreamWrap {
   /** The `SecureContext` the connection was made with (Node's `sc_`). */
   sc: SecureContext;
   sni_context: unknown = null;
-  isStreamBase = true;
 
   started = false;
   established = false;
@@ -66,7 +64,6 @@ export class TLSWrap extends LibuvStreamWrap {
   #hasActiveWriteFromPrevOwner: boolean;
   #waitingCertCb = false;
   #certCbRunning = false;
-  #error: string | null = null;
 
   /** TLSWrap::TLSWrap and TLSWrap::Wrap (crypto_tls.cc:410-559). */
   constructor(parent: StreamHandle, sc: SecureContext, isServer: boolean, hasActiveWriteFromPrevOwner: boolean) {
@@ -135,9 +132,13 @@ export class TLSWrap extends LibuvStreamWrap {
     this.#cycle();
   }
 
-  /** EmitRead of plaintext: to this handle's reader, as every stream binding delivers. */
+  /**
+   * EmitRead of plaintext: to this handle's reader at once, as Node's EmitRead calls `onread` inside ClearOut, so a
+   * read that comes before an SSL error reaches the socket before `onerror` destroys it.
+   */
   #emitRead(bytes: Uint8Array): void {
     LibuvStreamWrap.prototype.receive.call(this, bytes);
+    this.flushInbound();
   }
 
   /** Cycle (2158-2170). */
@@ -242,14 +243,7 @@ export class TLSWrap extends LibuvStreamWrap {
     const code = deps.tn_err_peek() >>> 0;
     const library = code ? cString(deps.tn_err_lib_string(code)) : null;
     const reason = code ? cString(deps.tn_err_reason_string(code)) : null;
-    const message = withScratch(4, (lengthAt) => {
-      const at = deps.tn_err_bio_error(lengthAt) >>> 0;
-      const length = new DataView(deps.memory.buffer).getUint32(lengthAt, true);
-      const text = new TextDecoder('latin1').decode(copyOut(at, length));
-      deps.tn_free(at);
-      return text;
-    });
-    const error = new Error(message) as Error & Record<string, unknown>;
+    const error = new Error(this.#bioError()) as Error & Record<string, unknown>;
     error.library = library ?? undefined;
     error.function = undefined;
     error.reason = reason ?? undefined;
@@ -257,16 +251,9 @@ export class TLSWrap extends LibuvStreamWrap {
     return error;
   }
 
-  /** GetBIOError alone, for ClearIn's EPROTO (963). */
+  /** GetBIOError (397-406), for ClearOut's error and ClearIn's EPROTO (963). */
   #bioError(): string {
-    const deps = nodeDeps();
-    return withScratch(4, (lengthAt) => {
-      const at = deps.tn_err_bio_error(lengthAt) >>> 0;
-      const length = new DataView(deps.memory.buffer).getUint32(lengthAt, true);
-      const text = new TextDecoder('latin1').decode(copyOut(at, length));
-      deps.tn_free(at);
-      return text;
-    });
+    return new TextDecoder('latin1').decode(mallocAnswer((lengthAt) => nodeDeps().tn_err_bio_error(lengthAt))!);
   }
 
   /** ClearIn (913-968). */
@@ -326,7 +313,8 @@ export class TLSWrap extends LibuvStreamWrap {
     streamBaseState[kBytesWritten] = buffer.byteLength;
     streamBaseState[kLastWriteWasAsync] = 1;
     if (!this.ssl) {
-      this.#error = 'Write after DestroySSL';
+      // StreamBase::Write hands the stream's Error() to the request (stream_base.cc), which `onWriteComplete` reads.
+      req.error = 'Write after DestroySSL';
       return UV_EPROTO;
     }
     const length = buffer.byteLength;
@@ -337,8 +325,10 @@ export class TLSWrap extends LibuvStreamWrap {
         const request = new WriteWrap();
         request.handle = this._parent;
         request.oncomplete = (status: number) => this.#onStreamAfterWrite(status);
+        // Node completes it with 0 a turn later whenever the underlying write is not asynchronous, a refused one
+        // included (1062-1069).
         const status = this._parent.writeBuffer(request, new Uint8Array(0));
-        if (status === 0 && !streamBaseState[kLastWriteWasAsync]) {
+        if (status !== 0 || !streamBaseState[kLastWriteWasAsync]) {
           queueBindingTask(() => this.#onStreamAfterWrite(0));
         }
         streamBaseState[kLastWriteWasAsync] = 1;
@@ -428,7 +418,6 @@ export class TLSWrap extends LibuvStreamWrap {
   /** EnableCertCb (1336-1340). */
   enableCertCb(): void {
     this.#waitingCertCb = true;
-    nodeDeps().tn_ssl_enable_cert_cb(this.ssl);
   }
 
   /** EnableALPNCb (1353-1361). */
@@ -451,8 +440,7 @@ export class TLSWrap extends LibuvStreamWrap {
   certCbDone(): void {
     const ctx = this.sni_context;
     if (ctx instanceof SecureContext) {
-      const result = nodeDeps().tn_ssl_set_sni_context(this.ssl, ctx._ctx);
-      if (result === 0) throw opensslError('CertCbDone');
+      if (nodeDeps().tn_ssl_use_context(this.ssl, ctx._ctx) === 0) throw opensslError('CertCbDone');
     } else if (ctx !== null && typeof ctx === 'object') {
       invokeOwned(this, 'onerror', new TypeError('Invalid SNI context'));
       return;
@@ -473,7 +461,7 @@ export class TLSWrap extends LibuvStreamWrap {
   setKeyCert(context: unknown): void {
     if (!this.isServer) return;
     if (!(context instanceof SecureContext)) throw new TypeError('Must give a SecureContext as first argument');
-    if (!nodeDeps().tn_ssl_set_key_cert(this.ssl, context._ctx)) throw opensslError('SetKeyCert');
+    if (nodeDeps().tn_ssl_use_context(this.ssl, context._ctx) !== 1) throw opensslError('SetKeyCert');
   }
 
   /** GetPeerCertificate (1705-1719). */
@@ -483,18 +471,18 @@ export class TLSWrap extends LibuvStreamWrap {
 
   /**
    * GetPeerX509Certificate/GetX509Certificate (1721-1752): the binding's `X509Certificate` handle. Its methods are
-   * `crypto`'s; `InternalX509Certificate` is refused by name until `crypto` is OpenSSL's (ADR-0016 §4), so only the
-   * handle's presence is used.
+   * `crypto`'s, and `InternalX509Certificate` is refused by name (ADR-0016 §4), so only the handle's presence is used:
+   * `wrap.js`'s verification reads it.
    */
   getPeerX509Certificate(): X509Handle | undefined {
     const deps = nodeDeps();
     const leaf = this.isServer
-      ? derAnswer((outAt) => deps.tn_ssl_peer_certificate(this.ssl, outAt))
-      : derAnswer((outAt) => deps.tn_ssl_peer_chain_certificate(this.ssl, 0, outAt));
+      ? outAnswer((outAt) => deps.tn_ssl_peer_certificate(this.ssl, outAt))
+      : outAnswer((outAt) => deps.tn_ssl_peer_chain_certificate(this.ssl, 0, outAt));
     return leaf ? new X509Handle(leaf) : undefined;
   }
   getX509Certificate(): X509Handle | undefined {
-    const der = derAnswer((outAt) => nodeDeps().tn_ssl_certificate(this.ssl, outAt));
+    const der = outAnswer((outAt) => nodeDeps().tn_ssl_certificate(this.ssl, outAt));
     return der ? new X509Handle(der) : undefined;
   }
 
@@ -514,7 +502,7 @@ export class TLSWrap extends LibuvStreamWrap {
 
   /** GetSession/SetSession/IsSessionReused (1810-1860). */
   getSession(): Buffer | undefined {
-    const der = derAnswer((outAt) => nodeDeps().tn_ssl_get_session(this.ssl, outAt));
+    const der = outAnswer((outAt) => nodeDeps().tn_ssl_get_session(this.ssl, outAt));
     return der ? Buffer.from(der) : undefined;
   }
   setSession(session: Uint8Array): void {
@@ -588,12 +576,8 @@ export class TLSWrap extends LibuvStreamWrap {
 
   /** GetTLSTicket (2050-2068). */
   getTLSTicket(): Buffer | undefined {
-    const deps = nodeDeps();
-    return withScratch(4, (outAt) => {
-      const length = deps.tn_ssl_tls_ticket(this.ssl, outAt) >>> 0;
-      const at = new DataView(deps.memory.buffer).getUint32(outAt, true);
-      return at ? Buffer.from(copyOut(at, length)) : undefined;
-    });
+    const ticket = outAnswer((outAt) => nodeDeps().tn_ssl_tls_ticket(this.ssl, outAt), false);
+    return ticket ? Buffer.from(ticket) : undefined;
   }
 
   /** NewSessionDone (2070-2075): a server's; not reached while session callbacks are refused. */
@@ -632,13 +616,8 @@ export class TLSWrap extends LibuvStreamWrap {
 
   /** GetALPNNegotiatedProto (2122-2146). */
   getALPNNegotiatedProtocol(): string | false {
-    const deps = nodeDeps();
-    return withScratch(4, (outAt) => {
-      const length = deps.tn_ssl_get_alpn_selected(this.ssl, outAt) >>> 0;
-      if (length === 0) return false;
-      const at = new DataView(deps.memory.buffer).getUint32(outAt, true);
-      return new TextDecoder('latin1').decode(copyOut(at, length));
-    });
+    const selected = outAnswer((outAt) => nodeDeps().tn_ssl_get_alpn_selected(this.ssl, outAt), false);
+    return selected && selected.byteLength > 0 ? new TextDecoder('latin1').decode(selected) : false;
   }
 
   /** WritesIssuedByPrevListenerDone (2148-2156). */
@@ -649,9 +628,6 @@ export class TLSWrap extends LibuvStreamWrap {
 
   /** SetMaxSendFragment (2172-2183). */
   setMaxSendFragment(size: number): number { return nodeDeps().tn_ssl_set_max_send_fragment(this.ssl, size | 0); }
-
-  /** The last error DoWrite set (TLSWrap::Error, 1004-1006). */
-  get error(): string | null { return this.#error; }
 
   // ---- The module's callbacks ----------------------------------------------------------------------------
 
@@ -707,21 +683,18 @@ export function listensWithTls(sockets: TreeSockets, port: number): boolean {
   });
 }
 
-/** The handle `getPeerX509Certificate()` answers: the DER, for `InternalX509Certificate` once `crypto` carries it. */
-export class X509Handle {
+/** The handle `getPeerX509Certificate()` answers: the certificate's DER. */
+class X509Handle {
   constructor(readonly der: Uint8Array) {}
 }
 
-function errorCodes(): any {
-  return (nodeLibInternalRequire('internal/errors') as { codes: unknown }).codes;
-}
-
+// The module raises these only inside an `SSL_*` call of a live wrap.
 setTlsCallbacks({
-  handshake: (ssl, done) => wraps.get(ssl)?.handshake(done !== 0),
-  keylog: (ssl, line) => wraps.get(ssl)?.keylog(line),
-  newSession: (ssl, id, der) => wraps.get(ssl)?.newSession(id, der),
-  cert: (ssl, servername, ocsp) => wraps.get(ssl)?.cert(servername, ocsp) ?? 1,
-  alpn: (ssl, protocols) => wraps.get(ssl)?.alpn(protocols) ?? -1,
+  handshake: (ssl, done) => wraps.get(ssl)!.handshake(done !== 0),
+  keylog: (ssl, line) => wraps.get(ssl)!.keylog(line),
+  newSession: (ssl, id, der) => wraps.get(ssl)!.newSession(id, der),
+  cert: (ssl, servername, ocsp) => wraps.get(ssl)!.cert(servername, ocsp),
+  alpn: (ssl, protocols) => wraps.get(ssl)!.alpn(protocols),
 });
 
 /**

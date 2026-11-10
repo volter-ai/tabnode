@@ -59,6 +59,26 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   });
   if (require && name === 'internal/webstreams/adapters') return () => createWebStreamsAdapters(require);
   if (name === 'internal/locks') return () => ({ locks: locksOf(process) });
+  // `internal/options` of a process: the realm's table, and Node's `getAllowUnauthorized` (lib/internal/options.js),
+  // whose environment and once-only warning are that process's.
+  if (process && name === 'internal/options') return () => {
+    let warnOnAllowUnauthorized = true;
+    return {
+      ...internalOptions,
+      getAllowUnauthorized(): boolean {
+        const allowUnauthorized = process.env?.NODE_TLS_REJECT_UNAUTHORIZED === '0';
+        if (allowUnauthorized && warnOnAllowUnauthorized) {
+          warnOnAllowUnauthorized = false;
+          process.emitWarning(
+            'Setting the NODE_TLS_REJECT_UNAUTHORIZED ' +
+            'environment variable to \'0\' makes TLS connections ' +
+            'and HTTPS requests insecure by disabling ' +
+            'certificate verification.');
+        }
+        return allowUnauthorized;
+      },
+    };
+  };
   if (process && name === 'internal/blob') return () => internalBlobOf(nodeLibBindingFor(process, 'blob') as BlobBinding);
   if (process && name === 'internal/process/per_thread') return () => ({
     platform: process.platform, arch: process.arch, version: process.version,

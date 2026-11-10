@@ -80,12 +80,10 @@ export function watchListens(sockets: TreeSockets, onListen: ListenWatcher['onLi
   return () => { set!.delete(watcher); };
 }
 /**
- * The listening handles each port of a process's calls was told for: its watchers hear a port once, when the first
- * handle listens on it, and its close when the last one closes (a listener received over IPC listens on the port its
- * sender did).
+ * The listening handles on each port of a process's calls: its watchers hear a port once, when the first handle
+ * listens on it, and its close when the last one closes (a listener received over IPC listens on the port its sender
+ * did); a bridge asks which handles listen there (`listensWithTls`).
  */
-const announced = new WeakMap<TreeSockets, Map<number, number>>();
-/** The handles listening on each port of a process's calls, for a bridge that asks what listens there. */
 const listening = new WeakMap<TreeSockets, Map<number, Set<TCP>>>();
 /** The handles of `sockets`'s process listening on `port`. */
 export function listeningHandles(sockets: TreeSockets, port: number): TCP[] {
@@ -218,16 +216,12 @@ export class TCP extends KernelStreamWrap {
     const sockets = this.sockets;
     if (!sockets || port === null) return;
     this.#announcedPort = port;
-    let handles = listening.get(sockets);
-    if (!handles) listening.set(sockets, handles = new Map());
-    let onPort = handles.get(port);
-    if (!onPort) handles.set(port, onPort = new Set());
+    let ports = listening.get(sockets);
+    if (!ports) listening.set(sockets, ports = new Map());
+    let onPort = ports.get(port);
+    if (!onPort) ports.set(port, onPort = new Set());
     onPort.add(this);
-    let ports = announced.get(sockets);
-    if (!ports) announced.set(sockets, ports = new Map());
-    const listeners = ports.get(port) ?? 0;
-    ports.set(port, listeners + 1);
-    if (listeners > 0) return;
+    if (onPort.size > 1) return;
     const out: Partial<SockName> = {};
     const address = this.getsockname(out) === 0 ? out.address ?? '' : '';
     for (const watcher of [...listenWatchers.get(sockets) ?? []]) {
@@ -455,15 +449,11 @@ export class TCP extends KernelStreamWrap {
     this.onconnection = null;
     const port = this.#announcedPort, sockets = this.sockets;
     this.#announcedPort = null;
-    if (sockets && port !== null) {
-      const onPort = listening.get(sockets)?.get(port);
-      onPort?.delete(this);
-      if (onPort?.size === 0) listening.get(sockets)!.delete(port);
-    }
-    const ports = sockets && announced.get(sockets);
-    if (port === null || !ports) return;
-    const listeners = (ports.get(port) ?? 1) - 1;
-    if (listeners > 0) { ports.set(port, listeners); return; }
+    const ports = sockets && listening.get(sockets);
+    const onPort = port === null ? undefined : ports?.get(port);
+    if (port === null || !ports || !onPort) return;
+    onPort.delete(this);
+    if (onPort.size > 0) return;
     ports.delete(port);
     for (const watcher of [...listenWatchers.get(sockets) ?? []]) {
       try { watcher.onClose(port); } catch { /* a watcher that throws is not the close's business */ }
