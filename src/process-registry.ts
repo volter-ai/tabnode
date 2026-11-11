@@ -42,7 +42,7 @@ export interface ProcessRegistry {
   readonly kernel?: boolean;
   /**
    * `signal` of process `pid` is now handled (a listener for it) or not: a kernel's registry records it as the
-   * process's disposition, from which the kernel protects a namespace's init (browser-substrate ADR-0129 4.4).
+   * process's disposition, from which the kernel protects a namespace's init (browser-substrate ADR-0129).
    */
   disposition?(pid: number, signal: number, handled: boolean): void;
   /**

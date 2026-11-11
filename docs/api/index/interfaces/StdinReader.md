@@ -7,7 +7,7 @@
 # Interface: StdinReader
 
 What a run reads its fd 0 through: this module's ring, or a reader a host makes in the run's own realm over a pipe
-of its kernel's, whatever that pipe's layout (browser-substrate ADR-0129 step 3.4: fd 0 is the kernel description it
+of its kernel's, whatever that pipe's layout (browser-substrate ADR-0129: fd 0 is the kernel description it
 is, read where the run is, with no thread copying it into a ring first). The four calls are the ring's own, with the
 same answers: `take` never waits (a count, 0 at EOF, null when nothing is there yet), `takeBlocking` waits with
 `Atomics.wait`, `takeAll` takes what is there, and `whenWritten` resolves, with no timer, once something has been

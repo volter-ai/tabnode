@@ -366,10 +366,10 @@ export class VirtualFSAdapter implements IFileSystem {
   }
 
   /**
-   * Create a symbolic link (not supported)
+   * Create a symbolic link
    */
-  async symlink(_target: string, _linkPath: string): Promise<void> {
-    throw new Error('Symbolic links are not supported in VirtualFS');
+  async symlink(target: string, linkPath: string): Promise<void> {
+    this.vfs.symlinkSync(target, linkPath);
   }
 
   /**
@@ -380,10 +380,10 @@ export class VirtualFSAdapter implements IFileSystem {
   }
 
   /**
-   * Read the target of a symbolic link (not supported)
+   * Read the target of a symbolic link
    */
-  async readlink(_path: string): Promise<string> {
-    throw new Error('Symbolic links are not supported in VirtualFS');
+  async readlink(path: string): Promise<string> {
+    return this.vfs.readlinkSync(path);
   }
 
   /**

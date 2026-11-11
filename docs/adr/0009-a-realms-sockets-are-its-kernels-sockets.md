@@ -400,8 +400,7 @@ And for identity: its `ProcessRegistry.lookup(pid)` reads the kernel's process t
   against a kernel.
 - **Extrapolation:** that one `Atomics.waitAsync` per pending readiness costs what a kernel-side poll costs; that a
   DNS exchange per lookup (no cache, as glibc keeps none) is fast enough for a boot's lookups.
-- **Not built in `udp_wrap`:** IPv6 source-specific multicast membership answers `ENOSYS`: its `struct
-  group_source_req` is laid out by the host's word size, which this interface does not fix.
-- **Not built in `tls`:** session tickets and their reuse, client certificates (`requestCert`), SNI contexts
-  (`addContext`, `SNICallback`), PFX and encrypted keys. The host's TLS (browser-substrate's `tls-client.ts` and
-  `tls-server.ts`) speaks TLS 1.3 with TLS_AES_128_GCM_SHA256 only.
+- **Not built in `udp_wrap`:** IPv6 source-specific multicast membership answers `ENOSYS`: the binding does not
+  yet lay out `struct group_source_req` in the kernel's WALI form, which is x86-64's (browser-substrate ADR-0227 §2).
+- **`tls`** is OpenSSL in `node-deps.wasm` through memory BIOs (ADR-0016 §4); what it does not carry yet is that
+  ADR's list, each an open defect, not a platform limit.

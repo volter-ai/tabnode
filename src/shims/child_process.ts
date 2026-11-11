@@ -2284,7 +2284,7 @@ interface CommandRun {
  */
 async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
   if (!onKernel() && !justBash) await loadJustBash();
-  // A run handed its own tree (a kernel process's, browser-substrate ADR-0129 5f) gets that tree's shell, as runNode
+  // A run handed its own tree (a kernel process's, browser-substrate ADR-0129) gets that tree's shell, as runNode
   // makes one: without it the line ran on whichever tree's shell came last.
   if (run.vfs && !shells.has(run.vfs)) shellForRunTree(run.vfs);
   const tree = run.vfs ?? treeForRun();
@@ -3018,12 +3018,12 @@ let __nextChildRun = 1;
  * What a `Process` handle runs: a named run of the engine, with its streams
  * wired to the handle's pipes and its end reported once.
  *
- * A killed run reports its end at once. The engine has no signal to deliver:
- * a command already inside the shell cannot always be interrupted, and a
- * parent that called `kill` has no process left to wait for -- so the abort
- * goes out, the run's timers and handles are released as ending a process
- * releases them, and `onexit` carries the signal. Whatever the command does
- * afterwards is nobody's.
+ * A child a host or a realm of its own runs takes a killed run's signal as a
+ * process does (`kill` below: the kernel's kill where the registry is a
+ * kernel's) and ends by its own outcome. Only a run of the engine's shell,
+ * with no process behind it, reports its end at once: the abort goes out, the
+ * run's timers and handles are released as ending a process releases them,
+ * and `onexit` carries the signal.
  */
 function startChildRun(request: RunRequest): StartedRun {
   // A child of a process with a kernel is its own process, run by its host (ADR-0010 §2): with no host to run it (a
@@ -3299,8 +3299,8 @@ function startChildRun(request: RunRequest): StartedRun {
       // A child the host runs takes the signal there (the abort carries it) and ends when the program does,
       // as a Linux child stays live and waitable until it exits: a postmaster's SIGINT is its fast shutdown,
       // which still writes a checkpoint, and a handler may survive the signal. Its end is the host's result.
-      // A child the host runs is a kernel process where this run's registry is a kernel's (browser-substrate ADR-0129
-      // step 4): the signal is the kernel's kill, as a shell's is, and the kernel delivers it to the image that runs
+      // A child the host runs is a kernel process where this run's registry is a kernel's (browser-substrate ADR-0129):
+      // the signal is the kernel's kill, as a shell's is, and the kernel delivers it to the image that runs
       // the child, which takes it by its own dispositions. Only without a kernel does the abort carry it to the host.
       if (hostRun && signalsThroughKernel(request.owner) && signalPid(pid, signal, request.owner)) return 0;
       if (hostRun) {

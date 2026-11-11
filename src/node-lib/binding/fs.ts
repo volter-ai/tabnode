@@ -56,12 +56,12 @@ function createNodeError(code: string, syscall: string, path: string): Error {
 }
 
 /**
- * The tab's filesystem holds no links. `link` and `symlink` refuse with
- * EPERM rather than copying, which pretended a second name existed.
+ * A tree with no kernel behind it holds no hard links. `link` refuses with
+ * EPERM there rather than copying, which pretended a second name existed.
  */
 function refuseLinks(syscall: string, path: string): never {
   throw Object.assign(
-    new Error(`EPERM: the tab's filesystem holds no links, ${syscall} '${path}'`),
+    new Error(`EPERM: a tree with no kernel holds no hard links, ${syscall} '${path}'`),
     { code: 'EPERM', errno: -1, syscall, path },
   );
 }
@@ -1507,12 +1507,8 @@ const fsBinding = {
 
   symlink(target: unknown, path: unknown, _type: unknown, req?: FSReq): undefined {
     return answer(req, () => {
-      const name = asPath(path);
-      if (treeHoldsLinks()) {
-        vfs().symlinkSync(asWritten(target), name);
-        return undefined;
-      }
-      refuseLinks('symlink', name);
+      vfs().symlinkSync(asWritten(target), asPath(path));
+      return undefined;
     });
   },
 

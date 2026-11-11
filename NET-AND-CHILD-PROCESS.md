@@ -19,7 +19,7 @@ hand-written module carries only the slice of Node one program exercised.
 Node's own files carry the whole behaviour, and 260 of Node's own tests
 (`test-net-*`, `test-child-process-*`) say how much of it holds.
 
-## What is vendored, unmodified, from Node v22.18.0 (Node's own `lib/`)
+## What is vendored, unmodified, from Node v24.21.0 (Node's own `lib/`)
 
 `net.js`, `internal/net.js`, `internal/stream_base_commons.js`,
 `internal/socket_list.js`, `child_process.js`, `internal/child_process.js`,
@@ -96,9 +96,10 @@ ownership that keeps a run alive while it holds a handle.
   `kBytesWritten`, `kLastWriteWasAsync`. A read delivers by setting
   `streamBaseState[kReadBytesOrError]` to the byte count (or `UV_EOF`) and
   calling `handle.onread(arrayBuffer)`, exactly what `onStreamRead` in
-  `internal/stream_base_commons.js` expects; a write completes
-  synchronously (`kLastWriteWasAsync` 0, `kBytesWritten` set, the request's
-  `oncomplete` not called), which is what the engine's writes are.
+  `internal/stream_base_commons.js` expects; a write the descriptor takes
+  whole completes synchronously (`kLastWriteWasAsync` 0, `kBytesWritten` set,
+  the request's `oncomplete` not called), and one that waits for the
+  descriptor's writability completes later (`kLastWriteWasAsync` 1).
 - `tcp_wrap`: `TCP(type)` with `constants.SOCKET|SERVER|UV_TCP_IPV6ONLY|UV_TCP_REUSEPORT`,
   `TCPConnectWrap` (`oncomplete(status, handle, req, readable, writable)`),
   over the process's socket calls, with libuv's rules (Node v24.21.0's

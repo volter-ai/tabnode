@@ -166,7 +166,7 @@ export class Zlib {
     outBuf: Uint8Array, outOff: number, outLen: number,
   ): void {
     // Node's own binding does this work on the thread pool and calls back;
-    // a tab has one thread, so the work is done here and the callback is the
+    // this realm keeps no thread pool, so the work is done here and the callback is the
     // next tick, which is the difference a program can observe.
     const tick = (globalThis as { process?: { nextTick?: (fn: () => void) => void } }).process?.nextTick
       ?? ((fn: () => void) => { queueMicrotask(fn); });

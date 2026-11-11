@@ -279,8 +279,8 @@ export const utilBinding = {
   },
 
   /**
-   * A blocking sleep. A tab has one thread and nothing else can run while
-   * this spins, which is exactly what a blocking sleep is; only a program
+   * A blocking sleep. This realm has one thread and nothing else in it can
+   * run while this spins, which is exactly what a blocking sleep is; only a program
    * that asked for one gets it.
    */
   sleep: (milliseconds: number): void => {
