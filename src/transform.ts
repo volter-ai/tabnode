@@ -12,6 +12,7 @@ import { ESBUILD_WASM_ESM_CDN, ESBUILD_WASM_BINARY_CDN } from './config/cdn';
 // host installed, the engine's worker among them, transforms through it
 // wherever it is.
 import { getEsbuildInstance } from './shims/esbuild';
+import { engineConsole as console } from './system';
 
 // Check if we're in a browser environment
 const isBrowser = typeof window !== 'undefined';

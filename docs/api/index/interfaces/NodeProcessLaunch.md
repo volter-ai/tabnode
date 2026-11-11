@@ -44,9 +44,10 @@ Retained process credentials for the host to pass to Runtime/contained realm adm
 
 > **descriptors**: readonly `object`[]
 
-The kernel descriptors the child starts with (an IPC channel's end): each `fd` of the child's table is `dup2` of
-its descriptor `from`, which its fork copied from its parent's, made before its exec closes the close-on-exec ones,
-as libuv's `uv__process_child_init` makes them.
+The kernel descriptors the child starts with (its stdio and IPC channel, ADR-0010): each `fd` of the child's table
+is `dup2` of its descriptor `from`, which its fork copied from its parent's, made before its exec closes the
+close-on-exec ones, as libuv's `uv__process_child_init` makes them. An fd among them is the child's own, read and
+written by its image: `streams` carries no sink or input for it, and the host relays nothing of it.
 
 ***
 

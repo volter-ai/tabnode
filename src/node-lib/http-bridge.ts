@@ -24,7 +24,8 @@ import { Buffer } from './buffer-module';
 import { HTTPParser } from './binding/http_parser';
 import { withFilesystem } from './binding/named-tree';
 import { callingSockets } from '../host-sockets';
-import tlsModule, { listensWithTls } from '../shims/tls';
+import { listensWithTls } from './binding/tls_wrap';
+import { nodeLibInternalRequire } from './load';
 import type { VirtualFS } from '../virtual-fs';
 
 /** What a page request answers with, the shape the bridge has always answered. */
@@ -42,16 +43,17 @@ export interface ResponseData {
  * A connection to `port` on the loopback, as the process whose tree is `tree` (the calling process's without one):
  * `localhost`, which is 127.0.0.1 and then ::1, so a guest bound to `::1` alone is reached there, as a client that
  * tries each of a name's addresses reaches it. A port a TLS server of that process listens on (`listensWithTls`) is
- * reached as a TLS client over its tree's TLS, and the HTTP goes inside it. Its certificate is not verified, as a
+ * reached as a TLS client, Node's own `tls` over node-deps.wasm (ADR-0016), and the HTTP goes inside it. Its certificate is not verified, as a
  * development server's proxy does not verify a local target (`secure: false`): the page is the person's own and the
  * server is the person's own program, on their own container's loopback, where nothing else can stand between them,
- * and its certificate is a development one that no root signs (ADR-0009 §3).
+ * and its certificate is a development one that no root signs (ADR-0009 §3, ADR-0016).
  */
-function connectLoopback(tree: object | undefined, port: number): Socket {
+export function connectLoopback(tree: object | undefined, port: number): Socket {
   const connect = (): Socket => {
     const sockets = callingSockets();
     if (sockets && listensWithTls(sockets, port)) {
-      return tlsModule.connect({ port, host: 'localhost', servername: 'localhost', rejectUnauthorized: false, ALPNProtocols: ['http/1.1'] }) as unknown as Socket;
+      const tls = nodeLibInternalRequire('tls') as { connect(options: object): unknown };
+      return tls.connect({ port, host: 'localhost', servername: 'localhost', rejectUnauthorized: false, ALPNProtocols: ['http/1.1'] }) as unknown as Socket;
     }
     return netModule.connect({ port, host: 'localhost' }) as unknown as Socket;
   };
@@ -59,7 +61,7 @@ function connectLoopback(tree: object | undefined, port: number): Socket {
 }
 
 /** Whether a connection failed because nothing listens where it went: the kernel's refusal. */
-function refused(error: unknown): boolean {
+export function refused(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   return code === 'ECONNREFUSED' || (error instanceof AggregateError && error.errors.every(refused));
 }
@@ -88,6 +90,8 @@ interface Collected {
   statusCode: number;
   statusMessage: string;
   headers: Record<string, string>;
+  /** The head's fields as sent, name and value alternating, as Node's `res.rawHeaders`. */
+  rawHeaders: string[];
   chunks: Uint8Array[];
   complete: boolean;
   upgrade: boolean;
@@ -109,6 +113,7 @@ function responseParser(collected: Collected, onHead?: () => void, onChunk?: (ch
     collected.statusCode = statusCode;
     collected.statusMessage = statusMessage;
     collected.upgrade = upgrade;
+    collected.rawHeaders = headers.slice();
     for (let index = 0; index + 1 < headers.length; index += 2) {
       const name = headers[index]!.toLowerCase();
       const value = headers[index + 1]!;
@@ -142,7 +147,7 @@ function responseParser(collected: Collected, onHead?: () => void, onChunk?: (ch
 }
 
 function emptyCollected(): Collected {
-  return { statusCode: 0, statusMessage: '', headers: {}, chunks: [], complete: false, upgrade: false };
+  return { statusCode: 0, statusMessage: '', headers: {}, rawHeaders: [], chunks: [], complete: false, upgrade: false };
 }
 
 /**
@@ -276,6 +281,8 @@ export interface UpgradeResult {
   /** Absent where the server sent none, as Node's `res.statusMessage` may be. */
   statusMessage?: string;
   headers: Record<string, string>;
+  /** The head's fields as sent, name and value alternating (a `Set-Cookie` sent twice is two entries). */
+  rawHeaders: string[];
   socket: Socket | null;
 }
 
@@ -286,26 +293,30 @@ export interface UpgradeResult {
  * page holds this one, which is exactly what the real `ws` needs on both
  * sides. The bytes llhttp had already read past the head are pushed back
  * onto this end, because they are the first frame. A port nothing listens on
- * (the kernel refuses the connection) answers 503 with no socket.
+ * (the kernel refuses the connection) answers 503 with no socket. The
+ * connection is this request's until its 101 hands it over: `signal` aborts
+ * the request before then, its connection destroyed and its answer no socket.
  */
 export function __upgradeOverLoopback(
   tree: object | undefined, port: number, method: string, url: string, headers: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<UpgradeResult> {
   return new Promise<UpgradeResult>((resolve) => {
     const collected = emptyCollected();
     let settled = false;
     const parser = responseParser(collected);
     const socket = connectLoopback(tree, port);
-    const fail = (error?: unknown): void => {
+    signal?.addEventListener('abort', () => { if (!settled) { socket.destroy(); fail(); } }, { once: true });
+    function fail(error?: unknown): void {
       if (settled) return;
       settled = true;
       parser.free();
       if (collected.statusCode === 0 && refused(error)) {
-        resolve({ statusCode: 503, statusMessage: 'Service Unavailable', headers: {}, socket: null });
+        resolve({ statusCode: 503, statusMessage: 'Service Unavailable', headers: {}, rawHeaders: [], socket: null });
         return;
       }
-      resolve({ statusCode: collected.statusCode || 502, statusMessage: collected.statusMessage, headers: collected.headers, socket: null });
-    };
+      resolve({ statusCode: collected.statusCode || 502, statusMessage: collected.statusMessage, headers: collected.headers, rawHeaders: collected.rawHeaders, socket: null });
+    }
     socket.on('data', (chunk: Uint8Array) => {
       if (settled) return;
       const read = parser.execute(chunk);
@@ -318,7 +329,7 @@ export function __upgradeOverLoopback(
         const consumed = typeof read === 'number' ? read : chunk.length;
         const rest = chunk.subarray(consumed);
         if (rest.length > 0) (socket as unknown as { unshift(data: Uint8Array): void }).unshift(rest);
-        resolve({ statusCode: collected.statusCode, statusMessage: collected.statusMessage, headers: collected.headers, socket });
+        resolve({ statusCode: collected.statusCode, statusMessage: collected.statusMessage, headers: collected.headers, rawHeaders: collected.rawHeaders, socket });
         return;
       }
       if (collected.complete) { socket.destroy(); fail(); }

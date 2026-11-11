@@ -574,21 +574,46 @@ function transformEsmToCjsRegex(code: string): string {
 }
 
 /**
- * THE GUEST'S GLOBAL NAMES, REWRITTEN WHERE THEY ARE FREE (S2 K1 evaluate; lead ruling m-71c68f37). A module body ran
- * inside `with (__substrateGuestScope)` so that the few names whose realm value is not the guest's (the worker's
- * `self`, `postMessage`, `close` and event names, `window`/`document`/`location` that a Node process has not,
- * `Promise`, `fetch` and undici's interfaces, `URL`, `WebAssembly`, `performance`, `navigator`,
- * `MessageChannel`/`MessagePort`/`Worker`) read the guest's. Node runs
- * a body in its wrapper with no `with`: every free name resolves lexically, then on the global. The `with` made every
- * free name of every function in the body a dynamic lookup through that object, at every call. Here only the free
- * references to those names become `<scope>.<name>`, as reads, writes, `typeof` and update operands, a bare call
- * keeping Node's undefined receiver (`(0,<scope>["<name>"])(...)`) and a shorthand property its key; every other free
- * name resolves as Node resolves it. A `new X(...)` callee is wrapped as before (`<construct>(X)`), with a guest name
- * inside it rewritten too. Answers undefined where name resolution is dynamic in the body itself (a `with` statement,
- * or a direct `eval`), and the body keeps the `with` wrapper.
+ * A file's text with every free name it reads made a read of its process's scope objects (ADR-0015 §2), for code the
+ * engine compiles as a function body of its own (Node's library files, a dependency): `kept` names the free names left
+ * as written. Undefined where the file's names are dynamic (a `with` or a direct `eval` of its own, an escaped name),
+ * it names the scope objects itself, or it does not parse as a script: such a file runs inside `with` instead.
  */
-export function __substrateGuestNameEdits(ast: any, code: string, names: ReadonlySet<string>, scope: string,
-  construct: (callee: string) => string): Array<[number, number, string]> | undefined {
+export function guestScopedText(code: string, kept: (name: string) => boolean): string | undefined {
+  if (code.includes('__substrateGuestScope') || code.includes('__substrateGuestTypeof')) return undefined;
+  let ast: any;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true, allowHashBang: true });
+  } catch {
+    return undefined;
+  }
+  const edits = __substrateGuestNameEdits(ast, code, kept, '__substrateGuestScope', undefined, '__substrateGuestTypeof');
+  ast = undefined;
+  return edits && applySourceEdits(code, edits.sort((a, b) => b[0] - a[0]));
+}
+/** The names a scope of the body binds, each shadowing the same name of the scopes around it. */
+interface Visible { has(name: string): boolean; bound(name: string): boolean }
+/**
+ * EVERY FREE NAME, RESOLVED ON THE PROCESS'S GLOBAL (ADR-0015). Node compiles a body inside its process's context: every free name resolves lexically, then on that
+ * process's global, and a name the global does not hold is a `ReferenceError`. The engine runs many processes in one
+ * realm, so each free reference of a body becomes a property of the process's scope objects (`guest-scope.ts`), as
+ * reads, writes, update and `delete` operands (`<scope>.<name>`), a bare call keeping Node's undefined receiver
+ * (`(0,<scope>["<name>"])(...)`), a shorthand property its key (`<name>: <scope>['<name>']`), and `typeof <name>`
+ * (`typeof <typeOf>.<name>`, which reads the global itself, so an absent name is "undefined" rather than a throw).
+ * `kept(name)` names the free names left as written: the realm's own intrinsics, which V8 then resolves through its
+ * global load cache at no cost, the engine's plumbing, and the names the compile site binds itself. A `new X(...)`
+ * callee and a free `Function(...)` call are wrapped (`<construct>(X)`) where `construct` is given. Answers undefined
+ * where name resolution is dynamic in the body itself (a `with` statement, or a direct `eval`), or a name is written
+ * with escapes, and the body keeps the `with` wrapper.
+ */
+export function __substrateGuestNameEdits(ast: any, code: string, kept: (name: string) => boolean, scope: string,
+  construct: ((callee: string) => string) | undefined, typeOf: string): Array<[number, number, string]> | undefined {
+  const outermost: Visible = { has: (name) => !kept(name), bound: () => false };
+  const shadow = (visible: Visible, names: Iterable<string>): Visible => {
+    const own = new Set(names);
+    if (own.size === 0) return visible;
+    return { has: (name) => !own.has(name) && visible.has(name), bound: (name) => own.has(name) || visible.bound(name) };
+  };
   const edits: Array<[number, number, string]> = [];
   let dynamic = false;
   // Whether the code being walked is strict: an ES module's or "use strict" body, a class. A block's function
@@ -616,18 +641,19 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
     }
   };
   // Each shape is told apart by its own text, which names the scope: a read is `<scope>.<name>`, a bare call
-  // `(0,<scope>["<name>"])`, a shorthand property `<name>: <scope>['<name>']`. A body that names the scope itself is
-  // never given to this walker, so every occurrence of it in the result is one of these three, and a function's
-  // text is given back exactly (runtime.ts __substrateUnscopeGuestNames). A name written with escapes
-  // (`\u0073elf`) would come back unescaped: the body declines.
+  // `(0,<scope>["<name>"])`, a shorthand property `<name>: <scope>['<name>']`, a typeof operand `<typeOf>.<name>`. A
+  // body that names either itself is never given to this walker, so every occurrence of them in the result is one of
+  // these four, and a function's text is given back exactly (runtime.ts __substrateUnscopeGuestNames). A name written
+  // with escapes (`\u0073elf`) would come back unescaped: the body declines.
   const read = (name: string): string => `${scope}.${name}`;
   const called = (name: string): string => `(0,${scope}["${name}"])`;
   const shorthand = (name: string): string => `${name}: ${scope}['${name}']`;
+  const typeOfRead = (name: string): string => `${typeOf}.${name}`;
   const edit = (node: any, text: string): void => {
     if (code.slice(node.start, node.end) !== node.name) { dynamic = true; return; }
     edits.push([node.start, node.end, text]);
   };
-  const target = (node: any, visible: Set<string>): void => {
+  const target = (node: any, visible: Visible): void => {
     if (!node || typeof node !== "object") return;
     if (node.type === "Identifier") { if (visible.has(node.name)) edit(node, read(node.name)); return; }
     if (node.type === "ObjectPattern") {
@@ -649,18 +675,21 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
     visit(node, visible);
   };
   // A declaration's own pattern binds its names; only its defaults and computed keys are references.
-  const declared = (node: any, visible: Set<string>): void => {
+  const declared = (node: any, visible: Visible): void => {
     if (!node || typeof node !== "object" || node.type === "Identifier") return;
     if (node.type === "ObjectPattern") { for (const property of node.properties) { if (property.type === "RestElement") declared(property.argument, visible); else { if (property.computed) visit(property.key, visible); declared(property.value, visible); } } return; }
     if (node.type === "ArrayPattern") { for (const element of node.elements) declared(element, visible); return; }
     if (node.type === "AssignmentPattern") { declared(node.left, visible); visit(node.right, visible); return; }
     if (node.type === "RestElement") declared(node.argument, visible);
   };
-  const callee = (node: any, visible: Set<string>): void => {
+  const callee = (node: any, visible: Visible): void => {
     if (node?.type === "Identifier" && visible.has(node.name)) edit(node, called(node.name));
-    else visit(node, visible);
+    // `Function(...)` makes a function as `new Function(...)` does, so its body resolves on the global the same way.
+    else if (construct && node?.type === "Identifier" && node.name === "Function" && !visible.bound("Function")) {
+      edits.push([node.start, node.end, construct("Function")]);
+    } else visit(node, visible);
   };
-  const visit = (node: any, visible: Set<string>): void => {
+  const visit = (node: any, visible: Visible): void => {
     if (dynamic || !node || typeof node !== "object") return;
     if (Array.isArray(node)) { for (const item of node) visit(item, visible); return; }
     if (typeof node.type !== "string") return;
@@ -682,8 +711,8 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
       case "NewExpression":
         if (node.callee?.type === "Identifier") {
           const name = node.callee.name;
-          if (visible.has(name)) edit(node.callee, construct(read(name)));
-          else edits.push([node.callee.start, node.callee.end, construct(code.slice(node.callee.start, node.callee.end))]);
+          if (visible.has(name)) edit(node.callee, construct ? construct(read(name)) : read(name));
+          else if (construct) edits.push([node.callee.start, node.callee.end, construct(code.slice(node.callee.start, node.callee.end))]);
         } else visit(node.callee, visible);
         visit(node.arguments, visible);
         return;
@@ -706,7 +735,13 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
       case "VariableDeclarator": declared(node.id, visible); visit(node.init, visible); return;
       case "AssignmentExpression": target(node.left, visible); visit(node.right, visible); return;
       case "UpdateExpression": target(node.argument, visible); return;
-      case "UnaryExpression": visit(node.argument, visible); return;
+      case "UnaryExpression":
+        if (node.operator === "typeof" && node.argument?.type === "Identifier" && visible.has(node.argument.name)) {
+          edit(node.argument, typeOfRead(node.argument.name));
+          return;
+        }
+        visit(node.argument, visible);
+        return;
       case "FunctionDeclaration": case "FunctionExpression": case "ArrowFunctionExpression": {
         const outer = strict;
         const block = node.body && node.body.type === "BlockStatement";
@@ -717,11 +752,11 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
         if (node.id && node.type !== "FunctionDeclaration") parameters.add(node.id.name);
         for (const parameter of node.params) __substrateBindingNames(parameter, parameters);
         if (node.type !== "ArrowFunctionExpression") parameters.add("arguments");
-        const parameterScope = __substrateShadow(visible, parameters);
+        const parameterScope = shadow(visible, parameters);
         for (const parameter of node.params) declared(parameter, parameterScope);
         const bound = new Set<string>(parameters);
         if (block) { hoisted(node.body.body, bound, !strict, true); __substrateLexicalNames(node.body.body, bound); }
-        const inner = __substrateShadow(visible, bound);
+        const inner = shadow(visible, bound);
         if (block) for (const statement of node.body.body) visit(statement, inner);
         else visit(node.body, inner);
         strict = outer;
@@ -730,7 +765,7 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
       case "BlockStatement": {
         const bound = new Set<string>();
         __substrateLexicalNames(node.body, bound);
-        const inner = __substrateShadow(visible, bound);
+        const inner = shadow(visible, bound);
         for (const statement of node.body) visit(statement, inner);
         return;
       }
@@ -739,7 +774,7 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
         const bound = new Set<string>();
         hoisted(node.body, bound, false, true);
         __substrateLexicalNames(node.body, bound);
-        const inner = __substrateShadow(visible, bound);
+        const inner = shadow(visible, bound);
         for (const statement of node.body) visit(statement, inner);
         return;
       }
@@ -747,7 +782,7 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
         const outer = strict;
         const bound = new Set<string>();
         if (node.id) bound.add(node.id.name);
-        const inner = __substrateShadow(visible, bound);
+        const inner = shadow(visible, bound);
         // The heritage is evaluated in strict code too, inside the class's own scope.
         strict = true;
         visit(node.superClass, inner);
@@ -759,24 +794,24 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
         // The parameter's defaults see the parameter alone, never the body's declarations, as a function's do.
         const parameters = new Set<string>();
         __substrateBindingNames(node.param, parameters);
-        if (node.param) declared(node.param, __substrateShadow(visible, parameters));
+        if (node.param) declared(node.param, shadow(visible, parameters));
         const bound = new Set<string>(parameters);
         __substrateLexicalNames(node.body.body, bound);
-        const inner = __substrateShadow(visible, bound);
+        const inner = shadow(visible, bound);
         for (const statement of node.body.body) visit(statement, inner);
         return;
       }
       case "ForStatement": {
         const bound = new Set<string>();
         if (node.init && node.init.type === "VariableDeclaration" && node.init.kind !== "var") for (const declarator of node.init.declarations) __substrateBindingNames(declarator.id, bound);
-        const inner = __substrateShadow(visible, bound);
+        const inner = shadow(visible, bound);
         visit(node.init, inner); visit(node.test, inner); visit(node.update, inner); visit(node.body, inner);
         return;
       }
       case "ForInStatement": case "ForOfStatement": {
         const bound = new Set<string>();
         if (node.left && node.left.type === "VariableDeclaration" && node.left.kind !== "var") for (const declarator of node.left.declarations) __substrateBindingNames(declarator.id, bound);
-        const inner = __substrateShadow(visible, bound);
+        const inner = shadow(visible, bound);
         if (node.left && node.left.type === "VariableDeclaration") visit(node.left, inner);
         else target(node.left, inner);
         visit(node.right, inner);
@@ -787,7 +822,7 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
         visit(node.discriminant, visible);
         const bound = new Set<string>();
         for (const switchCase of node.cases) __substrateLexicalNames(switchCase.consequent, bound);
-        const inner = __substrateShadow(visible, bound);
+        const inner = shadow(visible, bound);
         for (const switchCase of node.cases) { visit(switchCase.test, inner); for (const statement of switchCase.consequent) visit(statement, inner); }
         return;
       }
@@ -803,6 +838,6 @@ export function __substrateGuestNameEdits(ast: any, code: string, names: Readonl
   const top = new Set<string>();
   hoisted(ast.body, top, !strict, true);
   __substrateLexicalNames(ast.body, top);
-  visit(ast.body, __substrateShadow(new Set(names), top));
+  visit(ast.body, shadow(outermost, top));
   return dynamic ? undefined : edits;
 }

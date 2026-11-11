@@ -10,12 +10,20 @@
  * to a lookup; to a query it is c-ares's error for it (`ESERVFAIL`, `EREFUSED`, `ENOTIMP`, `EFORMERR`, `ETIMEOUT`,
  * `ECONNREFUSED`). `getServers()` is the process's `/etc/resolv.conf`'s nameservers. A process with no socket calls
  * can ask no server: a name not in its hosts file is `EAI_AGAIN`.
+ *
+ * A name is the one Node hands its libraries (`to_ascii`), checked as they check it before anything is sent: one
+ * musl's getaddrinfo refuses (empty, 255 bytes or more, an empty label, a label over 63 bytes) is `ENOTFOUND` to a
+ * lookup, and one c-ares refuses is `EBADNAME` to a query (ADR-0009 §3).
  */
 import { heldWork } from '../host-globals';
+import { queueGuestNextTick } from '../guest-loop';
+import { adaToAscii } from '../node-lib/binding/ada_idna';
+import { libRequire } from '../node-lib/require-hook';
 import { AsyncLocalStorage } from './async_hooks';
 import {
   callingSockets, captureCallingSockets, ipv6Text, linux, socketAddress, socketAddressBuffer, type TreeSockets,
 } from '../host-sockets';
+import { setTimeout, clearTimeout, setImmediate } from '../system';
 
 // DNS lookup callback type
 type LookupCallback = (err: Error | null, address?: string, family?: number) => void;
@@ -140,16 +148,89 @@ function serverAddress(server: string, sockets: TreeSockets | undefined): { fami
   return v6 ? { family: linux.AF_INET6, address: v6 } : undefined;
 }
 
-/** DNS's record types this resolver reads the data of; every other type a query asks for is answered by its rcode alone. */
+/**
+ * The record types a query admits (the types Node's `dns.resolve` takes) and the type number each asks for: the one
+ * table both admission (`checkedRrtype`) and the question read. Only A and AAAA records' data are read; any other
+ * type is answered by its rcode alone.
+ */
 const RECORD_TYPES: Record<string, number> = {
   A: 1, NS: 2, CNAME: 5, SOA: 6, PTR: 12, MX: 15, TXT: 16, AAAA: 28, SRV: 33, NAPTR: 35, CAA: 257, TLSA: 52, ANY: 255,
 };
 
+/**
+ * The name Node hands its resolver libraries (ADR-0009 §3): Ada's own `ada::idna::to_ascii` of what it was given
+ * (`cares_wrap.cc` 1976, 1797), cut at its first NUL, since Node passes it to them as `name.c_str()`.
+ */
+function asciiName(hostname: string): string {
+  const ascii = adaToAscii(hostname);
+  const nul = ascii.indexOf('\0');
+  return nul < 0 ? ascii : ascii.slice(0, nul);
+}
+
+/** Node's own `isIP` (`internal/net.js`), which `lib/dns.js` answers a literal by. */
+function nodeIsIP(hostname: string): number {
+  return (libRequire('internal/net') as { isIP(value: string): number }).isIP(hostname);
+}
+
+/** Node's own validators (`internal/validators.js`). */
+const nodeValidators = (): {
+  validateStringWithoutNullBytes(value: unknown, name: string): void;
+  validateString(value: unknown, name: string): void;
+  validateOneOf(value: unknown, name: string, oneOf: readonly unknown[]): void;
+  validateBoolean(value: unknown, name: string): void;
+} => libRequire('internal/validators') as ReturnType<typeof nodeValidators>;
+
+/** A lookup's name as `lib/dns.js` checks it (`validateStringWithoutNullBytes`). */
+function validateHostname(hostname: unknown): void {
+  nodeValidators().validateStringWithoutNullBytes(hostname, 'hostname');
+}
+
+/** A query's name as Node's resolver checks it, before anything converts it (`validateString(name, 'name')`). */
+function validateQueryName(name: unknown): void {
+  nodeValidators().validateString(name, 'name');
+}
+
+/**
+ * A lookup's options, checked before any answer (ADR-0009 §3), in Node's order: the family asked (4, 6, or 0 for
+ * either), by Node's own `validateOneOf` on 0, 4 and 6, then `all` and then `verbatim` by Node's own `validateBoolean`
+ * (`lib/dns.js` 175-197, `internal/dns/promises.js` 220-232). The one difference is the door's, as Node's: the callback
+ * door also takes the family names `'IPv4'` and `'IPv6'` in an options object, the promise door does not.
+ */
+function lookupOptions(given: number | LookupOptions | undefined, door: 'callback' | 'promise'): { options: LookupOptions; requested: number } {
+  if (typeof given === 'number') {
+    nodeValidators().validateOneOf(given, 'family', [0, 4, 6]);
+    return { options: { family: given }, requested: given + 0 };
+  }
+  const options = typeof given === 'object' && given ? given : {};
+  let requested = 0;
+  if (door === 'callback' && options.family === 'IPv4') requested = 4;
+  else if (door === 'callback' && options.family === 'IPv6') requested = 6;
+  else if (options.family != null) {
+    nodeValidators().validateOneOf(options.family, 'options.family', [0, 4, 6]);
+    requested = (options.family as number) + 0;
+  }
+  const flags = options as { all?: unknown; verbatim?: unknown };
+  if (flags.all != null) nodeValidators().validateBoolean(flags.all, 'options.all');
+  if (flags.verbatim != null) nodeValidators().validateBoolean(flags.verbatim, 'options.verbatim');
+  return { options, requested };
+}
+
+/**
+ * A name's labels as its query carries them (ADR-0009 §3), or undefined for a name the library refuses: one trailing
+ * dot is the root's; an empty label anywhere else, a label over 63 bytes, or a name of more than `limit` bytes without
+ * that dot is refused, as musl's `res_mkquery` (limit 253) and c-ares's `ares_split_dns_name` (limit 255) refuse it.
+ * The root is no labels.
+ */
+function nameLabels(ascii: string, limit: number): Uint8Array[] | undefined {
+  const name = ascii.endsWith('.') ? ascii.slice(0, -1) : ascii;
+  if (name === '') return [];
+  if (name.length > limit) return undefined;
+  const labels = name.split('.').map(label => new TextEncoder().encode(label));
+  return labels.every(label => label.byteLength > 0 && label.byteLength <= 63) ? labels : undefined;
+}
+
 /** A query message (RFC 1035 §4.1): one question, recursion desired. */
-function queryMessage(id: number, name: string, type: number): Uint8Array {
-  let ascii = name.replace(/\.$/u, '');
-  if (/[^\x00-\x7f]/u.test(ascii)) { try { ascii = new URL(`http://${ascii}/`).hostname; } catch { /* the name as given */ } }
-  const labels = ascii.split('.').filter(label => label.length > 0).map(label => new TextEncoder().encode(label).subarray(0, 63));
+function queryMessage(id: number, labels: readonly Uint8Array[], type: number): Uint8Array {
   const length = 12 + labels.reduce((total, label) => total + 1 + label.byteLength, 0) + 1 + 4;
   const out = new Uint8Array(length);
   const view = new DataView(out.buffer);
@@ -248,7 +329,7 @@ const QUERY_FAILURES: Record<number, string> = { 1: 'EFORMERR', 2: 'ESERVFAIL', 
  * A question to the process's resolver: each server in order, `attempts` rounds, until one answers NOERROR or
  * NXDOMAIN; otherwise the last failure, as c-ares names it.
  */
-async function ask(sockets: TreeSockets | undefined, config: ResolverConfig, hostname: string, type: number): Promise<{ rcode: number; addresses: string[] } | { failed: string }> {
+async function ask(sockets: TreeSockets | undefined, config: ResolverConfig, labels: readonly Uint8Array[], type: number): Promise<{ rcode: number; addresses: string[] } | { failed: string }> {
   if (!sockets) return { failed: 'ECONNREFUSED' };
   // A resolv.conf naming no server is the local one, as glibc and c-ares take it.
   const servers = (config.servers.length ? config.servers : ['127.0.0.1'])
@@ -257,7 +338,7 @@ async function ask(sockets: TreeSockets | undefined, config: ResolverConfig, hos
   for (let attempt = 0; attempt < config.attempts; attempt += 1) {
     for (const server of servers) {
       const id = (Math.random() * 0x10000) & 0xffff;
-      const outcome = await askServer(sockets, server, queryMessage(id, hostname, type), id, type, config.timeoutMs);
+      const outcome = await askServer(sockets, server, queryMessage(id, labels, type), id, type, config.timeoutMs);
       if ('answer' in outcome) {
         if (!SERVER_FAILURES.has(outcome.answer.rcode)) return outcome.answer;
         failed = QUERY_FAILURES[outcome.answer.rcode] ?? 'ESERVFAIL';
@@ -272,7 +353,8 @@ async function ask(sockets: TreeSockets | undefined, config: ResolverConfig, hos
 type ResolverDoor = () => ResolverConfig;
 
 /**
- * Node's getaddrinfo shape: the process's hosts file, `localhost`, then its resolver.
+ * Node's `dns.lookup` (ADR-0009 §3): Node's own front, then, until the libc's `getaddrinfo` is delegated to, the
+ * process's hosts file and then its resolver. The engine answers no name itself.
  */
 export function lookup(
   hostname: string,
@@ -304,33 +386,39 @@ function lookupWithHosts(
   callback?: LookupCallback | LookupAllCallback,
 ): void {
   const given = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
-  const options = typeof optionsOrCallback === 'number' ? { family: optionsOrCallback } : typeof optionsOrCallback === 'object' && optionsOrCallback ? optionsOrCallback : {};
   if (typeof given !== 'function') throw Object.assign(new TypeError('The callback argument must be a function'), { code: 'ERR_INVALID_ARG_TYPE' });
   // Node's net.js makes a listener's handle in this callback (listen(port, host)): it runs in the caller's process.
   const cb = inCallersContext(given as LookupCallback) as LookupCallback | LookupAllCallback;
   const sockets = callingSockets();
-  if (hostname && typeof hostname !== 'string') throw Object.assign(new TypeError('The hostname argument must be a string'), { code: 'ERR_INVALID_ARG_TYPE' });
-  const requested = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family ?? 0;
-  if (![0, 4, 6].includes(requested)) throw Object.assign(new TypeError(`Invalid address family: ${requested}`), { code: 'ERR_INVALID_ARG_VALUE' });
+  if (hostname) validateHostname(hostname);
+  const { options, requested } = lookupOptions(typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback, 'callback');
+  // Node's own answers (lib/dns.js 204-223), on a later tick: an empty name is null, and a string Node's isIP takes
+  // is itself, in its family.
+  if (!hostname) {
+    queueGuestNextTick(() => {
+      if (options.all) (cb as LookupAllCallback)(null, []);
+      else (cb as unknown as (err: null, address: null, family: number) => void)(null, null, requested === 6 ? 6 : 4);
+    });
+    return;
+  }
+  const literal = nodeIsIP(hostname);
+  if (literal) {
+    queueGuestNextTick(() => {
+      if (options.all) (cb as LookupAllCallback)(null, [{ address: hostname, family: literal }]);
+      else (cb as LookupCallback)(null, hostname, literal);
+    });
+    return;
+  }
 
   answerLater(() => {
-    if (!hostname) {
-      if (options.all) (cb as LookupAllCallback)(null, []);
-      else (cb as LookupCallback)(null, undefined, requested === 6 ? 6 : 4);
-      return;
-    }
-    // An IP literal is its own answer, in its own family, as Node's lookup short-circuits it: `::` must stay IPv6.
-    const family = literalFamily(hostname);
-    if (family) {
-      const address = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
-      if (options.all) (cb as LookupAllCallback)(null, [{ address, family }]);
-      else (cb as LookupCallback)(null, address, family);
-      return;
-    }
+    // The name getaddrinfo is given (Node's to_ascii); musl refuses an empty one, or one of 255 bytes or more, before
+    // it reads any source (ADR-0009 §3).
+    const ascii = asciiName(hostname);
+    if (ascii === '' || ascii.length >= 255) { cb(notFound(hostname)); return; }
     // hosts(5) belongs to the requesting process. Preserve the actual addresses and families,
     // including aliases, rather than making every held name an IPv4/IPv6 wildcard.
     let fileAddresses: Array<{ address: string; family: number }> | undefined;
-    try { fileAddresses = readHosts ? hostsAddresses(readHosts(), hostname) : undefined; }
+    try { fileAddresses = readHosts ? hostsAddresses(readHosts(), ascii) : undefined; }
     catch (cause) {
       // nss_files reports an unreadable hosts source as unavailable; lookup continues with
       // the next resolver source. Kernel-owner/protocol, EIO transport and programming failures still surface.
@@ -350,21 +438,17 @@ function lookupWithHosts(
       else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
       return;
     }
-    // localhost is the process's own loopback (RFC 6761), whatever its resolver holds.
-    if (hostname.toLowerCase().replace(/\.$/, '') === 'localhost') {
-      const families = requested ? [requested] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
-      const addresses = families.map(family => ({ address: family === 6 ? '::1' : '127.0.0.1', family }));
-      if (options.all) (cb as LookupAllCallback)(null, addresses);
-      else (cb as LookupCallback)(null, addresses[0].address, addresses[0].family);
-      return;
-    }
+    // A name res_mkquery will not encode (the root, an empty label, a label over 63 bytes, more than 253 bytes) is no
+    // answer from DNS, and getaddrinfo's EAI_NONAME: nothing is sent (ADR-0009 §3).
+    const labels = nameLabels(ascii, 253);
+    if (!labels?.length) { cb(notFound(hostname)); return; }
     // The resolver: A, then AAAA (or as `order` puts them), as getaddrinfo asks for an unspecified family.
     const families: Array<4 | 6> = requested ? [requested as 4 | 6] : options.order === 'ipv6first' ? [6, 4] : [4, 6];
     const config = resolver();
     const asked = (async () => {
       const answers: Array<{ rcode: number; addresses: string[] }> = [];
       for (const family of families) {
-        const answer = await ask(sockets, config, hostname, family === 6 ? 28 : 1);
+        const answer = await ask(sockets, config, labels, family === 6 ? 28 : 1);
         if ('failed' in answer) return undefined;
         answers.push(answer);
       }
@@ -390,12 +474,16 @@ function lookupWithHosts(
  * types is not read: a held name answers ENODATA for them.
  */
 function query(resolver: ResolverDoor, hostname: string, rrtype: string, given: ResolveCallback): void {
+  validateQueryName(hostname);
   const syscall = `query${rrtype.charAt(0)}${rrtype.slice(1).toLowerCase()}`;
-  const type = RECORD_TYPES[rrtype] ?? 1;
+  const type = RECORD_TYPES[rrtype]!;
   const callback = inCallersContext(given);
   const sockets = callingSockets();
   const config = resolver();
-  answerLater(() => ask(sockets, config, hostname, type)
+  // A name c-ares will not encode is its ARES_EBADNAME, Node's EBADNAME: nothing is sent (ADR-0009 §3).
+  const labels = nameLabels(asciiName(hostname), 255);
+  if (!labels) { answerLater(() => callback(queryFailed(hostname, syscall, 'EBADNAME'))); return; }
+  answerLater(() => ask(sockets, config, labels, type)
     .then((outcome) => {
       if ('failed' in outcome) callback(queryFailed(hostname, syscall, outcome.failed));
       else if (outcome.rcode === 3) callback(notFound(hostname, syscall));
@@ -404,12 +492,17 @@ function query(resolver: ResolverDoor, hostname: string, rrtype: string, given: 
     }));
 }
 
-/** The record types Node's `dns.resolve` takes; any other is `ERR_INVALID_ARG_VALUE`, thrown as Node throws it. */
-const RRTYPES = new Set(['A', 'AAAA', 'ANY', 'CAA', 'CNAME', 'MX', 'NAPTR', 'NS', 'PTR', 'SOA', 'SRV', 'TLSA', 'TXT']);
+/**
+ * A record type as Node's resolver admits it (`callback_resolver.js` 85-105, `promises.js` 353-371): a string, by Node's
+ * own `validateString`, that is one of `RECORD_TYPES`' own keys, else Node's own `ERR_INVALID_ARG_VALUE`.
+ */
 function checkedRrtype(rrtype: unknown): string {
-  if (typeof rrtype !== 'string') throw Object.assign(new TypeError(`The "rrtype" argument must be of type string. Received ${typeof rrtype}`), { code: 'ERR_INVALID_ARG_TYPE' });
-  if (!RRTYPES.has(rrtype)) throw Object.assign(new TypeError(`The argument 'rrtype' is invalid. Received '${rrtype}'`), { code: 'ERR_INVALID_ARG_VALUE' });
-  return rrtype;
+  nodeValidators().validateString(rrtype, 'rrtype');
+  if (!Object.hasOwn(RECORD_TYPES, rrtype as string)) {
+    const { codes } = libRequire('internal/errors') as { codes: { ERR_INVALID_ARG_VALUE: new (name: string, value: unknown) => Error } };
+    throw new codes.ERR_INVALID_ARG_VALUE('rrtype', rrtype);
+  }
+  return rrtype as string;
 }
 
 /** The resolve family over one resolver. */
@@ -482,21 +575,33 @@ export function getDefaultResultOrder(): string {
 /** The promise forms over one lookup and one resolve family. */
 function promisesOver(doLookup: typeof lookup, resolvers: ReturnType<typeof resolveFunctions>, servers: { get(): string[]; set(servers: string[]): void }) {
   const promises = {
-    lookup: (hostname: string, options?: number | LookupOptions) => new Promise((resolve, reject) => {
-      if (typeof options === 'object' && options?.all) {
-        doLookup(hostname, options, ((err: Error | null, addresses?: Array<{ address: string; family: number }>) => {
+    lookup: (hostname: string, options?: number | LookupOptions) => {
+      // Node's checks first (internal/dns/promises.js 197-239): the name, then the family.
+      if (hostname) validateHostname(hostname);
+      const { requested: family } = lookupOptions(options, 'promise');
+      return new Promise((resolve, reject) => {
+        // Node's own answers (internal/dns/promises.js 138-150): an empty name is null, a literal is itself.
+        const all = typeof options === 'object' && options?.all === true;
+        if (!hostname) { resolve(all ? [] : { address: null, family: family === 6 ? 6 : 4 }); return; }
+        const literal = nodeIsIP(hostname);
+        if (literal) { const result = { address: hostname, family: literal }; resolve(all ? [result] : result); return; }
+        if (all) {
+          doLookup(hostname, options, ((err: Error | null, addresses?: Array<{ address: string; family: number }>) => {
+            if (err) reject(err);
+            else resolve(addresses || []);
+          }) as LookupAllCallback);
+          return;
+        }
+        doLookup(hostname, options ?? {}, (err, address, family) => {
           if (err) reject(err);
-          else resolve(addresses || []);
-        }) as LookupAllCallback);
-        return;
-      }
-      doLookup(hostname, options ?? {}, (err, address, family) => {
-        if (err) reject(err);
-        else resolve({ address, family });
+          else resolve({ address, family });
+        });
       });
-    }),
+    },
     resolve: (hostname: string, rrtype = 'A') => {
+      // Node's checks first (internal/dns/promises.js 341-346): the record type, then the name.
       checkedRrtype(rrtype);
+      validateQueryName(hostname);
       return new Promise<string[]>((promiseResolve, promiseReject) => {
         resolvers.resolve(hostname, rrtype, (err, addresses) => {
           if (err) promiseReject(err);
@@ -505,9 +610,12 @@ function promisesOver(doLookup: typeof lookup, resolvers: ReturnType<typeof reso
       });
     },
     resolve4: (hostname: string) => promises.resolve(hostname),
-    resolve6: (hostname: string) => new Promise<string[]>((resolve, reject) => {
-      resolvers.resolve6(hostname, (err, addresses) => { if (err) reject(err); else resolve(addresses || []); });
-    }),
+    resolve6: (hostname: string) => {
+      validateQueryName(hostname);
+      return new Promise<string[]>((resolve, reject) => {
+        resolvers.resolve6(hostname, (err, addresses) => { if (err) reject(err); else resolve(addresses || []); });
+      });
+    },
     reverse: (ip: string) => new Promise<string[]>((resolve, reject) => {
       reverse(ip, (err, hostnames) => { if (err) reject(err); else resolve(hostnames || []); });
     }),

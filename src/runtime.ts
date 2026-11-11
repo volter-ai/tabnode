@@ -15,6 +15,7 @@ import { VirtualFS } from './virtual-fs';
 import { rememberCompiledSource } from './error-source';
 import { attachVmScriptEnvironment, VmScriptPreparationCache } from './vm-script-state';
 import type { VmScriptObserver, VmScriptPhase } from './vm-script-state';
+import { dlopenNative } from './native-addon';
 import { startGuestLoop, withGuestExecution, guestExecutionActiveMs, enableGuestEntryAccount, guestEntryAccount, guestEntryKinds } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
 import { installHttpParserModule } from './http-parser-module';
@@ -82,7 +83,7 @@ import { createSqliteModule } from './node-lib/sqlite';
 import { registerHandle, unrefHandle, releaseHandle, ownedRun } from './node-lib/binding/handles';
 import * as rollupShim from './shims/rollup';
 import * as v8Shim from './shims/v8';
-import * as tlsShim from './shims/tls';
+import { lazyModule } from './node-lib/lazy';
 import * as http2Shim from './shims/http2';
 import * as clusterShim from './shims/cluster';
 import * as replShim from './shims/repl';
@@ -94,11 +95,17 @@ import { createWasiModule, type WasiHostFs, type WasiModule } from './shims/wasi
 
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
 import { transformEsmToCjsSimple, setNodeLowering, __cjsExports, __cjsObject, __substrateHasEsmSyntax, __substrateGuestNameEdits } from './code-transforms';
+import { guestScopesOf, guestHolds, leftToRealm, isEnginePlumbing, MODULE_SCOPE_NAMES, MODULE_WRAPPER_PARAMETERS, OBJECT_PROTOTYPE_NAMES } from './guest-scope';
 import { applySourceEdits } from './source-edits';
 import { canStripTypes, stripModuleTypes, transformsTypes } from './node-lib/typescript-module';
 import * as acorn from 'acorn';
 
 import { observerDescriptor, observerHasOwn, observerRecord, observerWrite, observerFreeze } from './module-observer-records';
+import { htmlAtob as atob } from './node-lib/binding/buffer';
+import { availableParallelism as osAvailableParallelism } from './shims/os';
+import { clearTimeout, engineTrace, monotonicMs, onKernel, performance, setImmediate, setTimeout, useTreeSystem } from './system';
+/** The realm's console, taken when this module loads: a page's or a library host's; a kernel's host program's realm has none. */
+const realmConsole = (globalThis as { console?: Console }).console;
 
 /**
  * A prepared root's native-binding map (the substrate's ADR-0094), given to the engine once by the realm's prelude
@@ -159,6 +166,17 @@ const __substrateGuestGlobals = new WeakMap<Process, Record<string, unknown>>();
 const __substrateAsyncFunction = (async function() {}).constructor;
 const __substrateFunctionScope = Function("__substrateFunctionGlobals", "__substrateFunctionSource", "__dynamicImport", "with (__substrateFunctionGlobals) { return eval('(' + __substrateFunctionSource + ')'); }");
 /**
+ * A function's source made where its free names resolve on the process's global (ADR-0015 §2): inside `with` of the
+ * process's global scope object, which answers the names the global holds and shadows the realm's others.
+ */
+function __substrateMadeFunction(process: Process, source: string, dynamicImport?: unknown): Function {
+  const scope = __substrateGuestScopes(process).withGlobal;
+  if (typeof dynamicImport !== "function") return __substrateFunctionScope(scope, source) as Function;
+  // Rewritten as an expression statement and unwrapped again, so the parser reads a function expression.
+  const rewritten = __substrateRewriteDynamicImportsInScript(`(${source})`);
+  return __substrateFunctionScope(scope, rewritten.slice(1, -1), dynamicImport) as Function;
+}
+/**
  * `import()` inside a function a program MAKES (`new Function('path', 'return import(path)')`) is the loader's of
  * the module that made it, as Node's is. The rewrite of a module's `import()` is made from its syntax tree and so
  * never reaches source held in a string: such a function ran the browser's own `import()`, which has no view of
@@ -173,10 +191,11 @@ function __substrateGuestConstructor(Constructor: unknown, process: Process, dyn
   return new Proxy(Constructor as object, { construct(target, args) {
     const compiled = Reflect.construct(target as new (...args: unknown[]) => unknown, args);
     const source = String(compiled);
-    if (typeof dynamicImport !== "function") return __substrateFunctionScope(__substrateGuestGlobal(process), source);
-    // Rewritten as an expression statement and unwrapped again, so the parser reads a function expression.
-    const rewritten = __substrateRewriteDynamicImportsInScript(`(${source})`);
-    return __substrateFunctionScope(__substrateGuestGlobal(process), rewritten.slice(1, -1), dynamicImport);
+    return __substrateMadeFunction(process, source, dynamicImport);
+  }, apply(_target, _self, args) {
+    // `Function(...)` called makes the same function as `new Function(...)` (the rewrite wraps a free call of it).
+    const source = String(Reflect.apply(Constructor as (...args: unknown[]) => unknown, undefined, args));
+    return __substrateMadeFunction(process, source, dynamicImport);
   } });
 }
 /**
@@ -213,12 +232,13 @@ function __substrateGuestVm(process: Process): unknown {
   const run = (code: string): unknown => {
     // Preserve the original argument order: acquire the actual guest-global
     // scope, then perform the single existing code coercion.
-    const { globals, source } = observer.phase('setup', () => {
+    const { globals, scope, source } = observer.phase('setup', () => {
       const globals = __substrateGuestGlobal(process);
-      return { globals, source: String(code) };
+      return { globals, scope: __substrateGuestScopes(process).withGlobal, source: String(code) };
     });
     observer.run('thisContext', source.length);
-    return observer.phase('eval', () => __substrateScriptScope(globals, source));
+    // A script's top-level `this` is its context's global, as in Node.
+    return observer.phase('eval', () => __substrateScriptScope.call(globals, scope, source));
   };
   class Script extends vmShim.Script {
     constructor(code: string, options?: object) {
@@ -227,7 +247,11 @@ function __substrateGuestVm(process: Process): unknown {
     }
     override runInThisContext(_options?: object): unknown { return run((this as unknown as { code: string }).code); }
   }
-  vm = { ...vmShim, Script, runInThisContext: (code: string, _options?: object) => run(code),
+  // `vm.compileFunction` makes its function in the calling process's context, as the function a guest's `Function`
+  // makes is (ADR-0015 §3).
+  const compileFunction = (code: string, params?: readonly string[], _options?: object): unknown =>
+    __substrateMadeFunction(process, `function (${(params ?? []).join(', ')}) {\n${String(code)}\n}`);
+  vm = { ...vmShim, Script, compileFunction, runInThisContext: (code: string, _options?: object) => run(code),
     runInNewContext: (code: string, context?: object, options?: object) => new Script(code, options).runInNewContext(context, options),
     runInContext: (code: string, context: object, options?: object) => new Script(code, options).runInContext(context, options),
     default: undefined };
@@ -283,7 +307,23 @@ function __substrateScriptName(resolvedPath: string): string | undefined {
 }
 /** A body whose guest names are rewritten where free (`__substrateGuestNameEdits`): it runs in Node's own wrapper form, no `with`. */
 const __substrateGuestScopedMarker = '/*__substrate_guest_scoped__*/';
-const __substrateGuestNamePattern = new RegExp(`\\b(?:new|eval|with|${['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'URL', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'MessageEvent', 'WebAssembly', 'window', 'document', 'location', 'performance'].join('|')})\\b`, 'u');
+/** Words a body may hold that are never a free name the rewrite edits: the language's keywords but `new`, `eval` and `with`, which it acts on. */
+const __substrateKeywords = new Set(['break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof', 'let', 'null', 'return', 'static', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'yield', 'async', 'await', 'of', 'get', 'set']);
+/** A body's free names that resolve on the process's global (ADR-0015): every one but the realm's own and the wrapper's. */
+const __substrateKeptName = (name: string): boolean => leftToRealm(name) || MODULE_SCOPE_NAMES.has(name);
+/**
+ * Whether a body may hold something the rewrite edits or declines on: some identifier-like word of its text (strings
+ * and comments included, so the answer errs toward parsing) is not a keyword and not left as written, or is `eval` or
+ * `Function`, or the text holds an escape. A body made only of the wrapper's names, the realm's and keywords is not
+ * parsed.
+ */
+function __substrateMayNameGuest(code: string): boolean {
+  if (code.includes('\\')) return true;
+  for (const [word] of code.matchAll(/[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*/gu)) {
+    if (word === 'eval' || word === 'Function' || (!__substrateKeywords.has(word) && !__substrateKeptName(word))) return true;
+  }
+  return false;
+}
 /** Whether a prepared body carries the mark, after an ES module's own mark where it has one. */
 function __substrateGuestScoped(code: string): boolean {
   return code.startsWith(__substrateGuestScopedMarker) || (code.startsWith(__substrateModuleMarker) && code.startsWith(__substrateGuestScopedMarker, __substrateModuleMarker.length));
@@ -308,17 +348,17 @@ function __substrateScopeGlobalCalls(source: string): string {
   const code = __substrateUnclaimGuestScoped(source);
   // A body that names the scope or the constructor wrap itself keeps the `with` wrapper: a function's text is given
   // back by reading those names as this pass's own (__substrateUnscopeGuestNames).
-  const reserved = code.includes('__substrateGuestScope') || code.includes('__substrateGuestConstructor');
+  const reserved = code.includes('__substrateGuestScope') || code.includes('__substrateGuestConstructor') || code.includes('__substrateGuestTypeof');
   // No guest name, no constructor, nothing dynamic and no escaped name: nothing to rewrite, and Node's wrapper
   // form as it stands.
-  if (!reserved && !code.includes('\\u') && !__substrateGuestNamePattern.test(code)) return __substrateMarkGuestScoped(code);
+  if (!reserved && !__substrateMayNameGuest(code)) return __substrateMarkGuestScoped(code);
   let ast;
   try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true }); }
   catch { return code; }
   // The making module's dynamic import goes with its process (Codex 91): a constructor that loads a module at
   // construction (a Worker's module, a lazy class) imports from the module that wrote `new`, in either rewrite.
   const construct = (callee: string): string => "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + __substrateGuestConstructArgs + "):" + callee + ")";
-  const guestEdits = reserved ? undefined : __substrateGuestNameEdits(ast, code, new Set(__substrateGuestScopeNames), '__substrateGuestScope', construct);
+  const guestEdits = reserved ? undefined : __substrateGuestNameEdits(ast, code, __substrateKeptName, '__substrateGuestScope', construct, '__substrateGuestTypeof');
   if (guestEdits) return __substrateMarkGuestScoped(applySourceEdits(code, guestEdits.sort((a, b) => b[0] - a[0])));
   // A `with` statement or a direct eval in the body, whose names resolve at run time, an escaped guest name, or the
   // reserved names above: the body keeps the `with` wrapper and the old rewrite below.
@@ -421,18 +461,22 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   // A name the guest has not touched is answered by what stands behind it (`standing`, below): the engine's own
   // object for a name it provides, the realm's otherwise. It was three slots and five special cases, and a trap
   // that lacked a case answered from behind the guest's own write (an assignment to `atob` was ignored).
-  // The realm's `document`, `window` and `location` are no globals of Node's and a guest starts without them, which
-  // is the state of a name it deleted: one it then makes (a DOM test setup's `globalThis.window = dom.window`) is its
-  // own like any other.
-  const removed = new Set<string | symbol>(['document', 'window', 'location']);
+  // What stands behind is only what Node's global holds (ADR-0015 §1, `guestHolds`): Node's names, ECMAScript's and
+  // the engine's plumbing. The realm's other names (`window`, `document`, `self`, `importScripts`, `XMLHttpRequest`,
+  // `localStorage`, a worker's `postMessage` and `onmessage`) are no globals of Node's, and a guest starts without
+  // them as it would after deleting them: one it then makes (a DOM test setup's `globalThis.window = dom.window`) is
+  // its own like any other.
+  const removed = new Set<string | symbol>();
+  /** Whether a name stands behind the guest's global, read from the realm or answered by the engine. */
+  const standsBehind = (key: string | symbol): boolean => typeof key !== 'string' || guestHolds(key);
   /** What a guest assigned to `process`, where it is not the run's own process object (the `set` trap). */
   let assignedProcess: { value: unknown } | undefined;
   const boundGlobals = new Map<string | symbol, { original: unknown; bound: unknown }>();
+  let processTimers: ReturnType<typeof guestTimerFunctions> | undefined;
   // A key the guest defined that the host would not take (a name the host
   // holds non-configurable, `navigator` under a worker's authority) lives on
   // the proxy's own target, and is this guest's from then on.
   const shadowed = (target: object, key: string | symbol): boolean => Reflect.getOwnPropertyDescriptor(target, key) !== undefined;
-  const hostAtStart = new Set<string | symbol>(Reflect.ownKeys(host));
   const localGlobals = Object.create(null);
   Object.defineProperty(localGlobals, "Promise", { value: intrinsicPromise, writable: true, configurable: true, enumerable: false });
   // Node's own navigator, scoped to this process; never expose WorkerNavigator.
@@ -445,22 +489,9 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
         value, writable: true, configurable: true, enumerable: false,
       }) },
   });
-  // Guest-written globals are process-local, including absent Node globals.
-  // Assigning global.Worker/globalThis.self must create the corresponding
-  // bare binding without exposing or mutating the browser worker authority.
-  Object.defineProperties(localGlobals, {
-    Worker: { value: undefined, writable: true, configurable: true, enumerable: false },
-    self: { value: undefined, writable: true, configurable: true, enumerable: false },
-  });
-  // These stand-ins are how the realm's own names are kept from a guest, and are no globals of Node's: they are not
-  // enumerated. One a guest assigns becomes its global and is enumerated from then on (the `set` trap below).
-  const guestAssigned = new Set<string | symbol>();
-  // Browser worker messaging is host authority, not a Node global. A guest's
-  // adapter may define its own names without hijacking the host transport.
-  const browserTransportGlobals = ['postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent'];
-  for (const key of browserTransportGlobals) Object.defineProperty(localGlobals, key, {
-    value: undefined, writable: true, configurable: true, enumerable: false,
-  });
+  // The realm's `Worker`, `self` and worker messaging (`postMessage`, `onmessage`, `close`, `addEventListener`) are
+  // host authority and no globals of Node's: they stand behind nothing (`standsBehind`), and a guest that assigns one
+  // makes its own, process-local, leaving the realm's untouched.
   // The names Node gives as accessors are the guest's own accessors from the start, as `navigator` is: each answers
   // what stands behind the name until its setter is called, and from then what was assigned. Being properties of
   // the target, a program may read their descriptor, define it back, change an attribute or delete them as on any
@@ -473,19 +504,38 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       configurable: true, enumerable: shape!.enumerable,
     });
   }
-  const isLocalGlobal = (key: string | symbol) => ['Promise', 'navigator', 'Navigator', 'Worker', 'self', ...browserTransportGlobals].includes(key as string);
+  /**
+   * The names the engine answers itself, whatever the realm holds: `standing` reads them here and `has` asks this map,
+   * so the two cannot disagree.
+   */
+  const engineAnswered = new Map<string, () => unknown>([
+    ['global', () => guest], ['globalThis', () => guest], ['fetch', () => fetch],
+    ...[...UNDICI_GLOBALS].map((name): [string, () => unknown] => [name, () => undici()[name]]),
+    ['URL', () => processUrl(process)],
+    // The guest's `Buffer` is the one `require('buffer')` answers with, read when the guest asks, so the two are one
+    // object.
+    ['Buffer', () => loadNodeLibFor(process, 'buffer').Buffer],
+    ['MessageChannel', () => guestMessageGlobals(process).MessageChannel],
+    ['MessagePort', () => guestMessageGlobals(process).MessagePort],
+    // `perf_hooks`'s own object.
+    ['performance', () => perfHooksShim.performance],
+    // The process's own console, the one its modules are given.
+    ['console', () => processConsoles.get(process)],
+    // Node's Web Crypto, whose randomness is the system's (shims/crypto.ts `webcrypto`).
+    ['crypto', () => cryptoShim.webcrypto],
+    // The timers are the engine's own list's, counted for the process (guest-timers.ts; ADR-0017): no realm timer.
+    ...(["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"] as const)
+      .map((name): [string, () => unknown] => [name, () => (processTimers ??= guestTimerFunctions(process))[name]]),
+    // `atob` and `btoa` are the `buffer` module's own, as in Node, where the global IS `require('buffer').atob`.
+    ['atob', () => (loadNodeLibFor(process, 'buffer') as Record<string, unknown>).atob],
+    ['btoa', () => (loadNodeLibFor(process, 'buffer') as Record<string, unknown>).btoa],
+    // What a Node global inherits from `Object.prototype`, found as Node finds it, not on the realm's own chain.
+    ...[...OBJECT_PROTOTYPE_NAMES].map((name): [string, () => unknown] => [name, () => Reflect.get(Object.prototype, name, guest)]),
+  ]);
   /** What stands behind a name the guest has not made its own. */
   const standing = (key: string | symbol): unknown => {
-      if (key === "global" || key === "globalThis") return guest;
-      if (key === "fetch") return fetch;
-      if (UNDICI_GLOBALS.has(key as string)) return undici()[key as string];
-      if (key === "URL") return processUrl(process);
-      // The guest's `Buffer` is the one `require('buffer')` answers with, read when the guest asks rather than when
-      // this closure is made: a guest that compared the two found two objects.
-      if (key === "Buffer") return loadNodeLibFor(process, 'buffer').Buffer;
-      if (key === "MessageChannel" || key === "MessagePort") return guestMessageGlobals(process)[key as "MessageChannel" | "MessagePort"];
-      // `perf_hooks`'s own object.
-      if (key === "performance") return perfHooksShim.performance;
+      const answer = typeof key === "string" ? engineAnswered.get(key) : undefined;
+      if (answer) return answer();
       const value = Reflect.get(host, key, host);
       if (key === "structuredClone" && typeof value === "function") {
         if (boundGlobals.get(key)?.original !== value) boundGlobals.set(key, {
@@ -495,14 +545,6 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
             return value.call(host, input, options);
           },
         });
-        return boundGlobals.get(key)!.bound;
-      }
-      if (["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"].includes(key as string) && typeof value === "function") {
-        // The guest's timers, counted for it; rebuilt if the host's own change.
-        if (boundGlobals.get(key)?.original !== value) {
-          const timers = guestTimerFunctions(process, host);
-          for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"] as const) boundGlobals.set(name, { original: Reflect.get(host, name, host), bound: timers[name] });
-        }
         return boundGlobals.get(key)!.bound;
       }
       // A namespace whose asynchronous calls the guest waits on: the calls are
@@ -523,9 +565,6 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
         }
         return boundGlobals.get(key)!.bound;
       }
-      // `atob` and `btoa` are the `buffer` module's own, as in Node, where the global IS `require('buffer').atob`:
-      // a program that compares the two (Node's test/common does, to know its globals) found two functions.
-      if (key === "atob" || key === "btoa") return (loadNodeLibFor(process, 'buffer') as Record<string, unknown>)[key];
       if (["structuredClone", "queueMicrotask"].includes(key as string) && typeof value === "function") {
         if (boundGlobals.get(key)?.original !== value) boundGlobals.set(key, { original: value, bound: value.bind(host) });
         return boundGlobals.get(key)!.bound;
@@ -539,14 +578,10 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       // So it is answered and assigned here, ahead of the guest's own properties; a guest may still delete it.
       if (key === "process") return removed.has(key) ? undefined : assignedProcess ? assignedProcess.value : process;
       if (shadowed(target, key)) return Reflect.get(target, key, guest);
-      if (removed.has(key)) return undefined;
+      if (removed.has(key) || !standsBehind(key)) return undefined;
       return standing(key);
     },
     set(target, key, value) {
-      if (isLocalGlobal(key) && !guestAssigned.has(key) && (key === 'Worker' || key === 'self' || browserTransportGlobals.includes(key as string))) {
-        guestAssigned.add(key);
-        return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
-      }
       // The run's own process is written to the realm, where the engine reads it. Anything else a guest assigns is
       // kept for the guest alone: written to the realm it would stand where the engine looks for the asking run,
       // and every filesystem call after it would find no run ("this realm has no filesystem").
@@ -562,22 +597,30 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       if (removed.has(key)) { removed.delete(key); return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true }); }
       // One of Node's value globals, not yet the guest's own: it becomes so, with the shape it had.
       if (typeof key === 'string' && NODE_GLOBALS.has(key)) return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: key !== 'globalThis' });
-      if (Reflect.set(host, key, value, host)) return true;
-      // A global the host holds read-only (a confined realm's \`WebSocket\`) is
-      // still the guest's to replace, as Node's globals are: undici's
-      // \`install()\` assigns \`globalThis.WebSocket\` and Pi died on the refusal.
-      // The value becomes the guest's own binding; the host's is untouched.
+      // ECMAScript's names and the engine's plumbing are the realm's, so a bare `Map` (left as written, read from the
+      // realm) and `globalThis.Map` stay one value; a symbol-keyed property is the realm's (ADR-0015 §1).
+      if ((typeof key !== 'string' || leftToRealm(key)) && Reflect.set(host, key, value, host)) return true;
+      // Any other name is the process's own, as each Node process has its own global: a name Node does not give, one
+      // of Node's interfaces the guest replaces, or one the realm holds read-only (a confined realm's `WebSocket`,
+      // which undici's `install()` assigns: Pi died on the refusal). The realm's is untouched.
       return Reflect.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
     },
     has(target, key) {
       if (removed.has(key)) return false;
       if (shadowed(target, key)) return true;
-      return isLocalGlobal(key) ? false : (typeof key === 'string' && NODE_GLOBALS.has(key)) || key in host;
+      if (!standsBehind(key)) return false;
+      return (typeof key === 'string' && (NODE_GLOBALS.has(key) || engineAnswered.has(key))) || key in host;
     },
     ownKeys(target) {
       const keys = Reflect.ownKeys(target);
-      for (const key of Reflect.ownKeys(host)) if (!isLocalGlobal(key) && !removed.has(key) && !keys.includes(key)) keys.push(key);
-      for (const key of NODE_GLOBALS) if (!isLocalGlobal(key) && !removed.has(key) && !keys.includes(key)) keys.push(key);
+      const seen = new Set(keys);
+      // What stands behind, as Node lists its global's keys: Node's names and ECMAScript's the realm holds, never the
+      // engine's plumbing or a name of the realm's own.
+      for (const key of Reflect.ownKeys(host)) {
+        if (seen.has(key) || removed.has(key) || !standsBehind(key) || (typeof key === 'string' && isEnginePlumbing(key))) continue;
+        keys.push(key); seen.add(key);
+      }
+      for (const key of NODE_GLOBALS) if (!removed.has(key) && !seen.has(key)) { keys.push(key); seen.add(key); }
       return keys;
     },
     deleteProperty(target, key) {
@@ -591,18 +634,17 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       // The guest's own first: a key it defined non-configurable is reported from the target, as a proxy must.
       const own = Reflect.getOwnPropertyDescriptor(target, key);
       if (own) return own;
-      if (removed.has(key) || isLocalGlobal(key)) return undefined;
+      if (removed.has(key) || !standsBehind(key)) return undefined;
       // Node's shape for `process`: an accessor with a setter, not enumerated.
       if (key === "process") return { get: () => guest!.process, set: (value: unknown) => { guest!.process = value; }, configurable: true, enumerable: false };
       // One of Node's value globals the guest has not touched: writable, configurable, enumerable but for `globalThis`.
       if (typeof key === 'string' && NODE_GLOBALS.has(key)) return { value: standing(key), writable: true, configurable: true, enumerable: key !== 'globalThis' };
       const descriptor = Reflect.getOwnPropertyDescriptor(host, key);
-      // What the realm had before this guest (a worker's `self`, `postMessage`, `onmessage`, the engine's own names)
-      // is reachable and is not ENUMERATED unless Node enumerates that name: `for (const name in global)` in a
-      // guest gave Node's fifteen names and eleven of the realm's. A program that walks its globals to find what it
-      // leaked found those (Node's own test/common does at every exit: 186 of its files failed on that alone once
-      // `exit` was emitted when a loop drains). A global the guest itself adds is enumerable as it defined it.
-      if (descriptor && descriptor.enumerable && hostAtStart.has(key) && !(typeof key === 'string' && NODE_ENUMERABLE_GLOBALS.has(key))) return { ...descriptor, configurable: true, enumerable: false };
+      // What stands behind is not ENUMERATED unless Node enumerates that name: `for (const name in global)` in a guest
+      // gave Node's fifteen names and eleven of the realm's. A program that walks its globals to find what it leaked
+      // found those (Node's own test/common does at every exit: 186 of its files failed on that alone once `exit` was
+      // emitted when a loop drains). A global the guest itself adds is its own, enumerable as it defined it.
+      if (descriptor && descriptor.enumerable && !(typeof key === 'string' && NODE_ENUMERABLE_GLOBALS.has(key))) return { ...descriptor, configurable: true, enumerable: false };
       return descriptor ? { ...descriptor, configurable: true } : undefined;
     },
     defineProperty(target, key, descriptor) {
@@ -629,9 +671,9 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       // claim a non-configurable property its target holds non-configurable, and on the realm it would be every
       // process's (one process's dispatcher making another's connections).
       if (descriptor.configurable === false) return Reflect.defineProperty(target, key, descriptor);
-      if (Reflect.defineProperty(host, key, descriptor)) return true;
-      // The host refused (a name it holds non-configurable): the define is
-      // still the guest's to make on its own global, so the target takes it.
+      // ECMAScript's names, the plumbing and symbols are the realm's, as an assignment to them is (the `set` trap).
+      if ((typeof key !== 'string' || leftToRealm(key)) && Reflect.defineProperty(host, key, descriptor)) return true;
+      // Any other name, or one the realm refused (a name it holds non-configurable), is the guest's own.
       return Reflect.defineProperty(target, key, descriptor);
     },
   });
@@ -641,29 +683,13 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
 // A process's builtins run in its global, as Node's run in its context.
 setNodeLibGlobal((process) => __substrateGuestGlobal(process as Process));
 /**
- * The names a body reads as bare identifiers from its process's guest global rather than the host realm's, live:
- * each read is the guest's value now, each assignment is the guest's. They were an object literal of accessors in
- * every body's wrapper, so V8 parsed 2,300 characters and 38 accessor functions again for each body it compiled,
- * and made 38 closures again for each body it ran: Cal's server compiled 8,456 bodies to its first page (S2 K1,
- * compile 743 ms). One object a process serves every body of it, the same answers. Its accessors are not
- * configurable: one body's `delete window` used to remove the name from that body's own scope alone, and on a
- * shared scope it would remove it from every later body's, so the delete is refused (false, as sloppy code sees it).
+ * The objects a process's bodies resolve free names through (ADR-0015, `guest-scope.ts`), one set a process: a
+ * rewritten body reads `__substrateGuestScope.X` and `typeof __substrateGuestTypeof.X`, a declined one runs inside
+ * `with` of the module scope. One set a process serves every body of it, read live, so a body's wrapper makes nothing
+ * per body (S2 K1: Cal's server compiled 8,456 bodies to its first page).
  */
-const __substrateGuestScopeNames = ['MessageChannel', 'MessagePort', 'Worker', 'self', 'postMessage', 'onmessage', 'onmessageerror', 'close', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'navigator', 'Navigator', 'Promise', 'fetch', 'URL', 'Request', 'Response', 'Headers', 'FormData', 'WebSocket', 'CloseEvent', 'MessageEvent', 'WebAssembly', 'window', 'document', 'location', 'performance'] as const;
-const __substrateGuestScopes = new WeakMap<Process, object>();
-function __substrateGuestScope(process: Process): object {
-  let scope = __substrateGuestScopes.get(process);
-  if (scope) return scope;
-  const guest = __substrateGuestGlobal(process);
-  scope = Object.create(null) as object;
-  for (const name of __substrateGuestScopeNames) {
-    // The wrapper's accessors were sloppy code: a read is `globalThis[name]`, an assignment the guest's global
-    // refuses is ignored, never thrown.
-    Object.defineProperty(scope, name, { enumerable: true, configurable: false,
-      get: () => guest[name], set: (value: unknown) => { Reflect.set(guest, name, value); } });
-  }
-  __substrateGuestScopes.set(process, scope);
-  return scope;
+function __substrateGuestScopes(process: Process) {
+  return guestScopesOf(__substrateGuestGlobal(process));
 }
 // Node compiles a CommonJS body as sloppy script code: an assignment to a
 // getter-only property is ignored rather than thrown, an undeclared assignment
@@ -890,17 +916,18 @@ function __substrateUnfollowAwaits(source: string): string {
 /**
  * A function's text with this pass's edits undone, exactly: a function is also data (`page.evaluate(() =>
  * document.title)`, `String(fn)` handed to a worker run it where none of these names exist), and `String(() => fetch)`
- * is Node's text (reviews of 2eaa5f41 and 6cbfbfc). Every edit's text names `__substrateGuestScope` or
- * `__substrateGuestConstructor`, which a rewritten body never names itself (__substrateScopeGlobalCalls), and each of
- * its shapes is told apart by its own text (__substrateGuestNameEdits): the constructor wrap around a callee, a bare
- * call `(0,__substrateGuestScope["X"])`, a shorthand `X: __substrateGuestScope['X']`, a read `__substrateGuestScope.X`.
- * Guest text around them is never read as one.
+ * is Node's text (reviews of 2eaa5f41 and 6cbfbfc). Every edit's text names `__substrateGuestScope`,
+ * `__substrateGuestTypeof` or `__substrateGuestConstructor`, which a rewritten body never names itself
+ * (__substrateScopeGlobalCalls), and each of its shapes is told apart by its own text (__substrateGuestNameEdits): the
+ * constructor wrap around a callee, a bare call `(0,__substrateGuestScope["X"])`, a shorthand
+ * `X: __substrateGuestScope['X']`, a read `__substrateGuestScope.X`, a typeof operand `__substrateGuestTypeof.X`. X is
+ * any free name, so the shapes match any identifier. Guest text around them is never read as one.
  */
-const __substrateGuestNamesText = __substrateGuestScopeNames.join('|');
+const __substrateGuestNameText = '[\\p{ID_Start}$_][\\p{ID_Continue}$\\u200c\\u200d]*';
 // Its shape names the arguments both rewrites pass (__substrateGuestConstructArgs), and the process-only form a body
 // prepared before them carries, so `String(fn)` gives back `new X` from either.
 const __substrateGuestConstructShape = /\(typeof __substrateGuestConstructor==='function'\?__substrateGuestConstructor\(([^,()]+),\$process(?:,typeof \$dynamicImport==='function'\?\$dynamicImport:void 0)?\):\1\)/gu;
-const __substrateGuestEditShape = new RegExp(`\\(0,__substrateGuestScope\\["(${__substrateGuestNamesText})"\\]\\)|(${__substrateGuestNamesText}): __substrateGuestScope\\['\\2'\\]|__substrateGuestScope\\.(${__substrateGuestNamesText})(?![\\p{ID_Continue}$\\u200c\\u200d])`, 'gu');
+const __substrateGuestEditShape = new RegExp(`\\(0,__substrateGuestScope\\["(${__substrateGuestNameText})"\\]\\)|(?<![\\p{ID_Continue}$\\u200c\\u200d])(${__substrateGuestNameText}): __substrateGuestScope\\['\\2'\\]|__substrateGuest(?:Scope|Typeof)\\.(${__substrateGuestNameText})`, 'gu');
 function __substrateUnscopeGuestNames(source: string): string {
   if (!source.includes('__substrateGuest')) return source;
   return source.replace(__substrateGuestConstructShape, '$1')
@@ -1770,6 +1797,8 @@ function __substrateBodyKind(code: string, strictBody: boolean): 'sync' | 'gener
   if (code.endsWith(__substrateTopLevelAwaitMarker)) return 'async';
   return strictBody && code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
 }
+/** The wrapper's parameters: the module's scope (`MODULE_WRAPPER_PARAMETERS`, which the rewrite leaves as written), then the engine's own. */
+const __substrateWrapperParameters = [...MODULE_WRAPPER_PARAMETERS, '__substrateGuestGlobal', '__substrateGuestConstructor', '__substrateGuestScope', '__substrateGuestTypeof'].join(', ');
 /**
  * A module's wrapper, one line as Node's `Module.wrap` is. Its scope is its parameters, given their values by
  * `__substrateRunWrapped` at the call: a header of `var` statements that took them from other parameters and from the
@@ -1777,19 +1806,21 @@ function __substrateBodyKind(code: string, strictBody: boolean): 'sync' | 'gener
  * some 6 MB over a server's 6,171 bodies). The `$` names are the ones a lowered body's own text uses.
  */
 function __substrateWrapBody(code: string, guestScoped: boolean, strictBody: boolean, sourceURL: string): string {
-  return `(function($exports, exports, $require, require, $module, module, __filename, __dirname, $process, process, console, import_meta, $dynamicImport, __dynamicImport, globalThis, global, Buffer, queueMicrotask, atob, btoa, structuredClone, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope) { globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
+  return `(function(${__substrateWrapperParameters}) { globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
 }
 /** Runs a wrapped body with its scope's values, read from the guest's global in the order its header read them; the guest
- *  scope object, which is made once per process and reads nothing when made, is taken after them. */
-function __substrateRunWrapped(fn: Function, exports: unknown, require: unknown, module: unknown, filename: string, dirname: string,
+ *  scope objects, made once per process and reading nothing when made, are taken after them: the read scope for a
+ *  rewritten body, the module's `with` object for a declined one (ADR-0015 §2). */
+function __substrateRunWrapped(fn: Function, guestScoped: boolean, exports: unknown, require: unknown, module: unknown, filename: string, dirname: string,
   process: Process, console: unknown, importMeta: unknown, dynamicImport: unknown): unknown {
   const guest = __substrateGuestGlobal(process) as Record<string, unknown>;
+  const scopes = guestScopesOf(guest);
   return fn(exports, exports, require, require, module, module, filename, dirname, process, process, console, importMeta,
     dynamicImport, dynamicImport, guest, guest, guest.Buffer, guest.queueMicrotask, guest.atob, guest.btoa, guest.structuredClone,
     guest.setTimeout, guest.clearTimeout, guest.setInterval, guest.clearInterval, guest.setImmediate, guest.clearImmediate,
-    __substrateGuestGlobal, __substrateGuestConstructor, __substrateGuestScope(process));
+    __substrateGuestGlobal, __substrateGuestConstructor, guestScoped ? scopes.read : scopes.withModule, scopes.typeOf);
 }
 /**
  * Drives a body: a generator runs until an import is still settling or the
@@ -2132,7 +2163,8 @@ const builtinModules: Record<string, unknown> = {
   rollup: rollupShim,
   v8: v8Shim,
   readline: readlineModule,
-  tls: tlsShim,
+  // Node's own `lib/tls.js` over node-deps.wasm (ADR-0016); a process's `tls` is its own graph's (loadNodeLibFor).
+  tls: lazyModule<Record<string, unknown>>('tls'),
   http2: http2Shim,
   cluster: clusterShim,
   // A stand-in for Node's surface that refuses the REPL by name (shims/repl.ts says why it is not Node's file).
@@ -2154,7 +2186,7 @@ const builtinModules: Record<string, unknown> = {
   prettier: prettierShim,
   // Some packages explicitly require 'console' (with Console constructor)
   console: {
-    ...console,
+    ...realmConsole,
     Console: class Console {
       private _stdout: { write: (s: string) => void } | null;
       private _stderr: { write: (s: string) => void } | null;
@@ -2178,8 +2210,8 @@ const builtinModules: Record<string, unknown> = {
         const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ') + '\n';
         const target = stream === 'err' ? this._stderr : this._stdout;
         if (target) target.write(msg);
-        else if (stream === 'err') console.error(...args);
-        else console.log(...args);
+        else if (stream === 'err') realmConsole?.error(...args);
+        else realmConsole?.log(...args);
       }
       log(...args: unknown[]) { this._write('out', args); }
       error(...args: unknown[]) { this._write('err', args); }
@@ -2446,9 +2478,8 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
   };
 
   extend("os", {
-    // A tab reports the parallelism the browser gives it; a worker with no
-    // navigator answers one, as Node does on a machine it cannot ask.
-    availableParallelism: () => (typeof navigator === "object" && navigator && Number(navigator.hardwareConcurrency)) || 1
+    // uv_available_parallelism: the CPUs the process may run on, its system's (ADR-0017).
+    availableParallelism: () => osAvailableParallelism()
   });
 
   table["dns/promises"] = table.dns.promises;
@@ -2739,6 +2770,18 @@ function __substrateEsbuildRunsHere(vfs: VirtualFS, file: string, env?: Record<s
 }
 
 /**
+ * A native addon whose surface the holder answers in JavaScript, named by the package the addon belongs to (`bcrypt` ->
+ * a module with the binding's exports): that module's path, for `require` and `process.dlopen` alike, where the holder
+ * names one and it exists (ADR-0011 §1).
+ */
+function __substrateNativeStandIn(vfs: VirtualFS, path: string): string | undefined {
+  const native = (globalThis as { __browserRuntimeNativeStandIns?: Record<string, string> }).__browserRuntimeNativeStandIns;
+  const name = native ? Object.keys(native).find((each) => path.includes('/node_modules/' + each + '/')) : undefined;
+  const answer = name !== undefined ? native![name] : undefined;
+  return answer && vfs.existsSync(answer) ? answer : undefined;
+}
+
+/**
  * Node's `module` builtin is the `Module` class: every module's `require` is
  * `Module.prototype.require`, and resolution goes through
  * `Module._resolveFilename`, so a program that replaces either, Next's require
@@ -2979,7 +3022,9 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     ".ts": builtinHandler,
     ".mts": builtinHandler,
     ".cts": builtinHandler,
-    ".node": (module: any, filename: string) => { throw Object.assign(new Error(`Cannot load native addon ${filename} in a tab.`), { code: "ERR_DLOPEN_FAILED" }); },
+    // Node's `.node` loader (loader.js): `process.dlopen(module, filename)` of the run's process, read at the call, so
+    // a program's wrapper of it (the native-binding prelude's) is what loads (ADR-0011 §1).
+    ".node": (module: any, filename: string) => requireFor(module).__process.dlopen(module, filename),
   });
   Module._pathCache = Object.create(null);
   Module.builtinModules = moduleShim.builtinModules;
@@ -3294,25 +3339,14 @@ function createRequire(
       }
     }
     // Return cached module
-    // A native addon cannot load in a tab. Node answers a `require` of a `.node`
-    // file that cannot be loaded with `ERR_DLOPEN_FAILED`, and a package that
-    // probes for its addon, chokidar for fsevents, takes its portable path on
-    // that error. Reading the binary as a module and parsing it took the process
-    // with it.
-    if (resolvedPath.endsWith('.node')) {
-      // A native addon whose surface the holder answers in JavaScript, named
-      // by the package the addon belongs to (`bcrypt` -> a module with the
-      // binding's exports): the addon's bytes are never read and the stand-in
-      // loads in its place. Every other addon fails as Node's dlopen would.
-      const __native = (globalThis as { __browserRuntimeNativeStandIns?: Record<string, string> }).__browserRuntimeNativeStandIns;
-      const __package = __native ? Object.keys(__native).find((name) => resolvedPath.includes('/node_modules/' + name + '/')) : undefined;
-      const __answer = __package !== undefined && __native ? __native[__package] : undefined;
-      if (__answer && vfs.existsSync(__answer)) {
-        resolvedPath = __answer;
-      } else {
-        throw Object.assign(new Error('Cannot load native addon ' + resolvedPath + ': a tab runs no native code.'), { code: 'ERR_DLOPEN_FAILED' });
-      }
-    }
+    // A native addon whose surface the holder answers in JavaScript, named by
+    // the package the addon belongs to (`bcrypt` -> a module with the binding's
+    // exports): the addon's bytes are never read and the stand-in loads in its
+    // place. Every other `.node` is loaded by its extension, `process.dlopen`'s
+    // load (ADR-0011), and a file that is no WALI Node-API module fails there
+    // with `ERR_DLOPEN_FAILED`, on which a package that probes for its addon,
+    // chokidar for fsevents, takes its portable path.
+    if (resolvedPath.endsWith('.node')) resolvedPath = __substrateNativeStandIn(vfs, resolvedPath) ?? resolvedPath;
     if (moduleCache[resolvedPath]) {
       return moduleCache[resolvedPath];
     }
@@ -3568,7 +3602,7 @@ function createRequire(
     return code;
   };
 
-  const consoleWrapper = runtimeConsole(options);
+  const consoleWrapper = processConsoles.get(process);
 
   /**
    * Runs a body as the module, on the module's own require and console, and
@@ -3672,7 +3706,7 @@ function createRequire(
       const importMeta = createImportMeta(moduleRequire, importMetaUrl, dirname, resolvedPath);
 
       __substrateLoadPhase(process, vfs, 'evaluate');
-      const body = __substrateInStatWindow(process, () => withGuestExecution(() => __substrateRunWrapped(fn,
+      const body = __substrateInStatWindow(process, () => withGuestExecution(() => __substrateRunWrapped(fn, guestScoped,
         module.exports, moduleRequire, module, resolvedPath, dirname, process, consoleWrapper, importMeta, dynamicImport), 'module'));
       if (loadClock) __substrateKeepHeaviest(loadClock, resolvedPath, __substrateLoadNow() - bodyBegan);
 
@@ -3959,11 +3993,11 @@ function createRequire(
       // Intercept rollup and esbuild - always use our shims
       // These packages have native binaries that don't work in browser
       if (id === 'rollup' || id.startsWith('rollup/') || id.startsWith('@rollup/rollup-')) {
-        console.log('[runtime] Intercepted rollup:', id);
+        engineTrace('[runtime] Intercepted rollup:', id);
         return __substrateGuestRollup(process);
       }
       if (id === 'esbuild' || id.startsWith('esbuild/') || id.startsWith('@esbuild/')) {
-        console.log('[runtime] Intercepted esbuild:', id);
+        engineTrace('[runtime] Intercepted esbuild:', id);
         return __substrateGuestEsbuild(process);
       }
       // Intercept prettier - uses createRequire which doesn't work in our runtime
@@ -4081,6 +4115,7 @@ function createRequire(
   };
   (require as any).__compileRaw = compileRaw;
   (require as any).__builtinLoad = builtinLoad;
+  (require as any).__process = process;
   (require as any).__resolveRaw = (id: string) => resolveModule(id, currentDir);
   // The doors `module.register`'s chain reaches this loader through: the run's
   // hooks, the engine's own resolution in the URL terms a hook speaks, the
@@ -4132,65 +4167,56 @@ function createRequire(
 }
 
 /**
- * A runtime's one `console`, as a Node process's modules share one: made at a runtime's first body and given to every
- * body after it, by its options object (S2 AC-LC14: ten closures and an object made for every body, thousands at a
- * server's start).
+ * A process's one `console`, as a Node process's modules share one: made with its runtime, given to every body and
+ * answered by its global (S2 AC-LC14: ten closures and an object made for every body, thousands at a server's start).
+ * Its output is the process's own (`onConsole`, its fd 1 and 2), never the realm's (ADR-0017: no realm console).
  */
-const runtimeConsoles = new WeakMap<object, Console>();
-function runtimeConsole(options: { onConsole?: (method: string, args: unknown[]) => void }): Console {
-  let made = runtimeConsoles.get(options);
-  if (!made) { made = createConsoleWrapper(options.onConsole); runtimeConsoles.set(options, made); }
-  return made;
-}
+const processConsoles = new WeakMap<object, Console>();
 
 /**
- * Create a console wrapper that can capture output
+ * Create a console wrapper that can capture output. A program's console is its own output (`onConsole`: its fd 1 and 2);
+ * on a kernel nothing else hears it (ADR-0017: no realm console), and over no kernel the realm's console is told too,
+ * as it always was. Its timers, counters and groups are its own, on the system's clock.
  */
 function createConsoleWrapper(
   onConsole?: (method: string, args: unknown[]) => void
 ): Console {
+  let indent = '';
+  const echo = onKernel() ? undefined : realmConsole;
   const emit = (method: 'log' | 'error' | 'warn' | 'info' | 'debug' | 'trace', args: unknown[]): void => {
     // Owned instrumentation is evidence, so the host's R5 owner delivers it
     // once after HTTP. Ordinary console calls keep both existing output paths.
     if ((method === 'log' || method === 'info' || method === 'warn' || method === 'error' || method === 'debug')
       && captureTraceConsoleLine(args, method === 'debug' ? 'log' : method)) return;
-    console[method](...args);
-    onConsole?.(method, args);
+    const said = indent && args.length > 0 ? [`${indent}${typeof args[0] === 'string' ? args[0] : String(args[0])}`, ...args.slice(1)] : args;
+    echo?.[method]?.(...said);
+    onConsole?.(method, said);
+  };
+  const timers = new Map<string, number>();
+  const counts = new Map<string, number>();
+  const elapsed = (label: string): string | undefined => {
+    const began = timers.get(label);
+    return began === undefined ? undefined : `${label}: ${(monotonicMs() - began).toFixed(3)}ms`;
   };
   const wrapper = {
-    log: (...args: unknown[]) => {
-      emit('log', args);
-    },
-    error: (...args: unknown[]) => {
-      emit('error', args);
-    },
-    warn: (...args: unknown[]) => {
-      emit('warn', args);
-    },
-    info: (...args: unknown[]) => {
-      emit('info', args);
-    },
-    debug: (...args: unknown[]) => {
-      emit('debug', args);
-    },
-    trace: (...args: unknown[]) => {
-      emit('trace', args);
-    },
-    dir: (obj: unknown) => {
-      console.dir(obj);
-      onConsole?.('dir', [obj]);
-    },
-    time: console.time.bind(console),
-    timeEnd: console.timeEnd.bind(console),
-    timeLog: console.timeLog.bind(console),
-    assert: console.assert.bind(console),
-    clear: console.clear.bind(console),
-    count: console.count.bind(console),
-    countReset: console.countReset.bind(console),
-    group: console.group.bind(console),
-    groupCollapsed: console.groupCollapsed.bind(console),
-    groupEnd: console.groupEnd.bind(console),
-    table: console.table.bind(console),
+    log: (...args: unknown[]) => { emit('log', args); },
+    error: (...args: unknown[]) => { emit('error', args); },
+    warn: (...args: unknown[]) => { emit('warn', args); },
+    info: (...args: unknown[]) => { emit('info', args); },
+    debug: (...args: unknown[]) => { emit('debug', args); },
+    trace: (...args: unknown[]) => { emit('trace', args); },
+    dir: (obj: unknown) => { emit('log', [obj]); },
+    time: (label = 'default') => { timers.set(String(label), monotonicMs()); },
+    timeEnd: (label = 'default') => { const said = elapsed(String(label)); timers.delete(String(label)); if (said) emit('log', [said]); },
+    timeLog: (label = 'default', ...rest: unknown[]) => { const said = elapsed(String(label)); if (said) emit('log', [said, ...rest]); },
+    assert: (value: unknown, ...args: unknown[]) => { if (!value) emit('warn', args.length ? [`Assertion failed: ${String(args[0])}`, ...args.slice(1)] : ['Assertion failed']); },
+    clear: () => {},
+    count: (label = 'default') => { const n = (counts.get(String(label)) ?? 0) + 1; counts.set(String(label), n); emit('log', [`${String(label)}: ${n}`]); },
+    countReset: (label = 'default') => { counts.set(String(label), 0); },
+    group: (...args: unknown[]) => { if (args.length) emit('log', args); indent += '  '; },
+    groupCollapsed: (...args: unknown[]) => { if (args.length) emit('log', args); indent += '  '; },
+    groupEnd: () => { indent = indent.slice(2); },
+    table: (data: unknown) => { emit('log', [data]); },
   };
 
   return wrapper as unknown as Console;
@@ -4250,37 +4276,40 @@ export class Runtime {
     // Create fs shim with cwd getter for relative path resolution
     this.fsShim = createFsShim(vfs, () => this.process.cwd());
     this.options = options;
-    // Node's `process.dlopen(module, filename[, flags])`, which a loader calls
-    // in place of `require` when it wants its own flags: Prisma's library
-    // engine loads `libquery_engine-*.node` this way. A tab runs no native
-    // code, so the load is the one a `require` of that path makes: through
-    // the run's resolve hooks, where an image's binding map answers the
-    // addon with its prepared export, and otherwise to ERR_DLOPEN_FAILED as
-    // Node's dlopen fails. The flags name dynamic-linker modes and have
-    // nothing to act on here.
+    processConsoles.set(this.process, createConsoleWrapper(options.onConsole));
+    // Node's `process.dlopen(module, filename[, flags])` (ADR-0011 §1), which a loader calls in place of `require`
+    // when it wants its own flags (Prisma's library engine), and which the `.node` extension calls for `require`. Its
+    // checks are DLOpen's; a host stand-in's package is answered as `require` answers it; every other path is opened
+    // in this process and its initializer called on this target's exports, however often the file was opened before.
+    // The binding map is the substrate prelude's wrapper of this function. The flags name dynamic-linker modes and
+    // have nothing to act on here.
     Object.defineProperty(this.process, 'dlopen', {
       configurable: true, enumerable: true, writable: true,
-      value: (target: { exports?: unknown }, filename: string, _flags?: number): void => {
-        if (target === null || typeof target !== 'object') {
-          throw Object.assign(new TypeError('The "module" argument must be of type object'), { code: 'ERR_INVALID_ARG_TYPE' });
+      value: (...args: unknown[]): void => {
+        if (args.length < 2) {
+          throw Object.assign(new TypeError('process.dlopen needs at least 2 arguments'), { code: 'ERR_MISSING_ARGS' });
         }
-        if (typeof filename !== 'string') {
-          throw Object.assign(new TypeError('The "filename" argument must be of type string'), { code: 'ERR_INVALID_ARG_TYPE' });
+        if (args.length > 2) {
+          try { void (+(args[2] as number) | 0); }
+          catch { throw Object.assign(new TypeError('flag argument must be an integer.'), { code: 'ERR_INVALID_ARG_TYPE' }); }
         }
-        const file = pathShim.resolve(this.process.cwd(), filename);
-        const load = createRequire(this.vfs, this.fsShim, this.process, pathShim.dirname(file), this.moduleCache, this.options, this.processedCodeCache);
-        try {
-          target.exports = load(file);
-        } catch (error) {
-          // Node's dlopen of a missing file fails as the dynamic linker
-          // reports it (the engine is linux to its guests), under
-          // ERR_DLOPEN_FAILED, which loaders read; require's MODULE_NOT_FOUND
-          // is a different failure. An addon that exists and cannot load
-          // already fails as ERR_DLOPEN_FAILED, and a prepared refusal keeps
-          // its own named reason.
-          if ((error as { code?: unknown } | null)?.code !== 'MODULE_NOT_FOUND') throw error;
-          throw Object.assign(new Error(file + ': cannot open shared object file: No such file or directory'), { code: 'ERR_DLOPEN_FAILED' });
+        // DLOpen's `ToObject(module)` and `ToObject(module.exports)`.
+        const object = (value: unknown): object => {
+          if (value === null || value === undefined) throw new TypeError('Cannot convert undefined or null to object');
+          return Object(value) as object;
+        };
+        const target = object(args[0]) as { exports?: unknown; filename?: unknown };
+        const exports = object(target.exports);
+        const file = pathShim.resolve(this.process.cwd(), `${args[1] as string}`);
+        const standIn = __substrateNativeStandIn(this.vfs, file);
+        if (standIn !== undefined) {
+          target.exports = createRequire(this.vfs, this.fsShim, this.process, pathShim.dirname(file), this.moduleCache, this.options, this.processedCodeCache)(standIn);
+          return;
         }
+        let bytes: Uint8Array;
+        try { bytes = this.vfs.readFileSync(file) as Uint8Array; }
+        catch { throw Object.assign(new Error(file + ': cannot open shared object file: No such file or directory'), { code: 'ERR_DLOPEN_FAILED' }); }
+        dlopenNative(this.process, target, exports, file, bytes);
       },
     });
 
@@ -4367,7 +4396,7 @@ export class Runtime {
       module.id = '.';
     }
 
-    const consoleWrapper = runtimeConsole(this.options);
+    const consoleWrapper = processConsoles.get(this.process);
 
     // Transform code the same way loadModule does
     // Strip shebang line if present (e.g. #!/usr/bin/env node)
@@ -4435,7 +4464,7 @@ export class Runtime {
         try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), this.process, scriptName); }
         catch { throw syntaxError; }
       }
-      const body = __substrateInStatWindow(this.process, () => withGuestExecution(() => __substrateRunWrapped(fn,
+      const body = __substrateInStatWindow(this.process, () => withGuestExecution(() => __substrateRunWrapped(fn, guestScoped,
         module.exports, require, module, filename, dirname, this.process, consoleWrapper,
         createImportMeta(require, importMetaUrl, dirname, filename), dynamicImport), 'module'));
 
@@ -4568,7 +4597,7 @@ export class Runtime {
       this.options,
       this.processedCodeCache
     );
-    const consoleWrapper = runtimeConsole(this.options);
+    const consoleWrapper = processConsoles.get(this.process);
     const process = this.process;
     const buffer = bufferShim.Buffer;
 
@@ -4582,17 +4611,21 @@ export class Runtime {
       'console',
       'process',
       'Buffer',
-      `var __code, __result;
-while (true) {
-  __code = yield;
+      '__substrateReplScope',
+      // The REPL's free names are its process's global's, as a Node REPL's are its context's (ADR-0015 §3): the
+      // module scope's `with` object leaves its own require, console, process and Buffer to these parameters, and its
+      // engine-named locals to the generator.
+      `var __substrateReplCode, __substrateReplResult;
+with (__substrateReplScope) while (true) {
+  __substrateReplCode = yield;
   try {
-    __result = eval(__code);
-    yield { value: __result, error: null };
+    __substrateReplResult = eval(__substrateReplCode);
+    yield { value: __substrateReplResult, error: null };
   } catch (e) {
     yield { value: undefined, error: e };
   }
 }`
-    )(require, consoleWrapper, process, buffer);
+    )(require, consoleWrapper, process, buffer, __substrateGuestScopes(process).withModule);
     replGen.next(); // prime the generator
 
     return {
@@ -4649,14 +4682,6 @@ export default Runtime;
  * Each is registered here when this module loads and installed by the first
  * `Runtime`, so that a host that only imported the engine keeps its own.
  */
-// Polyfill setImmediate/clearImmediate (Node.js globals not available in browsers)
-forGuestRealm(() => {
-  if (typeof globalThis.setImmediate === 'undefined') {
-    takeFromHost(globalThis, 'setImmediate', (fn: (...args: unknown[]) => void, ...args: unknown[]) => setTimeout(fn, 0, ...args));
-    takeFromHost(globalThis, 'clearImmediate', (id: number) => clearTimeout(id));
-  }
-});
-
 // Node's timers answer a `Timeout` object and a browser's answer a number.
 // That correction used to be made on the realm, which replaced the
 // `setTimeout` of any Node process that imported the engine. It is the
@@ -4936,7 +4961,7 @@ function __substrateStackTracePolyfill(): void {
       try {
         target.stack = savedPrepare(target, callSites);
       } catch (e) {
-        console.warn('[tabnode] Error.prepareStackTrace threw:', e);
+        engineTrace('[tabnode] Error.prepareStackTrace threw:', e);
         target.stack = rawStack;
       }
     } else {

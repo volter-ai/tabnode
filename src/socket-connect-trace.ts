@@ -1,4 +1,5 @@
 import { traceReadingRequested, traceOutput } from './trace-output';
+import { performance } from './system';
 /** Binding evidence only; the substrate buffers these lines until first HTTP or exit. */
 interface SocketIdentity { pid: number | null; id: number | null; socketId: number | null; request: number | null }
 const sockets = new WeakMap<object, SocketIdentity>();

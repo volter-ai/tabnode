@@ -233,6 +233,31 @@ listen(2).
 
 ***
 
+### poll()
+
+> **poll**(`fds`, `timeout`): `number`
+
+poll(2), blocking the calling thread: waits until one of `fds` is ready or `timeout` milliseconds pass (-1 without
+end, 0 not at all), sets each entry's `revents` (`POLLERR`, `POLLHUP` and `POLLNVAL` always among what it may
+report), and answers how many are ready (0 at the timeout) or a negative errno. Only a realm that may block calls
+it, for a synchronous child's pipes (ADR-0010 §4); the engine's loop asks `wait`.
+
+#### Parameters
+
+##### fds
+
+[`PollDescriptor`](PollDescriptor.md)[]
+
+##### timeout
+
+`number`
+
+#### Returns
+
+`number`
+
+***
+
 ### recvfrom()
 
 > **recvfrom**(`fd`, `buffer`, `flags`, `address`): `number`

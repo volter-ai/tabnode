@@ -1,9 +1,11 @@
 import { withGuestExecution, withGuestCallback, drainGuestNextTicks } from '../../guest-loop';
+import { nodeCryptoConstants } from '../binding/node-deps';
 import { AsyncLocalStorage } from '../../shims/async_hooks';
 import { kCancelTimer } from '../../timer-cancellation';
 import { handleOwnerSymbol } from '../binding/owner-symbol';
 import { traceSocketConnect } from '../../socket-connect-trace';
 import { registerHandle, refHandle, unrefHandle, releaseHandle, currentOwner, __adoptHandle } from '../binding/handles';
+import { engineTimers } from '../../system';
 /**
  * The internals Node's `net` names that are neither vendored nor a binding:
  * async ids, timers, stream defaults, the option table, and the three
@@ -109,13 +111,13 @@ function realmSetTimeout(fn: () => void, ms: number): unknown {
   const realm = globalThis as unknown as {
     __browserRuntimeNativeSetTimeout?: (fn: () => void, ms: number) => unknown;
   };
-  return (realm.__browserRuntimeNativeSetTimeout ?? globalThis.setTimeout).call(globalThis, fn, ms);
+  return realm.__browserRuntimeNativeSetTimeout ? realm.__browserRuntimeNativeSetTimeout.call(globalThis, fn, ms) : engineTimers.setTimeout(fn, ms);
 }
 function realmClearTimeout(id: unknown): void {
   const realm = globalThis as unknown as {
     __browserRuntimeNativeClearTimeout?: (id: unknown) => void;
   };
-  (realm.__browserRuntimeNativeClearTimeout ?? globalThis.clearTimeout).call(globalThis, id as number);
+  if (realm.__browserRuntimeNativeClearTimeout) realm.__browserRuntimeNativeClearTimeout.call(globalThis, id); else engineTimers.clearTimeout(id);
 }
 
 /**
@@ -308,6 +310,21 @@ const optionValues: Record<string, unknown> = {
   '--enable-source-maps': false,
   '--use-env-proxy': false,
   '--experimental-transform-types': false,
+  // TLS (node_options.h:228-372), Node's defaults, but the CA store: the engine's is the image's bundle as
+  // `--use-openssl-ca` makes it (ADR-0016 §4), so the option says so and tls.getCACertificates() agrees.
+  '--tls-min-v1.0': false,
+  '--tls-min-v1.1': false,
+  '--tls-min-v1.2': false,
+  '--tls-min-v1.3': false,
+  '--tls-max-v1.2': false,
+  '--tls-max-v1.3': false,
+  '--tls-keylog': '',
+  '--trace-tls': false,
+  '--use-openssl-ca': true,
+  '--use-bundled-ca': false,
+  '--use-system-ca': false,
+  // DEFAULT_CIPHER_LIST_CORE (node_constants.h:52-76), as node-deps.wasm compiled it.
+  get '--tls-cipher-list'() { return nodeCryptoConstants().defaultCoreCipherList; },
 };
 
 /**
@@ -342,10 +359,31 @@ function evalOption(): string {
   return '';
 }
 
+interface OptionsProcess { env?: Record<string, string | undefined>; emitWarning?(message: string): void }
+/** The processes Node's `warnOnAllowUnauthorized` has already warned (a module-level flag of each process's). */
+const warnedAllowUnauthorized = new WeakSet<object>();
+/**
+ * Node's `getAllowUnauthorized` (lib/internal/options.js) over `process`: NODE_TLS_REJECT_UNAUTHORIZED=0 turns
+ * verification off, with Node's warning, once per process.
+ */
+export function allowUnauthorizedOf(process: OptionsProcess | undefined): boolean {
+  const allowUnauthorized = process?.env?.NODE_TLS_REJECT_UNAUTHORIZED === '0';
+  if (allowUnauthorized && process && !warnedAllowUnauthorized.has(process)) {
+    warnedAllowUnauthorized.add(process);
+    process.emitWarning?.(
+      'Setting the NODE_TLS_REJECT_UNAUTHORIZED ' +
+      'environment variable to \'0\' makes TLS connections ' +
+      'and HTTPS requests insecure by disabling ' +
+      'certificate verification.');
+  }
+  return allowUnauthorized;
+}
 export const internalOptions = {
   getOptionValue: (name: string): unknown => (optionOverrides !== null && name in optionOverrides ? optionOverrides[name]
     : name === '--eval' ? evalOption() : optionValues[name]),
   getEmbedderOptions: () => ({ shouldNotRegisterESMLoader: false, noGlobalSearchPaths: false, noBrowserGlobals: false }),
+  /** Node's `getAllowUnauthorized` for the realm's own graph; a process's `internal/options` answers it over itself. */
+  getAllowUnauthorized: (): boolean => allowUnauthorizedOf((globalThis as { process?: OptionsProcess }).process),
 };
 
 /** `internal/perf/observe`: nothing observes `net` in the engine. */

@@ -68,9 +68,12 @@ through the socket calls its tree offers (`TREE_SOCKETS`,
 `src/host-sockets.ts`, ADR-0009): the engine keeps no port, path, loopback,
 listener table or pairing of its own for them, and an IPC channel of such a
 process is a kernel AF_UNIX socketpair whose handles cross as `SCM_RIGHTS`
-(ADR-0009 §4). What else the engine does for a child stays and is the
-binding's implementation: the stdio pipes, the IPC channel of a process with
-no socket calls, the page bridge that hears a listening port and routes a
+(ADR-0009 §4). A child of such a process gets its stdio as libuv makes it,
+in the parent's kernel table: a `pipe` a socketpair, `inherit` or a number
+the parent's descriptor, `ignore` /dev/null, placed at the child's numbers
+by the host that runs it as its own process (ADR-0010). What else the engine
+does for a child stays and is the binding's implementation: the stdio pipes
+and IPC channel of a process with no socket calls, the page bridge that hears a listening port and routes a
 preview's requests and upgrades, the routing of a spawned command to the engine's
 `node`, a page-registered program, a WALI pack or the shell, and the run
 ownership that keeps a run alive while it holds a handle.
@@ -146,9 +149,14 @@ ownership that keeps a run alive while it holds a handle.
   signalCode)` once, when the run ends; `ref()`, `unref()`.
 - `spawn_sync`: `spawn(options)` answering `{ status, signal, output: [null,
   stdout, stderr], error, pid }` over the engine's synchronous command door
-  (`src/shims/sync-child.ts`), `UV_ENOSYS` in `error` where none exists.
+  (`src/shims/sync-child.ts`), `UV_ENOSYS` in `error` where none exists;
+  in a process with socket calls a child its host runs is given kernel
+  descriptors, and the binding reads and writes its own ends with
+  `TreeSockets.poll` until they close (ADR-0010 §4).
 - `tty_wrap`: `isTTY(fd)` and `TTY` for the stdio the engine reports as a
-  terminal, and `guessHandleType(fd)` in `internal/util`'s bound object.
+  terminal, and `guessHandleType(fd)` in `internal/util`'s bound object; a
+  run's terminal's size and fd 0's mode (`setRawMode`) are its host's
+  (`RunStreams.terminal`, ADR-0010 §3).
 - `cares_wrap`: `isIP`, `isIPv4`, `isIPv6` (Node's own from
   `internal/net.js` need only these); lookups are the engine's `dns`, a DNS
   exchange over the process's own UDP with its `/etc/resolv.conf`'s
@@ -156,12 +164,13 @@ ownership that keeps a run alive while it holds a handle.
 
 Run ownership: a handle registers with the current run token when it is
 created, `ref`/`unref` toggle it, and a run is alive while it holds a ref'd
-handle or a pending timer, as libuv's loop is; this replaces the socket and
-server registries and the `__ownsHandles` rule of .40. The names the
-substrate's bridge and `http.ts` read today (`__ownedServerPorts`,
-`_registerServer`, `__releaseOwnedServers`, `__adoptSocket`,
-`__pairLoopbackSockets`'s effect) are served by the binding under the same
-names until `http` is ported the same way.
+handle or a pending timer, as libuv's loop is. A handle made outside the run
+it belongs to is counted in that run's loop by `__adoptHandle` (a socket by
+`__adoptSocket`), and `__ownedServerPorts` answers the ports a run's servers
+listen on. A run's end is `__endOwnedProcess` (`node-lib/binding/handles.ts`,
+ADR-0011 §6): its servers and then every handle it holds are closed and its
+timers stopped, and the end completes when every release that outlives its
+close (an addon runtime's native teardown) has finished.
 
 ## The process's sockets
 
@@ -177,7 +186,7 @@ which namespaces exist, what listens or where a connect goes: a refusal, a
 route, a drop and an egress are the kernel's. A handle keeps the calls of the
 process that made it, an accepted one its listener's, a received one its
 receiver's. HTTP is a `net` or `tls` connection like any other (a process's
-TLS, client and server, is its host's, `TREE_TLS`), and a guest's `fetch` is Node's own
+TLS, client and server, is Node's own over OpenSSL in node-deps.wasm, ADR-0016), and a guest's `fetch` is Node's own
 undici over the process's `net` and `tls`, so nothing leaves around the
 network.
 

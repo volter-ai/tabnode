@@ -30,6 +30,10 @@ import fsBinding, { fsDirBinding, fsEventWrapBinding } from './fs';
 import blobBinding from './blob';
 import zlibBinding from './zlib';
 import modulesBinding from './modules';
+import cryptoBinding from './crypto';
+import tlsWrapBinding from './tls_wrap';
+import jsStreamBinding from './js_stream';
+import { handleOwnerSymbol } from './owner-symbol';
 import { AsyncResource } from '../internals/runtime';
 
 /**
@@ -73,6 +77,14 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   async_wrap: () => ({ AsyncResource }),
   zlib: () => zlibBinding,
   modules: () => modulesBinding,
+  // Node's TLS over node-deps.wasm (ADR-0016 §4): `crypto` as far as `tls` reaches it, `tls_wrap`, and the
+  // JSStream a TLS socket over a JavaScript stream is made of.
+  crypto: () => cryptoBinding,
+  tls_wrap: () => tlsWrapBinding,
+  js_stream: () => jsStreamBinding,
+  // `internalBinding('symbols')` (env_properties.h PER_ISOLATE_SYMBOL_PROPERTIES), the names a vendored file
+  // reads: `internal/tls/wrap.js` keys a PSK exchange by `onpskexchange`; `owner_symbol` is the engine's one.
+  symbols: () => ({ onpskexchange: Symbol('onpskexchange'), owner_symbol: handleOwnerSymbol }),
   fs_dir: () => fsDirBinding,
   fs_event_wrap: () => fsEventWrapBinding,
 };;
@@ -80,5 +92,5 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
 }
 
 export {
-  __ownedHandleCount, __releaseOwnedHandles, __adoptHandle, currentOwner,
+  __ownedHandleCount, __adoptHandle, currentOwner,
 } from './handles';

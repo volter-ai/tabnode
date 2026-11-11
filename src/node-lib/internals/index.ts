@@ -13,13 +13,14 @@
 import { internalUtilTypes } from './util';
 import * as acorn from 'acorn';
 import { internalCryptoKeys } from './crypto-keys';
+import { internalCryptoUtil, internalCryptoX509 } from './crypto-tls';
 import {
   internalConsoleGlobal, internalProcessExecution,
   internalProcessWarning, internalSourceMapCache, internalReadlineInterface, internalJsTransferable,
 } from './events-util';
 import {
   internalAsyncHooks, internalTimers, internalStreamsState, internalTaskQueues,
-  internalEventTarget, internalOptions, internalPerfObserve, internalAssert,
+  internalEventTarget, internalOptions, allowUnauthorizedOf, internalPerfObserve, internalAssert,
   internalStartupSnapshot, internalPermission,
 } from './runtime';
 import { internalSocketAddress, internalBlockList } from './addresses';
@@ -38,6 +39,8 @@ import { locksOf } from './locks';
 var __table: Record<string, () => unknown> | undefined;
 export function nodeLibInternal(name: string, require?: (name: string) => any, process?: any): (() => unknown) | undefined {
   if (name === 'internal/crypto/keys') return () => internalCryptoKeys;
+  if (name === 'internal/crypto/util') return () => internalCryptoUtil;
+  if (name === 'internal/crypto/x509') return () => internalCryptoX509;
   if (name === 'internal/deps/acorn/acorn/dist/acorn') return () => acorn;
   if (name === 'internal/modules/helpers') return () => ({
     // Node's: a file URL as its path, anything else as it is (lib/internal/modules/helpers.js).
@@ -56,6 +59,11 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   });
   if (require && name === 'internal/webstreams/adapters') return () => createWebStreamsAdapters(require);
   if (name === 'internal/locks') return () => ({ locks: locksOf(process) });
+  // `internal/options` of a process: the realm's table, with Node's `getAllowUnauthorized` over that process.
+  if (process && name === 'internal/options') return () => ({
+    ...internalOptions,
+    getAllowUnauthorized: () => allowUnauthorizedOf(process),
+  });
   if (process && name === 'internal/blob') return () => internalBlobOf(nodeLibBindingFor(process, 'blob') as BlobBinding);
   if (process && name === 'internal/process/per_thread') return () => ({
     platform: process.platform, arch: process.arch, version: process.version,

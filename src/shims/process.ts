@@ -25,6 +25,7 @@ import { ownProcessPid, parentPidOf, pidIsLive, signalPid, groupIsLive, signalGr
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
 import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
 import { freemem as osFreemem } from './os';
+import { engineTrace, monotonicMs, monotonicNs, onKernel, system } from '../system';
 import { copyProcessCredentials, recordProcessCredentials, type ProcessCredentials } from '../process-credentials';
 import { version as acornVersion } from 'acorn';
 import { ERR_INVALID_ARG_TYPE, ERR_OUT_OF_RANGE } from '../node-internals';
@@ -96,8 +97,9 @@ interface ProcessWritableStream extends ProcessStream {
  * `node script.js < file` does. Where a runner can still feed the guest
  * (a held run the host writes to with `sendStdin`), it leaves the stream open
  * instead, which is Node's pipe whose writer has not closed. A terminal is
- * not invented: `isTTY` stays false unless a runner says otherwise, and there
- * is no `setRawMode` that does anything, because there is no raw mode to set.
+ * not invented: `isTTY` stays false unless a runner says otherwise, and a
+ * `setRawMode` that does anything is the runner's, for a run whose host sets
+ * its terminal's mode (ADR-0010 §3).
  */
 /**
  * The guest's fd 0: a `Readable` the engine pushes into.
@@ -123,7 +125,7 @@ export interface ProcessStdin extends Readable {
    */
   readonly __substrateGuestRead: boolean;
   [kEngineStdinRead](size?: number): unknown;
-  setRawMode(mode: boolean): ProcessStdin;
+  setRawMode(mode: boolean | 'raw' | 'io'): ProcessStdin;
   __substrateStdinWrite(data: string | Uint8Array): void;
   __substrateStdinEnd(): void;
 }
@@ -160,8 +162,8 @@ function processStdinClass(ReadableClass: typeof Readable): new () => ProcessStd
     /** False: there is no terminal in a tab. A runner that drives an interactive program sets it. */
     isTTY = false;
 
-    /** Node's `tty.ReadStream.setRawMode`, which a tab has no terminal to put in raw mode. */
-    setRawMode(_mode: boolean): this {
+    /** Node's `tty.ReadStream.setRawMode`, for an fd 0 that is no terminal whose mode a host sets: no mode is claimed. */
+    setRawMode(_mode: boolean | 'raw' | 'io'): this {
       return this;
     }
 
@@ -557,7 +559,14 @@ export function __substrateExitCode(code: unknown): number {
  * figures this function always gave, which are a shape for callers and measure nothing.
  */
 function measuredMemory(): { rss: number; heapTotal: number; heapUsed: number; external: number; arrayBuffers: number } {
-  const heap = (performance as unknown as { memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number } }).memory;
+  // On a kernel, the resident size is Linux's (libuv's uv_resident_set_memory reads /proc/self/stat; VmRSS is the same
+  // count): the realm's heap reading is the worker's, which a process's realm has none of.
+  if (onKernel()) {
+    const resident = /^VmRSS:\s+(\d+) kB$/mu.exec(system().file('/proc/self/status') ?? '');
+    const rss = resident ? Number(resident[1]) * 1024 : 0;
+    return { rss, heapTotal: rss, heapUsed: rss, external: 0, arrayBuffers: 0 };
+  }
+  const heap = ((globalThis as { performance?: unknown }).performance as { memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number } } | undefined)?.memory;
   const used = heap?.usedJSHeapSize, total = heap?.totalJSHeapSize;
   if (typeof used === 'number' && typeof total === 'number' && total > 0) {
     return { rss: total, heapTotal: total, heapUsed: used, external: 0, arrayBuffers: 0 };
@@ -645,7 +654,8 @@ export function createProcess(options?: {
   // as in Node; its ticks run.
   let exiting = false;
   let ended = false;
-  const startTime = Date.now();
+  // Node's process.uptime is uv_hrtime's since the process began: the system's monotonic clock.
+  const startTime = monotonicMs();
   // The guest's fd 0: the bytes the runner put there, then the end of them.
   // Nothing more can arrive unless the runner says it holds the input open.
   let stdinStream: ProcessStdin | undefined;
@@ -874,6 +884,9 @@ export function createProcess(options?: {
         child.kill(name);
         return true;
       }
+      // A process that has ended and is not yet reaped (a Linux zombie) takes the signal, and nothing of it runs: no
+      // handler and no default action (ADR-0013 §1).
+      if (ended) return true;
       if (name !== "SIGKILL" && name !== "SIGSTOP" && emitter.listenerCount(name) > 0) {
         // A handler's throw is the process's uncaught exception, as Node's signal callback's is (v26.12.0: printed, exit
         // 1); a `process.exit` inside it is the stop it is.
@@ -956,7 +969,7 @@ export function createProcess(options?: {
       const printedType = warning instanceof Error ? warning.name : type;
       const line = '(node) ' + (printedCode === undefined ? '' : '[' + printedCode + '] ') + printedType + ': ' + text + '\n';
       if (this && this.stderr && typeof this.stderr.write === 'function') this.stderr.write(line);
-      else console.warn(line);
+      else engineTrace(line.trimEnd());
       // Node raises the warning as an Error on the process's 'warning' event on
       // the next tick, which is how a program (and Node's own test helper,
       // `common.expectWarning`) observes it; the engine only printed it.
@@ -973,7 +986,8 @@ export function createProcess(options?: {
       } else if (options?.onStdout) {
         options.onStdout(chunkText(proc, stdoutDecoder, data, encoding));
       } else {
-        console.log(chunkText(proc, stdoutDecoder, data, encoding));
+        // A process with no fd 1 of its run's: its bytes are the engine's to say, on the trace, never a console.
+        engineTrace(chunkText(proc, stdoutDecoder, data, encoding));
       }
       return true;
     }) as ProcessWritableStream,
@@ -984,7 +998,7 @@ export function createProcess(options?: {
       } else if (options?.onStderr) {
         options.onStderr(chunkText(proc, stderrDecoder, data, encoding));
       } else {
-        console.error(chunkText(proc, stderrDecoder, data, encoding));
+        engineTrace(chunkText(proc, stderrDecoder, data, encoding));
       }
       return true;
     }) as ProcessWritableStream,
@@ -998,20 +1012,23 @@ export function createProcess(options?: {
       return stdinStream;
     },
 
+    // Node's hrtime is uv_hrtime, clock_gettime(CLOCK_MONOTONIC): the system's one clock, which every process of a
+    // kernel reads alike (a worker's own performance.now() counted from that worker's start).
     hrtime: Object.assign(
       function hrtime(time?: [number, number]): [number, number] {
-        const now = performance.now();
-        const seconds = Math.floor(now / 1000);
-        const nanoseconds = Math.floor((now % 1000) * 1e6);
+        const now = monotonicNs();
+        const seconds = Number(now / 1_000_000_000n);
+        const nanoseconds = Number(now % 1_000_000_000n);
         if (time) {
-          const diffSeconds = seconds - time[0];
-          const diffNanos = nanoseconds - time[1];
+          let diffSeconds = seconds - time[0];
+          let diffNanos = nanoseconds - time[1];
+          if (diffNanos < 0) { diffSeconds -= 1; diffNanos += 1e9; }
           return [diffSeconds, diffNanos];
         }
         return [seconds, nanoseconds];
       },
       {
-        bigint: (): bigint => BigInt(Math.floor(performance.now() * 1e6)),
+        bigint: (): bigint => monotonicNs(),
       }
     ),
 
@@ -1040,7 +1057,7 @@ export function createProcess(options?: {
     },
 
     uptime() {
-      return (Date.now() - startTime) / 1000;
+      return (monotonicMs() - startTime) / 1000;
     },
 
     cpuUsage() {

@@ -1,12 +1,16 @@
 import type { ProcessCredentials } from '../process-credentials';
 import { callingSockets, interfaceAddresses, type TreeSockets } from '../host-sockets';
+import { system } from '../system';
 /**
- * Node.js os module shim
- * Provides operating system utilities
+ * Node's `os`, its facts the system's (ADR-0017): `uname(2)` for the type, release, version and machine; `/proc` and
+ * `sysinfo(2)` for the CPUs, memory, load and uptime, read as libuv reads them on Linux (uv_cpu_info: /proc/stat and
+ * /proc/cpuinfo; uv_get_total_memory and uv_get_free_memory: /proc/meminfo's MemTotal and MemAvailable; uv_loadavg:
+ * sysinfo; uv_uptime: /proc/uptime; uv_available_parallelism: sched_getaffinity). Where no kernel answers, the realm's
+ * system gives its fixed figures (system.ts `realmSystem`).
  */
 
 export function hostname(): string {
-  return 'localhost';
+  return system().uname().nodename;
 }
 
 export function platform(): string {
@@ -18,19 +22,19 @@ export function arch(): string {
 }
 
 export function type(): string {
-  return 'Linux';
+  return system().uname().sysname;
 }
 
 export function release(): string {
-  return '5.10.0';
+  return system().uname().release;
 }
 
 export function version(): string {
-  return '#1 SMP';
+  return system().uname().version;
 }
 
 export function machine(): string {
-  return 'x86_64';
+  return system().uname().machine;
 }
 
 export function tmpdir(): string {
@@ -41,33 +45,58 @@ export function homedir(): string {
   return '/home/user';
 }
 
-export function cpus(): Array<{
-  model: string;
-  speed: number;
-  times: { user: number; nice: number; sys: number; idle: number; irq: number };
-}> {
-  const cpu = {
-    model: 'Virtual CPU',
-    speed: 2400,
-    times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 },
-  };
-  return [cpu, cpu]; // Simulate 2 CPUs
+type CpuTimes = { user: number; nice: number; sys: number; idle: number; irq: number };
+
+/** USER_HZ, the unit /proc/stat counts in; libuv multiplies by the clock tick's milliseconds (10). */
+const TICK_MS = 10;
+
+export function cpus(): Array<{ model: string; speed: number; times: CpuTimes }> {
+  const stat = system().file('/proc/stat');
+  if (stat === undefined) {
+    const count = system().affinity();
+    return Array.from({ length: count }, () => ({ model: 'Virtual CPU', speed: 2400, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }));
+  }
+  const info = system().file('/proc/cpuinfo') ?? '';
+  const models = [...info.matchAll(/^model name\s*:\s*(.*)$/gmu)].map((match) => match[1]!);
+  const speeds = [...info.matchAll(/^cpu MHz\s*:\s*([0-9.]+)$/gmu)].map((match) => Math.floor(Number(match[1])));
+  const list: Array<{ model: string; speed: number; times: CpuTimes }> = [];
+  for (const line of stat.split('\n')) {
+    const match = /^cpu(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+\d+\s+(\d+)/u.exec(line);
+    if (!match) continue;
+    const at = Number(match[1]);
+    const [user, nice, sys, idle, irq] = match.slice(2, 7).map((value) => Number(value) * TICK_MS) as [number, number, number, number, number];
+    // libuv's model is "unknown" and its speed 0 where /proc/cpuinfo names none.
+    list.push({ model: models[at] ?? models[0] ?? 'unknown', speed: speeds[at] ?? speeds[0] ?? 0, times: { user, nice, sys, idle, irq } });
+  }
+  return list;
+}
+
+/** A /proc/meminfo field, in bytes; undefined where it is not there. */
+function meminfo(field: string): number | undefined {
+  const match = new RegExp(`^${field}:\\s+(\\d+) kB$`, 'mu').exec(system().file('/proc/meminfo') ?? '');
+  return match ? Number(match[1]) * 1024 : undefined;
 }
 
 export function totalmem(): number {
-  return 4 * 1024 * 1024 * 1024; // 4GB
+  return meminfo('MemTotal') ?? system().sysinfo().totalram;
 }
 
 export function freemem(): number {
-  return 2 * 1024 * 1024 * 1024; // 2GB
+  return meminfo('MemAvailable') ?? system().sysinfo().freeram;
 }
 
 export function uptime(): number {
-  return Math.floor(performance.now() / 1000);
+  const proc = /^([0-9.]+)/u.exec(system().file('/proc/uptime') ?? '');
+  return proc ? Number(proc[1]) : system().sysinfo().uptime;
 }
 
 export function loadavg(): [number, number, number] {
-  return [0.5, 0.5, 0.5];
+  return system().sysinfo().loads;
+}
+
+/** uv_available_parallelism: the CPUs the process may run on. */
+export function availableParallelism(): number {
+  return Math.max(1, system().affinity());
 }
 
 /** A netmask's prefix length: its leading one bits, as `os.js` counts them for `cidr`. */
@@ -188,6 +217,7 @@ export default {
   freemem,
   uptime,
   loadavg,
+  availableParallelism,
   networkInterfaces,
   userInfo,
   endianness,

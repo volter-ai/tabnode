@@ -1,3 +1,4 @@
+import { realmProcess } from '../../system';
 /**
  * `internal/deps/amaro/dist/index`: the type stripper Node carries.
  *
@@ -21,9 +22,7 @@ type AmaroTransform = (source: string, options: Record<string, unknown>) => { co
 interface Amaro { transformSync: AmaroTransform }
 
 /** The host's `process`, taken before a guest's takes the global name. */
-const hostProcess = typeof process !== 'undefined' && process !== null
-  ? (process as unknown as { getBuiltinModule?: (name: string) => unknown })
-  : null;
+const hostProcess = realmProcess;
 
 let loaded: Amaro | null | undefined;
 

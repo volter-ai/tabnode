@@ -48,6 +48,9 @@
  * spin where it may not), as uvwasi blocks on its loop.
  */
 import NODE_WASI_SOURCE from '../node-lib/wasi.js?raw';
+import { monotonicMs, randomFill, system } from '../system';
+
+const systemClock = (id: 0 | 1): bigint => system().clock(id);
 // The guest stdin stream's engine-side read (process.ts `kEngineStdinRead`).
 const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
 import {
@@ -434,12 +437,13 @@ function nanosSince(ms: number): bigint {
   return BigInt(whole) * 1_000_000n + BigInt(Math.round((ms - whole) * 1e6));
 }
 
+/** The system's clocks (clock_gettime, ADR-0017). */
 function realtimeNanos(): bigint {
-  return nanosSince(performance.timeOrigin + performance.now());
+  return systemClock(0);
 }
 
 function monotonicNanos(): bigint {
-  return nanosSince(performance.now());
+  return systemClock(1);
 }
 
 /**
@@ -451,21 +455,21 @@ function monotonicNanos(): bigint {
 function sleepNanos(nanos: bigint): void {
   if (nanos <= 0n) return;
   const ms = Number(nanos) / 1e6;
-  const until = performance.now() + ms;
+  const until = monotonicMs() + ms;
   if (typeof SharedArrayBuffer !== 'undefined' && typeof Atomics !== 'undefined' && typeof Atomics.wait === 'function') {
     try {
       const cell = new Int32Array(new SharedArrayBuffer(4));
-      let remaining = until - performance.now();
+      let remaining = until - monotonicMs();
       while (remaining > 0) {
         Atomics.wait(cell, 0, 0, remaining);
-        remaining = until - performance.now();
+        remaining = until - monotonicMs();
       }
       return;
     } catch {
       // Not allowed on this thread; fall through to the timed spin.
     }
   }
-  while (performance.now() < until) { /* spin */ }
+  while (monotonicMs() < until) { /* spin */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -1327,12 +1331,9 @@ function bindingClassFor(fs: WasiHostFs, process: WasiHostProcess): BindingClass
   define('random_get', 'ii', (_state, memory, bufPtr, bufLen) => {
     if (!memory.fits(bufPtr as number, bufLen as number)) return ERRNO.EOVERFLOW;
     const target = memory.bytes.subarray(bufPtr as number, (bufPtr as number) + (bufLen as number));
-    // getRandomValues fills at most 65536 bytes per call, and never a shared buffer.
-    for (let at = 0; at < target.length; at += 65536) {
-      const chunk = target.subarray(at, Math.min(at + 65536, target.length));
-      if (memory.shared) chunk.set(crypto.getRandomValues(new Uint8Array(chunk.length)));
-      else crypto.getRandomValues(chunk);
-    }
+    // getrandom(2), the system's pool (ADR-0017), drawn into a copy where the memory is shared.
+    if (memory.shared) target.set(randomFill(new Uint8Array(target.length)));
+    else randomFill(target);
   });
 
   define('sched_yield', '', () => {});

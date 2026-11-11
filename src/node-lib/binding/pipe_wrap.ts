@@ -3,12 +3,12 @@
  *
  * A pipe that is a socket is a kernel AF_UNIX socket of its process, as libuv's is: a server binds and listens on a
  * path (`sockaddr_un`, or an abstract name with a leading NUL), a client connects to one, and the kernel makes the
- * socket's node, refuses (`ENOENT`, `ECONNREFUSED`, `EADDRINUSE`) and accepts. A child's IPC channel is one end of a
- * `socketpair` its parent made (`process_wrap`), and a handle crosses it as `SCM_RIGHTS` into the receiver's own
- * table (`kernel_stream.ts`, ADR-0009 §4). A pipe of a process whose tree offers no socket calls has no AF_UNIX: a
- * bind or connect is `EAFNOSUPPORT`, and its stdio pipes and IPC channels are the engine's pairing, on which an IPC
- * write may carry another pairing, set on the peer before the peer's read, where `setupChannel` in
- * `internal/child_process.js` takes a sent handle. A stdio pipe is the engine's pairing everywhere.
+ * socket's node, refuses (`ENOENT`, `ECONNREFUSED`, `EADDRINUSE`) and accepts. A child's stdio pipe and its IPC
+ * channel are each one end of a `socketpair` its parent made (`child_stdio.ts`, ADR-0010 §1), and a handle crosses a
+ * channel as `SCM_RIGHTS` into the receiver's own table (`kernel_stream.ts`, ADR-0009 §4). A pipe of a process whose
+ * tree offers no socket calls has no AF_UNIX: a bind or connect is `EAFNOSUPPORT`, and its stdio pipes and IPC
+ * channels are the engine's pairing, on which an IPC write may carry another pairing, set on the peer before the
+ * peer's read, where `setupChannel` in `internal/child_process.js` takes a sent handle.
  */
 import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';

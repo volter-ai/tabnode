@@ -2,7 +2,191 @@
 
 What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## Unreleased
+## 0.21.0 — 2026-11-10
+
+A minor release: `TREE_SYSTEM` and its types are exported. It is the first published release carrying 0.20.0's
+changes below, which was prepared and never published.
+
+- **A process has its clocks, timers, randomness, output and system facts from its system** (ADR-0017). On a
+  kernel a tree offers its process's Linux calls under `TREE_SYSTEM` (`src/system.ts`, the engine's one door), and
+  the engine reads nothing of these from the realm it runs in:
+  - **time**: `process.hrtime`, `performance.now` and `timeOrigin`, `process.uptime`, `os.uptime`, the guest loop,
+    `child_process`, WASI and node-deps read `clock_gettime`; `Date` reads `CLOCK_REALTIME`;
+  - **timers**: the engine keeps its own timer list (guest globals, the `timers` module, its internal timers),
+    runs one due timer per turn in deadline order, and gives the process's loop the nearest deadline, which it
+    waits for in `epoll_pwait`; `async_hooks` carries a timer's context;
+  - **randomness**: `randomBytes`, `randomUUID`, `getRandomValues` (with Web Crypto's 65,536-byte limit), WASI's
+    `random_get` and OpenSSL's entropy are `getrandom`; a guest's `globalThis.crypto` is the engine's `webcrypto`;
+  - **output**: a process's console is its fds 1 and 2; the engine's own diagnostics go to the process's trace;
+  - **`os`**: libuv's Linux reads (`/proc/stat` in USER_HZ, `/proc/cpuinfo`, `/proc/meminfo`, `/proc/uptime`,
+    `sysinfo`, `uname`, the CPU affinity), never invented figures;
+  - **the host**: one read in `system.ts`, consulted only with no kernel; just-bash, which takes the realm's timers
+    when it loads, is loaded only then.
+  With no kernel (the standalone library and the in-page modes) the same interface is backed by the realm's own
+  clock, crypto, timers and console, and `os` answers its fixed figures.
+- **One base64 codec**: HTML's `atob` and `btoa` are the `buffer` binding's, over its own decoder and encoder.
+- **A process's global `console` is its own**, made with its runtime and given to its module bodies, never the
+  realm's: code compiled through `Function` or `vm` (Prisma's TypeScript config loader) reads it from the global.
+
+## 0.20.0 — 2026-11-10 (not published; first published in 0.21.0)
+
+A minor release: the prepared format moves to `tabnode-prepared-9`.
+
+- **`tls` is Node's own over OpenSSL 3.5.8 in the realm's node-deps.wasm** (ADR-0016). Node v24.21.0's `tls.js`,
+  `_tls_common.js`, `_tls_wrap.js`, `internal/tls/*.js` and `internal/js_stream_socket.js` run unmodified over
+  `tls_wrap`, `crypto`'s `SecureContext` and `js_stream` bindings, which carry the V8 half of Node's
+  `crypto_tls.cc`/`crypto_context.cc`; OpenSSL, ncrypto and the export layer are one WebAssembly module built from
+  Node's `deps/` by `scripts/build-node-deps-wasm.sh`, driven through memory BIOs as Node's TLSWrap drives it. The tab
+  had no TLS: a handshake failed `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, and Rallly's `prisma migrate deploy` exited 1
+  on a missing `TLSSocket.secureConnecting`. A client verifies against the image's bundle and `NODE_EXTRA_CA_CERTS`,
+  as `--use-openssl-ca` makes it. `process.versions.openssl` is `3.5.8`; the `constants` binding's `crypto` group is
+  OpenSSL's own. Refused by name: `getPeerX509Certificate()` until `crypto` is OpenSSL's, a server's session
+  resumption events, PSK, OCSP stapling, `enableTrace`, `pfx`, certificate compression, `getSharedSigalgs()`.
+- **`TREE_TLS` and its types are no longer exported** (ADR-0016 §4): a process's TLS is the library inside it, so a
+  host offers none. `src/shims/tls.ts`, `src/host-tls.ts` and `DuplexStreamHandle` are deleted; a TLS socket over a
+  JavaScript stream is Node's own `JSStreamSocket` (ADR-0013 §2).
+- **Every free name a process's code reads resolves on that process's global** (ADR-0015), as Node compiles every
+  builtin and module inside its process's context. Each compile site bound a list of names and left the rest to the
+  realm: undici's bundle read the realm's `Buffer`, which a browser worker has not, and Rallly's server died on
+  `ReferenceError: Buffer is not defined` at `lib/dispatcher/client-h1.js`; a guest's `typeof XMLHttpRequest`,
+  `typeof importScripts` or `typeof localStorage` found the browser's.
+  - **The process's global holds Node's names**: Node v24.21.0's globals, ECMAScript's (the realm's own), the
+    engine's helpers, and what the process puts there. Any other name of the realm (`window`, `self`,
+    `XMLHttpRequest`, `localStorage`, `importScripts`, a worker's `postMessage`) is not the process's: `undefined`,
+    not `in`, not listed. What a process assigns or defines is its own, not the realm's; an assignment to an
+    ECMAScript name stays the realm's, as before.
+  - **Rewritten where free**: every free name of a module body, of Node's library files (once a realm per file) and
+    of `@emnapi/runtime` reads the process's global, except the realm's intrinsics and the names the wrapper binds,
+    which stay as written at no cost. A read of a name the global does not hold is `ReferenceError: X is not
+    defined`; `typeof` of one is `"undefined"`. A free `Function(...)` call makes its function as `new Function` does.
+  - **Inside `with`, where names are dynamic** (a body with `with` or a direct `eval`, a function a program makes, a
+    `vm.runInThisContext` script, `vm.compileFunction`, the REPL): a name the global holds is its, a realm-only name
+    reads `undefined`, and a script's top-level `this` is the process's global.
+  - **`vm.runInNewContext`**: a name the sandbox lacks is V8's own global or `undefined`, never the realm's.
+  - **Kept** (ADR-0015 *Divergences*): in `with` code a realm-only name reads `undefined` rather than throwing; a
+    strict assignment to an undeclared name creates it; indirect `eval` and a constructor reached by property compile
+    at the realm's scope; a sloppy function's `this` is the realm's global.
+
+## 0.19.0 — 2026-11-06
+
+A minor release: `run(argv)`, `ServerBridge.registerConnector`, the `vite-ws-channel` fields and the `TreeSockets`
+and `RunStreams.terminal` doors change the exported surface.
+
+- **A shell's `&` job is the catalog shell's own fork** (browser-substrate ADR-0227, "What a page program is"). In the
+  substrate every shell line, `exec`, `shell: true` spawn and synchronous child is the catalog's own `/bin/sh -c`, so
+  a `&` there is that shell's own fork. The engine's shell runs a line only where no host runs it, and there, with no
+  fork, a `&` statement runs in the foreground in the realm, as just-bash runs it. The host executor's `bypass` count
+  is gone: no host ever set it.
+- **`currentProcessToken()`** names the run whose call is executing, as a container's `currentProcessToken` does, for
+  a host realm that has no container (a Node worker thread's, whose children its kernel forks under that run).
+- **A virtual WebSocket is Node's own WebSocket client** (ADR-0014; browser-substrate ROADMAP 55). The server bridge
+  opens undici's `WebSocket` (the bundle Node ships, unedited) to the guest's port over the container's loopback, so
+  the handshake and its 101 checks, masking, every frame check, the close-code table, the closing handshake, 1005,
+  1006 and `wasClean`, permessage-deflate and a 32 MiB message limit are undici's. The bridge carries only the
+  `vite-ws-channel` channel:
+  - **Scoped:** `ServerBridge.registerConnector(id)` registers a connector, and a bridge answers only its registered
+    connectors' `connect`s. A connect every registered bridge refuses (nothing listens) is answered `close` 1006.
+  - **New fields:** `connect` carries `connector`, `protocols` and the request's `headers` (Host, Origin and Cookie
+    among them; `origin` and `host` are gone). `disconnect` carries `kind` (`close` or `fail`) and a code or none.
+    `connected` carries `protocol`, `extensions` and the 101's `setCookie`. `close` carries `code`, `reason` and
+    `wasClean`.
+  - **Ends:** a disconnect while the connection is being made cancels it, its loopback connection or upgrade request
+    included. A `close` with 1001 sends a Close with no body and a `fail` sends no Close (ADR-0014 *Kept*). A closing
+    bridge reports `close` 1006 to each client and ends each by its state, a CLOSING one aborted.
+  - **Byte pipes** (`framing: 'none'`) carry the same headers and `Set-Cookie`, and report their end as 1005 (clean)
+    or 1006.
+- **`stopProcess` is `kill(pid, 'SIGTERM')`** (ADR-0013 §1). It delivers SIGTERM to the named run: its listeners run,
+  else its default action ends it inside the call, its servers, handles and timers released, and `run()` settles with
+  `exitCode: 143, signal: 'SIGTERM'`, as a held run now does. A second stop before the run is reaped delivers nothing.
+  A run that receives no signals ends at once, as before.
+- **A program's stream under TLS is called in its caller's context** (ADR-0013 §2), as Node's `JSStreamSocket` calls
+  it: a write is one `write` of the whole buffer inside the writer's call, a chunk is read inside the stream's `data`
+  listener, `readStop` and `readStart` pause and resume it, `shutdown` ends it on a tick of the caller's process after a
+  pending write, and an error carries the stream's own code. Every write and shutdown is answered once: a close, or
+  the stream's own close, cancels what is held, and a late callback is ignored.
+- **`container.run` takes an argv vector** (`run(argv, options?)`, ADR-0012), as `execvp` takes one, and the vector
+  reaches the program untouched.
+  - **Resolution:** `argv[0]` is resolved as musl's `execvp` resolves it, on the run's own tree: a name with a slash
+    is that path; any other walks `PATH` in order, relative entries against the working directory, counting only a
+    regular file with an execute bit. Each candidate is admitted whole, as `execve` admits it: one that fails
+    `ENOENT`, `ENOTDIR` or `EACCES` (its script's interpreter included) is passed over, and any other failure ends the
+    walk. In a kernel tree the kernel's `posix_spawnp` resolves it, and Tabnode does not search.
+  - **What runs:** the resolved file decides it, never its name. The engine's node entry is that Node, as `runNode`
+    starts it, so a numbered run's pid is the Node's own. A registered command's installed entry runs that command.
+    A script runs its `#!` interpreter, read from its first 256 bytes as Linux reads them (a truncated interpreter
+    path is `ENOEXEC`), and decided the same way. Anything else fails as a shell reports it: 127 for `ENOENT`, 126 for
+    `ENOTDIR`, `EACCES`, `ENOEXEC`, `ELOOP` or a read failure. An argv runs no shell builtin, so `['true']` with no `true` on `PATH`
+    is `ENOENT`.
+  - **Command entries:** a tree the engine made carries every command its shell registers as an executable entry
+    at `/bin/<name>` and `/usr/bin/<name>`, with just-bash's own entry text, so `['ls']` finds `/bin/ls` as on a
+    machine.
+  - **Hosts:** a host is given the executable and the vector to resolve itself.
+  - **The npm shortcut is gone:** `npm -v` is answered only by the shell's own `npm`.
+  - A command line is still a line, and its process a shell.
+- **A nested `node` the realm runs gives back what it took, on every exit** (ADR-0010 §2). A `node` a run's shell runs
+  in the same realm (`nestedNodeToken`: its pid under the run's, the run's streams registered under its token) is
+  released by one scope from that moment. A refusal (an option without its value, no script, a missing module) exits
+  with its code, and its completion with its status. A startup that throws partway (its filesystem, its stderr sink,
+  its runtime, its input, its channel) is killed. Either way its parent reaps it, its number is forgotten, its
+  registration of the parent's streams goes, and whatever of its run record, runtime, input, terminal and channel was
+  started is released.
+- **A `.node` that is a WALI Node-API module loads** (ADR-0011). `require` of a `.node` caches its module and loads it
+  through the `.node` extension, which is `process.dlopen(module, filename)` of the run's process, so a wrapper of
+  `process.dlopen` applies; `process.dlopen` initializes its own target's `module.exports` with an environment of its
+  own every time, over the one instance a process keeps per file. The file is validated by the engine's WebAssembly
+  compiler before anything of it is read, then loaded into its process's memory by the loading process's tree
+  (`TREE_NATIVE`, `src/host-native.ts`). Its Node-API is emnapi's (`@emnapi/core` and `@emnapi/runtime` 1.11.3) as
+  emnapi behaves, its memory boundary included. `@emnapi/runtime` is evaluated once per process, so its `process`,
+  immediates, ports, `Buffer` and global are that process's. Threads wake the main thread through a shared queue, and
+  `@volter/tabnode/native-thread` is a thread worker's side of the imports.
+- **A process's end completes its native teardown** (ADR-0011 §6). `__endOwnedProcess` releases a process's servers
+  and handles and stops its timers at once, and answers a completion that settles when its addons' teardown is done:
+  the context destroyed, then native immediates, cleanup hooks and thread deliveries run turn after turn until no
+  native immediate is queued and no native request waits, going again at once while one is queued. A cleanup hook
+  removed or added again while the queue drains keeps every other hook in it. A throw during the end leaves the
+  remaining hooks to run and fails the end, and the run fails with it rather than reporting a clean result; a killed
+  child reports its exit at completion. A refused `dlopen` leaves the process's addon runtime as it was, and a `dlopen` once the end has
+  begun is refused. Any other `.node` fails
+  `ERR_DLOPEN_FAILED` as Node's `dlopen` does: `invalid ELF header`, the compiler's refusal, "Module did not
+  self-register", `cannot dynamically load executable`, `undefined symbol: <name>`, or, in a tree that offers no
+  `TREE_NATIVE`, `a tab runs no native code`.
+- **`dns` takes Node's own front and Ada's own name conversion** (ADR-0009 §3).
+  - **Node's own checks and answers:** names are validated with Node's own `validateStringWithoutNullBytes`.
+    Literals are answered where Node's own `isIP` recognises the string as given, so `[::1]` is no longer
+    unbracketed. An empty name answers `null` on a later tick, on the callback and promise doors alike.
+  - **Ada's own conversion:** every name goes through `ada::idna::to_ascii` from Node v24.21.0's Ada, compiled to
+    WebAssembly (`scripts/build-ada-idna-wasm.sh`), which replaces the URL parser's conversion. The result is cut at
+    its first NUL, as Node passes `name.c_str()`. `lookup('DB')` finds a `db` hosts line.
+  - **Refusals:** a name no query can carry is refused and sends nothing, where before its labels were dropped or
+    cut. That is an empty label, a label over 63 bytes, or more than 253 bytes (255 for a query). A lookup refuses
+    with `ENOTFOUND` -3008, a query with `EBADNAME`.
+  - **`localhost`:** the engine no longer answers it itself. It resolves from the image's hosts line, or from the
+    resolver.
+- **A child's stdio is descriptors of its kernel** (ADR-0010; browser-substrate ADR-0227 §7). In a process whose tree
+  offers socket calls, `spawn` makes each stdio entry as libuv's `uv__process_init_stdio` does, in the parent's kernel
+  table: a `'pipe'` (IPC or not) a socketpair with 64 KiB buffers, `'inherit'` and a number the parent's descriptor,
+  a stream its descriptor, `'ignore'` at 0 to 2 /dev/null. `RunRequest.kernelDescriptors` lists them as `{ fd, from }`;
+  a child a host runs as its own process is started with them (`NodeProcessLaunch.descriptors`, the new
+  `ChildProcessHostRequest.kernelDescriptors`), its fds 0 to 2 and its pipe ends blocking, and the parent closes the
+  ends it made for it after the start and relays nothing of them (no sink, no input). A child of a process with a
+  kernel is always its host's: with no host to run it, the spawn fails `EACCES` and nothing runs it in the realm.
+  Whether an inherited number is the parent's descriptor is the kernel's answer. `spawn` and `spawnSync` share one
+  preparation (`child_stdio.ts`).
+- **A terminal's mode is its host's termios** (ADR-0010 §3). `RunStreams.terminal.setRawMode(false | 'raw' | 'io')`
+  is fd 0's mode as `uv_tty_set_mode` sets it; a `TTY` on fd 0 sets it, and a run's `process.stdin.setRawMode` is
+  Node's own `tty.ReadStream.prototype.setRawMode` over the same binding operation, and a run's end
+  puts a mode it set back to normal, as Node's `ResetStdio` does. A `TTY` on fd 0 to 2 answers `getWindowSize` from the
+  run's terminal.
+- **A synchronous child's pipes are read by its parent's blocking loop** (ADR-0010 §4). `TreeSockets` adds `poll`
+  (`poll(2)` blocking the calling thread, `PollDescriptor`). In a process with socket calls `spawnSync` makes the
+  child's stdio as `spawn` does and hands the host's `runSync` `kernelDescriptors` and `drain` in place of `input`,
+  `captured`, `maxBuffer`, `onStdout` and `onStderr`; `drain` writes each input pipe and reads each output pipe to its
+  end with `poll`, one send and one read per ready pipe a round, as Node's `SyncProcessRunner` does, killing the
+  child and closing the pipes at `timeout` (`ETIMEDOUT`, whatever the pipes' readiness) or past `maxBuffer`
+  (`ENOBUFS`), so a child that fills a 64 KiB pipe is read, not deadlocked. `maxBuffer` is Node's on every
+  synchronous route: positive, it bounds stdout and stderr together; zero sets no limit.
+
+## 0.18.0 — 2026-11-05
 
 - **The prepared format is `tabnode-prepared-8`, a minor release, 0.18.0** (CONTRIBUTING: a change to the lowered text
   moves the format). A guest body's free `Request`, `Response`, `Headers`, `FormData`, `WebSocket`, `CloseEvent`,

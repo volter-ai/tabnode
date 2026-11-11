@@ -4,15 +4,17 @@
  */
 
 import {
-  __requestOverLoopback, __streamOverLoopback, __upgradeOverLoopback,
+  __requestOverLoopback, __streamOverLoopback, __upgradeOverLoopback, connectLoopback, refused,
   type ResponseData, type LoopbackStreamFlow,
 } from './node-lib/http-bridge';
+import { loadNodeLib } from './node-lib/load';
 import { watchListens } from './node-lib/binding/tcp_wrap';
 import { callingSockets, treeSocketsOf } from './host-sockets';
 import type { Socket } from './node-lib/net-module';
 import { Buffer } from './node-lib/buffer-module';
 import { uint8ToBase64 } from './utils/binary-encoding';
 import { PortBridge, type IVirtualServer, type VirtualServer, type BridgeOptions } from './port-bridge';
+import { randomFill } from './system';
 
 const _encoder = new TextEncoder();
 
@@ -40,343 +42,425 @@ function guestListeningServer(tree: object | undefined, port: number, address: s
   };
 }
 
-/**
- * Server Bridge manages virtual HTTP servers and routes requests
+/*
+ * A virtual WebSocket (ADR-0014). The page's connector posts a `connect` on the `vite-ws-channel` channel, and the
+ * bridge its runtime registered the connector with (§3) opens Node's own WebSocket client, undici's, to the guest's
+ * port over the container's loopback (§1). Every protocol case is undici's; the bridge carries the channel (§2): the
+ * page's sends and closes in, the socket's open, messages and single close out.
  */
-/**
- * A virtual WebSocket to a port whose server is an HTTP server with an
- * `upgrade` listener, and no `ws` shim server of its own, reaches that listener
- * as Node delivers it: an `upgrade` event with the request and a duplex socket,
- * on which the program's own WebSocket library — `ws` bundled inside Vite among
- * them — writes its 101 response and then frames. The bridge speaks RFC 6455 on
- * the socket's other end: the library's frames become the client's messages,
- * the client's messages become masked frames the library reads, a close either
- * way closes both.
- */
-/** One client's place in the bridge: who it is, which port, the channel it speaks on. */
-interface UpgradeEntry {
-  clientId: string;
-  port: number;
-  channel: BroadcastChannel;
-}
 
-/** A partly read frame stream: bytes not yet a whole frame, and a fragmented message in progress. */
-interface FrameState {
-  /** The bytes after the last whole frame, as they came: joined once a frame they hold can be whole (`need`). */
-  pending: Uint8Array[];
-  pendingBytes: number;
-  /** How many bytes the frame at the front needs before it can be read; 0 when unknown (a header still short). */
-  need: number;
-  fragments: { opcode: number; parts: Uint8Array[] } | null;
-}
+/** The size limit of a message, either way (browser-substrate ADR-0099 *Kept*, `MAX_VIRTUAL_WEBSOCKET_FRAME_BYTES`). */
+const MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
 
-/** What a virtual WebSocket client sends over the shared channel. */
-interface UpgradeSignal {
+/** What a connector sends on the channel (ADR-0014 §2). */
+interface ChannelSignal {
   type: string;
   clientId: string;
+  /** `connect`: the connector's registered id (§3). */
+  connector?: string;
+  /** `connect`: a URL whose port is the guest port and whose path and query are the request target. */
   url?: string;
   protocols?: string[];
-  /** `"none"` asks for a byte pipe; anything else, or nothing, is a WebSocket. */
-  framing?: "websocket" | "none";
-  /** The origin of the page that opened the socket, which a browser sends on every handshake. */
-  origin?: string;
-  /** The authority the client addressed, its handshake's Host; the engine's own URL names the port. */
-  host?: string;
-  payload?: string | ArrayBuffer;
+  /** `connect`: the request's headers, a `HeadersInit`. */
+  headers?: unknown;
+  /** `connect`: `"none"` asks for a byte pipe (§4); anything else, or nothing, is a WebSocket. */
+  framing?: string;
+  /** `message`. */
+  payload?: unknown;
+  /** `disconnect`. */
+  kind?: string;
   code?: number;
   reason?: string;
 }
 
-/** What a server must answer for a virtual connect to reach it as an upgrade. */
-interface UpgradeTarget {
-  emit(event: string, ...args: unknown[]): boolean;
-  listenerCount(event: string): number;
+/** One client the bridge carries, from its `connect` to its single `close`. */
+interface CarriedClient {
+  /** The page's `message`; a throw fails the client. */
+  deliver(payload: unknown): void;
+  /** The page's `disconnect`. */
+  disconnect(kind: 'close' | 'fail', code: number | undefined, reason: string): void;
+  /** The bridge's own close (§5): the connection ended, nothing more posted. */
+  release(): void;
 }
 
-/** The end of an upgraded socket the bridge drives, whichever socket the listener was handed. */
-interface UpgradeEnd {
-  deliver(payload: string | ArrayBuffer): void;
-  disconnect(code: number, reason: string): void;
-  destroy(): void;
+/** A bridge's side of one client: the channel's posts addressed to it, and its end. */
+interface ClientLink {
+  post(message: Record<string, unknown>): void;
+  /** Nothing listened on the port in this bridge's container (§3). */
+  refused(): void;
+  /** The client's single `close` has been posted, or will never be: it leaves the bridge. */
+  forget(): void;
 }
 
-/**
- * The duplex socket an `upgrade` listener is handed: the connection's own
- * `net.Socket`, which is what Node hands one, plus the two calls the bridge
- * drives its own end with, `deliver` and `disconnect`, and the two a Duplex
- * here does not inherit -- `cork`/`uncork` are the Writable base's, Node's
- * socket has them, and `ws` corks a two-part frame before it writes it.
- */
-type UpgradeSocket = Socket & UpgradeEnd & { cork(): void; uncork(): void };
+/** The bridges each connector id is registered with (§3). */
+const registeredConnectors = new Map<string, Set<ServerBridge>>();
+/** The bridges that refused a client's connect, until every bridge its connector is registered with has (§3). */
+const refusals = new Map<string, Set<ServerBridge>>();
 
-// RFC 6455 on the bridge's side of an upgraded socket: what the server's
-// library writes is parsed into messages for the client, what the client
-// sends is framed, masked as a client must, for the library to read.
-/**
- * The upgraded sockets each bridge's channel carries, by client, and the connects still being answered on it. Every
- * client's messages and its end are looked up in its own bridge's channel, so two bridges that both accepted one
- * broadcast connect never reach each other's socket, and a bridge that closes ends exactly its own.
- */
-const __substrateChannelSockets = new WeakMap<BroadcastChannel, { sockets: Map<string, UpgradeEnd>; pending: Set<string> }>();
-function __substrateFrame(opcode: number, payload: Uint8Array, masked: boolean): Uint8Array {
-  const length = payload.length;
-  const header = [0x80 | opcode];
-  if (length < 126) header.push((masked ? 0x80 : 0) | length);
-  else if (length < 65536) header.push((masked ? 0x80 : 0) | 126, length >> 8, length & 255);
-  else header.push((masked ? 0x80 : 0) | 127, 0, 0, 0, 0, (length >>> 24) & 255, (length >>> 16) & 255, (length >>> 8) & 255, length & 255);
-  const mask = masked ? [Math.random() * 256 | 0, Math.random() * 256 | 0, Math.random() * 256 | 0, Math.random() * 256 | 0] : [];
-  const out = new Uint8Array(header.length + mask.length + length);
-  out.set(header, 0);
-  out.set(mask, header.length);
-  for (let index = 0; index < length; index += 1) out[header.length + mask.length + index] = masked ? payload[index] ^ mask[index & 3] : payload[index];
-  return out;
+/** The undici Node bundles, as the bridge uses it (ADR-0014 §1): the engine's own, loaded at the first virtual WebSocket. */
+interface UndiciWebSocket extends EventTarget {
+  binaryType: string;
+  readonly readyState: number;
+  readonly protocol: string;
+  readonly extensions: string;
+  send(data: string | ArrayBuffer | ArrayBufferView): void;
+  close(code?: number, reason?: string): void;
 }
-/**
- * Incoming WebSocket chunks are kept separately and joined once the front frame
- * can be whole, avoiding repeated copying while a large frame is incomplete.
- */
-function __substrateParseFrames(state: FrameState, chunk: Uint8Array, onFrame: (opcode: number, payload: Uint8Array) => void): void {
-  state.pending.push(chunk);
-  state.pendingBytes += chunk.length;
-  if (state.need > state.pendingBytes) return;
-  let joined: Uint8Array;
-  if (state.pending.length === 1) joined = state.pending[0]!;
-  else {
-    joined = new Uint8Array(state.pendingBytes);
-    let at = 0;
-    for (const part of state.pending) { joined.set(part, at); at += part.length; }
+interface UndiciDispatcher {
+  dispatch(options: object, handler: object): boolean;
+  destroy(): Promise<void>;
+}
+interface Undici {
+  WebSocket: (new (url: string, init: { protocols: string[]; dispatcher: object; headers: [string, string][] }) => UndiciWebSocket)
+    & { CONNECTING: number; OPEN: number };
+  EnvHttpProxyAgent: new (options: object) => UndiciDispatcher;
+}
+const engineUndici = (): Undici => loadNodeLib('internal/deps/undici/undici') as Undici;
+
+/** The error a cancelled connection is answered with, as an aborted connection is answered. */
+const cancelled = (): Error => Object.assign(new Error('The connection was cancelled'), { code: 'ECONNABORTED' });
+
+/** A `HeadersInit` as name and value pairs: a list of pairs or a record of strings; anything else is refused. */
+function headerPairs(init: unknown): [string, string][] {
+  if (init === undefined || init === null) return [];
+  if (typeof init !== 'object') throw new TypeError('headers are a list of pairs or a record');
+  const pairs = Array.isArray(init) ? init : Object.entries(init as Record<string, unknown>);
+  for (const pair of pairs) {
+    if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string' || typeof pair[1] !== 'string') {
+      throw new TypeError('a header is a name and a value');
+    }
   }
-  state.need = 0;
-  let offset = 0;
-  for (;;) {
-    if (joined.length - offset < 2) break;
-    const b0 = joined[offset], b1 = joined[offset + 1];
-    const fin = (b0 & 0x80) !== 0, opcode = b0 & 0x0f, masked = (b1 & 0x80) !== 0;
-    let length = b1 & 0x7f, at = offset + 2;
-    if (length === 126) { if (joined.length - at < 2) break; length = (joined[at] << 8) | joined[at + 1]; at += 2; }
-    else if (length === 127) { if (joined.length - at < 8) break; length = 0; for (let index = 0; index < 8; index += 1) length = length * 256 + joined[at + index]; at += 8; }
-    let mask: Uint8Array | undefined;
-    if (masked) { if (joined.length - at < 4) break; mask = joined.subarray(at, at + 4); at += 4; }
-    if (joined.length - at < length) { state.need = at + length - offset; break; }
-    const payload = joined.slice(at, at + length);
-    if (mask) for (let index = 0; index < length; index += 1) payload[index] ^= mask[index & 3];
-    offset = at + length;
-    if (opcode === 0 && state.fragments) { state.fragments.parts.push(payload); if (fin) { const parts = state.fragments.parts; const total = parts.reduce((sum, part) => sum + part.length, 0); const whole = new Uint8Array(total); let cursor = 0; for (const part of parts) { whole.set(part, cursor); cursor += part.length; } const op = state.fragments.opcode; state.fragments = null; onFrame(op, whole); } }
-    else if (!fin && (opcode === 1 || opcode === 2)) state.fragments = { opcode, parts: [payload] };
-    else onFrame(opcode, payload);
-  }
-  const rest = joined.slice(offset);
-  state.pending = rest.length ? [rest] : [];
-  state.pendingBytes = rest.length;
+  return pairs as [string, string][];
 }
+
+/** The authority the page addressed, from its `Host`, where it is one; else the guest port on `localhost`. */
+function authorityOf(pairs: readonly [string, string][], port: number): string {
+  const host = pairs.find(([name]) => name.toLowerCase() === 'host')?.[1];
+  return host !== undefined && /^(?:\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::[0-9]{1,5})?$/iu.test(host) ? host : `localhost:${port}`;
+}
+
+/** A field's value as undici hands it: a string, a Buffer, or a list of them. */
+const fieldValues = (value: unknown): string[] =>
+  (Array.isArray(value) ? value : [value]).map((each) => (each as { toString(encoding?: string): string }).toString('latin1'));
+
+/** The `Set-Cookie` values of a head as `onUpgrade` gives it (name and value alternating) or as `onRequestUpgrade` does. */
+function setCookieOf(head: unknown): string[] {
+  if (Array.isArray(head)) {
+    const values: string[] = [];
+    for (let index = 0; index + 1 < head.length; index += 2) {
+      if (String(head[index]).toLowerCase() === 'set-cookie') values.push(...fieldValues(head[index + 1]));
+    }
+    return values;
+  }
+  if (head === null || typeof head !== 'object') return [];
+  const entry = Object.entries(head as Record<string, unknown>).find(([name]) => name.toLowerCase() === 'set-cookie');
+  return entry && entry[1] != null ? fieldValues(entry[1]) : [];
+}
+
 /**
- * The socket an `upgrade` listener is handed for a connect that carries
- * WebSocket frames: Node's own `net.Socket`, over a handle whose peer is the
- * bridge.
- *
- * Node hands an `upgrade` listener the connection's `net.Socket`, and a
- * program does everything a socket can with it. The engine used to hand it an
- * object with `write`, `end` and `destroy` overridden on a socket-shaped
- * class, so pause, resume, pipe, `setEncoding` and `bufferSize` were either
- * wrong or absent -- VS Code's `NodeSocket.drain` resolves on
- * `bufferSize === 0` and otherwise waits for a `drain` event, and waited
- * forever, which is what openvscode-server does before handing its extension
- * host the workbench's connection.
- *
- * So the bridge is a client, not a fake socket: the listener's end is a
- * `net.Socket` of Node's own making and the bridge holds the other end of the
- * connection. What the library writes arrives as bytes -- read first as the
- * `101` head and then as RFC 6455 -- and what the client says is framed,
- * masked as a client must, and pushed in as the connection's own inbound
- * bytes.
+ * undici's handler for one request, with its upgrade observed (ADR-0014 §1): the 101's `Set-Cookie` and the upgraded
+ * socket are handed to `seen`, and the call goes on to undici unchanged.
  */
-function __substrateUpgradeSocket(entry: UpgradeEntry, socket: Socket): UpgradeSocket {
-  // The connection is already made and its `101` already read: this is the
-  // client's own end of a connection the guest's server accepted, so the
-  // bytes on it from here are the protocol's.
-  const end = socket as UpgradeSocket;
-  const bridge = {
-    push: (frame: Uint8Array): void => { socket.write(frame); },
-    destroy: (): void => { socket.destroy(); },
-    get destroyed(): boolean { return socket.destroyed; },
-    onData: (listener: (chunk: Uint8Array) => void): void => { socket.on("data", listener); },
+function observeUpgrade(handler: object, seen: (setCookie: string[], socket: Socket) => void): object {
+  return new Proxy(handler, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver) as unknown;
+      if (typeof value !== 'function') return value;
+      if (key === 'onUpgrade') {
+        return function (this: unknown, status: number, rawHeaders: unknown, socket: Socket): unknown {
+          if (status === 101) seen(setCookieOf(rawHeaders), socket);
+          return value.call(this, status, rawHeaders, socket);
+        };
+      }
+      if (key === 'onRequestUpgrade') {
+        return function (this: unknown, controller: unknown, status: number, headers: unknown, socket: Socket): unknown {
+          if (status === 101) seen(setCookieOf(headers), socket);
+          return value.call(this, controller, status, headers, socket);
+        };
+      }
+      return value;
+    },
+  });
+}
+
+/** A WebSocket client: Node's own, undici's, to the guest's `port` over `tree`'s loopback (ADR-0014 §1, §2). */
+function carryWebSocket(link: ClientLink, tree: object | undefined, port: number, target: string,
+  pairs: [string, string][], protocols: string[]): CarriedClient {
+  const undici = engineUndici();
+  let refusedHere = false;
+  let socket: Socket | null = null;
+  let setCookie: string[] = [];
+  let gone = false;
+  let released = false;
+  let connecting: { connection: Socket; answer: (error: Error | null, connected: Socket | null) => void } | null = null;
+  const agent = new undici.EnvHttpProxyAgent({
+    // No proxy is ever taken from the engine's environment.
+    httpProxy: '',
+    httpsProxy: '',
+    // The connection is the container's, to the guest's port, whatever authority the URL names.
+    // The connection is this client's until its answer hands it to undici (§1): a cancel before then destroys it.
+    connect: (_options: unknown, answer: (error: Error | null, connected: Socket | null) => void): void => {
+      if (gone || released) { answer(cancelled(), null); return; }
+      const connection = connectLoopback(tree, port);
+      const ready = (connection as unknown as { encrypted?: boolean }).encrypted === true ? 'secureConnect' : 'connect';
+      const attempt = { connection, answer };
+      connecting = attempt;
+      connection.once(ready, () => {
+        if (connecting !== attempt) return;
+        connecting = null;
+        answer(null, connection);
+      });
+      connection.once('error', (error: Error) => {
+        if (connecting !== attempt) return;
+        connecting = null;
+        if (refused(error)) refusedHere = true;
+        answer(error, null);
+      });
+    },
+  });
+  const dispatcher = {
+    webSocketOptions: { maxPayloadSize: MAX_MESSAGE_BYTES },
+    dispatch: (options: object, handler: object): boolean => agent.dispatch(options, observeUpgrade(handler, (cookies, upgraded) => {
+      setCookie = cookies;
+      socket = upgraded;
+      // A 101 for a client already gone sends no `connected`.
+      if (gone || released) upgraded.destroy();
+    })),
   };
-  let closed = false;
-  const headed = true;
-  const state: FrameState = { pending: [], pendingBytes: 0, need: 0, fragments: null };
-  const decoder = new TextDecoder();
-  const finish = (code: number, reason: string): void => {
-    if (closed) return;
-    closed = true;
-    __substrateChannelSockets.get(entry.channel)?.sockets.delete(entry.clientId);
-    entry.channel.postMessage({ type: "close", targetClient: entry.clientId, code, reason });
+  const headers = pairs.filter(([name]) => name.toLowerCase() !== 'host');
+  const ws = new undici.WebSocket(`ws://${authorityOf(pairs, port)}${target}`, { protocols, dispatcher, headers });
+  ws.binaryType = 'arraybuffer';
+  ws.addEventListener('open', () => {
+    if (gone || released) return;
+    link.post({ type: 'connected', protocol: ws.protocol, extensions: ws.extensions, setCookie });
+  });
+  ws.addEventListener('message', (event) => {
+    if (released) return;
+    link.post({ type: 'message', payload: (event as MessageEvent).data });
+  });
+  ws.addEventListener('close', (event) => {
+    void agent.destroy().catch(() => undefined);
+    link.forget();
+    if (released) return;
+    if (refusedHere && socket === null) { link.refused(); return; }
+    const closed = event as CloseEvent;
+    link.post({ type: 'close', code: closed.code, reason: closed.reason, wasClean: closed.wasClean });
+  });
+  // While the connection is being made, a close or a fail cancels it (§2): undici fails it, a loopback connection not
+  // yet handed to undici is destroyed and its connect answered with the cancel, and a socket already upgraded is
+  // destroyed before undici takes it.
+  const cancel = (): void => {
+    gone = true;
+    ws.close();
+    const attempt = connecting;
+    connecting = null;
+    if (attempt) {
+      attempt.connection.destroy();
+      attempt.answer(cancelled(), null);
+    }
+    socket?.destroy();
   };
-  /** What the client says, framed for the server's library, as the socket's own inbound bytes. */
-  const receive = (frame: Uint8Array): void => { if (!bridge.destroyed) bridge.push(frame); };
-  bridge.onData((chunk) => {
-    const bytes = chunk;
-    if (!headed) return;
-    __substrateParseFrames(state, bytes, (opcode, payload) => {
-      if (closed) return;
-      if (opcode === 1) entry.channel.postMessage({ type: "message", targetClient: entry.clientId, payload: decoder.decode(payload) });
-      else if (opcode === 2) entry.channel.postMessage({ type: "message", targetClient: entry.clientId, payload: payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) });
-      else if (opcode === 8) { const code = payload.length >= 2 ? (payload[0] << 8) | payload[1] : 1005; finish(code === 1005 ? 1000 : code, payload.length > 2 ? decoder.decode(payload.subarray(2)) : ""); end.destroy(); }
-      else if (opcode === 9) receive(__substrateFrame(10, payload, true));
+  return {
+    deliver: (payload) => {
+      ws.send(payload as string | ArrayBuffer | ArrayBufferView);
+    },
+    disconnect: (kind, code, reason) => {
+      if (ws.readyState === undici.WebSocket.CONNECTING) { cancel(); return; }
+      // A fail, whatever its code, closes the connection with no Close (RFC 6455 §7.1.1; a code is ADR-0014 *Kept* (2)).
+      if (kind === 'fail') { socket?.destroy(); return; }
+      // 1001 is a Close with no body (ADR-0014 *Kept* (1)); no code is `close()`'s own case, a reason making it 1000.
+      if (code === 1001) ws.close();
+      else ws.close(code, reason);
+    },
+    // By its state, as the runtime's release ends a socket (§5): CONNECTING cancelled, OPEN closed (*Kept* (1)), and
+    // CLOSING aborted, since undici's `close` does nothing for a CLOSING socket and the carrier goes with the runtime.
+    release: () => {
+      released = true;
+      if (ws.readyState === undici.WebSocket.CONNECTING) cancel();
+      else if (ws.readyState === undici.WebSocket.OPEN) ws.close();
+      else socket?.destroy();
+    },
+  };
+}
+
+/**
+ * A byte pipe (ADR-0014 §4): the same upgrade request, and then the connection's bytes as they are, every read one
+ * `message` and every `message` one write. VS Code's `RemoteExtensionHostAgentServer` writes its own 101 and then
+ * reads and writes its remote protocol on the socket, unframed.
+ */
+function carryBytePipe(link: ClientLink, tree: object | undefined, port: number, target: string,
+  pairs: [string, string][], protocols: string[]): CarriedClient {
+  let socket: Socket | null = null;
+  let gone = false;
+  let released = false;
+  // The upgrade request's connection is the request's until its 101 hands it here; this aborts it before then.
+  const upgrade = new AbortController();
+  const request: Record<string, string> = {};
+  for (const [name, value] of pairs) if (name.toLowerCase() !== 'host') request[name] = value;
+  Object.assign(request, {
+    Host: authorityOf(pairs, port),
+    Upgrade: 'websocket',
+    'Sec-WebSocket-Version': '13',
+    'Sec-WebSocket-Key': uint8ToBase64(randomFill(new Uint8Array(16))),
+    ...(protocols.length ? { 'Sec-WebSocket-Protocol': protocols.join(', ') } : {}),
+  });
+  void __upgradeOverLoopback(tree, port, 'GET', target, request, upgrade.signal).then((result) => {
+    if (gone || released) { result.socket?.destroy(); return; }
+    if (result.statusCode === 503 && !result.socket) { link.forget(); link.refused(); return; }
+    if (result.statusCode !== 101 || !result.socket) {
+      link.forget();
+      link.post({ type: 'close', code: 1006, reason: '', wasClean: false });
+      return;
+    }
+    const upgraded = result.socket;
+    socket = upgraded;
+    upgraded.on('data', (chunk: Uint8Array) => {
+      if (released) return;
+      link.post({ type: 'message', payload: chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) });
+    });
+    upgraded.on('close', (hadError: boolean) => {
+      link.forget();
+      if (released) return;
+      // No closing handshake: an end without error is 1005, clean; an error is 1006.
+      link.post({ type: 'close', code: hadError ? 1006 : 1005, reason: '', wasClean: !hadError });
+    });
+    link.post({
+      type: 'connected',
+      protocol: result.headers['sec-websocket-protocol'] ?? '',
+      extensions: '',
+      setCookie: setCookieOf(result.rawHeaders),
     });
   });
-  // The listener's own end going is the connection going: the bridge's client
-  // is told, once, whichever side ended it.
-  end.on("close", () => { finish(1000, ""); bridge.destroy(); });
-  end.deliver = (payload: string | ArrayBuffer) => {
-    if (closed || end.destroyed) return;
-    const bytes = typeof payload === "string" ? _encoder.encode(payload) : new Uint8Array(payload);
-    receive(__substrateFrame(typeof payload === "string" ? 1 : 2, bytes, true));
+  return {
+    deliver: (payload) => {
+      if (!socket) throw new Error('a byte pipe takes no message before it is connected');
+      socket.write(typeof payload === 'string' ? _encoder.encode(payload) : ArrayBuffer.isView(payload)
+        ? new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength).slice() : new Uint8Array(payload as ArrayBuffer));
+    },
+    disconnect: (kind) => {
+      if (!socket) {
+        // Still being made: the upgrade request is cancelled, and this is the client's one `close`.
+        gone = true;
+        upgrade.abort();
+        link.forget();
+        link.post({ type: 'close', code: 1006, reason: '', wasClean: false });
+        return;
+      }
+      if (kind === 'fail') socket.destroy();
+      else socket.end();
+    },
+    release: () => {
+      released = true;
+      upgrade.abort();
+      socket?.destroy();
+    },
   };
-  end.disconnect = (code: number, reason: string) => {
-    if (closed || end.destroyed) return;
-    const text = _encoder.encode(reason || "");
-    const payload = new Uint8Array(2 + text.length); payload[0] = code >> 8; payload[1] = code & 255; payload.set(text, 2);
-    // The client is told at once, while its channel can carry it (a bridge closing sends this and then closes it); the
-    // library then answers the close frame with its own, which ends this end through the reader above, and a library
-    // that does not answer is ended here.
-    finish(code, reason || "");
-    receive(__substrateFrame(8, payload, true));
-    setTimeout(() => { end.destroy(); }, 50);
-  };
-  return end;
-}
-/**
- * The socket an `upgrade` listener is handed for a connect that carries no
- * WebSocket frames: the same `net.Socket` over the same connection, with the
- * bridge speaking bytes rather than frames on its end.
- *
- * vscode-server's `RemoteExtensionHostAgentServer` answers its own upgrade. It
- * writes `HTTP/1.1 101 Switching Protocols` with `socket.write` and then reads
- * and writes its remote protocol on that same socket as bytes, because its
- * client asked for no framing and the server frames nothing either way. The
- * engine handed it the bridge's RFC 6455 socket, which read the server's
- * protocol as frames and found none, so the server's answer went nowhere and
- * the client's connect never opened. Here every write is one message to the
- * client, every message from the client is data on the socket, and the head
- * the server writes is the client's to strip.
- */
-function __substrateRawUpgradeSocket(entry: UpgradeEntry, socket: Socket): Socket & UpgradeEnd {
-  const end = socket as Socket & UpgradeEnd;
-  const bridge = {
-    push: (data: Uint8Array): void => { socket.write(data); },
-    destroy: (): void => { socket.destroy(); },
-    end: (): void => { socket.end(); },
-    get destroyed(): boolean { return socket.destroyed; },
-    onData: (listener: (chunk: Uint8Array) => void): void => { socket.on("data", listener); },
-  };
-  let closed = false;
-  const finish = (code: number, reason: string): void => {
-    if (closed) return;
-    closed = true;
-    __substrateChannelSockets.get(entry.channel)?.sockets.delete(entry.clientId);
-    entry.channel.postMessage({ type: "close", targetClient: entry.clientId, code, reason });
-  };
-  bridge.onData((chunk) => {
-    if (closed) return;
-    entry.channel.postMessage({ type: "message", targetClient: entry.clientId, payload: chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) });
-  });
-  end.on("close", () => { finish(1000, ""); bridge.destroy(); });
-  end.deliver = (payload: string | ArrayBuffer) => {
-    if (closed || end.destroyed || bridge.destroyed) return;
-    bridge.push(typeof payload === "string" ? _encoder.encode(payload) : new Uint8Array(payload));
-  };
-  end.disconnect = (code: number, reason: string) => {
-    if (closed || end.destroyed) return;
-    bridge.end();
-    finish(code, reason || "");
-    end.destroy();
-  };
-  return end;
-}
-/**
- * The channel a virtual websocket's connect arrives on, opened for the guest
- * whose servers this bridge holds. It is the bridge's to hold and the
- * bridge's to give back: a subscribed `BroadcastChannel` is a `MessagePort`
- * the host's loop counts, and this one was opened in a closure and never
- * stored, so a Node process that used the engine — `createContainer()` and
- * nothing more — never reached `beforeExit`; the substrate's own
- * `verify:pnpm-workspace` had to run with `--test-force-exit` for it. It is
- * unreferenced where the host counts handles against exit (a browser's
- * `BroadcastChannel` has no `unref` and holds nothing open), and `close()`
- * gives it up altogether. The rule this restores is the one the fork already
- * states for import, carried on to use: a host resource the engine opens for
- * a guest must not outlive the guest, and must never be the reason someone
- * else's process stays alive.
- */
-function __substrateListenForUpgrades(bridge: ServerBridge): BroadcastChannel | null {
-  if (typeof BroadcastChannel === "undefined") return null;
-  const channel = new BroadcastChannel("vite-ws-channel");
-  (channel as unknown as { unref?: () => void }).unref?.();
-  const carried = { sockets: new Map<string, UpgradeEnd>(), pending: new Set<string>() };
-  __substrateChannelSockets.set(channel, carried);
-  channel.addEventListener("message", (event) => {
-    const data2 = event.data as UpgradeSignal;
-    if (!data2 || typeof data2 !== "object") return;
-    if (data2.type === "connect") {
-      let url2: URL;
-      try { url2 = new URL(data2.url!); } catch { return; }
-      const port = Number(url2.port);
-      const record = { clientId: data2.clientId, port, channel };
-      carried.pending.add(data2.clientId);
-      // A client that asked for no frames is a byte pipe; anything else is a
-      // WebSocket, and the bridge speaks RFC 6455 on its own end of it.
-      const raw = data2.framing === "none";
-      const key = uint8ToBase64(crypto.getRandomValues(new Uint8Array(16)));
-      const protocols = Array.isArray(data2.protocols) ? data2.protocols : [];
-      // The handshake is a request on a real connection, and the guest's
-      // server answers it with its own code: Node's `http` emits `upgrade`
-      // with the socket, which is what the real `ws` takes over. What comes
-      // back here is the client's end of that same connection.
-      void __upgradeOverLoopback(bridge.tree, port, "GET", url2.pathname + url2.search, {
-        // Host is the authority the client addressed, as an HTTP request's is
-        Host: typeof data2.host === "string" && /^(?:\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::[0-9]{1,5})?$/iu.test(data2.host) ? data2.host : url2.host,
-        Upgrade: "websocket",
-        "Sec-WebSocket-Version": "13",
-        "Sec-WebSocket-Key": key,
-        ...(protocols.length ? { "Sec-WebSocket-Protocol": protocols.join(", ") } : {}),
-        // A browser sends Origin on every WebSocket handshake, and a server's
-        // check of it is how it refuses sockets from pages it did not serve.
-        ...(typeof data2.origin === "string" && /^https?:\/\/[^/]+$/u.test(data2.origin) ? { Origin: data2.origin } : {}),
-      }).then((result) => {
-        // A bridge closed while the upgrade was in flight has no channel left to answer on: the socket is ended.
-        carried.pending.delete(data2.clientId);
-        if (!__substrateChannelSockets.has(channel)) { result.socket?.destroy(); return; }
-        // Nothing listens on the port for this bridge's process: another bridge on the channel may serve it, so this
-        // one says nothing.
-        if (result.statusCode === 503 && !result.socket) return;
-        if (result.statusCode !== 101 || !result.socket) {
-          channel.postMessage({ type: "close", targetClient: data2.clientId, code: 1006, reason: "upgrade refused" });
-          return;
-        }
-        const socket = raw
-          ? __substrateRawUpgradeSocket(record, result.socket)
-          : __substrateUpgradeSocket(record, result.socket);
-        carried.sockets.set(data2.clientId, socket);
-        channel.postMessage({
-          type: "connected",
-          targetClient: data2.clientId,
-          protocol: result.headers["sec-websocket-protocol"] ?? (raw ? protocols[0] ?? "" : ""),
-        });
-      });
-    } else if (data2.type === "message") {
-      const socket = carried.sockets.get(data2.clientId);
-      if (socket) socket.deliver(data2.payload!);
-    } else if (data2.type === "disconnect") {
-      const socket = carried.sockets.get(data2.clientId);
-      if (socket) socket.disconnect(typeof data2.code === "number" ? data2.code : 1000, typeof data2.reason === "string" ? data2.reason : "");
-    }
-  });
-  return channel;
 }
 
+/**
+ * The channel a bridge's clients arrive on (ADR-0014 §2, §3), opened for the guest whose servers this bridge holds. It
+ * is the bridge's to hold and the bridge's to give back: a subscribed `BroadcastChannel` is a `MessagePort` the host's
+ * loop counts, so it is unreferenced where the host counts handles against exit (a browser's has no `unref` and holds
+ * nothing open), and `close` gives it up. A host resource the engine opens for a guest must not outlive the guest,
+ * and must never be the reason someone else's process stays alive.
+ */
+class SocketChannel {
+  private readonly channel: BroadcastChannel;
+  private readonly clients = new Map<string, CarriedClient>();
+  private open = true;
+
+  constructor(private readonly bridge: ServerBridge) {
+    this.channel = new BroadcastChannel('vite-ws-channel');
+    (this.channel as unknown as { unref?: () => void }).unref?.();
+    this.channel.addEventListener('message', (event) => this.receive(event.data as ChannelSignal));
+  }
+
+  private post(clientId: string, message: Record<string, unknown>): void {
+    if (!this.open) return;
+    if (message.type === 'connected' || message.type === 'close') refusals.delete(clientId);
+    this.channel.postMessage({ ...message, targetClient: clientId });
+  }
+
+  private linkFor(clientId: string, connector: string): ClientLink {
+    return {
+      post: (message) => this.post(clientId, message),
+      refused: () => {
+        const registered = registeredConnectors.get(connector);
+        const refusing = refusals.get(clientId) ?? new Set<ServerBridge>();
+        refusing.add(this.bridge);
+        if (registered && [...registered].some((bridge) => !refusing.has(bridge))) { refusals.set(clientId, refusing); return; }
+        this.post(clientId, { type: 'close', code: 1006, reason: '', wasClean: false });
+      },
+      forget: () => { this.clients.delete(clientId); },
+    };
+  }
+
+  /** A client whose operation threw is failed (ADR-0014 §2). */
+  private fail(clientId: string, client: CarriedClient): void {
+    try { client.disconnect('fail', undefined, ''); } catch { /* a client already ending is ending */ }
+  }
+
+  private receive(signal: ChannelSignal): void {
+    if (!signal || typeof signal !== 'object' || typeof signal.clientId !== 'string') return;
+    if (signal.type === 'connect') {
+      if (typeof signal.connector !== 'string' || !this.bridge.hasConnector(signal.connector) || this.clients.has(signal.clientId)) return;
+      const link = this.linkFor(signal.clientId, signal.connector);
+      let url: URL;
+      let pairs: [string, string][];
+      try {
+        url = new URL(signal.url!);
+        pairs = headerPairs(signal.headers);
+      } catch {
+        link.post({ type: 'close', code: 1006, reason: '', wasClean: false });
+        return;
+      }
+      const port = Number(url.port);
+      const protocols = Array.isArray(signal.protocols) ? signal.protocols : [];
+      const carry = signal.framing === 'none' ? carryBytePipe : carryWebSocket;
+      try {
+        this.clients.set(signal.clientId, carry(link, this.bridge.tree, port, url.pathname + url.search, pairs, protocols));
+      } catch {
+        // undici's constructor refused the request (a protocol list §2.2 refuses).
+        this.clients.delete(signal.clientId);
+        link.post({ type: 'close', code: 1006, reason: '', wasClean: false });
+      }
+      return;
+    }
+    const client = this.clients.get(signal.clientId);
+    if (!client) return;
+    try {
+      if (signal.type === 'message') client.deliver(signal.payload);
+      else if (signal.type === 'disconnect') {
+        client.disconnect(signal.kind === 'fail' ? 'fail' : 'close', typeof signal.code === 'number' ? signal.code : undefined,
+          typeof signal.reason === 'string' ? signal.reason : '');
+      }
+    } catch {
+      this.fail(signal.clientId, client);
+    }
+  }
+
+  /** The bridge's close (ADR-0014 §5): every client told `close` 1006 while the channel can carry it, then ended. */
+  close(): void {
+    const clients = [...this.clients];
+    this.clients.clear();
+    for (const [clientId] of clients) this.post(clientId, { type: 'close', code: 1006, reason: '', wasClean: false });
+    this.open = false;
+    try { this.channel.close(); } catch { /* a channel the realm already closed is closed */ }
+    for (const [, client] of clients) {
+      try { client.release(); } catch { /* a client already ending is ending */ }
+    }
+  }
+}
+
+/**
+ * The page's requests answered by a guest's own servers, over connections the bridge makes as its container's process,
+ * and the page's virtual WebSockets carried to them (ADR-0014).
+ */
 export class ServerBridge extends PortBridge {
-  /** The upgrade channel this bridge opened, held so it can be given back. */
-  private upgradeChannel: BroadcastChannel | null = null;
+  /** The channel this bridge's virtual WebSockets arrive on, held so it can be given back. */
+  private sockets: SocketChannel | null = null;
+  /** The connector ids registered with this bridge (ADR-0014 §3). */
+  private readonly connectors = new Set<string>();
 
   /** The tree of the process this bridge acts as, its container's; the calling process's where none was given. */
   readonly tree: object | undefined;
@@ -387,7 +471,7 @@ export class ServerBridge extends PortBridge {
     this.tree = options.tree;
     // A guest's servers register themselves, from the port they take.
     this.watchGuestPorts();
-    this.upgradeChannel = __substrateListenForUpgrades(this);
+    this.sockets = typeof BroadcastChannel === 'undefined' ? null : new SocketChannel(this);
   }
 
   /**
@@ -424,19 +508,37 @@ export class ServerBridge extends PortBridge {
     );
   }
 
+  /**
+   * Registers a connector's random id with this bridge (ADR-0014 §3): the bridge answers that connector's `connect`s,
+   * and only registered ones. Answers the call that removes it.
+   */
+  registerConnector(id: string): () => void {
+    if (typeof id !== 'string' || id.length === 0) throw new TypeError('a connector id is a non-empty string');
+    this.connectors.add(id);
+    let bridges = registeredConnectors.get(id);
+    if (!bridges) { bridges = new Set(); registeredConnectors.set(id, bridges); }
+    bridges.add(this);
+    return () => this.unregisterConnector(id);
+  }
+
+  /** Whether a connector's id is registered with this bridge. */
+  hasConnector(id: string): boolean {
+    return this.connectors.has(id);
+  }
+
+  private unregisterConnector(id: string): void {
+    this.connectors.delete(id);
+    const bridges = registeredConnectors.get(id);
+    bridges?.delete(this);
+    if (bridges?.size === 0) registeredConnectors.delete(id);
+  }
+
   override close(): void {
     this.stopWatching?.();
     this.stopWatching = null;
-    if (this.upgradeChannel) {
-      // Its upgraded sockets end as a server going away ends them (1001), while their channel can still say so.
-      const carried = __substrateChannelSockets.get(this.upgradeChannel);
-      for (const socket of [...(carried?.sockets.values() ?? [])]) socket.disconnect(1001, "going away");
-      // A connect still being answered is told too; its socket, should it arrive, is ended unanswered.
-      for (const client of carried?.pending ?? []) this.upgradeChannel.postMessage({ type: "close", targetClient: client, code: 1001, reason: "going away" });
-      __substrateChannelSockets.delete(this.upgradeChannel);
-      try { this.upgradeChannel.close(); } catch { /* a channel the realm already closed is closed */ }
-      this.upgradeChannel = null;
-    }
+    for (const id of [...this.connectors]) this.unregisterConnector(id);
+    this.sockets?.close();
+    this.sockets = null;
     super.close();
   }
 

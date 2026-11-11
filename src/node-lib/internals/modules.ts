@@ -9,6 +9,7 @@
  * list its `module.builtinModules` reports, so a hook that reads `node:fs`
  * reads the name the guest's own `module.isBuiltin` agrees with.
  */
+import { errorCodes } from '../binding/crypto';
 import * as moduleShim from '../../shims/module';
 import { fileURLToPath, pathToFileURL } from '../../shims/url';
 
@@ -59,6 +60,27 @@ export const internalBootstrapRealm = {
  * turn a URL into the options a request is made from.
  */
 export const internalUrl = {
+  /**
+   * Node's `domainToASCII` (lib/internal/url.js:1443-1449 over node_url.cc:224-249): Ada's `set_hostname` on a
+   * `ws://x` URL, which is the URL Standard's hostname setter on a special URL. The realm's `URL` runs that setter;
+   * a setter that fails leaves the host as it was, so the set is made on two hosts and a failure is where neither
+   * changed: Node's empty string.
+   */
+  domainToASCII(...args: unknown[]): string {
+    if (args.length < 1) {
+      const { ERR_MISSING_ARGS } = errorCodes();
+      throw new ERR_MISSING_ARGS('domain');
+    }
+    const input = `${args[0]}`;
+    if (input === '') return '';
+    const set = (initial: string): string => {
+      const url = new URL(`ws://${initial}`);
+      url.hostname = input;
+      return url.hostname;
+    };
+    const first = set('x');
+    return first === set('y') ? first : '';
+  },
   fileURLToPath,
   pathToFileURL,
   /**

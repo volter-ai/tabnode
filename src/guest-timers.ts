@@ -2,6 +2,7 @@ import { pendingGuestPorts, stopGuestPorts } from './guest-message-ports';
 import { __reportUncaughtException } from './shims/process';
 import { withGuestCallback } from './guest-loop';
 import { nodeTimeout, timerHandleOf } from './node-lib/timers';
+import { engineTimers } from './system';
 
 /**
  * Referenced timers and message ports: what Node's loop counts to decide
@@ -25,37 +26,31 @@ export function pendingGuestTimerKinds(process: object): string[] {
 }
 /**
  * Close this process's message ports and clear every timer it still holds.
- * Ending a Node process clears the
- * ones its loop was waiting on. The ids were made by the host's own
- * `setTimeout`/`setInterval` through the guest's global view, so the host's
- * own clears end them; a `Timeout` is cleared by either in Node, and either
- * refusing an id of the other kind is not an error here.
+ * Ending a Node process clears the ones its loop was waiting on. The ids are
+ * the engine's own timer list's (system.ts), whose one clear ends any kind.
  */
 export function stopGuestTimers(process: object): void {
   stopGuestPorts(process);
   const held = __substratePendingTimers.get(process);
   if (!held) return;
-  const host = globalThis as unknown as Record<string, unknown>;
-  const clearOnce = host.clearTimeout as ((id: unknown) => void) | undefined;
-  const clearRepeating = host.clearInterval as ((id: unknown) => void) | undefined;
-  const clearQueued = host.clearImmediate as ((id: unknown) => void) | undefined;
-  for (const id of [...held]) {
-    try { clearOnce?.call(host, id); } catch {}
-    try { clearRepeating?.call(host, id); } catch {}
-    try { clearQueued?.call(host, timerHandleOf(id)); } catch {}
-  }
+  for (const id of [...held]) engineTimers.clearTimeout(timerHandleOf(id));
   held.clear();
 }
-export function guestTimerFunctions(process: object, host: Record<string, unknown>) {
+/**
+ * A process's timers: the engine's own list's (system.ts, ADR-0017), whose deadlines are the system's monotonic clock
+ * and whose wake is the process's loop, counted for the process. No realm timer stands behind them.
+ */
+export function guestTimerFunctions(process: object) {
   let pending = __substratePendingTimers.get(process);
   if (!pending) { pending = new Set(); __substratePendingTimers.set(process, pending); }
   const held = pending;
-  const hostSetTimeout = host.setTimeout as (fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) => unknown;
-  const hostSetInterval = host.setInterval as (fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) => unknown;
-  const hostClearTimeout = host.clearTimeout as (id: unknown) => void;
-  const hostClearInterval = host.clearInterval as (id: unknown) => void;
-  const hostSetImmediate = host.setImmediate as ((fn: (...a: unknown[]) => void, ...rest: unknown[]) => unknown) | undefined;
-  const hostClearImmediate = host.clearImmediate as ((id: unknown) => void) | undefined;
+  const host = engineTimers;
+  const hostSetTimeout = host.setTimeout;
+  const hostSetInterval = host.setInterval;
+  const hostClearTimeout = host.clearTimeout;
+  const hostClearInterval = host.clearInterval;
+  const hostSetImmediate = host.setImmediate;
+  const hostClearImmediate = host.clearImmediate;
   // Node's timers answer a `Timeout`: an object with `ref`, `unref`,
   // `hasRef` and `refresh`, which vitest and many packages call. A browser's
   // answer a number. The engine used to correct this by replacing the realm's

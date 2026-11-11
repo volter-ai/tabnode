@@ -7,7 +7,9 @@
  * `TTY` class, which `getHandleWrapType` asks an `instanceof` of. The engine
  * writes to a page or to a host's pipe, so a descriptor is a terminal only
  * when the running program's own `process.stdout.isTTY` says so -- which is
- * what a held run gets, and what a program reads to decide on colour.
+ * what a held run gets, and what a program reads to decide on colour. A
+ * run's terminal is its host's (`RunStreams.terminal`): its size the host's
+ * `TIOCGWINSZ`, and fd 0's mode the host's termios (ADR-0010 §3).
  */
 import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
@@ -21,6 +23,55 @@ export interface TerminalState {
   rows: number;
   onResize(listener: (columns: number, rows: number) => void): () => void;
   resize(columns: number, rows: number): void;
+}
+
+/**
+ * What a host gives a run whose fd 0, 1 or 2 is a terminal (`RunStreams.terminal`), kept on the run's process: its
+ * size, which the host keeps current, and fd 0's mode where the host can set it.
+ */
+export interface RunTerminal {
+  readonly columns: number;
+  readonly rows: number;
+  /**
+   * fd 0's termios as `uv_tty_set_mode` sets it: `'raw'` libuv's raw mode, `'io'` `cfmakeraw`, false the termios
+   * before the first change. Throws an error whose `errno` is the call's negative errno where it cannot.
+   */
+  setRawMode?(mode: false | 'raw' | 'io'): void;
+}
+
+/** The key a run's process keeps its `RunTerminal` under. */
+export const kRunTerminal = Symbol.for('tabnode.run.terminal');
+
+/** The asking run's terminal, as its host gave it; none where it was given none. */
+function runTerminalOf(): RunTerminal | undefined {
+  const token = currentOwner();
+  const own = token === null ? undefined : __runFor(token)?.process as unknown as Record<symbol, unknown> | undefined;
+  const proc = own ?? (globalThis as unknown as { process?: Record<symbol, unknown> }).process;
+  return proc?.[kRunTerminal] as RunTerminal | undefined;
+}
+
+/**
+ * The binding's mode operation for a run's fd 0 (ADR-0010 §3): `uv_tty_set_mode` through the run's terminal,
+ * `UV_TTY_MODE_NORMAL` false, `UV_TTY_MODE_IO` io, `UV_TTY_MODE_RAW_VT` (and libuv's `UV_TTY_MODE_RAW`) raw; 0, or the
+ * call's negative errno.
+ */
+function setRunTerminalMode(terminal: RunTerminal, mode: number): number {
+  try {
+    terminal.setRawMode!(mode === UV_TTY_MODE_NORMAL ? false : mode === UV_TTY_MODE_IO ? 'io' : 'raw');
+    return 0;
+  } catch (cause) {
+    const errno = (cause as { errno?: unknown } | null)?.errno;
+    if (typeof errno !== 'number' || errno >= 0) throw cause;
+    return errno;
+  }
+}
+
+/**
+ * The handle Node's own `tty.ReadStream.prototype.setRawMode` drives for a run's `process.stdin` whose terminal's mode
+ * the host sets: that function's `this._handle.setRawMode(UV_TTY_MODE_*)`, answered by the binding's mode operation.
+ */
+export function runTerminalModeHandle(terminal: RunTerminal): { setRawMode(mode: number): number } {
+  return { setRawMode: mode => setRunTerminalMode(terminal, mode) };
 }
 
 /** One terminal endpoint, shared by independently owned descriptors. */
@@ -82,16 +133,23 @@ export class TTY extends LibuvStreamWrap {
     }
   }
 
-  /** A terminal the engine does not own has one size and no mode to set. */
+  /** uv_tty_get_winsize: an engine pty's size, a run's terminal's (its host's TIOCGWINSZ) for fd 0 to 2, else 80 by 24. */
   getWindowSize(out: number[]): number {
-    out[0] = this.terminal?.columns ?? 80;
-    out[1] = this.terminal?.rows ?? 24;
+    const terminal = this.terminal ?? (this.fd >= 0 && this.fd <= 2 ? runTerminalOf() : undefined);
+    out[0] = terminal?.columns ?? 80;
+    out[1] = terminal?.rows ?? 24;
     return 0;
   }
 
-  setRawMode(_raw: number): number {
-    // ADR-0023: this host has no termios. Do not claim a mode change.
-    return this.endpoint ? UV_ENOTSUP : 0;
+  /**
+   * uv_tty_set_mode: fd 0's mode through the run's terminal (ADR-0010 §3). ADR-0023: an engine pty endpoint has no
+   * termios, and a terminal whose host sets no mode claims no change.
+   */
+  setRawMode(mode: number): number {
+    if (this.endpoint) return UV_ENOTSUP;
+    const terminal = this.fd === 0 ? runTerminalOf() : undefined;
+    if (!terminal?.setRawMode) return 0;
+    return setRunTerminalMode(terminal, mode);
   }
 
   static allocate(endpoint: TerminalEndpoint): TTY {

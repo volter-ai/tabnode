@@ -6,6 +6,7 @@
 import { Buffer } from '../node-lib/buffer-module';
 import pako from 'pako';
 import { zlibConstants as constants } from './zlib-constants';
+import { engineConsole as console } from '../system';
 export { constants };
 
 // Brotli WASM instance - loaded lazily
