@@ -25,6 +25,8 @@ changes below, which was prepared and never published.
   With no kernel (the standalone library and the in-page modes) the same interface is backed by the realm's own
   clock, crypto, timers and console, and `os` answers its fixed figures.
 - **One base64 codec**: HTML's `atob` and `btoa` are the `buffer` binding's, over its own decoder and encoder.
+- **A process's global `console` is its own**, made with its runtime and given to its module bodies, never the
+  realm's: code compiled through `Function` or `vm` (Prisma's TypeScript config loader) reads it from the global.
 
 ## 0.20.0 — 2026-11-10 (not published; first published in 0.21.0)
 
