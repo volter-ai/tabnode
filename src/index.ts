@@ -278,6 +278,8 @@ export function createContainer(options?: ContainerOptions): {
   // pack.
   // A tree the caller gives is the caller's; one made here is the engine's to furnish.
   const vfs = (options && options.vfs) || adoptEngineTree(new VirtualFS());
+  // A tree that is a kernel's client gives the engine its system (ADR-0017): clocks, timers, randomness, os facts.
+  useTreeSystem(vfs);
   const runtime = new Runtime(vfs, options);
   const npmManager = new PackageManager(vfs);
   // A container owns its servers. One process-wide bridge meant two runtimes in
@@ -485,4 +487,6 @@ export default createContainer;
 // Node's module resolution as a function over any filesystem, for a host
 // that resolves the way the engine does (the substrate's stand-ins do).
 export { createNodeResolver } from './node-resolution';
+import { useTreeSystem } from './system';
+export { TREE_SYSTEM, type TreeSystem, type SystemInfo, type SystemUname } from './system';
 export type { ResolutionFs, ExportsResolver, NodeResolverOptions, NodeResolver } from './node-resolution';

@@ -39,7 +39,7 @@ if (typeof globalThis.process === 'undefined') {
 
 import { forGuestRealm, heldWork } from '../host-globals';
 import { promiseOwner } from '../promise-ownership';
-import { Bash, defineCommand } from 'just-bash';
+import type { Bash } from 'just-bash';
 import type { CommandContext, ExecResult as JustBashExecResult } from 'just-bash';
 import { EventEmitter } from '../node-lib/events-module';
 import { __substrateProcessEnded, __substrateProcessEnding, __substrateTerminating, __substrateUncaughtCapture, type ProcessStdin } from './process';
@@ -65,7 +65,6 @@ import { UV_ESRCH } from '../node-lib/binding/uv';
 import { loadNodeLibFor } from '../node-lib/load';
 import { kRunTerminal, runTerminalModeHandle, type RunTerminal } from '../node-lib/binding/tty_wrap';
 import type { ChildProcessModule } from '../node-lib/child-process-module';
-import { getCommandNames } from 'just-bash';
 import { __substrateExecPath, __substrateProgramName, __substrateLineFor, __substrateArgvFor, __substrateShellLine, __substrateRunsNode, setProgramResolver, setHostRunsProgram } from './command-line';
 
 import { __substrateChildrenOf, __onUncaughtException, __reportUncaughtException, __substrateSignalNames } from './process';
@@ -74,10 +73,7 @@ import { PROCESS_TOKEN_ENV, __recordRun, __runFor, __currentProcessToken, enterR
 import type { ProcessRegistry } from '../process-registry';
 import { treeDescriptorsOf } from '../tree-descriptors';
 /** The host's own `process`, where it has one that emits, taken as the shim loads and before any guest's takes the global name. */
-const __hostProcess: { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown } | null =
-  typeof process !== 'undefined' && process !== null && typeof (process as { on?: unknown }).on === 'function' && typeof (process as { off?: unknown }).off === 'function'
-    ? (process as { on(event: string, listener: (reason: unknown) => void): unknown; off(event: string, listener: (reason: unknown) => void): unknown })
-    : null;
+const __hostProcess = realmProcess;
 import { Runtime, pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers, __substratePendingOf } from '../runtime';
 import { __nodeResolverFor } from '../node-resolver';
 import { resolve as __resolvePath } from './path';
@@ -86,19 +82,23 @@ import { installShellJobs } from './shell-jobs';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
 import { installedNpmVersion } from '../npm/version';
+import { clearTimeout, engineConsole as console, monotonicMs, setTimeout, onKernel, randomUUID as systemRandomUUID, realmHost, realmProcess } from '../system';
 
 // Capture host capabilities before the guest's authority is restricted. These
 // endpoints are private, carry no guest bytes, and close at each checkpoint.
-const HostBroadcastChannel = globalThis.BroadcastChannel;
-const hostChannelName = globalThis.crypto?.randomUUID.bind(globalThis.crypto);
-const isWorkerRealm = typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined';
-const hostNow = globalThis.performance.now.bind(globalThis.performance);
+const HostBroadcastChannel = (globalThis as { BroadcastChannel?: typeof BroadcastChannel }).BroadcastChannel;
+const hostChannelName = systemRandomUUID;
+const isWorkerRealm = realmHost === 'worker';
+/** The system's monotonic clock (ADR-0017). */
+const hostNow = monotonicMs;
 
 async function settleEntry(): Promise<void> {
   // A native loop checkpoint shares the existing host task channel. It is
   // host work, not a guest timer, and does not depend on timer scheduling.
   await new Promise<void>(resolve => { queueNativeFsTask(resolve); });
-  if (!isWorkerRealm || nodeProcessRealmToken() === null) return;
+  // On a kernel a rejection no program handles ends the process through its host (task.mjs runHost), with nothing
+  // of the realm's reporting to order behind.
+  if (onKernel() || !isWorkerRealm || nodeProcessRealmToken() === null) return;
   if (!HostBroadcastChannel || !hostChannelName) throw new Error('Native process rejection checkpoint is unavailable.');
   // HTML queues rejection reporting after the microtask checkpoint on the
   // DOM manipulation task source. A timer alone can overtake that report.
@@ -139,6 +139,18 @@ function treeForRun(): VirtualFS | null {
   const realm = globalThis as unknown as { process?: Record<symbol, unknown> };
   const found = realm.process?.[engineSymbolFor('tabnode.run.vfs')] as VirtualFS | undefined;
   return found ?? currentVfs;
+}
+
+type JustBash = typeof import('just-bash');
+let justBash: JustBash | undefined;
+let justBashLoading: Promise<JustBash> | undefined;
+/**
+ * just-bash, the engine's shell over its own tree, loaded by the first container over no kernel. It takes the realm's
+ * timers when it loads, which a kernel's host program's realm does not hold (ADR-0017): on a kernel every command is
+ * the kernel's own (ADR-0012) and the library is never loaded.
+ */
+function loadJustBash(): Promise<JustBash> {
+  return justBashLoading ??= import('just-bash').then((library) => justBash = library);
 }
 
 function shellOf(tree: VirtualFS | null | undefined): { bash: Bash; adapter: VirtualFSAdapter } | null {
@@ -444,8 +456,7 @@ export function sendStdin(data: string, token?: ProcessToken): void {
 let __backstopInstalled = false;
 forGuestRealm(() => {
   if (__backstopInstalled) return;
-  if (typeof (globalThis as Record<string, unknown>).WorkerGlobalScope === 'undefined') return;
-  if (typeof globalThis.addEventListener !== 'function') return;
+  if (realmHost !== 'worker') return;
   __backstopInstalled = true;
   globalThis.addEventListener('error', (event: Event) => {
     // A task's or an owned callback's throw was reported to its own run already (process-tokens.ts); what reaches here
@@ -474,7 +485,7 @@ forGuestRealm(() => {
  * (reading 'catch')` inside a timer, 59 of them in one boot.
  */
 const __listenForUnhandledRejections = (owner: object, report: (reason: unknown, promise?: Promise<unknown>) => void, ownsRealm: boolean): (() => void) => {
-  if (typeof globalThis.addEventListener === 'function') {
+  if (realmHost === 'worker' || realmHost === 'window') {
     const target = globalThis as unknown as EventTarget;
     const listener = (event: Event) => {
       const rejection = event as PromiseRejectionEvent;
@@ -1513,7 +1524,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       if (traceReadingRequested()) traceOutput("[boot-trace]", { event: 'run-drained', at: Date.now(), pid: typeof proc !== 'undefined' ? (proc as { pid?: number }).pid ?? null : null, afterEntryMs: Date.now() - startTime, endedBy, heldByMs: { ...heldBy }, sinceLastOutputMs: sinceLastOutput, checkMs: CHECK_MS,
         entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null,
         emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt,
-        lookTimer: { realm: isWorkerRealm || nodeProcessRealmToken() !== null ? 'worker' : typeof window === 'undefined' ? 'host' : 'window',
+        lookTimer: { realm: onKernel() ? 'kernel' : isWorkerRealm || nodeProcessRealmToken() !== null ? 'worker' : realmHost === 'window' ? 'window' : 'host',
           source: globalThis.__browserRuntimeNativeSetTimeout ? 'host-captured setTimeout' : 'realm.setTimeout', requestedMs: CHECK_MS, ...checkWait },
         lookWorkMs: { ...checkWork }, entryCheckpointMs: { ...checkpoints } });
     }
@@ -1622,9 +1633,19 @@ export function initChildProcess(vfs: VirtualFS): void {
     } catch { /* a tree that refuses the write keeps the command under its plain name */ }
     installCommandEntries(tree);
   }
-  if (typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined' || typeof (globalThis as Record<string, unknown>).document !== 'undefined') warmSyncChild();
+  if (realmHost === 'worker' || realmHost === 'window') warmSyncChild();
   vfsAdapter = new VirtualFSAdapter(tree);
 
+  if (justBash) makeShell(tree);
+  else if (!onKernel()) void loadJustBash().then(() => { if (!shells.has(tree)) { const was = { vfs: currentVfs, bash: bashInstance, adapter: vfsAdapter }; makeShell(tree); if (was.vfs && was.vfs !== tree) { currentVfs = was.vfs; bashInstance = was.bash; vfsAdapter = was.adapter; } } });
+  installProcessRunner();
+}
+
+/** The tree's own shell: its `node` and `npm` close over it. Made once just-bash has loaded. */
+function makeShell(tree: VirtualFS): void {
+  const { Bash: Shell, defineCommand } = justBash!;
+  const adapter = new VirtualFSAdapter(tree);
+  vfsAdapter = adapter;
   // The shell's `node` is the engine's Node started from the words the shell
   // parsed; `launchNode` is the one start, which `container.runNode` shares.
   const launchShellNode = (args: string[], ctx: CommandContext) => launchNode(tree, {
@@ -1686,8 +1707,8 @@ export function initChildProcess(vfs: VirtualFS): void {
     }
   });
 
-  bashInstance = new Bash({
-    fs: vfsAdapter,
+  bashInstance = new Shell({
+    fs: adapter,
     cwd: '/',
     env: {
       HOME: '/home/user',
@@ -1697,9 +1718,11 @@ export function initChildProcess(vfs: VirtualFS): void {
     customCommands: [nodeCommand, npmCommand],
   });
   // The shell's `sh`, `bash`, `exec` and `kill` over the engine's process table (`shell-jobs.ts`).
-  installShellJobs(bashInstance, { runTokenOf });
-  shells.set(tree, { bash: bashInstance, adapter: vfsAdapter });
+  installShellJobs(bashInstance, { runTokenOf, defineCommand });
+  shells.set(tree, { bash: bashInstance, adapter });
+}
 
+function installProcessRunner(): void {
   if (processRunnerInstalled) return;
   processRunnerInstalled = true;
 
@@ -1712,7 +1735,8 @@ export function initChildProcess(vfs: VirtualFS): void {
   setHostRunsProgram(hostRunsProgram);
   setProcessRunner({
     resolves: (request: RunRequest): boolean => {
-      if (!bashInstance) {
+      // On a kernel the child is the kernel's to start (the host's door below), with no shell of the engine's.
+      if (!bashInstance && !onKernel()) {
         if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-no-shell', at: Date.now(), file: request.file });
         return false;
       }
@@ -2259,6 +2283,7 @@ interface CommandRun {
  * handle, a `runCommand` and a synchronous child all reach the world through.
  */
 async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
+  if (!onKernel() && !justBash) await loadJustBash();
   // A run handed its own tree (a kernel process's, browser-substrate ADR-0129) gets that tree's shell, as runNode
   // makes one: without it the line ran on whichever tree's shell came last.
   if (run.vfs && !shells.has(run.vfs)) shellForRunTree(run.vfs);
@@ -2661,10 +2686,10 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
   const tree = options.filesystem ?? options.vfs;
   if (options.filesystem && !shells.has(options.filesystem)) shellForRunTree(options.filesystem);
   const shell = shells.get(tree);
-  if (!shell) throw new Error('child_process not initialized for this tree');
+  // On a kernel the engine has no shell of its own (its commands are the kernel's, ADR-0012): the tree is the run's.
+  if (!shell && !onKernel()) throw new Error('child_process not initialized for this tree');
   currentVfs = tree;
-  bashInstance = shell.bash;
-  vfsAdapter = shell.adapter;
+  if (shell) { bashInstance = shell.bash; vfsAdapter = shell.adapter; }
   const env = { ...(options.env ?? {}) };
   delete env[PROCESS_TOKEN_ENV];
   if (options.registry) installRunRegistry(options.processToken, options.registry);
@@ -2689,7 +2714,8 @@ export async function runNode(argv: readonly string[], options: NodeRunOptions):
  */
 let __shellCommandNames: Set<string> | null = null;
 function shellCommandNames(): Set<string> {
-  if (__shellCommandNames === null) __shellCommandNames = new Set([...getCommandNames(), 'node', 'npm']);
+  if (__shellCommandNames === null && justBash) __shellCommandNames = new Set([...justBash.getCommandNames(), 'node', 'npm']);
+  if (__shellCommandNames === null) return new Set(['node', 'npm']);
   return __shellCommandNames;
 }
 

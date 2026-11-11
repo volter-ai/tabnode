@@ -8,7 +8,6 @@
  * there is no fork, and a statement ending in `&` runs in the foreground in the realm, as just-bash runs it
  * (browser-substrate decisions, "with no host, Tabnode's `&` runs in the foreground").
  */
-import { defineCommand } from 'just-bash';
 import type { Bash, CommandContext } from 'just-bash';
 import { PROCESS_TOKEN_ENV, pidIsLive, signalPid, tokenOfPid, __signalOwnedProcess, type ProcessToken } from '../process-tokens';
 import { __substrateChildrenOf, __substrateSignals, __substrateSignalNames } from './process';
@@ -32,7 +31,8 @@ function signalName(spec: string): string | null {
 }
 
 /** The engine's shell, given `sh`, `bash`, `exec` and `kill`. */
-export function installShellJobs(bash: Bash, host: ShellJobsHost): void {
+export function installShellJobs(bash: Bash, host: ShellJobsHost & { defineCommand: typeof import('just-bash').defineCommand }): void {
+  const { defineCommand } = host;
   // `sh file`, `sh -c line` and `sh` on stdin: the shell's own ran the script
   // with the caller's exported variables alone, and a run's name travels in
   // a variable the shell never exports, so a `node` on any line of a script

@@ -1,4 +1,5 @@
 import { kCancelTimer } from '../timer-cancellation';
+import { engineTimers } from '../system';
 /**
  * Node's `Timeout`, over whatever the realm's timers answer.
  *
@@ -44,8 +45,9 @@ export function createTimersModule(owned?: {
   setInterval(fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]): unknown;
   clearInterval(id: unknown): void;
 }) {
-  const schedule = owned?.setTimeout ?? globalThis.setTimeout.bind(globalThis);
-  const cancel = owned?.clearTimeout ?? ((id: unknown) => globalThis.clearTimeout(timerHandleOf(id) as number));
+  // The engine's own timer list (system.ts, ADR-0017) where no process's timers are given.
+  const schedule = owned?.setTimeout ?? engineTimers.setTimeout;
+  const cancel = owned?.clearTimeout ?? ((id: unknown) => engineTimers.clearTimeout(timerHandleOf(id)));
   // Node's legacy timer list API, deprecated (DEP0095) and still exported:
   // an object with `_onTimeout` is enrolled for a duration, made active to
   // start or restart its countdown, and unenrolled to stop it.
@@ -103,24 +105,17 @@ export function createTimersModule(owned?: {
   };
   return {
     setTimeout(fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) {
-      return nodeTimeout(globalThis.setTimeout(fn as () => void, ms, ...rest));
+      return nodeTimeout(engineTimers.setTimeout(fn, ms, ...rest));
     },
-    clearTimeout(id: unknown) { return globalThis.clearTimeout(timerHandleOf(id) as number); },
+    clearTimeout(id: unknown) { return engineTimers.clearTimeout(timerHandleOf(id)); },
     setInterval(fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) {
-      return nodeTimeout(globalThis.setInterval(fn as () => void, ms, ...rest));
+      return nodeTimeout(engineTimers.setInterval(fn, ms, ...rest));
     },
-    clearInterval(id: unknown) { return globalThis.clearInterval(timerHandleOf(id) as number); },
+    clearInterval(id: unknown) { return engineTimers.clearInterval(timerHandleOf(id)); },
     setImmediate(fn: (...a: unknown[]) => void, ...args: unknown[]) {
-      const realm = globalThis as unknown as { setImmediate?: (fn: (...a: unknown[]) => void, ...args: unknown[]) => unknown };
-      return nodeTimeout(realm.setImmediate
-        ? realm.setImmediate(fn, ...args)
-        : globalThis.setTimeout(fn as () => void, 0, ...args));
+      return nodeTimeout(engineTimers.setImmediate(fn, ...args));
     },
-    clearImmediate(id: unknown) {
-      const realm = globalThis as unknown as { clearImmediate?: (id: unknown) => void };
-      const handle = timerHandleOf(id);
-      return realm.clearImmediate ? realm.clearImmediate(handle) : globalThis.clearTimeout(handle as number);
-    },
+    clearImmediate(id: unknown) { return engineTimers.clearImmediate(timerHandleOf(id)); },
     ...(owned ? {
       ...owned,
       setImmediate: (fn: (...args: unknown[]) => void, ...args: unknown[]) => owned.setTimeout(fn, 0, ...args),

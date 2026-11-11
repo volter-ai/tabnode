@@ -15,6 +15,7 @@
  * The rule for this file: it binds, it does not implement.
  */
 import { lazyModule, lazyExport } from './lazy';
+import { htmlAtob as atob, htmlBtoa as btoa } from './binding/buffer';
 
 /** Node's `Buffer`, as the engine's own parts use it. */
 export interface BufferConstructor {

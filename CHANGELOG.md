@@ -2,7 +2,33 @@
 
 What each release changed, newest first. `RELEASING.md` owns publication of the exact retained `@volter/tabnode` archive and its source/registry receipts; main merges and tags trigger no upload. Through `v0.2.14-volter.88` the version counted up from upstream's; from `v0.3.0` it is the fork's own semver line. `volter-ai/browser-substrate` pins one version and its changelog records what that version changed in the tab. Upstream's own history, before the fork, is at the end.
 
-## 0.20.0 — 2026-11-10
+## 0.21.0 — 2026-11-10
+
+A minor release: `TREE_SYSTEM` and its types are exported. It is the first published release carrying 0.20.0's
+changes below, which was prepared and never published.
+
+- **A process has its clocks, timers, randomness, output and system facts from its system** (ADR-0017). On a
+  kernel a tree offers its process's Linux calls under `TREE_SYSTEM` (`src/system.ts`, the engine's one door), and
+  the engine reads nothing of these from the realm it runs in:
+  - **time**: `process.hrtime`, `performance.now` and `timeOrigin`, `process.uptime`, `os.uptime`, the guest loop,
+    `child_process`, WASI and node-deps read `clock_gettime`; `Date` reads `CLOCK_REALTIME`;
+  - **timers**: the engine keeps its own timer list (guest globals, the `timers` module, its internal timers),
+    runs one due timer per turn in deadline order, and gives the process's loop the nearest deadline, which it
+    waits for in `epoll_pwait`; `async_hooks` carries a timer's context;
+  - **randomness**: `randomBytes`, `randomUUID`, `getRandomValues` (with Web Crypto's 65,536-byte limit), WASI's
+    `random_get` and OpenSSL's entropy are `getrandom`; a guest's `globalThis.crypto` is the engine's `webcrypto`;
+  - **output**: a process's console is its fds 1 and 2; the engine's own diagnostics go to the process's trace;
+  - **`os`**: libuv's Linux reads (`/proc/stat` in USER_HZ, `/proc/cpuinfo`, `/proc/meminfo`, `/proc/uptime`,
+    `sysinfo`, `uname`, the CPU affinity), never invented figures;
+  - **the host**: one read in `system.ts`, consulted only with no kernel; just-bash, which takes the realm's timers
+    when it loads, is loaded only then.
+  With no kernel (the standalone library and the in-page modes) the same interface is backed by the realm's own
+  clock, crypto, timers and console, and `os` answers its fixed figures.
+- **One base64 codec**: HTML's `atob` and `btoa` are the `buffer` binding's, over its own decoder and encoder.
+- **A process's global `console` is its own**, made with its runtime and given to its module bodies, never the
+  realm's: code compiled through `Function` or `vm` (Prisma's TypeScript config loader) reads it from the global.
+
+## 0.20.0 — 2026-11-10 (not published; first published in 0.21.0)
 
 A minor release: the prepared format moves to `tabnode-prepared-9`.
 

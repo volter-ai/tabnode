@@ -32,13 +32,15 @@ import { copyProcessCredentials, type ProcessCredentials } from '../process-cred
  */
 
 import type { VirtualFS } from '../virtual-fs';
+import { htmlAtob as atob, htmlBtoa as btoa } from '../node-lib/binding/buffer';
+import { realmHost, realmProcess } from '../system';
 
 /** The tree a synchronous child runs on: the parent's own. */
 let hostVfs: VirtualFS | null = null;
 export function setSyncChildVfs(vfs: VirtualFS): void { hostVfs = vfs; }
 
 /** The host's `process`, taken before a guest's takes the global name. */
-const hostProcess = typeof process !== 'undefined' && process !== null ? (process as unknown as { getBuiltinModule?: (name: string) => unknown }) : null;
+const hostProcess = realmProcess;
 
 /** What a synchronous child answers when it has ended: each fd's bytes, as libuv reads them. */
 export interface SyncChildResult {
@@ -304,7 +306,7 @@ export function warmSyncChild(required = false): void {
   const toParent = new Uint8Array(new SharedArrayBuffer(DATA_BYTES));
   const toWorker = new Uint8Array(new SharedArrayBuffer(DATA_BYTES));
   const source = workerSource();
-  const inBrowser = typeof (globalThis as Record<string, unknown>).WorkerGlobalScope !== 'undefined' || typeof (globalThis as Record<string, unknown>).document !== 'undefined';
+  const inBrowser = realmHost === 'worker' || realmHost === 'window';
   const url = inBrowser && typeof Blob === 'function' && typeof URL.createObjectURL === 'function'
     ? URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
     : new URL(`data:text/javascript,${encodeURIComponent(source)}`);

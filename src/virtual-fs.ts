@@ -5,6 +5,8 @@
 import type { VFSSnapshot, VFSFileEntry } from './runtime-interface';
 import { uint8ToBase64, base64ToUint8 } from './utils/binary-encoding';
 import { Readable } from './node-lib/stream-module';
+import { setTimeout } from './system';
+import { engineConsole as console } from './system';
 
 /**
  * A read stream is a real `Readable`, so a guest can pipe it, iterate it, or

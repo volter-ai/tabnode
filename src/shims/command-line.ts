@@ -29,9 +29,9 @@ export function __substrateShellWord(word: string): string {
  * that is what a path naming a node binary means here.
  */
 export function __substrateProgramName(file: string): string {
-  const execPath = typeof process !== 'undefined' && process !== null && typeof (process as { execPath?: string }).execPath === 'string'
-    ? (process as { execPath: string }).execPath
-    : __substrateExecPath;
+  // The calling process's own executable, as its run names it; the engine's node entry where none does.
+  const calling = (globalThis as { process?: { execPath?: unknown } }).process;
+  const execPath = typeof calling?.execPath === 'string' ? calling.execPath : __substrateExecPath;
   if (file === execPath || file === __substrateExecPath) return 'node';
   if (file.includes('/') && file.slice(file.lastIndexOf('/') + 1) === 'node') return 'node';
   return file;
