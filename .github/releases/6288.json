@@ -11,7 +11,12 @@
       "status": "accepted",
       "uploadStartedAt": "2026-11-11T05:18:42.697Z",
       "uploadArchive": "/Volumes/PeakSSD/volter-work/tabnode-0.21.0-release/upload-6288-KwEa7t/volter-tabnode-0.21.0.tgz",
-      "acceptedAt": "2026-11-11T05:18:48.983Z"
+      "acceptedAt": "2026-11-11T05:18:48.983Z",
+      "lastAvailabilityAttempt": {
+        "at": "2026-11-11T05:18:52.037Z",
+        "outcome": "pending-or-failed",
+        "detail": "Command failed: npm pack @volter/tabnode@0.21.0 --ignore-scripts --json --registry https://registry.npmjs.org/ --prefer-online --fetch-retries=0 --fetch-timeout=7000 --pack-destination /Volumes/PeakSSD/volter-work/tabnode-0.21.0-release/volter-tabnode-0.21.0.tgz.comparison-SCUfC5\nnpm error code ETARGET\nnpm error notarget No matching version found for @volter/tabnode@0.21.0.\nnpm error notarget In most cases you or one of your dependencies are requesting a package version that doesn't exist.\nnpm error A complete log of this run can be found in: /Volumes/PeakSSD/offload/npm-cache/_logs/2026-11-11T05_18_51_858Z-debug-0.log\n"
+      }
     }
   ],
   "registry": "https://registry.npmjs.org/",
