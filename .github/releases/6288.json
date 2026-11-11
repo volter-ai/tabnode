@@ -8,9 +8,10 @@
       "version": "0.21.0",
       "archive": "volter-tabnode-0.21.0.tgz",
       "integrity": "sha512-OzEWmtJNULjKHdJm2rsuwIboSlgU0LkpYnF6kFWatOLqAthf3mPRKqdOYVOPjfQ0/gTIylMj9t/pxmb3bi9xaQ==",
-      "status": "uploading",
+      "status": "accepted",
       "uploadStartedAt": "2026-11-11T05:18:42.697Z",
-      "uploadArchive": "/Volumes/PeakSSD/volter-work/tabnode-0.21.0-release/upload-6288-KwEa7t/volter-tabnode-0.21.0.tgz"
+      "uploadArchive": "/Volumes/PeakSSD/volter-work/tabnode-0.21.0-release/upload-6288-KwEa7t/volter-tabnode-0.21.0.tgz",
+      "acceptedAt": "2026-11-11T05:18:48.983Z"
     }
   ],
   "registry": "https://registry.npmjs.org/",
