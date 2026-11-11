@@ -519,8 +519,8 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     ['MessagePort', () => guestMessageGlobals(process).MessagePort],
     // `perf_hooks`'s own object.
     ['performance', () => perfHooksShim.performance],
-    // The process's own console, the one its modules are given, made here if the global asks first.
-    ['console', () => processConsole(process)],
+    // The process's own console, the one its modules are given.
+    ['console', () => processConsoles.get(process)],
     // Node's Web Crypto, whose randomness is the system's (shims/crypto.ts `webcrypto`).
     ['crypto', () => cryptoShim.webcrypto],
     // The timers are the engine's own list's, counted for the process (guest-timers.ts; ADR-0017): no realm timer.
@@ -3602,7 +3602,7 @@ function createRequire(
     return code;
   };
 
-  const consoleWrapper = processConsole(process, options.onConsole);
+  const consoleWrapper = processConsoles.get(process);
 
   /**
    * Runs a body as the module, on the module's own require and console, and
@@ -4167,18 +4167,11 @@ function createRequire(
 }
 
 /**
- * A process's one `console`, as a Node process's modules share one: made on its first ask, whoever asks (a body or its
- * global), and the same object after (S2 AC-LC14: ten closures and an object made for every body, thousands at a
- * server's start). Its output is the process's own (`onConsole`, its fd 1 and 2, as its runtime records it), never the
- * realm's (ADR-0017: no realm console).
+ * A process's one `console`, as a Node process's modules share one: made with its runtime, given to every body and
+ * answered by its global (S2 AC-LC14: ten closures and an object made for every body, thousands at a server's start).
+ * Its output is the process's own (`onConsole`, its fd 1 and 2), never the realm's (ADR-0017: no realm console).
  */
 const processConsoles = new WeakMap<object, Console>();
-const processOutputs = new WeakMap<object, (method: string, args: unknown[]) => void>();
-function processConsole(process: object, onConsole?: (method: string, args: unknown[]) => void): Console {
-  let made = processConsoles.get(process);
-  if (!made) { made = createConsoleWrapper(onConsole ?? processOutputs.get(process)); processConsoles.set(process, made); }
-  return made;
-}
 
 /**
  * Create a console wrapper that can capture output. A program's console is its own output (`onConsole`: its fd 1 and 2);
@@ -4283,7 +4276,7 @@ export class Runtime {
     // Create fs shim with cwd getter for relative path resolution
     this.fsShim = createFsShim(vfs, () => this.process.cwd());
     this.options = options;
-    if (options.onConsole) processOutputs.set(this.process, options.onConsole);
+    processConsoles.set(this.process, createConsoleWrapper(options.onConsole));
     // Node's `process.dlopen(module, filename[, flags])` (ADR-0011 §1), which a loader calls in place of `require`
     // when it wants its own flags (Prisma's library engine), and which the `.node` extension calls for `require`. Its
     // checks are DLOpen's; a host stand-in's package is answered as `require` answers it; every other path is opened
@@ -4403,7 +4396,7 @@ export class Runtime {
       module.id = '.';
     }
 
-    const consoleWrapper = processConsole(this.process, this.options.onConsole);
+    const consoleWrapper = processConsoles.get(this.process);
 
     // Transform code the same way loadModule does
     // Strip shebang line if present (e.g. #!/usr/bin/env node)
@@ -4604,7 +4597,7 @@ export class Runtime {
       this.options,
       this.processedCodeCache
     );
-    const consoleWrapper = processConsole(this.process, this.options.onConsole);
+    const consoleWrapper = processConsoles.get(this.process);
     const process = this.process;
     const buffer = bufferShim.Buffer;
 
