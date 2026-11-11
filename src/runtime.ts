@@ -519,6 +519,8 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     ['MessagePort', () => guestMessageGlobals(process).MessagePort],
     // `perf_hooks`'s own object.
     ['performance', () => perfHooksShim.performance],
+    // The process's own console, the one its modules are given; the realm's only where no body has run (no kernel).
+    ['console', () => processConsoles.get(process) ?? Reflect.get(host, 'console', host)],
     // Node's Web Crypto, whose randomness is the system's (shims/crypto.ts `webcrypto`).
     ['crypto', () => cryptoShim.webcrypto],
     // The timers are the engine's own list's, counted for the process (guest-timers.ts; ADR-0017): no realm timer.
@@ -3600,7 +3602,7 @@ function createRequire(
     return code;
   };
 
-  const consoleWrapper = runtimeConsole(options);
+  const consoleWrapper = processConsole(process, options);
 
   /**
    * Runs a body as the module, on the module's own require and console, and
@@ -4170,6 +4172,13 @@ function createRequire(
  * server's start).
  */
 const runtimeConsoles = new WeakMap<object, Console>();
+/** Each process's console, the one its bodies are given: what its global's `console` answers (ADR-0017: no realm console). */
+const processConsoles = new WeakMap<object, Console>();
+function processConsole(process: object, options: { onConsole?: (method: string, args: unknown[]) => void }): Console {
+  const made = runtimeConsole(options);
+  processConsoles.set(process, made);
+  return made;
+}
 function runtimeConsole(options: { onConsole?: (method: string, args: unknown[]) => void }): Console {
   let made = runtimeConsoles.get(options);
   if (!made) { made = createConsoleWrapper(options.onConsole); runtimeConsoles.set(options, made); }
@@ -4398,7 +4407,7 @@ export class Runtime {
       module.id = '.';
     }
 
-    const consoleWrapper = runtimeConsole(this.options);
+    const consoleWrapper = processConsole(this.process, this.options);
 
     // Transform code the same way loadModule does
     // Strip shebang line if present (e.g. #!/usr/bin/env node)
@@ -4599,7 +4608,7 @@ export class Runtime {
       this.options,
       this.processedCodeCache
     );
-    const consoleWrapper = runtimeConsole(this.options);
+    const consoleWrapper = processConsole(this.process, this.options);
     const process = this.process;
     const buffer = bufferShim.Buffer;
 
