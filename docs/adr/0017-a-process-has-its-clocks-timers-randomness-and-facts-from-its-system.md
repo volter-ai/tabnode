@@ -59,7 +59,9 @@ from `system.ts`, never from the realm.
   engine's own internal timers are all this list's; `async_hooks` carries a program's context into its callbacks
   (`carryTimerCallbacks`). No realm timer is taken.
 - **completions**: the engine's asynchronous work completes into the same loop, as libuv runs a completed request
-  from its poll phase: an fs request's answer (and the native loop checkpoint) is `queueCompletion`'s, run after the
+  from its poll phase (libuv: the threadpool's finished work comes back through the loop's own async handle,
+  `uv_async_init(loop, &loop->wq_async, uv__work_done)` in `src/unix/loop.c:97`, an I/O event of `uv__io_poll`
+  in `uv_run`'s one pass, `src/unix/core.c:462`; there is no second queue a request answers on): an fs request's answer (and the native loop checkpoint) is `queueCompletion`'s, run after the
   due timer and before the immediates, one task each, and while one waits the wake is now. On a kernel each turn
   between two due items is the process's loop's (`wake`), never a channel of the engine's own, so the process has
   one loop as Node does. *Read 2026-11-13, browser-substrate's Node host (Node 26.12.0):* the completions had a
