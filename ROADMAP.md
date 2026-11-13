@@ -555,7 +555,7 @@ Recheck that state after the existing native task/rejection checkpoint, then emi
 in its run and retain work that its listeners schedule. End immediately if it remains empty,
 without a 50 ms look or the silent idle counter. Caller-held runs retain their owner's
 lifetime; unregistered runs retain the existing uncertainty rules and 60 s bound. Use the
-existing native filesystem task channel for the checkpoint instead of a browser timer.
+engine loop's completion queue for the checkpoint instead of a browser timer.
 Keep D1 fields; add actual timer-wait/body/checkpoint intervals and realm identity to its
 drain record, so a remaining counted-work delay is located by the next retained reading.
 
@@ -687,8 +687,10 @@ module bodies; the 307 head follows at 1791758789457.1. This establishes pre-dis
 Next 15.5.8's unchanged startup awaits filesystem operations before handlersReady; the same native binding defect
 is present in engine 14126b0, this change's base.
 
-Queue each asynchronous fs operation as a host MessagePort task, retaining the captured filesystem, cwd and owner.
-Keep one private, lazily created channel per realm; native host ports are referenced only while work is pending.
+Queue each asynchronous fs operation as a completion of the engine's loop (`system.ts`, libuv's poll phase: after the
+due timer, before the immediates, one task each), retaining the captured filesystem, cwd and owner; while one waits
+the loop's wake is now. On a kernel that loop's turns are the process's loop's, so its waits and completions share
+one queue.
 Each pending operation also holds its guest run and is cancelled when that run ends. Deliver the existing callback
 in its owner's MakeCallback scope and resolve or reject the existing promise in its owner's scope. Synchronous fs
 calls and guest nextTick/promise scheduling keep their behavior. Do not reorder a framework's preload or interrupt

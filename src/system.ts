@@ -214,11 +214,14 @@ export const performance = {
 // ---- the engine's timers ----
 
 /**
- * THE ENGINE'S OWN TIMER LIST. Each timer's deadline is a reading of the system's monotonic clock; the process's loop
- * is told the nearest one (`wake`) and calls back when it has come, and the due timers then run, one task each, in
- * deadline order (libuv's timer phase), the immediates queued before them after (its check phase). No realm timer is
- * taken: on a kernel the loop parks for the deadline in `epoll_pwait`; over no kernel the realm's `setTimeout` is
- * the wake.
+ * THE ENGINE'S OWN LOOP: its timers, its completions and its immediates, in libuv's phases. Each timer's deadline
+ * is a reading of the system's monotonic clock; the process's loop is told the nearest one (`wake`) and calls back
+ * when it has come, and the due timers then run, one task each, in deadline order (libuv's timer phase); then the
+ * engine's completed asynchronous work (an fs request's answer, which libuv runs from its poll phase), one task
+ * each; then the immediates queued before them (its check phase). While a completion or an immediate waits, the
+ * wake is now, so the loop does not park. No realm timer is taken: on a kernel the loop parks for the deadline in
+ * `epoll_pwait`, and each turn between two due items is that loop's own; over no kernel the realm's `setTimeout`
+ * is the wake and a worker task of the engine's own the turn.
  *
  * Handles are numbers, as a browser's are; Node's `Timeout` is built over one where a guest asks
  * (`node-lib/timers.ts`).
@@ -228,6 +231,7 @@ type Callback = (...args: any[]) => void;
 interface Timer { id: number; due: number; fn: Callback; args: unknown[]; every: number | null }
 const timers = new Map<number, Timer>();
 const immediates = new Map<number, { fn: Callback; args: unknown[] }>();
+const completions: Array<() => void> = [];
 let nextId = 1;
 /** A task of the worker's own between two timers, so the microtasks one leaves run before the next (made at first use:
  *  importing the engine opens nothing, host-globals.ts). */
@@ -246,7 +250,7 @@ const carry = (fn: unknown, kind: 'setTimeout' | 'setInterval' | 'setImmediate')
 
 function scheduleWake(): void {
   let nearest: number | null = null;
-  if (immediates.size > 0) nearest = 0;
+  if (immediates.size > 0 || completions.length > 0) nearest = 0;
   else for (const timer of timers.values()) if (nearest === null || timer.due < nearest) nearest = timer.due;
   current.wake(nearest, runDue);
 }
@@ -269,6 +273,12 @@ function runDue(): void {
     call(next.fn, next.args);
     return;
   }
+  const completion = completions.shift();
+  if (completion) {
+    postTurn();
+    call(completion, []);
+    return;
+  }
   const queued = [...immediates];
   immediates.clear();
   for (let at = 0; at < queued.length; at++) {
@@ -280,7 +290,8 @@ function runDue(): void {
 }
 
 function postTurn(): void {
-  if (turnPosted) return;
+  // On a kernel the process's loop is the one loop: the next due item's turn is its wake (call's scheduleWake).
+  if (onKernel() || turnPosted) return;
   turnPosted = true;
   if (!turn) {
     turn = new MessageChannel();
@@ -289,6 +300,21 @@ function postTurn(): void {
     (turn.port1 as unknown as { unref?(): void }).unref?.();
   }
   turn.port2.postMessage(null);
+}
+
+/**
+ * Completed asynchronous work, run from a turn of the loop as libuv runs a completed request's callback: an fs
+ * request's answer, as a libuv filesystem completion arrives from the loop, never from the tick or the promise queue,
+ * so a chain of them cannot run ahead of the process's other work. Answers its cancellation (the owning process's end
+ * cancels work not yet begun).
+ */
+export function queueCompletion(run: () => void): () => void {
+  completions.push(run);
+  scheduleWake();
+  return () => {
+    const at = completions.indexOf(run);
+    if (at >= 0) { completions.splice(at, 1); scheduleWake(); }
+  };
 }
 
 /** A callback's throw is reported as the realm reports an uncaught error: out of its own microtask. */

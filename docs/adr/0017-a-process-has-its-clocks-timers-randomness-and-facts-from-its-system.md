@@ -58,6 +58,14 @@ from `system.ts`, never from the realm.
   immediates queued before them (libuv's timer and check phases). A guest's global timers, the `timers` module and the
   engine's own internal timers are all this list's; `async_hooks` carries a program's context into its callbacks
   (`carryTimerCallbacks`). No realm timer is taken.
+- **completions**: the engine's asynchronous work completes into the same loop, as libuv runs a completed request
+  from its poll phase: an fs request's answer (and the native loop checkpoint) is `queueCompletion`'s, run after the
+  due timer and before the immediates, one task each, and while one waits the wake is now. On a kernel each turn
+  between two due items is the process's loop's (`wake`), never a channel of the engine's own, so the process has
+  one loop as Node does. *Read 2026-11-13, browser-substrate's Node host (Node 26.12.0):* the completions had a
+  channel of their own beside the process's loop, whose turn re-posts itself on its own port; Node drains a port
+  1,000 times before it serves another (a self-posting `MessageChannel` ran 1,000 times before a second channel's
+  one message), so a Prisma CLI's `fs.promises.readdir` waited 52 s, 1,090 of the loop's 50 ms parks, before it ran.
 - **randomness**: `getrandom` for `randomBytes`, `randomFill`, `randomUUID`, `getRandomValues`, WASI's `random_get` and
   OpenSSL's entropy. A guest's `globalThis.crypto` is the engine's `webcrypto`, whose randomness is this one.
 - **output**: a program's output is its own fds 1 and 2 (its run's streams); its `console` is its own, with no echo to

@@ -1,7 +1,6 @@
 import { traceReadingRequested, traceOutput } from '../trace-output';
 import { engineSymbolFor } from '../engine-symbol';
 import { copyProcessCredentials, type ProcessCredentials } from '../process-credentials';
-import { queueNativeFsTask } from '../native-fs-tasks';
 import { withGuestCallback } from '../guest-loop';
 /**
  * The engine's process model: what a run of a program IS here.
@@ -82,7 +81,7 @@ import { installShellJobs } from './shell-jobs';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
 import { installedNpmVersion } from '../npm/version';
-import { clearTimeout, engineConsole as console, monotonicMs, setTimeout, onKernel, randomUUID as systemRandomUUID, realmHost, realmProcess } from '../system';
+import { clearTimeout, engineConsole as console, monotonicMs, setTimeout, onKernel, queueCompletion, randomUUID as systemRandomUUID, realmHost, realmProcess } from '../system';
 
 // Capture host capabilities before the guest's authority is restricted. These
 // endpoints are private, carry no guest bytes, and close at each checkpoint.
@@ -93,9 +92,9 @@ const isWorkerRealm = realmHost === 'worker';
 const hostNow = monotonicMs;
 
 async function settleEntry(): Promise<void> {
-  // A native loop checkpoint shares the existing host task channel. It is
-  // host work, not a guest timer, and does not depend on timer scheduling.
-  await new Promise<void>(resolve => { queueNativeFsTask(resolve); });
+  // A native loop checkpoint: a completion of the engine's loop (system.ts),
+  // host work, not a guest timer.
+  await new Promise<void>(resolve => { queueCompletion(resolve); });
   // On a kernel a rejection no program handles ends the process through its host (task.mjs runHost), with nothing
   // of the realm's reporting to order behind.
   if (onKernel() || !isWorkerRealm || nodeProcessRealmToken() === null) return;

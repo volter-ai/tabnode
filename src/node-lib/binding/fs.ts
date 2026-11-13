@@ -40,7 +40,6 @@ import { treeDescriptorsOf, type TreeDescriptors, type TreeDescriptorStats, type
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
 import { traceOutput, traceReadingRequested } from '../../trace-output';
 import { errname, UV_ENOENT } from './uv';
-import { queueNativeFsTask } from '../../native-fs-tasks';
 
 /**
  * An errno error, as the filesystem makes one. The tree's own maker knows the
@@ -79,7 +78,7 @@ import { constantsBinding } from './misc';
 import { Buffer as NodeBuffer } from '../buffer-module';
 import { unsharedBytes } from './buffer';
 import { namedTree, withFilesystem } from './named-tree';
-import { setInterval, clearInterval } from '../../system';
+import { setInterval, clearInterval, queueCompletion } from '../../system';
 
 /** The key the engine hangs a run's filesystem off its guest process. */
 export const kRunFilesystem = Symbol.for('tabnode.run.vfs');
@@ -591,7 +590,7 @@ class FSRequest {
     const inScope = captureNodeResourceScope();
     ownedRun(owner, () => { registerHandle(this); observeNodeRequest(this.request); });
     try {
-      this.cancel = queueNativeFsTask(() => {
+      this.cancel = queueCompletion(() => {
         if (this.ended) return;
         try { ownedRun(owner, () => inScope(run), true, 'fs', source ?? run); }
         finally { this.close(); }
@@ -614,8 +613,8 @@ class FSReqPromise extends FSRequest {}
 /**
  * Every operation below is written once, synchronously, and this is what
  * makes one asynchronous: Node passes a request object as the last argument
- * when it wants a callback, and the answer arrives from a host task, as a
- * libuv filesystem completion arrives from the loop. Delivering it on a tick
+ * when it wants a callback, and the answer is a completion of the engine's
+ * loop (system.ts), as a libuv filesystem completion arrives from the loop. Delivering it on a tick
  * or microtask let asynchronous fs chains run ahead of queued server accepts.
  *
  * The tree and the cwd are captured on this stack, not on that turn. The
