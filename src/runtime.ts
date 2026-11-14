@@ -41,7 +41,7 @@ import { guestTimerFunctions } from './guest-timers';
 import { noteStackFormed, stackOverrides } from './stack-overrides';
 export { pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers } from './guest-timers';
 import eventsShim from './node-lib/events-module';
-import { streamModule as streamShim, streamPromisesModule as streamPromises } from './node-lib/stream-module';
+import { streamModule as streamShim, streamPromisesModule as streamPromises, streamConsumersModule } from './node-lib/stream-module';
 import { fileURLToPath } from './node-lib/internals/url';
 import utilShim from './node-lib/util-module';
 import * as cryptoShim from './shims/crypto';
@@ -2110,6 +2110,7 @@ const builtinModules: Record<string, unknown> = {
   stream: streamShim,
   // `stream/promises` is the promise form of pipeline and finished, as Node's.
   'stream/promises': streamPromises,
+  'stream/consumers': streamConsumersModule,
   buffer: bufferShim,
   // Node's own `url.js`; a process's is its own, whose `URL` is the process's (internals/url.ts).
   url: urlModule,
@@ -2229,9 +2230,9 @@ Object.defineProperty(builtinModules, 'assert/strict', {
 // A listed name with neither resolved to its bare id and was then opened as a FILE of that name: `require('repl')`
 // answered "ENOENT: open 'repl'" (ts-node, which loads `repl` on every start). The engine does not load with one.
 {
-  // Per guest too: `fs/promises` (the guest's `fs`), `stream/consumers` (made per process, requirePlain); and a name the
-  // vendored node-lib answers is answered by `requirePlain` ahead of this table (`dns/promises`, `timers/promises`).
-  const __perGuest = new Set(['fs', 'fs/promises', 'process', 'wasi', 'stream/consumers']);
+  // Per guest too: `fs/promises` (the guest's `fs`); and a name the vendored node-lib answers is answered by
+  // `requirePlain` ahead of this table (`dns/promises`, `timers/promises`).
+  const __perGuest = new Set(['fs', 'fs/promises', 'process', 'wasi']);
   const __unanswered = moduleShim.builtinModules.filter((name: string) => !__perGuest.has(name) && !Object.prototype.hasOwnProperty.call(builtinModules, name) && !hasNodeLibModule(name));
   if (__unanswered.length > 0) throw new Error(`tabnode: builtin name${__unanswered.length === 1 ? '' : 's'} listed with no module: ${__unanswered.join(', ')}. Give each a module in runtime.ts's table or take it off shims/module.ts's list.`);
 }
@@ -2463,48 +2464,6 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
   // it exports is a real streaming codec.
 
 }
-/**
- * `stream/consumers`: the one module beside `stream` that Node ships and this
- * lane did not vendor -- four functions that read a whole stream into a
- * string, a Buffer, JSON or a Blob. Everything else the engine used to fill in
- * here (`pipeline`, `finished`, `stream/promises`, the `toWeb` statics, an
- * async iterator on a Readable, `duplexPair`, `isDisturbed`, the high-water
- * marks) is Node's own file's now and is gone.
- */
-function __browserRuntimeFillStreams(table: Record<string, any>, Bytes = BufferPolyfill) {
-  const collect = async (source: any) => {
-    const chunks: any[] = [];
-    if (source && typeof source.getReader === "function") {
-      const reader = source.getReader();
-      for (;;) {
-        const step = await reader.read();
-        if (step.done) break;
-        chunks.push(Bytes.from(step.value));
-      }
-    } else if (source && typeof source[Symbol.asyncIterator] === "function") {
-      for await (const chunk of source) chunks.push(typeof chunk === "string" ? Bytes.from(chunk) : Bytes.from(chunk));
-    } else if (source && typeof source[Symbol.iterator] === "function") {
-      for (const chunk of source) chunks.push(typeof chunk === "string" ? Bytes.from(chunk) : Bytes.from(chunk));
-    } else {
-      throw new TypeError("The stream argument must be a stream or an iterable");
-    }
-    return Bytes.concat(chunks);
-  };
-  table["stream/consumers"] = {
-    arrayBuffer: async (source: any) => {
-      const bytes = await collect(source);
-      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    },
-    blob: async (source: any) => new Blob([new Uint8Array(await collect(source))]),
-    buffer: collect,
-    bytes: async (source: any) => new Uint8Array(await collect(source)),
-    json: async (source: any) => JSON.parse((await collect(source)).toString("utf8")),
-    text: async (source: any) => (await collect(source)).toString("utf8")
-  };
-}
-
-__browserRuntimeFillStreams(builtinModules);
-
 __browserRuntimeFillModules(builtinModules);
 
 /**
@@ -3859,11 +3818,6 @@ function createRequire(
     if (id === 'wasi') {
       return __substrateGuestWasi(fsShim, process);
     }
-    if (id === 'stream/consumers') return nativeModuleFor(process, id, () => {
-      const table: Record<string, any> = {};
-      __browserRuntimeFillStreams(table, loadNodeLibFor(process, 'buffer').Buffer);
-      return table[id];
-    });
     if (hasNodeLibModule(id)) {
       const loaded = loadNodeLibFor(process, id);
       if (id === 'http' || id === 'https' || id === '_http_server') {

@@ -16,6 +16,7 @@ import BUFFER from './buffer.js?raw';
 import INTERNAL_BUFFER from './internal/buffer.js?raw';
 import STREAM from './stream.js?raw';
 import STREAM_PROMISES from './stream/promises.js?raw';
+import STREAM_CONSUMERS from './stream/consumers.js?raw';
 import STREAMS_ADD_ABORT_SIGNAL from './internal/streams/add-abort-signal.js?raw';
 import STREAMS_COMPOSE from './internal/streams/compose.js?raw';
 import STREAMS_DESTROY from './internal/streams/destroy.js?raw';
@@ -170,6 +171,7 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/buffer': INTERNAL_BUFFER,
   'stream': STREAM,
   'stream/promises': STREAM_PROMISES,
+  'stream/consumers': STREAM_CONSUMERS,
   'internal/streams/add-abort-signal': STREAMS_ADD_ABORT_SIGNAL,
   'internal/streams/compose': STREAMS_COMPOSE,
   'internal/streams/destroy': STREAMS_DESTROY,
