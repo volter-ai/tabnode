@@ -52,12 +52,22 @@ loads it into the process's memory through the same loader a program's libraries
 into the same image: one libc, one `malloc` (browser-substrate ADR-0231 §3). `node-deps.wasm`, its own memory and its
 WASI imports go.
 
-### 2. The loop is `uv_run`
+### 2. `node` is a WALI program, and its `main` runs `uv_run`
 
-The process's loop is `uv_run(UV_RUN_DEFAULT)` on the default loop, entered through a JSPI `promising` export. libuv
-parks in `epoll_wait` in the kernel, as any program does; the Node process's worker blocks on its word meanwhile.
-`system.ts`'s loop and `linux-event-loop.ts` go. Node's own `lib/timers.js` runs over a `timers` binding on a
-`uv_timer_t`, in the shape of Node's own binding (`src/timers.cc`, read when that step is written).
+A library runs only in a process whose libc musl's startup has made (its TLS, `environ`, its thread pointer), and the
+loader instantiates libraries into a program (its table, its stack pointer, its entry). So `/usr/bin/node` is a WALI
+program, not a host program, and its `main` has the shape of Node's own (`src/node_main.cc`, `node::Start`): it starts
+libuv's default loop, calls the engine's bootstrap (an import into the realm's JavaScript, which runs Node's library
+and returns), then calls `uv_run(UV_RUN_DEFAULT)` itself, and exits with the run's status. libuv parks in
+`epoll_wait` in the kernel, as any program's call does. The realm still runs on the Node process's own worker, and a
+kernel wait there blocks on the worker's word (browser-substrate ADR-0227, "A Node process is the one task with a
+worker of its own"). browser-substrate's `linux-calls.ts`, `linux-event-loop.ts` and the host program marker for
+`node`, and `system.ts`'s loop, go. Node's own `lib/timers.js` runs over a `timers` binding on a `uv_timer_t`, in the
+shape of Node's own binding (`src/timers.cc`, read when that step is written).
+
+*Why `main` calls `uv_run`, and not the realm:* a JSPI suspension may have no JavaScript frame between the task's
+`promising` entry and the `Suspending` import (browser-substrate ADR-0227). With `main` calling `uv_run`, the stack
+from `_start` to §4's `drain` is WebAssembly alone; a realm that called `uv_run` would stand between them.
 
 ### 3. A binding is glue over libuv, as Node's `src/*_wrap.cc` is
 
@@ -69,12 +79,13 @@ goes.
 
 ### 4. Microtasks drain after each callback
 
-After a callback's JavaScript returns, libuv's call site calls `drain`, a `Suspending` import, before it continues:
-the stack suspends, the worker runs its microtasks and then one task, and the suspension resumes from that task. The
-resume is a task, not a microtask, because a resume queued as a microtask would run before the microtasks the drained
-ones queue. No JavaScript frame stands between `uv_run`'s `promising` entry and `drain`, so the suspension is JSPI's
-(browser-substrate ADR-0227, "No JavaScript frame stands between a task's entry and its suspension"). A callback that
-blocks (a synchronous fs call) blocks the worker in `Atomics.wait`, as today.
+libuv calls C: each handle's callbacks are `libnode`'s glue, as Node's `src/*_wrap.cc` callbacks are (`OnRead`,
+`OnConnection`, `AfterWrite`). The glue calls the handle's JavaScript (an import, as `MakeCallback` calls into V8),
+and when it returns calls `drain`, a `Suspending` import, before it returns to libuv, as Node's
+`InternalCallbackScope` closes: the stack suspends, the worker runs its microtasks and then one task, and the
+suspension resumes from that task. The resume is a task, not a microtask, because a resume queued as a microtask
+would run before the microtasks the drained ones queue. A callback that blocks (a synchronous fs call) blocks the
+worker on its word, as today.
 
 ### 5. Asynchronous work is libuv's threadpool
 
@@ -107,8 +118,10 @@ browser-substrate ADR-0236 step 5 records. `SYS_posix_spawn_v1` goes.
 - **Not read:** the loader run on a Node process's worker, which holds no
   loader today; a task boundary's cost on a Node process's worker; whether every library of §1 builds as Node
   configures it under the WALI SDK (ADR-0016 built OpenSSL with wasi-sdk, not the WALI SDK).
-- **Order of building, each a step that runs before the next is written:** libuv in `libnode.so` loaded on the Node
-  worker; `uv_run` as the loop with `timers` over it; `tcp_wrap`, `pipe_wrap`, `stream_wrap` and `tty_wrap`;
+- **Not read:** a WALI program run on a Node process's worker (today a CPU's worker runs programs and a Node
+  process's worker runs the host program), with its kernel waits blocking on the worker's word rather than suspending.
+- **Order of building, each a step that runs before the next is written:** `node` as a WALI program on the Node
+  worker, `main` starting libuv and returning; the realm's bootstrap import; `uv_run` as the loop with `timers` over it; `tcp_wrap`, `pipe_wrap`, `stream_wrap` and `tty_wrap`;
   `process_wrap` and `spawn_sync` over `uv_spawn`; `fs` over `uv_fs_*`; OpenSSL and the rest of §1 moved into
   `libnode.so`; addons through `dlopen`.
 
