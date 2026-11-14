@@ -4,10 +4,11 @@
  * A guest's `require('url')` is Node v24.21.0's `lib/url.js` in its process's builtin graph (`node-lib/load.ts`): the
  * legacy `parse`, `format`, `resolve` and `Url` are that file's own JavaScript parser, over Node's `querystring`,
  * `internal/querystring`, `internal/errors` and `internal/validators`, with `internal/url` bound by hand over the
- * realm's WHATWG `URL` (`node-lib/internals/url.ts`). This module reads that same file through the same loader,
- * outside any process, on its first use (the rule `node-lib/lazy.ts` states); each function is the file's.
+ * realm's WHATWG `URL` (`node-lib/internals/url.ts`). This module loads that same file through the same loader,
+ * outside any process, when it is evaluated, as `net-module.ts` loads `net`: the default is Node's module object and
+ * each name is its own member.
  */
-import { lazyModule } from '../node-lib/lazy';
+import { loadNodeLib } from '../node-lib/load';
 
 export interface UrlObject {
   protocol?: string | null;
@@ -35,29 +36,27 @@ interface UrlModule {
   domainToUnicode(domain: string): string;
   urlToHttpOptions(url: URL): Record<string, unknown>;
   Url: new () => UrlObject;
-  URL: typeof URL;
-  URLSearchParams: typeof URLSearchParams;
+  URL: typeof globalThis.URL;
+  URLSearchParams: typeof globalThis.URLSearchParams;
   URLPattern: unknown;
 }
 
-const nodeUrl = lazyModule<UrlModule>('url');
+const nodeUrl = loadNodeLib('url') as UrlModule;
 
-export function parse(urlString: string, parseQueryString = false, slashesDenoteHost = false): UrlObject {
-  return nodeUrl.parse(urlString, parseQueryString, slashesDenoteHost);
-}
-export function format(urlObject: UrlObject | URL | string, options?: Record<string, unknown>): string {
-  return nodeUrl.format(urlObject, options);
-}
-export function resolve(from: string, to: string): string { return nodeUrl.resolve(from, to); }
-export function resolveObject(from: string | UrlObject, to: string): UrlObject { return nodeUrl.resolveObject(from, to); }
-export function fileURLToPath(url: string | URL): string { return nodeUrl.fileURLToPath(url); }
-export function pathToFileURL(path: string): URL { return nodeUrl.pathToFileURL(path); }
-export function domainToASCII(domain: string): string { return nodeUrl.domainToASCII(domain); }
-export function domainToUnicode(domain: string): string { return nodeUrl.domainToUnicode(domain); }
-export function urlToHttpOptions(url: URL): Record<string, unknown> { return nodeUrl.urlToHttpOptions(url); }
+export const parse = nodeUrl.parse;
+export const format = nodeUrl.format;
+export const resolve = nodeUrl.resolve;
+export const resolveObject = nodeUrl.resolveObject;
+export const fileURLToPath = nodeUrl.fileURLToPath;
+export const pathToFileURL = nodeUrl.pathToFileURL;
+export const domainToASCII = nodeUrl.domainToASCII;
+export const domainToUnicode = nodeUrl.domainToUnicode;
+export const urlToHttpOptions = nodeUrl.urlToHttpOptions;
+export const Url = nodeUrl.Url;
 
 /** The realm's WHATWG classes, which are what Node's `url.URL` and `url.URLSearchParams` are here. */
-export const URL = globalThis.URL;
-export const URLSearchParams = globalThis.URLSearchParams;
+export const URL = nodeUrl.URL;
+export const URLSearchParams = nodeUrl.URLSearchParams;
+export const URLPattern = nodeUrl.URLPattern;
 
 export default nodeUrl;
