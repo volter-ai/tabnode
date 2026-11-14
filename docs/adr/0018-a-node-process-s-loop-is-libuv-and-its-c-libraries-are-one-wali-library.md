@@ -142,10 +142,15 @@ browser-substrate ADR-0236 step 5 records. `SYS_posix_spawn_v1` goes.
      `scheduleTimer`, `toggleTimerRef`, `toggleImmediateRef`, `getLibuvNow` and `setupTimers`. Node's `lib/timers.js`
      and `lib/internal/timers.js` take, beside what the engine vendors or binds already, `internal/linkedlist`,
      `internal/priority_queue` and `internal/async_context_frame`, vendored with them, and `task_queue`'s
-     `enqueueMicrotask`. *Open, to decide before this step is written:* `internal/async_context_frame`'s active form
-     carries `AsyncLocalStorage`'s store through V8's continuation-preserved embedder data, which a page's engine does
-     not expose; the engine carries the store into its own timers today (`system.ts` `carryTimerCallbacks`). Vendoring
-     Node's timers decides how the engine's `AsyncLocalStorage` is carried, which Next.js reads on every request.
+     `enqueueMicrotask`. **`AsyncLocalStorage` is Node's own, over the engine's frame.** Node 24's timers carry its store
+     through `internal/async_context_frame`, whose active form reads and writes one value, the current frame (a map of
+     each storage to its store), through `internalBinding('async_context_frame')`'s
+     `getContinuationPreservedEmbedderData` and `setContinuationPreservedEmbedderData`, which V8 keeps across `await`.
+     A page's engine exposes no such data, but the engine already keeps that one value the same way: its frame, "every
+     storage's store, as one frame", restored where each async function it compiles resumes (`src/shims/async_hooks.ts`,
+     `__substrateResume`, `__substrateRestore`). So the binding is the engine's frame register; `--async-context-frame`
+     is on, as Node 24's default; Node's `internal/async_context_frame`, its `AsyncLocalStorage` (the async-context-frame
+     form) and its timers run unmodified over it; the engine's own `AsyncLocalStorage` and `carryTimerCallbacks` go.
   3. Standard streams: `tty_wrap`, `pipe_wrap` and the stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so
      `process.stdout` is Node's.
   4. `tcp_wrap` and `stream_wrap` over `uv_tcp_t`; `udp_wrap` over `uv_udp_t`.
