@@ -5,9 +5,9 @@
  * A guest reads `err.code` and `err.message`, and Node's own tests read both
  * (test-path-parse-format.js asserts the ERR_INVALID_ARG_TYPE text word for
  * word; test-wasi-options-validation.js matches the property names), so each
- * message is assembled the way lib/internal/errors.js assembles it. These
- * began in `shims/path.ts`, the first Node file run on a binding; `shims/wasi.ts`
- * is the second, and both bind here.
+ * message is assembled the way lib/internal/errors.js assembles it.
+ * `shims/wasi.ts` binds Node's `wasi.js` here, and the engine's own modules
+ * raise Node's codes from here.
  */
 
 import { inspect } from './node-lib/util-module';

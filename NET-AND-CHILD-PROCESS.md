@@ -2,10 +2,10 @@
 
 The rule this applies is `CONTRIBUTING.md`'s: a hand-written module that has grown
 a patch group is replaced with Node's own file from `nodejs/node/lib` on a
-binding written once, and Node's tests are the measure. `src/shims/path.ts`
-over `src/node-lib/path.js` is the precedent: the vendored file binds, it
-does not implement, and a bug is fixed by moving the file to a newer Node,
-never by editing either side.
+binding written once, and Node's tests are the measure. `src/node-lib/path.js`
+is the precedent: the vendored file runs unedited, the binding answers what it
+needs, and a bug is fixed by moving the file to a newer Node, never by editing
+it.
 
 `src/shims/net.ts` and `src/shims/child_process.ts` are that patch group.
 Between fork .36 and .44 they took nine corrections, each one gap of Node's

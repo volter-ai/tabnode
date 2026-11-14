@@ -23,9 +23,11 @@
 import { nodeLibInternalRequire } from './load';
 
 
-/** The module a name stands for, loaded once, on the first property read. */
-function loadedModule(name: string, cache: { value?: Record<string, unknown> }): Record<string, unknown> {
-  return cache.value ??= nodeLibInternalRequire(name) as Record<string, unknown>;
+/** The module a name stands for, or one object `member` of it, loaded once, on the first property read. */
+function loadedModule(name: string, cache: { value?: Record<string, unknown> }, member?: string): Record<string, unknown> {
+  return cache.value ??= (member === undefined
+    ? nodeLibInternalRequire(name)
+    : (nodeLibInternalRequire(name) as Record<string, unknown>)[member]) as Record<string, unknown>;
 }
 
 /**
@@ -51,21 +53,23 @@ function loadedModule(name: string, cache: { value?: Record<string, unknown> }):
  * report it from there; every read answers the target first and the module
  * after. This is the shape the guest global's proxy in `src/runtime.ts` uses,
  * for the same reason.
+ *
+ * `member` names an object the module holds rather than the module itself: `path.win32` is one.
  */
-export function lazyModule<T extends object>(name: string): T {
+export function lazyModule<T extends object>(name: string, member?: string): T {
   const cache: { value?: Record<string, unknown> } = {};
   const own = (target: object, key: PropertyKey): boolean =>
     Reflect.getOwnPropertyDescriptor(target, key) !== undefined;
   return new Proxy({} as T, {
     get: (target, key, receiver) => (own(target, key)
       ? Reflect.get(target, key, receiver)
-      : Reflect.get(loadedModule(name, cache), key)),
+      : Reflect.get(loadedModule(name, cache, member), key)),
     set: (target, key, value, receiver) => (own(target, key)
       ? Reflect.set(target, key, value, receiver)
-      : Reflect.set(loadedModule(name, cache), key, value)),
-    has: (target, key) => own(target, key) || Reflect.has(loadedModule(name, cache), key),
+      : Reflect.set(loadedModule(name, cache, member), key, value)),
+    has: (target, key) => own(target, key) || Reflect.has(loadedModule(name, cache, member), key),
     defineProperty: (target, key, descriptor) => {
-      const module = loadedModule(name, cache);
+      const module = loadedModule(name, cache, member);
       if (descriptor.configurable === false) {
         if (!Reflect.defineProperty(target, key, descriptor)) return false;
         Reflect.defineProperty(module, key, { ...descriptor, configurable: true });
@@ -76,17 +80,17 @@ export function lazyModule<T extends object>(name: string): T {
     },
     deleteProperty: (target, key) => {
       if (own(target, key) && !Reflect.deleteProperty(target, key)) return false;
-      return Reflect.deleteProperty(loadedModule(name, cache), key);
+      return Reflect.deleteProperty(loadedModule(name, cache, member), key);
     },
     ownKeys: (target) => {
       const keys = Reflect.ownKeys(target);
-      for (const key of Reflect.ownKeys(loadedModule(name, cache))) if (!keys.includes(key)) keys.push(key);
+      for (const key of Reflect.ownKeys(loadedModule(name, cache, member))) if (!keys.includes(key)) keys.push(key);
       return keys;
     },
     getOwnPropertyDescriptor: (target, key) => {
       const mine = Reflect.getOwnPropertyDescriptor(target, key);
       if (mine !== undefined) return mine;
-      const descriptor = Reflect.getOwnPropertyDescriptor(loadedModule(name, cache), key);
+      const descriptor = Reflect.getOwnPropertyDescriptor(loadedModule(name, cache, member), key);
       return descriptor === undefined ? undefined : { ...descriptor, configurable: true };
     },
   }) as T;

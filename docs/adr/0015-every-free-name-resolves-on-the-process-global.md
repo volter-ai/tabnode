@@ -138,8 +138,7 @@ module body's `W` also leaves the wrapper's parameters alone. A script's top-lev
 Not taken, each because it reads no name a process's global answers:
 - **primordials** (`load.ts` `primordialsOf`): reads only ECMAScript's names, once a realm, as Node builds them once a
   context from its intrinsics.
-- **`path.js`** (`shims/path.ts`) and **`wasi.js`** (`shims/wasi.ts`): Node's files, compiled once a realm, read only
-  their parameters and primordials.
+- **`wasi.js`** (`shims/wasi.ts`): Node's file, compiled once a realm, reads only its parameters and primordials.
 
 ### 4. A name the realm gains later
 

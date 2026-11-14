@@ -9,12 +9,9 @@ import { traceSocketConnect } from '../socket-connect-trace';
 /**
  * One loader for Node's own files.
  *
- * `src/shims/path.ts` is the precedent: a vendored file binds, it does not
- * implement, and a bug in it is fixed by moving the file to a newer Node.
- * `path` bound its own primordials and its own three internals by hand, which
- * is affordable for one file that names fourteen names. `net.js` names two
- * hundred, and `child_process.js` after it, so the binding is written once
- * here instead: Node's own `internal/per_context/primordials.js` builds the
+ * A vendored file binds, it does not implement, and a bug in it is fixed by
+ * moving the file to a newer Node. The binding is written once, here: Node's
+ * own `internal/per_context/primordials.js` builds the
  * whole `primordials` object over this realm's built-ins the way Node's
  * bootstrap does, and a vendored file is evaluated in the scope Node's
  * `BuiltinModule` gives one —

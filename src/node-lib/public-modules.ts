@@ -18,7 +18,6 @@ import { processHostsReaderOf } from '../process-hostname';
 import * as clusterShim from '../shims/cluster';
 import asyncHooksShim from '../shims/async_hooks';
 import v8Shim from '../shims/v8';
-import * as pathShim from '../shims/path';
 import * as cryptoShim from '../shims/crypto';
 import * as vmShim from '../shims/vm';
 import * as workerThreadsShim from '../shims/worker_threads';
@@ -59,9 +58,6 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   // `internal/fs/cp/cp.js` requires the public alias; it is the same object
   // as `internal/util/types`, which is `util.types`.
   'util/types': () => nodeLibInternalRequire('internal/util/types'),
-  // The same object a guest's `require("path")` answers with: Node's own
-  // `path.posix`, out of the vendored `path.js` the engine's shim evaluates.
-  path: () => pathShim.posix,
   // `internal/fs/promises.js` exports `{ exports, FileHandle }`; the public
   // `fs/promises` module is the inner `exports` object, as `fs.js` reads it.
   'fs/promises': () => (nodeLibInternalRequire('internal/fs/promises') as { exports: unknown }).exports,
