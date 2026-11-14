@@ -125,10 +125,26 @@ browser-substrate ADR-0236 step 5 records. `SYS_posix_spawn_v1` goes.
   that its imports name the engine, so its exec gets a `"node"` worker and the engine registered for it (as host
   programs are, `hostPrograms`) answers those imports. *Not read:* a WALI program's kernel waits on that worker,
   which for a host program block on the worker's word (browser-substrate ADR-0227).
-- **Order of building, each a step that runs before the next is written:** `node` as a WALI program on the Node
-  worker, `main` starting libuv and returning; the realm's bootstrap import; `uv_run` as the loop with `timers` over it; `tcp_wrap`, `pipe_wrap`, `stream_wrap` and `tty_wrap`;
-  `process_wrap` and `spawn_sync` over `uv_spawn`; `fs` over `uv_fs_*`; OpenSSL and the rest of §1 moved into
-  `libnode.so`; addons through `dlopen`.
+- **Open: the engine's identity.** A host program is registered under a digest of the Node baseline's host-executable
+  key (browser-substrate `imageHostPrograms`), which moves with each baseline release; a C program names its import
+  module at compile time. The engine is named `host:tabnode` until an identity that also pins the interface between
+  `libnode`'s C and the engine's JavaScript (both from one Tabnode commit) is decided.
+- **Order of building, each a step that runs before the next is written.** Today's engine is asynchronous end to end:
+  `createContainer().runNode()` answers a promise of the run's end, its waits `LinuxEventLoop`'s timer and descriptor
+  registrations made from JavaScript through the process's raw calls (browser-substrate `linux-node-run.ts`). Under
+  libuv, `bootstrap` starts Node's library and returns, and the process lives while libuv holds a referenced handle,
+  so the engine's waits become libuv's handles first:
+  1. `node` as a WALI program on the Node worker: its `main`, the loop's own handles (`env.c`), the six engine
+     imports. *Built 2026-11-14 (native/node), linked; not run.*
+  2. The engine's waits as libuv's: its timers on `env.c`'s timer, through the `timers` binding Node's
+     `lib/internal/timers.js` drives; `linux-event-loop.ts` and `system.ts`'s loop go.
+  3. Standard streams: `tty_wrap`, `pipe_wrap` and the stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so
+     `process.stdout` is Node's.
+  4. `tcp_wrap` and `stream_wrap` over `uv_tcp_t`; `udp_wrap` over `uv_udp_t`.
+  5. `process_wrap` and `spawn_sync` over `uv_spawn`, with libuv at a267f5688b.
+  6. `fs` over `uv_fs_*` and its threadpool.
+  7. OpenSSL and the rest of §1 into `libnode.so`; addons through `dlopen`; the process's raw calls and
+     `linux-calls.ts` go.
 
 ## Consequences
 
