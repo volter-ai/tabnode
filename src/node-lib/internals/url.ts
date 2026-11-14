@@ -203,7 +203,7 @@ export function internalUrlOf(require: Require, process?: object) {
       validateObject(url, 'url', kValidateObjectAllowObjects);
       const { hostname, pathname, port, username, password, search } = url;
       // `...url`, in case the url object was extended by the user.
-      const options = Object.assign(Object.create(null) as Record<string, unknown>, url, {
+      const options: Record<string, unknown> = Object.assign(Object.create(null) as Record<string, unknown>, url, {
         protocol: url.protocol,
         hostname: hostname && hostname[0] === '[' ? hostname.slice(1, -1) : hostname,
         hash: url.hash,
