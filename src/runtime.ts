@@ -45,7 +45,6 @@ import { streamModule as streamShim, streamPromisesModule as streamPromises } fr
 import * as urlShim from './shims/url';
 import utilShim from './node-lib/util-module';
 import * as cryptoShim from './shims/crypto';
-import * as stringDecoderShim from './shims/string_decoder';
 import { createDnsModule } from './shims/dns';
 import { bufferModule as bufferShim } from './node-lib/buffer-module';
 import { initChildProcess } from './shims/child_process';
@@ -59,7 +58,7 @@ import { processUrl, setUrlModule } from './node-lib/object-urls';
 import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor, setNodeLibGlobal, nodeLibBindingFor } from './node-lib/load';
 import { fsModule, fsModuleFor } from './node-lib/fs-module';
 import {
-  assertModule, querystringModule, punycodeModule, constantsModule,
+  assertModule, querystringModule, punycodeModule, stringDecoderModule, constantsModule,
   diagnosticsChannelModule, osModule, ttyModule, readlineModule, readlinePromisesModule, zlibModule,
 } from './node-lib/small-modules';
 import { recordedProxies } from './node-lib/internals/util';
@@ -2124,7 +2123,7 @@ const builtinModules: Record<string, unknown> = {
   dns: createDnsModule(),
   child_process: childProcessShim,
   assert: assertModule,
-  string_decoder: stringDecoderShim,
+  string_decoder: stringDecoderModule,
   timers: createTimersModule(),
   // `chokidar`, `readdirp`, `fsevents` and `ws` are not the engine's to
   // answer. Each is an ordinary package over a builtin that is Node's own

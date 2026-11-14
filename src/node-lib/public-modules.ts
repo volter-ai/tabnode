@@ -17,7 +17,6 @@ import { createDnsModule } from '../shims/dns';
 import { processHostsReaderOf } from '../process-hostname';
 import * as clusterShim from '../shims/cluster';
 import asyncHooksShim from '../shims/async_hooks';
-import stringDecoderShim, { createStringDecoderModule } from '../shims/string_decoder';
 import v8Shim from '../shims/v8';
 import * as pathShim from '../shims/path';
 import * as cryptoShim from '../shims/crypto';
@@ -41,12 +40,10 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   if (require && name === 'crypto') return () => cryptoShim.createCryptoModule(require);
   // `url`'s URL is the process's, whose `createObjectURL` is Node's.
   if (_process && name === 'url') return () => processUrlModule(_process);
-  if (require && name === 'string_decoder') return () => createStringDecoderModule(() => require('buffer').Buffer);
   __table ??= {
   timers: createTimersModule,
   dns: createDnsModule,
   cluster: () => clusterShim,
-  string_decoder: () => stringDecoderShim,
   v8: () => v8Shim,
   // Node's `events.js` builds `EventEmitterAsyncResource` by extending this
   // binding's `AsyncResource`. The shim's class answers `asyncId` 0, which

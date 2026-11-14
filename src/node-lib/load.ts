@@ -80,8 +80,8 @@ interface NodeLibModule {
 /**
  * The loader's own state, built on first use rather than when this module is
  * evaluated. A vendored file is asked for from inside the import graph that
- * leads here -- the engine's `string_decoder` shim wants Node's `Buffer`, and
- * `Buffer` is a vendored file -- so the loader must answer whatever order the
+ * leads here -- the engine's own modules want Node's `Buffer`, and `Buffer`
+ * is a vendored file -- so the loader must answer whatever order the
  * bundler settles on. Module-scope `const`s left it in its own temporal dead
  * zone and the engine failed to load at all.
  */

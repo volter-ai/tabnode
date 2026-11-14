@@ -241,33 +241,6 @@ export function validateFunction(value: unknown, name: string): void {
   if (typeof value !== 'function') throw new ERR_INVALID_ARG_TYPE(name, 'Function', value);
 }
 
-/** lib/internal/errors.js ERR_UNKNOWN_ENCODING, as `new StringDecoder('x')` raises it. */
-export class ERR_UNKNOWN_ENCODING extends TypeError {
-  code = 'ERR_UNKNOWN_ENCODING';
-  constructor(encoding: unknown) {
-    super(`Unknown encoding: ${String(encoding)}`);
-    this.name = 'TypeError';
-  }
-}
-
-/** lib/internal/errors.js ERR_INVALID_THIS: a prototype method called off an instance. */
-export class ERR_INVALID_THIS extends TypeError {
-  code = 'ERR_INVALID_THIS';
-  constructor(type: string) {
-    super(`Value of "this" must be of type ${type}`);
-    this.name = 'TypeError';
-  }
-}
-
-/** lib/internal/errors.js ERR_STRING_TOO_LONG: past V8's longest string. */
-export class ERR_STRING_TOO_LONG extends RangeError {
-  code = 'ERR_STRING_TOO_LONG';
-  constructor(max: number) {
-    super(`Cannot create a string longer than 0x${max.toString(16)} characters`);
-    this.name = 'RangeError';
-  }
-}
-
 export function validateNumber(value: unknown, name: string): void {
   if (typeof value !== 'number') throw new ERR_INVALID_ARG_TYPE(name, 'number', value);
 }

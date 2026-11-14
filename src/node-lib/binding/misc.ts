@@ -229,14 +229,6 @@ export const fsBinding = {
 export { internalUtilTypes as typesBinding } from '../internals/util';
 
 /**
- * `internalBinding('string_decoder')`: `internal/util.js` reads the table of
- * encoding names out of it to normalize one.
- */
-export const stringDecoderBinding = {
-  encodings: ['ascii', 'utf8', 'base64', 'ucs2', 'binary', 'hex', 'utf16le', 'base64url'],
-};
-
-/**
  * `internalBinding('trace_events')`: the tracing category buffer
  * `internal/util/debuglog.js` reads to decide whether a section is traced.
  * Nothing in a tab is traced, so every category reads 0 -- which is what
