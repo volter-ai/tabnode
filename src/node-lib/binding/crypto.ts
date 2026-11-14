@@ -55,7 +55,9 @@ let roots: { system: string[]; extra: string[]; extraFile: string } | undefined;
 function rootCertificates() {
   if (roots) return roots;
   const fs = nodeLibInternalRequire('fs') as { readFileSync(path: string, encoding: string): string };
-  const process = nodeLibProcessOf() as { env?: Record<string, string | undefined>; emitWarning?(message: string): void };
+  // The realm's running process (the guest whose TLS first needs the roots), whose NODE_EXTRA_CA_CERTS names the file:
+  // the library's own process carries no image's environment.
+  const process = ((globalThis as { process?: unknown }).process ?? nodeLibProcessOf()) as { env?: Record<string, string | undefined>; emitWarning?(message: string): void };
   const split = (pem: string) => (pem.match(PEM_CERTIFICATE) ?? []).map((certificate) => `${certificate}\n`);
   let system: string[] = [];
   try { system = split(fs.readFileSync(SYSTEM_CA_FILE, 'latin1')); } catch { /* an image with no bundle has no roots */ }

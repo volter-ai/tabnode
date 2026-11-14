@@ -38,7 +38,7 @@ import { transcodeFor } from './binding/transcode';
 import { createUtilBinding } from './binding/util';
 import { ownedRun, ownerOfInstance, setInstanceOwner, withNodeResourceScope } from './binding/handles';
 import { __tokenForProcess, type ProcessToken } from '../process-tokens';
-import type { Process } from '../shims/process';
+import { createProcess, type Process } from '../shims/process';
 import { createFsBindings } from './binding/fs';
 import { createDiagnosticsChannelBinding } from './binding/diagnostics_channel';
 import { createWasmWebApiBinding } from './binding/wasm_web_api';
@@ -108,16 +108,16 @@ function internalBinding(name: string): unknown {
 }
 
 /**
- * The process a vendored file is handed where the realm has none: the engine
- * loaded as a library, before any guest has run.
+ * The static facts of the library realm's process, answered before that
+ * process can be made.
  *
  * Node compiles a builtin inside a bootstrapped process, and Node's own files
  * read that process while they compile -- `internal/util` reads
  * `process.versions.openssl` and `process.versions.amaro` at its top, and
- * `internal/streams/state` reads `process.platform` -- so a realm with no
- * process must still answer the static facts of one. It answers only those:
- * everything a run owns -- its argv, its environment, its streams, its exit --
- * belongs to that run's own process and is answered there.
+ * `internal/streams/state` reads `process.platform` -- and the engine
+ * compiles some of them while its bundle is still evaluating, before the
+ * library realm's process can be made, so these facts are answered until it
+ * is. They are that process's own: the same platform, versions and argv.
  *
  * What made this a wall: the engine's `net-module` compiles Node's `net.js`
  * while the bundle is still evaluating, `net` requires `events` and `events`
@@ -140,37 +140,29 @@ const NODE_LIB_LIBRARY_PROCESS: Record<string, unknown> = {
 };
 
 /**
- * The `process` a vendored file is handed, built by a hoisted function for
- * the reason `nodeLibInternalRequire` gives: a file can be compiled while the
- * bundle is still evaluating, when a module-scope `var` is still undefined.
- * Node hands a builtin the process of
- * the realm it runs in; so does this, read at call time, because a guest's
- * process is installed on the realm after this module is loaded and every run
- * replaces it. Where the realm has no process at all the answer is
- * {@link NODE_LIB_LIBRARY_PROCESS}.
+ * The `process` a vendored file loaded outside any process is handed: the engine's own process for the library
+ * realm, `createProcess()` with no run (a process object no run names is the realm's own, shims/process.ts), so the
+ * library's builtins have Node's `emitWarning`, `nextTick`, `cwd` and the rest. `url.parse` warns DEP0169 on its first
+ * call; read off a page's `globalThis.process` -- the polyfill shims/child_process.ts puts there, with no
+ * `emitWarning` -- it threw. A guest's process is never this one: each guest's builtins are its own graph, given
+ * that guest's process (`NodeLibScope`).
+ *
+ * Built by a hoisted function for the reason `nodeLibInternalRequire` gives, and made on the first read of a name
+ * that is not one of {@link NODE_LIB_LIBRARY_PROCESS}'s static facts: a file compiled while the bundle is still
+ * evaluating reads only those (its platform and versions), before shims/process.ts can make a process.
  */
 var nodeLibProcessCache: Record<string, unknown> | undefined;
+var libraryProcess: Record<string, unknown> | undefined;
+function libraryProcessOf(): Record<string, unknown> {
+  return libraryProcess ??= createProcess() as unknown as Record<string, unknown>;
+}
+const isStaticFact = (key: string | symbol): boolean =>
+  libraryProcess === undefined && typeof key === 'string' && Object.prototype.hasOwnProperty.call(NODE_LIB_LIBRARY_PROCESS, key);
 export function nodeLibProcessOf(): Record<string, unknown> {
   return nodeLibProcessCache ??= new Proxy({} as Record<string, unknown>, {
-  get(_target, key) {
-    const realm = (globalThis as unknown as { process?: Record<string, unknown> }).process;
-    if (!realm) return NODE_LIB_LIBRARY_PROCESS[key as string];
-    const value = realm[key as string];
-    if (key === 'nextTick' && typeof value !== 'function') {
-      return (fn: (...args: unknown[]) => void, ...args: unknown[]) => queueMicrotask(() => fn(...args));
-    }
-    if (key === 'platform' && typeof value !== 'string') return 'linux';
-    return value;
-  },
-  set(_target, key, value) {
-    const realm = (globalThis as unknown as { process?: Record<string, unknown> }).process;
-    if (realm) realm[key as string] = value;
-    return true;
-  },
-  has(_target, key) {
-    const realm = (globalThis as unknown as { process?: Record<string, unknown> }).process;
-    return realm ? key in realm : key in NODE_LIB_LIBRARY_PROCESS;
-  },
+    get: (_target, key) => (isStaticFact(key) ? NODE_LIB_LIBRARY_PROCESS[key as string] : Reflect.get(libraryProcessOf(), key)),
+    set: (_target, key, value) => Reflect.set(libraryProcessOf(), key, value),
+    has: (_target, key) => isStaticFact(key) || Reflect.has(libraryProcessOf(), key),
   });
 }
 
