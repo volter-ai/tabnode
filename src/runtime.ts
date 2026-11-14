@@ -42,7 +42,7 @@ import { noteStackFormed, stackOverrides } from './stack-overrides';
 export { pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers } from './guest-timers';
 import eventsShim from './node-lib/events-module';
 import { streamModule as streamShim, streamPromisesModule as streamPromises } from './node-lib/stream-module';
-import * as urlShim from './shims/url';
+import { fileURLToPath } from './node-lib/internals/url';
 import utilShim from './node-lib/util-module';
 import * as cryptoShim from './shims/crypto';
 import { createDnsModule } from './shims/dns';
@@ -54,11 +54,11 @@ import * as moduleShim from './shims/module';
 import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
 import { kRunFilesystem } from './node-lib/binding/fs';
 import { byteLengthUtf8 } from './node-lib/binding/buffer';
-import { processUrl, setUrlModule } from './node-lib/object-urls';
+import { processUrl } from './node-lib/object-urls';
 import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor, setNodeLibGlobal, nodeLibBindingFor } from './node-lib/load';
 import { fsModule, fsModuleFor } from './node-lib/fs-module';
 import {
-  assertModule, querystringModule, punycodeModule, stringDecoderModule, constantsModule,
+  assertModule, querystringModule, punycodeModule, stringDecoderModule, urlModule, constantsModule,
   diagnosticsChannelModule, osModule, ttyModule, readlineModule, readlinePromisesModule, zlibModule,
 } from './node-lib/small-modules';
 import { recordedProxies } from './node-lib/internals/util';
@@ -2111,9 +2111,8 @@ const builtinModules: Record<string, unknown> = {
   // `stream/promises` is the promise form of pipeline and finished, as Node's.
   'stream/promises': streamPromises,
   buffer: bufferShim,
-  // The shim, which `__browserRuntimeFillModules` extends with Node's names (`Url`, `domainToASCII`,
-  // `urlToHttpOptions` and the rest); a process's `url` is this module with its own `URL` (object-urls.ts).
-  url: urlShim,
+  // Node's own `url.js`; a process's is its own, whose `URL` is the process's (internals/url.ts).
+  url: urlModule,
   querystring: querystringModule,
   util: utilShim,
   tty: ttyModule,
@@ -2329,92 +2328,6 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
 
   table["timers/promises"] = table.timers.promises;
 
-  // Node's punycode decoder, RFC 3492, so domainToUnicode answers the name a
-  // person reads rather than the xn-- label: the engine dropped the punycode
-  // module Node retired, and nothing else in a tab decodes one.
-  const punycodeDecode = (input: any) => {
-    const base = 36, tMin = 1, tMax = 26, skew = 38, damp = 700;
-    const output = [];
-    let index = input.lastIndexOf("-");
-    if (index > 0) { for (let i = 0; i < index; i++) output.push(input.charCodeAt(i)); index++; } else index = 0;
-    let n = 128, bias = 72, i = 0;
-    while (index < input.length) {
-      const start = i;
-      for (let weight = 1, k = base; ; k += base) {
-        if (index >= input.length) throw new RangeError("Invalid punycode input");
-        const code = input.charCodeAt(index++);
-        let digit;
-        if (code >= 0x30 && code <= 0x39) digit = code - 0x30 + 26;
-        else if (code >= 0x61 && code <= 0x7a) digit = code - 0x61;
-        else if (code >= 0x41 && code <= 0x5a) digit = code - 0x41;
-        else throw new RangeError("Invalid punycode input");
-        i += digit * weight;
-        const t = k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias;
-        if (digit < t) break;
-        weight *= base - t;
-      }
-      const out = output.length + 1;
-      let delta = i - start;
-      delta = start === 0 ? Math.floor(delta / damp) : delta >> 1;
-      delta += Math.floor(delta / out);
-      let k = 0;
-      for (; delta > ((base - tMin) * tMax) >> 1; k += base) delta = Math.floor(delta / (base - tMin));
-      bias = Math.floor(k + ((base - tMin + 1) * delta) / (delta + skew));
-      n += Math.floor(i / out);
-      i %= out;
-      output.splice(i++, 0, n);
-    }
-    return String.fromCodePoint(...output);
-  };
-  const urlModule = table.url;
-  const URLClass = urlModule.URL || globalThis.URL;
-  const domainToASCII = (domain: any) => {
-    try { return new URLClass("http://" + String(domain)).hostname; } catch (error) { return ""; }
-  };
-  const domainToUnicode = (domain: any) => {
-    const ascii = domainToASCII(domain);
-    if (!ascii) return "";
-    return ascii.split(".").map((label: any) => {
-      if (!/^xn--/i.test(label)) return label;
-      try { return punycodeDecode(label.slice(4)); } catch (error) { return label; }
-    }).join(".");
-  };
-  function Url(this: any) {
-    this.protocol = null; this.slashes = null; this.auth = null; this.host = null;
-    this.port = null; this.hostname = null; this.hash = null; this.search = null;
-    this.query = null; this.pathname = null; this.path = null; this.href = null;
-  }
-  const resolveObject = (from: any, to: any) => Object.assign(new (Url as any)(), urlModule.parse(urlModule.resolve(from, to)));
-  Url.prototype.parse = function (this: any, input: any, parseQueryString: any, slashesDenoteHost: any) {
-    return Object.assign(this, urlModule.parse(input, parseQueryString, slashesDenoteHost));
-  };
-  Url.prototype.format = function () { return urlModule.format(this); };
-  Url.prototype.resolve = function (relative: any) { return urlModule.resolve(urlModule.format(this), relative); };
-  Url.prototype.resolveObject = function (relative: any) { return resolveObject(urlModule.format(this), relative); };
-  const urlFills: Record<string, any> = {
-    Url,
-    resolveObject,
-    domainToASCII,
-    domainToUnicode,
-    urlToHttpOptions: (url: any) => {
-      const hostname = typeof url.hostname === "string" && url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname;
-      const options = {
-        protocol: url.protocol,
-        hostname,
-        hash: url.hash,
-        search: url.search,
-        pathname: url.pathname,
-        path: (url.pathname || "") + (url.search || ""),
-        href: url.href
-      } as Record<string, any>;
-      if (url.port !== "" && url.port !== void 0 && url.port !== null) options.port = Number(url.port);
-      if (url.username || url.password) options.auth = decodeURIComponent(url.username || "") + ":" + decodeURIComponent(url.password || "");
-      return options;
-    }
-  };
-  if (typeof URLPattern !== "undefined") urlFills.URLPattern = URLPattern;
-  extend("url", urlFills);
-
   extend("querystring", {
     // Node's unescapeBuffer answers the bytes behind the percent escapes, not
     // a string, so a caller decoding a body that is not UTF-8 keeps them.
@@ -2593,7 +2506,6 @@ function __browserRuntimeFillStreams(table: Record<string, any>, Bytes = BufferP
 __browserRuntimeFillStreams(builtinModules);
 
 __browserRuntimeFillModules(builtinModules);
-setUrlModule(() => builtinModules.url as Record<string, unknown>);
 
 /**
  * A shared esbuild or rollup shim must use the calling guest's cwd, even after
@@ -3046,7 +2958,7 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     // `file://` as it stood, so a URL whose path had an escape (`%40` for `@`, `%20` for a space) named a directory
     // that is not there, and every relative `require` made from it was "Cannot find module".
     let fromPath = filenameOrUrl instanceof URL ? filenameOrUrl.href : String(filenameOrUrl);
-    if (fromPath.startsWith("file:")) fromPath = urlShim.fileURLToPath(fromPath);
+    if (fromPath.startsWith("file:")) fromPath = fileURLToPath(fromPath);
     const made = requireFor({ id: fromPath, filename: fromPath, paths: [] });
     made.cache = moduleCache;
     return made;
@@ -3163,7 +3075,7 @@ function createRequire(
     const named = id.startsWith('file:') || id.includes('.node') || /(^|\/)\.\.?\/*$/.test(id);
     // Read file: URLs with the engine's fileURLToPath outside the process's vendored node-lib scope, which contains
     // no public url module. Validate the scheme, host and encoded separators before native-binding lookup.
-    const requested = !named ? void 0 : id.startsWith('file:') ? urlShim.fileURLToPath(id)
+    const requested = !named ? void 0 : id.startsWith('file:') ? fileURLToPath(id)
       : id.startsWith('/') ? pathShim.resolve(id) : id.startsWith('.') ? pathShim.resolve(currentDir, id) : void 0;
     if (requested?.endsWith('.node')) for (const addons of maps) {
       if (underRoot(addons, requested)) addons.refuse(requested);

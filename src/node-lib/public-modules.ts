@@ -24,7 +24,6 @@ import * as workerThreadsShim from '../shims/worker_threads';
 import * as http2Shim from '../shims/http2';
 import * as inspectorShim from '../shims/inspector';
 import * as perfHooksShim from '../shims/perf_hooks';
-import { engineUrlModule, processUrlModule } from './object-urls';
 import { nodeLibInternalRequire } from './load';
 import { createTimersModule } from './timers';
 import { guestTimerFunctions } from '../guest-timers';
@@ -37,8 +36,6 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   if (_process && name === 'dns') return () => createDnsModule(processHostsReaderOf(_process));
   if (_process && name === 'timers') return () => createTimersModule(guestTimerFunctions(_process));
   if (require && name === 'crypto') return () => cryptoShim.createCryptoModule(require);
-  // `url`'s URL is the process's, whose `createObjectURL` is Node's.
-  if (_process && name === 'url') return () => processUrlModule(_process);
   __table ??= {
   timers: createTimersModule,
   dns: createDnsModule,
@@ -54,7 +51,6 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   http2: () => http2Shim,
   inspector: () => inspectorShim,
   perf_hooks: () => perfHooksShim,
-  url: engineUrlModule,
   // `internal/fs/cp/cp.js` requires the public alias; it is the same object
   // as `internal/util/types`, which is `util.types`.
   'util/types': () => nodeLibInternalRequire('internal/util/types'),

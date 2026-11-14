@@ -12,6 +12,8 @@ import * as osShim from '../../shims/os';
 import { treeSocketsOf, type TreeSockets } from '../../host-sockets';
 import { nodeLibInternalRequire } from '../load';
 import { setTimeout } from '../../system';
+import { adaToAscii } from './ada_idna';
+import { hostnameToUnicode } from '../internals/url';
 
 /**
  * `internalBinding('constants')`: the engine's own constants module, which
@@ -179,12 +181,41 @@ export const credentialsBinding = {
 };
 
 /**
- * `internalBinding('encoding_binding')`: the punycode conversion `url.js`
- * makes for a host name, out of the engine's own `punycode`.
+ * `internalBinding('encoding_binding')`: the IDNA conversion `url.js` makes of
+ * every host name. `toASCII` is Ada's own `ada::idna::to_ascii`, as Node's
+ * (encoding_binding.cc:221-232); `toUnicode` is out of the engine's `punycode`.
  */
 export const encodingBinding = {
-  toASCII: (value: string): string => (nodeLibInternalRequire('punycode') as { toASCII(value: string): string }).toASCII(value),
+  toASCII: (value: string): string => adaToAscii(value),
   toUnicode: (value: string): string => (nodeLibInternalRequire('punycode') as { toUnicode(value: string): string }).toUnicode(value),
+};
+
+/**
+ * `internalBinding('url')`: the one call the legacy `url.format` makes of it
+ * for a WHATWG `URL` (`url.format(url, options)`, url.js:615), node_url.cc
+ * `Format` (370-419): the href re-parsed, its fragment, query and credentials
+ * dropped as asked, and with `unicode` its host as `ada::idna::to_unicode`
+ * gives it. Ada's parser is the realm's `URL` here; an href it cannot parse
+ * is answered as it is, as Ada's is. The host is written into the
+ * serialization, not set, since the setter would encode it again.
+ */
+export const urlBinding = {
+  format(href: string, hash: boolean, unicode: boolean, search: boolean, auth: boolean): string {
+    let url: URL;
+    try { url = new URL(href); } catch { return href; }
+    if (!hash) url.hash = '';
+    if (!search) url.search = '';
+    if (!auth) { url.username = ''; url.password = ''; }
+    if (!unicode || url.hostname === '') return url.href;
+    const credentials = url.username || url.password
+      ? `${url.username}${url.password ? `:${url.password}` : ''}@` : '';
+    return `${url.protocol}//${credentials}${hostnameToUnicode(url.hostname)}${url.port ? `:${url.port}` : ''}${url.pathname}${url.search}${url.hash}`;
+  },
+};
+
+/** `internalBinding('url_pattern')`: Node's is Ada's `url_pattern`; the realm's own `URLPattern` stands in. */
+export const urlPatternBinding = {
+  get URLPattern() { return (globalThis as { URLPattern?: unknown }).URLPattern; },
 };
 
 /**

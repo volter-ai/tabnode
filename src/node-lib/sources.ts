@@ -83,6 +83,7 @@ import ASSERT_STRICT from './assert/strict.js?raw';
 import QUERYSTRING from './querystring.js?raw';
 import PUNYCODE from './punycode.js?raw';
 import STRING_DECODER from './string_decoder.js?raw';
+import URL_LEGACY from './url.js?raw';
 import NODE_CONSTANTS from './constants.js?raw';
 import DIAGNOSTICS_CHANNEL from './diagnostics_channel.js?raw';
 import INTERNAL_QUERYSTRING from './internal/querystring.js?raw';
@@ -236,6 +237,7 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'querystring': QUERYSTRING,
   'punycode': PUNYCODE,
   'string_decoder': STRING_DECODER,
+  'url': URL_LEGACY,
   'constants': NODE_CONSTANTS,
   'diagnostics_channel': DIAGNOSTICS_CHANNEL,
   'internal/querystring': INTERNAL_QUERYSTRING,

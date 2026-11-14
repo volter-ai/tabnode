@@ -29,7 +29,8 @@ import {
 } from './buffer-and-streams';
 import type { BlobBinding } from '../binding/blob';
 import { nodeLibBindingFor } from '../load';
-import { internalBootstrapRealm, internalUrl, internalEncoding } from './modules';
+import { internalBootstrapRealm, internalEncoding } from './modules';
+import { internalUrl, internalUrlOf } from './url';
 import { internalAmaro } from './amaro';
 import { locksOf } from './locks';
 
@@ -57,6 +58,8 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
     },
   });
   if (require && name === 'internal/webstreams/adapters') return () => createWebStreamsAdapters(require);
+  // A process's `URL` is its own (object-urls.ts), so its `internal/url` is too.
+  if (require && name === 'internal/url') return () => internalUrlOf(require, process);
   if (name === 'internal/locks') return () => ({ locks: locksOf(process) });
   // `internal/options` of a process: the realm's table, with Node's `getAllowUnauthorized` over that process.
   if (process && name === 'internal/options') return () => ({

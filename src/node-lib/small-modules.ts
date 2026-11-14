@@ -19,6 +19,7 @@ export const assertModule = lazyExport<Record<string, unknown>>('assert', 'ok') 
 export const querystringModule = lazyModule<Record<string, unknown>>('querystring');
 export const punycodeModule = lazyModule<Record<string, unknown>>('punycode');
 export const stringDecoderModule = lazyModule<Record<string, unknown>>('string_decoder');
+export const urlModule = lazyModule<Record<string, unknown>>('url');
 export const constantsModule = lazyModule<Record<string, unknown>>('constants');
 export const diagnosticsChannelModule = lazyModule<Record<string, unknown>>('diagnostics_channel');
 

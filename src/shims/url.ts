@@ -1,244 +1,63 @@
 /**
- * Node.js url module shim
- * Uses browser's built-in URL API
+ * `url`, as Node's own `lib/url.js`, for the library's `url` export.
+ *
+ * A guest's `require('url')` is Node v24.21.0's `lib/url.js` in its process's builtin graph (`node-lib/load.ts`): the
+ * legacy `parse`, `format`, `resolve` and `Url` are that file's own JavaScript parser, over Node's `querystring`,
+ * `internal/querystring`, `internal/errors` and `internal/validators`, with `internal/url` bound by hand over the
+ * realm's WHATWG `URL` (`node-lib/internals/url.ts`). This module reads that same file through the same loader,
+ * outside any process, on its first use (the rule `node-lib/lazy.ts` states); each function is the file's.
  */
+import { lazyModule } from '../node-lib/lazy';
 
 export interface UrlObject {
   protocol?: string | null;
   slashes?: boolean | null;
   auth?: string | null;
   host?: string | null;
-  port?: string | null;
+  port?: string | number | null;
   hostname?: string | null;
   hash?: string | null;
   search?: string | null;
   query?: string | Record<string, string | string[]> | null;
   pathname?: string | null;
   path?: string | null;
-  href?: string;
+  href?: string | null;
 }
 
-/**
- * The legacy `url.parse` gives a path back as a path. Node's
- * `url.parse("/workspace/app/x")` has `href` and `pathname` equal to the input
- * and no host; the shim resolved every input against a made-up
- * `http://localhost`, so `href` came back as a URL, and Tailwind v3, which runs
- * each config dependency through `url.parse(file).href` before it stats it,
- * stated a path that does not exist. An input with no scheme is split into its
- * path, search and hash, as Node does.
- */
-export function parse(
-  urlString: string,
-  parseQueryString: boolean = false,
-  slashesDenoteHost: boolean = false
-): UrlObject {
-  if (typeof urlString === 'string' && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(urlString) && !urlString.startsWith('//')) {
-    const __hashAt = urlString.indexOf('#');
-    const __hash = __hashAt >= 0 ? urlString.slice(__hashAt) : null;
-    const __beforeHash = __hashAt >= 0 ? urlString.slice(0, __hashAt) : urlString;
-    const __searchAt = __beforeHash.indexOf('?');
-    const __search = __searchAt >= 0 ? __beforeHash.slice(__searchAt) : null;
-    const __pathname = __searchAt >= 0 ? __beforeHash.slice(0, __searchAt) : __beforeHash;
-    return {
-      protocol: null,
-      slashes: null,
-      auth: null,
-      host: null,
-      port: null,
-      hostname: null,
-      hash: __hash,
-      search: __search,
-      query: parseQueryString ? Object.fromEntries(new URLSearchParams(__search || '')) : (__search ? __search.slice(1) : null),
-      pathname: __pathname || null,
-      path: (__pathname + (__search || '')) || null,
-      href: urlString
-    };
-  }
-  try {
-    const url = new URL(urlString, 'http://localhost');
-    const result: UrlObject = {
-      protocol: url.protocol,
-      slashes: url.protocol.endsWith(':'),
-      auth: url.username ? `${url.username}:${url.password}` : null,
-      host: url.host,
-      port: url.port || null,
-      hostname: url.hostname,
-      hash: url.hash || null,
-      search: url.search || null,
-      query: parseQueryString ? Object.fromEntries(url.searchParams) : url.search?.slice(1) || null,
-      pathname: url.pathname,
-      path: url.pathname + url.search,
-      href: url.href,
-    };
-    return result;
-  } catch {
-    // Handle relative URLs
-    return {
-      protocol: null,
-      slashes: null,
-      auth: null,
-      host: null,
-      port: null,
-      hostname: null,
-      hash: null,
-      search: null,
-      query: null,
-      pathname: urlString,
-      path: urlString,
-      href: urlString,
-    };
-  }
+interface UrlModule {
+  parse(urlString: string, parseQueryString?: boolean, slashesDenoteHost?: boolean): UrlObject;
+  format(urlObject: UrlObject | URL | string, options?: Record<string, unknown>): string;
+  resolve(from: string, to: string): string;
+  resolveObject(from: string | UrlObject, to: string): UrlObject;
+  fileURLToPath(url: string | URL): string;
+  pathToFileURL(path: string): URL;
+  domainToASCII(domain: string): string;
+  domainToUnicode(domain: string): string;
+  urlToHttpOptions(url: URL): Record<string, unknown>;
+  Url: new () => UrlObject;
+  URL: typeof URL;
+  URLSearchParams: typeof URLSearchParams;
+  URLPattern: unknown;
 }
 
-export function format(urlObject: UrlObject): string {
-  if (urlObject.href) {
-    return urlObject.href;
-  }
+const nodeUrl = lazyModule<UrlModule>('url');
 
-  let result = '';
-
-  if (urlObject.protocol) {
-    result += urlObject.protocol;
-    if (!urlObject.protocol.endsWith(':')) {
-      result += ':';
-    }
-  }
-
-  if (urlObject.slashes || urlObject.protocol === 'http:' || urlObject.protocol === 'https:') {
-    result += '//';
-  }
-
-  if (urlObject.auth) {
-    result += urlObject.auth + '@';
-  }
-
-  if (urlObject.hostname) {
-    result += urlObject.hostname;
-  } else if (urlObject.host) {
-    result += urlObject.host;
-  }
-
-  if (urlObject.port) {
-    result += ':' + urlObject.port;
-  }
-
-  if (urlObject.pathname) {
-    result += urlObject.pathname;
-  }
-
-  if (urlObject.search) {
-    result += urlObject.search;
-  } else if (urlObject.query) {
-    if (typeof urlObject.query === 'string') {
-      result += '?' + urlObject.query;
-    } else {
-      const params = new URLSearchParams();
-      for (const [key, value] of Object.entries(urlObject.query)) {
-        if (Array.isArray(value)) {
-          for (const v of value) {
-            params.append(key, v);
-          }
-        } else {
-          params.set(key, value);
-        }
-      }
-      const search = params.toString();
-      if (search) {
-        result += '?' + search;
-      }
-    }
-  }
-
-  if (urlObject.hash) {
-    result += urlObject.hash;
-  }
-
-  return result;
+export function parse(urlString: string, parseQueryString = false, slashesDenoteHost = false): UrlObject {
+  return nodeUrl.parse(urlString, parseQueryString, slashesDenoteHost);
 }
-
-export function resolve(from: string, to: string): string {
-  try {
-    return new URL(to, from).href;
-  } catch {
-    return to;
-  }
+export function format(urlObject: UrlObject | URL | string, options?: Record<string, unknown>): string {
+  return nodeUrl.format(urlObject, options);
 }
+export function resolve(from: string, to: string): string { return nodeUrl.resolve(from, to); }
+export function resolveObject(from: string | UrlObject, to: string): UrlObject { return nodeUrl.resolveObject(from, to); }
+export function fileURLToPath(url: string | URL): string { return nodeUrl.fileURLToPath(url); }
+export function pathToFileURL(path: string): URL { return nodeUrl.pathToFileURL(path); }
+export function domainToASCII(domain: string): string { return nodeUrl.domainToASCII(domain); }
+export function domainToUnicode(domain: string): string { return nodeUrl.domainToUnicode(domain); }
+export function urlToHttpOptions(url: URL): Record<string, unknown> { return nodeUrl.urlToHttpOptions(url); }
 
-// Re-export URL and URLSearchParams from globals
+/** The realm's WHATWG classes, which are what Node's `url.URL` and `url.URLSearchParams` are here. */
 export const URL = globalThis.URL;
 export const URLSearchParams = globalThis.URLSearchParams;
 
-/**
- * Convert a file:// URL to a file path, as Node's own does on Linux (lib/internal/url.js getPathFromURLPosix): a host
- * other than empty or localhost (which the URL parser makes empty) is ERR_INVALID_FILE_URL_HOST, and an encoded '/'
- * in the path is ERR_INVALID_FILE_URL_PATH, never decoded into a separator the URL did not have.
- * Node.js: url.fileURLToPath('file:///home/user/file.txt') -> '/home/user/file.txt'
- */
-export function fileURLToPath(url: string | URL): string {
-  const urlObj = typeof url === 'string' ? new globalThis.URL(url) : url;
-  if (urlObj.protocol !== 'file:') {
-    throw Object.assign(new TypeError('The URL must be of scheme file'), { code: 'ERR_INVALID_URL_SCHEME' });
-  }
-  if (urlObj.hostname !== '') {
-    throw Object.assign(new TypeError('File URL host must be "localhost" or empty on linux'), { code: 'ERR_INVALID_FILE_URL_HOST' });
-  }
-  const pathname = urlObj.pathname;
-  for (let at = 0; at < pathname.length; at++) {
-    if (pathname[at] === '%' && pathname[at + 1] === '2' && ((pathname.codePointAt(at + 2) ?? 0) | 0x20) === 0x66) {
-      throw Object.assign(new TypeError('File URL path must not include encoded / characters'), { code: 'ERR_INVALID_FILE_URL_PATH' });
-    }
-  }
-  return decodeURIComponent(pathname);
-}
-
-/**
- * Convert a file path to a file:// URL
- * Node.js: url.pathToFileURL('/home/user/file.txt') -> URL { href: 'file:///home/user/file.txt' }
- */
-/**
- * `url.pathToFileURL` takes any path Node takes. This encoded the whole path
- * after `file://`, so a path that did not begin with `/` became the URL's host,
- * and a virtual module id, the Vue plugin's `\0plugin-vue:export-helper`, was
- * no host at all: Vite's SSR loader asked for the file URL of every module it
- * instantiated and vue3-ssr's render died on "Invalid URL". A relative path is
- * resolved against the working directory first, as Node resolves it.
- *
- * Node encodes only what the URL would otherwise read as something else (`%`,
- * `\`, a newline, a carriage return, a tab, `?`, `#`, `|`, `^`, `[`, `]`, `~`) and leaves the rest
- * to the URL's own path encoding (lib/internal/url.js, encodePathChars). This
- * encoded each segment whole, so `@` became `%40`: @librechat/agents makes its
- * `require` from `pathToFileURL(__filename).href` and asks it for
- * `./llm/openai/index.cjs`, which was looked for under `node_modules/%40librechat`
- * and not found, and LibreChat answered every message with that error (mini run 5).
- */
-export function pathToFileURL(path: string): URL {
-  if (typeof path !== 'string') {
-    throw new TypeError('The "path" argument must be of type string. Received ' + typeof path);
-  }
-  const cwd = typeof globalThis.process?.cwd === 'function' ? globalThis.process.cwd() : '/';
-  const joined = path.startsWith('/') ? path : cwd.replace(/\/$/, '') + '/' + path;
-  // path.posix.resolve: `.` and `..` taken out, repeated slashes made one; a trailing slash is kept, as Node keeps it.
-  const segments: string[] = [];
-  for (const segment of joined.split('/')) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') segments.pop(); else segments.push(segment);
-  }
-  let resolved = '/' + segments.join('/');
-  if (path.endsWith('/') && resolved !== '/') resolved += '/';
-  resolved = resolved.replace(/%/g, '%25').replace(/\\/g, '%5C').replace(/\n/g, '%0A').replace(/\r/g, '%0D').replace(/\t/g, '%09')
-    .replace(/\?/g, '%3F').replace(/#/g, '%23').replace(/\|/g, '%7C').replace(/\^/g, '%5E').replace(/\[/g, '%5B').replace(/\]/g, '%5D').replace(/~/g, '%7E');
-  return new globalThis.URL('file://' + resolved);
-}
-
-export const URLPattern = (globalThis as unknown as { URLPattern?: unknown }).URLPattern;
-
-export default {
-  parse,
-  format,
-  resolve,
-  URL,
-  URLSearchParams,
-  URLPattern,
-  fileURLToPath,
-  pathToFileURL,
-};
+export default nodeUrl;

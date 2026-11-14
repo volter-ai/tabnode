@@ -14,7 +14,7 @@ import { __adoptHandle, ownedRun, ownerOf, registerHandle, releaseHandle, withNo
 import { loadDependencyFor, nodeLibGlobalFor } from './node-lib/load';
 import { __tokenForProcess, type ProcessToken } from './process-tokens';
 import type { Process } from './shims/process';
-import { pathToFileURL } from './shims/url';
+import { pathToFileURL } from './node-lib/internals/url';
 
 const dlopenFailed = (message: string): Error => Object.assign(new Error(message), { code: 'ERR_DLOPEN_FAILED' });
 

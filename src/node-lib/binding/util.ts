@@ -85,8 +85,35 @@ export const utilBinding = {
     return view.buffer !== undefined;
   },
 
-  /** Node warns differently for a deprecation raised inside a dependency; nothing here is. */
-  isInsideNodeModules: (): boolean => false,
+  /**
+   * Whether the nearest frame outside Node's own library is a file under a `node_modules` directory
+   * (node_util.cc:328-359). Node asks it so a deprecation a dependency triggers -- `url.parse`'s DEP0169,
+   * `punycode`'s DEP0040, `Buffer()`'s DEP0005 -- is not printed to a program that did not write the call. V8's
+   * structured stack is the realm's too, read as `getCallSites` below reads it; a builtin's frames are `node:`.
+   */
+  isInsideNodeModules: (framesLimit?: unknown): boolean => {
+    const limit = typeof framesLimit === 'number' && (framesLimit | 0) === framesLimit ? framesLimit : 10;
+    const original = Error.prepareStackTrace;
+    const stackLimit = Error.stackTraceLimit;
+    try {
+      Error.stackTraceLimit = limit;
+      Error.prepareStackTrace = (_error, sites: unknown[]) => sites;
+      const holder: { stack?: unknown } = {};
+      Error.captureStackTrace(holder, utilBinding.isInsideNodeModules);
+      const sites = holder.stack;
+      if (!Array.isArray(sites)) return false;
+      for (const raw of sites) {
+        const site = raw as { getScriptNameOrSourceURL?: () => string | null; getFileName?: () => string | null };
+        const name = site.getScriptNameOrSourceURL?.() || site.getFileName?.() || '';
+        if (name === '' || name.startsWith('node:')) continue;
+        return /[/\\]node_modules[/\\]/.test(name);
+      }
+      return false;
+    } finally {
+      Error.prepareStackTrace = original;
+      Error.stackTraceLimit = stackLimit;
+    }
+  },
 
   /**
    * An object's own properties that are not array indices, filtered the way

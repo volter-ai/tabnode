@@ -24,7 +24,7 @@ import ttyWrapBinding from './tty_wrap';
 import udpWrapBinding from './udp_wrap';
 import httpParserBinding from './http_parser';
 import bufferBinding from './buffer';
-import { constantsBinding, osBinding, configBinding, errorsBinding, credentialsBinding, encodingBinding, typesBinding, traceEventsBinding, messagingBinding } from './misc';
+import { constantsBinding, osBinding, configBinding, errorsBinding, credentialsBinding, encodingBinding, typesBinding, traceEventsBinding, messagingBinding, urlBinding, urlPatternBinding } from './misc';
 import utilBinding from './util';
 import { stringDecoderBinding } from './string_decoder';
 import fsBinding, { fsDirBinding, fsEventWrapBinding } from './fs';
@@ -73,6 +73,8 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   os: () => osBinding,
   credentials: () => credentialsBinding,
   encoding_binding: () => encodingBinding,
+  url: () => urlBinding,
+  url_pattern: () => urlPatternBinding,
   fs: () => fsBinding,
   blob: () => blobBinding,
   async_wrap: () => ({ AsyncResource }),
