@@ -137,7 +137,15 @@ browser-substrate ADR-0236 step 5 records. `SYS_posix_spawn_v1` goes.
   1. `node` as a WALI program on the Node worker: its `main`, the loop's own handles (`env.c`), the six engine
      imports. *Built 2026-11-14 (native/node), linked; not run.*
   2. The engine's waits as libuv's: its timers on `env.c`'s timer, through the `timers` binding Node's
-     `lib/internal/timers.js` drives; `linux-event-loop.ts` and `system.ts`'s loop go.
+     `lib/internal/timers.js` drives; `linux-event-loop.ts` and `system.ts`'s loop go. *Read 2026-11-14:* the binding
+     is `immediateInfo` and `timeoutInfo` (arrays the JavaScript keeps in C's memory, both now in `env.c`),
+     `scheduleTimer`, `toggleTimerRef`, `toggleImmediateRef`, `getLibuvNow` and `setupTimers`. Node's `lib/timers.js`
+     and `lib/internal/timers.js` take, beside what the engine vendors or binds already, `internal/linkedlist`,
+     `internal/priority_queue` and `internal/async_context_frame`, vendored with them, and `task_queue`'s
+     `enqueueMicrotask`. *Open, to decide before this step is written:* `internal/async_context_frame`'s active form
+     carries `AsyncLocalStorage`'s store through V8's continuation-preserved embedder data, which a page's engine does
+     not expose; the engine carries the store into its own timers today (`system.ts` `carryTimerCallbacks`). Vendoring
+     Node's timers decides how the engine's `AsyncLocalStorage` is carried, which Next.js reads on every request.
   3. Standard streams: `tty_wrap`, `pipe_wrap` and the stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so
      `process.stdout` is Node's.
   4. `tcp_wrap` and `stream_wrap` over `uv_tcp_t`; `udp_wrap` over `uv_udp_t`.
