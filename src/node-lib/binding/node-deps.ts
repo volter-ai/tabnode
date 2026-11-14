@@ -9,6 +9,7 @@
 import { NODE_DEPS_WASM_BASE64 } from './node-deps-wasm';
 import { randomFill, system } from '../../system';
 import { htmlAtob as atob } from './buffer';
+import { NODE_CRYPTO_CONSTANTS } from './node-crypto-constants';
 
 /** The module's exports (scripts/node-deps/tabnode_deps.cc). Pointers and sizes are wasm32 numbers. */
 interface NodeDepsExports {
@@ -235,20 +236,11 @@ export function opensslError(message: string, code = nodeDeps().tn_err_get() >>>
 
 let cryptoConstants: Record<string, number | string> | undefined;
 /**
- * Node's crypto constants (node_constants.cc `DefineCryptoConstants`), the body compiled as Node writes it against
- * the built OpenSSL (tabnode_deps.cc `tn_crypto_constants`). The same object every time, as Node's binding is.
+ * Node's crypto constants (node_constants.cc `DefineCryptoConstants`) as the built OpenSSL defines them: compiled in
+ * as Node's are, read from node-deps.wasm when it is built (scripts/node-crypto-constants.mjs, from tabnode_deps.cc
+ * `tn_crypto_constants`), so a process's bootstrap, whose lib/constants.js reads them, never instantiates OpenSSL to
+ * answer a constant. The same object every time, as Node's binding is.
  */
 export function nodeCryptoConstants(): Record<string, number | string> {
-  if (cryptoConstants) return cryptoConstants;
-  const text = new TextDecoder().decode(mallocAnswer((lengthAt) => nodeDeps().tn_crypto_constants(lengthAt))!);
-  const table: Record<string, number | string> = {};
-  for (const line of text.split('\n')) {
-    if (!line) continue;
-    const kind = line[0];
-    const space = line.indexOf(' ', 2);
-    const name = line.slice(2, space);
-    const value = line.slice(space + 1);
-    table[name] = kind === 'n' ? Number(value) : value;
-  }
-  return cryptoConstants = table;
+  return cryptoConstants ??= { ...NODE_CRYPTO_CONSTANTS };
 }
