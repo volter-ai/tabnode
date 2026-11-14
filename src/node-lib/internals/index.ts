@@ -16,21 +16,21 @@ import { internalCryptoKeys } from './crypto-keys';
 import { internalCryptoUtil, internalCryptoX509 } from './crypto-tls';
 import {
   internalConsoleGlobal, internalProcessExecution,
-  internalProcessWarning, internalSourceMapCache, internalReadlineInterface, internalJsTransferable,
+  internalProcessWarning, internalSourceMapCache, internalJsTransferable,
 } from './events-util';
 import {
-  internalAsyncHooks, internalTimers, internalStreamsState, internalTaskQueues,
+  internalAsyncHooks, internalTimers, internalTaskQueues,
   internalEventTarget, internalOptions, allowUnauthorizedOf, internalPerfObserve, internalAssert,
   internalStartupSnapshot, internalPermission,
 } from './runtime';
 import { internalSocketAddress, internalBlockList } from './addresses';
-import { internalFsUtils } from './child-process';
 import {
   internalAbortController, internalBlob, internalBlobOf, internalFile, internalWebStreamsAdapters, createWebStreamsAdapters,
 } from './buffer-and-streams';
 import type { BlobBinding } from '../binding/blob';
 import { nodeLibBindingFor } from '../load';
-import { internalBootstrapRealm, internalUrl, internalEncoding } from './modules';
+import { internalBootstrapRealm, internalEncoding } from './modules';
+import { internalUrl, internalUrlOf } from './url';
 import { internalAmaro } from './amaro';
 import { locksOf } from './locks';
 
@@ -58,6 +58,8 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
     },
   });
   if (require && name === 'internal/webstreams/adapters') return () => createWebStreamsAdapters(require);
+  // A process's `URL` is its own (object-urls.ts), so its `internal/url` is too.
+  if (require && name === 'internal/url') return () => internalUrlOf(require, process);
   if (name === 'internal/locks') return () => ({ locks: locksOf(process) });
   // `internal/options` of a process: the realm's table, with Node's `getAllowUnauthorized` over that process.
   if (process && name === 'internal/options') return () => ({
@@ -78,7 +80,6 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   'internal/util/types': () => internalUtilTypes,
   'internal/async_hooks': () => internalAsyncHooks,
   'internal/timers': () => internalTimers,
-  'internal/streams/state': () => internalStreamsState,
   'internal/process/task_queues': () => internalTaskQueues,
   'internal/process/permission': () => internalPermission,
   'internal/event_target': () => internalEventTarget,
@@ -86,7 +87,6 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   'internal/perf/observe': () => internalPerfObserve,
   'internal/assert': () => internalAssert,
   'internal/v8/startup_snapshot': () => internalStartupSnapshot,
-  'internal/fs/utils': () => internalFsUtils,
   'internal/abort_controller': () => internalAbortController,
   'internal/blob': () => internalBlob,
   'internal/file': () => internalFile,
@@ -101,7 +101,6 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   'internal/process/warning': () => internalProcessWarning,
   'internal/source_map/source_map_cache': () => internalSourceMapCache,
   'internal/deps/amaro/dist/index': () => internalAmaro(),
-  'internal/readline/interface': () => internalReadlineInterface,
   'internal/worker/js_transferable': () => internalJsTransferable,
 };;
   return __table[name];

@@ -5,9 +5,9 @@
  * A guest reads `err.code` and `err.message`, and Node's own tests read both
  * (test-path-parse-format.js asserts the ERR_INVALID_ARG_TYPE text word for
  * word; test-wasi-options-validation.js matches the property names), so each
- * message is assembled the way lib/internal/errors.js assembles it. These
- * began in `shims/path.ts`, the first Node file run on a binding; `shims/wasi.ts`
- * is the second, and both bind here.
+ * message is assembled the way lib/internal/errors.js assembles it.
+ * `shims/wasi.ts` binds Node's `wasi.js` here, and the engine's own modules
+ * raise Node's codes from here.
  */
 
 import { inspect } from './node-lib/util-module';
@@ -239,33 +239,6 @@ export function validateBoolean(value: unknown, name: string): void {
 
 export function validateFunction(value: unknown, name: string): void {
   if (typeof value !== 'function') throw new ERR_INVALID_ARG_TYPE(name, 'Function', value);
-}
-
-/** lib/internal/errors.js ERR_UNKNOWN_ENCODING, as `new StringDecoder('x')` raises it. */
-export class ERR_UNKNOWN_ENCODING extends TypeError {
-  code = 'ERR_UNKNOWN_ENCODING';
-  constructor(encoding: unknown) {
-    super(`Unknown encoding: ${String(encoding)}`);
-    this.name = 'TypeError';
-  }
-}
-
-/** lib/internal/errors.js ERR_INVALID_THIS: a prototype method called off an instance. */
-export class ERR_INVALID_THIS extends TypeError {
-  code = 'ERR_INVALID_THIS';
-  constructor(type: string) {
-    super(`Value of "this" must be of type ${type}`);
-    this.name = 'TypeError';
-  }
-}
-
-/** lib/internal/errors.js ERR_STRING_TOO_LONG: past V8's longest string. */
-export class ERR_STRING_TOO_LONG extends RangeError {
-  code = 'ERR_STRING_TOO_LONG';
-  constructor(max: number) {
-    super(`Cannot create a string longer than 0x${max.toString(16)} characters`);
-    this.name = 'RangeError';
-  }
 }
 
 export function validateNumber(value: unknown, name: string): void {

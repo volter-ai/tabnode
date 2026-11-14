@@ -96,6 +96,8 @@ export const promises = lazyModule<Record<string, unknown>>('stream/promises');
 
 /** The promise form of `pipeline` and `finished`, as `stream/promises`. */
 export const streamPromisesModule = lazyModule<Record<string, unknown>>('stream/promises');
+/** Node's own `stream/consumers.js`. */
+export const streamConsumersModule = lazyModule<Record<string, unknown>>('stream/consumers');
 
 /** Node's `stream` module object IS the `Stream` class, as `stream.js` exports it. */
 export default streamModule;

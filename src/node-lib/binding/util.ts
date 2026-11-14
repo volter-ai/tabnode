@@ -40,6 +40,53 @@ import { guessHandleTypeOfFd } from './fds';
 const HANDLE_TYPES = ['TCP', 'TTY', 'UDP', 'FILE', 'PIPE', 'UNKNOWN'];
 import { stdioKindOf } from './tty_wrap';
 import { nodeLibInternalRequire } from '../load';
+import { stackOverrides } from '../../stack-overrides';
+
+/** A V8 call site, as much of it as is read here. */
+interface CallSite {
+  getFunctionName?(): string | null; getFileName?(): string | null; getScriptNameOrSourceURL?(): string | null;
+  getLineNumber?(): number | null; getColumnNumber?(): number | null;
+}
+
+/**
+ * V8's call sites above `above`, through the door Node's own files use for them: an entry in `internal/errors`'
+ * `overrideStackTrace`, which the realm's stack hook reads first (`src/stack-overrides.ts`, runtime.ts
+ * `__substrateCallSiteFileNames`), and `Error.captureStackTrace`. `Error.prepareStackTrace` is never assigned, so a
+ * program that pinned it non-writable is not made to throw; where the realm's hook is not installed (a pinned,
+ * non-configurable `prepareStackTrace`, a realm without V8's call sites) the stack is not call sites and the answer
+ * is none. Every frame is taken: the callers of these ask rarely and the engine's own frames are passed over.
+ */
+function callSitesAbove(above: Function): CallSite[] {
+  const holder: { stack?: unknown } = {};
+  stackOverrides.set(holder, (_error, sites) => sites);
+  const limit = Object.getOwnPropertyDescriptor(Error, 'stackTraceLimit');
+  const settable = limit !== undefined && 'value' in limit && limit.writable === true;
+  try {
+    if (settable) Error.stackTraceLimit = Infinity;
+    (Error as { captureStackTrace?: (target: object, above?: Function) => void }).captureStackTrace?.(holder, above);
+    const sites = holder.stack;
+    return Array.isArray(sites) ? sites as CallSite[] : [];
+  } catch {
+    return [];
+  } finally {
+    if (settable) Error.stackTraceLimit = limit.value as number;
+    stackOverrides.delete(holder);
+  }
+}
+
+function scriptNameOf(site: CallSite): string {
+  return site.getScriptNameOrSourceURL?.() || site.getFileName?.() || '';
+}
+
+/**
+ * Whether a frame is the engine's own: a script the realm loaded by URL (the engine's bundle, a dependency it
+ * compiles under its name) rather than a file of the process. A guest's module is named by its path in the
+ * process's tree (runtime.ts `__substrateScriptName`, which names a `file:` URL by its path too), and a builtin by
+ * `node:`. A frame with no name (a guest's own `eval`) is passed over, as Node passes over one.
+ */
+function isEngineScript(name: string): boolean {
+  return name === '' || (!name.startsWith('/') && !name.startsWith('node:'));
+}
 
 /** Node's `propertyFilter` and promise-state constants, by their own values. */
 const constants = {
@@ -85,8 +132,25 @@ export const utilBinding = {
     return view.buffer !== undefined;
   },
 
-  /** Node warns differently for a deprecation raised inside a dependency; nothing here is. */
-  isInsideNodeModules: (): boolean => false,
+  /**
+   * Whether the nearest user frame is a file under a `node_modules` directory (node_util.cc:328-359). Node asks it so a
+   * deprecation a dependency triggers -- `url.parse`'s DEP0169, `punycode`'s DEP0040, `Buffer()`'s DEP0005 -- is not
+   * printed to a program that did not write the call. Node passes over its own `node:` frames; here the engine's own
+   * frames (its loader compiling a builtin, `require`, the shims) stand between too and are passed over as well,
+   * without counting toward the limit, which Node's frames never are.
+   */
+  isInsideNodeModules: (framesLimit?: unknown): boolean => {
+    const limit = typeof framesLimit === 'number' && (framesLimit | 0) === framesLimit ? framesLimit : 10;
+    let counted = 0;
+    for (const site of callSitesAbove(utilBinding.isInsideNodeModules)) {
+      const name = scriptNameOf(site);
+      if (isEngineScript(name)) continue;
+      if (++counted > limit) break;
+      if (name.startsWith('node:')) continue;
+      return /[/\\]node_modules[/\\]/.test(name);
+    }
+    return false;
+  },
 
   /**
    * An object's own properties that are not array indices, filtered the way
@@ -188,44 +252,30 @@ export const utilBinding = {
 
   /**
    * The stack, as `util.getCallSites()` reports it: one entry per frame with
-   * the function's name, the script it is in, and where in that script. V8's
-   * own structured-stack door is what Node reads too -- `Error
-   * .prepareStackTrace` handed an array of call sites -- so this asks the
-   * realm the same question and shapes the answer the same way. The harness
+   * the function's name, the script it is in, and where in that script, read
+   * off V8's own call sites (`callSitesAbove`). The harness
    * of Node's own tests calls it on every `mustNotCall`, which is why a
    * missing one showed up as thirty test files at once.
    */
   getCallSites: (frameCount = 10): Array<Record<string, unknown>> => {
-    const original = Error.prepareStackTrace;
-    const limit = Error.stackTraceLimit;
-    try {
-      Error.stackTraceLimit = Math.max(frameCount + 2, 10);
-      Error.prepareStackTrace = (_error, sites: unknown[]) => sites.map((raw) => {
-        const site = raw as {
-          getFunctionName?: () => string | null; getFileName?: () => string | null;
-          getLineNumber?: () => number | null; getColumnNumber?: () => number | null;
-          getScriptNameOrSourceURL?: () => string | null;
-        };
-        return {
-          functionName: site.getFunctionName?.() ?? '',
-          scriptName: site.getFileName?.() ?? site.getScriptNameOrSourceURL?.() ?? '',
-          scriptId: '0',
-          lineNumber: site.getLineNumber?.() ?? 0,
-          column: site.getColumnNumber?.() ?? 0,
-          columnNumber: site.getColumnNumber?.() ?? 0,
-        };
-      });
-      const holder: { stack?: unknown } = {};
-      Error.captureStackTrace(holder, utilBinding.getCallSites);
-      const sites = holder.stack as Array<Record<string, unknown>> | undefined;
-      if (!Array.isArray(sites)) return [];
+    const sites: Array<Record<string, unknown>> = [];
+    for (const site of callSitesAbove(utilBinding.getCallSites)) {
+      const scriptName = site.getFileName?.() ?? site.getScriptNameOrSourceURL?.() ?? '';
       // A frame inside a builtin is not the caller's business: Node drops the
-      // `node:util` frame its own `getCallSites` stands in, and so does this.
-      return sites.filter((site) => !String(site.scriptName ?? '').startsWith('node:')).slice(0, frameCount);
-    } finally {
-      Error.prepareStackTrace = original;
-      Error.stackTraceLimit = limit;
+      // `node:util` frame its own `getCallSites` stands in, and so does this,
+      // with the engine's own frames, which Node has none of.
+      if (scriptName.startsWith('node:') || isEngineScript(scriptName)) continue;
+      sites.push({
+        functionName: site.getFunctionName?.() ?? '',
+        scriptName,
+        scriptId: '0',
+        lineNumber: site.getLineNumber?.() ?? 0,
+        column: site.getColumnNumber?.() ?? 0,
+        columnNumber: site.getColumnNumber?.() ?? 0,
+      });
+      if (sites.length === frameCount) break;
     }
+    return sites;
   },
 
   /**

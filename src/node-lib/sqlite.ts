@@ -5,7 +5,7 @@
  * this binding does not provide; it refuses before opening or changing files.
  */
 import { sqliteC, type SqliteC } from './sqlite-wasm';
-import { fileURLToPath } from '../shims/url';
+import { fileURLToPath } from './internals/url';
 
 export interface SqliteHost {
   resolvePath(path: string): string;

@@ -41,11 +41,10 @@ import { guestTimerFunctions } from './guest-timers';
 import { noteStackFormed, stackOverrides } from './stack-overrides';
 export { pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers } from './guest-timers';
 import eventsShim from './node-lib/events-module';
-import { streamModule as streamShim, streamPromisesModule as streamPromises } from './node-lib/stream-module';
-import * as urlShim from './shims/url';
+import { streamModule as streamShim, streamPromisesModule as streamPromises, streamConsumersModule } from './node-lib/stream-module';
+import { fileURLToPath } from './node-lib/internals/url';
 import utilShim from './node-lib/util-module';
 import * as cryptoShim from './shims/crypto';
-import * as stringDecoderShim from './shims/string_decoder';
 import { createDnsModule } from './shims/dns';
 import { bufferModule as bufferShim } from './node-lib/buffer-module';
 import { initChildProcess } from './shims/child_process';
@@ -55,11 +54,11 @@ import * as moduleShim from './shims/module';
 import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
 import { kRunFilesystem } from './node-lib/binding/fs';
 import { byteLengthUtf8 } from './node-lib/binding/buffer';
-import { processUrl, setUrlModule } from './node-lib/object-urls';
+import { processUrl } from './node-lib/object-urls';
 import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor, setNodeLibGlobal, nodeLibBindingFor } from './node-lib/load';
 import { fsModule, fsModuleFor } from './node-lib/fs-module';
 import {
-  assertModule, querystringModule, punycodeModule, constantsModule,
+  assertModule, querystringModule, punycodeModule, stringDecoderModule, urlModule, constantsModule,
   diagnosticsChannelModule, osModule, ttyModule, readlineModule, readlinePromisesModule, zlibModule,
 } from './node-lib/small-modules';
 import { recordedProxies } from './node-lib/internals/util';
@@ -73,7 +72,6 @@ import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
 import { setSourceMapsSupportOf, sourceMapsSupportOf } from './node-lib/internals/events-util';
 import { ERR_INVALID_ARG_TYPE } from './node-internals';
 import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
-import { PUNYCODE_SOURCE } from './punycode-source';
 import * as perfHooksShim from './shims/perf_hooks';
 import * as workerThreadsShim from './shims/worker_threads';
 import { guestMessageGlobals, guestMessageModule } from './guest-message-ports';
@@ -2020,27 +2018,6 @@ export interface RequireFunction {
 }
 
 /**
- * Minimal prettier shim - just returns input unchanged
- * This is needed because prettier uses createRequire which conflicts with our runtime
- */
-const prettierShim = {
-  format: (source: string, _options?: unknown) => Promise.resolve(source),
-  formatWithCursor: (source: string, _options?: unknown) => Promise.resolve({ formatted: source, cursorOffset: 0 }),
-  check: (_source: string, _options?: unknown) => Promise.resolve(true),
-  resolveConfig: () => Promise.resolve(null),
-  resolveConfigFile: () => Promise.resolve(null),
-  clearConfigCache: () => {},
-  getFileInfo: () => Promise.resolve({ ignored: false, inferredParser: null }),
-  getSupportInfo: () => Promise.resolve({ languages: [], options: [] }),
-  version: '3.0.0',
-  doc: {
-    builders: {},
-    printer: {},
-    utils: {},
-  },
-};
-
-/**
  * Create a mutable copy of a module for packages that need to patch it
  * (e.g., Sentry needs to patch http.request/http.get)
  */
@@ -2057,7 +2034,6 @@ function makeMutable(mod: Record<string, unknown>): Record<string, unknown> {
  */
 // Node's old `constants` module, and the groups `process.binding("constants")`
 // serves it from, are one table in `shims/constants.ts`.
-const __browserRuntimePunycode = (() => { const module = { exports: {} }; new Function("module", "exports", PUNYCODE_SOURCE)(module, module.exports); return module.exports; })();
 /**
  * Node's `stream/web` is the web streams the worker already has as globals; the
  * table had no entry, so `file-type`, on Dub's middleware path, was "Cannot
@@ -2134,10 +2110,10 @@ const builtinModules: Record<string, unknown> = {
   stream: streamShim,
   // `stream/promises` is the promise form of pipeline and finished, as Node's.
   'stream/promises': streamPromises,
+  'stream/consumers': streamConsumersModule,
   buffer: bufferShim,
-  // The shim, which `__browserRuntimeFillModules` extends with Node's names (`Url`, `domainToASCII`,
-  // `urlToHttpOptions` and the rest); a process's `url` is this module with its own `URL` (object-urls.ts).
-  url: urlShim,
+  // Node's own `url.js`; a process's is its own, whose `URL` is the process's (internals/url.ts).
+  url: urlModule,
   querystring: querystringModule,
   util: utilShim,
   tty: ttyModule,
@@ -2147,7 +2123,7 @@ const builtinModules: Record<string, unknown> = {
   dns: createDnsModule(),
   child_process: childProcessShim,
   assert: assertModule,
-  string_decoder: stringDecoderShim,
+  string_decoder: stringDecoderModule,
   timers: createTimersModule(),
   // `chokidar`, `readdirp`, `fsevents` and `ws` are not the engine's to
   // answer. Each is an ordinary package over a builtin that is Node's own
@@ -2156,6 +2132,7 @@ const builtinModules: Record<string, unknown> = {
   // The engine's imitations answered those names before, and a program got a
   // watcher and a server that were not the ones it had installed. `fsevents`
   // is absent as it is on a Linux host, which is what chokidar checks for.
+  // `module` is listed so its name is a builtin's; `requirePlain` answers the run's own Module class before the table.
   module: moduleShim,
   perf_hooks: perfHooksShim,
   worker_threads: workerThreadsShim,
@@ -2182,8 +2159,6 @@ const builtinModules: Record<string, unknown> = {
   // nothing, which is worse than an imitation that says what it is.
   domain: domainShim,
   diagnostics_channel: diagnosticsChannelModule,
-  // prettier uses createRequire which doesn't work in our runtime, so we shim it
-  prettier: prettierShim,
   // Some packages explicitly require 'console' (with Console constructor)
   console: {
     ...realmConsole,
@@ -2255,9 +2230,9 @@ Object.defineProperty(builtinModules, 'assert/strict', {
 // A listed name with neither resolved to its bare id and was then opened as a FILE of that name: `require('repl')`
 // answered "ENOENT: open 'repl'" (ts-node, which loads `repl` on every start). The engine does not load with one.
 {
-  // Per guest too: `fs/promises` (the guest's `fs`), `stream/consumers` (made per process, requirePlain); and a name the
-  // vendored node-lib answers is answered by `requirePlain` ahead of this table (`dns/promises`, `timers/promises`).
-  const __perGuest = new Set(['fs', 'fs/promises', 'process', 'wasi', 'stream/consumers']);
+  // Per guest too: `fs/promises` (the guest's `fs`); and a name the vendored node-lib answers is answered by
+  // `requirePlain` ahead of this table (`dns/promises`, `timers/promises`).
+  const __perGuest = new Set(['fs', 'fs/promises', 'process', 'wasi']);
   const __unanswered = moduleShim.builtinModules.filter((name: string) => !__perGuest.has(name) && !Object.prototype.hasOwnProperty.call(builtinModules, name) && !hasNodeLibModule(name));
   if (__unanswered.length > 0) throw new Error(`tabnode: builtin name${__unanswered.length === 1 ? '' : 's'} listed with no module: ${__unanswered.join(', ')}. Give each a module in runtime.ts's table or take it off shims/module.ts's list.`);
 }
@@ -2353,92 +2328,6 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
   // parts still name an errno.
 
   table["timers/promises"] = table.timers.promises;
-
-  // Node's punycode decoder, RFC 3492, so domainToUnicode answers the name a
-  // person reads rather than the xn-- label: the engine dropped the punycode
-  // module Node retired, and nothing else in a tab decodes one.
-  const punycodeDecode = (input: any) => {
-    const base = 36, tMin = 1, tMax = 26, skew = 38, damp = 700;
-    const output = [];
-    let index = input.lastIndexOf("-");
-    if (index > 0) { for (let i = 0; i < index; i++) output.push(input.charCodeAt(i)); index++; } else index = 0;
-    let n = 128, bias = 72, i = 0;
-    while (index < input.length) {
-      const start = i;
-      for (let weight = 1, k = base; ; k += base) {
-        if (index >= input.length) throw new RangeError("Invalid punycode input");
-        const code = input.charCodeAt(index++);
-        let digit;
-        if (code >= 0x30 && code <= 0x39) digit = code - 0x30 + 26;
-        else if (code >= 0x61 && code <= 0x7a) digit = code - 0x61;
-        else if (code >= 0x41 && code <= 0x5a) digit = code - 0x41;
-        else throw new RangeError("Invalid punycode input");
-        i += digit * weight;
-        const t = k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias;
-        if (digit < t) break;
-        weight *= base - t;
-      }
-      const out = output.length + 1;
-      let delta = i - start;
-      delta = start === 0 ? Math.floor(delta / damp) : delta >> 1;
-      delta += Math.floor(delta / out);
-      let k = 0;
-      for (; delta > ((base - tMin) * tMax) >> 1; k += base) delta = Math.floor(delta / (base - tMin));
-      bias = Math.floor(k + ((base - tMin + 1) * delta) / (delta + skew));
-      n += Math.floor(i / out);
-      i %= out;
-      output.splice(i++, 0, n);
-    }
-    return String.fromCodePoint(...output);
-  };
-  const urlModule = table.url;
-  const URLClass = urlModule.URL || globalThis.URL;
-  const domainToASCII = (domain: any) => {
-    try { return new URLClass("http://" + String(domain)).hostname; } catch (error) { return ""; }
-  };
-  const domainToUnicode = (domain: any) => {
-    const ascii = domainToASCII(domain);
-    if (!ascii) return "";
-    return ascii.split(".").map((label: any) => {
-      if (!/^xn--/i.test(label)) return label;
-      try { return punycodeDecode(label.slice(4)); } catch (error) { return label; }
-    }).join(".");
-  };
-  function Url(this: any) {
-    this.protocol = null; this.slashes = null; this.auth = null; this.host = null;
-    this.port = null; this.hostname = null; this.hash = null; this.search = null;
-    this.query = null; this.pathname = null; this.path = null; this.href = null;
-  }
-  const resolveObject = (from: any, to: any) => Object.assign(new (Url as any)(), urlModule.parse(urlModule.resolve(from, to)));
-  Url.prototype.parse = function (this: any, input: any, parseQueryString: any, slashesDenoteHost: any) {
-    return Object.assign(this, urlModule.parse(input, parseQueryString, slashesDenoteHost));
-  };
-  Url.prototype.format = function () { return urlModule.format(this); };
-  Url.prototype.resolve = function (relative: any) { return urlModule.resolve(urlModule.format(this), relative); };
-  Url.prototype.resolveObject = function (relative: any) { return resolveObject(urlModule.format(this), relative); };
-  const urlFills: Record<string, any> = {
-    Url,
-    resolveObject,
-    domainToASCII,
-    domainToUnicode,
-    urlToHttpOptions: (url: any) => {
-      const hostname = typeof url.hostname === "string" && url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname;
-      const options = {
-        protocol: url.protocol,
-        hostname,
-        hash: url.hash,
-        search: url.search,
-        pathname: url.pathname,
-        path: (url.pathname || "") + (url.search || ""),
-        href: url.href
-      } as Record<string, any>;
-      if (url.port !== "" && url.port !== void 0 && url.port !== null) options.port = Number(url.port);
-      if (url.username || url.password) options.auth = decodeURIComponent(url.username || "") + ":" + decodeURIComponent(url.password || "");
-      return options;
-    }
-  };
-  if (typeof URLPattern !== "undefined") urlFills.URLPattern = URLPattern;
-  extend("url", urlFills);
 
   extend("querystring", {
     // Node's unescapeBuffer answers the bytes behind the percent escapes, not
@@ -2575,50 +2464,7 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
   // it exports is a real streaming codec.
 
 }
-/**
- * `stream/consumers`: the one module beside `stream` that Node ships and this
- * lane did not vendor -- four functions that read a whole stream into a
- * string, a Buffer, JSON or a Blob. Everything else the engine used to fill in
- * here (`pipeline`, `finished`, `stream/promises`, the `toWeb` statics, an
- * async iterator on a Readable, `duplexPair`, `isDisturbed`, the high-water
- * marks) is Node's own file's now and is gone.
- */
-function __browserRuntimeFillStreams(table: Record<string, any>, Bytes = BufferPolyfill) {
-  const collect = async (source: any) => {
-    const chunks: any[] = [];
-    if (source && typeof source.getReader === "function") {
-      const reader = source.getReader();
-      for (;;) {
-        const step = await reader.read();
-        if (step.done) break;
-        chunks.push(Bytes.from(step.value));
-      }
-    } else if (source && typeof source[Symbol.asyncIterator] === "function") {
-      for await (const chunk of source) chunks.push(typeof chunk === "string" ? Bytes.from(chunk) : Bytes.from(chunk));
-    } else if (source && typeof source[Symbol.iterator] === "function") {
-      for (const chunk of source) chunks.push(typeof chunk === "string" ? Bytes.from(chunk) : Bytes.from(chunk));
-    } else {
-      throw new TypeError("The stream argument must be a stream or an iterable");
-    }
-    return Bytes.concat(chunks);
-  };
-  table["stream/consumers"] = {
-    arrayBuffer: async (source: any) => {
-      const bytes = await collect(source);
-      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    },
-    blob: async (source: any) => new Blob([new Uint8Array(await collect(source))]),
-    buffer: collect,
-    bytes: async (source: any) => new Uint8Array(await collect(source)),
-    json: async (source: any) => JSON.parse((await collect(source)).toString("utf8")),
-    text: async (source: any) => (await collect(source)).toString("utf8")
-  };
-}
-
-__browserRuntimeFillStreams(builtinModules);
-
 __browserRuntimeFillModules(builtinModules);
-setUrlModule(() => builtinModules.url as Record<string, unknown>);
 
 /**
  * A shared esbuild or rollup shim must use the calling guest's cwd, even after
@@ -2715,7 +2561,7 @@ type GuestProcess = Process & { getBuiltinModule?: (name: string) => unknown };
 
 /**
  * A package the project has installed is the one a require of it loads, as Node
- * loads it. The engine answered `rollup`, `esbuild` and `prettier` with shims of
+ * loads it. The engine answered `rollup` and `esbuild` with shims of
  * its own before looking in `node_modules`, so a real Vite could not reach the
  * esbuild the project carries (the vendor's wasm build, as a pack), and its
  * config loader died in the engine's shim reaching for a CDN. An installed
@@ -3071,7 +2917,7 @@ function __substrateModuleClassFor(moduleCache: Record<string, Module>, requireF
     // `file://` as it stood, so a URL whose path had an escape (`%40` for `@`, `%20` for a space) named a directory
     // that is not there, and every relative `require` made from it was "Cannot find module".
     let fromPath = filenameOrUrl instanceof URL ? filenameOrUrl.href : String(filenameOrUrl);
-    if (fromPath.startsWith("file:")) fromPath = urlShim.fileURLToPath(fromPath);
+    if (fromPath.startsWith("file:")) fromPath = fileURLToPath(fromPath);
     const made = requireFor({ id: fromPath, filename: fromPath, paths: [] });
     made.cache = moduleCache;
     return made;
@@ -3159,7 +3005,6 @@ function createRequire(
   const __substrateInstalledWins = (id: string): boolean => {
     const shimmed = id === 'rollup' || id.startsWith('rollup/') || id.startsWith('@rollup/') ? 'rollup'
       : id === 'esbuild' || id.startsWith('esbuild/') || id.startsWith('@esbuild/') ? 'esbuild'
-      : id === 'prettier' || id.startsWith('prettier/') ? 'prettier'
       : id === 'ws' || id.startsWith('ws/') ? 'ws'
       : id === 'chokidar' || id.startsWith('chokidar/') ? 'chokidar'
       : id === 'readdirp' || id.startsWith('readdirp/') ? 'readdirp'
@@ -3189,7 +3034,7 @@ function createRequire(
     const named = id.startsWith('file:') || id.includes('.node') || /(^|\/)\.\.?\/*$/.test(id);
     // Read file: URLs with the engine's fileURLToPath outside the process's vendored node-lib scope, which contains
     // no public url module. Validate the scheme, host and encoded separators before native-binding lookup.
-    const requested = !named ? void 0 : id.startsWith('file:') ? urlShim.fileURLToPath(id)
+    const requested = !named ? void 0 : id.startsWith('file:') ? fileURLToPath(id)
       : id.startsWith('/') ? pathShim.resolve(id) : id.startsWith('.') ? pathShim.resolve(currentDir, id) : void 0;
     if (requested?.endsWith('.node')) for (const addons of maps) {
       if (underRoot(addons, requested)) addons.refuse(requested);
@@ -3973,11 +3818,6 @@ function createRequire(
     if (id === 'wasi') {
       return __substrateGuestWasi(fsShim, process);
     }
-    if (id === 'stream/consumers') return nativeModuleFor(process, id, () => {
-      const table: Record<string, any> = {};
-      __browserRuntimeFillStreams(table, loadNodeLibFor(process, 'buffer').Buffer);
-      return table[id];
-    });
     if (hasNodeLibModule(id)) {
       const loaded = loadNodeLibFor(process, id);
       if (id === 'http' || id === 'https' || id === '_http_server') {
@@ -4000,10 +3840,6 @@ function createRequire(
         engineTrace('[runtime] Intercepted esbuild:', id);
         return __substrateGuestEsbuild(process);
       }
-      // Intercept prettier - uses createRequire which doesn't work in our runtime
-      if (id === 'prettier' || id.startsWith('prettier/')) {
-        return builtinModules['prettier'];
-      }
     }
     const resolved = __substrateResolve(id);
 
@@ -4012,7 +3848,7 @@ function createRequire(
       return requirePlain(resolved);
     }
 
-    // Also check if resolved path is to rollup, esbuild, or prettier in node_modules
+    // Also check if resolved path is to rollup or esbuild in node_modules
     if (resolved.includes('/node_modules/rollup/') ||
         resolved.includes('/node_modules/@rollup/rollup-')) {
       return __substrateGuestRollup(process);
@@ -4020,9 +3856,6 @@ function createRequire(
     if ((resolved.includes('/node_modules/esbuild/') ||
         resolved.includes('/node_modules/@esbuild/')) && !__substrateEsbuildRunsHere(vfs, resolved, process.env)) {
       return __substrateGuestEsbuild(process);
-    }
-    if (resolved.includes('/node_modules/prettier/')) {
-      return builtinModules['prettier'];
     }
 
     // A page that can run a package's native side in the browser -- Rolldown's
