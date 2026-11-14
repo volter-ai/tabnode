@@ -91,7 +91,20 @@ browser-substrate ADR-0236 step 5 records. `SYS_posix_spawn_v1` goes.
 
 - **Read:** libuv compiles with the WALI toolchain (ADR-0234 §7); a task boundary costs 11.3 µs on the page's main
   thread in Chrome; JSPI's suspension and resume about 1 µs (browser-substrate ADR-0227).
-- **Not read:** libuv's link against the WALI imports; the loader run on a Node process's worker, which holds no
+- **Read 2026-11-14, libuv 1.52.1 (Node v24.21.0's `deps/uv`, tarball SHA-256 622424ef…2777 as Node's
+  `SHASUMS256.txt` gives it) with browser-substrate's prepared native SDK (input lock ad66685e…f1540):** its 35 Linux
+  sources compile (`-fPIC -pthread -matomics -mbulk-memory -O2`, CMake's Linux defines, the SDK's Linux headers) and
+  link `-shared` into a 168,353-byte module exporting 469 `uv_*` functions. It imports no kernel call: its 216
+  function imports are libc's interface, and the SDK's `libc.so` exports every one of them (of its 1,672).
+- **The libuv a Node process takes is not Node's pin.** 1.52.1 spawns by `fork()` then exec on Linux
+  (`src/unix/process.c:841`; its `posix_spawn` path is Apple's), and a Node process has no fork: its realm cannot be
+  copied. libuv uses `posix_spawn` on Linux from 40d45efebf ("unix: use posix_spawn instead of fork", in v1.53.0),
+  after a probe; at a267f5688b (2026-10-16, after v1.53.0, in no release yet) the probe is `clone(fn, stack, CLONE_VM |
+  CLONE_VFORK)` with no termination signal, where v1.53.0's is `vfork()`, which on this machine takes the
+  continuation. So `libnode.so` takes libuv at a267f5688b or the first release with it, as browser-substrate
+  ADR-0236 step 5 says, a difference from Node v24.21.0's `deps/uv` named here; musl's `posix_spawn` is then a clone
+  with an entry, and the probe needs `CLONE_VM` to share the memory.
+- **Not read:** the loader run on a Node process's worker, which holds no
   loader today; a task boundary's cost on a Node process's worker; whether every library of §1 builds as Node
   configures it under the WALI SDK (ADR-0016 built OpenSSL with wasi-sdk, not the WALI SDK).
 - **Order of building, each a step that runs before the next is written:** libuv in `libnode.so` loaded on the Node
