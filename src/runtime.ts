@@ -2019,27 +2019,6 @@ export interface RequireFunction {
 }
 
 /**
- * Minimal prettier shim - just returns input unchanged
- * This is needed because prettier uses createRequire which conflicts with our runtime
- */
-const prettierShim = {
-  format: (source: string, _options?: unknown) => Promise.resolve(source),
-  formatWithCursor: (source: string, _options?: unknown) => Promise.resolve({ formatted: source, cursorOffset: 0 }),
-  check: (_source: string, _options?: unknown) => Promise.resolve(true),
-  resolveConfig: () => Promise.resolve(null),
-  resolveConfigFile: () => Promise.resolve(null),
-  clearConfigCache: () => {},
-  getFileInfo: () => Promise.resolve({ ignored: false, inferredParser: null }),
-  getSupportInfo: () => Promise.resolve({ languages: [], options: [] }),
-  version: '3.0.0',
-  doc: {
-    builders: {},
-    printer: {},
-    utils: {},
-  },
-};
-
-/**
  * Create a mutable copy of a module for packages that need to patch it
  * (e.g., Sentry needs to patch http.request/http.get)
  */
@@ -2180,8 +2159,6 @@ const builtinModules: Record<string, unknown> = {
   // nothing, which is worse than an imitation that says what it is.
   domain: domainShim,
   diagnostics_channel: diagnosticsChannelModule,
-  // prettier uses createRequire which doesn't work in our runtime, so we shim it
-  prettier: prettierShim,
   // Some packages explicitly require 'console' (with Console constructor)
   console: {
     ...realmConsole,
@@ -2713,7 +2690,7 @@ type GuestProcess = Process & { getBuiltinModule?: (name: string) => unknown };
 
 /**
  * A package the project has installed is the one a require of it loads, as Node
- * loads it. The engine answered `rollup`, `esbuild` and `prettier` with shims of
+ * loads it. The engine answered `rollup` and `esbuild` with shims of
  * its own before looking in `node_modules`, so a real Vite could not reach the
  * esbuild the project carries (the vendor's wasm build, as a pack), and its
  * config loader died in the engine's shim reaching for a CDN. An installed
@@ -3157,7 +3134,6 @@ function createRequire(
   const __substrateInstalledWins = (id: string): boolean => {
     const shimmed = id === 'rollup' || id.startsWith('rollup/') || id.startsWith('@rollup/') ? 'rollup'
       : id === 'esbuild' || id.startsWith('esbuild/') || id.startsWith('@esbuild/') ? 'esbuild'
-      : id === 'prettier' || id.startsWith('prettier/') ? 'prettier'
       : id === 'ws' || id.startsWith('ws/') ? 'ws'
       : id === 'chokidar' || id.startsWith('chokidar/') ? 'chokidar'
       : id === 'readdirp' || id.startsWith('readdirp/') ? 'readdirp'
@@ -3998,10 +3974,6 @@ function createRequire(
         engineTrace('[runtime] Intercepted esbuild:', id);
         return __substrateGuestEsbuild(process);
       }
-      // Intercept prettier - uses createRequire which doesn't work in our runtime
-      if (id === 'prettier' || id.startsWith('prettier/')) {
-        return builtinModules['prettier'];
-      }
     }
     const resolved = __substrateResolve(id);
 
@@ -4010,7 +3982,7 @@ function createRequire(
       return requirePlain(resolved);
     }
 
-    // Also check if resolved path is to rollup, esbuild, or prettier in node_modules
+    // Also check if resolved path is to rollup or esbuild in node_modules
     if (resolved.includes('/node_modules/rollup/') ||
         resolved.includes('/node_modules/@rollup/rollup-')) {
       return __substrateGuestRollup(process);
@@ -4018,9 +3990,6 @@ function createRequire(
     if ((resolved.includes('/node_modules/esbuild/') ||
         resolved.includes('/node_modules/@esbuild/')) && !__substrateEsbuildRunsHere(vfs, resolved, process.env)) {
       return __substrateGuestEsbuild(process);
-    }
-    if (resolved.includes('/node_modules/prettier/')) {
-      return builtinModules['prettier'];
     }
 
     // A page that can run a package's native side in the browser -- Rolldown's
