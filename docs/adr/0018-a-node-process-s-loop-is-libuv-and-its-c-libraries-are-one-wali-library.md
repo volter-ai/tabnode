@@ -1,0 +1,106 @@
+# ADR-0018: A Node process's loop is libuv, and Node's C libraries are one WALI library in its memory
+
+Status: Proposed (design; nothing built).
+
+Date: 2026-11-14. Served: browser-substrate ADR-0234 §7 ("A Node process's loop is libuv itself") and ADR-0236 step 5
+("Tabnode's loop becomes libuv's"; done when `node` in the tab runs Next.js's standalone server and Prisma's CLI), card
+VO-3806. Supersedes, when built: ADR-0017's loop (`system.ts`, "the engine's own loop"), the substrate's
+`linux-event-loop.ts`, and ADR-0016 §1's "why not the WALI library now", whose condition (a loader) the substrate now
+meets.
+
+## Context
+
+### What Node is (as browser-substrate ADR-0234 §7 reads Node v24.21.0)
+
+Node is its JavaScript library over its C++ bindings (`src/*_wrap.cc`) over libuv (`deps/uv`). One loop, `uv_run`,
+owns every handle, request and completion. After each callback libuv makes into JavaScript, Node drains the microtask
+queue itself (`InternalCallbackScope::Close`, `src/api/callback.cc:157`). Asynchronous work that is not a descriptor's
+readiness (fs requests, crypto's `pbkdf2` and `scrypt`, zlib, `getaddrinfo`) runs on libuv's threadpool, and its
+completion reaches the loop through `uv_async_send`, a write the loop's poll sees.
+
+### What the engine does today (tabnode 167e5d7, browser-substrate c979486e69d)
+
+- **Two re-readings of libuv.** `system.ts` keeps timers, completions and immediates in libuv's phase order
+  (ADR-0017). browser-substrate's `linux-event-loop.ts` parks the task in `epoll_pwait` until the engine's nearest
+  deadline, and while a promise the engine handed out is unsettled it parks at most `ENGINE_QUANTUM_MS` (4 ms), so a
+  browser task can settle it between parks: a poll.
+- **Bindings that re-encode libuv's rules.** About 6,000 lines of `src/node-lib/binding/` face the loop (`handles`,
+  `tcp_wrap`, `pipe_wrap`, `tty_wrap`, `udp_wrap`, `stream_wrap`, `kernel_stream`, `process_wrap`, `spawn_sync`,
+  `fs`, `fds`, `child_stdio`): ordering, half-close, end of stream, ref and unref, close callbacks.
+- **C libraries in a module of their own.** `node-deps.wasm` (ADR-0016) is a wasip1 reactor with its own memory,
+  holding OpenSSL and ncrypto, because a WALI library needed a loader the substrate did not have.
+- **No native addon loads.** browser-substrate's `linux-tree-native.ts` refuses every `.node`: "a WALI Node-API side
+  module has no loader on this machine".
+
+### What the substrate now holds
+
+- A loader (`packages/wali/linux/host/dynamic-loader.mjs`, browser-substrate ADR-0236 step 4) that loads a WALI
+  program's shared libraries into its process memory against `libc.so`, as musl's ld.so finds them.
+- libuv 1.52.1, Node v24.21.0's `deps/uv` pin, compiles with the WALI toolchain: all 35 of its Linux sources
+  (ADR-0234 §7, read 2026-11-13).
+- A Node process is the one task with a worker of its own (browser-substrate ADR-0227): its engine is JavaScript, and
+  JSPI does not suspend across JavaScript frames, so its calls block in `Atomics.wait` on its worker's word.
+
+## Decision
+
+### 1. Node's C libraries are one WALI shared library in the Node process's memory
+
+`libnode.so` holds what Node links from `deps/`: libuv first, then OpenSSL and ncrypto, llhttp, Ada, zlib, brotli,
+zstd and nghttp2, each with Node's configuration and each difference named as ADR-0016 names OpenSSL's. It is built by
+the WALI SDK from Node's own source tarball (pinned by digest) and linked against `libc.so`. The Node process's worker
+loads it into the process's memory through the same loader a program's libraries use, so a `.node` addon `dlopen`s
+into the same image: one libc, one `malloc` (browser-substrate ADR-0231 §3). `node-deps.wasm`, its own memory and its
+WASI imports go.
+
+### 2. The loop is `uv_run`
+
+The process's loop is `uv_run(UV_RUN_DEFAULT)` on the default loop, entered through a JSPI `promising` export. libuv
+parks in `epoll_wait` in the kernel, as any program does; the Node process's worker blocks on its word meanwhile.
+`system.ts`'s loop and `linux-event-loop.ts` go. Node's own `lib/timers.js` runs over a `timers` binding on a
+`uv_timer_t`, in the shape of Node's own binding (`src/timers.cc`, read when that step is written).
+
+### 3. A binding is glue over libuv, as Node's `src/*_wrap.cc` is
+
+Each handle object owns its `uv_handle_t` (`uv_tcp_t`, `uv_pipe_t`, `uv_tty_t`, `uv_udp_t`, `uv_process_t`,
+`uv_signal_t`, `uv_fs_event_t`) in the process's memory; each request its `uv_req_t`. libuv's callbacks are imports
+that call the handle's JavaScript, as `MakeCallback` does. What a binding decides is what Node's C++ decides; what libuv
+decides (ordering, half-close, end of stream, ref and unref, close) is libuv's, and the TypeScript that re-encoded it
+goes.
+
+### 4. Microtasks drain after each callback
+
+After a callback's JavaScript returns, libuv's call site calls `drain`, a `Suspending` import, before it continues:
+the stack suspends, the worker runs its microtasks and then one task, and the suspension resumes from that task. The
+resume is a task, not a microtask, because a resume queued as a microtask would run before the microtasks the drained
+ones queue. No JavaScript frame stands between `uv_run`'s `promising` entry and `drain`, so the suspension is JSPI's
+(browser-substrate ADR-0227, "No JavaScript frame stands between a task's entry and its suspension"). A callback that
+blocks (a synchronous fs call) blocks the worker in `Atomics.wait`, as today.
+
+### 5. Asynchronous work is libuv's threadpool
+
+`uv_queue_work` runs on libuv's threads, which are the process's pthreads and so the machine's tasks; a completion
+reaches the loop through `uv_async_send`. With OpenSSL in `libnode.so`, crypto's asynchronous calls are Node's own
+threadpool work, not WebCrypto's promises. So no browser promise is pending on the loop, and the poll bound goes.
+
+### 6. Children are `uv_spawn`
+
+A child process is `uv_spawn`, a clone with an entry, and an addon's spawn is musl's `posix_spawn`, as
+browser-substrate ADR-0236 step 5 records. `SYS_posix_spawn_v1` goes.
+
+## Where the evidence stops
+
+- **Read:** libuv compiles with the WALI toolchain (ADR-0234 §7); a task boundary costs 11.3 µs on the page's main
+  thread in Chrome; JSPI's suspension and resume about 1 µs (browser-substrate ADR-0227).
+- **Not read:** libuv's link against the WALI imports; the loader run on a Node process's worker, which holds no
+  loader today; a task boundary's cost on a Node process's worker; whether every library of §1 builds as Node
+  configures it under the WALI SDK (ADR-0016 built OpenSSL with wasi-sdk, not the WALI SDK).
+- **Order of building, each a step that runs before the next is written:** libuv in `libnode.so` loaded on the Node
+  worker; `uv_run` as the loop with `timers` over it; `tcp_wrap`, `pipe_wrap`, `stream_wrap` and `tty_wrap`;
+  `process_wrap` and `spawn_sync` over `uv_spawn`; `fs` over `uv_fs_*`; OpenSSL and the rest of §1 moved into
+  `libnode.so`; addons through `dlopen`.
+
+## Consequences
+
+- The engine's account of its own handles (the run's end "by Tabnode's own count of its handles") is libuv's:
+  `uv_run` returns when no active, referenced handle or request remains.
+- A failure in the loop is libuv's or the kernel's, read in their sources, never re-encoded in a binding.
