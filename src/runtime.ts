@@ -2133,6 +2133,7 @@ const builtinModules: Record<string, unknown> = {
   // The engine's imitations answered those names before, and a program got a
   // watcher and a server that were not the ones it had installed. `fsevents`
   // is absent as it is on a Linux host, which is what chokidar checks for.
+  // `module` is listed so its name is a builtin's; `requirePlain` answers the run's own Module class before the table.
   module: moduleShim,
   perf_hooks: perfHooksShim,
   worker_threads: workerThreadsShim,
