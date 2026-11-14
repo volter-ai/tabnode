@@ -11,6 +11,9 @@ static uv_check_t immediate_check_handle;
 static uv_idle_t immediate_idle_handle;
 static uint64_t timer_base;
 static uint32_t immediate_info[kImmediateFields];
+// Node's timeout_info_ (src/env.h:1129, an AliasedInt32Array of one): the count of referenced timers, which the
+// engine's JavaScript keeps in place (lib/internal/timers.js `timeoutInfo[0]`).
+static int32_t timeout_info[1];
 
 static void run_timers(uv_timer_t *handle);
 static void check_immediate(uv_check_t *handle);
@@ -47,8 +50,9 @@ __attribute__((export_name("tabnode_toggle_immediate_ref"))) void tabnode_toggle
   if (ref) uv_idle_start(&immediate_idle_handle, idle_noop);
   else uv_idle_stop(&immediate_idle_handle);
 }
-// Where the engine's ImmediateInfo lives in the process's memory.
+// Where the engine's ImmediateInfo and timeoutInfo live in the process's memory.
 __attribute__((export_name("tabnode_immediate_info"))) uint32_t *tabnode_immediate_info(void) { return immediate_info; }
+__attribute__((export_name("tabnode_timeout_info"))) int32_t *tabnode_timeout_info(void) { return timeout_info; }
 
 // Environment::RunTimers (env.cc:1552-1611): the JavaScript runs every due timer and answers the next expiry. Node
 // calls again while the callback throws; here a throw is the realm's uncaught exception, which ends the process
