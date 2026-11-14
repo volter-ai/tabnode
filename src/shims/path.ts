@@ -3,12 +3,12 @@
  *
  * A guest's `require('path')` is Node v24.21.0's `lib/path.js` in its process's builtin graph (`node-lib/load.ts`),
  * over Node's own `internal/constants`, `internal/validators`, `internal/errors`, `internal/util` and, for
- * `matchesGlob`, `internal/fs/glob` with its vendored minimatch. The engine's own TypeScript reads that same file
- * through the same loader, outside any process, on its first use rather than when this module is evaluated (the
- * rule `node-lib/lazy.ts` states): `posix` and `win32` are Node's objects, and each function below is `posix`'s.
- * The default export is `posix`, the flavour Node picks on the engine's platform, as `path.js` exports it.
+ * `matchesGlob`, `internal/fs/glob` with its vendored minimatch. The engine's own TypeScript and the library export
+ * take that same file through the same loader, loaded when this module is evaluated as `net-module.ts` loads `net`,
+ * so every export here IS Node's: the default is `path.posix` itself (`posix.posix === posix`, the flavour Node picks
+ * on the engine's platform, as `path.js` exports it), and each name is its own member (`path.join === join`).
  */
-import { lazyModule } from '../node-lib/lazy';
+import { loadNodeLib } from '../node-lib/load';
 
 export interface ParsedPath {
   root: string;
@@ -46,21 +46,24 @@ export interface PlatformPath {
   readonly win32: PlatformPath;
 }
 
-/** `require('path')`, which is `path.posix` itself (`posix.posix === posix`). */
-export const posix: PlatformPath = lazyModule<PlatformPath>('path');
-export const win32: PlatformPath = lazyModule<PlatformPath>('path', 'win32');
+const nodePath = loadNodeLib('path') as PlatformPath;
 
-export function normalize(path: string): string { return posix.normalize(path); }
-export function join(...paths: string[]): string { return posix.join(...paths); }
-export function resolve(...paths: string[]): string { return posix.resolve(...paths); }
-export function isAbsolute(path: string): boolean { return posix.isAbsolute(path); }
-export function relative(from: string, to: string): string { return posix.relative(from, to); }
-export function dirname(path: string): string { return posix.dirname(path); }
-export function basename(path: string, suffix?: string): string { return posix.basename(path, suffix); }
-export function extname(path: string): string { return posix.extname(path); }
-export function parse(path: string): ParsedPath { return posix.parse(path); }
-export function format(pathObject: FormatInputPathObject): string { return posix.format(pathObject); }
-export function toNamespacedPath<T>(path: T): T { return posix.toNamespacedPath(path); }
-export function matchesGlob(path: string, pattern: string): boolean { return posix.matchesGlob(path, pattern); }
+export const posix: PlatformPath = nodePath.posix;
+export const win32: PlatformPath = nodePath.win32;
 
-export default posix;
+export const sep = nodePath.sep;
+export const delimiter = nodePath.delimiter;
+export const normalize = nodePath.normalize;
+export const join = nodePath.join;
+export const resolve = nodePath.resolve;
+export const isAbsolute = nodePath.isAbsolute;
+export const relative = nodePath.relative;
+export const dirname = nodePath.dirname;
+export const basename = nodePath.basename;
+export const extname = nodePath.extname;
+export const parse = nodePath.parse;
+export const format = nodePath.format;
+export const toNamespacedPath = nodePath.toNamespacedPath;
+export const matchesGlob = nodePath.matchesGlob;
+
+export default nodePath;
