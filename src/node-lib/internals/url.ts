@@ -104,7 +104,7 @@ function domainToUnicode(...args: unknown[]): string {
   return ascii === '' ? '' : hostnameToUnicode(ascii);
 }
 
-/** `fileURLToPath`'s argument as a `URL`, or Node's refusal (lib/internal/url.js:1640-1648). */
+/** `fileURLToPath`'s argument as a `file:` `URL`, or Node's refusal (lib/internal/url.js:1640-1648). */
 function fileURL(path: unknown): URL {
   const codes = errorCodes();
   let url: URL;
@@ -112,13 +112,15 @@ function fileURL(path: unknown): URL {
   else if (isURL(path)) url = path;
   else throw new codes.ERR_INVALID_ARG_TYPE('path', ['string', 'URL'], path);
   if (url.protocol !== 'file:') throw new codes.ERR_INVALID_URL_SCHEME('file');
-  if (url.hostname !== '') throw new codes.ERR_INVALID_FILE_URL_HOST('linux');
   return url;
 }
 
-/** `fileURLToPath` on the engine's platform, linux (lib/internal/url.js getPathFromURLPosix, 1600-1616). */
-export function fileURLToPath(path: unknown): string {
-  const url = fileURL(path);
+/** Node's `windows` option, which every file-URL conversion takes; the engine's platform is linux, so absent is false. */
+const windowsOf = (options: unknown): boolean => Boolean((options as { windows?: unknown } | null | undefined)?.windows ?? false);
+
+/** `getPathFromURLPosix` (lib/internal/url.js:1600-1616). */
+function pathFromURLPosix(url: URL): string {
+  if (url.hostname !== '') throw new (errorCodes().ERR_INVALID_FILE_URL_HOST)('linux');
   const pathname = url.pathname;
   for (let at = 0; at < pathname.length; at++) {
     if (pathname[at] === '%' && pathname[at + 1] === '2' && ((pathname.codePointAt(at + 2) ?? 0) | 0x20) === 102) {
@@ -126,6 +128,34 @@ export function fileURLToPath(path: unknown): string {
     }
   }
   return pathname.includes('%') ? decodeURIComponent(pathname) : pathname;
+}
+
+/** `getPathFromURLWin32` (lib/internal/url.js:1490-1525): a host is a UNC path's server, else a drive letter leads. */
+function pathFromURLWin32(url: URL): string {
+  const hostname = url.hostname;
+  let pathname = url.pathname;
+  for (let at = 0; at < pathname.length; at++) {
+    if (pathname[at] === '%') {
+      const third = (pathname.codePointAt(at + 2) ?? 0) | 0x20;
+      if ((pathname[at + 1] === '2' && third === 102) || (pathname[at + 1] === '5' && third === 99)) {
+        throw new (errorCodes().ERR_INVALID_FILE_URL_PATH)('must not include encoded \\ or / characters', url);
+      }
+    }
+  }
+  pathname = pathname.replace(/\//g, '\\');
+  if (pathname.includes('%')) pathname = decodeURIComponent(pathname);
+  if (hostname !== '') return `\\\\${domainToUnicode(hostname)}${pathname}`;
+  const letter = (pathname.codePointAt(1) ?? 0) | 0x20;
+  if (letter < 0x61 || letter > 0x7a || pathname.charAt(2) !== ':') {
+    throw new (errorCodes().ERR_INVALID_FILE_URL_PATH)('must be absolute', url);
+  }
+  return pathname.slice(1);
+}
+
+/** `fileURLToPath(path, options)` (lib/internal/url.js:1640-1648). */
+export function fileURLToPath(path: unknown, options?: unknown): string {
+  const url = fileURL(path);
+  return windowsOf(options) ? pathFromURLWin32(url) : pathFromURLPosix(url);
 }
 
 /** `percentDecode` (lib/internal/data_url.js:214-250): every `%XX` its byte, every other byte as it is. */
@@ -150,7 +180,7 @@ function percentDecode(input: Uint8Array): Uint8Array {
   return output.subarray(0, length);
 }
 
-/** `pathToFileURL`'s escapes (node_url.cc:119-155 lookup_table, EncodePathChars 162-180 for POSIX). */
+/** `pathToFileURL`'s escapes (node_url.cc:119-155 lookup_table); on Windows a `\\` is a `/` first (EncodePathChars 162-180). */
 const PATH_ESCAPES: Record<string, string> = {
   '\0': '%00', '\t': '%09', '\n': '%0A', '\r': '%0D', ' ': '%20', '"': '%22', '#': '%23', '%': '%25', '?': '%3F',
   '[': '%5B', '\\': '%5C', ']': '%5D', '^': '%5E', '|': '%7C', '~': '%7E',
@@ -169,24 +199,69 @@ export function internalUrlOf(require: Require, process?: object) {
     domainToUnicode,
     isURL,
     fileURLToPath,
-    /** `fileURLToPathBuffer` on linux (lib/internal/url.js getPathBufferFromURLPosix, 1618-1638). */
-    fileURLToPathBuffer(path: unknown): Uint8Array {
+    /** `fileURLToPathBuffer(path, options)` (lib/internal/url.js:1650-1664 over getPathBufferFromURLPosix/Win32). */
+    fileURLToPathBuffer(path: unknown, options?: unknown): Uint8Array {
       const url = fileURL(path);
-      const { Buffer } = require('buffer') as { Buffer: { from(value: string | ArrayBuffer, a?: unknown, b?: number): Uint8Array } };
-      const bytes = percentDecode(Buffer.from(url.pathname, 'utf8'));
-      return Buffer.from(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength);
+      const { Buffer } = require('buffer') as {
+        Buffer: {
+          from(value: string | ArrayBuffer, a?: unknown, b?: number): Uint8Array;
+          concat(list: Uint8Array[]): Uint8Array;
+        };
+      };
+      const decoded = (pathname: string): Uint8Array => {
+        const bytes = percentDecode(Buffer.from(pathname, 'utf8'));
+        return Buffer.from(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength);
+      };
+      if (!windowsOf(options)) {
+        if (url.hostname !== '') throw new (errorCodes().ERR_INVALID_FILE_URL_HOST)('linux');
+        return decoded(url.pathname);
+      }
+      const decodedPathname = decoded(url.pathname.replace(/\//g, '\\'));
+      if (url.hostname !== '') {
+        return Buffer.concat([Buffer.from('\\\\', 'ascii'), Buffer.from(domainToUnicode(url.hostname), 'utf8'), decodedPathname]);
+      }
+      const letter = (decodedPathname[1] ?? 0) | 0x20;
+      if (letter < 0x61 || letter > 0x7a || decodedPathname[2] !== 0x3a) {
+        throw new (errorCodes().ERR_INVALID_FILE_URL_PATH)('must be absolute', url);
+      }
+      return decodedPathname.subarray(1);
     },
     /**
-     * `pathToFileURL` on linux (lib/internal/url.js:1666-1710 over node_url.cc PathToFileURL): `path.posix.resolve`
-     * of the path, its trailing slash given back, then the URL of `file://` and the path with Node's escapes.
+     * `pathToFileURL(filepath, options)` (lib/internal/url.js:1666-1709 over node_url.cc PathToFileURL 183-222): the
+     * path resolved by `path.posix` or `path.win32`, a UNC path's server set as the host, a trailing separator given
+     * back, then the URL of `file://` and the path with Node's escapes.
      */
-    pathToFileURL(filepath: string): URL {
-      const { posix } = require('path') as { posix: { resolve(path: string): string } };
-      let resolved = posix.resolve(filepath);
-      if (filepath.charCodeAt(filepath.length - 1) === 0x2f && resolved[resolved.length - 1] !== '/') resolved += '/';
-      let encoded = 'file://';
-      for (const character of resolved) encoded += PATH_ESCAPES[character] ?? character;
-      return new (realmURL())(encoded);
+    pathToFileURL(filepath: string, options?: unknown): URL {
+      const codes = errorCodes();
+      const windows = windowsOf(options);
+      const path = require('path') as {
+        sep: string; posix: { resolve(path: string): string }; win32: { resolve(path: string): string };
+      };
+      const fromPath = (input: string, hostname?: string): URL => {
+        let encoded = 'file://';
+        for (const character of input) encoded += windows && character === '\\' ? '/' : (PATH_ESCAPES[character] ?? character);
+        let url: URL;
+        try { url = new (realmURL())(encoded); } catch { throw new codes.ERR_INVALID_URL(input); }
+        if (hostname !== undefined) {
+          url.hostname = hostname;
+          if (url.hostname === '' && hostname.toLowerCase() !== 'localhost') throw new codes.ERR_INVALID_URL(input, hostname);
+        }
+        return url;
+      };
+      const isUNC = windows && filepath.startsWith('\\\\');
+      let resolved = isUNC ? filepath : (windows ? path.win32.resolve(filepath) : path.posix.resolve(filepath));
+      if (isUNC || (windows && resolved.startsWith('\\\\'))) {
+        // "\\?\UNC\" is the extended form of the same prefix.
+        const isExtendedUNC = resolved.startsWith('\\\\?\\UNC\\');
+        const prefixLength = isExtendedUNC ? 8 : 2;
+        const hostnameEndIndex = resolved.indexOf('\\', prefixLength);
+        if (hostnameEndIndex === -1) throw new codes.ERR_INVALID_ARG_VALUE('path', resolved, 'Missing UNC resource path');
+        if (hostnameEndIndex === 2) throw new codes.ERR_INVALID_ARG_VALUE('path', resolved, 'Empty UNC servername');
+        return fromPath(resolved.slice(hostnameEndIndex), resolved.slice(prefixLength, hostnameEndIndex));
+      }
+      const last = filepath.charCodeAt(filepath.length - 1);
+      if ((last === 0x2f || (windows && last === 0x5c)) && resolved[resolved.length - 1] !== path.sep) resolved += '/';
+      return fromPath(resolved);
     },
     /** `toPathIfFileURL`: a URL is the path it names, anything else is handed on for `fs` to validate. */
     toPathIfFileURL(value: unknown): unknown {
