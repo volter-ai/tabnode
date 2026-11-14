@@ -206,10 +206,15 @@ export const urlBinding = {
     if (!hash) url.hash = '';
     if (!search) url.search = '';
     if (!auth) { url.username = ''; url.password = ''; }
-    if (!unicode || url.hostname === '') return url.href;
+    const serialized = url.href;
+    if (!unicode || url.hostname === '') return serialized;
+    // The host in the serialization, replaced where it stands: an empty query or fragment (`?`, `#`), which the
+    // URL's getters read as '', stays as Ada's get_href writes it.
     const credentials = url.username || url.password
       ? `${url.username}${url.password ? `:${url.password}` : ''}@` : '';
-    return `${url.protocol}//${credentials}${hostnameToUnicode(url.hostname)}${url.port ? `:${url.port}` : ''}${url.pathname}${url.search}${url.hash}`;
+    const before = `${url.protocol}//${credentials}`;
+    if (!serialized.startsWith(before + url.hostname)) return serialized;
+    return before + hostnameToUnicode(url.hostname) + serialized.slice(before.length + url.hostname.length);
   },
 };
 
