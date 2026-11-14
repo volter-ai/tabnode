@@ -41,8 +41,8 @@ Basis: the Node-fidelity study and its independent review (card VO-3806's commen
   `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. Rallly's `prisma migrate deploy` exited 1 on a missing
   `TLSSocket.secureConnecting` (browser-substrate 02b0d4899), a property Node's own `internal/tls/wrap.js` has.
 - `crypto` is JavaScript: @noble/hashes and @noble/curves, WebCrypto for randomness and the asynchronous calls.
-- Two of Node's C libraries already run as WebAssembly, each in its own module and memory: llhttp (undici 6.28.0's
-  build, not Node's 9.4.3; `binding/llhttp-wasm.ts`) and Ada's IDNA (`binding/ada-idna-wasm.ts`, built from Node
+- Two of Node's C libraries already run as WebAssembly, each in its own module and memory: llhttp (the 9.3.0 build
+  Node v24.21.0's `deps/undici` ships, not the 9.4.3 Node links; `binding/llhttp-wasm.ts`) and Ada's IDNA (`binding/ada-idna-wasm.ts`, built from Node
   v24.21.0's `deps/ada` by wasi-sdk 34.0, ADR-0009 §3).
 
 ### What the substrate holds
