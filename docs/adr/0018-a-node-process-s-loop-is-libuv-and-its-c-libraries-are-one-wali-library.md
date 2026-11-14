@@ -118,8 +118,13 @@ browser-substrate ADR-0236 step 5 records. `SYS_posix_spawn_v1` goes.
 - **Not read:** the loader run on a Node process's worker, which holds no
   loader today; a task boundary's cost on a Node process's worker; whether every library of §1 builds as Node
   configures it under the WALI SDK (ADR-0016 built OpenSSL with wasi-sdk, not the WALI SDK).
-- **Not read:** a WALI program run on a Node process's worker (today a CPU's worker runs programs and a Node
-  process's worker runs the host program), with its kernel waits blocking on the worker's word rather than suspending.
+- **Read 2026-11-14, browser-substrate `packages/wali/linux/host`:** one realm module (`task.mjs`) runs both kinds of
+  image: `runImage` instantiates a WALI program, or runs a host program (`runHost`) where the image's facts name one,
+  and only in an exec worker of the `"node"` kind (`task.mjs:435-446`); the machine starts that kind for an exec whose
+  image is a host program (`machine.mjs:151, 235`). So `node` as a WALI program takes one fact more on its image:
+  that its imports name the engine, so its exec gets a `"node"` worker and the engine registered for it (as host
+  programs are, `hostPrograms`) answers those imports. *Not read:* a WALI program's kernel waits on that worker,
+  which for a host program block on the worker's word (browser-substrate ADR-0227).
 - **Order of building, each a step that runs before the next is written:** `node` as a WALI program on the Node
   worker, `main` starting libuv and returning; the realm's bootstrap import; `uv_run` as the loop with `timers` over it; `tcp_wrap`, `pipe_wrap`, `stream_wrap` and `tty_wrap`;
   `process_wrap` and `spawn_sync` over `uv_spawn`; `fs` over `uv_fs_*`; OpenSSL and the rest of §1 moved into
