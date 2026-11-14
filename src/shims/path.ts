@@ -207,8 +207,7 @@ export interface PlatformPath {
 }
 
 // The vendored file is a CommonJS module of the Node runtime: it is handed the
-// scope Node would have handed it and run once. The engine already loads its
-// vendored punycode this way (src/punycode-source.ts).
+// scope Node would have handed it and run once.
 const nodePath: PlatformPath = (() => {
   const module: { exports: unknown } = { exports: {} };
   // eslint-disable-next-line no-new-func

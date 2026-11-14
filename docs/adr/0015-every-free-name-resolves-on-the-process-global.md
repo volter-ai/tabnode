@@ -140,7 +140,6 @@ Not taken, each because it reads no name a process's global answers:
   context from its intrinsics.
 - **`path.js`** (`shims/path.ts`) and **`wasi.js`** (`shims/wasi.ts`): Node's files, compiled once a realm, read only
   their parameters and primordials.
-- **punycode** (`runtime.ts` `__browserRuntimePunycode`): reads only its parameters.
 
 ### 4. A name the realm gains later
 

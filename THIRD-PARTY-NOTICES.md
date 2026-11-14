@@ -12,7 +12,6 @@ third-party bodies also retain their notices here.
 | The Ada module's runtime, as `scripts/build-ada-idna-wasm.sh` links it: wasi-libc (`libc.a`, `crt1-reactor.o`), libc++ and libc++abi (the `noeh` builds), and compiler-rt's builtins | `src/node-lib/binding/ada-idna-wasm.ts` | wasi-sdk 34.0: wasi-libc at `2e6fb9d8ee0cdf9e431fbcabe8af3115de000a13`, llvm-project at `895aa2c896ada719451be2e3673c83da8ddf1141` | wasi-libc MIT, with its musl, cloudlibc and dlmalloc notices; libc++, libc++abi and compiler-rt Apache-2.0 WITH LLVM-exception; notices below |
 | node-deps.wasm: OpenSSL 3.5.8, ncrypto and the export layer, compiled to WebAssembly by `scripts/build-node-deps-wasm.sh` | `src/node-lib/binding/node-deps-wasm.ts` | Node.js v24.21.0, `deps/openssl/openssl` (OpenSSL 3.5.8), `deps/ncrypto` and `src/node_root_certs.h`; `scripts/node-deps/tabnode_deps.cc` | OpenSSL Apache-2.0, its notice below; ncrypto and Node's root list MIT, `src/node-lib/LICENSE` |
 | The node-deps module's runtime, as `scripts/build-node-deps-wasm.sh` links it: wasi-libc (with its emulated signal, process-clock, mman and getpid libraries), libc++, libc++abi and compiler-rt's builtins | `src/node-lib/binding/node-deps-wasm.ts` | wasi-sdk 34.0, the release the Ada module's runtime row names | as that row; notices under "Ada module runtime notices" |
-| punycode 2.3.1, the library Node ships as its `punycode` builtin | `src/punycode-source.ts` | Mathias Bynens, `mathiasbynens/punycode.js` | MIT |
 | The engine this repository is a fork of | the tree | `macaly/almostnode` 0.2.14 | MIT, `LICENSE` |
 | SQLite 3.53.4 WebAssembly, embedded unchanged by `src/node-lib/sqlite-wasm.ts` | worker build | `@sqlite.org/sqlite-wasm` 3.53.4-build2, source `sqlite/sqlite-wasm` at `b30a8a19cab9a7928ac6b44bbc91f0b65e56324d` | SQLite public-domain dedication; Emscripten runtime notices below |
 | just-bash browser entry and its JavaScript dependency bodies | runtime-worker build from `src/worker/runtime-worker.ts` | `just-bash` 2.14.5, source `vercel-labs/just-bash` at `2bbbfaf8cc769109361ba29b55f5647a43988b14` | Apache-2.0 and the dependency licences below |
@@ -2852,12 +2851,7 @@ Original file SHA-256: `8a8bac543fccf52a64708ff3315ca2be90e3e4c270634df1e4e4b51f
 MIT
 ```
 
-## Vendored punycode and llhttp notices
-
-The embedded punycode source is byte-identical to `punycode.js` from the
-`punycode` 2.3.1 npm archive. Its source commit is
-[`9e1b2cda98d215d3a73fcbfe93c62e021f4ba768`](https://github.com/mathiasbynens/punycode.js/tree/9e1b2cda98d215d3a73fcbfe93c62e021f4ba768).
-The original source file has SHA-256 `6052a80eac47e46bd4de17ae0095e0192c336d3d7c387d292ad2176ebfc53d04`.
+## Vendored llhttp notices
 
 The embedded llhttp WebAssembly is byte-identical to the non-SIMD payload in
 Undici 6.28.0's `lib/llhttp/llhttp-wasm.js`: 48,615 bytes, SHA-256
@@ -2868,42 +2862,13 @@ Its vendored header identifies llhttp 8.1.0. The llhttp licence below is from
 that release's generated-source commit
 [`a294239338eff8bffd4c709265ab8f5a11e57e41`](https://github.com/nodejs/llhttp/tree/a294239338eff8bffd4c709265ab8f5a11e57e41).
 
-Both published npm archives were read without installation and matched their
-registry SHA-512 integrity. These input receipts identify the original notices;
-they do not claim a rebuild of either upstream artifact.
+The published npm archive was read without installation and matched its
+registry SHA-512 integrity. This input receipt identifies the original notice;
+it does not claim a rebuild of the upstream artifact.
 
 | Original npm input | Archive SHA-256 | Registry integrity |
 |---|---|---|
-| punycode 2.3.1 | `e4ce59f9fbac44349abab87279ab658f6b4614916bec5e088ae3be9323e193bb` | `sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==` |
 | undici 6.28.0 | `32a86c6fa28fd48b915555048c05bbd37ad35457d9e945953831a4374c886a9c` | `sha512-LIY910g9TI13YS95lrMFrs8Rm/u/irgHeTWoKCoteeJ04CUJ92eEfj0rVn+7VKMPBpUPiUoBKfhNyLI23EE/KA==` |
-
-### punycode 2.3.1
-
-Source: <https://cdn.jsdelivr.net/npm/punycode@2.3.1/LICENSE-MIT.txt>
-Original licence SHA-256: `483acb265f182907d1caf6cff9c16c96f31325ed23792832cc5d8b12d5f88c8a`.
-
-```text
-Copyright Mathias Bynens <https://mathiasbynens.be/>
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-```
 
 ### undici 6.28.0
 

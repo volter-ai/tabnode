@@ -73,7 +73,6 @@ import { freshEsModuleImportTurns, nodeLineOf } from './node-line';
 import { setSourceMapsSupportOf, sourceMapsSupportOf } from './node-lib/internals/events-util';
 import { ERR_INVALID_ARG_TYPE } from './node-internals';
 import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
-import { PUNYCODE_SOURCE } from './punycode-source';
 import * as perfHooksShim from './shims/perf_hooks';
 import * as workerThreadsShim from './shims/worker_threads';
 import { guestMessageGlobals, guestMessageModule } from './guest-message-ports';
@@ -2057,7 +2056,6 @@ function makeMutable(mod: Record<string, unknown>): Record<string, unknown> {
  */
 // Node's old `constants` module, and the groups `process.binding("constants")`
 // serves it from, are one table in `shims/constants.ts`.
-const __browserRuntimePunycode = (() => { const module = { exports: {} }; new Function("module", "exports", PUNYCODE_SOURCE)(module, module.exports); return module.exports; })();
 /**
  * Node's `stream/web` is the web streams the worker already has as globals; the
  * table had no entry, so `file-type`, on Dub's middleware path, was "Cannot
