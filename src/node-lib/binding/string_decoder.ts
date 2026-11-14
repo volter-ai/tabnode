@@ -7,9 +7,10 @@
  * missing at 4, the bytes buffered at 5, the encoding at 6. `decode` and `flush` are functions of that buffer and
  * their input, as `DecodeData` and `FlushData` are; nothing is held here between calls.
  *
- * A string is made as `MakeString` makes it: UTF-8 through the realm's decoder (V8's `NewFromUtf8`, which replaces
- * each maximal ill-formed subpart as `TextDecoder` does), every other encoding through `buffer`'s slices, which are
- * `StringBytes::Encode`'s.
+ * A string is made as `MakeString` makes it, through `buffer`'s slices (`./buffer.ts`): UTF-8 as V8's `NewFromUtf8`
+ * makes it (each maximal ill-formed subpart one U+FFFD, a U+FEFF kept), latin1 one code unit per byte, UTF-16LE the
+ * code units as they are (a lone surrogate kept, as a held half pair is flushed), and the rest as
+ * `StringBytes::Encode` writes them.
  */
 import {
   ASCII, UTF8, BASE64, UCS2, LATIN1, HEX, BUFFER, BASE64URL, kStringMaxLength,
