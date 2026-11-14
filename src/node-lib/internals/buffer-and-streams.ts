@@ -282,3 +282,92 @@ return {
 
 }
 export const internalWebStreamsAdapters = createWebStreamsAdapters();
+
+/**
+ * `ReadableStream.prototype.values` and `[Symbol.asyncIterator]`, as Node's own web streams define them
+ * (lib/internal/webstreams/readablestream.js:490-638, 700-706), where the realm's streams have none.
+ *
+ * A guest's `ReadableStream` is the realm's, and Node's own files iterate one with `for await` -- `stream/consumers`
+ * reads every stream it is given that way -- as does a program. Chrome 124 and Firefox 110 iterate a
+ * `ReadableStream`; Safari before 27 does not (MDN browser-compat-data, `api.ReadableStream.@@asyncIterator`), and the
+ * engine runs in WebKit (runtime.ts carries its call-site polyfill). Node's iterator is written over its own reader's
+ * internals; the same steps here go through the realm's public reader: one read in flight, each `next()` chained
+ * after the last, the reader released when the stream closes or errors, and `return()` cancelling the stream unless
+ * `preventCancel` was given. Installed once a realm, only where the realm's stream lacks it.
+ */
+if (typeof ReadableStream === 'function' && !(Symbol.asyncIterator in ReadableStream.prototype)) {
+  type Result = IteratorResult<unknown>;
+  const AsyncIteratorPrototype = Object.getPrototypeOf(Object.getPrototypeOf(async function* () { /* the prototype */ }.prototype)) as object;
+  const codes = () => (libRequire('internal/errors') as { codes: Record<string, any> }).codes;
+  const values = function values(this: unknown, options: unknown = {}): AsyncIterator<unknown> {
+    if (!(this instanceof ReadableStream)) throw new (codes().ERR_INVALID_THIS)('ReadableStream');
+    const { validateObject, kValidateObjectAllowObjectsAndNull } = libRequire('internal/validators') as {
+      validateObject(value: unknown, name: string, flags: number): void; kValidateObjectAllowObjectsAndNull: number;
+    };
+    validateObject(options, 'options', kValidateObjectAllowObjectsAndNull);
+    const preventCancel = !!(options as { preventCancel?: unknown } | null)?.preventCancel;
+    const reader = this.getReader();
+    const state: { done: boolean; current: Promise<Result> | undefined; bound: boolean } = { done: false, current: undefined, bound: true };
+    let started = false;
+    const unbound = () => new (codes().ERR_INVALID_STATE.TypeError)('The reader is not bound to a ReadableStream');
+    const release = (): void => { reader.releaseLock(); state.bound = false; };
+    // The read request's three outcomes (ReadableStreamAsyncIteratorReadRequest, readablestream.js:839-864).
+    const nextSteps = (): Promise<Result> => {
+      if (state.done) return Promise.resolve({ done: true, value: undefined });
+      if (!state.bound) return Promise.reject(unbound());
+      return reader.read().then((read): Result => {
+        state.current = undefined;
+        if (read.done) { state.done = true; release(); return { done: true, value: undefined }; }
+        return { value: read.value, done: false };
+      }, (error: unknown) => {
+        state.current = undefined;
+        state.done = true;
+        release();
+        throw error;
+      });
+    };
+    const returnSteps = async (value: unknown): Promise<Result> => {
+      if (state.done) return { done: true, value };
+      state.done = true;
+      if (!state.bound) throw unbound();
+      if (!preventCancel) {
+        const result = reader.cancel(value);
+        release();
+        await result;
+        return { done: true, value };
+      }
+      release();
+      return { done: true, value };
+    };
+    return Object.setPrototypeOf({
+      next(): Promise<Result> {
+        // The first read waits one microtask, as Node's does, for the controller's start and first pull.
+        if (!started) {
+          state.current = Promise.resolve() as unknown as Promise<Result>;
+          started = true;
+        }
+        if (state.current !== undefined) {
+          state.current = state.current.then(nextSteps, nextSteps);
+          return state.current;
+        }
+        state.current = nextSteps();
+        return state.current;
+      },
+      return(error?: unknown): Promise<Result> {
+        started = true;
+        state.current = state.current !== undefined
+          ? state.current.then(() => returnSteps(error), () => returnSteps(error))
+          : returnSteps(error);
+        return state.current;
+      },
+      [Symbol.asyncIterator]() { return this; },
+    }, AsyncIteratorPrototype) as AsyncIterator<unknown>;
+  };
+  if (!Object.prototype.hasOwnProperty.call(ReadableStream.prototype, 'values')) {
+    Object.defineProperty(ReadableStream.prototype, 'values', { configurable: true, enumerable: true, writable: true, value: values });
+  }
+  Object.defineProperty(ReadableStream.prototype, Symbol.asyncIterator, {
+    configurable: true, enumerable: false, writable: true,
+    value: (ReadableStream.prototype as unknown as { values: unknown }).values,
+  });
+}
