@@ -187,7 +187,9 @@ name what runs (browser-substrate ADR-0218 §3).
   OpenSSL 3.5.8 from Node v24.21.0's `deps/openssl` with the configuration in §1 (`libcrypto.a` 6,197,218 bytes,
   `libssl.a` 902,392 bytes, no compiler warning), ncrypto and the export layer, linked into `node-deps.wasm`,
   3,002,593 bytes (4.0 MB as the base64 the bundle carries, one string literal). Two builds in different scratch directories gave the
-  same bytes. Its imports are WASI's (`random_get`, `clock_time_get`, `environ_*`, `proc_exit`, and the file calls
+  same bytes. *Read 2026-11-15:* the committed module (3,002,593 bytes) does not come from the committed script: the
+  script at that commit's sources builds 2,446,826 bytes with every one of its 97 exports and a `target_features`
+  section the committed module lacks, so what else made it is not known; unexplained. Its imports are WASI's (`random_get`, `clock_time_get`, `environ_*`, `proc_exit`, and the file calls
   OpenSSL's loaders reach) and the five `tabnode` callbacks. Its compile and instantiation times are not yet read in
   a tab.
 - Built: the module, its realm loader (`src/node-lib/binding/node-deps.ts`), the `tls_wrap`, `crypto` and
