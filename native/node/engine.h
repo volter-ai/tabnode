@@ -80,6 +80,15 @@ TABNODE_IMPORT(loop_idle) void tabnode_loop_idle(void);
 // microtasks, which a browser runs only between tasks, so the engine answers it by a suspension that resumes from the
 // next task (a `Suspending` import).
 TABNODE_IMPORT(drain) void tabnode_drain(void);
+// A crypto job's completion (Tabnode ADR-0018 item 7; Node's CryptoJob::AfterThreadPoolWork, src/crypto/crypto_util.h:
+// 301-363): libuv's threadpool ran the job's work (crypto_util.cc uv_queue_work) and the loop calls this with its
+// after-work status (0, or UV_ECANCELED). The engine reads the job's result (ToResult) and calls its `ondone`, or
+// settles its WebCrypto promise. Answers nonzero where it made a callback, whose scope the C then closes (`drain`); the
+// C frees the job after.
+TABNODE_IMPORT(crypto_job_done) int32_t tabnode_crypto_job_done(void *job, int32_t status);
+// The engine device's descriptor is readable (crypto_engine.c's uv_poll_t, Tabnode ADR-0018 §5): an answer of the
+// device waits, which the engine reads and gives to the call it answers. Followed by a drain.
+TABNODE_IMPORT(engine_ready) void tabnode_engine_ready(int32_t status);
 // The TLS callbacks (Tabnode ADR-0016 §4, ADR-0018 item 7): what OpenSSL raises inside an SSL_* call the engine made
 // (crypto_tls.cc), which Node's TLSWrap answers in V8 synchronously, inside that call: so each is made with the
 // engine's own call on the stack, and no scope closes after it. A connection is named by its TnSsl's address

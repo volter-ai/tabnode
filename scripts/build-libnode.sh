@@ -145,17 +145,20 @@ sed -n '52,76p' "$work/$node/src/node_constants.h" > "$work/generated/default_ci
 
 # native/node: Node's start (node_main) and its standard streams' (stdio), its Environment's handles (env), the
 # engine's descriptor waits (poll), and the bindings' C, each over the Node source it names (memory, signo,
-# handle_wrap, stream_wrap, tcp_wrap, pipe_wrap, tty_wrap, udp_wrap, process_wrap, spawn_sync, fs, fs_cp, fs_event);
-# and the crypto and tls_wrap bindings' C++ over ncrypto and OpenSSL (crypto_util, crypto_context, crypto_cipher,
-# crypto_tls, crypto_x509, node_constants), with the defines ncrypto gives its dependents (ncrypto.gyp).
+# handle_wrap, stream_wrap, tcp_wrap, pipe_wrap, tty_wrap, udp_wrap, process_wrap, spawn_sync, fs, fs_cp, fs_event),
+# the engine device's descriptor (engine_device); and the crypto and tls_wrap bindings' C++ over ncrypto and OpenSSL
+# (crypto_util, crypto_context, crypto_cipher, crypto_tls, crypto_x509, crypto_keys, crypto_rsa, crypto_dsa,
+# crypto_dh, crypto_ec, crypto_pqc, crypto_hash, crypto_hmac, crypto_random, node_constants), with the defines ncrypto
+# gives its dependents (ncrypto.gyp).
 program=()
 for source in node_main stdio env poll memory signo handle_wrap stream_wrap tcp_wrap pipe_wrap tty_wrap udp_wrap \
-  process_wrap spawn_sync fs fs_cp fs_event; do
+  process_wrap spawn_sync fs fs_cp fs_event engine_device; do
   "$cc" "${flags[@]}" -D_GNU_SOURCE -I"$uv/include" -c "$repo/native/node/$source.c" -o "$work/$source.o" &
   pids+=($!)
   program+=("$work/$source.o")
 done
-for source in crypto_util crypto_context crypto_cipher crypto_tls crypto_x509 node_constants; do
+for source in crypto_util crypto_context crypto_cipher crypto_tls crypto_x509 crypto_keys crypto_rsa crypto_dsa crypto_dh \
+  crypto_ec crypto_pqc crypto_hash crypto_hmac crypto_random node_constants; do
   "$cxx" "${flags[@]}" "${cxxflags[@]}" "${ncdefines[@]}" -DOPENSSL_NO_DEPRECATED -D_GNU_SOURCE -I"$uv/include" \
     -I"$openssl/include" -I"$ncrypto" -I"$work/generated" -I"$work/$node/src" \
     -c "$repo/native/node/$source.cc" -o "$work/$source.o" &

@@ -137,11 +137,42 @@ uses the realm's `SubtleCrypto` for `webcrypto.subtle`, the asynchronous `sign` 
   RSA's raw `privateEncrypt` and `publicDecrypt`, primes (`checkPrime`, `generatePrime`), `X509Certificate`;
 - TLS, OpenSSL through memory BIOs (ADR-0016).
 
-*Open: the device is not designed.* It is the machine's (browser-substrate `host/machine.mjs`, and a driver in its
-kernel), not this engine's: its descriptor's kind, its request layout, how an object's message is matched to its
-request, and how an `Atomics.waitAsync` on memory outside the process's memory (a wait the realm makes on memory no
-Linux call reaches) is answered are unread. Until it exists, each of those services answers only when the park ends
-for another reason, which is hole 12's defect.
+*The device* is browser-substrate ADR-0236 hole 12's `/dev/engine`: its driver is the kernel's
+(`packages/wali/linux/arch/wasm/kernel/engine.c`: one session an open, a write one request, a read one answer, a ring
+of 256 tags shared with the device), and the device is the machine's own thread (`host/machine.mjs` `engineAttach`,
+`engineCall`, `engineEncode`), which runs SubtleCrypto's calls (`encrypt`, `decrypt`, `sign`, `verify`, `digest`,
+`generateKey`, `deriveKey`, `deriveBits`, `importKey`, `exportKey`, `wrapKey`, `unwrapKey`) and keeps each key it
+answers as a handle of the session, as a hardware key store does. A request and an answer hold at most 1 MiB
+(`WASM_ENGINE_BYTES`); a call larger is refused by name and never split (hole 12's open item). The process's session is
+the `node` program's descriptor (`native/node/engine_device.c`): a synchronous call blocks in Linux on it (a poll, then
+the read), and while an asynchronous call's answer is due it is a `uv_poll_t` of the loop whose readiness is the
+engine's `engine_ready` import followed by a drain, so its callback runs in the poll phase. The wire is the device's,
+as its other client writes it (browser-substrate `packages/node/src/linux-web-crypto.ts`), in Tabnode's
+`src/node-lib/binding/engine_device.ts`.
+
+*The routing is the binding's, per call.* Node's `lib/internal/crypto/*` is unchanged; each class of
+`internalBinding('crypto')` (a Hash, an Hmac, a Sign, a job) chooses where its call is answered, so there is one
+binding and no second crypto module:
+
+| Call | Answered by |
+|---|---|
+| A digest or an HMAC over SHA-1, SHA-256, SHA-384 or SHA-512 of more than 4 KiB (`createHash`, `createHmac`, `hash`, `subtle.digest`, `subtle.sign` with HMAC) | the device (`digest`; `importKey` then `sign` or `verify`) |
+| The same of 4 KiB or less, and every other digest and HMAC (MD5, SHA-224, SHA-512/256, SHA-3, SHAKE and an XOF length, cSHAKE, BLAKE2, RIPEMD-160) | OpenSSL |
+| PBKDF2 and HKDF, every one (`pbkdf2`, `pbkdf2Sync`, `hkdf`, `hkdfSync`, `subtle.deriveBits`) | the device (`deriveBits`) |
+| A signature and its verification by RSASSA-PKCS1-v1_5, RSA-PSS, ECDSA on P-256, P-384, P-521, and Ed25519 (`sign`, `verify`, `createSign`, `createVerify`, `subtle.sign`) | the device (`sign`, `verify`) |
+| A key pair or secret WebCrypto generates (RSA, EC on its curves, Ed25519, X25519, AES, HMAC) | the device (`generateKey`) |
+| A key's import or export in a form WebCrypto holds (raw, SPKI, PKCS#8, JWK) of those keys | the device (`importKey`, `exportKey`) |
+| AES-CBC, AES-CTR, AES-GCM, AES-KW, RSA-OAEP (`createCipheriv`'s `update` and `final`, `subtle.encrypt`) | the device (`encrypt`, `decrypt`, `wrapKey`, `unwrapKey`) |
+| ECDH and X25519 agreement on curves WebCrypto has | the device (`deriveBits`) |
+| scrypt, argon2, ChaCha20-Poly1305, the AES modes beside CBC, CTR, GCM and KW, DSA, Diffie-Hellman groups, ECDH on any other curve, RSA's raw `privateEncrypt` and `publicDecrypt`, primes, `X509Certificate`, PEM and PKCS#1/SEC1 parsing, KeyObject's details | OpenSSL |
+| TLS | OpenSSL (ADR-0016) |
+| Randomness (`randomBytes`, `randomFill`, `randomUUID`) | OpenSSL's, the kernel's `getrandom` |
+
+The bound is the measured one of hole 12 (the device 39.1 µs at 4 KiB against SHA-256 compiled to WebAssembly
+35.9 µs; at 64 KiB 117 µs against 769 µs); a Hash and an Hmac learn their input's length only at `digest`, so one over
+a WebCrypto digest keeps its input until then. A key is held where it is answered: its KeyObjectData in OpenSSL, its
+CryptoKey in the device's session, or both, each side taking its copy from the other's export the first time a call it
+answers needs one (`src/node-lib/binding/crypto_keys.ts`).
 
 ### 6. Children are `uv_spawn`
 
@@ -338,7 +369,7 @@ is built.
   7. OpenSSL and the rest of §1 into `libnode.so`; addons through `dlopen`; the process's raw calls and
      `linux-calls.ts` go. **Crypto is Node's own, landed as one piece:** Node's `lib/internal/crypto/*`, `keys.js`'s
      `KeyObject` and `x509.js`'s `X509Certificate` among them, over the `crypto` binding, whose glue is `libnode`'s C
-     as Node's `src/crypto/crypto_*.cc` is, over ncrypto and OpenSSL, each call answered by OpenSSL or by the device
+     as Node's `src/crypto/crypto_*.cc` is, over ncrypto and OpenSSL, each call answered by the device or by OpenSSL
      as §5 says. It replaces the engine's own `crypto` (`src/shims/crypto*.ts`: `sha.js`, `@noble`, RSA in BigInt)
      whole; until it lands, `crypto` is the engine's and what it refuses stays refused (browser-substrate VO-3806,
      manager's ruling 2026-11-15).

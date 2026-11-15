@@ -2,9 +2,9 @@
  * `internalBinding('crypto')`, as far as Node's own `tls` reaches it (ADR-0016 §4): `SecureContext`, an `SSL_CTX` of
  * the OpenSSL in the process's `libnode.so`, and the root-certificate and cipher calls of `lib/tls.js`. Each method is
  * the V8 half of Node's `src/crypto/crypto_context.cc` over its OpenSSL half in the program
- * (native/node/crypto_context.cc, crypto_cipher.cc), and names the lines it carries. The `crypto` module is the
- * engine's own (BUILTINS.md, Kind 2) until ADR-0018 item 7's Node crypto lands whole; its binding names that Node's
- * `crypto` files read are not here.
+ * (native/node/crypto_context.cc, crypto_cipher.cc), and names the lines it carries; the keys', hashes', HMACs' and
+ * randomness's parts are their files' (crypto_keys.ts, crypto_hash.ts, crypto_hmac.ts, crypto_random.ts), each call
+ * answered by the engine device or by OpenSSL as ADR-0018 §5 routes it.
  *
  * The root store is the image's bundle (`/etc/ssl/certs/ca-certificates.crt`, where an image lays its World's CA)
  * and the file `NODE_EXTRA_CA_CERTS` names, as Node's `--use-openssl-ca` makes it (ADR-0016 §4), read once for the
@@ -12,7 +12,16 @@
  */
 import { Buffer } from '../buffer-module';
 import { nodeLibInternalRequire, nodeLibProcessOf } from '../load';
+import { setCryptoCallbacks } from './libnode';
 import { copyOut, cString, openssl, opensslError, withBytes, withScratch } from './openssl';
+import {
+  bufferSource, checked, cryptoJobDone, glue, kCryptoJobAsync, kCryptoJobSync, kCryptoJobWebCrypto, takeThrown,
+} from './crypto_util';
+import { engineReady } from './engine_device';
+import { keysBinding, opensslBindingValues } from './crypto_keys';
+import { hashBinding } from './crypto_hash';
+import { hmacBinding } from './crypto_hmac';
+import { randomBinding } from './crypto_random';
 
 type Bytes = Uint8Array | string;
 
@@ -350,7 +359,40 @@ function getSSLCiphers(): string[] {
   return out;
 }
 
-export default {
+/** GetFipsCrypto, SetFipsCrypto, TestFipsCrypto (crypto_util.cc:207-242). */
+function getFipsCrypto(): number { return glue().tabnode_get_fips_crypto(); }
+function testFipsCrypto(): number { return glue().tabnode_test_fips_crypto(); }
+function setFipsCrypto(enable: unknown): void {
+  if (glue().tabnode_set_fips_crypto(enable ? 1 : 0)) return;
+  const error = takeThrown();
+  if (error) throw error;
+}
+
+/** GetOpenSSLSecLevelCrypto (crypto_util.cc:244-253). */
+function getOpenSSLSecLevelCrypto(): number { return checked(glue().tabnode_get_openssl_sec_level()); }
+
+/** SetEngine (crypto_util.cc:683-701): the engine's flags as a uint32. */
+function setEngine(id: string, flags: unknown): boolean {
+  const exports = glue();
+  return withBytes(String(id), (at) => exports.tabnode_set_engine(at, Number(flags) >>> 0)) !== 0;
+}
+
+/** TimingSafeEqual (crypto_timing.cc:19-76). */
+function timingSafeEqual(a: unknown, b: unknown): boolean {
+  const exports = glue();
+  return checked(withBytes(bufferSource(a), (aAt, aLength) => withBytes(bufferSource(b), (bAt, bLength) =>
+    exports.tabnode_timing_safe_equal(aAt, aLength, bAt, bLength)))) === 1;
+}
+
+// The binding's callbacks of libuv's threadpool and of the engine device (engine.h crypto_job_done, engine_ready).
+setCryptoCallbacks({ jobDone: cryptoJobDone, engineReady });
+
+/**
+ * `internalBinding('crypto')` (src/node_crypto.cc InitCryptoOnce's targets): TLS's, the keys', hashes', HMACs' and
+ * randomness's (ADR-0018 item 7), each the V8 half of its Node file. The OpenSSL values its initializers define are
+ * the program's (opensslBindingValues), read on the first ask of one.
+ */
+const binding: Record<string, unknown> = {
   SecureContext,
   getBundledRootCertificates,
   getSystemCACertificates,
@@ -360,4 +402,38 @@ export default {
   startLoadingCertificatesOffThread,
   getCertificateCompressionAlgorithms,
   getSSLCiphers,
+  getFipsCrypto,
+  setFipsCrypto,
+  testFipsCrypto,
+  getOpenSSLSecLevelCrypto,
+  setEngine,
+  timingSafeEqual,
+  kCryptoJobAsync,
+  kCryptoJobSync,
+  kCryptoJobWebCrypto,
+  ...keysBinding,
+  ...hashBinding,
+  ...hmacBinding,
+  ...randomBinding,
 };
+
+/** The OpenSSL-valued names its initializers define (EVP_PKEY_*, RSA_PKCS1_PSS_PADDING, OPENSSL_EC_*, X509_CHECK_FLAG_*). */
+const OPENSSL_VALUE_NAMES = [
+  'EVP_PKEY_ED25519', 'EVP_PKEY_ED448', 'EVP_PKEY_X25519', 'EVP_PKEY_X448',
+  'EVP_PKEY_ML_DSA_44', 'EVP_PKEY_ML_DSA_65', 'EVP_PKEY_ML_DSA_87',
+  'EVP_PKEY_ML_KEM_512', 'EVP_PKEY_ML_KEM_768', 'EVP_PKEY_ML_KEM_1024',
+  'EVP_PKEY_SLH_DSA_SHA2_128F', 'EVP_PKEY_SLH_DSA_SHA2_128S', 'EVP_PKEY_SLH_DSA_SHA2_192F', 'EVP_PKEY_SLH_DSA_SHA2_192S',
+  'EVP_PKEY_SLH_DSA_SHA2_256F', 'EVP_PKEY_SLH_DSA_SHA2_256S', 'EVP_PKEY_SLH_DSA_SHAKE_128F',
+  'EVP_PKEY_SLH_DSA_SHAKE_128S', 'EVP_PKEY_SLH_DSA_SHAKE_192F', 'EVP_PKEY_SLH_DSA_SHAKE_192S',
+  'EVP_PKEY_SLH_DSA_SHAKE_256F', 'EVP_PKEY_SLH_DSA_SHAKE_256S',
+  'RSA_PKCS1_PSS_PADDING', 'OPENSSL_EC_NAMED_CURVE', 'OPENSSL_EC_EXPLICIT_CURVE',
+  'X509_CHECK_FLAG_ALWAYS_CHECK_SUBJECT', 'X509_CHECK_FLAG_NO_WILDCARDS', 'X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS',
+  'X509_CHECK_FLAG_MULTI_LABEL_WILDCARDS', 'X509_CHECK_FLAG_SINGLE_LABEL_SUBDOMAINS',
+  'X509_CHECK_FLAG_NEVER_CHECK_SUBJECT',
+];
+// Each read from the program when first asked (an OpenSSL without one, as Node's #if, answers undefined).
+for (const name of OPENSSL_VALUE_NAMES) {
+  Object.defineProperty(binding, name, { get: () => opensslBindingValues()[name], enumerable: true, configurable: true });
+}
+
+export default binding;
