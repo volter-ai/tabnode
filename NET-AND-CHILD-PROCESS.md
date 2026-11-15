@@ -24,7 +24,9 @@ Node's own files carry the whole behaviour, and 260 of Node's own tests
 `net.js`, `internal/net.js`, `internal/stream_base_commons.js`,
 `internal/socket_list.js`, `child_process.js`, `internal/child_process.js`,
 `internal/child_process/serialization.js`, `internal/errors.js`,
-`internal/validators.js`, `internal/events/abort_listener.js`, and
+`internal/validators.js`, `internal/events/abort_listener.js`, `timers.js`
+and `internal/timers.js` with `internal/linkedlist.js` and
+`internal/priority_queue.js` (over the `timers` binding, ADR-0018 item 2), and
 `internal/per_context/primordials.js`, which builds the whole `primordials`
 object over the realm's built-ins the way Node does, so no vendored file's
 destructure is hand-written.
@@ -46,8 +48,7 @@ each as the small object the files destructure, in `src/node-lib/internals/`:
 `internal/util/inspect` (the engine's `util`), `internal/async_hooks`
 (`newAsyncId`, `defaultTriggerAsyncIdScope`, `getDefaultTriggerAsyncId`,
 `initHooksExist`, `emitInit`, over the engine's `async_hooks`, no-ops where
-the engine has nothing), `internal/timers` (`kTimeout`, `TIMEOUT_MAX`,
-`setUnrefTimeout`, `getTimerDuration` over the engine's timers),
+the engine has nothing),
 `internal/streams/state` (`getDefaultHighWaterMark`),
 `internal/process/task_queues` (the engine's `process.nextTick`),
 `internal/socketaddress` and `internal/blocklist` (`SocketAddress`,

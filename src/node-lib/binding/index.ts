@@ -35,7 +35,8 @@ import cryptoBinding from './crypto';
 import tlsWrapBinding from './tls_wrap';
 import jsStreamBinding from './js_stream';
 import { handleOwnerSymbol } from './owner-symbol';
-import { AsyncResource } from '../internals/runtime';
+import { AsyncResource, asyncContextFrameBinding } from '../../shims/async_hooks';
+import { createTimersBinding, taskQueueBinding } from './timers';
 
 /**
  * The table, built on the first ask rather than when this module is
@@ -78,6 +79,11 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   fs: () => fsBinding,
   blob: () => blobBinding,
   async_wrap: () => ({ AsyncResource }),
+  // Node's timers over the loop's timer and check handles (ADR-0018 item 2), the context frame they and Node's
+  // AsyncLocalStorage keep their stores in, and V8's microtask queue.
+  timers: createTimersBinding,
+  async_context_frame: () => asyncContextFrameBinding,
+  task_queue: () => taskQueueBinding,
   zlib: () => zlibBinding,
   modules: () => modulesBinding,
   // Node's TLS over node-deps.wasm (ADR-0016 §4): `crypto` as far as `tls` reaches it, `tls_wrap`, and the

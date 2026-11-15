@@ -361,6 +361,16 @@ function bindingSurface(value: unknown, owner: () => ProcessToken | null, proces
   return surface;
 }
 
+/**
+ * ONE ENVIRONMENT A REALM (ADR-0018 item 2). Node keeps its timer lists in `internal/timers` and their handles in its
+ * Environment, one a process. The engine runs every process of a realm on that realm's one loop (the system's,
+ * system.ts), whose timer and check handles the `timers` binding drives, so the timer lists over them are the realm's
+ * too: every graph's `internal/timers` is the realm's one file, and so is the context frame its timers and Node's
+ * `AsyncLocalStorage` keep their stores in. Each process's `timers` and `timers/promises` are its own files over them.
+ */
+const REALM_ENVIRONMENT = new Set(['internal/timers', 'internal/async_context_frame']);
+const REALM_BINDINGS = new Set(['timers', 'async_context_frame', 'task_queue']);
+
 class NodeLibScope {
   private readonly modules = new Map<string, NodeLibModule>();
   private readonly internals = new Map<string, unknown>();
@@ -374,12 +384,12 @@ class NodeLibScope {
     const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
     if (name === 'process') return this.process;
     if (name === 'fs/promises') return this.require('internal/fs/promises').exports;
-    if (name === 'timers/promises') return this.require('timers').promises;
     if (name === 'dns/promises') return this.require('dns').promises;
     if (name === 'path/posix') return this.require('path').posix;
     if (name === 'path/win32') return this.require('path').win32;
     if (name === 'assert/strict') return this.require('assert').strict;
     if (name === 'util/types') return this.require('internal/util/types');
+    if (REALM_ENVIRONMENT.has(name)) return loadNodeLib(name);
     if (isNodeLibFile(name)) return this.load(name);
     const internal = nodeLibInternal(name, this.require, this.process);
     if (internal) {
@@ -398,7 +408,9 @@ class NodeLibScope {
 
   readonly binding = (name: string): unknown => {
     if (!this.bindings.has(name)) {
-      if (['fs', 'fs_dir', 'fs_event_wrap'].includes(name)) {
+      if (REALM_BINDINGS.has(name)) {
+        this.bindings.set(name, internalBinding(name));
+      } else if (['fs', 'fs_dir', 'fs_event_wrap'].includes(name)) {
         // Exported handles and encoded names belong to this graph; the fd
         // allocator, open-file descriptions and filesystem remain shared OS state.
         const fs = createFsBindings(() => this.require('buffer').Buffer);
@@ -617,6 +629,17 @@ function bootstrapNodeLib(name: string, exports: unknown, process: object): void
     // definition rather than assignment.
     const map = (exports as { overrideStackTrace: object }).overrideStackTrace;
     for (const [key, value] of Object.entries(stackOverrideMap)) Object.defineProperty(map, key, { value, configurable: true });
+    return;
+  }
+  if (name === 'internal/timers') {
+    // lib/internal/bootstrap/node.js: the loop's handles call Node's own timer callbacks, whose ticks between two
+    // callbacks are the process's tick queue (internal/process/task_queues `runNextTicks`).
+    const { runNextTicks } = nodeLibRequire('internal/process/task_queues') as { runNextTicks: () => void };
+    const { processImmediate, processTimers } = (exports as {
+      getTimerCallbacks(runNextTicks: () => void): { processImmediate: () => void; processTimers: (now: number) => number };
+    }).getTimerCallbacks(runNextTicks);
+    (internalBinding('timers') as { setupTimers(immediate: () => void, timers: (now: number) => number): void })
+      .setupTimers(processImmediate, processTimers);
     return;
   }
   if (name === 'internal/util/debuglog') {

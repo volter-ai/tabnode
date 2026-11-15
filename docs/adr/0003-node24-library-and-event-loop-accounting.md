@@ -89,9 +89,9 @@ captured native call sites and the actual transformed script compiled by
 the engine. Positions describe that script; source-map remapping is not
 enabled. Missing compiled-source/native-frame information is the named
 errors.source-position capability failure, not an invented empty location.
-AsyncLocalStorage defaultValue/name/exit/withScope operate on real context
-frames. Internal timers own real native callbacks, release handles when
-fired/cancelled, and restore captured context. Unsafe Buffer allocations are
+AsyncLocalStorage is Node's own over the engine's context frame, and
+internal timers are Node's own `internal/timers` (ADR-0018 item 2), which
+capture and restore that frame around each callback. Unsafe Buffer allocations are
 zeroed browser ArrayBuffers; the detach key prevents transfers through the
 engine's MessagePort, Worker and structuredClone doors, not arbitrary host
 code that bypasses these doors. The amaro dependency matches Node24.21's

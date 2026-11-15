@@ -1,9 +1,9 @@
 /**
  * The internals Node's own files name that are not vendored.
  *
- * Node's own `internal/util`, `internal/async_hooks`, `internal/timers` and
- * the rest are large files whose subject is a Node the engine does not have:
- * an async-hooks graph, a timer wheel, a snapshot builder. What the vendored
+ * Node's own `internal/util`, `internal/async_hooks` and the rest are large
+ * files whose subject is a Node the engine does not have: an async-hooks
+ * graph, a snapshot builder. What the vendored
  * files actually take from each is a handful of names, so each is bound by
  * hand to exactly those, over the engine's own modules. This table is the
  * whole list; anything a vendored file asks for that is not here, not
@@ -19,7 +19,7 @@ import {
   internalProcessWarning, internalSourceMapCache, internalJsTransferable,
 } from './events-util';
 import {
-  internalAsyncHooks, internalTimers, internalTaskQueues,
+  internalAsyncHooks, internalTaskQueues,
   internalEventTarget, internalOptions, allowUnauthorizedOf, internalPerfObserve, internalAssert,
   internalStartupSnapshot, internalPermission,
 } from './runtime';
@@ -79,7 +79,6 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   __table ??= {
   'internal/util/types': () => internalUtilTypes,
   'internal/async_hooks': () => internalAsyncHooks,
-  'internal/timers': () => internalTimers,
   'internal/process/task_queues': () => internalTaskQueues,
   'internal/process/permission': () => internalPermission,
   'internal/event_target': () => internalEventTarget,

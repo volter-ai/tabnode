@@ -78,7 +78,7 @@ import { constantsBinding } from './misc';
 import { Buffer as NodeBuffer } from '../buffer-module';
 import { unsharedBytes } from './buffer';
 import { namedTree, withFilesystem } from './named-tree';
-import { setInterval, clearInterval, queueCompletion } from '../../system';
+import { setInterval, clearInterval, queueCompletion } from '../../engine-timers';
 
 /** The key the engine hangs a run's filesystem off its guest process. */
 export const kRunFilesystem = Symbol.for('tabnode.run.vfs');
@@ -614,7 +614,7 @@ class FSReqPromise extends FSRequest {}
  * Every operation below is written once, synchronously, and this is what
  * makes one asynchronous: Node passes a request object as the last argument
  * when it wants a callback, and the answer is a completion of the engine's
- * loop (system.ts), as a libuv filesystem completion arrives from the loop. Delivering it on a tick
+ * loop (engine-timers.ts `queueCompletion`), as a libuv filesystem completion arrives from the loop. Delivering it on a tick
  * or microtask let asynchronous fs chains run ahead of queued server accepts.
  *
  * The tree and the cwd are captured on this stack, not on that turn. The

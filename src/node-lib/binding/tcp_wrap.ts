@@ -21,7 +21,8 @@ import { queueBindingTask } from '../../guest-loop';
 import { KernelStreamWrap, kDescriptor, kShutdownPending, kSockets, registerKernelHandle } from './kernel_stream';
 import { holdRequest, ownerOf, ownerOfInstance, invokeOwned, observeNodeRequest, forgetNodeRequest, startHandle } from './handles';
 import { __runFor } from '../../process-tokens';
-import { internalAsyncHooks, internalTimers } from '../internals/runtime';
+import { internalAsyncHooks } from '../internals/runtime';
+import { nodeLibInternalRequire } from '../load';
 import { rememberSocketConnect, traceSocketConnect } from '../../socket-connect-trace';
 import { UV_EAFNOSUPPORT, UV_EALREADY, UV_EBADF, UV_EBUSY, UV_ECANCELED, UV_ECONNREFUSED, UV_EINVAL } from './uv';
 import {
@@ -246,7 +247,7 @@ export class TCP extends KernelStreamWrap {
       socketId: (socket as Record<symbol, number>)[internalAsyncHooks.symbols.async_id_symbol] ?? null, request: null,
     });
     const complete = (status: number): unknown => {
-      const timer = (): unknown => (socket as Record<symbol, unknown> | undefined)?.[internalTimers.kTimeout];
+      const timer = (): unknown => (socket as Record<symbol, unknown> | undefined)?.[(nodeLibInternalRequire('internal/timers') as { kTimeout: symbol }).kTimeout];
       traceSocketConnect('binding-entered', socket, timer(), status);
       try { return invokeOwned(req, 'oncomplete', status, this, req, true, true); }
       finally { traceSocketConnect('binding-returned', socket, timer(), status); }

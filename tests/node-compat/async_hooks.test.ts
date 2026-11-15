@@ -7,13 +7,15 @@
 import { describe, it, expect } from 'vitest';
 import asyncHooks, {
   AsyncResource,
-  AsyncLocalStorage,
   createHook,
   executionAsyncId,
   executionAsyncResource,
   triggerAsyncId,
 } from '../../src/shims/async_hooks';
 import { assert } from './common';
+
+// Node's own AsyncLocalStorage, which the module answers (ADR-0018 item 2).
+const { AsyncLocalStorage } = asyncHooks as unknown as { AsyncLocalStorage: new <T>(options?: object) => any };
 
 describe('async_hooks module (Node.js compat)', () => {
   describe('exports', () => {

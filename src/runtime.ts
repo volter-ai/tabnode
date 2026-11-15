@@ -36,8 +36,6 @@ import {
 } from './node-lib/http-module';
 import { netModule as netShim } from './node-lib/net-module';
 import { errname as __uvErrname } from './node-lib/binding/uv';
-import { createTimersModule } from './node-lib/timers';
-import { guestTimerFunctions } from './guest-timers';
 import { noteStackFormed, stackOverrides } from './stack-overrides';
 export { pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers } from './guest-timers';
 import eventsShim from './node-lib/events-module';
@@ -87,7 +85,7 @@ import * as clusterShim from './shims/cluster';
 import * as replShim from './shims/repl';
 import * as vmShim from './shims/vm';
 import * as inspectorShim from './shims/inspector';
-import * as asyncHooksShim from './shims/async_hooks';
+import asyncHooksShim from './shims/async_hooks';
 import * as domainShim from './shims/domain';
 import { createWasiModule, type WasiHostFs, type WasiModule } from './shims/wasi';
 
@@ -101,7 +99,8 @@ import * as acorn from 'acorn';
 import { observerDescriptor, observerHasOwn, observerRecord, observerWrite, observerFreeze } from './module-observer-records';
 import { htmlAtob as atob } from './node-lib/binding/buffer';
 import { availableParallelism as osAvailableParallelism } from './shims/os';
-import { clearTimeout, engineTrace, monotonicMs, onKernel, performance, setImmediate, setTimeout, useTreeSystem } from './system';
+import { engineTrace, monotonicMs, onKernel, performance, useTreeSystem } from './system';
+import { clearTimeout, setImmediate, setTimeout } from './engine-timers';
 /** The realm's console, taken when this module loads: a page's or a library host's; a kernel's host program's realm has none. */
 const realmConsole = (globalThis as { console?: Console }).console;
 
@@ -470,7 +469,6 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   /** What a guest assigned to `process`, where it is not the run's own process object (the `set` trap). */
   let assignedProcess: { value: unknown } | undefined;
   const boundGlobals = new Map<string | symbol, { original: unknown; bound: unknown }>();
-  let processTimers: ReturnType<typeof guestTimerFunctions> | undefined;
   // A key the guest defined that the host would not take (a name the host
   // holds non-configurable, `navigator` under a worker's authority) lives on
   // the proxy's own target, and is this guest's from then on.
@@ -521,9 +519,10 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     ['console', () => processConsoles.get(process)],
     // Node's Web Crypto, whose randomness is the system's (shims/crypto.ts `webcrypto`).
     ['crypto', () => cryptoShim.webcrypto],
-    // The timers are the engine's own list's, counted for the process (guest-timers.ts; ADR-0017): no realm timer.
+    // The timers are the process's `require('timers')`'s, Node's own (guest-timers.ts; ADR-0018 item 2), as Node's
+    // bootstrap makes them its globals: no realm timer.
     ...(["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"] as const)
-      .map((name): [string, () => unknown] => [name, () => (processTimers ??= guestTimerFunctions(process))[name]]),
+      .map((name): [string, () => unknown] => [name, () => loadNodeLibFor(process, 'timers')[name]]),
     // `atob` and `btoa` are the `buffer` module's own, as in Node, where the global IS `require('buffer').atob`.
     ['atob', () => (loadNodeLibFor(process, 'buffer') as Record<string, unknown>).atob],
     ['btoa', () => (loadNodeLibFor(process, 'buffer') as Record<string, unknown>).btoa],
@@ -2124,7 +2123,8 @@ const builtinModules: Record<string, unknown> = {
   child_process: childProcessShim,
   assert: assertModule,
   string_decoder: stringDecoderModule,
-  timers: createTimersModule(),
+  // Node's own `lib/timers.js` (a process's own is its graph's, guest-timers.ts).
+  timers: lazyModule('timers'),
   // `chokidar`, `readdirp`, `fsevents` and `ws` are not the engine's to
   // answer. Each is an ordinary package over a builtin that is Node's own
   // now, so a project installs it and it runs unchanged: a watcher over
@@ -2327,7 +2327,7 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
   // is Node's own code; `errorNames` above stays, because the engine's own
   // parts still name an errno.
 
-  table["timers/promises"] = table.timers.promises;
+  table["timers/promises"] = lazyModule("timers/promises");
 
   extend("querystring", {
     // Node's unescapeBuffer answers the bytes behind the percent escapes, not
@@ -2464,7 +2464,15 @@ function __browserRuntimeFillModules(table: Record<string, any>) {
   // it exports is a real streaming codec.
 
 }
-__browserRuntimeFillModules(builtinModules);
+// Filled when the first runtime is made, never while the bundle evaluates: a fill reads the module it extends
+// (`readline` is Node's file, which takes Node's timers), and Node's timers are made over the loop of the system the
+// first container takes (ADR-0018 item 2).
+let __builtinModulesFilled = false;
+forGuestRealm(() => {
+  if (__builtinModulesFilled) return;
+  __builtinModulesFilled = true;
+  __browserRuntimeFillModules(builtinModules);
+});
 
 /**
  * A shared esbuild or rollup shim must use the calling guest's cwd, even after
@@ -4515,12 +4523,6 @@ export default Runtime;
  * Each is registered here when this module loads and installed by the first
  * `Runtime`, so that a host that only imported the engine keeps its own.
  */
-// Node's timers answer a `Timeout` object and a browser's answer a number.
-// That correction used to be made on the realm, which replaced the
-// `setTimeout` of any Node process that imported the engine. It is the
-// guest's, and it is made on the guest's own timers, in
-// `guestTimerFunctions`.
-
 forGuestRealm(() => {
   // Node's `stream.finished()` on a web stream waits on a promise Node's own
   // web streams carry (`nodejs.webstream.isClosedPromise`), settled when the

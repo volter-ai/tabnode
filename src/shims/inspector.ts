@@ -3,7 +3,7 @@
  */
 
 import { EventEmitter } from '../node-lib/events-module';
-import { setTimeout } from '../system';
+import { setTimeout } from '../engine-timers';
 
 export class Session extends EventEmitter {
   connect(): void {}

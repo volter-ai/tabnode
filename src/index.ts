@@ -488,5 +488,5 @@ export default createContainer;
 // that resolves the way the engine does (the substrate's stand-ins do).
 export { createNodeResolver } from './node-resolution';
 import { useTreeSystem } from './system';
-export { TREE_SYSTEM, type TreeSystem, type SystemInfo, type SystemUname } from './system';
+export { TREE_SYSTEM, type TreeSystem, type SystemTimers, type SystemInfo, type SystemUname } from './system';
 export type { ResolutionFs, ExportsResolver, NodeResolverOptions, NodeResolver } from './node-resolution';

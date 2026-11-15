@@ -41,7 +41,7 @@ A tree that is a client of a kernel (ADR-0006) offers its process's calls for th
 | `random(bytes)` | `getrandom` |
 | `uname()`, `sysinfo()`, `affinity()` | `uname`, `sysinfo`, `sched_getaffinity` |
 | `file(path)` | a file of `/proc`, read through the process's own `open` and `read` |
-| `wake(deadline, due)` | the process's loop parks in `epoll_pwait` no later than `deadline` and calls `due` when it has come |
+| `timers` | libuv's timer and check handles in `node`'s C under Node's `timers` binding (ADR-0018 item 2): `immediateInfo` and `timeoutInfo` in its memory, `scheduleTimer`, `toggleTimerRef`, `toggleImmediateRef`, `getLibuvNow`, `setupTimers` |
 | `trace` | the process's trace (null where none is selected) |
 
 `createContainer` takes the system of the tree it is given (`useTreeSystem`). Every module of the engine takes these
@@ -53,21 +53,20 @@ from `system.ts`, never from the realm.
   the engine began, `performance.timeOrigin` the wall clock then; `process.uptime()` counts on it. On a kernel the
   realm's `Date` is replaced, once, by one whose `now()` and argument-less construction read `CLOCK_REALTIME`; its
   prototype, statics and `instanceof` are the intrinsic's. WASI's and node-deps' clocks are the same two.
-- **timers**: the engine keeps its own timer list (`system.ts`), each deadline a monotonic reading. It tells the loop
-  the nearest (`wake`) and runs the due ones when called back, one worker task each, in deadline order, then the
-  immediates queued before them (libuv's timer and check phases). A guest's global timers, the `timers` module and the
-  engine's own internal timers are all this list's; `async_hooks` carries a program's context into its callbacks
-  (`carryTimerCallbacks`). No realm timer is taken.
-- **completions**: the engine's asynchronous work completes into the same loop, as libuv runs a completed request
-  from its poll phase (libuv: the threadpool's finished work comes back through the loop's own async handle,
-  `uv_async_init(loop, &loop->wq_async, uv__work_done)` in `src/unix/loop.c:97`, an I/O event of `uv__io_poll`
-  in `uv_run`'s one pass, `src/unix/core.c:462`; there is no second queue a request answers on): an fs request's answer (and the native loop checkpoint) is `queueCompletion`'s, run after the
-  due timer and before the immediates, one task each, and while one waits the wake is now. On a kernel each turn
-  between two due items is the process's loop's (`wake`), never a channel of the engine's own, so the process has
-  one loop as Node does. *Read 2026-11-13, browser-substrate's Node host (Node 26.12.0):* the completions had a
-  channel of their own beside the process's loop, whose turn re-posts itself on its own port; Node drains a port
-  1,000 times before it serves another (a self-posting `MessageChannel` ran 1,000 times before a second channel's
-  one message), so a Prisma CLI's `fs.promises.readdir` waited 52 s, 1,090 of the loop's 50 ms parks, before it ran.
+- **timers**: Node's own `lib/timers.js` and `lib/internal/timers.js` over the system's `timers` (ADR-0018 item 2), the
+  loop's timer and check handles: a guest's global timers and its `timers` module are its graph's Node file, the
+  engine's internal timers the library's, all over the realm's one timer list. Each Timeout and Immediate carries its
+  context frame, as Node's do. No realm timer is taken on a kernel.
+- **completions**: the engine's asynchronous work completes into the same loop: an fs request's answer (and the native
+  loop checkpoint) is an immediate of the loop's check phase (`engine-timers.ts` `queueCompletion`) until the fs
+  binding's requests are libuv's (ADR-0018 item 6), whose callbacks libuv runs from its poll phase (the threadpool's
+  finished work comes back through the loop's own async handle, `uv_async_init(loop, &loop->wq_async, uv__work_done)`
+  in `src/unix/loop.c:97`). On a kernel each callback is the process's loop's, never a channel of the engine's own, so
+  the process has one loop as Node does. *Read 2026-11-13, browser-substrate's Node host (Node 26.12.0):* the
+  completions had a channel of their own beside the process's loop, whose turn re-posts itself on its own port; Node
+  drains a port 1,000 times before it serves another (a self-posting `MessageChannel` ran 1,000 times before a second
+  channel's one message), so a Prisma CLI's `fs.promises.readdir` waited 52 s, 1,090 of the loop's 50 ms parks, before
+  it ran.
 - **randomness**: `getrandom` for `randomBytes`, `randomFill`, `randomUUID`, `getRandomValues`, WASI's `random_get` and
   OpenSSL's entropy. A guest's `globalThis.crypto` is the engine's `webcrypto`, whose randomness is this one.
 - **output**: a program's output is its own fds 1 and 2 (its run's streams); its `console` is its own, with no echo to
@@ -89,7 +88,8 @@ from `system.ts`, never from the realm.
 Where the engine runs over no kernel (its in-memory tree, as a library in a page, a page's worker or a Node process:
 `createContainer()` with no kernel's tree), its system is the realm's own primitives, taken when `system.ts` loads,
 behind the same interface: `performance`'s clock and `Date`'s, the realm's `crypto.getRandomValues`, its `setTimeout`
-as the timers' wake, its `console` as the trace. `os` there answers the fixed figures the engine always gave (a Linux
+as the loop's timer handle and a `MessageChannel`'s task as its check (`system.ts` `realmTimers`), its `console` as the
+trace. `os` there answers the fixed figures the engine always gave (a Linux
 x64 of 4 GiB and 2 CPUs), which describe no machine; that is said at `realmSystem`'s site. These modes have no Linux
 under them and keep working as they did.
 

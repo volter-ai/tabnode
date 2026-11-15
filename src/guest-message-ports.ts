@@ -2,7 +2,8 @@
 import { __reportUncaughtException } from './shims/process';
 import { withGuestCallback } from './guest-loop';
 import { markUntransferable, isUntransferable, validateTransferList } from './transfer-ownership';
-import { onKernel, portMessagesDue } from './system';
+import { onKernel } from './system';
+import { portMessagesDue } from './engine-timers';
 
 type Port = Record<string, any>;
 /**
@@ -42,7 +43,7 @@ function track(process: object, port: Port): Port {
   tracked.set(port, state);
   collection.add(state);
   // On a kernel, a message on its way to a port the program listens to is its loop's work until the worker delivers
-  // it (system.ts `portMessagesDue`). A listener of the engine's own, beside the program's while it listens, sees
+  // it (engine-timers.ts `portMessagesDue`). A listener of the engine's own, beside the program's while it listens, sees
   // each delivery; the program's listeners, their identities and Node's references are untouched.
   const counter = () => { if (state.due > 0) { state.due--; if (state.listening) portMessagesDue(-1); } };
   const listen = (on: boolean) => {

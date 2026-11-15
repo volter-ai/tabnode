@@ -119,6 +119,14 @@ import INTERNAL_UTIL_COLORS from './internal/util/colors.js?raw';
 import INTERNAL_FIXED_QUEUE from './internal/fixed_queue.js?raw';
 import INTERNAL_EVENTS_SYMBOLS from './internal/events/symbols.js?raw';
 import INTERNAL_REPL_HISTORY from './internal/repl/history.js?raw';
+import TIMERS from './timers.js?raw';
+import TIMERS_PROMISES from './timers/promises.js?raw';
+import INTERNAL_TIMERS from './internal/timers.js?raw';
+import INTERNAL_LINKEDLIST from './internal/linkedlist.js?raw';
+import INTERNAL_PRIORITY_QUEUE from './internal/priority_queue.js?raw';
+import INTERNAL_ASYNC_CONTEXT_FRAME from './internal/async_context_frame.js?raw';
+import INTERNAL_ALS_ASYNC_CONTEXT_FRAME from './internal/async_local_storage/async_context_frame.js?raw';
+import INTERNAL_ALS_RUN_SCOPE from './internal/async_local_storage/run_scope.js?raw';
 
 import INTERNAL_STREAMS_ITER_TYPES from './internal/streams/iter/types.js?raw';
 
@@ -274,4 +282,12 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/fixed_queue': INTERNAL_FIXED_QUEUE,
   'internal/events/symbols': INTERNAL_EVENTS_SYMBOLS,
   'internal/repl/history': INTERNAL_REPL_HISTORY,
+  'timers': TIMERS,
+  'timers/promises': TIMERS_PROMISES,
+  'internal/timers': INTERNAL_TIMERS,
+  'internal/linkedlist': INTERNAL_LINKEDLIST,
+  'internal/priority_queue': INTERNAL_PRIORITY_QUEUE,
+  'internal/async_context_frame': INTERNAL_ASYNC_CONTEXT_FRAME,
+  'internal/async_local_storage/async_context_frame': INTERNAL_ALS_ASYNC_CONTEXT_FRAME,
+  'internal/async_local_storage/run_scope': INTERNAL_ALS_RUN_SCOPE,
 };

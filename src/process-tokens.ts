@@ -17,7 +17,7 @@ import type { ProcessCredentials } from './process-credentials';
  */
 
 import type { Process } from './shims/process';
-import { AsyncLocalStorage, routeUncaughtExceptions } from './shims/async_hooks';
+import { nodeAsyncLocalStorage, routeUncaughtExceptions } from './shims/async_hooks';
 import { createProcessRegistryOwner, type ProcessRegistry, type InitialProcessRegistration } from './process-registry';
 
 /** Whatever the embedding runtime uses to name one guest process. */
@@ -52,15 +52,17 @@ const tokensByProcess = new WeakMap<Process, ProcessToken>();
  * The run whose guest code is executing, as an async-local value rather than a
  * module global. A module-level "the current run" answered the LATEST run for
  * every reader, so a guest that spawned a child while another run was in
- * flight was attributed to the wrong parent. The engine's own storage carries
- * the value into timers, immediates, microtasks and `then` callbacks scheduled
- * from inside the run; a native `await` continuation is its documented limit.
+ * flight was attributed to the wrong parent. Node's own storage (the library's
+ * graph, made on first use) keeps the value in the context frame, which
+ * Node's timers and immediates and the engine's microtasks, `then` callbacks
+ * and compiled `await`s carry (shims/async_hooks.ts).
  */
-const executing = new AsyncLocalStorage<ProcessToken>();
+let executingStorage: { run<R>(store: ProcessToken, callback: () => R): R; getStore(): ProcessToken | undefined } | undefined;
+const executing = () => executingStorage ??= new (nodeAsyncLocalStorage())<ProcessToken>();
 
 /** Run `fn` as this token's guest code, so the doors below name that run. */
 export function enterRun<T>(token: ProcessToken, fn: () => T): T {
-  return executing.run(token, fn as (...args: unknown[]) => T);
+  return executing().run(token, fn);
 }
 
 /**
@@ -113,13 +115,13 @@ export function __runFor(token: ProcessToken): OwnedRun | undefined {
  * continuations carry. An exception a task callback throws goes to the run whose frame it ran in.
  */
 routeUncaughtExceptions((error) => {
-  const token = executing.getStore();
+  const token = executingStorage?.getStore();
   return token !== undefined && runs.get(token)?.reportUncaught(error) === true;
 });
 
 /** The run a guest is being launched under, where the host named one. */
 export function __currentProcessToken(): ProcessToken | null {
-  return executing.getStore() ?? null;
+  return executingStorage?.getStore() ?? null;
 }
 
 /**

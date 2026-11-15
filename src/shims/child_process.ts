@@ -81,7 +81,8 @@ import { installShellJobs } from './shell-jobs';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
 import { installedNpmVersion } from '../npm/version';
-import { clearTimeout, engineConsole as console, monotonicMs, setTimeout, onKernel, queueCompletion, randomUUID as systemRandomUUID, realmHost, realmProcess, system as processSystem } from '../system';
+import { engineConsole as console, monotonicMs, onKernel, randomUUID as systemRandomUUID, realmHost, realmProcess, system as processSystem } from '../system';
+import { clearTimeout, setTimeout, queueCompletion } from '../engine-timers';
 
 // Capture host capabilities before the guest's authority is restricted. These
 // endpoints are private, carry no guest bytes, and close at each checkpoint.
@@ -92,7 +93,7 @@ const isWorkerRealm = realmHost === 'worker';
 const hostNow = monotonicMs;
 
 async function settleEntry(): Promise<void> {
-  // A native loop checkpoint: a completion of the engine's loop (system.ts),
+  // A native loop checkpoint: a completion of the loop (engine-timers.ts),
   // host work, not a guest timer.
   await new Promise<void>(resolve => { queueCompletion(resolve); });
   // On a kernel a rejection no program handles ends the process through its host (task.mjs runHost), with nothing

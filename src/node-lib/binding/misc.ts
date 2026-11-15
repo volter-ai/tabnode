@@ -11,7 +11,7 @@ import { UV_ENOSYS } from './uv';
 import * as osShim from '../../shims/os';
 import { treeSocketsOf, type TreeSockets } from '../../host-sockets';
 import { nodeLibInternalRequire } from '../load';
-import { setTimeout } from '../../system';
+import { setTimeout } from '../../engine-timers';
 import { adaToAscii } from './ada_idna';
 import { hostnameToUnicode } from '../internals/url';
 
