@@ -1122,6 +1122,13 @@ CRYPTO_EXPORT(tabnode_crypto_binding_values) char* tabnode_crypto_binding_values
 #endif
 #endif
   V(RSA_PKCS1_PSS_PADDING)
+  // What the binding's routing reads (crypto_sig.ts): the key types and curves WebCrypto signs with.
+  V(RSA_PKCS1_PADDING)
+  V(EVP_PKEY_RSA)
+  V(EVP_PKEY_EC)
+  V(NID_X9_62_prime256v1)
+  V(NID_secp384r1)
+  V(NID_secp521r1)
   V(OPENSSL_EC_NAMED_CURVE)
   V(OPENSSL_EC_EXPLICIT_CURVE)
   V(X509_CHECK_FLAG_ALWAYS_CHECK_SUBJECT)

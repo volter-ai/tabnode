@@ -22,6 +22,8 @@ import { keysBinding, opensslBindingValues } from './crypto_keys';
 import { hashBinding } from './crypto_hash';
 import { hmacBinding } from './crypto_hmac';
 import { randomBinding } from './crypto_random';
+import { sigBinding } from './crypto_sig';
+import { x509Binding } from './x509_object';
 
 type Bytes = Uint8Array | string;
 
@@ -415,6 +417,8 @@ const binding: Record<string, unknown> = {
   ...hashBinding,
   ...hmacBinding,
   ...randomBinding,
+  ...sigBinding,
+  ...x509Binding,
 };
 
 /** The OpenSSL-valued names its initializers define (EVP_PKEY_*, RSA_PKCS1_PSS_PADDING, OPENSSL_EC_*, X509_CHECK_FLAG_*). */

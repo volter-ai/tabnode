@@ -40,7 +40,7 @@ CRYPTO_EXPORT(tabnode_x509_name) char* tabnode_x509_name(X509* x, int issuer, si
 // The text fields of X509ToObject and X509Certificate's methods; null answers "undefined".
 //  0 subjectaltname  1 infoAccess  2 valid_from  3 valid_to  4 fingerprint  5 fingerprint256  6 fingerprint512
 //  7 serialNumber    8 modulus     9 exponent    10 asn1Curve  11 nistCurve 12 pem 13 signatureAlgorithm
-//  14 signatureAlgorithmOid
+//  14 signatureAlgorithmOid  15 subject  16 issuer
 CRYPTO_EXPORT(tabnode_x509_text) char* tabnode_x509_text(X509* x, int field, size_t* length) {
   ncrypto::X509View view(x);
   *length = 0;
@@ -102,6 +102,9 @@ CRYPTO_EXPORT(tabnode_x509_text) char* tabnode_x509_text(X509* x, int field, siz
       auto oid = view.getSignatureAlgorithmOID();
       return oid.has_value() ? Copy(oid->data(), oid->size(), length) : nullptr;
     }
+    // Subject, Issuer (297-326): ToV8Value of the BIO's text.
+    case 15: return CopyBio(view.getSubject(), length);
+    case 16: return CopyBio(view.getIssuer(), length);
   }
   return nullptr;
 }
@@ -176,3 +179,69 @@ CRYPTO_EXPORT(tabnode_x509_issued_by) int tabnode_x509_issued_by(X509* x, X509* 
   return ncrypto::X509View(x).isIssuedBy(ncrypto::X509View(issuer));
 }
 
+
+// ---- X509Certificate (crypto_x509.cc:226-235, 407-565) ----------------------------------------------------------
+
+// Parse (547-565): a PEM or DER certificate's X509*, null where it threw.
+CRYPTO_EXPORT(tabnode_x509_parse) X509* tabnode_x509_parse(const unsigned char* data, size_t length) {
+  auto result = ncrypto::X509Pointer::Parse(ncrypto::Buffer<const unsigned char>{.data = data, .len = length});
+  if (!result.value) {
+    ThrowCrypto(result.error.value_or(0));
+    return nullptr;
+  }
+  return result.value.release();
+}
+
+// GetValidFromDate, GetValidToDate (226-234): the time in seconds, which the engine makes a Date of.
+CRYPTO_EXPORT(tabnode_x509_valid_time) double tabnode_x509_valid_time(X509* x, int to) {
+  ncrypto::X509View view(x);
+  return static_cast<double>(to ? view.getValidToTime() : view.getValidFromTime());
+}
+
+// PublicKey (407-426): a handle's data of the certificate's key, null where it threw.
+CRYPTO_EXPORT(tabnode_x509_public_key) KeyObjectData* tabnode_x509_public_key(X509* x) {
+  auto result = ncrypto::X509View(x).getPublicKey();
+  if (!result.value) {
+    ThrowCrypto(result.error.value_or(0));
+    return nullptr;
+  }
+  return new KeyObjectData(KeyObjectData::CreateAsymmetric(kKeyTypePublic, std::move(result.value)));
+}
+
+// CheckPrivateKey, CheckPublicKey (455-479).
+CRYPTO_EXPORT(tabnode_x509_check_private_key) int tabnode_x509_check_private_key(X509* x, const KeyObjectData* key) {
+  if (key->GetKeyType() != kKeyTypePrivate) abort();
+  return ncrypto::X509View(x).checkPrivateKey(key->GetAsymmetricKey()) ? 1 : 0;
+}
+CRYPTO_EXPORT(tabnode_x509_check_public_key) int tabnode_x509_check_public_key(X509* x, const KeyObjectData* key) {
+  if (key->GetKeyType() == kKeyTypeSecret) abort();
+  return ncrypto::X509View(x).checkPublicKey(key->GetAsymmetricKey()) ? 1 : 0;
+}
+
+// CheckX509Subject (481-512) for checkHost (0), checkEmail (1), checkIP (2): 1 for a match (the peer name OpenSSL
+// matched, where it gives one, malloc'd at *matched), 0 for none, -1 where it threw.
+CRYPTO_EXPORT(tabnode_x509_check_subject) int tabnode_x509_check_subject(X509* x, int which, const char* subject,
+                                                                        size_t subject_length, uint32_t flags,
+                                                                        char** matched, size_t* matched_length) {
+  ncrypto::X509View view(x);
+  std::string_view name(subject, subject_length);
+  ncrypto::DataPointer matched_subject;
+  ncrypto::X509View::CheckMatch result =
+      which == 0 ? view.checkHost(name, flags, &matched_subject)
+                 : which == 1 ? view.checkEmail(name, flags) : view.checkIp(name, flags);
+  *matched = nullptr;
+  *matched_length = 0;
+  switch (result) {
+    case ncrypto::X509View::CheckMatch::MATCH:
+      if (matched_subject) *matched = Copy(matched_subject.get<const char>(), matched_subject.size(), matched_length);
+      return 1;
+    case ncrypto::X509View::CheckMatch::NO_MATCH:
+      return 0;
+    case ncrypto::X509View::CheckMatch::INVALID_NAME:
+      Throw("ERR_INVALID_ARG_VALUE", "Invalid name");
+      return -1;
+    default:
+      Throw("ERR_CRYPTO_OPERATION_FAILED");
+      return -1;
+  }
+}
