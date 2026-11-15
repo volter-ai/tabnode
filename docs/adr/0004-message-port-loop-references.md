@@ -56,5 +56,4 @@ The transport stays the host's: the engine counts each message posted to a port 
 listener of its own, attached beside the program's only while the program listens, counts each delivery. A message to
 an unstarted port counts from its start; one to a started port nobody listens to, or to a port sent away in a message,
 is not the process's to wait for. *Read 2026-11-15 on browser-substrate's Node host, before:* a `MessageChannel`
-ping-pong between one process's two ports never completed (ended at 20 s); Rallly's first page, 18.7 s, advanced only
-when the run's 50 ms check ended a park.
+ping-pong between one process's two ports never completed (ended at 20 s); after, 0.10 ms a hop (real Node 0.25 ms).
