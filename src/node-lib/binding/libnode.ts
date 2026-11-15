@@ -9,7 +9,10 @@
  *
  * The host that runs the program attaches it once, in its `bootstrap` import, before Node's library runs
  * (`attachLibnode`): the program's exports, and the process's memory through its one door, a copy read and bytes
- * written, since a browser's APIs refuse a view of shared memory. A realm the host gives no program (a tab's engine
+ * written, since a browser's APIs refuse a view of shared memory. The run's end is libuv's (ADR-0018 item 7): `main`
+ * spins the loop as Node's SpinEventLoopInternal does and asks the process's run, which gives its end once
+ * (`attachLibnodeRun`), for `beforeExit`, `exit` and the code it returns; `process.exit` is the program's exit
+ * (`reallyExit`). A realm the host gives no program (a tab's engine
  * with no machine) has no libuv: its streams are the engine's pairing and its fs the engine's own tree (`fs.ts`), and
  * a binding that is only libuv's (`process_wrap`, `spawn_sync`) answers that it has none. A binding over libuv is its
  * V8 half: it writes a call's arguments into the process's memory, calls the C, and reads the answer, as Node's C++
@@ -174,6 +177,8 @@ export interface LibnodeExports {
   tabnode_fs_event_start(handle: I32, path: I32, flags: I32): I32;
   tabnode_stat_watcher_new(): I32;
   tabnode_stat_watcher_start(handle: I32, path: I32, interval: I32): I32;
+  /** stdio.c: exit(3), which runs Node's ResetStdio and ends the process: `process.reallyExit`'s. */
+  tabnode_exit(status: I32): void;
 }
 
 /** The program as its host gives it: its exports once instantiated, and the process's memory's one door. */
@@ -211,6 +216,41 @@ export function attachLibnode(program: LibnodeProgram): void {
     exports, read, write, cBytes,
     cString: (pointer) => { const bytes = cBytes(pointer); return bytes === null ? null : decoder.decode(bytes); },
   };
+}
+
+/**
+ * The run's end as `main` asks it (ADR-0018 item 7; native/node engine.h), what Node's C++ does once `uv_run` returns
+ * (src/api/embed_helpers.cc:40-76): `beforeExit` (EmitProcessBeforeExit, src/api/hooks.cc:33-51), 0 or nonzero where
+ * its emission failed; `emitExit` (EmitProcessExitInternal, hooks.cc:61-93); and `exitCode`, the code `main` returns.
+ */
+export interface LibnodeRunEnd {
+  beforeExit(): number;
+  emitExit(): void;
+  exitCode(): number;
+}
+
+let runEnd: LibnodeRunEnd | undefined;
+
+/** The realm's process gives its end once, before its first callback (`launchNode`). */
+export function attachLibnodeRun(end: LibnodeRunEnd): void {
+  if (runEnd) throw new Error('the realm\'s node program already has its process');
+  runEnd = end;
+}
+
+/** The process `main` ends: none where libuv's loop emptied before the run made it. */
+function theRunEnd(): LibnodeRunEnd {
+  if (!runEnd) throw new Error('node: libuv\'s loop ended before the run made its process');
+  return runEnd;
+}
+
+/**
+ * Node's `process.reallyExit` (src/node_process_methods.cc:502-511): its argument's Int32Value, kNoFailure where that
+ * throws, then exit(3), from inside whatever callback calls it.
+ */
+export function reallyExit(code: unknown): void {
+  let status = 0;
+  try { status = (code as number) | 0; } catch { /* Int32Value's Nothing: kNoFailure */ }
+  libnode().exports.tabnode_exit(status);
 }
 
 /** Whether the realm's process is the program `node`, whose bindings are libuv's. */
@@ -473,6 +513,10 @@ export function awaitRequest(request: number, done: () => void): void { fsReques
  * the C's.
  */
 export const libnodeImports = {
+  /** The run's end, after `uv_run` returns (`LibnodeRunEnd`); each followed in C by a drain. */
+  before_exit: (): number => theRunEnd().beforeExit(),
+  emit_exit: (): void => { theRunEnd().emitExit(); },
+  exit_code: (): number => theRunEnd().exitCode(),
   /** HandleWrap::OnClose: 1 where it made the close callback, whose scope the C closes; the C frees the handle. */
   handle_closed: (handle: number): number => (handleAt(handle).closed() ? 1 : 0),
   stream_read: (handle: number, nread: number, base: number): void => { handleAt(handle).target.onUvRead?.(nread, base); },

@@ -1,6 +1,6 @@
 # ADR-0018: A Node process's loop is libuv, and Node's C libraries are one WALI library in its memory
 
-Status: Accepted (manager's rulings, 2026-11-15: the order of building, item 7's crypto).
+Status: Accepted (manager's rulings, 2026-11-15: the order of building, item 7's run's end, item 8's crypto).
 
 Date: 2026-11-14. Served: browser-substrate ADR-0234 §7 ("A Node process's loop is libuv itself"), ADR-0236 hole 12
 ("A host program parked in Linux receives none of the engine's work") and ADR-0236 step 5 ("Tabnode's loop becomes
@@ -200,7 +200,7 @@ is built.
   - `crypto.subtle.deriveBits` (PBKDF2, 4,096 iterations) awaited beside a 1 s interval, once in each of three boots:
     libuv 52 and 52 ms; today 4,254, 4,718 and 4,941 ms. With the drain resumed by a port's message instead it was not
     settled in 15 s (Node's batch). 52 ms is the next callback libuv makes, the engine's own 50 ms run check (read in
-    `src/shims/child_process.ts:1356, 1430`; its count of the run's handles, which goes with steps 3 to 6); with no
+    `src/shims/child_process.ts:1356, 1430`; its count of the run's handles, which goes with item 7); with no
     callback the answer waits for the park to end, which is §5's device.
 - **Read 2026-11-14, browser-substrate `packages/wali/linux/host`:** one realm module (`task.mjs`) runs both kinds of
   image: `runImage` instantiates a WALI program, or runs a host program (`runHost`) where the image's facts name one,
@@ -259,7 +259,8 @@ is built.
      one file in every process's graph (`src/node-lib/load.ts` `REALM_ENVIRONMENT`), and each process's `timers` and
      `timers/promises` are its own files over them, its global timers that module's functions, as Node's bootstrap
      makes them. What a process's `timers` makes is counted for that process (`src/guest-timers.ts`, from Node's own
-     `_destroyed` and `hasRef()`) for the run's end the engine still decides. The engine's own timers are the library
+     `_destroyed` and `hasRef()`) for the run's end the engine decides in a realm with no `node` program (item 7).
+     The engine's own timers are the library
      graph's `timers` (`src/engine-timers.ts`). The binding's arrays are taken once, as an Environment holds them from
      before its library loads: `net` and `child_process` load on first use, never while the bundle evaluates, and a
      kernel's system offered after Node's timers were set up over the realm's loop is refused (`useTreeSystem`). Over
@@ -274,10 +275,6 @@ is built.
        while the worker has it to deliver, where a Node port is its own `uv_async_t`.
      - `internal/timers`'s own `process` (its `TimeoutOverflowWarning`) is the realm library's process, not the
        process whose timer it warns of.
-     The run's end is still the engine's own count; it decides it when the loop would wait, never on a timer:
-     `env.c`'s unreferenced prepare handle, Node's `idle_prepare_handle_` (`src/env.cc:1142-1155`, `1303-1307`),
-     tells the engine (`loop_idle`) before each poll that would block. `beforeExit` and `exit` from `main` are Node's
-     once the run's end is libuv's.
   3. Node's bootstrap on the realm's own global (§7), and the standard streams: `tty_wrap`, `pipe_wrap` and the
      stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so `process.stdout` is Node's. The glue is
      `native/node`'s, one C file per file of Node's (`handle_wrap.c`, `stream_wrap.c`, `pipe_wrap.c`, `tty_wrap.c`),
@@ -295,9 +292,8 @@ is built.
      pipe's handle with it), a shutdown, a listen, an accept and a connect are libuv's, and each callback is an import
      that calls the object's JavaScript, then drains. A JavaScript buffer is not in the process's memory, so a write's
      bytes are copied there (`memory.c`, the one allocator of the bytes and records the engine hands the C), and a
-     read's out of libuv's buffer into an ArrayBuffer, as Node's managed buffer is released into one. The run's count
-     asks libuv of each initialized handle (active and referenced, closing, or with a request in flight) until the
-     run's end is libuv's. `uv_guess_handle` answers every descriptor's type. The program's start is Node's
+     read's out of libuv's buffer into an ArrayBuffer, as Node's managed buffer is released into one.
+     `uv_guess_handle` answers every descriptor's type. The program's start is Node's
      PlatformInit for fds 0 to 2 (`stdio.c`: `/dev/null` for one not open, each one's flags and a terminal's termios
      recorded) and its exit Node's ResetStdio (libuv's terminal mode reset, O_NONBLOCK and termios put back), run by
      `exit(3)`, which is also `process.reallyExit`. `process.stdout`, `process.stderr` and `process.stdin` are made as
@@ -333,7 +329,50 @@ is built.
      process's kernel), made uninitialized and initialized by `start`; `fs.watchFile` a StatWatcher, a HandleWrap over
      a `uv_fs_poll_t`, initialized when it is made. A realm the host gives no `node` program keeps the engine's own
      tree's binding (`fs.ts`), which no longer reaches a kernel's descriptors.
-  7. OpenSSL and the rest of §1 into `libnode.so`; addons through `dlopen`; the process's raw calls and
+  7. The run's end is libuv's. `bootstrap` starts the process and returns, and the process lives while libuv's loop
+     holds an active, referenced handle or request: `main` spins it as Node's SpinEventLoopInternal does
+     (`src/api/embed_helpers.cc:40-76`) and asks the process's run what Node's C++ does there, through three imports
+     Tabnode answers (`libnodeImports`, over the end the run gives once before its first callback, `attachLibnodeRun`):
+     `before_exit` is EmitProcessBeforeExit (`src/api/hooks.cc:33-51`), `process.emit('beforeExit', code)` through
+     ProcessEmit's MakeCallback (`src/node_process_events.cc:47-61`), nonzero where the emission failed (a throw the
+     process handled), where Node's loop stops; `emit_exit` is EmitProcessExitInternal (`hooks.cc:61-93`): the process
+     exiting, its code, 13 (kUnsettledTopLevelAwait) where it had none and its entry's top-level `await` is unsettled,
+     and `process.emit('exit', code)`; `exit_code` is the code its listeners left, or 1 where the emission failed
+     (`src/node_main_instance.cc:109-110`), which `main` returns, so `exit(3)` runs ResetStdio. Each emission is a
+     callback scope of the process's run, its throw the process's uncaught exception. `process.exit` is Node's
+     (`lib/internal/process/per_thread.js:229-242`) and `process.reallyExit` the program's `exit(3)` (`tabnode_exit`,
+     `src/node_process_methods.cc:502-511`), from inside whatever callback calls it; an exception nobody handles ends
+     the process as `_fatalException` and TriggerUncaughtException do (`lib/internal/process/execution.js:161-171`,
+     `src/node_errors.cc:743`, `1395-1399`), through Environment::Exit, the same `exit(3)`; an outcome the run answers
+     before its process starts (a refusal of its command line) is its exit. So no count of the engine's own is kept
+     on the loop: a handle's wrap keeps its owner and Node's lists of it (`registerLibuvHandle`), and an fs request
+     only Node's. Node's idle prepare and check handles mark its isolate idle for V8's CPU profiler
+     (`src/env.cc:1142-1143`, `1303-1312`); the realm's engine has no such profiler, so `env.c` makes neither. A realm
+     with no `node` program keeps the engine's count, looked at on a timer (`launchNode`).
+
+     Every wait a run holds is libuv's handle or request:
+     - a timer: `env.c`'s `uv_timer_t`, referenced while a referenced timer is pending (`process_timers`' sign,
+       `toggleTimerRef`);
+     - an immediate: `env.c`'s `uv_idle_t`, started while a referenced immediate is queued (`toggleImmediateRef`); a
+       message due to a port the process listens to holds a referenced immediate (`portMessagesDue`);
+     - a stream: its `uv_tty_t`, `uv_pipe_t` or `uv_tcp_t`, active while it reads or listens; a write, a shutdown and a
+       connect their `uv_write_t`, `uv_shutdown_t` and `uv_connect_t`;
+     - a UDP socket: its `uv_udp_t` while it receives; a send its `uv_udp_send_t`;
+     - a child: its `uv_process_t` until its exit (`spawnSync` runs a loop of its own);
+     - fs: each request's `uv_fs_t` on libuv's threadpool; `fs.watch` its `uv_fs_event_t`, `fs.watchFile` its
+       `uv_fs_poll_t`;
+     - the engine device (Web Crypto, WebAssembly's compile) and DNS: a `uv_poll_t` of `poll.c` on the descriptor while
+       a waiter asks it (browser-substrate `linux-uv-waits.ts` `wait`).
+
+     Waits with no handle behind them, defects of the bindings that make them: a `MessagePort` that listens with no
+     message due holds nothing (`src/guest-message-ports.ts`), where Node's is a HandleWrap over a `uv_async_t`
+     (`src/node_messaging.cc:680`) referenced while it has a `message` listener (`lib/internal/worker/io.js:213-244`);
+     an addon's threads wake its process through `Atomics.waitAsync` (`src/native-queue.ts`), where Node's
+     threadsafe function is a `uv_async_t`, referenced until it is unreferenced (`src/node_api.cc:344-378`); a module
+     hook's asynchronous chain (`src/runtime.ts`, `heldWork`) holds only what its own awaits hold, where Node refs its
+     hooks thread while a request is in flight (`lib/internal/modules/esm/hooks.js:595-618`). Where the loop empties
+     under one, the process ends as Node's does when its loop empties.
+  8. OpenSSL and the rest of §1 into `libnode.so`; addons through `dlopen`; the process's raw calls and
      `linux-calls.ts` go. **Crypto is Node's own, landed as one piece:** Node's `lib/internal/crypto/*`, `keys.js`'s
      `KeyObject` and `x509.js`'s `X509Certificate` among them, over the `crypto` binding, whose glue is `libnode`'s C
      as Node's `src/crypto/crypto_*.cc` is, over ncrypto and OpenSSL, each call answered by OpenSSL or by the device
@@ -343,7 +382,7 @@ is built.
 
 
 **For the host** (browser-substrate `linux-node-engine.ts`, `linux-uv-waits.ts`, `linux-system.ts`, and the
-process's tree, `linux-virtual-filesystem.ts`), items 1 to 6 together:
+process's tree, `linux-virtual-filesystem.ts`), items 1 to 7 together:
 - *The one hookup.* In its `bootstrap` import, before Node's library runs, the host calls Tabnode's
   `attachLibnode({ exports, read, write })` once: the program's exports, `read(at, length)`, a copy of the process's
   memory, and `write(at, bytes)`, bytes into it (a browser's APIs refuse a view of shared memory). A second call with
@@ -352,10 +391,10 @@ process's tree, `linux-virtual-filesystem.ts`), items 1 to 6 together:
   (starts the run; 0 or a status to exit with), `drain()` (a `Suspending` import: the worker runs its microtasks and
   its other work and the stack resumes from its next task), `process_timers(now)` (`processTimers(now)`: the next
   expiry, positive where a referenced timer holds the loop, negative where none does, 0 for none),
-  `process_immediate()` (`processImmediate()`), `poll_ready(fd, status, events)` (a `uv_poll_t` of `poll.c` is
-  ready), `loop_idle()` (the loop is about to block: the engine decides its run's end there), `before_exit()`,
-  `emit_exit()` and `exit_code()`. It puts Tabnode's `libnodeImports` beside them, one table answering every binding
-  callback, each followed in C by `drain` where it made a callback: `handle_closed(handle) -> i32` (HandleWrap::OnClose;
+  `process_immediate()` (`processImmediate()`) and `poll_ready(fd, status, events)` (a `uv_poll_t` of `poll.c` is
+  ready). It puts Tabnode's `libnodeImports` beside them, one table answering the run's end (item 7) and every binding
+  callback, each followed in C by `drain` where it made a callback: `before_exit() -> i32`, `emit_exit()` and
+  `exit_code() -> i32`, `handle_closed(handle) -> i32` (HandleWrap::OnClose;
   nonzero where it made the close callback; the C frees the handle after), `stream_read(stream, nread, base)` (`base`
   libuv's buffer, freed when the import returns), `stream_written(id, status)`, `stream_shut(id, status)`,
   `stream_connection(server, status)`, `stream_connected(id, status, readable, writable)`, `udp_received(handle, nread,
@@ -363,9 +402,13 @@ process's tree, `linux-virtual-filesystem.ts`), items 1 to 6 together:
   f64 exit status, signal name's address, its length)`, `fs_done(request)`, `fs_event(handle, filename, events,
   status)` and `stat_watcher_change(handle, status)`. A handle is its address, a stream's or a socket's request its
   number, an fs request its address.
-- *The exports the host calls.* `tabnode_exit(status)`, Node's `process.reallyExit`: the run's end exits through it, so
-  ResetStdio runs. The tree's system offers `timers`, a `SystemTimers` over `env.c`'s exports: `immediateInfo` a
-  `Uint32Array` of 3 at `tabnode_immediate_info()` and `timeoutInfo` an `Int32Array` of 1 at
+- *The process's end* (item 7). The host answers none of `before_exit`, `emit_exit` and `exit_code`, and `loop_idle`
+  and the system's `idle` are gone; it calls no `tabnode_exit`. Its `bootstrap` starts the run and does not wait for
+  its end: where the realm's process is the program, `runNode`'s promise never settles. The process ends at the
+  program's exit, `main` returning its code or `process.exit`'s `exit(3)` from inside a callback, and the host learns
+  it as it learns any program's end: the task exits, with the status its parent's wait reads.
+- *The exports the host calls.* The tree's system offers `timers`, a `SystemTimers` over `env.c`'s exports:
+  `immediateInfo` a `Uint32Array` of 3 at `tabnode_immediate_info()` and `timeoutInfo` an `Int32Array` of 1 at
   `tabnode_timeout_info()` (views of the process's memory, which is shared and so keeps them across its growth),
   `getLibuvNow()` `tabnode_timers_now()`, `scheduleTimer(ms)` `tabnode_schedule_timer(BigInt(ms))`,
   `toggleTimerRef(ref)` and `toggleImmediateRef(ref)` `tabnode_toggle_timer_ref` and `tabnode_toggle_immediate_ref`
@@ -382,7 +425,7 @@ process's tree, `linux-virtual-filesystem.ts`), items 1 to 6 together:
   what the engine's loader and the bindings not over libuv read: its path calls (`readFileSync`, `statSync` and the
   rest the module loader and `process` use), `chdir` and the cwd, `TREE_SOCKETS` (a listener's port, for the
   machine's forwarding), `TREE_NATIVE`, `TREE_SYSTEM`, and of `TREE_DESCRIPTORS` `open`, `read`, `close`, `reserve`
-  and `release` (an executable's header, the engine's descriptor numbers), until item 7.
+  and `release` (an executable's header, the engine's descriptor numbers), until item 8.
 - *What the kernel and the substrate provide.* The kernel's `clone` with an entry, musl's `clone(fn, stack, flags,
   arg)`, for `CLONE_VM | CLONE_VFORK` with no termination signal (libuv's probe, whose child writes the parent's
   memory) and with `SIGCHLD` (musl's `posix_spawn`): the child runs `fn(arg)` on the given stack in the caller's

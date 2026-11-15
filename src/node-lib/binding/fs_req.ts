@@ -10,7 +10,7 @@
 import type { Buffer as NodeBuffer } from '../buffer-module';
 import { AsyncResource } from '../internals/runtime';
 import { awaitRequest, type Libnode } from './libnode';
-import { currentOwner, ownedRun, registerHandle, releaseHandle, observeNodeRequest, forgetNodeRequest, type OwnedHandle } from './handles';
+import { currentOwner, ownedRun, observeNodeRequest, forgetNodeRequest } from './handles';
 import type { ProcessToken } from '../../process-tokens';
 import { kUsePromises } from './fs';
 
@@ -408,22 +408,15 @@ export function syncCallWithContext(lib: Libnode, room: Room, ctx: unknown, sysc
 export const isUvError = (result: number): boolean => result < 0;
 
 /**
- * A dispatched request until libuv completes it: it holds its run while it is pending, as libuv's request holds its
- * loop (the run's end is still the engine's own count, ADR-0018 item 2), and is a request Node's
- * getActiveResourcesInfo lists. Its completion is the program's `fs_done`.
+ * A dispatched request until libuv completes it: libuv's request, which holds its loop while it is pending (the run's
+ * end is libuv's, ADR-0018 item 7), and a request Node's getActiveResourcesInfo lists. Its completion is the program's
+ * `fs_done`.
  */
 function pend(lib: Libnode, req: FSReq, request: number, base: number, after: After, proceed: boolean): void {
-  let ended = false;
-  const hold: OwnedHandle = { close: () => { if (!ended) { ended = true; releaseHandle(hold); } } };
-  ownedRun(req.owner, () => registerHandle(hold));
   const listed = req.callback ?? req.promise!;
   observeNodeRequest(listed);
   awaitRequest(request, () => {
-    const cancelled = ended;
-    hold.close();
     forgetNodeRequest(listed);
-    // The run ended while the request was on the threadpool: its answer has no one to go to.
-    if (cancelled) { lib.exports.tabnode_fs_free(request); return; }
     const x = lib.exports;
     complete(lib, req, { request, base, result: x.tabnode_fs_result(request), path: lib.cString(x.tabnode_fs_path(request)) }, after, proceed);
   });

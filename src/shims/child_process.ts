@@ -53,7 +53,7 @@ import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
 import { nodeProcessHostFor, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import { KernelStreamWrap, kKernelBacked } from '../node-lib/binding/kernel_stream';
-import { libnodeAttached } from '../node-lib/binding/libnode';
+import { attachLibnodeRun, libnodeAttached, reallyExit as libnodeExit } from '../node-lib/binding/libnode';
 import { installNodeStdio } from '../node-lib/stdio';
 import { Pipe, constants as pipeConstants } from '../node-lib/binding/pipe_wrap';
 import {
@@ -78,7 +78,7 @@ import { resolve as __resolvePath } from './path';
 import { installShellJobs } from './shell-jobs';
 import type { PackageJson } from '../types/package-json';
 import { installedNpmVersion } from '../npm/version';
-import { engineConsole as console, monotonicMs, onKernel, randomUUID as systemRandomUUID, realmHost, realmProcess, system as processSystem } from '../system';
+import { engineConsole as console, monotonicMs, onKernel, randomUUID as systemRandomUUID, realmHost, realmProcess } from '../system';
 import { clearTimeout, setTimeout, queueCompletion } from '../engine-timers';
 
 // Capture host capabilities before the guest's authority is restricted. These
@@ -566,8 +566,12 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   let inputActive = true;
   let inputIterator: AsyncIterator<Uint8Array> | undefined;
   let stdinSink: { installed: RunStdin; replaced: RunStdin | null | undefined } | undefined;
+  // Where the realm's process is `node` on libuv's loop the run's end is libuv's (ADR-0018 item 7): a process that has
+  // started runs on (the inner answers null) and ends at the program's exit, which ends its realm, so nothing here
+  // releases it; an outcome it answers before then (a refusal, a failed start) is its exit.
+  let runsOn = false;
   try {
-  ended = await (async (): Promise<CommandOutcome> => {
+  const outcome = await (async (): Promise<CommandOutcome | null> => {
   const credentials = copyProcessCredentials(launch.credentials ?? streams?.credentials);
   const processHost = nodeProcessHostFor(runToken);
   if (processHost && runToken !== null) {
@@ -905,7 +909,32 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     hostReceiptWritten = true;
     writePipedEndReceipt(proc.pid, proc.argv0 || 'node', proc.argv[1] ?? '', kind, error);
   };
-  proc.exit = ((...given: [code?: number | string | null]) => {
+  /** Node's `process._exiting`, `exitCode` and `reallyExit` on the process object, which Node's exit reads. */
+  const nodeEnd = proc as unknown as {
+    _exiting: boolean; exitCode: number | undefined; reallyExit(code?: unknown): void;
+  };
+  /** The engine's account of the process at its exit, an instrument's line. */
+  const sayExit = (): void => {
+    (globalThis as { __substratePreparedExit?: (process: object) => void }).__substratePreparedExit?.(proc);
+  };
+  /** Environment::Exit on libuv's loop: the program's exit(3) with `code`'s Int32Value. */
+  const exitNow = (code: unknown): void => { sayExit(); libnodeExit(code); };
+  if (nodeStdio) {
+    // On libuv's loop (ADR-0018 item 7) `process.exit` is Node's (lib/internal/process/per_thread.js:229-242): the
+    // code given, 'exit' once, then `process.reallyExit`, the program's exit(3) (node_process_methods.cc:502-511),
+    // from inside whatever callback calls it, so nothing after it runs. Both are the process's own methods, which a
+    // program may replace, as Node's are.
+    nodeEnd.reallyExit = function reallyExit(code?: unknown): void { exitNow(code); };
+    proc.exit = function exit(...given: unknown[]): never {
+      if (given.length !== 0) nodeEnd.exitCode = given[0] as number;
+      if (!nodeEnd._exiting) {
+        nodeEnd._exiting = true;
+        proc.emit('exit', nodeEnd.exitCode || 0);
+      }
+      nodeEnd.reallyExit(nodeEnd.exitCode || 0);
+      return undefined as never;
+    } as (code?: number) => never;
+  } else proc.exit = ((...given: [code?: number | string | null]) => {
     // Node's exit (per_thread.js): `if (arguments.length !== 0) process.exitCode = code`, through the setter that clears
     // it for undefined and null, takes an integer string as its number and throws for anything else; the status is
     // `process.exitCode || 0`. After the end nothing changes it.
@@ -1081,6 +1110,23 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   }
 
   /**
+   * On libuv's loop an exception nobody handled ends the process as Node's does (ADR-0018 item 7): `_fatalException`
+   * emits 'exit' once with kGenericUserError, a listener's throw dropped, unless the process is already exiting
+   * (lib/internal/process/execution.js:161-171), and TriggerUncaughtException exits with the code the listeners left, 1
+   * where none (src/node_errors.cc:1395-1399); a throw out of the program's own handler exits 7, with no 'exit'
+   * (node_errors.cc:743). Each is Environment::Exit, the program's exit(3), never the process's own `reallyExit`.
+   */
+  const libnodeFatal = (inHandler: boolean): void => {
+    if (inHandler) { exitNow(7); return; }
+    if (!nodeEnd._exiting) {
+      nodeEnd._exiting = true;
+      nodeEnd.exitCode = 1;
+      try { proc.emit('exit', 1); } catch { /* "Nothing to be done about it at this point" (execution.js:169) */ }
+    }
+    exitNow(nodeEnd.exitCode ?? 1);
+  };
+
+  /**
    * A throw out of the program's own handling of an uncaught exception (its capture callback, its `uncaughtException`
    * listener): Node prints it and exits 7 at once, emitting no `exit`, whatever exitCode the program set
    * (node_errors.cc TriggerUncaughtException, kExceptionInFatalExceptionHandler; v26.12.0). A `process.exit` inside
@@ -1094,6 +1140,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       if (!exitEnded) { exitCode = 7; (proc as { exitCode?: number }).exitCode = 7; exitEnded = true; __substrateProcessEnded(proc); }
       return;
     }
+    if (nodeStdio) { libnodeFatal(true); return; }
     const wasSync = syncExecution;
     syncExecution = false;
     silentExit = true;
@@ -1134,6 +1181,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // A rejection of a microtask an `exit` listener queued after the loop drained: printed, and the process exits 1
     // unless the program set its exitCode, as Node's does.
     if (exitCalled) { if (inExitWindow() && typeof proc.exitCode !== 'number') exitCode = 1; return; }
+    if (nodeStdio) { libnodeFatal(false); return; }
     const wasSync = syncExecution;
     syncExecution = false;
     // Node's `_fatalException`, as for an uncaught exception (below).
@@ -1181,6 +1229,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     writeHostReceipt('uncaught', error);
     // A throw of an `exit` listener after the loop drained, or of a microtask one queued: as a rejection there (above).
     if (exitCalled) { if (inExitWindow() && typeof proc.exitCode !== 'number') exitCode = 1; return; }
+    if (nodeStdio) { libnodeFatal(false); return; }
     const wasSync = syncExecution;
     syncExecution = false;
     // Node's `_fatalException` emits `exit` with status 1, unless the process is already exiting (an `exit`
@@ -1252,6 +1301,40 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     else enterRun(runToken, () => resize(columns, rows));
   });
 
+  // The run's end on libuv's loop (ADR-0018 item 7), given before any callback can find the loop empty: what
+  // SpinEventLoopInternal does once uv_run returns (src/api/embed_helpers.cc:40-76), each emission ProcessEmit's
+  // MakeCallback in the process's run (src/node_process_events.cc:47-61), its throw the process's uncaught exception.
+  let entryPending = true;
+  let exitEmitted = 0;
+  let exitEmissionFailed = false;
+  const processEmit = (event: string, code: number): void => {
+    const emit = (): void => { withGuestCallback(() => proc.emit(event, code), 'process', event); };
+    if (runToken === null) emit(); else enterRun(runToken, emit);
+  };
+  if (nodeStdio) attachLibnodeRun({
+    // EmitProcessBeforeExit (src/api/hooks.cc:33-51): 'beforeExit' with the exit code, 0 where none; nonzero where the
+    // emission failed, a throw the process handled, where Node's loop stops.
+    beforeExit: () => {
+      try { processEmit('beforeExit', (nodeEnd.exitCode ?? 0) | 0); return 0; }
+      catch (error) { onUncaughtException(error); return 1; }
+    },
+    // EmitProcessExitInternal (hooks.cc:61-93): the process is exiting; its code, 13 where it had none and its entry's
+    // top-level await is unsettled (kUnsettledTopLevelAwait, hooks.cc:75-82); 'exit' with it.
+    emitExit: () => {
+      nodeEnd._exiting = true;
+      let code = (nodeEnd.exitCode ?? 0) | 0;
+      if (code === 0 && entryPending) { code = 13; nodeEnd.exitCode = 13; }
+      exitEmitted = code;
+      try { processEmit('exit', code); }
+      catch (error) { exitEmissionFailed = true; onUncaughtException(error); }
+    },
+    // The code its listeners left (hooks.cc:91-92), or kGenericUserError where the emission failed
+    // (src/node_main_instance.cc:109-110).
+    exitCode: () => {
+      sayExit();
+      return exitEmissionFailed ? 1 : nodeEnd.exitCode === undefined ? exitEmitted : nodeEnd.exitCode | 0;
+    },
+  });
   let entrySettling: Promise<unknown> | undefined;
   try {
     if (preloads.length > 0 || imports.length > 0) {
@@ -1297,6 +1380,18 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   } finally {
     // After runFile returns, switch to async mode (no more throwing from process.exit)
     syncExecution = false;
+  }
+
+  // On libuv's loop the process runs on from here and its end is libuv's (ADR-0018 item 7): `main` asks the run for
+  // 'beforeExit', 'exit' and its code once uv_run returns (attachLibnodeRun, above). An entry still settling (a
+  // top-level `await`) that rejects is a rejection nobody handles, as Node's entry promise's is.
+  if (nodeStdio) {
+    const settling = entrySettling;
+    if (settling) {
+      settling.then(() => { entryPending = false; },
+        (error: unknown) => { entryPending = false; onUnhandledRejection(error, settling); });
+    } else entryPending = false;
+    return null;
   }
 
   // If process.exit was called synchronously (but didn't throw for some reason), return
@@ -1387,14 +1482,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // with what was pending while it worked.
     let sinceLastOutput: Record<string, number> = {};
     let endedBy = 'the program called exit';
-    // The time each look accounts for is the wait before it: a check's interval on a timer, the loop's own time to
-    // its next park where the process's system says when it would park.
+    // The time each look accounts for is the wait before it, a check's interval on a timer.
     let lastWaited = CHECK_MS;
     const note = (name: string): void => { heldBy[name] = (heldBy[name] ?? 0) + lastWaited; sinceLastOutput[name] = (sinceLastOutput[name] ?? 0) + lastWaited; };
-    // A run whose end Node's rule decides (a named process, or one its caller holds) looks when its loop would park,
-    // as libuv asks before it blocks; one the engine's time rules end (an unnamed run's quiet) looks on its interval.
-    const loopIdle = processSystem().idle;
-    const looksAtPark = loopIdle !== undefined && (runToken !== null || isLongRunning);
     const signal = streams?.signal;
     const stopped = signal ? new Promise<'tick'>((resolve) => {
       if (signal.aborted) resolve('tick'); else signal.addEventListener('abort', () => resolve('tick'), { once: true });
@@ -1450,9 +1540,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       const waitBegan = hostNow();
       const raceResult = await Promise.race([
         exitPromise.then(() => 'exit' as const),
-        looksAtPark
-          ? new Promise<'tick'>(r => loopIdle!(() => r('tick')))
-          : new Promise<'tick'>(r => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, () => r('tick'), CHECK_MS)),
+        new Promise<'tick'>(r => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, () => r('tick'), CHECK_MS)),
         ...(stopped ? [stopped] : []),
       ]);
       const waited = hostNow() - waitBegan;
@@ -1551,7 +1639,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null,
         emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt,
         lookTimer: { realm: onKernel() ? 'kernel' : isWorkerRealm || nodeProcessRealmToken() !== null ? 'worker' : realmHost === 'window' ? 'window' : 'host',
-          source: looksAtPark ? 'the loop, before it parks' : globalThis.__browserRuntimeNativeSetTimeout ? 'host-captured setTimeout' : 'realm.setTimeout', requestedMs: looksAtPark ? null : CHECK_MS, ...checkWait },
+          source: globalThis.__browserRuntimeNativeSetTimeout ? 'host-captured setTimeout' : 'realm.setTimeout', requestedMs: CHECK_MS, ...checkWait },
         lookWorkMs: { ...checkWork }, entryCheckpointMs: { ...checkpoints } });
     }
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
@@ -1559,10 +1647,16 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     return { stdout, stderr, exitCode: exitCalled ? await exitPromise : (typeof proc !== 'undefined' && typeof proc.exitCode === 'number' ? proc.exitCode : 0) };
   }
   })();
+  if (outcome === null) { runsOn = true; return new Promise<never>(() => {}); }
+  ended = outcome;
+  if (libnodeAttached() && !hosted) {
+    if (ended.stderr) streams?.onStderrBytes?.(new TextEncoder().encode(ended.stderr));
+    libnodeExit(ended.exitCode);
+  }
   return ended;
   } finally {
     // ADR-0010 §2's table, in reverse order of acquisition.
-    if (!hosted) {
+    if (!hosted && !runsOn) {
       try {
         // 13: what the program opened, its listening sockets among them, whatever ended it. Its end completes once
         // its native teardown has (ADR-0011 §6), and a teardown's failure rejects it: the rest is released, and the

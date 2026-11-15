@@ -171,7 +171,7 @@ shape (`ThrowCryptoError`: the message is `ERR_error_string_n`'s, with `library`
 ### 5. `crypto` is Node's own, with `libnode.so`
 
 Node's `lib/internal/crypto/*`, its `KeyObject` and `X509Certificate` among them, lands as one piece over the OpenSSL
-in `libnode.so` (ADR-0018, item 7 of its order), not on this module, which ADR-0018 §1 retires. Until then this module
+in `libnode.so` (ADR-0018, item 8 of its order), not on this module, which ADR-0018 §1 retires. Until then this module
 carries TLS (§4), and `crypto` is the engine's own. Randomness is not among them in this record (§2).
 
 ### 6. Measured as ADR-0021 orders
