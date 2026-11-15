@@ -254,7 +254,37 @@ is built.
      stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so `process.stdout` is Node's.
   4. `tcp_wrap` and `stream_wrap` over `uv_tcp_t`; `udp_wrap` over `uv_udp_t`.
   5. `process_wrap` and `spawn_sync` over `uv_spawn`, with libuv at a267f5688b.
-  6. `fs` over `uv_fs_*` and its threadpool.
+  6. `fs` over `uv_fs_*` and its threadpool. `internalBinding('fs')`, `fs_dir` and `fs_event_wrap` are Node's
+     `src/node_file.cc`, `node_dir.cc`, `fs_event_wrap.cc` and `node_stat_watcher.cc`, split where V8 stands: the
+     libuv half is `native/node` (`fs.c`, `fs_cp.c`, `fs_event.c`), the V8 half the engine's (`node_file.ts`,
+     `node_dir.ts`, `fs_event_wrap.ts`, FSReqBase in `fs_req.ts`). A request owns its `uv_fs_t` in the process's memory,
+     its arguments written in the room after it; a synchronous call is `uv_fs_*` with no callback, as `SyncCall`; an
+     asynchronous one runs on libuv's threadpool (the process's pthreads) and completes into the loop, where its
+     callback calls the engine (`fs_done`), which runs the request's After and its `MakeCallback` or settles its
+     promise, then drains. What Node's C++ decides in C (`MKDirpSync`, `MKDirpAsync`, `ReadFileUtf8`,
+     `WriteFileUtf8`) is decided in C the same way; `RmSync` and the `cpSync` calls are C++ over `std::filesystem`,
+     and libnode has no C++ library, so their `std::filesystem` calls are written over the POSIX calls libc++ makes
+     for them. A Buffer is the realm's memory, not the process's, so a write's bytes are copied into the request and a
+     read's out of it. `fs.watch` is a `uv_fs_event_t` (inotify in the process's kernel), `fs.watchFile` a
+     `uv_fs_poll_t`. A realm the host gives no `node` program keeps the engine's own tree's binding (`fs.ts`), which no
+     longer reaches a kernel's descriptors. While the run's end is the engine's count (item 2), a pending request and
+     a started watcher are counted in it as libuv counts them.
+     *For the host:* the engine's module answers four imports more, from Tabnode's `libnodeImports()`, and gives the
+     bindings the program with `installLibnode(program, process)` (its exports, and `read` and `write` of its memory)
+     before Node's library runs:
+     - `fs_done(request)`: an asynchronous `uv_fs_*` completed; the engine runs its After and frees it.
+     - `fs_event(handle, filename, events, status)`: a `uv_fs_event_t` saw a change (`FSEventWrap::OnEvent`).
+     - `stat_watcher_change(handle, status)`: a `uv_fs_poll_t` saw a change (`StatWatcher::Callback`), both stats in
+       the binding's arrays.
+     - `handle_closed(handle)`: `uv_close` closed a handle (`HandleWrap::OnClose`); C frees it after.
+     None is removed. The process's tree (browser-substrate `linux-virtual-filesystem.ts`) stops serving `fs`: its
+     `watch` (`linux-file-watches.ts`, inotify through a `uv_poll_t`), `holdsLinks`, and its descriptors' `write`,
+     `fstat`, `ftruncate`, `fsync`, `fchmod`, `chown`, `fchown`, `futimes`, `dup`, `advisoryLocks` and `absent`, which
+     only the fs binding called, go. It keeps what the engine's loader and the bindings not yet over libuv read:
+     its path calls (`readFileSync`, `statSync` and the rest the module loader and `process` use), `chdir` and the
+     cwd, `TREE_SOCKETS`, `TREE_NATIVE`, `TREE_SYSTEM`, and of `TREE_DESCRIPTORS` `open`, `read`, `close`, `reserve`
+     and `release` (an executable's header, a child's `/dev/null`, the engine's descriptor numbers), until items 3
+     to 5 and 7.
   7. OpenSSL and the rest of §1 into `libnode.so`; addons through `dlopen`; the process's raw calls and
      `linux-calls.ts` go. **Crypto is Node's own, landed as one piece:** Node's `lib/internal/crypto/*`, `keys.js`'s
      `KeyObject` and `x509.js`'s `X509Certificate` among them, over the `crypto` binding, whose glue is `libnode`'s C
