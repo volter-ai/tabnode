@@ -47,3 +47,14 @@ A file entry uses the ordinary module loader, including its image-prepared body
 and main-module identity. An asynchronous worker entry waits for that module's
 settling before draining messages; it does not recompile a prepared dependency
 through the source-evaluation door.
+
+On a kernel, a message on its way to a port the program listens to is the process's loop's work until the worker
+delivers it (`system.ts` `portMessagesDue`), as a Node port's message is its handle's on libuv
+(`src/node_messaging.cc`, a MessagePort's `uv_async_t`). The worker delivers a port's messages from its task queue,
+which runs only between the loop's turns; a loop parked in Linux runs none of it (browser-substrate ADR-0236 hole 12).
+The transport stays the host's: the engine counts each message posted to a port of the same guest channel, and a
+listener of its own, attached beside the program's only while the program listens, counts each delivery. A message to
+an unstarted port counts from its start; one to a started port nobody listens to, or to a port sent away in a message,
+is not the process's to wait for. *Read 2026-11-15 on browser-substrate's Node host, before:* a `MessageChannel`
+ping-pong between one process's two ports never completed (ended at 20 s); Rallly's first page, 18.7 s, advanced only
+when the run's 50 ms check ended a park.

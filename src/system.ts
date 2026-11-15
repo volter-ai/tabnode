@@ -248,9 +248,21 @@ export function carryTimerCallbacks(carry: Carrier): void { carrier = carry; }
 const carry = (fn: unknown, kind: 'setTimeout' | 'setInterval' | 'setImmediate'): Callback =>
   typeof fn !== 'function' ? () => {} : carrier ? carrier(fn as Callback, kind) : fn as Callback;
 
+/**
+ * Messages posted to a port the process listens to and not yet delivered (guest-message-ports.ts). The worker delivers
+ * them from its task queue, which runs only between the loop's turns, so each is work due now, as a Node port's message
+ * is its handle's (src/node_messaging.cc, a MessagePort's uv_async_t): the loop does not wait while one is queued.
+ */
+let messagesDue = 0;
+export function portMessagesDue(change: number): void {
+  if (change === 0) return;
+  messagesDue += change;
+  scheduleWake();
+}
+
 function scheduleWake(): void {
   let nearest: number | null = null;
-  if (immediates.size > 0 || completions.length > 0) nearest = 0;
+  if (immediates.size > 0 || completions.length > 0 || messagesDue > 0) nearest = 0;
   else for (const timer of timers.values()) if (nearest === null || timer.due < nearest) nearest = timer.due;
   current.wake(nearest, runDue);
 }
