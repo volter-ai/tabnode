@@ -1,6 +1,6 @@
 # ADR-0018: A Node process's loop is libuv, and Node's C libraries are one WALI library in its memory
 
-Status: Proposed. Step 1 built and run, step 2's waits built and run (2026-11-15); the rest is design.
+Status: Accepted (manager's rulings, 2026-11-15: the order of building, item 7's crypto).
 
 Date: 2026-11-14. Served: browser-substrate ADR-0234 §7 ("A Node process's loop is libuv itself"), ADR-0236 hole 12
 ("A host program parked in Linux receives none of the engine's work") and ADR-0236 step 5 ("Tabnode's loop becomes
@@ -219,8 +219,7 @@ is built.
   so the engine's waits become libuv's handles first:
   1. `node` as a WALI program on the Node worker: its `main`, the loop's own handles (`env.c`), the engine's
      imports, a drain after each of Node's callback scopes (the bootstrap's, StartExecution's, and each process
-     event's, ProcessEmit's). *Built 2026-11-14 (native/node); run 2026-11-15* (above): the image's facts name the
-     engine its imports name, and its task's worker answers them from the module registered under that name
+     event's, ProcessEmit's). The image's facts name the engine its imports name, and its task's worker answers them from the module registered under that name
      (browser-substrate `host/image.mjs` `engine`, `host/task.mjs` `engineImports`); it runs in the worker its exec
      lands in, which needs no worker of the `"node"` kind, since a Node host's two kinds are one and a tab's differ
      only by their script's name for its memory measurement.
@@ -243,9 +242,9 @@ is built.
      `lib/async_hooks.js:297-301` does, which makes the frame active). Node's `AsyncResource` takes the frame when it
      is made and runs in it, in Node's shape (`lib/async_hooks.js:180-292`). The engine's own storage and its timers'
      carrier are not.
-     *Built and run 2026-11-15, its waits:* every wait of the engine is a handle of libuv's loop (browser-substrate
-     `packages/node/src/linux-uv-waits.ts`), a descriptor a `uv_poll_t` (`native/node/poll.c`) until each binding owns
-     its handle (steps 3 to 6). `linux-event-loop.ts`, its park and its 4 ms bound went.
+     Every wait of the engine is a handle of libuv's loop (browser-substrate `packages/node/src/linux-uv-waits.ts`):
+     a binding's own handle where steps 3 to 6 give it one, and a `uv_poll_t` (`native/node/poll.c`) for the engine
+     device's descriptor, DNS and signals.
      **Node's timers over the binding.** Node v24.21.0's `lib/timers.js`, `lib/timers/promises.js`,
      `lib/internal/timers.js`, `internal/linkedlist`, `internal/priority_queue`, `internal/async_context_frame` and
      `internal/async_local_storage/async_context_frame` and `run_scope` are vendored unchanged (`src/node-lib/`).
