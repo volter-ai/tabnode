@@ -32,7 +32,7 @@ function nameObject(x: number, issuer: boolean): Record<string, unknown> | undef
 }
 
 /** X509ToObject (crypto_x509.cc:720-855) of the certificate `x` (an `X509*` of the module). */
-export function x509ToObject(x: number): Certificate {
+function x509ToObject(x: number): Certificate {
   const deps = nodeDeps();
   const text = (field: number) => latin1(answer((lengthAt) => deps.tn_x509_text(x, field, lengthAt)));
   const usage = answer((lengthAt) => deps.tn_x509_key_usage(x, lengthAt));
