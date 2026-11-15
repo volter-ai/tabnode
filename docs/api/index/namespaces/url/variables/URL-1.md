@@ -8,6 +8,8 @@
 
 > `const` **URL**: \{(`url`, `base?`): `URL`; `prototype`: `URL`; `canParse`: `boolean`; `createObjectURL`: `string`; `parse`: `URL` \| `null`; `revokeObjectURL`: `void`; \}
 
+The realm's WHATWG classes, which are what Node's `url.URL` and `url.URLSearchParams` are here.
+
 ## Type Declaration
 
 ## Parameters

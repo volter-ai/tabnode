@@ -195,7 +195,7 @@ export interface Process {
   platform: string;
   report: { getReport(): Record<string, unknown>; [name: string]: unknown };
   version: string;
-  versions: { node: string; v8: string; uv: string; webcontainer?: string; openssl?: string; acorn?: string };
+  versions: { node: string; v8: string; uv: string; openssl?: string; acorn?: string };
   release?: { name: string; lts?: string; sourceUrl: string; headersUrl: string };
   getuid?: () => number;
   geteuid?: () => number;

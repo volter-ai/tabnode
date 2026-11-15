@@ -13,17 +13,15 @@
 export const NODE_LTS_VERSION = "24.21.0";
 
 /**
- * `process.versions`, as this engine answers it. `webcontainer` says what this
- * runtime is, Node in a browser tab: a program that keeps a wasm build of its
- * native binding for such runtimes, Next's compiler among them, reads that
- * name and reaches for the wasm build before trying to load a binary no tab
- * can run.
+ * `process.versions`, as this engine answers it: Node's own keys, and no key
+ * Node does not report. The engine runs over Linux's own calls, sockets
+ * among them, so a program that reads a runtime's name from this table reads
+ * Node's.
  */
 export function nodeVersions(node: string = NODE_LTS_VERSION): {
   node: string;
   v8: string;
   uv: string;
-  webcontainer: string;
   openssl: string;
   amaro: string;
 } {
@@ -33,7 +31,7 @@ export function nodeVersions(node: string = NODE_LTS_VERSION): {
   // this table before any guest process exists, so the name has to live here.
   // `amaro` is the type stripper a `.ts` file runs through, the release Node
   // v24.21.0 carries; `internal/util` reads it for `assertTypeScript()`.
-  return { node, v8: "11.3.244.8", uv: "1.44.2", webcontainer: "1", openssl: "3.5.8", amaro: "1.1.11" };
+  return { node, v8: "11.3.244.8", uv: "1.44.2", openssl: "3.5.8", amaro: "1.1.11" };
 }
 
 /**
