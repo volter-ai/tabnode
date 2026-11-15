@@ -526,7 +526,8 @@ function __substrateInstallNodeGlobals(process: Process): void {
     Object.defineProperty(realm, name, { get() { const held = make(); set(held); return held; }, set, enumerable, configurable: true });
   };
   // Node's accessors that answer their object until a program assigns one (exposeGetterAndSetter,
-  // defineReplaceableLazyAttribute), in the shape NODE_GLOBAL_ACCESSORS measured.
+  // defineReplaceableLazyAttribute), in the shape NODE_GLOBAL_ACCESSORS measured. Each object is made at its first read
+  // and held from then, as Node's getter returns the one it holds: a read is the getter's, and no builtin's lookup.
   const answered: Record<string, () => unknown> = {
     performance: () => perfHooksShim.performance,
     Buffer: () => loadNodeLibFor(process, 'buffer').Buffer,
@@ -535,10 +536,10 @@ function __substrateInstallNodeGlobals(process: Process): void {
     ...Object.fromEntries([...UNDICI_GLOBALS].map((name) => [name, () => undici()[name]])),
   };
   for (const [name, shape] of Object.entries(NODE_GLOBAL_ACCESSORS)) {
-    let assigned = false, held: unknown;
+    let made = false, held: unknown;
     Object.defineProperty(realm, name, {
-      get: () => assigned ? held : answered[name]!(),
-      set: shape!.set ? (next: unknown) => { assigned = true; held = next; } : undefined,
+      get: () => { if (!made) { held = answered[name]!(); made = true; } return held; },
+      set: shape!.set ? (next: unknown) => { made = true; held = next; } : undefined,
       configurable: true, enumerable: shape!.enumerable,
     });
   }
@@ -560,7 +561,8 @@ function __substrateInstallNodeGlobals(process: Process): void {
   lazy('MessageChannel', () => guestMessageGlobals(process).MessageChannel, false);
   lazy('MessagePort', () => guestMessageGlobals(process).MessagePort, false);
   // Node's own navigator, scoped to this process; never WorkerNavigator.
-  Object.defineProperty(realm, 'navigator', { get: () => loadNodeLibFor(process, 'internal/navigator').navigator, enumerable: true, configurable: true });
+  let navigator: unknown;
+  Object.defineProperty(realm, 'navigator', { get: () => navigator ??= loadNodeLibFor(process, 'internal/navigator').navigator, enumerable: true, configurable: true });
   lazy('Navigator', () => loadNodeLibFor(process, 'internal/navigator').Navigator, false);
   for (const [name, held] of Object.entries(__substrateHeldNamespaces)) {
     const namespace = realm[name];
