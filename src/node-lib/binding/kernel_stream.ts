@@ -1,451 +1,253 @@
 /**
- * libuv's `uv_stream_t` over a kernel descriptor (ADR-0009): what `tcp_wrap`'s TCP and a kernel AF_UNIX
- * `pipe_wrap` Pipe share, as libuv's `tcp.c` and `pipe.c` share `stream.c`. Read in Node v24.21.0's
- * `deps/uv/src/unix/stream.c` and `src/stream_wrap.cc`:
+ * Node's LibuvStreamWrap over libuv's `uv_stream_t` (ADR-0018 §3, items 3 and 4): what `tcp_wrap`'s TCP,
+ * `pipe_wrap`'s Pipe and `tty_wrap`'s TTY share where the realm's process is `node` on libuv's loop, as Node's
+ * `src/stream_wrap.cc`, the JavaScript-facing half of `src/stream_base.cc` and `src/connection_wrap.cc` are shared by
+ * its TCPWrap, PipeWrap and TTYWrap (Node v24.21.0). The handle is a uv_handle_t in the process's memory (`libuv.ts`,
+ * native/node); a read, a write, a shutdown, a listen and an accept are libuv's calls through native/node's glue, and
+ * their order, their buffering, half-close, end of stream, ref and unref and close are libuv's.
  *
- * - a read is up to 64 KiB, at most 32 per readiness, stopping at a short one; 0 is EOF; an error is the read's status;
- * - a write is tried at once (`uv_try_write`) and completes synchronously when it is taken whole, else is queued for
- *   the socket's writability; `shutdown` follows the queued writes; `close` cancels what is pending with `ECANCELED`
- *   before its callback;
- * - an IPC pipe reads with `recvmsg` (`MSG_CMSG_CLOEXEC`), and each descriptor an `SCM_RIGHTS` record brings is now
- *   one of this process's (the kernel installed it, `scm_detach_fds`), queued (`queued_fds`) and handed to the next
- *   read's callback as the handle its type makes (`OnUvRead`, `uv_pipe_pending_type`, `uv_accept`); a write that
- *   sends a handle (`uv_write2`) is a `sendmsg` whose first bytes carry the handle's descriptor.
- *
- * A handle that is not a kernel descriptor's (a pipe of a process whose tree offers no socket calls) is the engine's
- * pairing, `stream_wrap.ts`.
+ * What is the binding's here is what Node's C++ object decides: the bytes a read hands `onread` (a copy, as Node's
+ * managed buffer is released into an ArrayBuffer) and the program's own buffer when it gave one (`useUserBuffer`),
+ * the handle an IPC read carries (AcceptHandle: a wrap of the pending handle's type, accepted, as `pendingHandle`),
+ * the client a connection makes (ConnectionWrap::OnConnection), the streamBaseState slots a write fills, and each
+ * request's `oncomplete`. A realm with no libuv makes no kernel stream: its handles are the engine's pairing
+ * (`stream_wrap.ts`).
  */
-import { queueBindingTask } from '../../guest-loop';
 import { LibuvStreamWrap, type WriteWrap, type ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync } from './stream_wrap';
-import { __adoptHandle, holdRequest, ownerOf, invokeOwned, observeNodeRequest, forgetNodeRequest, startHandle, stopHandle, type OwnedHandle } from './handles';
-import { UV_EBADF, UV_EBUSY, UV_ECANCELED, UV_EINVAL, UV_ENOTCONN, UV_EOF, UV_EPIPE } from './uv';
-import { callingSockets, captureCallingSockets, linux, receivedRights, rightsControl, rightsSpace, type TreeSockets } from '../../host-sockets';
-import { kernelSocketType, type HandleType } from './fds';
+import { invokeOwned, observeNodeRequest, ownedRun, ownerOfInstance, type OwnedHandle } from './handles';
+import { UV_EINVAL } from './uv';
+import { UvHandle, completeRequest, fromMemory, intoMemory, libuv, uv, type LibuvTarget } from './libuv';
 
 /** libuv's `uv__handle_fd`: the kernel descriptor a handle is, -1 while it has none. */
 export const kHandleFd = Symbol('uv__handle_fd');
-/** The kernel handle's own state, by symbol, as the stream's is (stream_wrap.ts `kPeer`). */
+/** Whether the handle is libuv's (the realm's process is `node` on libuv's loop). */
 export const kKernelBacked = Symbol('kernelBacked');
-export const kSockets = Symbol('sockets');
-export const kDescriptor = Symbol('descriptor');
-export const kReceivesDescriptors = Symbol('receivesDescriptors');
-export const kShutdownPending = Symbol('shutdownPending');
+/** HandleWrap::GetHandle: the wrap's address in the process's memory, 0 once it is closed. */
+export const kUvWrap = Symbol('uvWrap');
 
-/** What a received descriptor becomes: a handle of its type, opened on it (`uv_accept`'s `uv__stream_open`, `uv_udp_open`). */
-interface KernelHandle extends OwnedHandle {
-  open(fd: number): number;
-  readonly [kHandleFd]: number;
+/** The handle types an IPC pipe carries, by GetUVHandleTypeCode (native/node handle_wrap.c). */
+type CarriedType = 'TCP' | 'UDP' | 'PIPE';
+const CARRIED: Record<number, CarriedType> = { 0: 'TCP', 2: 'UDP', 4: 'PIPE' };
+
+/** What a carried handle becomes: a wrap of its type (WrapType::Instantiate). */
+export interface KernelHandle extends OwnedHandle {
+  readonly [kUvWrap]: number;
 }
-const kernelHandles: Partial<Record<HandleType, () => KernelHandle>> = {};
+const kernelHandles: Partial<Record<CarriedType, () => KernelHandle>> = {};
 
-/** Each binding names the handle a descriptor of its type becomes, after its class is defined. */
-export function registerKernelHandle(type: 'TCP' | 'UDP' | 'PIPE', make: () => KernelHandle): void {
+/** Each binding names the wrap a handle of its type becomes, after its class is defined. */
+export function registerKernelHandle(type: CarriedType, make: () => KernelHandle): void {
   kernelHandles[type] = make;
 }
 
-/** uv__nonblock: `fd` of `sockets`' process made non-blocking; 0 or the call's negative errno. */
-export function setNonblocking(sockets: TreeSockets, fd: number): number {
-  const flags = sockets.fcntl(fd, linux.F_GETFL, 0);
-  if (flags < 0) return flags;
-  const set = sockets.fcntl(fd, linux.F_SETFL, flags | linux.O_NONBLOCK);
-  return set < 0 ? set : 0;
-}
+/** Whether the realm's process is libuv's: its handles are made over its loop. */
+export function realmHasLibuv(): boolean { return libuv() !== undefined; }
 
-/** uv__read's buffer (`alloc_cb`'s suggested size) and its reads per readiness. */
-const READ_BYTES = 64 * 1024;
-const READS_PER_READINESS = 32;
-/** uv__write's writes per readiness. */
-const WRITES_PER_READINESS = 32;
-/** UV__CMSG_FD_COUNT: the descriptors one IPC read has room for. */
-const CMSG_FD_COUNT = 64;
-
-/** A queued write; `fd` the descriptor it sends (`req->send_handle`) until its first bytes are taken. */
-interface QueuedWrite { request: WriteWrap; bytes: Uint8Array; sent: number; fd: number | undefined; release: () => void }
-
-export class KernelStreamWrap extends LibuvStreamWrap {
-  #kernel: boolean;
-  /** The socket calls of the process that made the handle, which it keeps. */
-  #sockets: TreeSockets | undefined;
-  /** The calling process the handle was made in: a descriptor it receives becomes a handle there. */
-  #calling: (<T>(continuation: () => T) => T) | undefined;
-  /** The descriptor (libuv's `io_watcher.fd`), -1 until it is made or opened. */
-  #fd = -1;
-  #readable = false;
-  #writable = false;
-  /** UV_HANDLE_READING. */
-  #reading = false;
-  /** UV_HANDLE_SHUT: the write side was shut down. */
-  #shut = false;
-  #writes: QueuedWrite[] = [];
-  #shutdown: { request: ShutdownWrap; release: () => void } | null = null;
-  /** The readiness questions this handle has asked and not yet had answered. */
-  #waitingIn = false;
-  #waitingOut = false;
-  /** uv__read's buffer, reused: what a read delivers is copied out at its length. */
-  #scratch: Uint8Array | null = null;
-  /** An IPC read's control room. */
-  #control: Uint8Array | null = null;
-  /** libuv's `queued_fds`: descriptors received and not yet handed to a read's callback. */
-  #received: number[] = [];
-
-  /** `kernel`: the handle is a kernel descriptor of the calling process's (else the engine's pairing serves it). */
-  constructor(kernel: boolean) {
-    // uv_tcp_init and uv_pipe_init leave a kernel stream stopped; the engine's pairing holds its loop from its start.
-    super(!kernel);
-    this.#kernel = kernel;
-    this.#sockets = kernel ? callingSockets() : undefined;
-    this.#calling = kernel ? captureCallingSockets() : undefined;
-  }
-
-  /** Whether the handle is a kernel descriptor's. */
-  get [kKernelBacked](): boolean { return this.#kernel; }
+export class KernelStreamWrap extends LibuvStreamWrap implements LibuvTarget {
+  readonly #kernel: boolean;
+  #uv: UvHandle | undefined;
 
   /**
-   * A handle made before it was known to be a socket (a pipe that then binds or connects to a path) becomes a kernel
-   * stream of the calling process, stopped until it reads or listens; false where the process has no socket calls.
+   * `kernel`: the handle is libuv's (else the engine's pairing serves it); `pairingActive`: whether a pairing's
+   * handle holds its run's loop from its start (a TCP of a realm with no libuv does nothing and holds nothing).
    */
-  protected becomeKernel(): boolean {
-    if (this.#kernel) return true;
-    const sockets = callingSockets();
-    if (!sockets) return false;
-    this.#kernel = true;
-    this.#sockets = sockets;
-    this.#calling = captureCallingSockets();
-    stopHandle(this);
-    return true;
+  constructor(kernel: boolean, pairingActive = true) {
+    super(pairingActive, kernel);
+    this.#kernel = kernel;
+    if (!kernel) return;
+    // StreamBase's `fd` and LibuvStreamWrap's `writeQueueSize` accessors (stream_base.cc:607-622, stream_wrap.cc:272).
+    Object.defineProperty(this, 'fd', { configurable: true, enumerable: true, get: () => {
+      const handle = this.#uv;
+      if (!handle?.alive) return UV_EINVAL;
+      const fd = handle.fileno();
+      return fd >= 0 ? fd : -1;
+    } });
+    Object.defineProperty(this, 'writeQueueSize', { configurable: true, enumerable: true, get: () => {
+      const handle = this.#uv;
+      return handle?.alive ? uv().tabnode_stream_write_queue_size(handle.wrap) : 0;
+    } });
   }
 
-  get [kHandleFd](): number { return this.#kernel ? this.#fd : -1; }
-
-  protected get [kSockets](): TreeSockets | undefined { return this.#sockets; }
-  protected get [kDescriptor](): number { return this.#fd; }
-
-  /** The handle's descriptor is `fd`, of `sockets`' process. */
-  protected setDescriptor(fd: number, sockets: TreeSockets | undefined = this.#sockets): void {
-    this.#sockets = sockets;
-    this.#fd = fd;
-    this.fd = fd;
+  /** The handle, initialized by `init` (uv_tcp_init, uv_pipe_init, uv_tty_init), which answers the wrap's address. */
+  protected attachUv(init: (id: number) => number): UvHandle {
+    this.#uv = new UvHandle(this, this, init);
+    return this.#uv;
   }
 
-  /** UV_HANDLE_READABLE and UV_HANDLE_WRITABLE. */
-  protected setOpen(readable: boolean, writable: boolean): void {
-    this.#readable = readable;
-    this.#writable = writable;
+  /** The libuv handle, where the stream is libuv's. */
+  protected get uvHandle(): UvHandle | undefined { return this.#uv; }
+
+  get [kKernelBacked](): boolean { return this.#kernel; }
+
+  get [kHandleFd](): number {
+    const handle = this.#uv;
+    if (!handle?.alive) return -1;
+    const fd = handle.fileno();
+    return fd >= 0 ? fd : -1;
   }
 
-  /** uv_tcp_open, uv_pipe_open: a descriptor of this process's, made non-blocking, readable and writable. */
-  protected openDescriptor(fd: number): number {
-    const sockets = this.#sockets;
-    if (!sockets) return UV_EBADF;
-    if (this.#fd >= 0 && this.#fd !== fd) return UV_EBUSY;
-    const status = setNonblocking(sockets, fd);
-    if (status !== 0) return status;
-    this.setDescriptor(fd);
-    this.setOpen(true, true);
-    return 0;
+  get [kUvWrap](): number { return this.#uv?.alive ? this.#uv.wrap : 0; }
+
+  /** LibuvStreamWrap::IsIPCPipe: only an IPC pipe sends and receives handles. */
+  protected get isIpc(): boolean { return false; }
+
+  /** The client a connection makes (TCPWrap or PipeWrap Instantiate with SOCKET). */
+  protected makeClient(): KernelStreamWrap | undefined { return undefined; }
+
+  /** The stream's libuv handle where it is alive (StreamBase::JSMethod's IsAlive), else undefined. */
+  protected liveUv(): UvHandle | undefined {
+    const handle = this.#uv;
+    return handle?.alive ? handle : undefined;
   }
-
-  /** `other`'s descriptor becomes this handle's, as the end a child opens of a channel its parent made in its table. */
-  protected takeDescriptorFrom(other: KernelStreamWrap): void {
-    this.setDescriptor(other.#fd, other.#sockets);
-    this.setOpen(true, true);
-    other.#fd = -1;
-    other.fd = -1;
-    other.close();
-  }
-
-  /** The descriptor a write sends with its bytes (`uv_write2`'s `send_handle`): only an IPC pipe sends one. */
-  protected descriptorToSend(_handle: unknown): number { return UV_EINVAL; }
-
-  /** Whether reads take descriptors with their bytes: an IPC pipe's. */
-  protected get [kReceivesDescriptors](): boolean { return false; }
-
-  /** Whether a shutdown waits for the queued writes. */
-  protected get [kShutdownPending](): boolean { return this.#shutdown !== null; }
-
-  /** Whether queued writes wait (a connect in progress). */
-  protected writesHeld(): boolean { return false; }
 
   override readStart(): number {
     if (!this.#kernel) return super.readStart();
-    if (this.closed) return UV_EINVAL;
-    if (!this.#readable) return UV_ENOTCONN;
-    this.#reading = true;
-    this.reading = true;
-    // uv_read_start: reading is what a stream does, so it holds its loop while it reads.
-    startHandle(this);
-    this.waitIn();
-    return 0;
+    const handle = this.liveUv();
+    return handle ? uv().tabnode_stream_read_start(handle.wrap) : UV_EINVAL;
   }
 
   override readStop(): number {
     if (!this.#kernel) return super.readStop();
-    this.reading = false;
-    if (!this.#reading) return 0;
-    // uv_read_stop: polling stops and so does the handle (its requests hold the loop for themselves); a readiness
-    // already asked for is answered and left: the bytes stay in the kernel's buffer.
-    this.#reading = false;
-    stopHandle(this);
-    return 0;
+    const handle = this.liveUv();
+    return handle ? uv().tabnode_stream_read_stop(handle.wrap) : UV_EINVAL;
   }
 
-  /** The socket's readability, asked once while a read or an accept wants it. */
-  protected waitIn(): void {
-    const sockets = this.#sockets;
-    if (this.#waitingIn || this.#fd < 0 || this.closed || !sockets) return;
-    this.#waitingIn = true;
-    const fd = this.#fd;
-    void sockets.wait(fd, linux.POLLIN).then(() => queueBindingTask(() => {
-      this.#waitingIn = false;
-      if (this.closed || this.#fd !== fd) return;
-      this.onReadable();
-    }));
+  /** StreamBase::UseUserBuffer: reads land in `buffer`, at most its length at a time. */
+  override useUserBuffer(buffer: Uint8Array): void {
+    if (!this.#kernel) { super.useUserBuffer(buffer); return; }
+    const handle = this.liveUv();
+    if (!handle) return;
+    this.userBuffer = buffer;
+    uv().tabnode_stream_use_buffer(handle.wrap, buffer.byteLength);
   }
 
-  /**
-   * uv__server_io: one connection per readiness, from the listener's backlog, made a handle by `adopt` (which closes
-   * the descriptor where it cannot) and handed to `onconnection` in the listener's run.
-   */
-  protected serveConnection(adopt: (fd: number, sockets: TreeSockets) => KernelStreamWrap | undefined): void {
-    const sockets = this.#sockets!;
-    const fd = sockets.accept4(this.#fd, linux.SOCK_NONBLOCK | linux.SOCK_CLOEXEC, null);
-    if (fd < 0) { this.waitIn(); return; }
-    const accepted = adopt(fd, sockets);
-    if (accepted) {
-      accepted.setOpen(true, true);
-      __adoptHandle(accepted, ownerOf(this), this);
-      invokeOwned(this, 'onconnection', 0, accepted);
-    }
-    this.waitIn();
+  /** LibuvStreamWrap::SetBlocking. */
+  setBlocking(enable: unknown): number {
+    const handle = this.liveUv();
+    if (!this.#kernel || !handle) return UV_EINVAL;
+    return uv().tabnode_stream_set_blocking(handle.wrap, enable === true ? 1 : 0);
   }
 
-  /** The socket is readable: a reading stream reads. */
-  protected onReadable(): void {
-    if (this.#reading) this.#read();
-  }
-
-  /** uv__read: up to 32 reads of 64 KiB, stopping at a short one, at EOF, at an error or when reading stops. */
-  #read(): void {
-    for (let count = READS_PER_READINESS; count > 0 && this.#reading && !this.closed; count -= 1) {
-      const target = this.userBuffer;
-      const buffer = target ?? (this.#scratch ??= new Uint8Array(READ_BYTES));
-      let read: number;
-      do read = this.#receive(buffer); while (read === -linux.EINTR);
-      if (read === -linux.EAGAIN) { this.waitIn(); return; }
-      if (read < 0) {
-        this.#readable = false;
-        this.#writable = false;
-        this.#reading = false;
-        stopHandle(this);
-        this.#deliverStatus(read);
-        return;
-      }
-      if (read === 0) {
-        // uv__stream_eof: reading stops, and a stopped handle holds no loop.
-        this.#reading = false;
-        stopHandle(this);
-        this.#deliverStatus(UV_EOF);
-        return;
-      }
-      this.bytesRead += read;
-      this.#takePending();
-      streamBaseState[kReadBytesOrError] = read;
-      streamBaseState[kArrayBufferOffset] = 0;
-      if (target) invokeOwned(this, 'onread', null);
-      else invokeOwned(this, 'onread', buffer.slice(0, read).buffer);
-      if (read < buffer.byteLength) break;
-    }
-    if (this.#reading && !this.closed) this.waitIn();
-  }
-
-  /** recvfrom(2), or an IPC pipe's recvmsg(2), whose received descriptors join the queue. */
-  #receive(buffer: Uint8Array): number {
-    const sockets = this.#sockets!;
-    if (!this[kReceivesDescriptors]) return sockets.recvfrom(this.#fd, buffer, 0, null);
-    const message = { data: buffer, control: this.#control ??= new Uint8Array(rightsSpace(CMSG_FD_COUNT)), controlLength: 0, flags: 0 };
-    const read = sockets.recvmsg(this.#fd, message, linux.MSG_CMSG_CLOEXEC);
-    if (read >= 0 && message.controlLength > 0) this.#received.push(...receivedRights(message.control, message.controlLength));
-    return read;
+  /** StreamBase::Shutdown over LibuvStreamWrap::DoShutdown; AfterUvShutdown reports to `oncomplete`. */
+  override shutdown(req: ShutdownWrap): number {
+    if (!this.#kernel) return super.shutdown(req);
+    const handle = this.liveUv();
+    if (!handle) return UV_EINVAL;
+    const id = handle.dispatch((status) => completeRequest(req, status, this, undefined));
+    const err = uv().tabnode_stream_shutdown(handle.wrap, id);
+    if (err) handle.undispatch(id);
+    else observeNodeRequest(req, this);
+    return err;
   }
 
   /**
-   * OnUvRead's pending handle: the next received descriptor, made a handle of this handle's process by its type
-   * (uv_guess_handle), counted in this handle's run, as `pendingHandle` for the read's callback. A descriptor of no
-   * handle type is closed.
-   */
-  #takePending(): void {
-    const fd = this.#received.shift();
-    if (fd === undefined) return;
-    const sockets = this.#sockets!;
-    const type = kernelSocketType(sockets, fd);
-    const make = type === undefined ? undefined : kernelHandles[type];
-    if (!make) { sockets.close(fd); return; }
-    const handle = this.#calling!(make);
-    const status = handle.open(fd);
-    if (status !== 0) {
-      if (handle[kHandleFd] !== fd) sockets.close(fd);
-      handle.close();
-      return;
-    }
-    __adoptHandle(handle, ownerOf(this), this);
-    this.pendingHandle = handle;
-  }
-
-  #deliverStatus(status: number): void {
-    streamBaseState[kReadBytesOrError] = status;
-    streamBaseState[kArrayBufferOffset] = 0;
-    invokeOwned(this, 'onread', null);
-  }
-
-  /** send(2), never raising SIGPIPE (Node ignores it), so a closed peer is EPIPE; with `fd`, a sendmsg carrying it. */
-  #send(bytes: Uint8Array, fd: number | undefined): number {
-    const sockets = this.#sockets!;
-    const flags = linux.MSG_NOSIGNAL | linux.MSG_DONTWAIT;
-    let sent: number;
-    do {
-      sent = fd === undefined ? sockets.sendto(this.#fd, bytes, flags, null)
-        : sockets.sendmsg(this.#fd, { data: bytes, control: rightsControl([fd]) }, flags);
-    } while (sent === -linux.EINTR);
-    return sent;
-  }
-
-  /**
-   * StreamBase::Write: tried at once (`uv_try_write`), complete and synchronous when taken whole; what remains is
-   * queued and sent as the socket can take it, completed through the request. A write that sends a handle is
-   * `uv_write2`: queued, and written at once where nothing is ahead of it.
+   * StreamBase::WriteBuffer, Writev and WriteString over StreamBase::Write: the bytes (in the process's memory, as
+   * Node's backing store holds them) tried at once and the rest uv_write2'd, an IPC pipe's carried handle with them
+   * (`req.handle`, so it lives until AfterUvWrite); streamBaseState says the size and whether it is asynchronous.
    */
   protected override dispatchWrite(req: WriteWrap, buffer: Uint8Array, handle?: unknown): number {
     if (!this.#kernel) return super.dispatchWrite(req, buffer, handle);
-    streamBaseState[kBytesWritten] = buffer.byteLength;
-    streamBaseState[kLastWriteWasAsync] = 0;
-    req.async = false;
-    let fd: number | undefined;
-    if (handle !== undefined && handle !== null) {
-      fd = this.descriptorToSend(handle);
-      if (fd < 0) return fd;
+    const own = this.liveUv();
+    if (!own) return UV_EINVAL;
+    let send = 0;
+    if (handle !== null && typeof handle === 'object' && this.isIpc) {
+      send = (handle as { [kUvWrap]?: number })[kUvWrap] ?? 0;
+      if (!send) return UV_EINVAL;
+      (req as unknown as { handle: unknown }).handle = handle;
     }
-    if (this.closed) return UV_EBADF;
-    if (!this.#writable || this.#fd < 0) return UV_EPIPE;
-    const idle = this.#writes.length === 0 && !this.writesHeld();
-    let sent = 0;
-    if (idle && fd === undefined) {
-      const taken = this.#send(buffer, undefined);
-      if (taken < 0 && taken !== -linux.EAGAIN) return taken;
-      if (taken > 0) { sent = taken; this.bytesWritten += taken; }
-      if (sent === buffer.byteLength) return 0;
-    }
-    this.#writes.push({ request: req, bytes: buffer, sent, fd, release: holdRequest(this) });
-    this.writeQueueSize += buffer.byteLength - sent;
-    observeNodeRequest(req, this);
-    req.async = true;
-    streamBaseState[kLastWriteWasAsync] = 1;
-    if (idle && fd !== undefined) this.#flushWrites();
-    else if (!this.writesHeld()) this.waitOut();
-    return 0;
+    const length = buffer.byteLength;
+    this.bytesWritten += length;
+    const bytes = intoMemory(buffer);
+    const id = own.dispatch((status) => completeRequest(req, status, this, undefined));
+    const answer = uv().tabnode_stream_write(own.wrap, id, bytes, length, send);
+    if (answer === 1) observeNodeRequest(req, this);
+    else own.undispatch(id);
+    streamBaseState[kBytesWritten] = length;
+    streamBaseState[kLastWriteWasAsync] = answer === 1 ? 1 : 0;
+    return answer < 0 ? answer : 0;
   }
 
-  /** The socket's writability, asked once while a connect or a queued write wants it. */
-  protected waitOut(): void {
-    const sockets = this.#sockets;
-    if (this.#waitingOut || this.#fd < 0 || this.closed || !sockets) return;
-    this.#waitingOut = true;
-    const fd = this.#fd;
-    void sockets.wait(fd, linux.POLLOUT).then(() => queueBindingTask(() => {
-      this.#waitingOut = false;
-      if (this.closed || this.#fd !== fd) return;
-      this.onWritable();
-    }));
-  }
+  override ref(): void { if (this.#kernel) this.#uv?.ref(); else super.ref(); }
+  override unref(): void { if (this.#kernel) this.#uv?.unref(); else super.unref(); }
+  override hasRef(): boolean { return this.#kernel ? this.#uv?.hasRef() === true : super.hasRef(); }
 
-  /** The socket is writable: the queue is sent. */
-  protected onWritable(): void {
-    this.#flushWrites();
-  }
-
-  /** uv__write: the queue, in order, as far as the socket takes it; then uv__drain. */
-  #flushWrites(): void {
-    let count = WRITES_PER_READINESS;
-    while (this.#writes.length) {
-      const write = this.#writes[0]!;
-      const taken = this.#send(write.bytes.subarray(write.sent), write.fd);
-      if (taken === -linux.EAGAIN) { this.waitOut(); return; }
-      if (taken < 0) { this.#finishWrite(write, taken); return; }
-      write.fd = undefined;
-      write.sent += taken;
-      this.bytesWritten += taken;
-      this.writeQueueSize -= taken;
-      if (write.sent < write.bytes.byteLength) continue;
-      this.#finishWrite(write, 0);
-      if (--count <= 0) { this.waitOut(); return; }
-    }
-    this.#drain();
-  }
-
-  #finishWrite(write: QueuedWrite, status: number): void {
-    const index = this.#writes.indexOf(write);
-    if (index < 0) return;
-    this.#writes.splice(index, 1);
-    this.writeQueueSize -= write.bytes.byteLength - write.sent;
-    queueBindingTask(() => {
-      try { invokeOwned(write.request, 'oncomplete', status); }
-      finally { forgetNodeRequest(write.request); write.release(); }
-    });
-  }
-
-  /** Every queued write completes with `status` (a failed connect's, a close's ECANCELED). */
-  protected cancelWrites(status: number): void {
-    for (const write of [...this.#writes]) this.#finishWrite(write, status);
-  }
-
-  /** Writes held behind a connect go on once it is made: the queue, or a shutdown with nothing queued. */
-  protected resumeWrites(): void {
-    if (this.#writes.length) this.waitOut();
-    else if (this.#shutdown) this.#drain();
-  }
-
-  /** uv_shutdown: the write side ends once the queued writes are sent. */
-  override shutdown(req: ShutdownWrap): number {
-    if (!this.#kernel) return super.shutdown(req);
-    if (!this.#writable || this.#shut || this.#shutdown || this.closed || this.#fd < 0) return UV_ENOTCONN;
-    this.#writable = false;
-    observeNodeRequest(req, this);
-    this.#shutdown = { request: req, release: holdRequest(this) };
-    if (this.#writes.length === 0 && !this.writesHeld()) queueBindingTask(() => this.#drain());
-    return 0;
-  }
-
-  /** uv__drain: the pending shutdown, once nothing is queued. */
-  #drain(): void {
-    if (!this.#shutdown || this.#writes.length) return;
-    // A close cancels a pending shutdown itself, so a drain finds the socket open.
-    const shut = this.#sockets!.shutdown(this.#fd, linux.SHUT_WR);
-    if (shut >= 0) this.#shut = true;
-    this.#finishShutdown(shut < 0 ? shut : 0);
-  }
-
-  /** The pending shutdown's request completed with `status`, on its own turn. */
-  #finishShutdown(status: number): void {
-    const pending = this.#shutdown;
-    if (!pending) return;
-    this.#shutdown = null;
-    queueBindingTask(() => {
-      try { invokeOwned(pending.request, 'oncomplete', status); }
-      finally { forgetNodeRequest(pending.request); pending.release(); }
-    });
-  }
-
-  /** uv_close: the descriptor goes now, with any received and not handed on; what was pending is cancelled first. */
+  /** HandleWrap::Close. */
   override close(callback?: () => void): void {
-    if (this.#kernel && !this.closed) {
-      this.cancelWrites(UV_ECANCELED);
-      if (this.#shutdown) this.#finishShutdown(UV_ECANCELED);
-      this.#reading = false;
-      const sockets = this.#sockets;
-      for (const fd of this.#received.splice(0)) sockets?.close(fd);
-      if (this.#fd >= 0 && sockets) sockets.close(this.#fd);
-      this.#fd = -1;
-      this.fd = -1;
+    if (!this.#kernel) { super.close(callback); return; }
+    const handle = this.#uv;
+    if (!handle?.alive || handle.closing) return;
+    this.closed = true;
+    handle.close(callback);
+  }
+
+  /** HandleWrap::OnClose's own part: what a TCP or a Pipe gives up beyond the stream. */
+  onUvClose(): void { this.onCloseHandle(); }
+
+  /**
+   * LibuvStreamWrap::OnUvRead, then EmitRead to EmitToJSStreamListener or CustomBufferJSListener: on an IPC pipe, a
+   * read that brought a handle first makes it this process's (`pendingHandle`); then the bytes to `onread`.
+   */
+  onUvRead(nread: number, base: number): void {
+    const handle = this.#uv;
+    if (!handle?.alive) return;
+    if (this.isIpc && nread > 0) {
+      const type = CARRIED[uv().tabnode_pipe_pending_type(handle.wrap)];
+      const make = type === undefined ? undefined : kernelHandles[type];
+      if (make) {
+        const carried = this.#instantiate(make);
+        // AcceptHandle aborts where uv_accept of a handle the pipe holds fails.
+        if (uv().tabnode_stream_accept(handle.wrap, carried[kUvWrap]) !== 0) throw new Error('uv_accept of a carried handle failed');
+        this.pendingHandle = carried;
+      }
     }
-    super.close(callback);
+    if (nread > 0) this.bytesRead += nread;
+    const target = this.userBuffer;
+    if (target) {
+      if (base === 0 && nread < 0) { this.#emit(nread, undefined); return; }
+      if (nread > 0) target.set(new Uint8Array(fromMemory(base, nread)));
+      const next = this.#emit(nread, undefined);
+      if (next instanceof Uint8Array) {
+        this.userBuffer = next;
+        if (handle.alive) uv().tabnode_stream_use_buffer(handle.wrap, next.byteLength);
+      }
+      return;
+    }
+    if (nread < 0) { this.#emit(nread, undefined); return; }
+    if (nread === 0) return;
+    this.#emit(nread, fromMemory(base, nread));
+  }
+
+  /** StreamBase::CallJSOnreadMethod: the read's status and offset in streamBaseState, `onread` with the bytes. */
+  #emit(nread: number, bytes: ArrayBuffer | undefined): unknown {
+    streamBaseState[kReadBytesOrError] = nread;
+    streamBaseState[kArrayBufferOffset] = 0;
+    return invokeOwned(this, 'onread', bytes);
+  }
+
+  /** WrapType::Instantiate in this wrap's run. */
+  #instantiate<T>(make: () => T): T {
+    return ownedRun(ownerOfInstance(this), make) as T;
+  }
+
+  /**
+   * ConnectionWrap::OnConnection: a client wrap made and accepted, then `onconnection(status, client)`; one uv_accept
+   * refuses (a connection already gone) is given back, as Node's unreferenced wrap is collected and closed.
+   */
+  onUvConnection(status: number): void {
+    const handle = this.#uv;
+    if (!handle?.alive) return;
+    let client: KernelStreamWrap | undefined;
+    if (status === 0) {
+      const made = this.#instantiate(() => this.makeClient());
+      if (!made) return;
+      if (uv().tabnode_stream_accept(handle.wrap, made[kUvWrap]) !== 0) { made.close(); return; }
+      client = made;
+    }
+    invokeOwned(this, 'onconnection', status, client);
+  }
+
+  /** ConnectionWrap::AfterConnect: `oncomplete(status, handle, req, readable, writable)`. */
+  protected connectDone(req: object): (status: number, readable?: number, writable?: number) => void {
+    return (status, readable = 0, writable = 0) => completeRequest(req, status, this, req, readable !== 0, writable !== 0);
   }
 }

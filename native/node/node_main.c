@@ -4,12 +4,16 @@
 // came alive, then 'exit' and its code. `main` calls uv_run itself, so the stack from _start to every drain is
 // WebAssembly alone, as a JSPI suspension requires. Each call into the engine that Node makes inside a callback scope
 // is followed by that scope's close, a drain: the bootstrap's (StartExecution, src/node.cc:290-294) and each process
-// event's (ProcessEmit's MakeCallback, src/node_process_events.cc:48-61).
+// event's (ProcessEmit's MakeCallback, src/node_process_events.cc:48-61). PlatformInit's standard streams come first
+// (stdio.c), as InitializeOncePerProcess makes them before anything runs.
 #include <uv.h>
 #include "engine.h"
 #include "env.h"
 
+void tabnode_platform_init(void);
+
 int main(int argc, char **argv) {
+  tabnode_platform_init();
   uv_loop_t *loop = uv_default_loop();
   tabnode_initialize_libuv(loop);
   int status = tabnode_bootstrap(argc, argv);

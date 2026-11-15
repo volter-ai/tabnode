@@ -308,18 +308,70 @@ export function releaseHandle(handle: OwnedHandle, closePending = false, closeTu
 }
 
 /**
+ * HANDLES THAT ARE LIBUV'S (ADR-0018 §3): a wrap whose handle is a uv_handle_t of the process's loop holds that loop
+ * as libuv says, so the run's count asks libuv (`alive`: active and referenced, closing, or with a request in flight,
+ * as uv__loop_alive counts) when it counts, and keeps no copy of the rule. The wrap is the run's that made it, closed
+ * at the run's end as every handle is, until its close callback gives it up (`releaseLibuvHandle`).
+ */
+const libuvAlive = new WeakMap<OwnedHandle, () => boolean>();
+const libuvOwned = new Map<ProcessToken, Set<OwnedHandle>>();
+
+function addLibuvOwned(handle: OwnedHandle, token: ProcessToken | null): void {
+  if (token == null) return;
+  let owned = allOwned.get(token);
+  if (!owned) { owned = new Set(); allOwned.set(token, owned); }
+  owned.add(handle);
+  let live = libuvOwned.get(token);
+  if (!live) { live = new Set(); libuvOwned.set(token, live); }
+  live.add(handle);
+}
+
+function removeLibuvOwned(handle: OwnedHandle, token: ProcessToken | null | undefined): void {
+  if (token == null) return;
+  const owned = allOwned.get(token);
+  owned?.delete(handle);
+  if (owned?.size === 0) allOwned.delete(token);
+  const live = libuvOwned.get(token);
+  live?.delete(handle);
+  if (live?.size === 0) libuvOwned.delete(token);
+}
+
+/** A wrap of libuv's handle, the current run's; `referenced` is HandleWrap::HasRef, which the process's lists read. */
+export function registerLibuvHandle(handle: OwnedHandle, alive: () => boolean, referenced: () => boolean): void {
+  const token = currentOwner();
+  heldBy.set(handle, token);
+  libuvAlive.set(handle, alive);
+  addLibuvOwned(handle, token);
+  observeNodeHandle(handle, () => referenced());
+}
+
+/** The wrap's close callback has run (HandleWrap::OnClose): libuv holds nothing of it. */
+export function releaseLibuvHandle(handle: OwnedHandle): void {
+  removeLibuvOwned(handle, heldBy.get(handle));
+  forgetNodeHandle(handle);
+  heldBy.delete(handle);
+  libuvAlive.delete(handle);
+}
+
+/** The run's libuv handles that hold its loop now, as libuv answers. */
+function liveLibuvHandles(token: ProcessToken): OwnedHandle[] {
+  const live = libuvOwned.get(token);
+  return live ? [...live].filter((handle) => libuvAlive.get(handle)?.() === true) : [];
+}
+
+/**
  * How many ref'd handles the named run holds, as Node's loop counts them.
  * The engine's `node` command asks it to decide whether a program that has
  * gone quiet is done.
  */
 export function __ownedHandleCount(token: ProcessToken): number {
-  return owners.get(token)?.size ?? 0;
+  return (owners.get(token)?.size ?? 0) + liveLibuvHandles(token).length;
 }
 
 /** Each ref'd handle the named run holds, by its wrap's name (TCP, Pipe, Process, …), for the line that says what held it. */
 export function __ownedHandleKinds(token: ProcessToken): string[] {
-  const held = owners.get(token);
-  return held ? [...held].map((handle) => (handle as object).constructor?.name || 'handle') : [];
+  const held = [...owners.get(token) ?? [], ...liveLibuvHandles(token)];
+  return held.map((handle) => (handle as object).constructor?.name || 'handle');
 }
 
 /**
@@ -332,8 +384,7 @@ export function __ownedHandleKinds(token: ProcessToken): string[] {
  * the answer comes from the handles the run holds.
  */
 export function __ownedServerPorts(token: ProcessToken): number[] {
-  const held = owners.get(token);
-  if (!held) return [];
+  const held = [...owners.get(token) ?? [], ...liveLibuvHandles(token)];
   const ports: number[] = [];
   for (const handle of held) {
     // A listening socket's port is its kernel's name for it (getsockname).
@@ -360,9 +411,7 @@ function closeAtEnd(handle: OwnedHandle, failures: unknown[]): void {
  * before the rest of what the process held.
  */
 function releaseOwnedServers(token: ProcessToken, failures: unknown[]): void {
-  const held = owners.get(token);
-  if (!held) return;
-  for (const handle of [...held]) {
+  for (const handle of [...owners.get(token) ?? [], ...libuvOwned.get(token) ?? []]) {
     const listening = handle as unknown as { listening?: boolean };
     if (listening.listening === true) closeAtEnd(handle, failures);
   }
@@ -382,6 +431,7 @@ function releaseOwnedHandles(token: ProcessToken, failures: unknown[]): Promise<
   if (!held) return [];
   allOwned.delete(token);
   owners.delete(token);
+  libuvOwned.delete(token);
   const releases: Promise<void>[] = [];
   for (const handle of [...held]) {
     closeAtEnd(handle, failures);
@@ -434,6 +484,14 @@ export function __forgetOwnedProcessEnd(token: ProcessToken): void {
  */
 export function __adoptHandle(handle: OwnedHandle | null | undefined, token: ProcessToken | null, resourceSource?: object): void {
   if (!handle) return;
+  if (libuvAlive.has(handle)) {
+    removeLibuvOwned(handle, heldBy.get(handle));
+    heldBy.set(handle, token);
+    addLibuvOwned(handle, token);
+    const sourceRow = resourceSource && handleRowByObject.get(resourceSource);
+    if (handleRowByObject.has(handle)) observeResource(handleRows, handleRowByObject, handle, sourceRow ? sourceRow.owner : token);
+    return;
+  }
   drop(handle);
   const previous = heldBy.get(handle);
   if (previous != null) {

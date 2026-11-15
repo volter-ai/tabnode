@@ -1,22 +1,24 @@
 /**
- * `internalBinding('tty_wrap')`: the engine's standard streams, where a host
- * reports one of them as a terminal.
+ * `internalBinding('tty_wrap')`: Node's TTYWrap (Node v24.21.0's `src/tty_wrap.cc`).
  *
- * `internal/child_process.js` reads two things from it: whether a descriptor
- * is a terminal, which decides whether an `inherit` entry is a TTY, and the
- * `TTY` class, which `getHandleWrapType` asks an `instanceof` of. The engine
- * writes to a page or to a host's pipe, so a descriptor is a terminal only
- * when the running program's own `process.stdout.isTTY` says so -- which is
- * what a held run gets, and what a program reads to decide on colour. A
- * run's terminal is its host's (`RunStreams.terminal`): its size the host's
- * `TIOCGWINSZ`, and fd 0's mode the host's termios (ADR-0010 §3).
+ * Where the realm's process is `node` on libuv's loop (ADR-0018 §3, item 3), a TTY is libuv's `uv_tty_t` on its
+ * descriptor, its stream `kernel_stream.ts`'s: the reopening of a pty's slave so its non-blocking mode is its own,
+ * the window size (TIOCGWINSZ), the modes (`uv_tty_set_mode`, restored at exit by the program's ResetStdio) and
+ * whether a descriptor is a terminal (`uv_guess_handle`) are libuv's.
+ *
+ * A realm with no libuv writes to a page or to a host's pipe, so a descriptor is a terminal only when the running
+ * program's own `process.stdout.isTTY` says so -- which is what a held run gets, and what a program reads to decide
+ * on colour. A run's terminal is its host's (`RunStreams.terminal`): its size the host's `TIOCGWINSZ`, and fd 0's mode
+ * the host's termios (ADR-0010 §3); an engine pty is a pairing of two endpoints.
  */
 import { queueBindingTask } from '../../guest-loop';
-import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
+import { type WriteWrap } from './stream_wrap';
+import { KernelStreamWrap, kKernelBacked, realmHasLibuv } from './kernel_stream';
 import { guessHandleTypeOfFd, handleForFd, registerFd, releaseFd } from './fds';
 import { UV_EBADF, UV_EIO, UV_ENOTSUP } from './uv';
 import { currentOwner, forgetNodeHandle } from './handles';
 import { __runFor } from '../../process-tokens';
+import { collectUVExceptionInfo, uv, withRoom } from './libuv';
 
 export interface TerminalState {
   columns: number;
@@ -106,8 +108,8 @@ class TerminalEndpoint {
 }
 
 
-/** libuv's `uv_tty_t`, over the same stream the rest of the binding is. */
-export class TTY extends LibuvStreamWrap {
+/** Node's TTYWrap: libuv's `uv_tty_t` where the realm has libuv, else the engine's terminal over its pairing. */
+export class TTY extends KernelStreamWrap {
   get fdNumber(): number { return this.fd; }
   readonly descriptor: TTY;
   private endpoint?: TerminalEndpoint;
@@ -115,13 +117,22 @@ export class TTY extends LibuvStreamWrap {
   get slave(): boolean { return this.endpoint?.slave === true; }
 
   /**
-   * Node's `new TTY(fd, ctx)` writes an errno onto `ctx` when the fd is not
-   * a terminal, so `tty.WriteStream` refuses to wrap a pipe. A run's stdout
-   * that was not given a TTY is a pipe: `isTTY` is false and `hasColors`
-   * answers false, and `util.inspect` does not colorize a number on it.
+   * TTYWrap::New: uv_tty_init on `fd`, whose failure is told on `ctx` (`uv_tty_init`), so `tty.WriteStream` refuses
+   * to wrap what is not a terminal. Without libuv, a run's stdout that was not given a TTY is a pipe: `isTTY` is false
+   * and `hasColors` answers false, and `util.inspect` does not colorize a number on it.
    */
   constructor(fd: number, ctx?: { code?: string } | boolean) {
-    super();
+    super(realmHasLibuv());
+    if (this[kKernelBacked]) {
+      this.descriptor = this;
+      const handle = this.attachUv((id) => uv().tabnode_tty_new(id));
+      const err = uv().tabnode_tty_init(handle.wrap, Number(fd) | 0);
+      if (err !== 0) {
+        collectUVExceptionInfo(ctx, err, 'uv_tty_init');
+        handle.uninitialized();
+      }
+      return;
+    }
     this.fd = fd;
     const held = handleForFd(fd);
     this.descriptor = held instanceof TTY ? held.descriptor : this;
@@ -133,8 +144,18 @@ export class TTY extends LibuvStreamWrap {
     }
   }
 
-  /** uv_tty_get_winsize: an engine pty's size, a run's terminal's (its host's TIOCGWINSZ) for fd 0 to 2, else 80 by 24. */
+  /**
+   * TTYWrap::GetWindowSize: uv_tty_get_winsize. Without libuv, an engine pty's size, a run's terminal's (its host's
+   * TIOCGWINSZ) for fd 0 to 2, else 80 by 24.
+   */
   getWindowSize(out: number[]): number {
+    if (this[kKernelBacked]) {
+      const handle = this.liveUv();
+      if (!handle) return UV_EBADF;
+      return withRoom(8, (at) => uv().tabnode_tty_get_winsize(handle.wrap, at), (view, err) => {
+        if (err === 0) { out[0] = view.getInt32(0, true); out[1] = view.getInt32(4, true); }
+      });
+    }
     const terminal = this.terminal ?? (this.fd >= 0 && this.fd <= 2 ? runTerminalOf() : undefined);
     out[0] = terminal?.columns ?? 80;
     out[1] = terminal?.rows ?? 24;
@@ -142,10 +163,15 @@ export class TTY extends LibuvStreamWrap {
   }
 
   /**
-   * uv_tty_set_mode: fd 0's mode through the run's terminal (ADR-0010 §3). ADR-0023: an engine pty endpoint has no
-   * termios, and a terminal whose host sets no mode claims no change.
+   * TTYWrap::SetRawMode: uv_tty_set_mode. Without libuv, fd 0's mode through the run's terminal (ADR-0010 §3);
+   * ADR-0023: an engine pty endpoint has no termios, and a terminal whose host sets no mode claims no change.
    */
   setRawMode(mode: number): number {
+    if (this[kKernelBacked]) {
+      const handle = this.liveUv();
+      if (!handle) return UV_EBADF;
+      return uv().tabnode_tty_set_mode(handle.wrap, Number(mode) | 0);
+    }
     if (this.endpoint) return UV_ENOTSUP;
     const terminal = this.fd === 0 ? runTerminalOf() : undefined;
     if (!terminal?.setRawMode) return 0;
@@ -168,6 +194,7 @@ export class TTY extends LibuvStreamWrap {
   }
 
   readStart(): number {
+    if (this[kKernelBacked]) return super.readStart();
     if (this.descriptor.closed) return UV_EBADF;
     const result = super.readStart();
     this.endpoint?.pump();
@@ -177,8 +204,8 @@ export class TTY extends LibuvStreamWrap {
   /** Delivered into Node's existing stream binding, preserving backpressure. */
   deliver(bytes: Uint8Array): void { this.receive(bytes); this.flushInbound(); }
 
-  protected dispatchWrite(req: WriteWrap, bytes: Uint8Array): number {
-    if (!this.endpoint) return super.dispatchWrite(req, bytes);
+  protected dispatchWrite(req: WriteWrap, bytes: Uint8Array, handle?: unknown): number {
+    if (this[kKernelBacked] || !this.endpoint) return super.dispatchWrite(req, bytes, handle);
     if (this.closed || this.descriptor.closed) return UV_EBADF;
     if (!this.endpoint.peer?.descriptors.size) return UV_EIO;
     // Let the base binding set Node's synchronous-write accounting, while
@@ -190,6 +217,7 @@ export class TTY extends LibuvStreamWrap {
   }
 
   protected onCloseHandle(): void {
+    if (this[kKernelBacked]) return;
     this.endpoint?.readers.delete(this);
     if (this.descriptor !== this) { this.descriptor.close(); return; }
     releaseFd(this.fd);
@@ -232,8 +260,9 @@ export function resizePty(fd: number, columns: number, rows: number): void {
 }
 
 
-/** libuv's `uv_guess_handle(fd) === UV_TTY`, as the running program sees it. */
+/** TTYWrap::IsTTY: libuv's `uv_guess_handle(fd) === UV_TTY`, as the running program sees it. */
 export function isTTY(fd: number): boolean {
+  if (realmHasLibuv()) return uv().tabnode_guess_handle(Number(fd) | 0) === 1;
   if (fd !== 0 && fd !== 1 && fd !== 2) return guessHandleTypeOfFd(fd) === 'TTY';
   // The asking run's own streams, which carry its per-fd terminals: in a
   // realm several guests share, the global `process` is whichever ran last.

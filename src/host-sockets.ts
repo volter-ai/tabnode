@@ -175,39 +175,6 @@ export const linux = Object.freeze({
   ECONNREFUSED: 111, EINPROGRESS: 115,
 });
 
-/** A `struct cmsghdr`'s header, and the alignment of its records (`CMSG_ALIGN`), as on x86-64 Linux. */
-const CMSG_HEADER = 16;
-const cmsgAlign = (length: number): number => (length + 7) & ~7;
-
-/** `CMSG_SPACE(count * sizeof(int))`: the control room `count` descriptors take. */
-export function rightsSpace(count: number): number { return cmsgAlign(CMSG_HEADER + 4 * count); }
-
-/** One `SCM_RIGHTS` record carrying `fds`. */
-export function rightsControl(fds: readonly number[]): Uint8Array {
-  const out = new Uint8Array(rightsSpace(fds.length));
-  const view = new DataView(out.buffer);
-  view.setUint32(0, CMSG_HEADER + 4 * fds.length, true);
-  view.setInt32(8, linux.SOL_SOCKET, true);
-  view.setInt32(12, linux.SCM_RIGHTS, true);
-  fds.forEach((fd, index) => view.setInt32(CMSG_HEADER + 4 * index, fd, true));
-  return out;
-}
-
-/** The descriptors the `SCM_RIGHTS` records of a received control carry, in order (`CMSG_FIRSTHDR`, `CMSG_NXTHDR`). */
-export function receivedRights(control: Uint8Array, length: number): number[] {
-  const view = new DataView(control.buffer, control.byteOffset, control.byteLength);
-  const fds: number[] = [];
-  for (let at = 0; at + CMSG_HEADER <= length;) {
-    const size = view.getUint32(at, true);
-    if (size < CMSG_HEADER || at + size > length) break;
-    if (view.getInt32(at + 8, true) === linux.SOL_SOCKET && view.getInt32(at + 12, true) === linux.SCM_RIGHTS) {
-      for (let offset = CMSG_HEADER; offset + 4 <= size; offset += 4) fds.push(view.getInt32(at + offset, true));
-    }
-    at += cmsgAlign(size);
-  }
-  return fds;
-}
-
 /** A `sockaddr_in` or `sockaddr_in6`, read: its address as inet_ntop prints it, its family as Node names it, its port. */
 export interface SocketName {
   address: string;
