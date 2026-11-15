@@ -148,8 +148,8 @@ sed -n '52,76p' "$work/$node/src/node_constants.h" > "$work/generated/default_ci
 # handle_wrap, stream_wrap, tcp_wrap, pipe_wrap, tty_wrap, udp_wrap, process_wrap, spawn_sync, fs, fs_cp, fs_event),
 # the engine device's descriptor (engine_device); and the crypto and tls_wrap bindings' C++ over ncrypto and OpenSSL
 # (crypto_util, crypto_context, crypto_cipher, crypto_tls, crypto_x509, crypto_keys, crypto_rsa, crypto_dsa,
-# crypto_dh, crypto_ec, crypto_pqc, crypto_hash, crypto_hmac, crypto_random, crypto_sig, node_constants), with the defines ncrypto
-# gives its dependents (ncrypto.gyp).
+# crypto_dh, crypto_ec, crypto_pqc, crypto_hash, crypto_hmac, crypto_random, crypto_sig, crypto_pbkdf2, crypto_scrypt,
+# crypto_hkdf, node_constants), with the defines ncrypto gives its dependents (ncrypto.gyp).
 program=()
 for source in node_main stdio env poll memory signo handle_wrap stream_wrap tcp_wrap pipe_wrap tty_wrap udp_wrap \
   process_wrap spawn_sync fs fs_cp fs_event engine_device; do
@@ -158,7 +158,8 @@ for source in node_main stdio env poll memory signo handle_wrap stream_wrap tcp_
   program+=("$work/$source.o")
 done
 for source in crypto_util crypto_context crypto_cipher crypto_tls crypto_x509 crypto_keys crypto_rsa crypto_dsa crypto_dh \
-  crypto_ec crypto_pqc crypto_hash crypto_hmac crypto_random crypto_sig node_constants; do
+  crypto_ec crypto_pqc crypto_hash crypto_hmac crypto_random crypto_sig crypto_pbkdf2 crypto_scrypt crypto_hkdf \
+  node_constants; do
   "$cxx" "${flags[@]}" "${cxxflags[@]}" "${ncdefines[@]}" -DOPENSSL_NO_DEPRECATED -D_GNU_SOURCE -I"$uv/include" \
     -I"$openssl/include" -I"$ncrypto" -I"$work/generated" -I"$work/$node/src" \
     -c "$repo/native/node/$source.cc" -o "$work/$source.o" &
