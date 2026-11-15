@@ -64,8 +64,8 @@ export function constantsBinding(): ConstantsBinding {
     // the flat table has never held.
     os: { UV_UDP_REUSEADDR: 4, dlopen: groups.dlopen, errno: groups.errno, signals: groups.signals, priority: groups.priority },
     fs: groups.fs,
-    // Node's DefineCryptoConstants as the built OpenSSL defines them (ADR-0016): read from node-deps.wasm on the
-    // first read of the group, so a program that never reads it never instantiates the module.
+    // Node's DefineCryptoConstants as the built OpenSSL defines them (ADR-0016), compiled in when node-deps.wasm is
+    // built (node-crypto-constants.ts): reading the group instantiates nothing.
     get crypto() {
       const value = nodeCryptoConstants();
       Object.defineProperty(this, 'crypto', { value, enumerable: true, configurable: true, writable: true });

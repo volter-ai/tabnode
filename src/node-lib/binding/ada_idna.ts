@@ -4,7 +4,7 @@
  * synchronously the first time a name is converted. A name Ada cannot convert answers the empty string, as Ada does.
  */
 import { ADA_IDNA_WASM_BASE64 } from './ada-idna-wasm';
-import { htmlAtob as atob } from './buffer';
+import { moduleBytes } from '../../module-bytes';
 
 interface AdaIdna {
   memory: WebAssembly.Memory;
@@ -16,7 +16,7 @@ interface AdaIdna {
 let ada: AdaIdna | undefined;
 function adaIdna(): AdaIdna {
   if (ada) return ada;
-  const bytes = Uint8Array.from(atob(ADA_IDNA_WASM_BASE64), (character) => character.charCodeAt(0));
+  const bytes = moduleBytes(ADA_IDNA_WASM_BASE64);
   // Its one import is WASI's fd_write, which an assertion's message would take; nothing is written: ENOSYS.
   const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), { wasi_snapshot_preview1: { fd_write: () => 52 } });
   (instance.exports._initialize as () => void)();

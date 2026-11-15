@@ -17,16 +17,13 @@ import { createDnsModule } from '../shims/dns';
 import { processHostsReaderOf } from '../process-hostname';
 import * as clusterShim from '../shims/cluster';
 import asyncHooksShim from '../shims/async_hooks';
-import stringDecoderShim, { createStringDecoderModule } from '../shims/string_decoder';
 import v8Shim from '../shims/v8';
-import * as pathShim from '../shims/path';
 import * as cryptoShim from '../shims/crypto';
 import * as vmShim from '../shims/vm';
 import * as workerThreadsShim from '../shims/worker_threads';
 import * as http2Shim from '../shims/http2';
 import * as inspectorShim from '../shims/inspector';
 import * as perfHooksShim from '../shims/perf_hooks';
-import { engineUrlModule, processUrlModule } from './object-urls';
 import { nodeLibInternalRequire } from './load';
 import { createTimersModule } from './timers';
 import { guestTimerFunctions } from '../guest-timers';
@@ -39,14 +36,10 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   if (_process && name === 'dns') return () => createDnsModule(processHostsReaderOf(_process));
   if (_process && name === 'timers') return () => createTimersModule(guestTimerFunctions(_process));
   if (require && name === 'crypto') return () => cryptoShim.createCryptoModule(require);
-  // `url`'s URL is the process's, whose `createObjectURL` is Node's.
-  if (_process && name === 'url') return () => processUrlModule(_process);
-  if (require && name === 'string_decoder') return () => createStringDecoderModule(() => require('buffer').Buffer);
   __table ??= {
   timers: createTimersModule,
   dns: createDnsModule,
   cluster: () => clusterShim,
-  string_decoder: () => stringDecoderShim,
   v8: () => v8Shim,
   // Node's `events.js` builds `EventEmitterAsyncResource` by extending this
   // binding's `AsyncResource`. The shim's class answers `asyncId` 0, which
@@ -58,13 +51,9 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   http2: () => http2Shim,
   inspector: () => inspectorShim,
   perf_hooks: () => perfHooksShim,
-  url: engineUrlModule,
   // `internal/fs/cp/cp.js` requires the public alias; it is the same object
   // as `internal/util/types`, which is `util.types`.
   'util/types': () => nodeLibInternalRequire('internal/util/types'),
-  // The same object a guest's `require("path")` answers with: Node's own
-  // `path.posix`, out of the vendored `path.js` the engine's shim evaluates.
-  path: () => pathShim.posix,
   // `internal/fs/promises.js` exports `{ exports, FileHandle }`; the public
   // `fs/promises` module is the inner `exports` object, as `fs.js` reads it.
   'fs/promises': () => (nodeLibInternalRequire('internal/fs/promises') as { exports: unknown }).exports,

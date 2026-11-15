@@ -9,9 +9,7 @@
  * list its `module.builtinModules` reports, so a hook that reads `node:fs`
  * reads the name the guest's own `module.isBuiltin` agrees with.
  */
-import { errorCodes } from '../binding/crypto';
 import * as moduleShim from '../../shims/module';
-import { fileURLToPath, pathToFileURL } from '../../shims/url';
 
 /**
  * `internal/bootstrap/realm`'s `BuiltinModule`, the two class methods the
@@ -51,79 +49,6 @@ export const internalBootstrapRealm = {
       const name = id.startsWith('node:') ? id.slice(5) : id;
       return name.startsWith('internal/') || moduleShim.builtinModules.includes(name);
     },
-  },
-};
-
-/**
- * `internal/url`: the conversions between a path and a URL that the hooks
- * file makes, and the three names `_http_client.js` and `https.js` take to
- * turn a URL into the options a request is made from.
- */
-export const internalUrl = {
-  /**
-   * Node's `domainToASCII` (lib/internal/url.js:1443-1449 over node_url.cc:224-249): Ada's `set_hostname` on a
-   * `ws://x` URL, which is the URL Standard's hostname setter on a special URL. The realm's `URL` runs that setter;
-   * a setter that fails leaves the host as it was, so the set is made on two hosts and a failure is where neither
-   * changed: Node's empty string.
-   */
-  domainToASCII(...args: unknown[]): string {
-    if (args.length < 1) {
-      const { ERR_MISSING_ARGS } = errorCodes();
-      throw new ERR_MISSING_ARGS('domain');
-    }
-    const input = `${args[0]}`;
-    if (input === '') return '';
-    const set = (initial: string): string => {
-      const url = new URL(`ws://${initial}`);
-      url.hostname = input;
-      return url.hostname;
-    };
-    const first = set('x');
-    return first === set('y') ? first : '';
-  },
-  fileURLToPath,
-  pathToFileURL,
-  /**
-   * Node's `toPathIfFileURL`: `fs` takes a path or a `file:` URL for every
-   * one of its calls, and this is the one line that turns the second into
-   * the first. Anything else is handed on untouched, for `fs` to validate.
-   */
-  toPathIfFileURL: (value: unknown): unknown => {
-    if (value instanceof URL) return fileURLToPath(value);
-    if (typeof value === 'string' && value.startsWith('file://')) return fileURLToPath(value);
-    return value;
-  },
-  get URL() { return (globalThis as unknown as { URL: unknown }).URL; },
-  /** Node's `isURL`: a `URL` of this realm, or one shaped like it. */
-  isURL: (value: unknown): boolean =>
-    value instanceof URL ||
-    (value !== null && typeof value === 'object' &&
-      typeof (value as { href?: unknown }).href === 'string' &&
-      typeof (value as { origin?: unknown }).origin === 'string' &&
-      typeof (value as { protocol?: unknown }).protocol === 'string'),
-  /**
-   * Node's `urlToHttpOptions`: the request options a `URL` stands for. The
-   * rules are Node's own -- an IPv6 host loses its brackets, the path is the
-   * pathname and the search together, and a password without a user is still
-   * an auth pair.
-   */
-  urlToHttpOptions: (url: URL): Record<string, unknown> => {
-    const options: Record<string, unknown> = {
-      protocol: url.protocol,
-      hostname: typeof url.hostname === 'string' && url.hostname.startsWith('[')
-        ? url.hostname.slice(1, -1)
-        : url.hostname,
-      hash: url.hash,
-      search: url.search,
-      pathname: url.pathname,
-      path: `${url.pathname || ''}${url.search || ''}`,
-      href: url.href,
-    };
-    if (url.port !== '') options.port = Number(url.port);
-    if (url.username || url.password) {
-      options.auth = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
-    }
-    return options;
   },
 };
 

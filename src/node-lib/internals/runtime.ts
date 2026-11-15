@@ -232,12 +232,6 @@ export const internalTimers = {
   },
 };
 
-/** `internal/streams/state`: Node's default high-water marks. */
-export const internalStreamsState = {
-  getDefaultHighWaterMark: (objectMode?: boolean): number => (objectMode ? 16 : 65536),
-  setDefaultHighWaterMark: (): void => {},
-};
-
 /** `internal/process/task_queues`: ticks precede the native microtask queue. */
 export const internalTaskQueues = {
   queueMicrotask: (fn: () => void): void => queueMicrotask(fn),

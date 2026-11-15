@@ -13,9 +13,9 @@
  * no network request and has no alternate host-injected binary route.
  */
 import SQLITE_WASM_DATA_URL from '@sqlite.org/sqlite-wasm/sqlite3.wasm?inline';
-import { htmlAtob as atob } from './binding/buffer';
 import { performance } from '../system';
 import { engineConsole as console } from '../system';
+import { moduleBytes } from '../module-bytes';
 
 const ENOSYS = 52;
 
@@ -39,10 +39,7 @@ let instance: SqliteC | undefined;
 function wasmBytes(): Uint8Array {
   const comma = SQLITE_WASM_DATA_URL.indexOf(',');
   if (SQLITE_WASM_DATA_URL.startsWith('data:') && comma > 0) {
-    const text = atob(SQLITE_WASM_DATA_URL.slice(comma + 1));
-    const bytes = new Uint8Array(text.length);
-    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
-    return bytes;
+    return moduleBytes(SQLITE_WASM_DATA_URL.slice(comma + 1));
   }
   throw Object.assign(new Error('No such built-in module: node:sqlite (this realm holds no SQLite build)'), { code: 'ERR_UNKNOWN_BUILTIN_MODULE' });
 }

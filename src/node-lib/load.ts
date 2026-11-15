@@ -1,6 +1,7 @@
 // First, so a file compiled while the bundle is still evaluating finds them evaluated (ADR-0015).
-import { guestScopedText } from '../code-transforms';
-import { guestScopesOf, leftToRealm, NODE_LIB_PARAMETERS } from '../guest-scope';
+import { guestScopesOf, NODE_LIB_PARAMETERS } from '../guest-scope';
+import { scopedBody, type ScopedBody } from './scoped-body';
+import { isNodeLibFile, nodeLibBody } from './bodies';
 import { createOsBinding } from './binding/misc';
 import { createProcessBinding } from './binding/process_wrap';
 import { createSpawnSyncBinding } from './binding/spawn_sync';
@@ -9,12 +10,9 @@ import { traceSocketConnect } from '../socket-connect-trace';
 /**
  * One loader for Node's own files.
  *
- * `src/shims/path.ts` is the precedent: a vendored file binds, it does not
- * implement, and a bug in it is fixed by moving the file to a newer Node.
- * `path` bound its own primordials and its own three internals by hand, which
- * is affordable for one file that names fourteen names. `net.js` names two
- * hundred, and `child_process.js` after it, so the binding is written once
- * here instead: Node's own `internal/per_context/primordials.js` builds the
+ * A vendored file binds, it does not implement, and a bug in it is fixed by
+ * moving the file to a newer Node. The binding is written once, here: Node's
+ * own `internal/per_context/primordials.js` builds the
  * whole `primordials` object over this realm's built-ins the way Node's
  * bootstrap does, and a vendored file is evaluated in the scope Node's
  * `BuiltinModule` gives one —
@@ -31,7 +29,6 @@ import { traceSocketConnect } from '../socket-connect-trace';
  * `internalBinding(name)` is the libuv-shaped surface in `./binding/`.
  */
 import PRIMORDIALS_SOURCE from './primordials.js?raw';
-import { NODE_LIB_SOURCES } from './sources';
 import { nodeLibInternal } from './internals';
 import { nodeLibBinding } from './binding';
 import { nodeLibPublic } from './public-modules';
@@ -41,7 +38,7 @@ import { transcodeFor } from './binding/transcode';
 import { createUtilBinding } from './binding/util';
 import { ownedRun, ownerOfInstance, setInstanceOwner, withNodeResourceScope } from './binding/handles';
 import { __tokenForProcess, type ProcessToken } from '../process-tokens';
-import type { Process } from '../shims/process';
+import { createProcess, type Process } from '../shims/process';
 import { createFsBindings } from './binding/fs';
 import { createDiagnosticsChannelBinding } from './binding/diagnostics_channel';
 import { createWasmWebApiBinding } from './binding/wasm_web_api';
@@ -80,8 +77,8 @@ interface NodeLibModule {
 /**
  * The loader's own state, built on first use rather than when this module is
  * evaluated. A vendored file is asked for from inside the import graph that
- * leads here -- the engine's `string_decoder` shim wants Node's `Buffer`, and
- * `Buffer` is a vendored file -- so the loader must answer whatever order the
+ * leads here -- the engine's own modules want Node's `Buffer`, and `Buffer`
+ * is a vendored file -- so the loader must answer whatever order the
  * bundler settles on. Module-scope `const`s left it in its own temporal dead
  * zone and the engine failed to load at all.
  */
@@ -111,16 +108,16 @@ function internalBinding(name: string): unknown {
 }
 
 /**
- * The process a vendored file is handed where the realm has none: the engine
- * loaded as a library, before any guest has run.
+ * The static facts of the library realm's process, answered before that
+ * process can be made.
  *
  * Node compiles a builtin inside a bootstrapped process, and Node's own files
  * read that process while they compile -- `internal/util` reads
  * `process.versions.openssl` and `process.versions.amaro` at its top, and
- * `internal/streams/state` reads `process.platform` -- so a realm with no
- * process must still answer the static facts of one. It answers only those:
- * everything a run owns -- its argv, its environment, its streams, its exit --
- * belongs to that run's own process and is answered there.
+ * `internal/streams/state` reads `process.platform` -- and the engine
+ * compiles some of them while its bundle is still evaluating, before the
+ * library realm's process can be made, so these facts are answered until it
+ * is. They are that process's own: the same platform, versions and argv.
  *
  * What made this a wall: the engine's `net-module` compiles Node's `net.js`
  * while the bundle is still evaluating, `net` requires `events` and `events`
@@ -143,43 +140,35 @@ const NODE_LIB_LIBRARY_PROCESS: Record<string, unknown> = {
 };
 
 /**
- * The `process` a vendored file is handed, built by a hoisted function for
- * the reason `nodeLibInternalRequire` gives: a file can be compiled while the
- * bundle is still evaluating, when a module-scope `var` is still undefined.
- * Node hands a builtin the process of
- * the realm it runs in; so does this, read at call time, because a guest's
- * process is installed on the realm after this module is loaded and every run
- * replaces it. Where the realm has no process at all the answer is
- * {@link NODE_LIB_LIBRARY_PROCESS}.
+ * The `process` a vendored file loaded outside any process is handed: the engine's own process for the library
+ * realm, `createProcess()` with no run (a process object no run names is the realm's own, shims/process.ts), so the
+ * library's builtins have Node's `emitWarning`, `nextTick`, `cwd` and the rest. `url.parse` warns DEP0169 on its first
+ * call; read off a page's `globalThis.process` -- the polyfill shims/child_process.ts puts there, with no
+ * `emitWarning` -- it threw. A guest's process is never this one: each guest's builtins are its own graph, given
+ * that guest's process (`NodeLibScope`).
+ *
+ * Built by a hoisted function for the reason `nodeLibInternalRequire` gives, and made on the first read of a name
+ * that is not one of {@link NODE_LIB_LIBRARY_PROCESS}'s static facts: a file compiled while the bundle is still
+ * evaluating reads only those (its platform and versions), before shims/process.ts can make a process.
  */
 var nodeLibProcessCache: Record<string, unknown> | undefined;
+var libraryProcess: Record<string, unknown> | undefined;
+function libraryProcessOf(): Record<string, unknown> {
+  return libraryProcess ??= createProcess() as unknown as Record<string, unknown>;
+}
+const isStaticFact = (key: string | symbol): boolean =>
+  libraryProcess === undefined && typeof key === 'string' && Object.prototype.hasOwnProperty.call(NODE_LIB_LIBRARY_PROCESS, key);
 export function nodeLibProcessOf(): Record<string, unknown> {
   return nodeLibProcessCache ??= new Proxy({} as Record<string, unknown>, {
-  get(_target, key) {
-    const realm = (globalThis as unknown as { process?: Record<string, unknown> }).process;
-    if (!realm) return NODE_LIB_LIBRARY_PROCESS[key as string];
-    const value = realm[key as string];
-    if (key === 'nextTick' && typeof value !== 'function') {
-      return (fn: (...args: unknown[]) => void, ...args: unknown[]) => queueMicrotask(() => fn(...args));
-    }
-    if (key === 'platform' && typeof value !== 'string') return 'linux';
-    return value;
-  },
-  set(_target, key, value) {
-    const realm = (globalThis as unknown as { process?: Record<string, unknown> }).process;
-    if (realm) realm[key as string] = value;
-    return true;
-  },
-  has(_target, key) {
-    const realm = (globalThis as unknown as { process?: Record<string, unknown> }).process;
-    return realm ? key in realm : key in NODE_LIB_LIBRARY_PROCESS;
-  },
+    get: (_target, key) => (isStaticFact(key) ? NODE_LIB_LIBRARY_PROCESS[key as string] : Reflect.get(libraryProcessOf(), key)),
+    set: (_target, key, value) => Reflect.set(libraryProcessOf(), key, value),
+    has: (_target, key) => isStaticFact(key) || Reflect.has(libraryProcessOf(), key),
   });
 }
 
 function nodeLibRequire(specifier: string): unknown {
   const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
-  if (NODE_LIB_SOURCES[name] !== undefined) return loadNodeLib(name);
+  if (isNodeLibFile(name)) return loadNodeLib(name);
   const internal = nodeLibInternal(name);
   if (internal !== undefined) {
     builtInternals ??= new Map<string, unknown>();
@@ -391,7 +380,7 @@ class NodeLibScope {
     if (name === 'path/win32') return this.require('path').win32;
     if (name === 'assert/strict') return this.require('assert').strict;
     if (name === 'util/types') return this.require('internal/util/types');
-    if (NODE_LIB_SOURCES[name] !== undefined) return this.load(name);
+    if (isNodeLibFile(name)) return this.load(name);
     const internal = nodeLibInternal(name, this.require, this.process);
     if (internal) {
       if (!this.internals.has(name)) this.internals.set(name, moduleSurface(internal()));
@@ -468,7 +457,7 @@ export function loadNodeLibFor(owner: object, name: string): any {
   return scopeFor(owner).require(name);
 }
 export function hasNodeLibModule(name: string): boolean {
-  return NODE_LIB_SOURCES[name] !== undefined || nodeLibPublic(name) !== undefined
+  return isNodeLibFile(name) || nodeLibPublic(name) !== undefined
     || ['path/posix', 'path/win32', 'assert/strict', 'util/types', 'fs/promises', 'timers/promises', 'dns/promises'].includes(name);
 }
 export function nativeModuleFor(owner: object, name: string, create: () => unknown): unknown {
@@ -486,22 +475,10 @@ export function nodeLibGlobalFor(owner: object): object {
  * inside `with` of the global scope object because they are dynamic.
  */
 interface ScopedFunction { compiled: Function; scoped: boolean }
-/**
- * Compiles `source` as the body of `function (parameters) {…}` with every free name resolved on the global it is
- * later given: the realm's own names, `globalThis`, `arguments` and the parameters are left as written, every other is
- * rewritten onto `__substrateGuestScope` and `__substrateGuestTypeof`, and a file the rewrite declines runs inside
- * `with (__substrateGuestScope)`, given the global scope object instead. Nothing a process lacks is read from the realm.
- * The function's parameter list and the names left as written are one list.
- */
-function compileScoped(parameters: readonly string[], source: string, sourceURL: string): ScopedFunction {
-  const bound = new Set([...parameters, 'globalThis', 'arguments']);
-  const prefix = `return function (${parameters.join(', ')}) {`;
-  const rewritten = guestScopedText(source, (key) => leftToRealm(key) || bound.has(key));
-  const body = rewritten === undefined
-    ? `with (__substrateGuestScope) { ${prefix}${source}\n} }\n//# sourceURL=${sourceURL}`
-    : `${prefix}${rewritten}\n}\n//# sourceURL=${sourceURL}`;
+/** A scoped body (scoped-body.ts) compiled, its outer parameters `globalThis` and the scope objects. */
+function compileBody({ body, scoped }: ScopedBody): ScopedFunction {
   // eslint-disable-next-line no-new-func
-  return { compiled: new Function('globalThis', '__substrateGuestScope', '__substrateGuestTypeof', body), scoped: rewritten !== undefined };
+  return { compiled: new Function('globalThis', '__substrateGuestScope', '__substrateGuestTypeof', body), scoped };
 }
 /** Calls a compiled file's outer function with a global and the scope objects over it. */
 function withGlobal(file: ScopedFunction, global: object): Function {
@@ -521,7 +498,7 @@ export function loadDependencyFor(owner: object, name: string, source: string, g
   return scopeFor(owner).surface(name, () => {
     let compiled = compiledDependencies.get(name);
     if (!compiled) {
-      compiled = compileScoped(['exports', 'require', 'module', 'process', ...globals], source, name);
+      compiled = compileBody(scopedBody(['exports', 'require', 'module', 'process', ...globals], source, name));
       compiledDependencies.set(name, compiled);
     }
     const global = nodeLibGlobalFor(owner) as Record<string, unknown>;
@@ -532,7 +509,7 @@ export function loadDependencyFor(owner: object, name: string, source: string, g
 }
 
 function newNodeLibRecord(name: string): NodeLibModule {
-  if (NODE_LIB_SOURCES[name] === undefined) throw new Error(`node-lib: no vendored file for '${name}'`);
+  if (!isNodeLibFile(name)) throw new Error(`node-lib: no vendored file for '${name}'`);
   return { exports: {}, id: name, filename: `node:${name}`, loaded: false };
 }
 
@@ -552,14 +529,14 @@ export function setNodeLibGlobal(of: (process: object) => object): void {
  * global as `globalThis` (a scope around the file's own, so a file that declares the name keeps its declaration).
  *
  * Every other free name the file reads is its process's global's too (ADR-0015), as Node compiles a builtin inside
- * its process's context. The file's text is rewritten for it once a realm, here (a spare pays it in
- * `precompileNodeLib`); the vendored file itself is unedited.
+ * its process's context. The file's text is rewritten for it when the library is built (bodies.ts), and compiled
+ * once a realm, here (a spare pays it in `precompileNodeLib`); the vendored file itself is unedited.
  */
 function compiledNodeLibFor(name: string): ScopedFunction {
   compiledNodeLib ??= new Map<string, ScopedFunction>();
   let compiled = compiledNodeLib.get(name);
   if (!compiled) {
-    compiled = compileScoped(NODE_LIB_PARAMETERS, NODE_LIB_SOURCES[name]!, `node:${name}`);
+    compiled = compileBody(nodeLibBody(name)!);
     compiledNodeLib.set(name, compiled);
   }
   return compiled;
@@ -570,7 +547,7 @@ function compiledNodeLibFor(name: string): ScopedFunction {
  * already compiled.
  */
 export function precompileNodeLib(name: string): boolean {
-  if (NODE_LIB_SOURCES[name] === undefined || compiledNodeLib?.has(name)) return false;
+  if (!isNodeLibFile(name) || compiledNodeLib?.has(name)) return false;
   compiledNodeLibFor(name);
   return true;
 }

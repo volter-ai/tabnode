@@ -53,10 +53,26 @@ export const isSharedView = (view: ArrayBufferView): boolean => Object.prototype
  * `Buffer.prototype.slice` is `subarray`, a view of the same shared memory.
  */
 export const unsharedBytes = (view: Uint8Array): Uint8Array => (isSharedView(view) ? new Uint8Array(view) : view);
-/** A decoder per flavour: `fatal: false` is what Node's lossy decode is. */
-const utf8Decoder = new TextDecoder('utf-8');
-const latin1Decoder = new TextDecoder('latin1');
-const ucs2Decoder = new TextDecoder('utf-16le');
+/**
+ * UTF-8 as V8's `String::NewFromUtf8` decodes it (string_bytes.cc Encode): each maximal ill-formed subpart one
+ * U+FFFD, which is the Encoding Standard's decode with `fatal: false`, and a leading U+FEFF kept as the character it
+ * is, which the Encoding Standard strips unless told `ignoreBOM`. Latin-1 and UTF-16LE are not the Encoding
+ * Standard's: its `latin1` is windows-1252 (0x80 is U+20AC, where Node's is U+0080) and its `utf-16le` strips a BOM
+ * and makes a lone surrogate U+FFFD, where Node copies the code units as they are; both are decoded here as Node's
+ * `ExternOneByteString` and `ExternTwoByteString` copy them.
+ */
+const utf8Decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+
+/** The string of code units `units`, in pieces small enough to pass as arguments. */
+function stringOfUnits(units: Uint8Array | Uint16Array): string {
+  const piece = 0x2000;
+  if (units.length <= piece) return String.fromCharCode.apply(null, units as unknown as number[]);
+  let out = '';
+  for (let at = 0; at < units.length; at += piece) {
+    out += String.fromCharCode.apply(null, units.subarray(at, at + piece) as unknown as number[]);
+  }
+  return out;
+}
 
 const HEX_DIGITS = '0123456789abcdef';
 
@@ -144,6 +160,8 @@ function hexValue(code: number): number {
 }
 
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+/** The engine's own decoder where it has one (`Uint8Array.fromBase64`, ECMAScript 2026). */
+const nativeBase64Decode = typeof (Uint8Array as { fromBase64?: unknown }).fromBase64 === 'function';
 
 /**
  * The bytes a base64 string stands for. Node reads either alphabet under
@@ -152,6 +170,13 @@ const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
  * first `=`, and ignores anything that is a digit of neither.
  */
 function base64Bytes(string: string): Uint8Array {
+  // The engine's own decoder answers a string in one alphabet, with or without padding, where it reads as Node reads
+  // it; a string it refuses (both alphabets, text past the padding, a one-digit tail) takes Node's reading below.
+  if (nativeBase64Decode) {
+    try {
+      return Uint8Array.fromBase64(string, { alphabet: string.includes('-') || string.includes('_') ? 'base64url' : 'base64', lastChunkHandling: 'loose' });
+    } catch { /* read as Node reads it */ }
+  }
   let cleaned = '';
   for (let index = 0; index < string.length; index += 1) {
     const ch = string[index] as string;
@@ -209,17 +234,19 @@ export function asciiSlice(buf: Uint8Array, start?: number, end?: number): strin
 
 export function latin1Slice(buf: Uint8Array, start?: number, end?: number): string {
   const [from, to] = clamp(buf, start as number, end as number);
-  return latin1Decoder.decode(unsharedBytes(buf.subarray(from, to)));
+  // One byte, one code unit (string_bytes.cc LATIN1: ExternOneByteString::NewFromCopy).
+  return stringOfUnits(buf.subarray(from, to));
 }
 
 export function ucs2Slice(buf: Uint8Array, start?: number, end?: number): string {
   const [from, to] = clamp(buf, start as number, end as number);
-  // A trailing odd byte is dropped, as Node drops it.
-  const whole = to - ((to - from) % 2);
-  const bytes = buf.subarray(from, whole);
-  // A view whose offset is odd cannot be a `Uint16Array`; copy that one.
-  const aligned = (bytes.byteOffset % 2) === 0 ? bytes : new Uint8Array(bytes);
-  return ucs2Decoder.decode(unsharedBytes(aligned));
+  // Two bytes, little-endian, one code unit, kept as it is; a trailing odd byte is dropped, as Node drops it
+  // (string_bytes.cc UCS2: buflen / 2 code units).
+  const units = new Uint16Array((to - from) >>> 1);
+  for (let index = 0, at = from; index < units.length; index += 1, at += 2) {
+    units[index] = (buf[at] as number) | ((buf[at + 1] as number) << 8);
+  }
+  return stringOfUnits(units);
 }
 
 export function hexSlice(buf: Uint8Array, start?: number, end?: number): string {

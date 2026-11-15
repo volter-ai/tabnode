@@ -28,7 +28,7 @@
  */
 import { LLHTTP_WASM_BASE64 } from './llhttp-wasm';
 import { suppliedHttpParserModule, httpParserUnavailable } from '../../http-parser-module';
-import { htmlAtob as atob } from './buffer';
+import { moduleBytes } from '../../module-bytes';
 
 /** llhttp's `llhttp_type`. */
 const TYPE_REQUEST = 1;
@@ -75,6 +75,12 @@ interface LlhttpExports {
   llhttp_set_lenient_chunked_length(ptr: number, on: number): void;
   llhttp_set_lenient_keep_alive(ptr: number, on: number): void;
   llhttp_set_lenient_transfer_encoding(ptr: number, on: number): void;
+  llhttp_set_lenient_version(ptr: number, on: number): void;
+  llhttp_set_lenient_data_after_close(ptr: number, on: number): void;
+  llhttp_set_lenient_optional_lf_after_cr(ptr: number, on: number): void;
+  llhttp_set_lenient_optional_crlf_after_chunk(ptr: number, on: number): void;
+  llhttp_set_lenient_optional_cr_before_lf(ptr: number, on: number): void;
+  llhttp_set_lenient_spaces_after_chunk_size(ptr: number, on: number): void;
   malloc(size: number): number;
   free(ptr: number): void;
 }
@@ -112,7 +118,7 @@ function llhttp(): LlhttpExports {
   let module = suppliedHttpParserModule();
   if (module === undefined) {
     try {
-      const binary = Uint8Array.from(atob(LLHTTP_WASM_BASE64), (character) => character.charCodeAt(0));
+      const binary = moduleBytes(LLHTTP_WASM_BASE64);
       module = new WebAssembly.Module(binary);
     } catch (error) {
       throw httpParserUnavailable(error);
@@ -192,6 +198,11 @@ export class HTTPParser {
   static readonly kLenientOptionalCRLFAfterChunk = 128;
   static readonly kLenientOptionalCRBeforeLF = 256;
   static readonly kLenientSpacesAfterChunkSize = 512;
+  /**
+   * 0, as Node exports it when its llhttp is older than 9.4, which has no `llhttp_set_lenient_header_value_relaxed`
+   * (node_http_parser.cc:1385-1394): this build is 9.3.0 (`./llhttp-wasm.ts`).
+   */
+  static readonly kLenientHeaderValueRelaxed = 0;
   static readonly kLenientAll = 1023;
 
   [kOnMessageBegin]: ParserCallback = null;
@@ -242,6 +253,12 @@ export class HTTPParser {
     exports.llhttp_set_lenient_chunked_length(this.#ptr, flags & HTTPParser.kLenientChunkedLength ? 1 : 0);
     exports.llhttp_set_lenient_keep_alive(this.#ptr, flags & HTTPParser.kLenientKeepAlive ? 1 : 0);
     exports.llhttp_set_lenient_transfer_encoding(this.#ptr, flags & HTTPParser.kLenientTransferEncoding ? 1 : 0);
+    exports.llhttp_set_lenient_version(this.#ptr, flags & HTTPParser.kLenientVersion ? 1 : 0);
+    exports.llhttp_set_lenient_data_after_close(this.#ptr, flags & HTTPParser.kLenientDataAfterClose ? 1 : 0);
+    exports.llhttp_set_lenient_optional_lf_after_cr(this.#ptr, flags & HTTPParser.kLenientOptionalLFAfterCR ? 1 : 0);
+    exports.llhttp_set_lenient_optional_crlf_after_chunk(this.#ptr, flags & HTTPParser.kLenientOptionalCRLFAfterChunk ? 1 : 0);
+    exports.llhttp_set_lenient_optional_cr_before_lf(this.#ptr, flags & HTTPParser.kLenientOptionalCRBeforeLF ? 1 : 0);
+    exports.llhttp_set_lenient_spaces_after_chunk_size(this.#ptr, flags & HTTPParser.kLenientSpacesAfterChunkSize ? 1 : 0);
     this.#reset();
     this.#connections?.remove(this);
     this.#connections = connections;

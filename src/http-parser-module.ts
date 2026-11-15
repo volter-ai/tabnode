@@ -6,7 +6,7 @@ import { traceReadingRequested, traceOutput } from './trace-output';
  * sends the module in each realm's RuntimeOptions.httpParserModule.
  */
 import { LLHTTP_WASM_BASE64 } from './node-lib/binding/llhttp-wasm';
-import { htmlAtob as atob } from './node-lib/binding/buffer';
+import { moduleBytes } from './module-bytes';
 
 // Hoisted storage also works through the engine's builtin import cycles.
 var compilation: Promise<WebAssembly.Module> | undefined;
@@ -27,7 +27,7 @@ export function prepareHttpParserModule(): Promise<WebAssembly.Module> {
 async function compile(): Promise<WebAssembly.Module> {
   try {
     compilations = (compilations ?? 0) + 1;
-    const binary = Uint8Array.from(atob(LLHTTP_WASM_BASE64), (character) => character.charCodeAt(0));
+    const binary = moduleBytes(LLHTTP_WASM_BASE64);
     const module = await WebAssembly.compile(binary);
     // A count, without timings: this line appears once in the creating
     // worker, beside one install line in each of its N receiving realms.

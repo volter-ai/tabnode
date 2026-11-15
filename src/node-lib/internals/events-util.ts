@@ -1,4 +1,3 @@
-import { readlineModule as nodeLibPublicReadline } from './readline-access';
 import { engineConsole } from '../../system';
 
 /**
@@ -101,24 +100,6 @@ export const internalSourceMapCache = {
   // Asked of a source map that was found; none ever is, so there is no line to give.
   getSourceLine: (): undefined => void 0,
 };
-
-/**
- * `internal/readline/interface`: the one name `internal/fs/promises.js`
- * takes from it, at its top, so every use of `fs/promises` needs it.
- * `filehandle.readLines()` builds one of these over the file's own stream;
- * the engine's `readline` already has that class, over the same streams.
- */
-export const internalReadlineInterface = {
-  get Interface() { return readlineInterface(); },
-};
-
-// eslint-disable-next-line no-var, vars-on-top
-var readlineInterfaceCache: unknown;
-function readlineInterface(): unknown {
-  // Required late, not imported: `readline` is an EventEmitter, and this file
-  // is on the loader's own path.
-  return readlineInterfaceCache ??= (nodeLibPublicReadline() as { Interface: unknown }).Interface;
-}
 
 /**
  * `internal/worker/js_transferable`: the marks Node puts on an object that

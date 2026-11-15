@@ -1,11 +1,55 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
+import { readFileSync } from 'fs';
+import { build as esbuild } from 'esbuild';
 import wasm from 'vite-plugin-wasm';
+
+/**
+ * Node's own files' bodies (src/node-lib/bodies.ts) made here, once, by the same scopedBody a process would run, and
+ * carried in that module's place: no process's realm parses Node's library to rewrite it.
+ */
+function nodeLibBodies() {
+  const module = resolve(__dirname, 'src/node-lib/bodies.ts');
+  return {
+    name: 'node-lib-bodies',
+    async load(id) {
+      if (id !== module) return null;
+      const maker = await esbuild({
+        stdin: {
+          contents: `import { NODE_LIB_PARAMETERS } from './src/guest-scope';
+import { scopedBody } from './src/node-lib/scoped-body';
+import { NODE_LIB_SOURCES } from './src/node-lib/sources';
+export default Object.fromEntries(Object.entries(NODE_LIB_SOURCES).map(([name, source]) => [name, scopedBody(NODE_LIB_PARAMETERS, source, \`node:\${name}\`)]));`,
+          resolveDir: __dirname,
+          loader: 'ts',
+        },
+        bundle: true,
+        format: 'esm',
+        platform: 'node',
+        write: false,
+        // A vendored file is its text, as Vite's `?raw` reads it.
+        plugins: [{
+          name: 'raw',
+          setup(build) {
+            build.onResolve({ filter: /\?raw$/ }, (args) => ({ path: resolve(args.resolveDir, args.path.slice(0, -'?raw'.length)), namespace: 'raw' }));
+            build.onLoad({ filter: /.*/, namespace: 'raw' }, (args) => ({ contents: readFileSync(args.path, 'utf8'), loader: 'text' }));
+          },
+        }],
+      });
+      const { default: bodies } = await import(`data:text/javascript;base64,${Buffer.from(maker.outputFiles[0].text).toString('base64')}`);
+      return `const BODIES = ${JSON.stringify(bodies)};
+export function nodeLibBody(name) { return BODIES[name]; }
+export function isNodeLibFile(name) { return BODIES[name] !== undefined; }
+`;
+    },
+  };
+}
 
 
 export default defineConfig({
   plugins: [
     wasm(),
+    nodeLibBodies(),
     {
       name: 'browser-shims',
       enforce: 'pre',

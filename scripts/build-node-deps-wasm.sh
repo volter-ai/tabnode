@@ -76,3 +76,5 @@ sum=$(shasum -a 256 node-deps.wasm | cut -d' ' -f1)
   printf "  '%s';\n" "$(base64 -i node-deps.wasm | tr -d '\n')"
 } > "$out"
 echo "$out: $bytes bytes, sha256 $sum"
+# Node's crypto constants are the built OpenSSL's, compiled in as Node compiles them: read from the module just made.
+node "$repo/scripts/node-crypto-constants.mjs"

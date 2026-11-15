@@ -16,6 +16,7 @@ import BUFFER from './buffer.js?raw';
 import INTERNAL_BUFFER from './internal/buffer.js?raw';
 import STREAM from './stream.js?raw';
 import STREAM_PROMISES from './stream/promises.js?raw';
+import STREAM_CONSUMERS from './stream/consumers.js?raw';
 import STREAMS_ADD_ABORT_SIGNAL from './internal/streams/add-abort-signal.js?raw';
 import STREAMS_COMPOSE from './internal/streams/compose.js?raw';
 import STREAMS_DESTROY from './internal/streams/destroy.js?raw';
@@ -82,6 +83,8 @@ import ASSERT from './assert.js?raw';
 import ASSERT_STRICT from './assert/strict.js?raw';
 import QUERYSTRING from './querystring.js?raw';
 import PUNYCODE from './punycode.js?raw';
+import STRING_DECODER from './string_decoder.js?raw';
+import URL_LEGACY from './url.js?raw';
 import NODE_CONSTANTS from './constants.js?raw';
 import DIAGNOSTICS_CHANNEL from './diagnostics_channel.js?raw';
 import INTERNAL_QUERYSTRING from './internal/querystring.js?raw';
@@ -168,6 +171,7 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/buffer': INTERNAL_BUFFER,
   'stream': STREAM,
   'stream/promises': STREAM_PROMISES,
+  'stream/consumers': STREAM_CONSUMERS,
   'internal/streams/add-abort-signal': STREAMS_ADD_ABORT_SIGNAL,
   'internal/streams/compose': STREAMS_COMPOSE,
   'internal/streams/destroy': STREAMS_DESTROY,
@@ -234,6 +238,8 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'assert/strict': ASSERT_STRICT,
   'querystring': QUERYSTRING,
   'punycode': PUNYCODE,
+  'string_decoder': STRING_DECODER,
+  'url': URL_LEGACY,
   'constants': NODE_CONSTANTS,
   'diagnostics_channel': DIAGNOSTICS_CHANNEL,
   'internal/querystring': INTERNAL_QUERYSTRING,
