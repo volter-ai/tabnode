@@ -168,11 +168,11 @@ shape (`ThrowCryptoError`: the message is `ERR_error_string_n`'s, with `library`
 - **What stays the engine's:** the loop's dispatch. The wrap's callbacks run on the realm's loop as every other
   binding's do (ADR-0003); the microtask drain is the V8 glue's (browser-substrate ADR-0218 §3).
 
-### 5. `crypto` follows on the same module
+### 5. `crypto` is Node's own, with `libnode.so`
 
-Node's `lib/internal/crypto/*` moves onto the module's OpenSSL the same way, binding by binding (hashes, HMAC,
-ciphers, `KeyObject`, sign and verify, key generation, X509, `DiffieHellman`, ECDH, KDFs), each replacing its noble or
-WebCrypto answer. Randomness is not among them in this record (§2).
+Node's `lib/internal/crypto/*`, its `KeyObject` and `X509Certificate` among them, lands as one piece over the OpenSSL
+in `libnode.so` (ADR-0018, item 7 of its order), not on this module, which ADR-0018 §1 retires. Until then this module
+carries TLS (§4), and `crypto` is the engine's own. Randomness is not among them in this record (§2).
 
 ### 6. Measured as ADR-0021 orders
 

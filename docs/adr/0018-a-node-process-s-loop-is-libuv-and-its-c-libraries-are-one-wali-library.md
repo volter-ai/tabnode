@@ -254,7 +254,12 @@ is built.
   5. `process_wrap` and `spawn_sync` over `uv_spawn`, with libuv at a267f5688b.
   6. `fs` over `uv_fs_*` and its threadpool.
   7. OpenSSL and the rest of §1 into `libnode.so`; addons through `dlopen`; the process's raw calls and
-     `linux-calls.ts` go.
+     `linux-calls.ts` go. **Crypto is Node's own, landed as one piece:** Node's `lib/internal/crypto/*`, `keys.js`'s
+     `KeyObject` and `x509.js`'s `X509Certificate` among them, over the `crypto` binding, whose glue is `libnode`'s C
+     as Node's `src/crypto/crypto_*.cc` is, over ncrypto and OpenSSL, each call answered by OpenSSL or by the device
+     as §5 says. It replaces the engine's own `crypto` (`src/shims/crypto*.ts`: `sha.js`, `@noble`, RSA in BigInt)
+     whole; until it lands, `crypto` is the engine's and what it refuses stays refused (browser-substrate VO-3806,
+     manager's ruling 2026-11-15).
 
 ## Consequences
 
