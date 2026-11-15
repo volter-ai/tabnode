@@ -8,6 +8,10 @@
 
 #define TABNODE_IMPORT(name) __attribute__((import_module("host:tabnode"), import_name(#name)))
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Runs Node's library over the bindings (Node's `node::LoadEnvironment`): answers 0, or the status to exit with.
 TABNODE_IMPORT(bootstrap) int tabnode_bootstrap(int argc, char **argv);
 // `timers_callback_function` (lib/internal/timers.js `processTimers`), called with the loop's now: the next expiry, 0
@@ -76,4 +80,24 @@ TABNODE_IMPORT(loop_idle) void tabnode_loop_idle(void);
 // microtasks, which a browser runs only between tasks, so the engine answers it by a suspension that resumes from the
 // next task (a `Suspending` import).
 TABNODE_IMPORT(drain) void tabnode_drain(void);
+// The TLS callbacks (Tabnode ADR-0016 §4, ADR-0018 item 7): what OpenSSL raises inside an SSL_* call the engine made
+// (crypto_tls.cc), which Node's TLSWrap answers in V8 synchronously, inside that call: so each is made with the
+// engine's own call on the stack, and no scope closes after it. A connection is named by its TnSsl's address
+// (crypto_util.h). TLSWrap::SSLInfoCallback (crypto_tls.cc:599-639): a handshake began (`done` 0) or completed (1).
+TABNODE_IMPORT(tls_handshake) void tabnode_tls_handshake(void *tls, int32_t done);
+// KeylogCallback (crypto_tls.cc:143-158): one NSS key log line, `length` bytes, with no newline.
+TABNODE_IMPORT(tls_keylog) void tabnode_tls_keylog(void *tls, const char *line, uint32_t length);
+// NewSessionCallback (crypto_tls.cc:160-208): the session's id and its DER.
+TABNODE_IMPORT(tls_new_session) void tabnode_tls_new_session(void *tls, const unsigned char *id, uint32_t id_length,
+                                                             const unsigned char *der, uint32_t der_length);
+// SSLCertCallback (crypto_tls.cc:210-247): the ClientHello's servername and whether it asked for OCSP. Answers 1 to
+// continue the handshake, -1 to suspend it until CertCbDone.
+TABNODE_IMPORT(tls_cert) int32_t tabnode_tls_cert(void *tls, const char *servername, uint32_t length, int32_t ocsp);
+// SelectALPNCallback's JavaScript branch (crypto_tls.cc:249-302): the offered protocols; answers the offset of the
+// chosen one in them, or -1 for a fatal alert.
+TABNODE_IMPORT(tls_alpn) int32_t tabnode_tls_alpn(void *tls, const unsigned char *protocols, uint32_t length);
+
+#ifdef __cplusplus
+}
+#endif
 #endif

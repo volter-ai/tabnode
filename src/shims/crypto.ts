@@ -73,7 +73,7 @@ const kRandomChunk = 65536;
 /**
  * Node's Web Crypto, `globalThis.crypto` and `crypto.webcrypto`: its randomness is the system's (getrandom, ADR-0017),
  * never the realm's `crypto.getRandomValues`. Its SubtleCrypto is still the realm's, taken when this module loads: the
- * one realm interface a kernel's host program keeps until Node's own webcrypto runs over node-deps' OpenSSL
+ * one realm interface a kernel's host program keeps until Node's own webcrypto runs over libnode.so's OpenSSL
  * (browser-substrate ADR-0227 §4, what the strip keeps and why).
  */
 const webcrypto = {

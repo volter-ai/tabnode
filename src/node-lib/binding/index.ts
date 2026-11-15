@@ -86,7 +86,7 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   task_queue: () => taskQueueBinding,
   zlib: () => zlibBinding,
   modules: () => modulesBinding,
-  // Node's TLS over node-deps.wasm (ADR-0016 §4): `crypto` as far as `tls` reaches it, `tls_wrap`, and the
+  // Node's TLS over OpenSSL in the process's libnode.so (ADR-0016 §4, ADR-0018 item 7): `crypto` as far as `tls` reaches it, `tls_wrap`, and the
   // JSStream a TLS socket over a JavaScript stream is made of.
   crypto: () => cryptoBinding,
   tls_wrap: () => tlsWrapBinding,

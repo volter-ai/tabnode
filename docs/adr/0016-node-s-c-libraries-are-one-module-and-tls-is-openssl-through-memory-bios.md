@@ -1,6 +1,7 @@
 # ADR-0016: Node's C libraries are one module built from Node's deps, and TLS is OpenSSL through memory BIOs
 
-Status: Accepted.
+Status: Accepted; §1, §2 and §3 amended by ADR-0018 item 7: Node's C libraries are `libnode.so` in the process's
+memory, and the export layer is the `node` program's.
 
 Date: 2026-11-10. Served: browser-substrate ADR-0218 §1 and §3 (browser-substrate PR #276, "Tabnode is Node's facade,
 and it has no real fallback in a tab"; "Tabnode's V8 glue is a declared subset with named refusals") and ROADMAP 109,
@@ -56,64 +57,71 @@ Basis: the Node-fidelity study and its independent review (card VO-3806's commen
 
 ## Decision
 
-### 1. One module, built from Node's own `deps/`, with no linker
+### 1. Node's C libraries are `libnode.so`, built from Node's own `deps/`
 
-`node-deps.wasm` is one WebAssembly module holding the C libraries Node links that never reach the kernel, built from
-Node v24.21.0's own source tarball (pinned by digest) by `scripts/build-node-deps-wasm.sh`:
+OpenSSL 3.5.8 (`deps/openssl/openssl`) and ncrypto (`deps/ncrypto`) are in `libnode.so`, the one WALI shared library
+of Node's C in the Node process's memory (ADR-0018 §1), built from Node v24.21.0's own source tarball (pinned by
+digest) by `scripts/build-libnode.sh` with the WALI SDK, and linked whole into it, as gyp links every static
+dependency of Node's shared library (`node.gyp:1141`), so the program and an addon find all of OpenSSL in the image.
+The rest of ADR-0018 §1's libraries (llhttp, Ada, zlib, brotli, zstd, nghttp2) join it in that record's order.
 
-- **Now:** OpenSSL 3.5.8 (`deps/openssl/openssl`), ncrypto (`deps/ncrypto`), and the engine's export layer
-  (`scripts/node-deps/tabnode_deps.cc`, §3).
-- **Then, in the row's order, into the same module:** llhttp 9.4.3 and Ada 4.0.0 whole (`deps/llhttp`, `deps/ada`;
-  `http_parser` and a vendored `internal/url`), so their two memories go; zlib (Node's Chromium fork), brotli 1.2.0
-  and zstd 1.5.7 (`deps/zlib`, `deps/brotli`, `deps/zstd`; the `zlib` binding, and OpenSSL's certificate compression
-  as Node configures it); nghttp2 1.70.0 (`deps/nghttp2`; Node's own `http2` JavaScript).
-- **Toolchain:** wasi-sdk 34.0, the release ADR-0009 §3 already pins for Ada, digest-checked, targeting
-  `wasm32-wasip1` as a reactor. The libraries are linked statically with one libc (wasi-libc) and one allocator, as
-  the `node` executable links them, into a memory of the module's own, not shared. The module imports nothing but
-  WASI's calls (§2) and the engine's TLS callbacks (§4); nothing links it, and nothing else is loaded into it.
-- **Why not the WALI library now.** A WALI library is a process image's part, loadable only by a linker the Linux host
-  lacks. The libraries that need the kernel (SQLite over files, `getaddrinfo`, c-ares, native addons) wait for that
-  linker (browser-substrate ROADMAP 109). When it lands, this module is rebuilt from the same sources and the same
-  configuration by the WALI SDK as the host image's main, so addons resolve libc and malloc against one image
-  (browser-substrate ADR-0231 §3). That rebuild is the linker's change, not this record's.
-- **OpenSSL's configuration is Node's, with each difference named.** `linux-generic32` (wasm32 is ILP32) with Node's
-  options, and `no-asm` as Node's own no-asm configurations have it. A module with no dynamic loader, no threads and
-  no sockets adds `no-dso no-threads no-sock no-async no-secure-memory no-ui-console no-apps`, and so leaves out
-  `enable-fips`, whose provider is a loadable module. Each loss is refused by name in the engine, never approximated
-  (browser-substrate ADR-0218 §3): `crypto.setFips(true)` and `--enable-fips`/`--force-fips`; `--secure-heap`
-  (`crypto.secureHeapUsed()` reports none); engines (`crypto.setEngine`, `clientCertEngine`, `privateKeyEngine`);
-  an OpenSSL configuration file (`--openssl-config`, `OPENSSL_CONF`), since the module reads no files. `zlib`,
-  `enable-brotli` and `enable-zstd` are left out until those libraries enter the module; until then
-  `getCertificateCompressionAlgorithms()` answers the empty list the built OpenSSL has, and a `certificateCompression`
-  option naming an algorithm is refused by name. Node's own `doc/build.info` is absent from its stripped tree; the build writes an
-  empty one in its scratch copy so `Configure` runs, and compiles nothing differently.
+- **C++ runtime.** ncrypto and the glue (§3) are C++ (Node's `-std=gnu++20 -fno-rtti -fno-exceptions`), over the WALI
+  SDK's one C++ runtime, libc++ and libc++abi from browser-substrate's side-module toolchain (its ADR-0231 §1), which
+  the build takes as an input; each module links what it uses of it, as a side module does (ADR-0231 §3).
+- **OpenSSL's configuration is Node's, with each difference named.** Node's options (`deps/openssl/config/
+  Makefile:33-36`: `no-tests no-shared no-afalgeng enable-ssl-trace enable-fips`) with `no-asm`, as Node's own no-asm
+  configurations have it, and Node's defines (`openssl.gyp`: `OPENSSL_NO_HW`, `OPENSSL_API_COMPAT=0x10100001L`,
+  `STATIC_LEGACY`; `openssl_common.gypi`: `TERMIOS`, OPENSSLDIR `/etc/ssl`; `common.gypi`: `OPENSSL_THREADS`, and no
+  `OPENSSL_NO_PINSHARED`, as for a shared libnode). The legacy provider is built in, as Node's libopenssl holds it.
+  The differences:
+  - `linux-generic64`, where Node configures its host's target: `wasm32-linux-muslwali` has a 64-bit `long` and
+    32-bit pointers, OpenSSL's `SIXTY_FOUR_BIT_LONG`, the target browser-substrate's own OpenSSL recipe takes.
+  - `no-zlib no-brotli no-zstd`, where Node's has `zlib`, `enable-brotli` and `enable-zstd` over its own deps for
+    RFC 8879 certificate compression: those libraries are not yet in `libnode.so`, so
+    `getCertificateCompressionAlgorithms()` answers the empty list the built OpenSSL has, and a
+    `certificateCompression` option naming an algorithm is refused by name.
+  - MODULESDIR is the image's `/usr/lib/ossl-modules`, where Node's names its build tree, and ENGINESDIR
+    `/usr/lib/engines-3` where Node's gyp says `/dev/null`, which no code reads, since `no-shared` configures no
+    dynamic engine, as Node's does.
+  - Node's tree is stripped of `doc/`; `Configure` reads `doc/build.info`, so the build writes an empty one in its
+    scratch copy, which compiles nothing differently.
 
-### 2. Instantiated once per realm; bytes cross by copy
+### 2. In the process's memory; bytes cross by copy
 
-- The module is compiled once per worker, on the realm's first TLS or crypto call, and instantiated once per realm.
-  Every `SecureContext` and `TLSWrap` of the realm lives in that instance's memory; nothing of it crosses realms, so
-  a realm's end frees it with the realm.
-- Bytes cross by copy, as llhttp's and Ada's do: a `Buffer` is copied into the module's memory for a call and the
-  answer is copied out. A `Buffer` is never placed in the module's memory, and the module's memory is not shared, so
-  every WebIDL API without `[AllowShared]` can still read what it hands out.
-- **WASI imports.** `random_get` is the engine's one randomness source and `clock_time_get` its one clock, taken as
-  they are: this record does not decide them (timers, clocks, randomness and the console are designed separately),
-  and when that design moves them the module follows. `fd_write` answers `ENOSYS` (OpenSSL writes nothing it needs
-  read; `enableTrace` output reaches the program through the engine, §4). `environ_*` answer an empty environment;
-  `proc_exit` and `abort` throw an error naming the module. Every other WASI call answers `ENOSYS`.
+- Every `SecureContext` and `TLSWrap` of a process lives in its memory, made with its `malloc`, as a Node process's
+  do; a process's end frees them with it.
+- Bytes cross by copy through the program's one door (ADR-0018, "For the host": `read` and `write`): a `Buffer` is
+  copied into the process's memory for a call and the answer copied out, since a browser's APIs refuse a view of
+  shared memory. A `Buffer` is never placed in the process's memory.
+- **The kernel's calls.** OpenSSL's randomness is its own seeding over `getrandom`, its clock `clock_gettime`, its
+  configuration file and its modules the process's files, each the kernel's call through `libc.so`, as a Linux
+  process's OpenSSL makes them. The process's OpenSSL is started as Node starts it (`src/node.cc:1183-1266`: the
+  configuration file `OPENSSL_CONF` names, else OpenSSL's default under OPENSSLDIR, its `nodejs_conf` section) and
+  InitCryptoOnce, at the bindings' first use, where Node starts it before the environment: the engine's options are
+  parsed in the realm, and no OpenSSL call comes before. The engine's option table carries none of
+  `--openssl-config`, `--openssl-shared-config`, `--openssl-legacy-provider` and `--secure-heap`, so OpenSSL starts
+  as Node's does when none is given.
+- **A realm the host gives no `node` program has no OpenSSL**, as a Node built without it: `process.versions.openssl`
+  answers none, so Node's `https` and `tls` refuse with `ERR_NO_CRYPTO` (`assertCrypto`), the `constants` binding's
+  `crypto` group is the empty one such a Node defines, and a binding over OpenSSL answers that the realm has no
+  program.
 
 ### 3. The export layer is Node's C++ with its V8 half removed
 
-`tabnode_deps.cc` exports flat C functions (`tn_*`) whose bodies are the OpenSSL half of Node's
-`crypto_context.cc` and `crypto_tls.cc`, line for line where the C++ is OpenSSL, each function naming the lines it
-carries; the V8 half (argument unwrapping, `Local<Object>` results, `MakeCallback`) is the binding's JavaScript. Where
-ncrypto already has the code (`X509View`, `SSLPointer`, `BIOPointer`, `CSPRNG`, the cipher and curve lists), the
-export layer calls ncrypto. The certificate half, Node's `X509ToObject` and the issuer walk of `GetPeerCert`
-(`crypto_x509.cc:611-855`, `crypto_common.cc:80-171`), is carried the same way, so `getPeerCertificate()` answers
-the object `tls.checkServerIdentity` reads. Errors come back as OpenSSL's error queue, read by the binding into Node's own error
-shape (`ThrowCryptoError`: the message is `ERR_error_string_n`'s, with `library`, `reason` and `code`).
+The `node` program's `native/node/crypto_util.cc`, `crypto_context.cc`, `crypto_cipher.cc`, `crypto_tls.cc`,
+`crypto_x509.cc` and `node_constants.cc` export flat C functions (`tabnode_*`) whose bodies are the OpenSSL half of
+Node's files of those names, line for line where the C++ is OpenSSL, each function naming the lines it carries; the V8
+half (argument unwrapping, `Local<Object>` results, `MakeCallback`) is the bindings' TypeScript over
+`src/node-lib/binding/openssl.ts`. Where ncrypto already has the code (`X509View`, `SSLPointer`, `BIOPointer`,
+`CSPRNG`, the cipher and curve lists), the glue calls ncrypto. The certificate half, Node's `X509ToObject` and the
+issuer walk of `GetPeerCert` (`crypto_x509.cc:611-855`, `crypto_common.cc:80-171`), is carried the same way, so
+`getPeerCertificate()` answers the object `tls.checkServerIdentity` reads. Errors come back as OpenSSL's error queue,
+read by the binding into Node's own error shape (`ThrowCryptoError`: the message is `ERR_error_string_n`'s, with
+`library`, `reason` and `code`). Node's crypto constants are `DefineCryptoConstants` compiled into the program
+against the OpenSSL it links (`node_constants.cc:866-1091`, extracted by the build), as Node compiles them into its
+binary; `--tls-cipher-list` is Node's `DEFAULT_CIPHER_LIST_CORE` from the same source.
 
-### 4. TLS: Node's own JavaScript over `tls_wrap` and `SecureContext` bindings on the module
+### 4. TLS: Node's own JavaScript over `tls_wrap` and `SecureContext` bindings on OpenSSL
 
 - **Node's own files.** `tls.js`, `_tls_common.js`, `_tls_wrap.js`, `internal/tls/{common,secure-context,wrap}.js` and
   `internal/js_stream_socket.js` are vendored unmodified from v24.21.0. `src/shims/tls.ts`, its `DuplexStreamHandle`
@@ -126,25 +134,24 @@ shape (`ThrowCryptoError`: the message is `ERR_error_string_n`'s, with `library`
   `EncOut`); writes are `DoWrite`'s, completing when `EncOut`'s write to the underlying stream does
   (`InvokeQueued`); `shutdown` is `close_notify` and then the underlying stream's. `onhandshakestart`,
   `onhandshakedone`, `onnewsession`, `onkeylog`, `oncertcb`, `onerror` and `ALPNCallback` are called where Node calls
-  them; OpenSSL reaches them through the module's `tabnode` imports, synchronously, inside the `SSL_*` call that
-  raised them, as in Node. Where Node defers to `SetImmediate` (a write the underlying stream finished synchronously,
-  `EncOut` inside `DoWrite`), the binding defers to its binding turn, as the engine's stream bindings do.
+  them; OpenSSL reaches them through the program's `tls_*` imports (`host:tabnode`, ADR-0018 "For the host"),
+  synchronously, inside the `SSL_*` call that raised them, as in Node. Where Node defers to `SetImmediate` (a write
+  the underlying stream finished synchronously, `EncOut` inside `DoWrite`), the binding defers to its binding turn, as
+  the engine's stream bindings do.
 - **`internalBinding('crypto')`** (`src/node-lib/binding/crypto.ts`) is, for now, what `tls` reaches: `SecureContext`
-  (an `SSL_CTX` in the module, initialised as `SecureContext::Init`), the root-certificate calls and `getSSLCiphers`.
-  An error Node throws from C++ is made as its `THROW_ERR_*` makes it, the message as given with its `code`. The
-  binding's `crypto` constants group is Node's `DefineCryptoConstants`, compiled against the built OpenSSL
-  (`node_constants.cc:866-1091`, extracted by the build); the options table answers Node's TLS options, with
-  `--tls-cipher-list` Node's `DEFAULT_CIPHER_LIST_CORE` from the same source.
+  (an `SSL_CTX` in the process's memory, initialised as `SecureContext::Init`), the root-certificate calls and
+  `getSSLCiphers`. An error Node throws from C++ is made as its `THROW_ERR_*` makes it, the message as given with its
+  `code`. The binding's `crypto` constants group is §3's; the options table answers Node's TLS options.
 - **A context lives as Node's does.** A `SecureContext`'s `SSL_CTX` reference is released by `close()` or when the
   object is collected (a `FinalizationRegistry`), and a connection holding the context keeps the `SSL_CTX`, whose own
   ex_data owns the context's ticket keys, so a connection never outlives what its callbacks read.
 - **`internalBinding('js_stream')`** is Node's `JSStream`, which Node's own `JSStreamSocket` drives (ADR-0013 §2).
 - **The root store is the image's bundle plus `NODE_EXTRA_CA_CERTS`, as Node's `--use-openssl-ca` makes it.** The
   store a client verifies against is `/etc/ssl/certs/ca-certificates.crt` with the file `NODE_EXTRA_CA_CERTS` names,
-  read through the process's files once for the realm's instance, and the options table answers `--use-openssl-ca`
+  read through the process's files once for the process, and the options table answers `--use-openssl-ca`
   true, so `tls.getCACertificates('default')` agrees with it. *Why:* an image lays its World's CA in that bundle, so
   a World twin's certificate verifies as the image's own programs verify it; Node's default, its bundled store
-  (`getBundledRootCertificates()`, compiled into the module), would refuse every twin. Node's default as a realm's
+  (`getBundledRootCertificates()`, compiled into the program), would refuse every twin. Node's default as a realm's
   roots is browser-substrate ROADMAP's "96's Node bundled root store", a named difference until then.
   `tls.setDefaultCACertificates()` replaces the store as Node's `ResetRootCertStore` does.
 - **`InternalX509Certificate` is refused by name until `crypto` is OpenSSL's.** `internal/tls/wrap.js` takes it from
@@ -162,50 +169,38 @@ shape (`ThrowCryptoError`: the message is `ERR_error_string_n`'s, with `library`
   `net.Server` holding `_sharedCreds`, the SecureContext Node's `tls.Server` keeps, answers TLS (`listensWithTls`).
 - **Refused by name, each an open defect, not a platform limit:** a server's session resumption events
   (`resumeSession`, `newSession`: Node's ClientHello parser is not carried), PSK, OCSP stapling (`requestOCSP`,
-  `OCSPRequest`), `enableTrace`/`--trace-tls`, `pfx`, certificate compression (until zlib, brotli and zstd enter the
-  module), `getSharedSigalgs()`. Engines are refused by Node's own `ERR_CRYPTO_CUSTOM_ENGINE_NOT_SUPPORTED`, the
-  build having none.
+  `OCSPRequest`), `enableTrace`/`--trace-tls`, `pfx`, certificate compression (until zlib, brotli and zstd enter
+  `libnode.so`), `getSharedSigalgs()`. Engines are refused by Node's own `ERR_CRYPTO_CUSTOM_ENGINE_NOT_SUPPORTED`,
+  the build having none.
 - **What stays the engine's:** the loop's dispatch. The wrap's callbacks run on the realm's loop as every other
   binding's do (ADR-0003); the microtask drain is the V8 glue's (browser-substrate ADR-0218 §3).
 
 ### 5. `crypto` is Node's own, with `libnode.so`
 
 Node's `lib/internal/crypto/*`, its `KeyObject` and `X509Certificate` among them, lands as one piece over the OpenSSL
-in `libnode.so` (ADR-0018, item 7 of its order), not on this module, which ADR-0018 §1 retires. Until then this module
-carries TLS (§4), and `crypto` is the engine's own. Randomness is not among them in this record (§2).
+in `libnode.so` and the program's glue of §3 (ADR-0018, item 7 of its order). Until then `crypto` is the engine's own,
+and TLS (§4) is the part of the OpenSSL binding that runs.
 
 ### 6. Measured as ADR-0021 orders
 
 Each step is a move from the engine's own module to Node's file, measured before and after by Node's own
 `test/parallel/test-tls-*`, `test-https-*` and `test-crypto-*` through `scripts/node-tests.mjs`, when a measurement
-is asked for. `process.versions.openssl` names the built OpenSSL (`3.5.8`), and the other `process.versions` entries
-name what runs (browser-substrate ADR-0218 §3).
+is asked for. `process.versions.openssl` names the OpenSSL that runs, read from `libnode.so` as Node's
+GetOpenSSLVersion reads it (`3.5.8`), and the other `process.versions` entries name what runs (browser-substrate
+ADR-0218 §3).
 
 ## Where the evidence stops
 
-- Built on 2026-11-15 by `scripts/build-node-deps-wasm.sh` alone (wasi-sdk 34.0 arm64-macos, as it fetches it): OpenSSL
-  3.5.8 from Node v24.21.0's `deps/openssl` with the configuration in §1, ncrypto and the export layer, linked into
-  `node-deps.wasm`, 2,446,826 bytes (sha256 `42ee5ea3…c286c`, 3.3 MB as the base64 the bundle carries, one string
-  literal). Two builds in different scratch directories gave the same bytes. The module committed before it, 3,002,593
-  bytes, was built on another machine whose environment is not recorded, and the script does not reproduce it: it
-  lacks the bulk-memory sections (`datacount`, `target_features`) wasi-sdk 34's compiler emits, and holds 1,449 bytes
-  of globals against 8 and 500 KB more code, a compiler other than the one the script fetches or configured otherwise.
-  The tab readings below were taken on that module and are not yet read again on this one. Its imports are WASI's (`random_get`, `clock_time_get`, `environ_*`, `proc_exit`, and the file calls
-  OpenSSL's loaders reach) and the five `tabnode` callbacks. Its compile and instantiation times are not yet read in
-  a tab.
-- Built: the module, its realm loader (`src/node-lib/binding/node-deps.ts`), the `tls_wrap`, `crypto` and
-  `js_stream` bindings, the vendored tls files, and the rewiring (§4). The engine builds with the repository's build;
-  no suite, test or typecheck was run (AGENTS.md).
-- Run in the tab on 2026-11-10 through browser-substrate's fast-try door (`dev/image-tab/try.mjs`, Chrome, the
-  `small` image), each a `node -e` with a `tls.createServer`/`https.createServer` on 127.0.0.1:8443 (a throwaway
-  self-signed EC certificate for `localhost`) and a client over a kernel TCP connection; readings under
-  `~/Library/Caches/browser-substrate/try/runs/2026-11-10T19-32-*`, on the pack of this record's head:
-  - `ca` given: `client got: hello over TLSv1.3 authorized: true cipher: TLS_AES_256_GCM_SHA384`;
-  - no `ca`: `client error: DEPTH_ZERO_SELF_SIGNED_CERT | self-signed certificate`;
-  - `rejectUnauthorized: false`: `client got: hello over TLSv1.3 authorized: false authorizationError:
-    DEPTH_ZERO_SELF_SIGNED_CERT`;
-  - `https.get` with `ca`: `https status: 200 body: hello over TLSv1.3 for GET /probe authorized: true`.
-  Not yet run: a client to a World twin or a granted host (Rallly's `prisma migrate deploy`).
+- **Built, not run:** `scripts/build-libnode.sh`'s OpenSSL, ncrypto and glue (§1, §3), the bindings over
+  `src/node-lib/binding/openssl.ts`, and the `tls_*` imports. Whether OpenSSL configures and compiles as §1 says under
+  the WALI SDK, and whether the program links against the side-module toolchain's C++ runtime, is not read: the build
+  takes that toolchain as an input, and none was prepared on the machine this was written on.
+- **Run in the tab on 2026-11-10, over the earlier module this record's §1 replaced** (Chrome, browser-substrate's
+  fast-try door, the `small` image), a `tls.createServer`/`https.createServer` on 127.0.0.1:8443 with a self-signed EC
+  certificate and a client over a kernel TCP connection: with `ca`, `hello over TLSv1.3 authorized: true cipher:
+  TLS_AES_256_GCM_SHA384`; with none, `DEPTH_ZERO_SELF_SIGNED_CERT`; with `rejectUnauthorized: false`, authorized
+  false; `https.get` with `ca`, status 200. The bindings' TypeScript is the same; its OpenSSL half is now the
+  program's, not yet run.
 - The cost of wasm against native crypto is not measured: WebCrypto and the browser's TLS run native, and WebAssembly
   has no AES or SHA instructions. ADR-0218 §0 makes speed the objective, so the asynchronous WebCrypto answers are
   not retired before that number is read.

@@ -270,7 +270,7 @@ Read in Node v24.21.0's own sources (`deps/uv/src/unix/tcp.c`, `stream.c`, `udp.
   and IPv6 addresses, `internal` for a loopback interface, `mac` from the hardware address, `scopeid` from
   `sin6_scope_id`.
 - **`tls`**: a process's TLS is Node's own `lib/tls.js` and `lib/internal/tls/*.js` over OpenSSL 3.5.8 in the
-  realm's node-deps.wasm, driven through memory BIOs as Node's `TLSWrap` drives it (ADR-0016), so it is the library
+  process's libnode.so (ADR-0018 item 7), driven through memory BIOs as Node's `TLSWrap` drives it (ADR-0016), so it is the library
   inside the process over a connection the kernel only carries, as a Linux process's is. A `TLSSocket` is a
   `net.Socket` whose handle is a TLSWrap over the TCP handle of a kernel connection: one it makes with Node's own `net`
   to any destination, one a TLS server accepted, or the socket it was given (a JavaScript stream through Node's own
@@ -402,5 +402,5 @@ And for identity: its `ProcessRegistry.lookup(pid)` reads the kernel's process t
   DNS exchange per lookup (no cache, as glibc keeps none) is fast enough for a boot's lookups.
 - **Not built in `udp_wrap`:** IPv6 source-specific multicast membership answers `ENOSYS`: the binding does not
   yet lay out `struct group_source_req` in the kernel's WALI form, which is x86-64's (browser-substrate ADR-0227 §2).
-- **`tls`** is OpenSSL in `node-deps.wasm` through memory BIOs (ADR-0016 §4); what it does not carry yet is that
+- **`tls`** is OpenSSL in `libnode.so` through memory BIOs (ADR-0016 §4); what it does not carry yet is that
   ADR's list, each an open defect, not a platform limit.
