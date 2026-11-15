@@ -50,6 +50,12 @@ export interface TreeSystem {
    * no later than it, and calls `due` once it has come, from a turn of its own (no caller on the stack).
    */
   wake(deadline: number | null, due: () => void): void;
+  /**
+   * `run`, once, when the process's loop next has nothing to do now and would wait, as libuv asks whether its loop is
+   * alive before it blocks (`uv__loop_alive`): a run's end is decided then. Absent on the realm's system, whose run
+   * looks on a timer.
+   */
+  idle?(run: () => void): void;
   /** The process's trace, a line at a time; null where none is selected. */
   readonly trace: ((line: string) => void) | null;
 }
@@ -248,9 +254,21 @@ export function carryTimerCallbacks(carry: Carrier): void { carrier = carry; }
 const carry = (fn: unknown, kind: 'setTimeout' | 'setInterval' | 'setImmediate'): Callback =>
   typeof fn !== 'function' ? () => {} : carrier ? carrier(fn as Callback, kind) : fn as Callback;
 
+/**
+ * Messages posted to a port the process listens to and not yet delivered (guest-message-ports.ts). The worker delivers
+ * them from its task queue, which runs only between the loop's turns, so each is work due now, as a Node port's message
+ * is its handle's (src/node_messaging.cc, a MessagePort's uv_async_t): the loop does not wait while one is queued.
+ */
+let messagesDue = 0;
+export function portMessagesDue(change: number): void {
+  if (change === 0) return;
+  messagesDue += change;
+  scheduleWake();
+}
+
 function scheduleWake(): void {
   let nearest: number | null = null;
-  if (immediates.size > 0 || completions.length > 0) nearest = 0;
+  if (immediates.size > 0 || completions.length > 0 || messagesDue > 0) nearest = 0;
   else for (const timer of timers.values()) if (nearest === null || timer.due < nearest) nearest = timer.due;
   current.wake(nearest, runDue);
 }

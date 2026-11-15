@@ -1,7 +1,7 @@
 declare global {
   interface Uint8ArrayConstructor {
     /** ECMAScript 2026's base64 decode (Chrome 140, Firefox 133, Safari 18.2, Node 25). */
-    fromBase64(text: string): Uint8Array<ArrayBuffer>;
+    fromBase64(text: string, options?: { alphabet?: 'base64' | 'base64url'; lastChunkHandling?: 'loose' | 'strict' | 'stop-before-partial' }): Uint8Array<ArrayBuffer>;
   }
 }
 

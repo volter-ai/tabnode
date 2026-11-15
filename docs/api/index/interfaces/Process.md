@@ -858,10 +858,6 @@ Node's `process.umask()`: the file-mode mask this process creates with.
 
 > **v8**: `string`
 
-#### webcontainer?
-
-> `optional` **webcontainer?**: `string`
-
 ## Methods
 
 ### \_getActiveHandles()

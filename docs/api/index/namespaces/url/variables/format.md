@@ -4,15 +4,19 @@
 
 [@volter/tabnode](../../../../README.md) / [index](../../../README.md) / [url](../README.md) / format
 
-# Function: format()
+# Variable: format
 
-> **format**(`urlObject`): `string`
+> `const` **format**: (`urlObject`, `options?`) => `string`
 
 ## Parameters
 
 ### urlObject
 
-[`UrlObject`](../interfaces/UrlObject.md)
+[`UrlObject`](../interfaces/UrlObject.md) \| `URL` \| `string`
+
+### options?
+
+`Record`\<`string`, `unknown`\>
 
 ## Returns
 

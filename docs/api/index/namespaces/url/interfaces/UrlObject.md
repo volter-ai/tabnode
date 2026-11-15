@@ -6,9 +6,6 @@
 
 # Interface: UrlObject
 
-Node.js url module shim
-Uses browser's built-in URL API
-
 ## Properties
 
 ### auth?
@@ -37,7 +34,7 @@ Uses browser's built-in URL API
 
 ### href?
 
-> `optional` **href?**: `string`
+> `optional` **href?**: `string` \| `null`
 
 ***
 
@@ -55,7 +52,7 @@ Uses browser's built-in URL API
 
 ### port?
 
-> `optional` **port?**: `string` \| `null`
+> `optional` **port?**: `string` \| `number` \| `null`
 
 ***
 

@@ -13,14 +13,16 @@
 ## Variables
 
 - [default](variables/default.md)
-- [URL](variables/URL.md)
+- [domainToASCII](variables/domainToASCII.md)
+- [domainToUnicode](variables/domainToUnicode.md)
+- [fileURLToPath](variables/fileURLToPath.md)
+- [format](variables/format.md)
+- [parse](variables/parse.md)
+- [pathToFileURL](variables/pathToFileURL.md)
+- [resolve](variables/resolve.md)
+- [resolveObject](variables/resolveObject.md)
+- [Url](variables/Url.md)
+- [URL](variables/URL-1.md)
 - [URLPattern](variables/URLPattern.md)
 - [URLSearchParams](variables/URLSearchParams.md)
-
-## Functions
-
-- [fileURLToPath](functions/fileURLToPath.md)
-- [format](functions/format.md)
-- [parse](functions/parse.md)
-- [pathToFileURL](functions/pathToFileURL.md)
-- [resolve](functions/resolve.md)
+- [urlToHttpOptions](variables/urlToHttpOptions.md)

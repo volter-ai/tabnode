@@ -2,9 +2,18 @@
 import { __reportUncaughtException } from './shims/process';
 import { withGuestCallback } from './guest-loop';
 import { markUntransferable, isUntransferable, validateTransferList } from './transfer-ownership';
+import { onKernel, portMessagesDue } from './system';
 
 type Port = Record<string, any>;
-type PortState = { port: Port; referenced: boolean; closed: boolean; close: () => void };
+/**
+ * A tracked port. `peer`: the other end of the guest channel that made it; `due`: messages posted to it and not yet
+ * delivered; `started` and `listening`: whether the worker delivers to it and the program listens; `moved`: sent away
+ * in a message, so its messages are no longer this process's.
+ */
+type PortState = {
+  port: Port; referenced: boolean; closed: boolean; close: () => void;
+  peer?: PortState; due: number; started: boolean; listening: boolean; moved: boolean;
+};
 const owned = new WeakMap<object, Set<PortState>>();
 const tracked = new WeakMap<object, PortState>();
 const globals = new WeakMap<object, { MessageChannel: any; MessagePort: any }>();
@@ -29,15 +38,42 @@ function track(process: object, port: Port): Port {
   for (const key of ['ref', 'unref', 'start', 'close', 'on', 'addListener', 'once', 'prependListener', 'prependOnceListener', 'removeListener', 'off', 'removeAllListeners', 'addEventListener', 'removeEventListener', 'postMessage', 'emit']) {
     if (typeof port[key] === 'function') original[key] = port[key].bind(port);
   }
-  const state: PortState = { port, referenced: false, closed: false, close: () => port.close() };
+  const state: PortState = { port, referenced: false, closed: false, close: () => port.close(), due: 0, started: false, listening: false, moved: false };
   tracked.set(port, state);
   collection.add(state);
-  const release = () => { state.closed = true; state.referenced = false; collection.delete(state); };
+  // On a kernel, a message on its way to a port the program listens to is its loop's work until the worker delivers
+  // it (system.ts `portMessagesDue`). A listener of the engine's own, beside the program's while it listens, sees
+  // each delivery; the program's listeners, their identities and Node's references are untouched.
+  const counter = () => { if (state.due > 0) { state.due--; if (state.listening) portMessagesDue(-1); } };
+  const listen = (on: boolean) => {
+    if (on === state.listening) return;
+    state.listening = on;
+    if (on) { original.addEventListener?.('message', counter); portMessagesDue(state.due); return; }
+    original.removeEventListener?.('message', counter);
+    // A started port with no listener delivers to none: what was on its way is gone with it.
+    portMessagesDue(-state.due);
+    state.due = 0;
+  };
+  const release = () => { listen(false); state.closed = true; state.referenced = false; collection.delete(state); };
   const define = (key: string, value: unknown) => Object.defineProperty(port, key, { value, writable: true, configurable: true });
   define('postMessage', (value: unknown, transfer?: unknown[] | { transfer?: unknown[] }) => {
-    validateTransferList(Array.isArray(transfer) ? transfer : transfer?.transfer);
-    return original.postMessage(value, transfer);
+    const list = Array.isArray(transfer) ? transfer : transfer?.transfer;
+    validateTransferList(list);
+    const result = original.postMessage(value, transfer);
+    for (const item of list ?? []) {
+      const sent = item && typeof item === 'object' ? tracked.get(item) : undefined;
+      if (sent) { if (sent.listening) portMessagesDue(-sent.due); sent.due = 0; sent.moved = true; }
+    }
+    const peer = state.peer;
+    // A message to an unstarted port waits in its queue for its start; one to a started port nobody listens to is
+    // delivered to none.
+    if (onKernel() && peer && !peer.closed && !peer.moved && !state.moved && (peer.listening || !peer.started)) {
+      peer.due++;
+      if (peer.listening) portMessagesDue(1);
+    }
+    return result;
   });
+  define('start', () => { state.started = true; return original.start?.(); });
   define('ref', () => { if (!state.closed) { state.referenced = true; return original.ref?.(); } });
   define('unref', () => { state.referenced = false; return original.unref?.(); });
   define('hasRef', () => state.closed ? undefined : state.referenced);
@@ -56,21 +92,39 @@ function track(process: object, port: Port): Port {
 
   const activate = (previous: number, current: number) => {
     if (state.closed) return;
-    if (previous === 0 && current > 0) { port.ref(); original.start?.(); }
-    else if (previous > 0 && current === 0) port.unref();
+    if (previous === 0 && current > 0) { port.ref(); state.started = true; original.start?.(); listen(true); }
+    else if (previous > 0 && current === 0) { port.unref(); listen(false); }
   };
   if (original.on && typeof port.listenerCount === 'function') {
+    const listeners = port.listenerCount.bind(port) as (type: string) => number;
+    const programs = (type: string) => Math.max(0, listeners(type) - (type === 'message' && state.listening ? 1 : 0));
+    define('listenerCount', programs);
     // Account the real delivery boundary without changing listeners or their
     // remove/once identities on the thread host's actual EventEmitter.
     if (original.emit) define('emit', (...args: unknown[]) => withGuestCallback(() => original.emit(...args), 'message'));
     // Preserve the thread host's actual EventEmitter and transport semantics.
-    for (const name of ['on', 'addListener', 'once', 'prependListener', 'prependOnceListener', 'removeListener', 'off', 'removeAllListeners']) if (original[name]) {
+    // Every way a program listens: the emitter's calls, the event target's, and the `onmessage` handler React's and
+    // undici's ports are given.
+    for (const name of ['on', 'addListener', 'once', 'prependListener', 'prependOnceListener', 'removeListener', 'off', 'removeAllListeners', 'addEventListener', 'removeEventListener']) if (original[name]) {
       define(name, (...args: unknown[]) => {
-        const previous = port.listenerCount('message');
+        const previous = programs('message');
         const result = original[name](...args);
-        activate(previous, port.listenerCount('message'));
+        activate(previous, programs('message'));
         return result;
       });
+    }
+    for (const type of ['message', 'messageerror']) {
+      let owner = Object.getPrototypeOf(port);
+      while (owner && !Object.getOwnPropertyDescriptor(owner, 'on' + type)?.set) owner = Object.getPrototypeOf(owner);
+      const handler = owner && Object.getOwnPropertyDescriptor(owner, 'on' + type);
+      if (!handler?.set || !handler.get) continue;
+      Object.defineProperty(port, 'on' + type, { configurable: true, enumerable: handler.enumerable,
+        get: () => handler.get!.call(port),
+        set(value) {
+          const previous = programs('message');
+          handler.set!.call(port, value);
+          activate(previous, programs('message'));
+        } });
     }
     return port;
   }
@@ -144,6 +198,8 @@ function classes(process: object, Channel: any, PortConstructor: any) {
     if (!new.target) throw new TypeError('MessageChannel must be constructed with new');
     const channel = Reflect.construct(Channel, []) as { port1: Port; port2: Port };
     track(process, channel.port1); track(process, channel.port2);
+    const one = tracked.get(channel.port1)!, two = tracked.get(channel.port2)!;
+    one.peer = two; two.peer = one;
     return channel;
   };
   const MessagePort = function(this: unknown, ...args: unknown[]) {

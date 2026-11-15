@@ -160,6 +160,8 @@ function hexValue(code: number): number {
 }
 
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+/** The engine's own decoder where it has one (`Uint8Array.fromBase64`, ECMAScript 2026). */
+const nativeBase64Decode = typeof (Uint8Array as { fromBase64?: unknown }).fromBase64 === 'function';
 
 /**
  * The bytes a base64 string stands for. Node reads either alphabet under
@@ -168,6 +170,13 @@ const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
  * first `=`, and ignores anything that is a digit of neither.
  */
 function base64Bytes(string: string): Uint8Array {
+  // The engine's own decoder answers a string in one alphabet, with or without padding, where it reads as Node reads
+  // it; a string it refuses (both alphabets, text past the padding, a one-digit tail) takes Node's reading below.
+  if (nativeBase64Decode) {
+    try {
+      return Uint8Array.fromBase64(string, { alphabet: string.includes('-') || string.includes('_') ? 'base64url' : 'base64', lastChunkHandling: 'loose' });
+    } catch { /* read as Node reads it */ }
+  }
   let cleaned = '';
   for (let index = 0; index < string.length; index += 1) {
     const ch = string[index] as string;

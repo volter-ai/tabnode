@@ -23,8 +23,9 @@ import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials
  * (ADR-0010).
  */
 import {
-  LibuvStreamWrap, WriteWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
+  LibuvStreamWrap, WriteWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset, kPeer,
 } from './stream_wrap';
+import { kKernelBacked } from './kernel_stream';
 import { Pipe, constants as pipeConstants } from './pipe_wrap';
 import { nativeStreamFor } from '../../native-stream-binding';
 import { UV_EACCES, UV_EBADF, UV_ENOENT, UV_ESRCH, UV_EPERM, UV_EINVAL } from './uv';
@@ -511,12 +512,12 @@ export class Process implements OwnedHandle {
    */
   private handOver(): void {
     this.prepared?.makeBlocking();
-    for (const far of this.farEnds.values()) if (far instanceof Pipe && far.kernelBacked) far.close();
+    for (const far of this.farEnds.values()) if (far instanceof Pipe && far[kKernelBacked]) far.close();
   }
 
   /** The far end of fd `index`, whoever holds it now. */
   private farEndAt(index: number): LibuvStreamWrap | null {
-    return this.farEnds.get(index) ?? this.stdio[index]?.handle?.peer ?? null;
+    return this.farEnds.get(index) ?? this.stdio[index]?.handle?.[kPeer] ?? null;
   }
 
   private closeFarEnds(): void {

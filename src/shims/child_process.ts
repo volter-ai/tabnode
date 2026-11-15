@@ -54,7 +54,7 @@ import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/bindi
 import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
 import { nodeProcessHostFor, nodeProcessHostInstalled, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
-import { KernelStreamWrap } from '../node-lib/binding/kernel_stream';
+import { KernelStreamWrap, kKernelBacked } from '../node-lib/binding/kernel_stream';
 import { Pipe, constants as pipeConstants } from '../node-lib/binding/pipe_wrap';
 import {
   WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
@@ -81,7 +81,7 @@ import { installShellJobs } from './shell-jobs';
 import { unstreamedOutput } from './streamed-output';
 import type { PackageJson } from '../types/package-json';
 import { installedNpmVersion } from '../npm/version';
-import { clearTimeout, engineConsole as console, monotonicMs, setTimeout, onKernel, queueCompletion, randomUUID as systemRandomUUID, realmHost, realmProcess } from '../system';
+import { clearTimeout, engineConsole as console, monotonicMs, setTimeout, onKernel, queueCompletion, randomUUID as systemRandomUUID, realmHost, realmProcess, system as processSystem } from '../system';
 
 // Capture host capabilities before the guest's authority is restricted. These
 // endpoints are private, carry no guest bytes, and close at each checkpoint.
@@ -274,7 +274,7 @@ async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaun
     // were placed with them. Any other is a native stream the child's realm inherits.
     const inherited: NodeProcessLaunch['inherited'][number][] = [];
     for (const { fd, handle } of inheritedRunFds(token)) {
-      if (handle instanceof KernelStreamWrap && handle.kernelBacked) continue;
+      if (handle instanceof KernelStreamWrap && handle[kKernelBacked]) continue;
       const descriptor = nativeStreamDescriptor(handle as LibuvStreamWrap);
       if (!descriptor) throw new Error(`Node descriptor ${fd} has no native owner for process isolation.`);
       inherited.push({ fd, handle: descriptor });
@@ -1375,7 +1375,18 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     // with what was pending while it worked.
     let sinceLastOutput: Record<string, number> = {};
     let endedBy = 'the program called exit';
-    const note = (name: string): void => { heldBy[name] = (heldBy[name] ?? 0) + CHECK_MS; sinceLastOutput[name] = (sinceLastOutput[name] ?? 0) + CHECK_MS; };
+    // The time each look accounts for is the wait before it: a check's interval on a timer, the loop's own time to
+    // its next park where the process's system says when it would park.
+    let lastWaited = CHECK_MS;
+    const note = (name: string): void => { heldBy[name] = (heldBy[name] ?? 0) + lastWaited; sinceLastOutput[name] = (sinceLastOutput[name] ?? 0) + lastWaited; };
+    // A run whose end Node's rule decides (a named process, or one its caller holds) looks when its loop would park,
+    // as libuv asks before it blocks; one the engine's time rules end (an unnamed run's quiet) looks on its interval.
+    const loopIdle = processSystem().idle;
+    const looksAtPark = loopIdle !== undefined && (runToken !== null || isLongRunning);
+    const signal = streams?.signal;
+    const stopped = signal ? new Promise<'tick'>((resolve) => {
+      if (signal.aborted) resolve('tick'); else signal.addEventListener('abort', () => resolve('tick'), { once: true });
+    }) : null;
     // Whether the idle rule's wait ever saw work the engine does not count: a look that found nothing pending and no new
     // output begins an empty span; a later look that finds output or pending work ends it, and the program is said to
     // have woken that long after its loop looked empty (Node would have ended it at the first empty look). A program
@@ -1427,9 +1438,13 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       const waitBegan = hostNow();
       const raceResult = await Promise.race([
         exitPromise.then(() => 'exit' as const),
-        new Promise<'tick'>(r => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, () => r('tick'), CHECK_MS)),
+        looksAtPark
+          ? new Promise<'tick'>(r => loopIdle!(() => r('tick')))
+          : new Promise<'tick'>(r => (globalThis.__browserRuntimeNativeSetTimeout ?? setTimeout).call(globalThis, () => r('tick'), CHECK_MS)),
+        ...(stopped ? [stopped] : []),
       ]);
       const waited = hostNow() - waitBegan;
+      lastWaited = waited;
       checkWait.count += 1; checkWait.totalMs += waited; checkWait.maxMs = Math.max(checkWait.maxMs, waited);
 
       if (raceResult === 'exit' || exitCalled) break;
@@ -1465,7 +1480,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
           idleMs = 0;
           sinceLastOutput = {};
         } else {
-          idleMs += CHECK_MS;
+          idleMs += lastWaited;
         }
 
         // A caller-held run belongs to its caller. The observed empty look includes held children/builds.
@@ -1524,7 +1539,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
         entryReturnedAt: startTime, lastWrite: lastWrite.writes > 0 ? { ...lastWrite, beforeDrainMs: Date.now() - lastWrite.at } : null,
         emptyLooks, wokeAfterEmpty, lastEmptyMs: emptyAt === undefined ? null : Date.now() - emptyAt,
         lookTimer: { realm: onKernel() ? 'kernel' : isWorkerRealm || nodeProcessRealmToken() !== null ? 'worker' : realmHost === 'window' ? 'window' : 'host',
-          source: globalThis.__browserRuntimeNativeSetTimeout ? 'host-captured setTimeout' : 'realm.setTimeout', requestedMs: CHECK_MS, ...checkWait },
+          source: looksAtPark ? 'the loop, before it parks' : globalThis.__browserRuntimeNativeSetTimeout ? 'host-captured setTimeout' : 'realm.setTimeout', requestedMs: looksAtPark ? null : CHECK_MS, ...checkWait },
         lookWorkMs: { ...checkWork }, entryCheckpointMs: { ...checkpoints } });
     }
     // A run that ends by its loop draining says its exit lines too, as one that called `process.exit` does.
@@ -2331,7 +2346,7 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     // The host's program is the one holding the child's pipes past fd 2; the
     // run's end is its end of them, whatever it did not close itself.
     // A kernel pipe is placed for the child itself (`kernelDescriptors`); only the engine's pairings are relayed.
-    const opened = (run.descriptors ?? []).filter(({ pipe }) => !pipe.kernelBacked).map(({ fd, pipe }) => ({ fd, ...descriptorOver(pipe) }));
+    const opened = (run.descriptors ?? []).filter(({ pipe }) => !pipe[kKernelBacked]).map(({ fd, pipe }) => ({ fd, ...descriptorOver(pipe) }));
     try {
       let result: ChildProcessHostResult;
       try {

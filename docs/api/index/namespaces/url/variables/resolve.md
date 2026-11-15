@@ -4,9 +4,9 @@
 
 [@volter/tabnode](../../../../README.md) / [index](../../../README.md) / [url](../README.md) / resolve
 
-# Function: resolve()
+# Variable: resolve
 
-> **resolve**(`from`, `to`): `string`
+> `const` **resolve**: (`from`, `to`) => `string`
 
 ## Parameters
 

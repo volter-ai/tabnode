@@ -67,6 +67,26 @@ A file of the kernel's (`/proc/...`), read whole; undefined where it cannot be r
 
 ***
 
+### idle()?
+
+> `optional` **idle**(`run`): `void`
+
+`run`, once, when the process's loop next has nothing to do now and would wait, as libuv asks whether its loop is
+alive before it blocks (`uv__loop_alive`): a run's end is decided then. Absent on the realm's system, whose run
+looks on a timer.
+
+#### Parameters
+
+##### run
+
+() => `void`
+
+#### Returns
+
+`void`
+
+***
+
 ### random()
 
 > **random**(`into`): `void`
