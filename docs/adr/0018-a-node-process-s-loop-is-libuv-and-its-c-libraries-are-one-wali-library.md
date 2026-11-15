@@ -420,7 +420,9 @@ tree, `linux-virtual-filesystem.ts`, and the recipe `programs/node/24.21.0`), it
   `stream_connection(server, status)`, `stream_connected(id, status, readable, writable)`, `udp_received(handle, nread,
   base, name, flags)` (`name` a `tabnode_address_t`, 0 with an error), `udp_sent(id, status)`, `process_exit(handle,
   f64 exit status, signal name's address, its length)`, `fs_done(request)`, `fs_event(handle, filename, events,
-  status)` and `stat_watcher_change(handle, status)`; and OpenSSL's callbacks, made inside an export call of the
+  status)`, `stat_watcher_change(handle, status)`, `crypto_job_done(job, status) -> i32` (a CryptoJob's
+  AfterThreadPoolWork; nonzero where it made the job's callback; the C frees the job after) and `engine_ready(status)`
+  (the engine device's descriptor is readable, `native/node/engine_device.c`'s `uv_poll_t`); and OpenSSL's callbacks, made inside an export call of the
   engine's and followed by no drain: `tls_handshake(tls, done)`, `tls_keylog(tls, line, length)`,
   `tls_new_session(tls, id, id_length, der, der_length)`, `tls_cert(tls, servername, length, ocsp) -> i32` and
   `tls_alpn(tls, protocols, length) -> i32`. A handle is its address, a stream's or a socket's request its number, an
@@ -454,6 +456,8 @@ tree, `linux-virtual-filesystem.ts`, and the recipe `programs/node/24.21.0`), it
   SIGCHLD reaches libuv's handler (its loop's child watcher, `uv__wait_children`'s `waitpid`): no part of the host
   blocks it or reads it from a signalfd. `dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addchdir_np")` answers from
   `libc.so`, or a spawn with a `cwd` forks. inotify in the process's kernel answers `fs.watch`.
+  The engine device is `/dev/engine` (browser-substrate ADR-0236 hole 12), which the program opens itself, read and
+  write and poll on its descriptor as on any device's, a request and an answer of at most 1 MiB each.
   OpenSSL's seeding is `getrandom` (else `/dev/urandom`) and its clock `clock_gettime`; it reads `OPENSSL_CONF`'s
   file or `/etc/ssl/openssl.cnf` where the image has one (a missing file is no error, as in Node), and a provider
   module from `/usr/lib/ossl-modules` only where the configuration or `crypto.setFips` asks for one.

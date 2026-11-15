@@ -177,9 +177,10 @@ binary; `--tls-cipher-list` is Node's `DEFAULT_CIPHER_LIST_CORE` from the same s
 
 ### 5. `crypto` is Node's own, with `libnode.so`
 
-Node's `lib/internal/crypto/*`, its `KeyObject` and `X509Certificate` among them, lands as one piece over the OpenSSL
-in `libnode.so` and the program's glue of §3 (ADR-0018, item 7 of its order). Until then `crypto` is the engine's own,
-and TLS (§4) is the part of the OpenSSL binding that runs.
+Node's `lib/internal/crypto/*`, its `KeyObject` and `X509Certificate` among them, lands as one piece over the
+`crypto` binding (ADR-0018, item 7 of its order), each of whose calls is answered by the engine device (the browser's
+WebCrypto, `/dev/engine`) or by the OpenSSL in `libnode.so` through the program's glue of §3, as ADR-0018 §5 routes it.
+Until then `crypto` is the engine's own, and TLS (§4) is the part of the OpenSSL binding that runs.
 
 ### 6. Measured as ADR-0021 orders
 
