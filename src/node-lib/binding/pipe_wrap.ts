@@ -17,7 +17,7 @@ import { UV_EAFNOSUPPORT, UV_EBADF, UV_EINVAL } from './uv';
 import { handleForFd, registerFd, releaseFd } from './fds';
 import { __adoptHandle, ownerOf, observeNodeRequest } from './handles';
 import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
-import { uv, withCString } from './libuv';
+import { libnode, withCString } from './libnode';
 
 /** libuv's `uv_pipe_t` flavours, and the two chmod bits `listen` reads. */
 export const constants = {
@@ -46,7 +46,7 @@ export class Pipe extends KernelStreamWrap {
   constructor(type: number = constants.SOCKET) {
     super(realmHasLibuv());
     this.type = type;
-    if (this[kKernelBacked]) this.attachUv((id) => uv().tabnode_pipe_init(id, type === constants.IPC ? 1 : 0));
+    if (this[kKernelBacked]) this.attachUv(libnode().exports.tabnode_pipe_init(type === constants.IPC ? 1 : 0), true);
     else this.attachNative('pipe', type);
   }
 
@@ -72,7 +72,7 @@ export class Pipe extends KernelStreamWrap {
     const handle = this.liveUv();
     if (!this[kKernelBacked]) return UV_EAFNOSUPPORT;
     if (!handle) return UV_EBADF;
-    return this.#named(name, (at, length) => uv().tabnode_pipe_bind(handle.wrap, at, length));
+    return this.#named(name, (at, length) => libnode().exports.tabnode_pipe_bind(handle.wrap, at, length));
   }
 
   /** PipeWrap::Listen: uv_listen, whose connections are ConnectionWrap::OnConnection's. */
@@ -80,7 +80,7 @@ export class Pipe extends KernelStreamWrap {
     const handle = this.liveUv();
     if (!this[kKernelBacked]) return UV_EINVAL;
     if (!handle) return UV_EBADF;
-    const err = uv().tabnode_stream_listen(handle.wrap, Number(backlog) | 0);
+    const err = libnode().exports.tabnode_stream_listen(handle.wrap, Number(backlog) | 0);
     if (err === 0) this.listening = true;
     return err;
   }
@@ -91,7 +91,7 @@ export class Pipe extends KernelStreamWrap {
     if (!this[kKernelBacked]) return UV_EAFNOSUPPORT;
     if (!handle) return UV_EBADF;
     const id = handle.dispatch(this.connectDone(req));
-    const err = this.#named(name, (at, length) => uv().tabnode_pipe_connect(handle.wrap, id, at, length));
+    const err = this.#named(name, (at, length) => libnode().exports.tabnode_pipe_connect(handle.wrap, id, at, length));
     if (err) handle.undispatch(id);
     else observeNodeRequest(req, this);
     return err;
@@ -106,7 +106,7 @@ export class Pipe extends KernelStreamWrap {
     if (this[kKernelBacked]) {
       const handle = this.liveUv();
       if (!handle) return UV_EBADF;
-      return uv().tabnode_pipe_open(handle.wrap, Number(fd) | 0);
+      return libnode().exports.tabnode_pipe_open(handle.wrap, Number(fd) | 0);
     }
     const native = nativeStreamFor(this);
     if (native) {
@@ -140,7 +140,7 @@ export class Pipe extends KernelStreamWrap {
   fchmod(mode: number): number {
     const handle = this.liveUv();
     if (!handle) return UV_EBADF;
-    return uv().tabnode_pipe_chmod(handle.wrap, Number(mode) | 0);
+    return libnode().exports.tabnode_pipe_chmod(handle.wrap, Number(mode) | 0);
   }
 
   /** Windows asks for more pipe instances; Node defines this on Windows alone. */

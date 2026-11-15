@@ -19,8 +19,7 @@ static void on_alloc(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) 
 // LibuvStreamWrap::OnUvRead (stream_wrap.cc:229-270) and EmitRead: the engine takes the bytes out of the buffer (and,
 // on an IPC pipe, the handle that came with them) and calls `onread`; the buffer is the managed one, released here.
 static void on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
-  tabnode_wrap_t *wrap = stream->data;
-  tabnode_stream_read(wrap->id, (int32_t)nread, buf->base);
+  tabnode_stream_read(stream, (int32_t)nread, buf->base);
   tabnode_drain();
   free(buf->base);
 }
@@ -99,8 +98,7 @@ TABNODE_EXPORT(tabnode_stream_set_blocking) int tabnode_stream_set_blocking(tabn
 // ConnectionWrap::OnConnection (connection_wrap.cc:30-72): the engine makes the client's wrap and accepts it
 // (`tabnode_stream_accept`), then calls `onconnection`.
 static void on_connection(uv_stream_t *server, int status) {
-  tabnode_wrap_t *wrap = server->data;
-  tabnode_stream_connection(wrap->id, status);
+  tabnode_stream_connection(server, status);
   tabnode_drain();
 }
 

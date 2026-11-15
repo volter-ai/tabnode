@@ -16,7 +16,8 @@
 import { LibuvStreamWrap, type WriteWrap, type ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync } from './stream_wrap';
 import { invokeOwned, observeNodeRequest, ownedRun, ownerOfInstance, type OwnedHandle } from './handles';
 import { UV_EINVAL } from './uv';
-import { UvHandle, completeRequest, fromMemory, intoMemory, libuv, uv, type LibuvTarget } from './libuv';
+import { fromMemory, intoMemory, libnode, libnodeAttached, type HandleCallbacks } from './libnode';
+import { HandleWrap, completeRequest } from './handle_wrap';
 
 /** libuv's `uv__handle_fd`: the kernel descriptor a handle is, -1 while it has none. */
 export const kHandleFd = Symbol('uv__handle_fd');
@@ -41,11 +42,11 @@ export function registerKernelHandle(type: CarriedType, make: () => KernelHandle
 }
 
 /** Whether the realm's process is libuv's: its handles are made over its loop. */
-export function realmHasLibuv(): boolean { return libuv() !== undefined; }
+export function realmHasLibuv(): boolean { return libnodeAttached(); }
 
-export class KernelStreamWrap extends LibuvStreamWrap implements LibuvTarget {
+export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks {
   readonly #kernel: boolean;
-  #uv: UvHandle | undefined;
+  #uv: HandleWrap | undefined;
 
   /**
    * `kernel`: the handle is libuv's (else the engine's pairing serves it); `pairingActive`: whether a pairing's
@@ -64,18 +65,18 @@ export class KernelStreamWrap extends LibuvStreamWrap implements LibuvTarget {
     } });
     Object.defineProperty(this, 'writeQueueSize', { configurable: true, enumerable: true, get: () => {
       const handle = this.#uv;
-      return handle?.alive ? uv().tabnode_stream_write_queue_size(handle.wrap) : 0;
+      return handle?.alive ? libnode().exports.tabnode_stream_write_queue_size(handle.wrap) : 0;
     } });
   }
 
-  /** The handle, initialized by `init` (uv_tcp_init, uv_pipe_init, uv_tty_init), which answers the wrap's address. */
-  protected attachUv(init: (id: number) => number): UvHandle {
-    this.#uv = new UvHandle(this, this, init);
+  /** The handle at `handle` (uv_tcp_init's, uv_pipe_init's, or a TTY's before its uv_tty_init), the stream's HandleWrap. */
+  protected attachUv(handle: number, initialized: boolean): HandleWrap {
+    this.#uv = new HandleWrap(this, this, handle, initialized);
     return this.#uv;
   }
 
   /** The libuv handle, where the stream is libuv's. */
-  protected get uvHandle(): UvHandle | undefined { return this.#uv; }
+  protected get uvHandle(): HandleWrap | undefined { return this.#uv; }
 
   get [kKernelBacked](): boolean { return this.#kernel; }
 
@@ -95,7 +96,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements LibuvTarget {
   protected makeClient(): KernelStreamWrap | undefined { return undefined; }
 
   /** The stream's libuv handle where it is alive (StreamBase::JSMethod's IsAlive), else undefined. */
-  protected liveUv(): UvHandle | undefined {
+  protected liveUv(): HandleWrap | undefined {
     const handle = this.#uv;
     return handle?.alive ? handle : undefined;
   }
@@ -103,13 +104,13 @@ export class KernelStreamWrap extends LibuvStreamWrap implements LibuvTarget {
   override readStart(): number {
     if (!this.#kernel) return super.readStart();
     const handle = this.liveUv();
-    return handle ? uv().tabnode_stream_read_start(handle.wrap) : UV_EINVAL;
+    return handle ? libnode().exports.tabnode_stream_read_start(handle.wrap) : UV_EINVAL;
   }
 
   override readStop(): number {
     if (!this.#kernel) return super.readStop();
     const handle = this.liveUv();
-    return handle ? uv().tabnode_stream_read_stop(handle.wrap) : UV_EINVAL;
+    return handle ? libnode().exports.tabnode_stream_read_stop(handle.wrap) : UV_EINVAL;
   }
 
   /** StreamBase::UseUserBuffer: reads land in `buffer`, at most its length at a time. */
@@ -118,14 +119,14 @@ export class KernelStreamWrap extends LibuvStreamWrap implements LibuvTarget {
     const handle = this.liveUv();
     if (!handle) return;
     this.userBuffer = buffer;
-    uv().tabnode_stream_use_buffer(handle.wrap, buffer.byteLength);
+    libnode().exports.tabnode_stream_use_buffer(handle.wrap, buffer.byteLength);
   }
 
   /** LibuvStreamWrap::SetBlocking. */
   setBlocking(enable: unknown): number {
     const handle = this.liveUv();
     if (!this.#kernel || !handle) return UV_EINVAL;
-    return uv().tabnode_stream_set_blocking(handle.wrap, enable === true ? 1 : 0);
+    return libnode().exports.tabnode_stream_set_blocking(handle.wrap, enable === true ? 1 : 0);
   }
 
   /** StreamBase::Shutdown over LibuvStreamWrap::DoShutdown; AfterUvShutdown reports to `oncomplete`. */
@@ -134,7 +135,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements LibuvTarget {
     const handle = this.liveUv();
     if (!handle) return UV_EINVAL;
     const id = handle.dispatch((status) => completeRequest(req, status, this, undefined));
-    const err = uv().tabnode_stream_shutdown(handle.wrap, id);
+    const err = libnode().exports.tabnode_stream_shutdown(handle.wrap, id);
     if (err) handle.undispatch(id);
     else observeNodeRequest(req, this);
     return err;
@@ -159,7 +160,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements LibuvTarget {
     this.bytesWritten += length;
     const bytes = intoMemory(buffer);
     const id = own.dispatch((status) => completeRequest(req, status, this, undefined));
-    const answer = uv().tabnode_stream_write(own.wrap, id, bytes, length, send);
+    const answer = libnode().exports.tabnode_stream_write(own.wrap, id, bytes, length, send);
     if (answer === 1) observeNodeRequest(req, this);
     else own.undispatch(id);
     streamBaseState[kBytesWritten] = length;
@@ -191,12 +192,12 @@ export class KernelStreamWrap extends LibuvStreamWrap implements LibuvTarget {
     const handle = this.#uv;
     if (!handle?.alive) return;
     if (this.isIpc && nread > 0) {
-      const type = CARRIED[uv().tabnode_pipe_pending_type(handle.wrap)];
+      const type = CARRIED[libnode().exports.tabnode_pipe_pending_type(handle.wrap)];
       const make = type === undefined ? undefined : kernelHandles[type];
       if (make) {
         const carried = this.#instantiate(make);
         // AcceptHandle aborts where uv_accept of a handle the pipe holds fails.
-        if (uv().tabnode_stream_accept(handle.wrap, carried[kUvWrap]) !== 0) throw new Error('uv_accept of a carried handle failed');
+        if (libnode().exports.tabnode_stream_accept(handle.wrap, carried[kUvWrap]) !== 0) throw new Error('uv_accept of a carried handle failed');
         this.pendingHandle = carried;
       }
     }
@@ -208,7 +209,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements LibuvTarget {
       const next = this.#emit(nread, undefined);
       if (next instanceof Uint8Array) {
         this.userBuffer = next;
-        if (handle.alive) uv().tabnode_stream_use_buffer(handle.wrap, next.byteLength);
+        if (handle.alive) libnode().exports.tabnode_stream_use_buffer(handle.wrap, next.byteLength);
       }
       return;
     }
@@ -240,7 +241,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements LibuvTarget {
     if (status === 0) {
       const made = this.#instantiate(() => this.makeClient());
       if (!made) return;
-      if (uv().tabnode_stream_accept(handle.wrap, made[kUvWrap]) !== 0) { made.close(); return; }
+      if (libnode().exports.tabnode_stream_accept(handle.wrap, made[kUvWrap]) !== 0) { made.close(); return; }
       client = made;
     }
     invokeOwned(this, 'onconnection', status, client);

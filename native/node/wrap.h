@@ -1,7 +1,6 @@
-// A HANDLE THE REALM'S JAVASCRIPT OWNS (Tabnode ADR-0018 §3), as Node's HandleWrap owns its uv_handle_t
-// (src/handle_wrap.h, Node v24.21.0): libuv's handle first, so a pointer to the wrap is one to the handle, then the
-// number of the JavaScript object it belongs to, which each callback into the engine names, as Node's handle->data
-// names its wrap. A request (uv_write_t, uv_shutdown_t, uv_connect_t, uv_udp_send_t) is a tabnode_req_t: libuv's
+// A STREAM'S OR A SOCKET'S HANDLE THE REALM'S JAVASCRIPT OWNS (Tabnode ADR-0018 §3), as Node's HandleWrap owns its
+// uv_handle_t (src/handle_wrap.h, Node v24.21.0): libuv's handle first, so a pointer to the wrap is one to the handle,
+// which each callback into the engine names, as Node's handle->data names its wrap (handle_wrap.c). A request (uv_write_t, uv_shutdown_t, uv_connect_t, uv_udp_send_t) is a tabnode_req_t: libuv's
 // request, the number of its JavaScript object (Node's ReqWrap), and the bytes it owns until it completes.
 #ifndef TABNODE_WRAP_H
 #define TABNODE_WRAP_H
@@ -21,7 +20,6 @@ typedef struct {
     uv_tty_t tty;
     uv_udp_t udp;
   } uv;
-  int32_t id;
   // CustomBufferJSListener's buffer (src/stream_base.cc:718-722): a stream given the program's own buffer
   // (`useUserBuffer`) reads at most its length; 0 reads libuv's suggested size, as Node's managed buffer does.
   uint32_t user_buffer;
@@ -50,10 +48,11 @@ typedef struct {
   char address[INET6_ADDRSTRLEN + UV_IF_NAMESIZE];
 } tabnode_address_t;
 
-// A new wrap for JavaScript object `id` (HandleWrap's constructor, handle_wrap.cc:131-141); its handle is the
-// binding's to initialize. Node's `new` aborts where memory is out; so does this.
-tabnode_wrap_t *tabnode_wrap_new(int32_t id);
-// HandleWrap::OnClose (handle_wrap.cc:144-166): the engine is told, its scope closes, and the wrap goes.
+// A new wrap (HandleWrap's constructor, handle_wrap.cc:121-133); its handle is the binding's to initialize. Node's
+// `new` aborts where memory is out; so does this.
+tabnode_wrap_t *tabnode_wrap_new(void);
+// HandleWrap::OnClose (handle_wrap.cc:135-157): the engine is told, the close callback's scope closes where it made
+// one, and the handle's memory goes.
 void tabnode_wrap_closed(uv_handle_t *handle);
 // A request for JavaScript object `id` owning `bytes` (ReqWrap's constructor); aborts where memory is out.
 tabnode_req_t *tabnode_req_new(int32_t id, char *bytes);

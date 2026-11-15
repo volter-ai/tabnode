@@ -18,7 +18,7 @@ import { guessHandleTypeOfFd, handleForFd, registerFd, releaseFd } from './fds';
 import { UV_EBADF, UV_EIO, UV_ENOTSUP } from './uv';
 import { currentOwner, forgetNodeHandle } from './handles';
 import { __runFor } from '../../process-tokens';
-import { collectUVExceptionInfo, uv, withRoom } from './libuv';
+import { collectUVExceptionInfo, libnode, withRoom } from './libnode';
 
 export interface TerminalState {
   columns: number;
@@ -125,12 +125,11 @@ export class TTY extends KernelStreamWrap {
     super(realmHasLibuv());
     if (this[kKernelBacked]) {
       this.descriptor = this;
-      const handle = this.attachUv((id) => uv().tabnode_tty_new(id));
-      const err = uv().tabnode_tty_init(handle.wrap, Number(fd) | 0);
-      if (err !== 0) {
-        collectUVExceptionInfo(ctx, err, 'uv_tty_init');
-        handle.uninitialized();
-      }
+      // TTYWrap's constructor marks the wrap uninitialized where uv_tty_init fails (tty_wrap.cc:158-170).
+      const handle = this.attachUv(libnode().exports.tabnode_tty_new(), false);
+      const err = libnode().exports.tabnode_tty_init(handle.wrap, Number(fd) | 0);
+      if (err === 0) handle.markAsInitialized();
+      else collectUVExceptionInfo(ctx, err, 'uv_tty_init');
       return;
     }
     this.fd = fd;
@@ -152,7 +151,7 @@ export class TTY extends KernelStreamWrap {
     if (this[kKernelBacked]) {
       const handle = this.liveUv();
       if (!handle) return UV_EBADF;
-      return withRoom(8, (at) => uv().tabnode_tty_get_winsize(handle.wrap, at), (view, err) => {
+      return withRoom(8, (at) => libnode().exports.tabnode_tty_get_winsize(handle.wrap, at), (view, err) => {
         if (err === 0) { out[0] = view.getInt32(0, true); out[1] = view.getInt32(4, true); }
       });
     }
@@ -170,7 +169,7 @@ export class TTY extends KernelStreamWrap {
     if (this[kKernelBacked]) {
       const handle = this.liveUv();
       if (!handle) return UV_EBADF;
-      return uv().tabnode_tty_set_mode(handle.wrap, Number(mode) | 0);
+      return libnode().exports.tabnode_tty_set_mode(handle.wrap, Number(mode) | 0);
     }
     if (this.endpoint) return UV_ENOTSUP;
     const terminal = this.fd === 0 ? runTerminalOf() : undefined;
@@ -262,7 +261,7 @@ export function resizePty(fd: number, columns: number, rows: number): void {
 
 /** TTYWrap::IsTTY: libuv's `uv_guess_handle(fd) === UV_TTY`, as the running program sees it. */
 export function isTTY(fd: number): boolean {
-  if (realmHasLibuv()) return uv().tabnode_guess_handle(Number(fd) | 0) === 1;
+  if (realmHasLibuv()) return libnode().exports.tabnode_guess_handle(Number(fd) | 0) === 1;
   if (fd !== 0 && fd !== 1 && fd !== 2) return guessHandleTypeOfFd(fd) === 'TTY';
   // The asking run's own streams, which carry its per-fd terminals: in a
   // realm several guests share, the global `process` is whichever ran last.

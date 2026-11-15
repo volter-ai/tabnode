@@ -6,7 +6,7 @@
 
 // TTYWrap's constructor (tty_wrap.cc:155-167): the wrap, then uv_tty_init, whose error the JavaScript reports on its
 // context (`uv_tty_init`) and frees the uninitialized wrap (MarkAsUninitialized).
-TABNODE_EXPORT(tabnode_tty_new) tabnode_wrap_t *tabnode_tty_new(int32_t id) { return tabnode_wrap_new(id); }
+TABNODE_EXPORT(tabnode_tty_new) tabnode_wrap_t *tabnode_tty_new(void) { return tabnode_wrap_new(); }
 TABNODE_EXPORT(tabnode_tty_init) int tabnode_tty_init(tabnode_wrap_t *wrap, int fd) {
   int err = uv_tty_init(uv_default_loop(), &wrap->uv.tty, fd, 0);
   wrap->uv.handle.data = wrap;

@@ -125,36 +125,25 @@ ownership that keeps a run alive while it holds a handle.
   AF_UNIX socket of the process on a `sockaddr_un`: the kernel makes the
   path's node and answers `ENOENT`, `ECONNREFUSED` and `EADDRINUSE`; a
   process with no socket calls has none, `EAFNOSUPPORT`), `fchmod` (0),
-  `setPendingInstances` (0), `open(fd)` (the fd of a forked child's IPC
-  channel, from the per-child fd table `process_wrap` keeps, or a kernel
-  descriptor). An IPC pipe of a process with socket calls is a kernel
+  `setPendingInstances` (0), `open(fd)` (a kernel descriptor, a forked
+  child's IPC channel among them). An IPC pipe of a process with socket calls is a kernel
   AF_UNIX socket too (`kernel_stream.ts`): `writeUtf8String(req,
   string, handle)` is a `sendmsg` carrying the handle's descriptor, and each
   descriptor a `recvmsg` brings becomes the `pendingHandle` of a read's
   `onread`, which is how `setupChannel` in `internal/child_process.js`
   receives a sent handle. On the engine's pairing the handle is a duplicate
   of another pairing, set on the peer before its `onread`.
-- `process_wrap`: `Process` with `spawn(options)` (`file`, `args`, `cwd`,
-  `envPairs`, `stdio` entries of type `pipe`/`ignore`/`inherit`/`fd`/`wrap`
-  with their `handle`, `detached`), which starts the engine's run of the
-  command the way the shim's `spawn` routes one today (`node`, a registered
-  page program, a WALI pack, the shell) with the given `Pipe` handles as its
-  stdio, sets `pid`, returns 0 or a `UV_*` code (`UV_ENOENT` when the
-  command resolves to nothing); a `pipe` entry past fd 2 is the child's at
-  its own number, which an engine `node` child opens by that fd and a
-  program the page registered receives as a byte stream in each direction;
-  a child that is the engine's `node` (by name or by `process.execPath`) is
-  started from its argv by the same launch as `container.runNode`, not as a
-  shell line, and its fds 0, 1 and 2 carry the bytes written to them, as a
-  pipe does; a shell builtin's output is the shell's text;
-  `kill(signal)`; `onexit(exitCode,
-  signalCode)` once, when the run ends; `ref()`, `unref()`.
-- `spawn_sync`: `spawn(options)` answering `{ status, signal, output: [null,
-  stdout, stderr], error, pid }` over the engine's synchronous command door
-  (`src/shims/sync-child.ts`), `UV_ENOSYS` in `error` where none exists;
-  in a process with socket calls a child its host runs is given kernel
-  descriptors, and the binding reads and writes its own ends with
-  `TreeSockets.poll` until they close (ADR-0010 §4).
+- `process_wrap`: Node's `src/process_wrap.cc` over the `node` program's
+  `uv_spawn` (ADR-0018 §3, §6): `Process` is a HandleWrap whose
+  `uv_process_t` is native/node's `process_wrap.c`; `spawn(file, args, cwd,
+  envPairs, stdio, flags, uid, gid)` reads its arguments into one record the C
+  turns into `uv_process_options_t`, a `pipe`, `overlapped` or `wrap` entry
+  naming its handle's `uv_stream_t`; `kill(signal)` is `uv_process_kill`;
+  libuv's exit callback calls `onexit(exitStatus, signalName)`; `close`,
+  `ref`, `unref` and `hasRef` are HandleWrap's.
+- `spawn_sync`: Node's `SyncProcessRunner` (`src/spawn_sync.cc`) in C,
+  native/node's `spawn_sync.c`, over a loop of its own: `spawn(options)`
+  answers `{ error, status, signal, output, pid }` as Node's does.
 - `tty_wrap`: `isTTY(fd)` and `TTY` for the stdio the engine reports as a
   terminal, and `guessHandleType(fd)` in `internal/util`'s bound object; a
   run's terminal's size and fd 0's mode (`setRawMode`) are its host's

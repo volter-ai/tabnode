@@ -1,16 +1,18 @@
-// HANDLE_WRAP (Tabnode ADR-0018 §3): Node v24.21.0's src/handle_wrap.cc without V8, and what every binding's glue
-// shares: the process memory the engine's bytes cross through, a wrap's close, its ref and its descriptor, and
-// AddressToJS (src/tcp_wrap.cc:619-690). Where Node calls into V8 the glue calls the engine (engine.h); where Node's
-// InternalCallbackScope closes (MakeCallback's return) it calls tabnode_drain. The JavaScript keeps a wrap's state
-// (kInitialized, kClosing, kClosed) and its close callback, as Node's HandleWrap object does.
+// HANDLE_WRAP (Tabnode ADR-0018 §3): Node v24.21.0's src/handle_wrap.cc without V8, the one HandleWrap every binding's
+// handle is (a TCP, a pipe, a TTY, a UDP socket, a process, an fs watcher), and what the bindings' glue shares: a
+// wrap's close, its ref and its descriptor, and AddressToJS (src/tcp_wrap.cc:619-690). A handle is a block of the
+// process's memory that begins with its uv_handle_t, so the handle's address is the wrap's, as Node's handle->data
+// names its wrap; every callback into the engine names its handle by that address. The JavaScript keeps a wrap's
+// state (kInitialized, kClosing, kClosed) and its close callback, as Node's HandleWrap object does
+// (src/node-lib/binding/handle_wrap.ts). The block is the binding's until the handle is initialized, and libuv's from
+// then until OnClose, which frees it, as Node's OnClose detaches its wrap and drops the last reference to it.
 #include <stdlib.h>
 #include <string.h>
 #include "wrap.h"
 
-tabnode_wrap_t *tabnode_wrap_new(int32_t id) {
+tabnode_wrap_t *tabnode_wrap_new(void) {
   tabnode_wrap_t *wrap = calloc(1, sizeof *wrap);
   if (!wrap) abort();
-  wrap->id = id;
   wrap->uv.handle.data = wrap;
   return wrap;
 }
@@ -29,41 +31,33 @@ void tabnode_req_free(tabnode_req_t *req) {
   free(req);
 }
 
+// HandleWrap::OnClose (handle_wrap.cc:135-157): the engine closes the wrap and makes its close callback where Close
+// was given one, answering whether it did; only then is there a callback scope (MakeCallback's) to close. The
+// handle's memory goes after, as Node's wrap does when OnClose drops it.
 void tabnode_wrap_closed(uv_handle_t *handle) {
-  tabnode_wrap_t *wrap = handle->data;
-  tabnode_handle_closed(wrap->id);
-  tabnode_drain();
-  free(wrap);
+  if (tabnode_handle_closed(handle)) tabnode_drain();
+  free(handle);
 }
 
-// The bytes the engine hands a call (a write's, a name's) live in the process's memory, as V8's backing stores live
-// in Node's: the engine asks for room, writes into it, and the call or its request frees it.
-TABNODE_EXPORT(tabnode_alloc) char *tabnode_alloc(uint32_t size) {
-  char *bytes = malloc(size ? size : 1);
-  if (!bytes) abort();
-  return bytes;
+// HandleWrap::Close (handle_wrap.cc:72-86), once the wrap's state is kInitialized: uv_close, its callback OnClose.
+TABNODE_EXPORT(tabnode_handle_close) void tabnode_handle_close(uv_handle_t *handle) {
+  uv_close(handle, tabnode_wrap_closed);
 }
-TABNODE_EXPORT(tabnode_free) void tabnode_free(char *bytes) { free(bytes); }
-
-// HandleWrap::Close (handle_wrap.cc:65-77): uv_close, its callback HandleWrap::OnClose.
-TABNODE_EXPORT(tabnode_handle_close) void tabnode_handle_close(tabnode_wrap_t *wrap) {
-  uv_close(&wrap->uv.handle, tabnode_wrap_closed);
-}
-// HandleWrap::Ref, Unref and HasRef (handle_wrap.cc:40-62); the JavaScript asks IsAlive first.
-TABNODE_EXPORT(tabnode_handle_ref) void tabnode_handle_ref(tabnode_wrap_t *wrap) { uv_ref(&wrap->uv.handle); }
-TABNODE_EXPORT(tabnode_handle_unref) void tabnode_handle_unref(tabnode_wrap_t *wrap) { uv_unref(&wrap->uv.handle); }
-TABNODE_EXPORT(tabnode_handle_has_ref) int tabnode_handle_has_ref(tabnode_wrap_t *wrap) {
-  return uv_has_ref(&wrap->uv.handle);
+// HandleWrap::Ref, Unref and HasRef (handle_wrap.cc:40-63); the JavaScript asks IsAlive first.
+TABNODE_EXPORT(tabnode_handle_ref) void tabnode_handle_ref(uv_handle_t *handle) { uv_ref(handle); }
+TABNODE_EXPORT(tabnode_handle_unref) void tabnode_handle_unref(uv_handle_t *handle) { uv_unref(handle); }
+TABNODE_EXPORT(tabnode_handle_has_ref) int tabnode_handle_has_ref(const uv_handle_t *handle) {
+  return uv_has_ref(handle);
 }
 // uv_is_active: whether the handle holds its loop (with its ref), as libuv counts it (uv__has_active_handles).
-TABNODE_EXPORT(tabnode_handle_is_active) int tabnode_handle_is_active(tabnode_wrap_t *wrap) {
-  return uv_is_active(&wrap->uv.handle);
+TABNODE_EXPORT(tabnode_handle_is_active) int tabnode_handle_is_active(const uv_handle_t *handle) {
+  return uv_is_active(handle);
 }
 // LibuvStreamWrap::GetFD and UDPWrap::GetFD (stream_wrap.cc:153-163, udp_wrap.cc:291-299): uv_fileno, -1 or
 // UV_EBADF where the handle has none.
-TABNODE_EXPORT(tabnode_handle_fileno) int tabnode_handle_fileno(tabnode_wrap_t *wrap) {
+TABNODE_EXPORT(tabnode_handle_fileno) int tabnode_handle_fileno(const uv_handle_t *handle) {
   uv_os_fd_t fd;
-  int err = uv_fileno(&wrap->uv.handle, &fd);
+  int err = uv_fileno(handle, &fd);
   return err ? err : fd;
 }
 

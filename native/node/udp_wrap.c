@@ -6,8 +6,8 @@
 #include "wrap.h"
 
 // UDPWrap's constructor (udp_wrap.cc:154-166): uv_udp_init cannot fail but for memory.
-TABNODE_EXPORT(tabnode_udp_init) tabnode_wrap_t *tabnode_udp_init(int32_t id) {
-  tabnode_wrap_t *wrap = tabnode_wrap_new(id);
+TABNODE_EXPORT(tabnode_udp_init) tabnode_wrap_t *tabnode_udp_init(void) {
+  tabnode_wrap_t *wrap = tabnode_wrap_new();
   if (uv_udp_init(uv_default_loop(), &wrap->uv.udp)) abort();
   wrap->uv.handle.data = wrap;
   return wrap;
@@ -96,11 +96,10 @@ static void on_alloc(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) 
 // address as AddressToJS makes it) or the error to `onmessage`.
 static void on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf, const struct sockaddr *addr,
                     unsigned flags) {
-  tabnode_wrap_t *wrap = handle->data;
   if (!(nread == 0 && addr == NULL)) {
     tabnode_address_t name;
     if (nread >= 0 && addr) tabnode_address_of(addr, &name);
-    tabnode_udp_received(wrap->id, (int32_t)nread, buf->base, nread >= 0 && addr ? &name : NULL, flags);
+    tabnode_udp_received(handle, (int32_t)nread, buf->base, nread >= 0 && addr ? &name : NULL, flags);
     tabnode_drain();
   }
   free(buf->base);

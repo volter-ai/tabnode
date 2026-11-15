@@ -9,8 +9,8 @@
 #include "wrap.h"
 
 // TCPWrap's constructor (tcp_wrap.cc:187-192): uv_tcp_init cannot fail but for memory.
-TABNODE_EXPORT(tabnode_tcp_init) tabnode_wrap_t *tabnode_tcp_init(int32_t id) {
-  tabnode_wrap_t *wrap = tabnode_wrap_new(id);
+TABNODE_EXPORT(tabnode_tcp_init) tabnode_wrap_t *tabnode_tcp_init(void) {
+  tabnode_wrap_t *wrap = tabnode_wrap_new();
   if (uv_tcp_init(uv_default_loop(), &wrap->uv.tcp)) abort();
   wrap->uv.handle.data = wrap;
   return wrap;

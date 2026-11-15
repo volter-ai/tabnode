@@ -69,7 +69,6 @@ function unsupportedMetadata(syscall: string): never {
   throw Object.assign(new Error(`ENOTSUP: filesystem does not support ${syscall}`), { code: 'ENOTSUP', syscall });
 }
 
-
 function treeHoldsLinks(): boolean {
   return (vfs() as VirtualFS & { holdsLinks?: boolean }).holdsLinks === true;
 }
@@ -422,125 +421,6 @@ function fileFor(fd: number): OpenFile {
   return file;
 }
 
-/**
- * Where a child's output goes when its stdio names a descriptor of the
- * parent's (`stdio: ['ignore', fd, fd]` with `fd` from `openSync`): the file
- * that descriptor has open, as the child's own duplicate of it, so it keeps
- * writing after the parent closes its copy. Appending descriptors append;
- * others write on from the position the parent's copy had. A descriptor that
- * is a stream (a socket, a pipe) is written as a stream. Anything else is
- * not a sink, and the child's output there goes nowhere, as `ignore` does.
- */
-export type DescriptorWriter = ((chunk: string | Uint8Array) => void) & {
-  /** The child has ended: its own reference to the description goes (a dup the tree made). */
-  release?(): void;
-};
-
-export function descriptorWriter(fd: number): DescriptorWriter | null {
-  if (fd > 2 && traceReadingRequested()) return tracedDescriptorWriter(fd, descriptorWriterOf(fd, { sayFailures: true }));
-  return descriptorWriterOf(fd, { sayFailures: false });
-}
-
-/**
- * An instrument: what reached a child's stdio that names a file of the parent's (`stdio: ['ignore', fd, fd]`), said
- * when the writer is made, at its first write, at its first failure and when the child ends. A write here that fails
- * is dropped by design (a closed description drops the child's output), so a log that stays empty said nothing of
- * why: a World's native-postgres.log read 0 characters on both visits of the Umami f7b17202 pair (S2 L1).
- */
-function tracedDescriptorWriter(fd: number, writer: DescriptorWriter | null): DescriptorWriter | null {
-  const owner = ownerOf(fd);
-  const file = openFiles.get(fd);
-  const where = { fd, sink: writer === null ? 'none' : owner ? 'owner' : handleForFd(fd) instanceof LibuvStreamWrap ? 'stream' : file ? 'tree' : 'standard', ...(file ? { path: file.path } : {}) };
-  traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'made', at: Date.now(), ...where });
-  if (writer === null) return null;
-  const counts = { chunks: 0, bytes: 0, failures: 0 };
-  const traced: DescriptorWriter = (chunk) => {
-    const length = typeof chunk === 'string' ? chunk.length : chunk.byteLength;
-    counts.chunks += 1;
-    counts.bytes += length;
-    if (counts.chunks === 1) traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'first-write', at: Date.now(), ...where, bytes: length });
-    try { writer(chunk); }
-    catch (cause) {
-      counts.failures += 1;
-      if (counts.failures === 1) traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'failed', at: Date.now(), ...where, error: cause instanceof Error ? cause.message.slice(0, 200) : String(cause).slice(0, 200) });
-      // an owner's failure is dropped, as it is untraced (it is thrown here only to be said); any other goes on as before
-      if (where.sink !== 'owner') throw cause;
-    }
-  };
-  traced.release = () => {
-    traceOutput('[boot-trace]', { event: 'child-stdio-file', phase: 'released', at: Date.now(), ...where, ...counts });
-    writer.release?.();
-  };
-  return traced;
-}
-
-/** `sayFailures`: an owner's failed write is thrown to the instrument that wraps this writer, which says and drops it; elsewhere it is dropped here. */
-function descriptorWriterOf(fd: number, { sayFailures }: { sayFailures: boolean }): DescriptorWriter | null {
-  // A descriptor takes bytes; a chunk a child wrote as bytes goes on as them.
-  const bytesOf = (chunk: string | Uint8Array): Uint8Array => typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk;
-  // A description a tree owns is written through it: one offset, the
-  // owner's, shared with the parent's copy as a dup'd descriptor's is.
-  const owner = ownerOf(fd);
-  if (owner) {
-    // The child's own number for the description, taken now, while the parent's is open: the parent
-    // closing (or reusing) its number then changes nothing for the child (fork's copy plus dup2).
-    let own: number | undefined;
-    try { own = owner.dup?.(fd); } catch { own = undefined; }
-    const target = own ?? fd;
-    const writer: DescriptorWriter = (chunk) => {
-      const bytes = bytesOf(chunk);
-      try { owner.write(target, bytes, 0, bytes.length, null); }
-      catch (cause) { if (sayFailures) throw cause; /* a closed description drops the child's output */ }
-    };
-    if (own !== undefined) {
-      let released = false;
-      writer.release = () => {
-        if (released) return;
-        released = true;
-        try { owner.close(own!); } catch { /* the tree has already let it go */ }
-      };
-    }
-    return writer;
-  }
-  // The parent's own fd 1 or 2 (or a descriptor it opened on /dev/stdout):
-  // the child writes the parent's stream, read against the parent, whose
-  // code is the code running now.
-  const standard = stdioOf(fd);
-  if (standard !== null && standard !== 0 && handleForFd(fd) === undefined) {
-    const parent = currentOwner();
-    return (chunk) => { try { writeStdio(standard, bytesOf(chunk), parent); } catch { /* a closed stream drops the child's output */ } };
-  }
-  const stream = handleForFd(fd);
-  if (stream instanceof LibuvStreamWrap) {
-    return (chunk) => { try { stream.writeBuffer(new WriteWrap(), bytesOf(chunk)); } catch { /* a closed stream drops the child's output, as a closed pipe does */ } };
-  }
-  const file = openFiles.get(fd);
-  if (!file || file.directory || (file.flags & 3) === 0) return null;
-  const { tree, path } = file;
-  const append = (file.flags & flagBits().append) !== 0;
-  // One offset per open file, as a dup'd descriptor shares one: a child's
-  // stdout and stderr on the same file follow each other, and the parent's
-  // own position moves with them while its copy is open.
-  let cursor = descriptorCursors.get(file);
-  if (!cursor) { cursor = { position: file.position }; descriptorCursors.set(file, cursor); }
-  const offset = cursor;
-  return (chunk) => {
-    const bytes = bytesOf(chunk);
-    // the parent's copy, while it is open, holds the file's bytes as it last wrote them
-    const shared = openFiles.get(fd) === file ? file : null;
-    if (shared) offset.position = shared.position;
-    const existing = shared?.cached ?? (tree.existsSync(path) ? tree.readFileSync(path) as Uint8Array : new Uint8Array(0));
-    const at = append ? existing.length : offset.position;
-    const next = new Uint8Array(Math.max(existing.length, at + bytes.length));
-    next.set(existing, 0);
-    next.set(bytes, at);
-    tree.writeFileSync(path, next);
-    offset.position = at + bytes.length;
-    if (shared) { shared.cached = next; shared.position = offset.position; }
-  };
-}
-const descriptorCursors = new WeakMap<object, { position: number }>();
-
 /** Node's stat array: eighteen numbers, with each time a second and a nanosecond. */
 function statArray(stats: VfsStats | TreeDescriptorStats, bigint: boolean, path?: string): Float64Array | BigInt64Array {
   const mtime = stats.mtime instanceof Date ? stats.mtime.getTime() : Number(stats.mtimeMs ?? 0);
@@ -722,7 +602,6 @@ class FSReqCallback {
 }
 
 /** The symbol `fs.promises` passes where a callback would go. */
-
 
 /**
  * `internalBinding('fs_dir')`'s handle: an open directory, read a batch at a

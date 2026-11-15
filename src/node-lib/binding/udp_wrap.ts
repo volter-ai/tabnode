@@ -13,7 +13,8 @@ import { registerHandle, releaseHandle, nodeHandleHasRef, refHandle, unrefHandle
 import { nextHandleAsyncId } from './stream_wrap';
 import { kHandleFd, kUvWrap, realmHasLibuv, registerKernelHandle } from './kernel_stream';
 import { UV_EAFNOSUPPORT, UV_EBADF, UV_EINVAL } from './uv';
-import { UvHandle, addressAt, collectUVExceptionInfo, completeRequest, fromMemory, intoMemory, sockOrPeerName, uv, withCString, type LibuvTarget } from './libuv';
+import { addressAt, collectUVExceptionInfo, fromMemory, intoMemory, libnode, sockOrPeerName, withCString, type HandleCallbacks } from './libnode';
+import { HandleWrap, completeRequest } from './handle_wrap';
 import { loadNodeLib, loadNodeLibFor } from '../load';
 import { queueBindingTask, withGuestCallback } from '../../guest-loop';
 
@@ -43,7 +44,7 @@ function scopeBuffer(): BufferClass {
 /** SetLibuvInt32's options, by native/node udp_wrap.c `tabnode_udp_set_int`. */
 const MULTICAST_TTL = 0, MULTICAST_LOOP = 1, BROADCAST = 2, TTL = 3;
 
-export class UDP implements OwnedHandle, LibuvTarget {
+export class UDP implements OwnedHandle, HandleCallbacks {
   /** Set by `dgram.js`: each datagram, or a receive's error. */
   onmessage: ((nread: number, handle: UDP, buffer?: unknown, rinfo?: unknown) => void) | null = null;
   onerror: ((nread: number, handle: UDP, error: unknown) => void) | null = null;
@@ -53,19 +54,19 @@ export class UDP implements OwnedHandle, LibuvTarget {
   #Buffer: BufferClass = scopeBuffer();
   readonly #asyncId = nextHandleAsyncId();
   /** The handle, where the realm has libuv. */
-  readonly #uv: UvHandle | undefined;
+  readonly #uv: HandleWrap | undefined;
   /** A realm with no libuv: its handle is closed. */
   #closed = false;
 
   /** UDPWrap::New: a uv_udp_init'd handle. */
   constructor() {
-    if (realmHasLibuv()) this.#uv = new UvHandle(this, this, (id) => uv().tabnode_udp_init(id));
+    if (realmHasLibuv()) this.#uv = new HandleWrap(this, this, libnode().exports.tabnode_udp_init(), true);
     // A handle that does nothing holds nothing (uv_udp_init leaves it stopped).
     else registerHandle(this, true, false);
   }
 
   /** The handle where it is alive (ASSIGN_OR_RETURN_UNWRAP), else undefined. */
-  #live(): UvHandle | undefined { return this.#uv?.alive ? this.#uv : undefined; }
+  #live(): HandleWrap | undefined { return this.#uv?.alive ? this.#uv : undefined; }
 
   /** UDPWrap::GetFD: uv_fileno, UV_EBADF where there is none. */
   get fd(): number {
@@ -91,14 +92,14 @@ export class UDP implements OwnedHandle, LibuvTarget {
     if (!this.#uv) return UV_EAFNOSUPPORT;
     const handle = this.#live();
     if (!handle) return UV_EBADF;
-    return withCString(String(address), (ip) => uv().tabnode_udp_bind(handle.wrap, family, ip, Number(port) >>> 0, Number(flags) >>> 0));
+    return withCString(String(address), (ip) => libnode().exports.tabnode_udp_bind(handle.wrap, family, ip, Number(port) >>> 0, Number(flags) >>> 0));
   }
 
   /** UDPWrap::Open: uv_udp_open. */
   open(fd: number): number {
     const handle = this.#live();
     if (!handle) return UV_EBADF;
-    return uv().tabnode_udp_open(handle.wrap, Number(fd) | 0);
+    return libnode().exports.tabnode_udp_open(handle.wrap, Number(fd) | 0);
   }
 
   connect(address: string, port: number): number { return this.#connect(4, address, port); }
@@ -109,14 +110,14 @@ export class UDP implements OwnedHandle, LibuvTarget {
     if (!this.#uv) return UV_EAFNOSUPPORT;
     const handle = this.#live();
     if (!handle) return UV_EBADF;
-    return withCString(String(address), (ip) => uv().tabnode_udp_connect(handle.wrap, family, ip, Number(port) >>> 0));
+    return withCString(String(address), (ip) => libnode().exports.tabnode_udp_connect(handle.wrap, family, ip, Number(port) >>> 0));
   }
 
   /** UDPWrap::Disconnect: uv_udp_connect(handle, NULL). */
   disconnect(): number {
     const handle = this.#live();
     if (!handle) return UV_EBADF;
-    return uv().tabnode_udp_disconnect(handle.wrap);
+    return libnode().exports.tabnode_udp_disconnect(handle.wrap);
   }
 
   send(request: SendWrap, list: Uint8Array[], count: number, ...rest: unknown[]): number { return this.#send(4, request, list, count, rest); }
@@ -140,7 +141,7 @@ export class UDP implements OwnedHandle, LibuvTarget {
     const bytes = intoMemory(data);
     const id = handle.dispatch((status) => { if (hasCallback) completeRequest(request, status, size); });
     const answer = withCString(sendto ? String(rest[1]) : null, (ip) =>
-      uv().tabnode_udp_send(handle.wrap, id, bytes, size, sendto ? family : 0, ip, sendto ? Number(rest[0]) >>> 0 : 0));
+      libnode().exports.tabnode_udp_send(handle.wrap, id, bytes, size, sendto ? family : 0, ip, sendto ? Number(rest[0]) >>> 0 : 0));
     if (answer === 0) observeNodeRequest(request, this);
     else handle.undispatch(id);
     return answer;
@@ -150,12 +151,12 @@ export class UDP implements OwnedHandle, LibuvTarget {
   recvStart(): number {
     if (!this.#uv) return UV_EAFNOSUPPORT;
     const handle = this.#live();
-    return handle ? uv().tabnode_udp_recv_start(handle.wrap) : UV_EBADF;
+    return handle ? libnode().exports.tabnode_udp_recv_start(handle.wrap) : UV_EBADF;
   }
 
   recvStop(): number {
     const handle = this.#live();
-    return handle ? uv().tabnode_udp_recv_stop(handle.wrap) : UV_EBADF;
+    return handle ? libnode().exports.tabnode_udp_recv_stop(handle.wrap) : UV_EBADF;
   }
 
   /**
@@ -178,13 +179,13 @@ export class UDP implements OwnedHandle, LibuvTarget {
   #name(peer: 0 | 1, out: Record<string, unknown>): number {
     const handle = this.#live();
     if (!handle) return UV_EBADF;
-    return sockOrPeerName((at) => uv().tabnode_udp_name(handle.wrap, peer, at), out);
+    return sockOrPeerName((at) => libnode().exports.tabnode_udp_name(handle.wrap, peer, at), out);
   }
 
   #setInt(which: number, value: number): number {
     const handle = this.#live();
     if (!handle) return UV_EBADF;
-    return uv().tabnode_udp_set_int(handle.wrap, which, Number(value) | 0);
+    return libnode().exports.tabnode_udp_set_int(handle.wrap, which, Number(value) | 0);
   }
 
   setBroadcast(on: number): number { return this.#setInt(BROADCAST, on); }
@@ -196,7 +197,7 @@ export class UDP implements OwnedHandle, LibuvTarget {
   setMulticastInterface(interfaceAddress: string): number {
     const handle = this.#live();
     if (!handle) return UV_EBADF;
-    return withCString(String(interfaceAddress), (iface) => uv().tabnode_udp_multicast_interface(handle.wrap, iface));
+    return withCString(String(interfaceAddress), (iface) => libnode().exports.tabnode_udp_multicast_interface(handle.wrap, iface));
   }
 
   addMembership(multicastAddress: string, interfaceAddress?: string | null): number { return this.#membership(multicastAddress, interfaceAddress, 1); }
@@ -208,7 +209,7 @@ export class UDP implements OwnedHandle, LibuvTarget {
     if (!handle) return UV_EBADF;
     const iface = interfaceAddress === undefined || interfaceAddress === null ? null : String(interfaceAddress);
     return withCString(String(multicastAddress), (group) => withCString(iface, (at) =>
-      uv().tabnode_udp_membership(handle.wrap, group, at, join)));
+      libnode().exports.tabnode_udp_membership(handle.wrap, group, at, join)));
   }
 
   addSourceSpecificMembership(source: string, group: string, interfaceAddress?: string | null): number { return this.#sourceMembership(source, group, interfaceAddress, 1); }
@@ -220,7 +221,7 @@ export class UDP implements OwnedHandle, LibuvTarget {
     if (!handle) return UV_EBADF;
     const iface = interfaceAddress === undefined || interfaceAddress === null ? null : String(interfaceAddress);
     return withCString(String(source), (from) => withCString(String(group), (to) => withCString(iface, (at) =>
-      uv().tabnode_udp_source_membership(handle.wrap, from, to, at, join))));
+      libnode().exports.tabnode_udp_source_membership(handle.wrap, from, to, at, join))));
   }
 
   /** UDPWrap::BufferSize: uv_recv_buffer_size / uv_send_buffer_size, 0 reads the size; a failure fills `ctx`. */
@@ -229,13 +230,13 @@ export class UDP implements OwnedHandle, LibuvTarget {
     const handle = this.#live();
     if (!handle) return UV_EBADF;
     if (!Number.isInteger(size) || size < 0 || size > 0x7fffffff) { collectUVExceptionInfo(ctx, UV_EINVAL, syscall); return undefined; }
-    const answer = uv().tabnode_udp_buffer_size(handle.wrap, size, isRecv ? 1 : 0);
+    const answer = libnode().exports.tabnode_udp_buffer_size(handle.wrap, size, isRecv ? 1 : 0);
     if (answer < 0) { collectUVExceptionInfo(ctx, answer, syscall); return undefined; }
     return answer;
   }
 
-  getSendQueueSize(): number { const handle = this.#live(); return handle ? uv().tabnode_udp_send_queue_size(handle.wrap) : UV_EBADF; }
-  getSendQueueCount(): number { const handle = this.#live(); return handle ? uv().tabnode_udp_send_queue_count(handle.wrap) : UV_EBADF; }
+  getSendQueueSize(): number { const handle = this.#live(); return handle ? libnode().exports.tabnode_udp_send_queue_size(handle.wrap) : UV_EBADF; }
+  getSendQueueCount(): number { const handle = this.#live(); return handle ? libnode().exports.tabnode_udp_send_queue_count(handle.wrap) : UV_EBADF; }
 
   /** HandleWrap::Close: libuv cancels the queued sends (ECANCELED) before the close's callback. */
   close(callback?: () => void): void {

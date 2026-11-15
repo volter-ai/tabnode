@@ -4,6 +4,7 @@
 #ifndef TABNODE_ENGINE_H
 #define TABNODE_ENGINE_H
 #include <stdint.h>
+#include <uv.h>
 
 #define TABNODE_IMPORT(name) __attribute__((import_module("host:tabnode"), import_name(#name)))
 
@@ -23,28 +24,39 @@ TABNODE_IMPORT(exit_code) int tabnode_exit_code(void);
 // A descriptor the engine waits on is ready (poll.c): libuv's status and its events (UV_READABLE, UV_WRITABLE,
 // UV_DISCONNECT).
 TABNODE_IMPORT(poll_ready) void tabnode_poll_ready(int fd, int status, int events);
-// HandleWrap::OnClose (src/handle_wrap.cc:144-166): handle `id` is closed; its JavaScript runs its close callback.
-TABNODE_IMPORT(handle_closed) void tabnode_handle_closed(int32_t id);
-// LibuvStreamWrap::OnUvRead (src/stream_wrap.cc:229-270): stream `id` read `nread` bytes at `base` (UV_EOF or an error
+// The bindings' callbacks (Tabnode ADR-0018 §3, §4): what libuv calls back into a handle's or a request's JavaScript,
+// as Node's C++ makes each with MakeCallback. A handle is named by its address (it begins with its uv_handle_t, as
+// Node's handle->data names its wrap, handle_wrap.c); a stream's or a socket's request by the number its JavaScript
+// gave it (wrap.h tabnode_req_t). Each C caller closes the callback's scope (`drain`) after the import returns.
+//
+// HandleWrap::OnClose (src/handle_wrap.cc:135-157): the handle's wrap is closed, and the close callback its Close was
+// given, where it was given one, is made. Answers nonzero where a callback was made, whose scope the C then closes;
+// the C frees the handle after.
+TABNODE_IMPORT(handle_closed) int tabnode_handle_closed(uv_handle_t *handle);
+// LibuvStreamWrap::OnUvRead (src/stream_wrap.cc:229-270): the stream read `nread` bytes at `base` (UV_EOF or an error
 // where negative; the buffer is freed once this returns). On an IPC pipe the JavaScript accepts the handle that came
 // with them before it calls `onread`.
-TABNODE_IMPORT(stream_read) void tabnode_stream_read(int32_t id, int32_t nread, const char *base);
+TABNODE_IMPORT(stream_read) void tabnode_stream_read(uv_stream_t *stream, int32_t nread, const char *base);
 // LibuvStreamWrap::AfterUvWrite and AfterUvShutdown (stream_wrap.cc:315-334, 392-400): request `id` completed.
 TABNODE_IMPORT(stream_written) void tabnode_stream_written(int32_t id, int32_t status);
 TABNODE_IMPORT(stream_shut) void tabnode_stream_shut(int32_t id, int32_t status);
-// ConnectionWrap::OnConnection (src/connection_wrap.cc:30-72): listening stream `id` has a connection (or an error);
+// ConnectionWrap::OnConnection (src/connection_wrap.cc:30-72): the listening stream has a connection (or an error);
 // the JavaScript makes the client's wrap, accepts it and calls `onconnection`.
-TABNODE_IMPORT(stream_connection) void tabnode_stream_connection(int32_t id, int32_t status);
+TABNODE_IMPORT(stream_connection) void tabnode_stream_connection(uv_stream_t *server, int32_t status);
 // ConnectionWrap::AfterConnect (connection_wrap.cc:75-112): connect request `id` completed, with the stream's
 // readability and writability.
 TABNODE_IMPORT(stream_connected) void tabnode_stream_connected(int32_t id, int32_t status, int32_t readable,
                                                               int32_t writable);
-// UDPWrap::OnRecv (src/udp_wrap.cc:701-778): socket `id` received `nread` bytes at `base` from the address `name`
+// UDPWrap::OnRecv (src/udp_wrap.cc:701-778): the socket received `nread` bytes at `base` from the address `name`
 // describes (a tabnode_address_t, wrap.h), or an error where `nread` is negative (`name` NULL).
-TABNODE_IMPORT(udp_received) void tabnode_udp_received(int32_t id, int32_t nread, const char *base, const void *name,
-                                                      uint32_t flags);
+TABNODE_IMPORT(udp_received) void tabnode_udp_received(uv_udp_t *handle, int32_t nread, const char *base,
+                                                      const void *name, uint32_t flags);
 // UDPWrap::OnSendDone (udp_wrap.cc:672-686): send request `id` completed.
 TABNODE_IMPORT(udp_sent) void tabnode_udp_sent(int32_t id, int32_t status);
+// ProcessWrap::OnExit (src/process_wrap.cc:363-378): the handle's `onexit`, with the exit status and the name of the
+// signal that ended the child (signo_string: its `signal_length` bytes, none for none).
+TABNODE_IMPORT(process_exit) void tabnode_process_exit(uv_process_t *handle, double exit_status, const char *signal,
+                                                      uint32_t signal_length);
 // The loop is about to wait (env.c's idle prepare handle, as Node's idle_prepare_handle_ marks its isolate idle,
 // src/env.cc:1303-1312): it has nothing to do now, its poll would block. The engine decides there what it decides
 // when its loop would park (a run's end), as libuv asks `uv__loop_alive` before it blocks.

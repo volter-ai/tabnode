@@ -7,8 +7,8 @@
 #include "wrap.h"
 
 // PipeWrap's constructor (pipe_wrap.cc:144-152): uv_pipe_init cannot fail but for memory.
-TABNODE_EXPORT(tabnode_pipe_init) tabnode_wrap_t *tabnode_pipe_init(int32_t id, int ipc) {
-  tabnode_wrap_t *wrap = tabnode_wrap_new(id);
+TABNODE_EXPORT(tabnode_pipe_init) tabnode_wrap_t *tabnode_pipe_init(int ipc) {
+  tabnode_wrap_t *wrap = tabnode_wrap_new();
   if (uv_pipe_init(uv_default_loop(), &wrap->uv.pipe, ipc)) abort();
   wrap->uv.handle.data = wrap;
   return wrap;

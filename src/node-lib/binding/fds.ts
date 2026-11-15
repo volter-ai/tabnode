@@ -18,7 +18,7 @@ import type { ProcessToken } from '../../process-tokens';
 import { currentOwner } from './handles';
 import { nativeInheritedFdType } from '../../native-stream-binding';
 import { treeDescriptorsOf, type TreeDescriptors } from '../../tree-descriptors';
-import { libuv, uv } from './libuv';
+import { libnode, libnodeAttached } from './libnode';
 
 /** What libuv answers for a descriptor. */
 export type HandleType = 'TCP' | 'TTY' | 'UDP' | 'FILE' | 'PIPE' | 'UNKNOWN';
@@ -68,19 +68,6 @@ export function allocateFd(): number {
   return nextFd++;
 }
 
-
-/** Record a descriptor a run is started with, under that run's name. */
-export function registerRunFd(token: ProcessToken, fd: number, type: HandleType, handle: unknown): void {
-  let table = runFds.get(token);
-  if (!table) { table = new Map(); runFds.set(token, table); }
-  table.set(fd, { type, handle });
-}
-
-/** A run that has ended was started with nothing. */
-export function releaseRunFds(token: ProcessToken): void {
-  runFds.delete(token);
-}
-
 /** Trusted process admission reads copies of this run's descriptor entries. */
 export function inheritedRunFds(token: ProcessToken): Array<{ fd: number; type: HandleType; handle: unknown }> {
   return Array.from(runFds.get(token) ?? [], ([fd, entry]) => ({ fd, ...entry }));
@@ -111,9 +98,6 @@ export function releaseFd(fd: number): void {
   if (owner) { reservedFds.delete(fd); owner.release(fd); }
 }
 
-/** Whether the realm's process is `node` on libuv's loop. */
-function realmHasLibuv(): boolean { return libuv() !== undefined; }
-
 /** internal/util's `handleTypes`, GetUVHandleTypeCode's indices (native/node handle_wrap.c). */
 export const HANDLE_TYPE_NAMES: readonly HandleType[] = ['TCP', 'TTY', 'UDP', 'FILE', 'PIPE', 'UNKNOWN'];
 
@@ -122,7 +106,7 @@ export const HANDLE_TYPE_NAMES: readonly HandleType[] = ['TCP', 'TTY', 'UDP', 'F
  * descriptor; else a descriptor the engine opened is what it opened, and the three standard ones are pipes.
  */
 export function guessHandleTypeOfFd(fd: number): HandleType {
-  if (realmHasLibuv()) return HANDLE_TYPE_NAMES[uv().tabnode_guess_handle(Number(fd) | 0)] ?? 'UNKNOWN';
+  if (libnodeAttached()) return HANDLE_TYPE_NAMES[libnode().exports.tabnode_guess_handle(Number(fd) | 0)] ?? 'UNKNOWN';
   const open = tableOfAskingRun()?.get(fd) ?? openFds.get(fd);
   if (open) return open.type;
   const inherited = nativeInheritedFdType(fd);

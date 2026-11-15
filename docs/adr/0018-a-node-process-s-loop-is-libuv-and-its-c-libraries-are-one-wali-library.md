@@ -330,6 +330,33 @@ is built.
      for its streams; the engine's own lines (an uncaught exception's report) still go to `onStderrBytes`, on a
      descriptor libuv may have made non-blocking, which answers EAGAIN where its pipe is full.
   5. `process_wrap` and `spawn_sync` over `uv_spawn`, with libuv at a267f5688b.
+     libuv is libuv's own source at a267f5688be25e8d4628e296245a041adc2ca072, GitHub's archive of it pinned by
+     SHA-256 02d51895…a0af (`scripts/build-libnode.sh`), where Node v24.21.0 pins 1.52.1 in `deps/uv`: its version
+     says 1.53.1-dev, its 35 Linux sources and CMake's Linux defines are 1.52.1's, and its difference is the spawn
+     (`src/unix/process.c`: `posix_spawn` after the clone probe, fork only where `posix_spawn` cannot carry the
+     options: a uid or gid). A `Process` is a HandleWrap whose `uv_process_t` is native/node's (`process_wrap.c`,
+     over HandleWrap's `handle_wrap.c`), and a `pipe`, `overlapped` or `wrap` stdio entry names its handle's
+     `uv_stream_t` (StreamForWrap), so those handles are items 3's and 4's; spawn_sync is Node's SyncProcessRunner in
+     C over a loop of its own (`spawn_sync.c`).
+     *For the host:*
+     - Imports added to `host:tabnode` (engine.h), answered by Tabnode's `libnodeImports`, which the host puts
+       among the program's imports: `handle_closed(handle) -> i32`, HandleWrap::OnClose (the wrap closed, its close
+       callback made; nonzero where it was, and the C drains); `process_exit(handle, f64 exit status, signal name's
+       address, its length)`, ProcessWrap::OnExit (`onexit` made; the C drains). None removed.
+     - Tabnode's `attachLibnode` is given the program before Node's library runs: its exports, and the process's
+       memory's `read` and `write`, through which a binding writes a call's record (`tabnode_malloc`) and reads a
+       result.
+     - The kernel's `clone` with an entry, musl's `clone(fn, stack, flags, arg)`, for `CLONE_VM | CLONE_VFORK` with
+       no termination signal (libuv's probe, whose child writes the parent's memory) and with `SIGCHLD` (musl's
+       `posix_spawn`): the child runs `fn(arg)` on the given stack in the caller's memory, on a worker of its own
+       running only the program's WebAssembly, with its own descriptor table, signal handlers and pid, while the
+       caller waits for its exec or its end; `waitpid(pid, …, __WCLONE)` reaps a child with no termination signal.
+       Where the probe fails, libuv forks, and a Node process has no fork, so every spawn fails.
+     - SIGCHLD reaches libuv's handler (its loop's child watcher, `uv__wait_children`'s `waitpid`): no part of the
+       host blocks it or reads it from a signalfd. `dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addchdir_np")`
+       answers from `libc.so`, or a spawn with a `cwd` forks.
+     - Node's `child_process` reaches no door of the host: the engine's process runner and the synchronous child's
+       host door are not asked by `process_wrap` or `spawn_sync`.
   6. `fs` over `uv_fs_*` and its threadpool.
   7. OpenSSL and the rest of §1 into `libnode.so`; addons through `dlopen`; the process's raw calls and
      `linux-calls.ts` go. **Crypto is Node's own, landed as one piece:** Node's `lib/internal/crypto/*`, `keys.js`'s

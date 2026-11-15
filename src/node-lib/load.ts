@@ -3,8 +3,6 @@ import { guestScopesOf, NODE_LIB_PARAMETERS } from '../guest-scope';
 import { scopedBody, type ScopedBody } from './scoped-body';
 import { isNodeLibFile, nodeLibBody } from './bodies';
 import { createOsBinding } from './binding/misc';
-import { createProcessBinding } from './binding/process_wrap';
-import { createSpawnSyncBinding } from './binding/spawn_sync';
 import { withGuestExecution } from '../guest-loop';
 import { traceSocketConnect } from '../socket-connect-trace';
 /**
@@ -419,10 +417,6 @@ class NodeLibScope {
         this.bindings.set('fs_event_wrap', bindingSurface(fs.fsEventWrapBinding, this.owner, this.process));
       } else if (name === 'os') {
         this.bindings.set(name, createOsBinding(this.process));
-      } else if (name === 'process_wrap') {
-        this.bindings.set(name, bindingSurface(createProcessBinding(this.process), this.owner, this.process));
-      } else if (name === 'spawn_sync') {
-        this.bindings.set(name, bindingSurface(createSpawnSyncBinding(this.process), this.owner, this.process));
       } else if (name === 'errors') {
         this.bindings.set(name, { ...errorsBinding, getErrorSourcePositions: (error: object) => errorSourcePositions(this.process, error) });
       } else if (name === 'diagnostics_channel') {
