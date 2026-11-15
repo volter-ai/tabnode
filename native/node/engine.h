@@ -23,6 +23,10 @@ TABNODE_IMPORT(exit_code) int tabnode_exit_code(void);
 // A descriptor the engine waits on is ready (poll.c): libuv's status and its events (UV_READABLE, UV_WRITABLE,
 // UV_DISCONNECT).
 TABNODE_IMPORT(poll_ready) void tabnode_poll_ready(int fd, int status, int events);
+// The loop is about to wait (env.c's idle prepare handle, as Node's idle_prepare_handle_ marks its isolate idle,
+// src/env.cc:1303-1312): it has nothing to do now, its poll would block. The engine decides there what it decides
+// when its loop would park (a run's end), as libuv asks `uv__loop_alive` before it blocks.
+TABNODE_IMPORT(loop_idle) void tabnode_loop_idle(void);
 // The close of a callback's scope (Node's InternalCallbackScope::Close, src/api/callback.cc): the tick queue, then the
 // microtasks, which a browser runs only between tasks, so the engine answers it by a suspension that resumes from the
 // next task (a `Suspending` import).

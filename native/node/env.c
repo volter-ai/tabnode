@@ -9,6 +9,8 @@
 static uv_timer_t timer_handle;
 static uv_check_t immediate_check_handle;
 static uv_idle_t immediate_idle_handle;
+// Node's idle_prepare_handle_ (src/env.h, env.cc:1142, 1155, 1303-1307): unreferenced, so it never keeps the loop alive.
+static uv_prepare_t idle_prepare_handle;
 static uint64_t timer_base;
 static uint32_t immediate_info[kImmediateFields];
 // Node's timeout_info_ (src/env.h:1129, an AliasedInt32Array of one): the count of referenced timers, which the
@@ -18,6 +20,7 @@ static int32_t timeout_info[1];
 static void run_timers(uv_timer_t *handle);
 static void check_immediate(uv_check_t *handle);
 static void idle_noop(uv_idle_t *handle) { (void)handle; }
+static void prepare_idle(uv_prepare_t *handle);
 
 // The loop's now, relative to its start (Environment::GetNowUint64, env.cc:1649-1655).
 static uint64_t now_since_base(void) {
@@ -25,7 +28,8 @@ static uint64_t now_since_base(void) {
   return uv_now(timer_handle.loop) - timer_base;
 }
 
-// Environment::InitializeLibuv (env.cc:1124-1136): the timer and the check unreferenced, the idle stopped.
+// Environment::InitializeLibuv (env.cc:1124-1158): the timer and the check unreferenced, the idle stopped, and the idle
+// prepare handle unreferenced and started (StartProfilerIdleNotifier, env.cc:1303-1307).
 void tabnode_initialize_libuv(uv_loop_t *loop) {
   if (uv_timer_init(loop, &timer_handle)) abort();
   uv_unref((uv_handle_t *)&timer_handle);
@@ -33,7 +37,22 @@ void tabnode_initialize_libuv(uv_loop_t *loop) {
   uv_unref((uv_handle_t *)&immediate_check_handle);
   if (uv_idle_init(loop, &immediate_idle_handle)) abort();
   if (uv_check_start(&immediate_check_handle, check_immediate)) abort();
+  if (uv_prepare_init(loop, &idle_prepare_handle)) abort();
+  uv_unref((uv_handle_t *)&idle_prepare_handle);
+  if (uv_prepare_start(&idle_prepare_handle, prepare_idle)) abort();
   timer_base = uv_now(loop);
+}
+
+// The idle prepare handle, run before each poll (uv_run's prepare phase, deps/uv/src/unix/core.c:452, the timeout
+// read after it, :456): where Node marks its isolate idle, the engine is told the loop would wait, only when its poll
+// would block. uv_backend_timeout is 0 where an idle handle, a closing handle or a pending callback keeps it from
+// blocking (core.c:401-411), and also while watcher changes are queued (:414-419), a descriptor's wait just started,
+// which is a live wait: the engine is told on the next iteration instead, never wrongly. The scope it opens closes as
+// any callback's.
+static void prepare_idle(uv_prepare_t *handle) {
+  if (uv_backend_timeout(handle->loop) == 0) return;
+  tabnode_loop_idle();
+  tabnode_drain();
 }
 
 // The `timers` binding's calls (src/timers.cc over Environment, env.cc:1537-1550, 1638-1647, 1649-1655).

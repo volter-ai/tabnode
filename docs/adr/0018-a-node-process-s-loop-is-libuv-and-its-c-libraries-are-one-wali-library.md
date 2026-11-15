@@ -247,7 +247,9 @@ is built.
      4 ms bound went. *Not built:* Node's `lib/timers.js` and `lib/internal/timers.js` over the binding, in place of
      `system.ts`'s list, which still answers the deadline; so `system.ts`'s loop has not gone. The run's end is still the
      engine's own count, which ends the process by `exit_group`; `beforeExit` and `exit` from `main` are Node's once the
-     handles are libuv's.
+     handles are libuv's. The engine decides it when the loop would wait, never on a timer: `env.c`'s unreferenced
+     prepare handle, Node's `idle_prepare_handle_` (`src/env.cc:1142-1155`, `1303-1307`), tells the engine
+     (`loop_idle`) before each poll that would block, as the system's `idle` asks.
   3. Node's bootstrap on the realm's own global (§7), and the standard streams: `tty_wrap`, `pipe_wrap` and the
      stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so `process.stdout` is Node's.
   4. `tcp_wrap` and `stream_wrap` over `uv_tcp_t`; `udp_wrap` over `uv_udp_t`.
