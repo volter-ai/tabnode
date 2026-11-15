@@ -4,6 +4,7 @@
 #ifndef TABNODE_ENGINE_H
 #define TABNODE_ENGINE_H
 #include <stdint.h>
+#include <uv.h>
 
 #define TABNODE_IMPORT(name) __attribute__((import_module("host:tabnode"), import_name(#name)))
 
@@ -31,4 +32,13 @@ TABNODE_IMPORT(loop_idle) void tabnode_loop_idle(void);
 // microtasks, which a browser runs only between tasks, so the engine answers it by a suspension that resumes from the
 // next task (a `Suspending` import).
 TABNODE_IMPORT(drain) void tabnode_drain(void);
+// HandleWrap::OnClose (src/handle_wrap.cc:135-157): the handle's wrap is closed, and the close callback its Close was
+// given, where it was given one, is made as MakeCallback makes it. Answers nonzero where a callback was made, whose
+// scope the C then closes (a drain).
+TABNODE_IMPORT(handle_closed) int tabnode_handle_closed(uv_handle_t *handle);
+// ProcessWrap::OnExit (src/process_wrap.cc:363-378): the handle's `onexit`, made as MakeCallback makes it, with the
+// exit status and the name of the signal that ended the child (signo_string: its `signal_length` bytes, none for
+// none); the scope's close is the C's drain.
+TABNODE_IMPORT(process_exit) void tabnode_process_exit(uv_process_t *handle, double exit_status, const char *signal,
+  uint32_t signal_length);
 #endif
