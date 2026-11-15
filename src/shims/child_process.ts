@@ -55,6 +55,8 @@ import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
 import { nodeProcessHostFor, nodeProcessHostInstalled, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import { KernelStreamWrap, kKernelBacked } from '../node-lib/binding/kernel_stream';
+import { libuv } from '../node-lib/binding/libuv';
+import { installNodeStdio } from '../node-lib/stdio';
 import { Pipe, constants as pipeConstants } from '../node-lib/binding/pipe_wrap';
 import {
   WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
@@ -835,6 +837,11 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // Whose wait its end is: a nested node's parent run, a run forked here the realm's; any other run's parent is
   // elsewhere (the kernel's exec'd node: its own channel reports its exit) or is the host's.
   if (forkedHere) reaper = null;
+  // Where the realm's process is `node` on libuv's loop its standard streams are Node's (ADR-0018 item 3,
+  // node-lib/stdio.ts): the console writes to them, as Node's console writes to `process.stdout` and `process.stderr`,
+  // and nothing of the engine's stdin, terminal or output capture is made for this run.
+  const nodeStdio = libuv() !== undefined;
+  let nodeStreams: { stdout: { write(text: string): unknown }; stderr: { write(text: string): unknown } } | undefined;
   // Create a runtime with output capture for both console.log AND process.stdout.write
   const runtime = new Runtime(tree, {
     ...(launch.moduleEvaluationObserver ? { moduleEvaluationObserver: launch.moduleEvaluationObserver } : {}),
@@ -843,7 +850,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     credentials,
     onConsole: (method, consoleArgs) => {
       const msg = consoleArgs.map(a => String(a)).join(' ') + '\n';
-      if (method === 'error') {
+      if (nodeStreams) {
+        (method === 'error' ? nodeStreams.stderr : nodeStreams.stdout).write(msg);
+      } else if (method === 'error') {
         appendStderr(msg);
       } else {
         appendStdout(msg);
@@ -872,6 +881,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
 
   // Override process.exit to resolve the completion promise
   const proc = runtime.getProcess();
+  if (nodeStdio) {
+    installNodeStdio(proc);
+    nodeStreams = proc as unknown as NonNullable<typeof nodeStreams>;
+  }
   // What fds 0, 1 and 2 are, where the fs binding's fstat reads them (the
   // symbol is the binding's `kStdioKinds`, named here so this file does not
   // import the fs binding).
@@ -1003,11 +1016,11 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // run's prompt, through `sendStdin`, or a parent writing to the stdin pipe
   // of a child it spawned.
   // A run whose fd 0 is a shared ring has no other writer.
-  if (streams && !stdinRing) {
+  if (streams && !stdinRing && !nodeStdio) {
     stdinSink = { installed: proc.stdin as unknown as RunStdin, replaced: streams.stdin };
     streams.stdin = stdinSink.installed;
   }
-  if (stdinRing) (proc as unknown as Record<symbol, unknown>)[kStdinRing] = stdinRing;
+  if (stdinRing && !nodeStdio) (proc as unknown as Record<symbol, unknown>)[kStdinRing] = stdinRing;
 
   const terminal = streams?.terminal;
   // The terminal's mode is fd 0's termios, set by the host (ADR-0010 §3); the mode this run set (`terminalMode`) is put
@@ -1017,12 +1030,12 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     get rows() { return terminal.rows; },
     ...(ttyFds[0] && terminal.setRawMode ? { setRawMode: (mode: false | 'raw' | 'io') => { terminal.setRawMode!(mode); terminalMode = mode; } } : {}),
   };
-  if (runTerminal) (proc as unknown as Record<symbol, unknown>)[kRunTerminal] = runTerminal;
+  if (runTerminal && !nodeStdio) (proc as unknown as Record<symbol, unknown>)[kRunTerminal] = runTerminal;
   // For long-running commands (watch mode), report as TTY so tools like
   // vitest set up interactive features (file watching, stdin commands). A
   // spawned child's stdio is a pipe, as Node's is, and gets none of this.
   // Each fd is a terminal only where the host said so.
-  if (ttyFds[0]) {
+  if (ttyFds[0] && !nodeStdio) {
     proc.stdin.isTTY = true;
     // Node's own userland sets the mode (ADR-0010 §0, §3): `tty.ReadStream.prototype.setRawMode`, over the binding's
     // mode operation as this stream's handle.
@@ -1034,8 +1047,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       };
     }
   }
-  if (ttyFds[1]) proc.stdout.isTTY = true;
-  if (ttyFds[2]) proc.stderr.isTTY = true;
+  if (ttyFds[1] && !nodeStdio) proc.stdout.isTTY = true;
+  if (ttyFds[2] && !nodeStdio) proc.stderr.isTTY = true;
   // A window change reaches the output streams that are the terminal; one
   // redirected to a file has no size.
   const resize = (columns: number, rows: number): void => {
@@ -1046,7 +1059,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       stream.emit('resize');
     }
   };
-  const readableInput = proc.stdin as unknown as { listenerCount(event: string): number; readableLength: number; readableHighWaterMark: number; readableFlowing: boolean | null; readableEnded?: boolean; _readableState?: { reading?: boolean; needReadable?: boolean } };
+  // Node's stdin is made when the program first reads it, and its liveness is its handle's, which libuv counts.
+  const readableInput = (nodeStdio ? { listenerCount: () => 0, readableLength: 0, readableHighWaterMark: 0, readableFlowing: null } : proc.stdin) as unknown as { listenerCount(event: string): number; readableLength: number; readableHighWaterMark: number; readableFlowing: boolean | null; readableEnded?: boolean; _readableState?: { reading?: boolean; needReadable?: boolean } };
   const inputReading = () => readableInput.readableFlowing === true || readableInput._readableState?.reading === true
     || readableInput._readableState?.needReadable === true || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0;
   // Whether the guest is consuming its stdin stream, which keeps a Node
@@ -1057,9 +1071,9 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // not the writer has closed.
   // A guest's own `read()` counts as well: Node starts reading fd 0 then and
   // the process lives until the stream ends. The engine's reads do not.
-  const inputConsumed = () => readableInput.readableFlowing === true
+  const inputConsumed = () => !nodeStdio && (readableInput.readableFlowing === true
     || readableInput.listenerCount('data') > 0 || readableInput.listenerCount('readable') > 0
-    || ((proc.stdin as unknown as { __substrateGuestRead?: boolean }).__substrateGuestRead === true && readableInput.readableEnded !== true);
+    || ((proc.stdin as unknown as { __substrateGuestRead?: boolean }).__substrateGuestRead === true && readableInput.readableEnded !== true));
 
   // A child started with a channel wires its own end of it before its
   // module runs, which is what `lib/internal/process/pre_execution.js` does
@@ -1186,7 +1200,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // more (its `_read`), and waits for the producer with `Atomics.waitAsync`:
   // no timer, and nothing read that the guest has not asked for. A blocking
   // `fs.readSync(0)` takes from the same ring, after what the stream holds.
-  if (stdinRing) {
+  if (stdinRing && !nodeStdio) {
     const ring = stdinRing;
     let draining = false;
     const push = (chunk: Uint8Array | null): boolean => (runToken === null ? proc.stdin.push(chunk) : enterRun(runToken, () => proc.stdin.push(chunk)));
@@ -1207,7 +1221,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     };
     (proc.stdin as unknown as { _read(): void })._read = () => { void drain(); };
   }
-  if (streams?.stdinStream && !stdinRing) {
+  if (streams?.stdinStream && !stdinRing && !nodeStdio) {
     inputIterator = streams.stdinStream[Symbol.asyncIterator]();
     const input = inputIterator;
     void (async () => {
@@ -1235,8 +1249,8 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       } finally { streams.stdinOpen = false; }
     })();
   }
-  if (terminal) resize(terminal.columns, terminal.rows);
-  stopResize = terminal?.onResize?.((columns, rows) => {
+  if (terminal && !nodeStdio) resize(terminal.columns, terminal.rows);
+  if (!nodeStdio) stopResize = terminal?.onResize?.((columns, rows) => {
     if (runToken === null) resize(columns, rows);
     else enterRun(runToken, () => resize(columns, rows));
   });

@@ -291,8 +291,44 @@ is built.
      prepare handle, Node's `idle_prepare_handle_` (`src/env.cc:1142-1155`, `1303-1307`), tells the engine
      (`loop_idle`) before each poll that would block, as the system's `idle` asks.
   3. Node's bootstrap on the realm's own global (§7), and the standard streams: `tty_wrap`, `pipe_wrap` and the
-     stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so `process.stdout` is Node's.
-  4. `tcp_wrap` and `stream_wrap` over `uv_tcp_t`; `udp_wrap` over `uv_udp_t`.
+     stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so `process.stdout` is Node's. The glue is
+     `native/node`'s, one C file per file of Node's (`handle_wrap.c`, `stream_wrap.c`, `pipe_wrap.c`, `tty_wrap.c`),
+     built into the `node` program: a wrap is libuv's handle followed by its JavaScript object's number (`wrap.h`), a
+     request libuv's request, its object's number and the bytes it owns until its callback. The binding's object owns
+     the wrap as Node's HandleWrap owns its handle and keeps what that object keeps (its state, its close callback,
+     its requests in flight); a read, a write (tried at once, the rest `uv_write2`, an IPC pipe's handle with it), a
+     shutdown, a listen, an accept and a connect are libuv's, and each callback is an import that calls the object's
+     JavaScript, then drains. A JavaScript buffer is not in the process's memory, so a write's bytes are copied
+     there, and a read's out of libuv's buffer into an ArrayBuffer, as Node's managed buffer is released into one.
+     The run's count asks libuv of each such handle (active and referenced, closing, or with a request in flight)
+     until the run's end is libuv's. `uv_guess_handle` answers every descriptor's type. The program's start is
+     Node's PlatformInit for fds 0 to 2 (`stdio.c`: `/dev/null` for one not open, each one's flags and a terminal's
+     termios recorded) and its exit Node's ResetStdio (libuv's terminal mode reset, O_NONBLOCK and termios put back),
+     run by `exit(3)`, which is also `process.reallyExit`. `process.stdout`, `process.stderr` and `process.stdin` are
+     made as Node's `lib/internal/bootstrap/switches/is_main_thread.js` makes them, on first read, and the console
+     writes to them; that file is the bootstrap's, so until §7 its stream part is carried in the engine
+     (`src/node-lib/stdio.ts`), line for line.
+  4. `tcp_wrap` and `stream_wrap` over `uv_tcp_t`; `udp_wrap` over `uv_udp_t`, in the same shape (`tcp_wrap.c`,
+     `udp_wrap.c`): an address goes to libuv as Node's binding takes it, its text and its port, parsed by
+     `uv_ip4_addr` or `uv_ip6_addr`, and a name comes back as AddressToJS makes it. A realm with no libuv (a tab's
+     engine with no machine) has no IPv4, IPv6 or AF_UNIX, and its pipes and terminals are the engine's pairing.
+
+     *For the host (items 3 and 4).* The `node` program imports, beside step 2's, eight callbacks of libuv's, each
+     answered by Tabnode's `libuvImports` (exported by the package) and followed in C by `drain`: `handle_closed(id)`,
+     a handle's close callback (HandleWrap::OnClose); `stream_read(id, nread, base)`, a stream's read, `base` libuv's
+     buffer in the process's memory, freed when the import returns (LibuvStreamWrap::OnUvRead);
+     `stream_written(id, status)` and `stream_shut(id, status)`, a write's and a shutdown's completion;
+     `stream_connection(id, status)`, a listener's connection (ConnectionWrap::OnConnection);
+     `stream_connected(id, status, readable, writable)`, a connect's completion (AfterConnect);
+     `udp_received(id, nread, base, name, flags)`, a datagram and its sender's address (UDPWrap::OnRecv); and
+     `udp_sent(id, status)`, a send's completion. The host gives Tabnode the program once, in its `bootstrap` import
+     and before the run starts: `attachLibuv({ exports, read, write })`, the program's exports and its memory's copy
+     out and copy in. The program exports `tabnode_exit(status)`, Node's `process.reallyExit`, through which a run's
+     end exits so ResetStdio runs. No import goes: `poll_ready` and `poll.c` are no handle's of these items, and still
+     answer the waits that are not yet libuv's handles (the engine device's descriptor, DNS, children, signals, file
+     watches). A run whose realm has libuv reads none of `onStdoutBytes`, `stdinReader`, `stdioKind` or `terminal`
+     for its streams; the engine's own lines (an uncaught exception's report) still go to `onStderrBytes`, on a
+     descriptor libuv may have made non-blocking, which answers EAGAIN where its pipe is full.
   5. `process_wrap` and `spawn_sync` over `uv_spawn`, with libuv at a267f5688b.
   6. `fs` over `uv_fs_*` and its threadpool.
   7. OpenSSL and the rest of §1 into `libnode.so`; addons through `dlopen`; the process's raw calls and

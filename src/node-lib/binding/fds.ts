@@ -1,12 +1,13 @@
 /**
  * The file descriptors a handle can be opened on.
  *
- * libuv answers `uv_guess_handle(fd)` from the kernel. A socket is the
- * process's kernel's, asked of it (ADR-0009); the engine's own descriptors are
- * the three a process is started with, the ones a spawn hands a child and the
- * pipes the engine itself opened, registered here by the run that made them;
- * the three standard ones are pipes because the engine's stdio is a stream the
- * host reads, never a terminal it owns.
+ * libuv answers `uv_guess_handle(fd)` from the kernel, and where the realm's
+ * process is `node` on libuv's loop the answer is libuv's (ADR-0018 §3). In a
+ * realm with no libuv the engine's own descriptors are the three a process is
+ * started with, the ones a spawn hands a child and the pipes the engine itself
+ * opened, registered here by the run that made them; the three standard ones
+ * are pipes because the engine's stdio is a stream the host reads, never a
+ * terminal it owns.
  *
  * `net.js` reads it through `internal/util`'s `guessHandleType` when a program
  * builds a socket on a descriptor (`new net.Socket({ fd })`) and when a server
@@ -17,7 +18,7 @@ import type { ProcessToken } from '../../process-tokens';
 import { currentOwner } from './handles';
 import { nativeInheritedFdType } from '../../native-stream-binding';
 import { treeDescriptorsOf, type TreeDescriptors } from '../../tree-descriptors';
-import { callingSockets, linux, readIntOption, type TreeSockets } from '../../host-sockets';
+import { libuv, uv } from './libuv';
 
 /** What libuv answers for a descriptor. */
 export type HandleType = 'TCP' | 'TTY' | 'UDP' | 'FILE' | 'PIPE' | 'UNKNOWN';
@@ -110,32 +111,22 @@ export function releaseFd(fd: number): void {
   if (owner) { reservedFds.delete(fd); owner.release(fd); }
 }
 
+/** Whether the realm's process is `node` on libuv's loop. */
+function realmHasLibuv(): boolean { return libuv() !== undefined; }
+
+/** internal/util's `handleTypes`, GetUVHandleTypeCode's indices (native/node handle_wrap.c). */
+export const HANDLE_TYPE_NAMES: readonly HandleType[] = ['TCP', 'TTY', 'UDP', 'FILE', 'PIPE', 'UNKNOWN'];
+
 /**
- * libuv's `uv_guess_handle`: a descriptor the engine opened is what it opened; a kernel socket of the asking process
- * is told by its type and family (`SO_TYPE`, `SO_DOMAIN`): a stream of IPv4 or IPv6 is TCP, of AF_UNIX a pipe, a
- * datagram of IPv4 or IPv6 UDP.
+ * libuv's `uv_guess_handle`: where the realm's process is `node` on libuv's loop, libuv's own answer of the kernel's
+ * descriptor; else a descriptor the engine opened is what it opened, and the three standard ones are pipes.
  */
 export function guessHandleTypeOfFd(fd: number): HandleType {
+  if (realmHasLibuv()) return HANDLE_TYPE_NAMES[uv().tabnode_guess_handle(Number(fd) | 0)] ?? 'UNKNOWN';
   const open = tableOfAskingRun()?.get(fd) ?? openFds.get(fd);
   if (open) return open.type;
   const inherited = nativeInheritedFdType(fd);
   if (inherited) return inherited;
-  const sockets = callingSockets();
-  const socket = sockets && kernelSocketType(sockets, fd);
-  if (socket) return socket;
   if (fd === 0 || fd === 1 || fd === 2) return 'PIPE';
   return 'FILE';
-}
-
-/** uv_guess_handle of a kernel descriptor of `sockets`' process: its socket's type and family; none for no socket. */
-export function kernelSocketType(sockets: TreeSockets, fd: number): HandleType | undefined {
-  if (!Number.isInteger(fd) || fd < 0) return undefined;
-  const type = new Uint8Array(4), domain = new Uint8Array(4);
-  if (sockets.getsockopt(fd, linux.SOL_SOCKET, linux.SO_TYPE, type) < 0) return undefined;
-  if (sockets.getsockopt(fd, linux.SOL_SOCKET, linux.SO_DOMAIN, domain) < 0) return 'UNKNOWN';
-  const kind = readIntOption(type), family = readIntOption(domain);
-  const inet = family === linux.AF_INET || family === linux.AF_INET6;
-  if (kind === linux.SOCK_STREAM) return inet ? 'TCP' : family === linux.AF_UNIX ? 'PIPE' : 'UNKNOWN';
-  if (kind === linux.SOCK_DGRAM && inet) return 'UDP';
-  return 'UNKNOWN';
 }

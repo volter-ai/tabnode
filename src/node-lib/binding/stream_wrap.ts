@@ -6,10 +6,10 @@
  * reads through `handle.onread(arrayBuffer)` with the byte count in
  * `streamBaseState[kReadBytesOrError]`. That is the whole contract, and this
  * file implements exactly it over the engine's pipe pairing: two handles
- * whose writes are each other's reads. A kernel descriptor's handle (a `TCP`,
- * a kernel IPC `Pipe`) extends it for that contract and nothing of the
- * pairing: its bytes are its process's kernel socket's (`kernel_stream.ts`,
- * ADR-0009).
+ * whose writes are each other's reads. Where the realm's process is `node`
+ * on libuv's loop, a `TCP`, a `Pipe` and a `TTY` extend it for that contract
+ * and nothing of the pairing: each is a uv_stream_t of that loop, and its
+ * bytes, its order and its end are libuv's (`kernel_stream.ts`, ADR-0018 §3).
  *
  * Nothing here implements anything Node's files implement. There is no
  * buffering policy, no half-open rule, no timeout: those are `net.js`'s, and
@@ -159,9 +159,12 @@ export class LibuvStreamWrap implements OwnedHandle {
   protected userBuffer: Uint8Array | null = null;
   protected readonly asyncId = nextAsyncId++;
 
-  /** `active`: whether the handle holds its run's loop from its start (the engine's pairing does; `kernel_stream.ts`). */
-  constructor(active = true) {
-    registerHandle(this, true, active);
+  /**
+   * `active`: whether the handle holds its run's loop from its start (the engine's pairing does). A handle that is
+   * libuv's (`kernel_stream.ts`) is counted by libuv's own answer, registered by its wrap (`libuv.ts`).
+   */
+  constructor(active = true, libuvBacked = false) {
+    if (!libuvBacked) registerHandle(this, true, active);
   }
 
   protected attachNative(kind: 'pipe', type: number): void {

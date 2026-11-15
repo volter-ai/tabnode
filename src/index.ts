@@ -80,6 +80,12 @@ export { TREE_DESCRIPTORS } from './tree-descriptors';
 import { treeDescriptorsOf } from './tree-descriptors';
 export type { TreeDescriptors, TreeDescriptorStats, TreeRecordLock, TreeAdvisoryLocks } from './tree-descriptors';
 export { TREE_SOCKETS } from './host-sockets';
+/**
+ * The realm's process is `node` on libuv's loop (ADR-0018 §3): the host gives the program's exports and memory once
+ * (`attachLibuv`, in its `bootstrap` import), and answers the program's handle callbacks with `libuvImports`.
+ */
+export { attachLibuv, libuvImports } from './node-lib/binding/libuv';
+export type { LibuvProgram, LibuvExports } from './node-lib/binding/libuv';
 export type { TreeSockets, InterfaceAddressEntry, SocketMessage, PollDescriptor } from './host-sockets';
 export { TREE_NATIVE, NATIVE_THREAD_MODULE } from './host-native';
 export type { TreeNative, NativeLoadRequest, NativeLoaded } from './host-native';

@@ -1,33 +1,22 @@
 /**
- * `internalBinding('tcp_wrap')`: libuv's `uv_tcp_t`, over the calling process's kernel sockets (ADR-0009).
+ * `internalBinding('tcp_wrap')`: Node's TCPWrap (Node v24.21.0's `src/tcp_wrap.cc`) over libuv's `uv_tcp_t`
+ * (ADR-0018 §3, item 4), where the realm's process is `node` on libuv's loop. The handle is libuv's in the process's
+ * memory, its stream `kernel_stream.ts`'s; making its socket, its family, SO_REUSEADDR and IPV6_V6ONLY at bind, a
+ * bind's held EADDRINUSE, a connect in progress and its SO_ERROR, an accept per readiness and a close's cancellations
+ * are libuv's (`deps/uv/src/unix/tcp.c`, `stream.c`). The binding parses nothing: an address's text and its port go to
+ * uv_ip4_addr and uv_ip6_addr, as TCPWrap::Bind and Connect hand them.
  *
- * A handle keeps the socket calls of the process that made it (`host-sockets.ts` callingSockets), as a socket keeps
- * the namespace and descriptor table of the process whose `socket(2)` made it. Everything a socket is (its port, its
- * loopback, where a connect goes, what pairs with what) is the kernel's; this file holds the libuv rules over the
- * calls, read in Node v24.21.0's `deps/uv/src/unix/tcp.c` and `src/tcp_wrap.cc` (its stream is `kernel_stream.ts`):
- *
- * - the socket is made at `bind`, `connect` or `listen`, of the address's family (`maybe_new_socket`), non-blocking
- *   and close-on-exec; `listen` on a handle with none makes an AF_INET one;
- * - `bind` sets `SO_REUSEADDR`, `SO_REUSEPORT` for `UV_TCP_REUSEPORT` and `IPV6_V6ONLY` on an IPv6 socket; its
- *   `EADDRINUSE` is held (`delayed_error`) and said by `listen` or by a connect's callback;
- * - a connect in progress waits for the socket to be writable and reads `SO_ERROR`; an immediate `ECONNREFUSED` is
- *   the callback's, any other error the call's;
- * - a listener accepts one connection per readiness;
- * - `close` cancels a pending connect with `ECANCELED`, then the stream's pending requests.
- *
- * A process whose tree offers no socket calls has no IPv4 or IPv6: making the socket is `EAFNOSUPPORT`.
+ * A realm with no libuv is a process with no IPv4 or IPv6: a bind, a listen or a connect is `EAFNOSUPPORT`.
  */
-import { queueBindingTask } from '../../guest-loop';
-import { KernelStreamWrap, kDescriptor, kShutdownPending, kSockets, registerKernelHandle } from './kernel_stream';
-import { holdRequest, ownerOf, ownerOfInstance, invokeOwned, observeNodeRequest, forgetNodeRequest, startHandle } from './handles';
+import { KernelStreamWrap, kKernelBacked, realmHasLibuv, registerKernelHandle } from './kernel_stream';
+import { ownerOf, ownerOfInstance, observeNodeRequest } from './handles';
 import { __runFor } from '../../process-tokens';
 import { internalAsyncHooks } from '../internals/runtime';
 import { nodeLibInternalRequire } from '../load';
 import { rememberSocketConnect, traceSocketConnect } from '../../socket-connect-trace';
-import { UV_EAFNOSUPPORT, UV_EALREADY, UV_EBADF, UV_EBUSY, UV_ECANCELED, UV_ECONNREFUSED, UV_EINVAL } from './uv';
-import {
-  intOption, linux, readIntOption, readSocketName, socketAddress, socketAddressBuffer, type SocketName, type TreeSockets,
-} from '../../host-sockets';
+import { UV_EAFNOSUPPORT, UV_EBADF } from './uv';
+import { sockOrPeerName, uv, withCString } from './libuv';
+import { callingSockets, type TreeSockets } from '../../host-sockets';
 
 /** libuv's `uv_tcp_t` flavours, and the two flags `getFlags` builds. */
 export const constants = {
@@ -91,118 +80,65 @@ export function listeningHandles(sockets: TreeSockets, port: number): TCP[] {
   return [...listening.get(sockets)?.get(port) ?? []];
 }
 
-interface PendingConnect { request: TCPConnectWrap; complete: (status: number) => void; release: () => void }
+/** `IsUint32()` of an argument V8 would read. */
+function isUint32(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+}
 
 export class TCP extends KernelStreamWrap {
   /** `constants.SOCKET` or `constants.SERVER`. */
   readonly type: number;
   listening = false;
   /** Set by `net.js` on a server handle; how an accepted connection is announced. */
-  onconnection: ((status: number, clientHandle: TCP) => void) | null = null;
+  onconnection: ((status: number, clientHandle: TCP | undefined) => void) | null = null;
 
-  /** The socket's family, AF_INET or AF_INET6. */
-  #family = 0;
-  /** libuv's `delayed_error`: a bind's `EADDRINUSE` or a connect's immediate refusal, said later. */
-  #delayedError = 0;
-  #noDelay = false;
-  #keepAlive = false;
-  #connect: PendingConnect | null = null;
+  /** The socket calls of the process that made the handle, whose listen watchers hear its port. */
+  readonly #sockets: TreeSockets | undefined = callingSockets();
   /** The port this handle told its process's watchers it listens on. */
   #announcedPort: number | null = null;
 
+  /** TCPWrap::New: a uv_tcp_init'd handle. */
   constructor(type: number = constants.SOCKET) {
-    super(true);
+    super(realmHasLibuv(), false);
     this.type = type;
+    if (this[kKernelBacked]) this.attachUv((id) => uv().tabnode_tcp_init(id));
   }
 
-  /** The descriptor, made now of `family` where the handle has none (`maybe_new_socket`). */
-  #socketFor(family: number): number {
-    if (this[kDescriptor] >= 0) return 0;
-    const sockets = this[kSockets];
-    if (!sockets) return UV_EAFNOSUPPORT;
-    const fd = sockets.socket(family, linux.SOCK_STREAM | linux.SOCK_NONBLOCK | linux.SOCK_CLOEXEC, 0);
-    if (fd < 0) return fd;
-    const status = this.#adopt(fd, family);
-    if (status !== 0) { sockets.close(fd); this.setDescriptor(-1); }
-    return status;
-  }
-
-  /** uv__stream_open: the descriptor is this handle's, and a TCP_NODELAY or keep-alive asked before it is set on it. */
-  #adopt(fd: number, family: number, sockets?: TreeSockets): number {
-    if (this[kDescriptor] >= 0 && this[kDescriptor] !== fd) return UV_EBUSY;
-    this.setDescriptor(fd, sockets);
-    this.#family = family;
-    return this.#applyOptions();
-  }
-
-  #applyOptions(): number {
-    if (this.#noDelay) { const status = this.#setInt(linux.IPPROTO_TCP, linux.TCP_NODELAY, 1); if (status !== 0) return status; }
-    if (this.#keepAlive) { const status = this.#keepalive(true, 60, 1, 10); if (status !== 0) return status; }
-    return 0;
-  }
-
-  #setInt(level: number, name: number, value: number): number {
-    const status = this[kSockets]!.setsockopt(this[kDescriptor], level, name, intOption(value));
-    return status < 0 ? status : 0;
-  }
-
-  /** uv__tcp_keepalive. */
-  #keepalive(on: boolean, idle: number, interval: number, count: number): number {
-    let status = this.#setInt(linux.SOL_SOCKET, linux.SO_KEEPALIVE, on ? 1 : 0);
-    if (status !== 0 || !on) return status;
-    if (idle < 1 || interval < 1 || count < 1) return UV_EINVAL;
-    status = this.#setInt(linux.IPPROTO_TCP, linux.TCP_KEEPIDLE, idle);
-    if (status === 0) status = this.#setInt(linux.IPPROTO_TCP, linux.TCP_KEEPINTVL, interval);
-    if (status === 0) status = this.#setInt(linux.IPPROTO_TCP, linux.TCP_KEEPCNT, count);
-    return status;
+  /** ConnectionWrap::OnConnection's client: TCPWrap::Instantiate with SOCKET. */
+  protected override makeClient(): TCP {
+    return new (this.constructor as typeof TCP)(constants.SOCKET);
   }
 
   bind(address: string, port: number, flags?: number): number {
-    return this.#bind(4, address, port, Number(flags) || 0);
+    return this.#bind(4, address, port, flags);
   }
 
   bind6(address: string, port: number, flags?: number): number {
-    return this.#bind(6, address, port, Number(flags) || 0);
+    return this.#bind(6, address, port, flags);
   }
 
-  /** TCPWrap::Bind's `uv_ip4_addr`/`uv_ip6_addr`, then uv__tcp_bind. */
-  #bind(family: 4 | 6, address: string, port: number, flags: number): number {
-    const name = socketAddress(family, address, port, this[kSockets]);
-    if (!name) return UV_EINVAL;
-    if ((flags & constants.UV_TCP_IPV6ONLY) && family !== 6) return UV_EINVAL;
-    let status = this.#socketFor(family === 6 ? linux.AF_INET6 : linux.AF_INET);
-    if (status !== 0) return status;
-    status = this.#setInt(linux.SOL_SOCKET, linux.SO_REUSEADDR, 1);
-    if (status !== 0) return status;
-    if (flags & constants.UV_TCP_REUSEPORT) {
-      status = this.#setInt(linux.SOL_SOCKET, linux.SO_REUSEPORT, 1);
-      if (status !== 0) return status;
-    }
-    if (family === 6) {
-      status = this.#setInt(linux.IPPROTO_IPV6, linux.IPV6_V6ONLY, flags & constants.UV_TCP_IPV6ONLY ? 1 : 0);
-      if (status !== 0) return status === -linux.EOPNOTSUPP ? UV_EINVAL : status;
-    }
-    const bound = this[kSockets]!.bind(this[kDescriptor], name);
-    if (bound < 0 && bound !== -linux.EADDRINUSE) return bound === -linux.EAFNOSUPPORT ? UV_EINVAL : bound;
-    this.#delayedError = bound < 0 ? bound : 0;
-    return 0;
+  /** TCPWrap::Bind: the address parsed by uv_ip4_addr or uv_ip6_addr, then uv_tcp_bind. */
+  #bind(family: 4 | 6, address: string, port: number, flags: unknown): number {
+    const handle = this.liveUv();
+    if (!this[kKernelBacked]) return UV_EAFNOSUPPORT;
+    if (!handle) return UV_EBADF;
+    const given = isUint32(flags) ? flags : 0;
+    return withCString(String(address), (ip) => uv().tabnode_tcp_bind(handle.wrap, family, ip, Number(port) | 0, given));
   }
 
+  /** TCPWrap::Listen: uv_listen, whose connections are ConnectionWrap::OnConnection's. */
   listen(backlog: number): number {
-    if (this.#delayedError) return this.#delayedError;
-    const status = this.#socketFor(linux.AF_INET);
-    if (status !== 0) return status;
-    const listened = this[kSockets]!.listen(this[kDescriptor], Number(backlog) | 0);
-    if (listened < 0) return listened;
+    const handle = this.liveUv();
+    if (!this[kKernelBacked]) return UV_EAFNOSUPPORT;
+    if (!handle) return UV_EBADF;
+    const err = uv().tabnode_stream_listen(handle.wrap, Number(backlog) | 0);
+    if (err !== 0) return err;
     const port = this.#localPort();
     if (!this.listening) {
       this.listening = true;
-      // uv_listen: a listening socket holds its loop.
-      startHandle(this);
       this.#announce(port);
     }
     sayListenClock(this, port);
-    this.waitIn();
     return 0;
   }
 
@@ -214,7 +150,7 @@ export class TCP extends KernelStreamWrap {
 
   /** Its process's watchers hear the port it listens on, where no other of its handles listens there. */
   #announce(port: number | null): void {
-    const sockets = this[kSockets];
+    const sockets = this.#sockets;
     if (!sockets || port === null) return;
     this.#announcedPort = port;
     let ports = listening.get(sockets);
@@ -238,217 +174,101 @@ export class TCP extends KernelStreamWrap {
     return this.#connectTo(req, address, port, 6);
   }
 
-  /** TCPWrap::Connect's `uv_ip4_addr`/`uv_ip6_addr`, then uv__tcp_connect. */
+  /** TCPWrap::Connect: the address parsed, then uv_tcp_connect under the request, completed by AfterConnect. */
   #connectTo(req: TCPConnectWrap, address: string, port: number, family: 4 | 6): number {
+    const handle = this.liveUv();
+    if (!this[kKernelBacked]) return UV_EAFNOSUPPORT;
+    if (!handle) return UV_EBADF;
     const socket = (this as unknown as Record<symbol, unknown>)[internalAsyncHooks.symbols.owner_symbol];
     const owner = ownerOfInstance(req);
     if (socket && typeof socket === 'object') rememberSocketConnect(socket, {
       pid: owner === null ? null : __runFor(owner)?.process.pid ?? null, id: null,
       socketId: (socket as Record<symbol, number>)[internalAsyncHooks.symbols.async_id_symbol] ?? null, request: null,
     });
-    const complete = (status: number): unknown => {
-      const timer = (): unknown => (socket as Record<symbol, unknown> | undefined)?.[(nodeLibInternalRequire('internal/timers') as { kTimeout: symbol }).kTimeout];
+    const done = this.connectDone(req);
+    const timer = (): unknown => (socket as Record<symbol, unknown> | undefined)?.[(nodeLibInternalRequire('internal/timers') as { kTimeout: symbol }).kTimeout];
+    const id = handle.dispatch((status, readable, writable) => {
       traceSocketConnect('binding-entered', socket, timer(), status);
-      try { return invokeOwned(req, 'oncomplete', status, this, req, true, true); }
+      try { done(status, readable, writable); }
       finally { traceSocketConnect('binding-returned', socket, timer(), status); }
-    };
-    const name = socketAddress(family, address, Number(port), this[kSockets]);
-    if (!name) return UV_EINVAL;
-    if (this.#connect) return UV_EALREADY;
-    if (this.#delayedError === 0) {
-      const status = this.#socketFor(family === 6 ? linux.AF_INET6 : linux.AF_INET);
-      if (status !== 0) return status;
-      this.setOpen(true, true);
-      if (family === 6) this.#defaultLinkLocalScope(name);
-      let connected: number;
-      do connected = this[kSockets]!.connect(this[kDescriptor], name); while (connected === -linux.EINTR);
-      if (connected < 0 && connected !== -linux.EINPROGRESS) {
-        // Linux reports a refusal later; an immediate one (or an EINVAL, which a BSD gives for it) is the callback's.
-        if (connected === -linux.ECONNREFUSED || connected === -linux.EINVAL) this.#delayedError = UV_ECONNREFUSED;
-        else return connected;
-      }
-    }
-    observeNodeRequest(req, this);
-    this.#connect = { request: req, complete, release: holdRequest(this) };
-    if (this.#delayedError) queueBindingTask(() => this.#connected());
-    else this.waitOut();
-    return 0;
-  }
-
-  /** A link-local IPv6 destination named with no interface goes out of the first one that has a link-local address. */
-  #defaultLinkLocalScope(name: Uint8Array): void {
-    if (name[8] !== 0xfe || name[9] !== 0x80) return;
-    const view = new DataView(name.buffer, name.byteOffset, name.byteLength);
-    if (view.getUint32(24, true) !== 0) return;
-    let entries: ReturnType<TreeSockets['getifaddrs']> = [];
-    try { entries = this[kSockets]?.getifaddrs() ?? []; } catch { return; }
-    for (const entry of entries) {
-      const own = readSocketName(entry.address);
-      if (own?.family === 'IPv6' && entry.address[8] === 0xfe && entry.address[9] === 0x80) { view.setUint32(24, own.scopeid ?? 0, true); return; }
-    }
-  }
-
-  /** uv__stream_connect: the connect's outcome, its held error or the socket's own (`SO_ERROR`). */
-  #connected(): void {
-    const pending = this.#connect;
-    if (!pending) return;
-    let error: number;
-    if (this.#delayedError) { error = this.#delayedError; this.#delayedError = 0; }
-    else {
-      const value = new Uint8Array(4);
-      const status = this[kSockets]!.getsockopt(this[kDescriptor], linux.SOL_SOCKET, linux.SO_ERROR, value);
-      error = status < 0 ? status : -readIntOption(value);
-    }
-    if (error === -linux.EINPROGRESS) { this.waitOut(); return; }
-    this.#connect = null;
-    try { pending.complete(error); }
-    finally { forgetNodeRequest(pending.request); pending.release(); }
-    if (this[kDescriptor] < 0) return;
-    if (error < 0) { this.cancelWrites(UV_ECANCELED); return; }
-    this.resumeWrites();
-  }
-
-  /** A connect in progress holds the writes queued behind it. */
-  protected override writesHeld(): boolean { return this.#connect !== null; }
-
-  /** A listener's readiness is a connection to accept; a connection's, bytes to read. */
-  protected override onReadable(): void {
-    if (this.listening) this.#accept();
-    else super.onReadable();
-  }
-
-  /** A connect in progress is answered by the socket's writability; else the queue is sent. */
-  protected override onWritable(): void {
-    if (this.#connect) this.#connected();
-    else super.onWritable();
-  }
-
-  /**
-   * A connection accepted (uv__server_io), with the options asked of the listener's family. A listener nobody serves
-   * yet (a received one whose receiver has not set its `onconnection`) leaves it in the kernel's backlog until it
-   * listens again.
-   */
-  #accept(): void {
-    if (!this.listening || this.closed || this.onconnection === null) return;
-    this.serveConnection((fd, sockets) => {
-      const accepted = new (this.constructor as typeof TCP)(constants.SOCKET);
-      if (accepted.#adopt(fd, this.#family, sockets) === 0) return accepted;
-      sockets.close(fd);
-      accepted.setDescriptor(-1);
-      accepted.close();
-      return undefined;
     });
-  }
-
-  /** uv_close: a pending connect is cancelled, then the stream's requests; the descriptor goes. */
-  override close(callback?: () => void): void {
-    if (!this.closed) {
-      const connect = this.#connect;
-      this.#connect = null;
-      if (connect) queueBindingTask(() => { try { connect.complete(UV_ECANCELED); } finally { forgetNodeRequest(connect.request); connect.release(); } });
-    }
-    super.close(callback);
+    const err = withCString(String(address), (ip) => uv().tabnode_tcp_connect(handle.wrap, id, family, ip, Number(port) | 0));
+    if (err) handle.undispatch(id);
+    else observeNodeRequest(req, this);
+    return err;
   }
 
   getsockname(out: Partial<SockName>): number {
-    return this.#name('getsockname', out);
+    return this.#name(0, out);
   }
 
   getpeername(out: Partial<SockName>): number {
-    return this.#name('getpeername', out);
+    return this.#name(1, out);
   }
 
-  /** uv_tcp_getsockname / uv_tcp_getpeername: a held error first, then the kernel's name, as AddressToJS reads it. */
-  #name(call: 'getsockname' | 'getpeername', out: Partial<SockName>): number {
-    if (this.#delayedError) return this.#delayedError;
-    const sockets = this[kSockets];
-    if (this[kDescriptor] < 0 || !sockets) return UV_EBADF;
-    const buffer = socketAddressBuffer();
-    const status = sockets[call](this[kDescriptor], buffer);
-    if (status < 0) return status;
-    const name: SocketName | undefined = readSocketName(buffer, sockets);
-    if (!name) return UV_EINVAL;
-    out.address = name.address;
-    out.family = name.family;
-    out.port = name.port;
-    return 0;
+  /** GetSockOrPeerName<TCPWrap, uv_tcp_getsockname / uv_tcp_getpeername>, AddressToJS on success. */
+  #name(peer: 0 | 1, out: Partial<SockName>): number {
+    const handle = this.liveUv();
+    if (!handle) return UV_EBADF;
+    return sockOrPeerName((at) => uv().tabnode_tcp_name(handle.wrap, peer, at), out as Record<string, unknown>);
   }
 
-  /** uv_tcp_nodelay: set now where the socket exists, and remembered for when it is made. */
-  setNoDelay(enable: boolean): number {
-    const on = Boolean(enable);
-    if (this[kDescriptor] >= 0) { const status = this.#setInt(linux.IPPROTO_TCP, linux.TCP_NODELAY, on ? 1 : 0); if (status !== 0) return status; }
-    this.#noDelay = on;
-    return 0;
+  /** TCPWrap::SetNoDelay: uv_tcp_nodelay. */
+  setNoDelay(enable: unknown): number {
+    const handle = this.liveUv();
+    if (!this[kKernelBacked]) return 0;
+    if (!handle) return UV_EBADF;
+    return uv().tabnode_tcp_nodelay(handle.wrap, enable === true ? 1 : 0);
   }
 
-  /** uv_tcp_keepalive_ex (TCPWrap::SetKeepAlive: an interval of 1 s and 10 probes where none is given). */
-  setKeepAlive(enable: boolean, delay: number, interval?: number, count?: number): number {
-    const on = Boolean(enable);
-    if (this[kDescriptor] >= 0) {
-      const status = this.#keepalive(on, Number(delay) >>> 0, typeof interval === 'number' ? interval >>> 0 : 1, typeof count === 'number' ? count >>> 0 : 10);
-      if (status !== 0) return status;
-    }
-    this.#keepAlive = on;
-    return 0;
+  /** TCPWrap::SetKeepAlive: uv_tcp_keepalive_ex, an interval of 1 s and 10 probes where none is given. */
+  setKeepAlive(enable: unknown, delay: number, interval?: unknown, count?: unknown): number {
+    const handle = this.liveUv();
+    if (!this[kKernelBacked]) return 0;
+    if (!handle) return UV_EBADF;
+    return uv().tabnode_tcp_keepalive(handle.wrap, Number(enable) | 0, Number(delay) >>> 0,
+      isUint32(interval) ? interval : 1, isUint32(count) ? count : 10);
   }
 
-  /** TCPWrap::SetTypeOfService: IP_TOS for an IPv4 socket, IPV6_TCLASS for an IPv6 one. */
+  /** TCPWrap::SetTypeOfService: IP_TOS or IPV6_TCLASS by the socket's family. */
   setTypeOfService(tos: number): number {
-    const option = this.#typeOfServiceOption();
-    if (typeof option === 'number') return option;
-    return this.#setInt(option.level, option.name, Number(tos) | 0);
+    const handle = this.liveUv();
+    if (!handle) return UV_EBADF;
+    return uv().tabnode_tcp_set_tos(handle.wrap, Number(tos) | 0);
   }
 
   getTypeOfService(): number {
-    const option = this.#typeOfServiceOption();
-    if (typeof option === 'number') return option;
-    const value = new Uint8Array(4);
-    const status = this[kSockets]!.getsockopt(this[kDescriptor], option.level, option.name, value);
-    return status < 0 ? status : readIntOption(value);
-  }
-
-  #typeOfServiceOption(): { level: number; name: number } | number {
-    if (this[kDescriptor] < 0) return UV_EBADF;
-    const out: Partial<SockName> = {};
-    const status = this.getsockname(out);
-    if (status !== 0) return status;
-    return out.family === 'IPv6' ? { level: linux.IPPROTO_IPV6, name: linux.IPV6_TCLASS } : { level: linux.IPPROTO_IP, name: linux.IP_TOS };
+    const handle = this.liveUv();
+    if (!handle) return UV_EBADF;
+    return uv().tabnode_tcp_get_tos(handle.wrap);
   }
 
   setSimultaneousAccepts(_enable: boolean): number {
     return 0;
   }
 
-  /** uv_tcp_open: a descriptor of this process's, made non-blocking, with the options asked before it. */
+  /** TCPWrap::Open: uv_tcp_open of a descriptor of this process's. */
   open(fd: number): number {
-    let status = this.openDescriptor(fd);
-    if (status !== 0) return status;
-    const buffer = socketAddressBuffer();
-    this.#family = this[kSockets]!.getsockname(fd, buffer) < 0 ? linux.AF_INET : buffer[0]! | (buffer[1]! << 8);
-    status = this.#applyOptions();
-    return status;
+    const handle = this.liveUv();
+    if (!handle) return UV_EBADF;
+    return uv().tabnode_tcp_open(handle.wrap, Math.trunc(Number(fd)));
   }
 
-  /** uv_tcp_close_reset: `SO_LINGER` {1, 0}, then close: the peer reads ECONNRESET rather than EOF. */
+  /** TCPWrap::Reset: uv_tcp_close_reset (the peer reads ECONNRESET), its callback HandleWrap::OnClose. */
   reset(callback?: () => void): number {
-    if (this.closed) return UV_EBADF;
-    if (this[kShutdownPending]) return UV_EINVAL;
-    const sockets = this[kSockets];
-    if (this[kDescriptor] >= 0 && sockets) {
-      const linger = new Uint8Array(8);
-      new DataView(linger.buffer).setInt32(0, 1, true);
-      const status = sockets.setsockopt(this[kDescriptor], linux.SOL_SOCKET, linux.SO_LINGER, linger);
-      if (status < 0 && status !== -linux.EINVAL) return status;
-    }
-    this.close(callback);
-    return 0;
+    const handle = this.liveUv();
+    if (!this[kKernelBacked]) { this.close(callback); return 0; }
+    if (!handle || handle.closing) return 0;
+    const err = uv().tabnode_tcp_reset(handle.wrap);
+    this.closed = true;
+    handle.closingWith(err === 0 ? callback : undefined);
+    return err;
   }
 
   protected override onCloseHandle(): void {
     this.listening = false;
     this.onconnection = null;
-    const port = this.#announcedPort, sockets = this[kSockets];
+    const port = this.#announcedPort, sockets = this.#sockets;
     this.#announcedPort = null;
     const ports = sockets && listening.get(sockets);
     const onPort = port === null ? undefined : ports?.get(port);
