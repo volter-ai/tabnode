@@ -14,7 +14,7 @@
  *   the parent closes its copies of what was made for the child.
  */
 import { handleForFd } from './fds';
-import { KernelStreamWrap, kHandleFd } from './kernel_stream';
+import { KernelStreamWrap, kHandleFd, kKernelBacked } from './kernel_stream';
 import { intOption, linux, type TreeSockets } from '../../host-sockets';
 import type { TreeDescriptors } from '../../tree-descriptors';
 
@@ -105,13 +105,13 @@ export function prepareChildStdio(entries: readonly ChildStdioEntry[], sockets: 
       placed.push({ fd: index, from: child });
     } else if (entry.type === 'inherit') {
       const held = handleForFd(entry.fd);
-      const from = held instanceof KernelStreamWrap && held.kernelBacked ? held[kHandleFd] : entry.fd;
+      const from = held instanceof KernelStreamWrap && held[kKernelBacked] ? held[kHandleFd] : entry.fd;
       const flags = sockets.fcntl(from, linux.F_GETFL, 0);
       if (flags < 0) return fail(flags);
       placed.push({ fd: index, from });
     } else if (entry.type === 'stream') {
       const handle = entry.handle;
-      if (handle instanceof KernelStreamWrap && handle.kernelBacked && handle[kHandleFd] >= 0) placed.push({ fd: index, from: handle[kHandleFd] });
+      if (handle instanceof KernelStreamWrap && handle[kKernelBacked] && handle[kHandleFd] >= 0) placed.push({ fd: index, from: handle[kHandleFd] });
     } else if (entry.type === 'ignore' && index <= 2 && files) {
       let fd: number;
       try { fd = files.open('/dev/null', index === 0 ? O_RDONLY : O_RDWR, 0); }

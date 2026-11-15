@@ -4,7 +4,7 @@
  * its own worker (ADR-0009).
  */
 import { Pipe } from './node-lib/binding/pipe_wrap';
-import { LibuvStreamWrap, WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset } from './node-lib/binding/stream_wrap';
+import { LibuvStreamWrap, kConnectionEnd, kPeer, kPeerQueuedBytes, kPeerQueuedHandles, WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset } from './node-lib/binding/stream_wrap';
 import { __adoptHandle } from './node-lib/binding/handles';
 import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOBUFS, UV_ENOTSUP, UV_EPIPE, UV_EMFILE, UV_EBUSY, UV_ENOSYS } from './node-lib/binding/uv';
 
@@ -181,14 +181,14 @@ export class NativeStreamScope {
       }
       case 'pair': {
         const other = this.entry(operation.peer)?.handle;
-        if (!other || handle.peer || other.peer || other === handle) return { status: UV_EINVAL };
+        if (!other || handle[kPeer] || other[kPeer] || other === handle) return { status: UV_EINVAL };
         LibuvStreamWrap.pair(handle, other);
         return { status: 0 };
       }
       case 'open': {
         const inherited = this.descriptors.get(operation.fd);
         const held = inherited === undefined ? undefined : this.entry(inherited);
-        if (!held || held.descriptor.kind !== entry.descriptor.kind || handle.peer || handle.listening) return { status: UV_EBADF };
+        if (!held || held.descriptor.kind !== entry.descriptor.kind || handle[kPeer] || handle.listening) return { status: UV_EBADF };
         if (held !== entry) {
           handle.takeOverFrom(held.handle);
           this.uncredit(inherited!);
@@ -229,8 +229,8 @@ export class NativeStreamScope {
     if (bytes.byteLength > this.limits.maxReadChunkBytes
       || this.writes.has(id)
       || this.pendingWriteBytes + bytes.byteLength > this.limits.maxPendingWriteBytes) return UV_EAGAIN;
-    if (!handle.peer) return UV_EPIPE;
-    if (handle.peerQueuedBytes + bytes.byteLength > this.limits.maxQueuedBytes) return UV_EAGAIN;
+    if (!handle[kPeer]) return UV_EPIPE;
+    if (handle[kPeerQueuedBytes] + bytes.byteLength > this.limits.maxQueuedBytes) return UV_EAGAIN;
     const status = handle.writeBuffer(new WriteWrap(), bytes);
     this.publishCredit(id);
     return status;
@@ -249,7 +249,7 @@ export class NativeStreamScope {
       || this.limits.maxQueuedBytes + this.limits.maxReadChunkBytes >= 2 ** 31) return { status: UV_EINVAL };
     // One send buffer per socket: a duplicate of a connection end already credited (here or in another scope of this
     // worker) is given that end's word, and its writes reserve from the same window.
-    const end = handle.connectionEnd;
+    const end = handle[kConnectionEnd];
     let credit = sendCredits.get(end);
     if (!credit) {
       credit = { word, written: 0, maxQueuedBytes: this.limits.maxQueuedBytes, holders: new Map() };
@@ -272,7 +272,7 @@ export class NativeStreamScope {
     if (credit) credit.written = (credit.written + bytes.byteLength) | 0;
     const handle = this.entry(id)?.handle;
     const status = !handle || handle.closed ? UV_EBADF : !(bytes instanceof Uint8Array) ? UV_EINVAL
-      : !handle.peer ? UV_EPIPE : handle.writeBuffer(new WriteWrap(), bytes);
+      : !handle[kPeer] ? UV_EPIPE : handle.writeBuffer(new WriteWrap(), bytes);
     this.publishCredit(id);
     return status;
   }
@@ -290,7 +290,7 @@ export class NativeStreamScope {
     credit.holders.delete(handle);
     if (credit.holders.size > 0) { publishSendCredit(credit); return; }
     Atomics.store(credit.word, SEND_CREDIT_LIMIT, credit.written);
-    sendCredits.delete(handle.connectionEnd);
+    sendCredits.delete(handle[kConnectionEnd]);
   }
 
   private publishCredit(id: number): void {
@@ -348,11 +348,11 @@ export class NativeStreamScope {
       const attempt = (): void => {
         if (ended) return;
         if (handle.closed || this.disposed) { finish(UV_ECANCELED); return; }
-        if (!handle.peer) { finish(UV_EPIPE); return; }
-        if (handle.peerQueuedBytes + owned.byteLength > this.limits.maxQueuedBytes) return;
+        if (!handle[kPeer]) { finish(UV_EPIPE); return; }
+        if (handle[kPeerQueuedBytes] + owned.byteLength > this.limits.maxQueuedBytes) return;
         // A one-byte IPC message can carry an entire descriptor. Byte credit
         // alone does not meaningfully bound unread SCM_RIGHTS copies.
-        if (retained && handle.peerQueuedHandles >= this.limits.maxQueuedHandles) return;
+        if (retained && handle[kPeerQueuedHandles] >= this.limits.maxQueuedHandles) return;
         try { finish(handle.writeBuffer(new WriteWrap(), owned, retained)); }
         catch (cause) { finish(UV_ECANCELED, cause); }
         this.publishCredit(id);
@@ -420,8 +420,8 @@ const sendCredits = new WeakMap<object, SendCredit>();
 function publishSendCredit(credit: SendCredit): void {
   let free = 0;
   for (const handle of credit.holders.keys()) {
-    if (handle.closed || !handle.peer) continue;
-    free = Math.max(0, credit.maxQueuedBytes - handle.peerQueuedBytes);
+    if (handle.closed || !handle[kPeer]) continue;
+    free = Math.max(0, credit.maxQueuedBytes - handle[kPeerQueuedBytes]);
     break;
   }
   Atomics.store(credit.word, SEND_CREDIT_LIMIT, (credit.written + free) | 0);

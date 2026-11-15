@@ -24,6 +24,12 @@ import { kernelSocketType, type HandleType } from './fds';
 
 /** libuv's `uv__handle_fd`: the kernel descriptor a handle is, -1 while it has none. */
 export const kHandleFd = Symbol('uv__handle_fd');
+/** The kernel handle's own state, by symbol, as the stream's is (stream_wrap.ts `kPeer`). */
+export const kKernelBacked = Symbol('kernelBacked');
+export const kSockets = Symbol('sockets');
+export const kDescriptor = Symbol('descriptor');
+export const kReceivesDescriptors = Symbol('receivesDescriptors');
+export const kShutdownPending = Symbol('shutdownPending');
 
 /** What a received descriptor becomes: a handle of its type, opened on it (`uv_accept`'s `uv__stream_open`, `uv_udp_open`). */
 interface KernelHandle extends OwnedHandle {
@@ -92,7 +98,7 @@ export class KernelStreamWrap extends LibuvStreamWrap {
   }
 
   /** Whether the handle is a kernel descriptor's. */
-  get kernelBacked(): boolean { return this.#kernel; }
+  get [kKernelBacked](): boolean { return this.#kernel; }
 
   /**
    * A handle made before it was known to be a socket (a pipe that then binds or connects to a path) becomes a kernel
@@ -111,8 +117,8 @@ export class KernelStreamWrap extends LibuvStreamWrap {
 
   get [kHandleFd](): number { return this.#kernel ? this.#fd : -1; }
 
-  protected get sockets(): TreeSockets | undefined { return this.#sockets; }
-  protected get descriptor(): number { return this.#fd; }
+  protected get [kSockets](): TreeSockets | undefined { return this.#sockets; }
+  protected get [kDescriptor](): number { return this.#fd; }
 
   /** The handle's descriptor is `fd`, of `sockets`' process. */
   protected setDescriptor(fd: number, sockets: TreeSockets | undefined = this.#sockets): void {
@@ -152,10 +158,10 @@ export class KernelStreamWrap extends LibuvStreamWrap {
   protected descriptorToSend(_handle: unknown): number { return UV_EINVAL; }
 
   /** Whether reads take descriptors with their bytes: an IPC pipe's. */
-  protected get receivesDescriptors(): boolean { return false; }
+  protected get [kReceivesDescriptors](): boolean { return false; }
 
   /** Whether a shutdown waits for the queued writes. */
-  protected get shutdownPending(): boolean { return this.#shutdown !== null; }
+  protected get [kShutdownPending](): boolean { return this.#shutdown !== null; }
 
   /** Whether queued writes wait (a connect in progress). */
   protected writesHeld(): boolean { return false; }
@@ -255,7 +261,7 @@ export class KernelStreamWrap extends LibuvStreamWrap {
   /** recvfrom(2), or an IPC pipe's recvmsg(2), whose received descriptors join the queue. */
   #receive(buffer: Uint8Array): number {
     const sockets = this.#sockets!;
-    if (!this.receivesDescriptors) return sockets.recvfrom(this.#fd, buffer, 0, null);
+    if (!this[kReceivesDescriptors]) return sockets.recvfrom(this.#fd, buffer, 0, null);
     const message = { data: buffer, control: this.#control ??= new Uint8Array(rightsSpace(CMSG_FD_COUNT)), controlLength: 0, flags: 0 };
     const read = sockets.recvmsg(this.#fd, message, linux.MSG_CMSG_CLOEXEC);
     if (read >= 0 && message.controlLength > 0) this.#received.push(...receivedRights(message.control, message.controlLength));

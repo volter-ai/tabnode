@@ -18,7 +18,7 @@
  * A process whose tree offers no socket calls has no IPv4 or IPv6: making the socket is `EAFNOSUPPORT`.
  */
 import { queueBindingTask } from '../../guest-loop';
-import { KernelStreamWrap, registerKernelHandle } from './kernel_stream';
+import { KernelStreamWrap, kDescriptor, kShutdownPending, kSockets, registerKernelHandle } from './kernel_stream';
 import { holdRequest, ownerOf, ownerOfInstance, invokeOwned, observeNodeRequest, forgetNodeRequest, startHandle } from './handles';
 import { __runFor } from '../../process-tokens';
 import { internalAsyncHooks, internalTimers } from '../internals/runtime';
@@ -116,8 +116,8 @@ export class TCP extends KernelStreamWrap {
 
   /** The descriptor, made now of `family` where the handle has none (`maybe_new_socket`). */
   #socketFor(family: number): number {
-    if (this.descriptor >= 0) return 0;
-    const sockets = this.sockets;
+    if (this[kDescriptor] >= 0) return 0;
+    const sockets = this[kSockets];
     if (!sockets) return UV_EAFNOSUPPORT;
     const fd = sockets.socket(family, linux.SOCK_STREAM | linux.SOCK_NONBLOCK | linux.SOCK_CLOEXEC, 0);
     if (fd < 0) return fd;
@@ -128,7 +128,7 @@ export class TCP extends KernelStreamWrap {
 
   /** uv__stream_open: the descriptor is this handle's, and a TCP_NODELAY or keep-alive asked before it is set on it. */
   #adopt(fd: number, family: number, sockets?: TreeSockets): number {
-    if (this.descriptor >= 0 && this.descriptor !== fd) return UV_EBUSY;
+    if (this[kDescriptor] >= 0 && this[kDescriptor] !== fd) return UV_EBUSY;
     this.setDescriptor(fd, sockets);
     this.#family = family;
     return this.#applyOptions();
@@ -141,7 +141,7 @@ export class TCP extends KernelStreamWrap {
   }
 
   #setInt(level: number, name: number, value: number): number {
-    const status = this.sockets!.setsockopt(this.descriptor, level, name, intOption(value));
+    const status = this[kSockets]!.setsockopt(this[kDescriptor], level, name, intOption(value));
     return status < 0 ? status : 0;
   }
 
@@ -166,7 +166,7 @@ export class TCP extends KernelStreamWrap {
 
   /** TCPWrap::Bind's `uv_ip4_addr`/`uv_ip6_addr`, then uv__tcp_bind. */
   #bind(family: 4 | 6, address: string, port: number, flags: number): number {
-    const name = socketAddress(family, address, port, this.sockets);
+    const name = socketAddress(family, address, port, this[kSockets]);
     if (!name) return UV_EINVAL;
     if ((flags & constants.UV_TCP_IPV6ONLY) && family !== 6) return UV_EINVAL;
     let status = this.#socketFor(family === 6 ? linux.AF_INET6 : linux.AF_INET);
@@ -181,7 +181,7 @@ export class TCP extends KernelStreamWrap {
       status = this.#setInt(linux.IPPROTO_IPV6, linux.IPV6_V6ONLY, flags & constants.UV_TCP_IPV6ONLY ? 1 : 0);
       if (status !== 0) return status === -linux.EOPNOTSUPP ? UV_EINVAL : status;
     }
-    const bound = this.sockets!.bind(this.descriptor, name);
+    const bound = this[kSockets]!.bind(this[kDescriptor], name);
     if (bound < 0 && bound !== -linux.EADDRINUSE) return bound === -linux.EAFNOSUPPORT ? UV_EINVAL : bound;
     this.#delayedError = bound < 0 ? bound : 0;
     return 0;
@@ -191,7 +191,7 @@ export class TCP extends KernelStreamWrap {
     if (this.#delayedError) return this.#delayedError;
     const status = this.#socketFor(linux.AF_INET);
     if (status !== 0) return status;
-    const listened = this.sockets!.listen(this.descriptor, Number(backlog) | 0);
+    const listened = this[kSockets]!.listen(this[kDescriptor], Number(backlog) | 0);
     if (listened < 0) return listened;
     const port = this.#localPort();
     if (!this.listening) {
@@ -213,7 +213,7 @@ export class TCP extends KernelStreamWrap {
 
   /** Its process's watchers hear the port it listens on, where no other of its handles listens there. */
   #announce(port: number | null): void {
-    const sockets = this.sockets;
+    const sockets = this[kSockets];
     if (!sockets || port === null) return;
     this.#announcedPort = port;
     let ports = listening.get(sockets);
@@ -251,7 +251,7 @@ export class TCP extends KernelStreamWrap {
       try { return invokeOwned(req, 'oncomplete', status, this, req, true, true); }
       finally { traceSocketConnect('binding-returned', socket, timer(), status); }
     };
-    const name = socketAddress(family, address, Number(port), this.sockets);
+    const name = socketAddress(family, address, Number(port), this[kSockets]);
     if (!name) return UV_EINVAL;
     if (this.#connect) return UV_EALREADY;
     if (this.#delayedError === 0) {
@@ -260,7 +260,7 @@ export class TCP extends KernelStreamWrap {
       this.setOpen(true, true);
       if (family === 6) this.#defaultLinkLocalScope(name);
       let connected: number;
-      do connected = this.sockets!.connect(this.descriptor, name); while (connected === -linux.EINTR);
+      do connected = this[kSockets]!.connect(this[kDescriptor], name); while (connected === -linux.EINTR);
       if (connected < 0 && connected !== -linux.EINPROGRESS) {
         // Linux reports a refusal later; an immediate one (or an EINVAL, which a BSD gives for it) is the callback's.
         if (connected === -linux.ECONNREFUSED || connected === -linux.EINVAL) this.#delayedError = UV_ECONNREFUSED;
@@ -280,7 +280,7 @@ export class TCP extends KernelStreamWrap {
     const view = new DataView(name.buffer, name.byteOffset, name.byteLength);
     if (view.getUint32(24, true) !== 0) return;
     let entries: ReturnType<TreeSockets['getifaddrs']> = [];
-    try { entries = this.sockets?.getifaddrs() ?? []; } catch { return; }
+    try { entries = this[kSockets]?.getifaddrs() ?? []; } catch { return; }
     for (const entry of entries) {
       const own = readSocketName(entry.address);
       if (own?.family === 'IPv6' && entry.address[8] === 0xfe && entry.address[9] === 0x80) { view.setUint32(24, own.scopeid ?? 0, true); return; }
@@ -295,14 +295,14 @@ export class TCP extends KernelStreamWrap {
     if (this.#delayedError) { error = this.#delayedError; this.#delayedError = 0; }
     else {
       const value = new Uint8Array(4);
-      const status = this.sockets!.getsockopt(this.descriptor, linux.SOL_SOCKET, linux.SO_ERROR, value);
+      const status = this[kSockets]!.getsockopt(this[kDescriptor], linux.SOL_SOCKET, linux.SO_ERROR, value);
       error = status < 0 ? status : -readIntOption(value);
     }
     if (error === -linux.EINPROGRESS) { this.waitOut(); return; }
     this.#connect = null;
     try { pending.complete(error); }
     finally { forgetNodeRequest(pending.request); pending.release(); }
-    if (this.descriptor < 0) return;
+    if (this[kDescriptor] < 0) return;
     if (error < 0) { this.cancelWrites(UV_ECANCELED); return; }
     this.resumeWrites();
   }
@@ -360,10 +360,10 @@ export class TCP extends KernelStreamWrap {
   /** uv_tcp_getsockname / uv_tcp_getpeername: a held error first, then the kernel's name, as AddressToJS reads it. */
   #name(call: 'getsockname' | 'getpeername', out: Partial<SockName>): number {
     if (this.#delayedError) return this.#delayedError;
-    const sockets = this.sockets;
-    if (this.descriptor < 0 || !sockets) return UV_EBADF;
+    const sockets = this[kSockets];
+    if (this[kDescriptor] < 0 || !sockets) return UV_EBADF;
     const buffer = socketAddressBuffer();
-    const status = sockets[call](this.descriptor, buffer);
+    const status = sockets[call](this[kDescriptor], buffer);
     if (status < 0) return status;
     const name: SocketName | undefined = readSocketName(buffer, sockets);
     if (!name) return UV_EINVAL;
@@ -376,7 +376,7 @@ export class TCP extends KernelStreamWrap {
   /** uv_tcp_nodelay: set now where the socket exists, and remembered for when it is made. */
   setNoDelay(enable: boolean): number {
     const on = Boolean(enable);
-    if (this.descriptor >= 0) { const status = this.#setInt(linux.IPPROTO_TCP, linux.TCP_NODELAY, on ? 1 : 0); if (status !== 0) return status; }
+    if (this[kDescriptor] >= 0) { const status = this.#setInt(linux.IPPROTO_TCP, linux.TCP_NODELAY, on ? 1 : 0); if (status !== 0) return status; }
     this.#noDelay = on;
     return 0;
   }
@@ -384,7 +384,7 @@ export class TCP extends KernelStreamWrap {
   /** uv_tcp_keepalive_ex (TCPWrap::SetKeepAlive: an interval of 1 s and 10 probes where none is given). */
   setKeepAlive(enable: boolean, delay: number, interval?: number, count?: number): number {
     const on = Boolean(enable);
-    if (this.descriptor >= 0) {
+    if (this[kDescriptor] >= 0) {
       const status = this.#keepalive(on, Number(delay) >>> 0, typeof interval === 'number' ? interval >>> 0 : 1, typeof count === 'number' ? count >>> 0 : 10);
       if (status !== 0) return status;
     }
@@ -403,12 +403,12 @@ export class TCP extends KernelStreamWrap {
     const option = this.#typeOfServiceOption();
     if (typeof option === 'number') return option;
     const value = new Uint8Array(4);
-    const status = this.sockets!.getsockopt(this.descriptor, option.level, option.name, value);
+    const status = this[kSockets]!.getsockopt(this[kDescriptor], option.level, option.name, value);
     return status < 0 ? status : readIntOption(value);
   }
 
   #typeOfServiceOption(): { level: number; name: number } | number {
-    if (this.descriptor < 0) return UV_EBADF;
+    if (this[kDescriptor] < 0) return UV_EBADF;
     const out: Partial<SockName> = {};
     const status = this.getsockname(out);
     if (status !== 0) return status;
@@ -424,7 +424,7 @@ export class TCP extends KernelStreamWrap {
     let status = this.openDescriptor(fd);
     if (status !== 0) return status;
     const buffer = socketAddressBuffer();
-    this.#family = this.sockets!.getsockname(fd, buffer) < 0 ? linux.AF_INET : buffer[0]! | (buffer[1]! << 8);
+    this.#family = this[kSockets]!.getsockname(fd, buffer) < 0 ? linux.AF_INET : buffer[0]! | (buffer[1]! << 8);
     status = this.#applyOptions();
     return status;
   }
@@ -432,12 +432,12 @@ export class TCP extends KernelStreamWrap {
   /** uv_tcp_close_reset: `SO_LINGER` {1, 0}, then close: the peer reads ECONNRESET rather than EOF. */
   reset(callback?: () => void): number {
     if (this.closed) return UV_EBADF;
-    if (this.shutdownPending) return UV_EINVAL;
-    const sockets = this.sockets;
-    if (this.descriptor >= 0 && sockets) {
+    if (this[kShutdownPending]) return UV_EINVAL;
+    const sockets = this[kSockets];
+    if (this[kDescriptor] >= 0 && sockets) {
       const linger = new Uint8Array(8);
       new DataView(linger.buffer).setInt32(0, 1, true);
-      const status = sockets.setsockopt(this.descriptor, linux.SOL_SOCKET, linux.SO_LINGER, linger);
+      const status = sockets.setsockopt(this[kDescriptor], linux.SOL_SOCKET, linux.SO_LINGER, linger);
       if (status < 0 && status !== -linux.EINVAL) return status;
     }
     this.close(callback);
@@ -447,7 +447,7 @@ export class TCP extends KernelStreamWrap {
   protected override onCloseHandle(): void {
     this.listening = false;
     this.onconnection = null;
-    const port = this.#announcedPort, sockets = this.sockets;
+    const port = this.#announcedPort, sockets = this[kSockets];
     this.#announcedPort = null;
     const ports = sockets && listening.get(sockets);
     const onPort = port === null ? undefined : ports?.get(port);

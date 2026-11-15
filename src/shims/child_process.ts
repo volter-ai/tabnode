@@ -54,7 +54,7 @@ import { registerRunFd, releaseRunFds, inheritedRunFds } from '../node-lib/bindi
 import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
 import { nodeProcessHostFor, nodeProcessHostInstalled, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
-import { KernelStreamWrap } from '../node-lib/binding/kernel_stream';
+import { KernelStreamWrap, kKernelBacked } from '../node-lib/binding/kernel_stream';
 import { Pipe, constants as pipeConstants } from '../node-lib/binding/pipe_wrap';
 import {
   WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
@@ -274,7 +274,7 @@ async function runHostedNode(host: NodeProcessHost, launch: Omit<NodeProcessLaun
     // were placed with them. Any other is a native stream the child's realm inherits.
     const inherited: NodeProcessLaunch['inherited'][number][] = [];
     for (const { fd, handle } of inheritedRunFds(token)) {
-      if (handle instanceof KernelStreamWrap && handle.kernelBacked) continue;
+      if (handle instanceof KernelStreamWrap && handle[kKernelBacked]) continue;
       const descriptor = nativeStreamDescriptor(handle as LibuvStreamWrap);
       if (!descriptor) throw new Error(`Node descriptor ${fd} has no native owner for process isolation.`);
       inherited.push({ fd, handle: descriptor });
@@ -2346,7 +2346,7 @@ async function routeCommand(run: CommandRun): Promise<CommandOutcome> {
     // The host's program is the one holding the child's pipes past fd 2; the
     // run's end is its end of them, whatever it did not close itself.
     // A kernel pipe is placed for the child itself (`kernelDescriptors`); only the engine's pairings are relayed.
-    const opened = (run.descriptors ?? []).filter(({ pipe }) => !pipe.kernelBacked).map(({ fd, pipe }) => ({ fd, ...descriptorOver(pipe) }));
+    const opened = (run.descriptors ?? []).filter(({ pipe }) => !pipe[kKernelBacked]).map(({ fd, pipe }) => ({ fd, ...descriptorOver(pipe) }));
     try {
       let result: ChildProcessHostResult;
       try {

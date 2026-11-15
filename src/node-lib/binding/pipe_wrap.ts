@@ -11,8 +11,8 @@
  * peer's read, where `setupChannel` in `internal/child_process.js` takes a sent handle.
  */
 import { queueBindingTask } from '../../guest-loop';
-import { LibuvStreamWrap, type WriteWrap } from './stream_wrap';
-import { KernelStreamWrap, kHandleFd, registerKernelHandle } from './kernel_stream';
+import { LibuvStreamWrap, kPeer, type WriteWrap } from './stream_wrap';
+import { KernelStreamWrap, kDescriptor, kHandleFd, kKernelBacked, kReceivesDescriptors, kSockets, registerKernelHandle } from './kernel_stream';
 import { callingSockets, callingTree, linux } from '../../host-sockets';
 import uv, { UV_EACCES, UV_EAFNOSUPPORT, UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EIO, UV_ENOENT } from './uv';
 import { handleForFd, kernelSocketType, registerFd, releaseFd } from './fds';
@@ -76,7 +76,7 @@ export class Pipe extends KernelStreamWrap {
     // A server or IPC pipe is a socket from its start; a plain one only once it connects or is opened on a socket.
     super(kernelEnd || ((type === constants.SERVER || type === constants.IPC) && callingSockets() !== undefined));
     this.type = type;
-    if (!this.kernelBacked) this.attachNative('pipe', type);
+    if (!this[kKernelBacked]) this.attachNative('pipe', type);
   }
 
   /** A pipe for a kernel descriptor it is handed: a kernel stream, opened on it by its caller. */
@@ -87,13 +87,13 @@ export class Pipe extends KernelStreamWrap {
 
   /** This pipe as a kernel AF_UNIX socket of the calling process, `EAFNOSUPPORT` where the process has none. */
   private kernelSocket(): number {
-    if (!this.kernelBacked) {
+    if (!this[kKernelBacked]) {
       if (!callingSockets()) return UV_EAFNOSUPPORT;
       detachNativeStream(this);
       this.becomeKernel();
     }
-    if (this.descriptor >= 0) return 0;
-    const sockets = this.sockets!;
+    if (this[kDescriptor] >= 0) return 0;
+    const sockets = this[kSockets]!;
     const fd = sockets.socket(linux.AF_UNIX, linux.SOCK_STREAM | linux.SOCK_NONBLOCK | linux.SOCK_CLOEXEC, 0);
     if (fd < 0) return fd;
     this.setDescriptor(fd);
@@ -105,14 +105,14 @@ export class Pipe extends KernelStreamWrap {
    * directory for is EACCES, as libuv answers. A refused bind leaves no socket.
    */
   bind(name: string): number {
-    if (this.kernelBacked && this.descriptor >= 0) return UV_EINVAL;
+    if (this[kKernelBacked] && this[kDescriptor] >= 0) return UV_EINVAL;
     const address = unixAddress(String(name));
     if (typeof address === 'number') return address;
     const status = this.kernelSocket();
     if (status !== 0) return status;
-    const bound = this.sockets!.bind(this.descriptor, address);
+    const bound = this[kSockets]!.bind(this[kDescriptor], address);
     if (bound < 0) {
-      this.sockets!.close(this.descriptor);
+      this[kSockets]!.close(this[kDescriptor]);
       this.setDescriptor(-1);
       return bound === UV_ENOENT ? UV_EACCES : bound;
     }
@@ -123,8 +123,8 @@ export class Pipe extends KernelStreamWrap {
 
   /** uv_pipe_listen: listen(2) on the bound socket, which then holds its loop; listening again sets its backlog. */
   listen(backlog: number): number {
-    if (!this.kernelBacked || this.descriptor < 0 || this.type === constants.IPC) return UV_EINVAL;
-    const listened = this.sockets!.listen(this.descriptor, Number(backlog) | 0);
+    if (!this[kKernelBacked] || this[kDescriptor] < 0 || this.type === constants.IPC) return UV_EINVAL;
+    const listened = this[kSockets]!.listen(this[kDescriptor], Number(backlog) | 0);
     if (listened < 0) return listened;
     this.listening = true;
     startHandle(this);
@@ -153,7 +153,7 @@ export class Pipe extends KernelStreamWrap {
     let status = this.kernelSocket();
     if (status === 0) {
       let connected: number;
-      do connected = this.sockets!.connect(this.descriptor, address); while (connected === -linux.EINTR);
+      do connected = this[kSockets]!.connect(this[kDescriptor], address); while (connected === -linux.EINTR);
       status = connected < 0 ? connected : 0;
       if (status === 0) this.setOpen(true, true);
     }
@@ -179,9 +179,9 @@ export class Pipe extends KernelStreamWrap {
     const sockets = callingSockets();
     const kernelSocket = held === undefined && nativeInheritedFdType(fd) === undefined && sockets !== undefined
       && kernelSocketType(sockets, fd) === 'PIPE';
-    if (this.kernelBacked || kernelSocket) {
-      if (held instanceof Pipe && held.kernelBacked && held[kHandleFd] >= 0) { this.takeDescriptorFrom(held); return 0; }
-      if (!this.kernelBacked) { detachNativeStream(this); this.becomeKernel(); }
+    if (this[kKernelBacked] || kernelSocket) {
+      if (held instanceof Pipe && held[kKernelBacked] && held[kHandleFd] >= 0) { this.takeDescriptorFrom(held); return 0; }
+      if (!this[kKernelBacked]) { detachNativeStream(this); this.becomeKernel(); }
       return this.openDescriptor(fd);
     }
     const native = nativeStreamFor(this);
@@ -216,7 +216,7 @@ export class Pipe extends KernelStreamWrap {
    * others, where it lacks them; a path chmod, as libuv's (fchmod of a socket changes no node).
    */
   fchmod(mode: number): number {
-    if (!this.kernelBacked || this.descriptor < 0) return UV_EBADF;
+    if (!this[kKernelBacked] || this[kDescriptor] < 0) return UV_EBADF;
     const both = constants.UV_READABLE | constants.UV_WRITABLE;
     if (mode !== constants.UV_READABLE && mode !== constants.UV_WRITABLE && mode !== both) return UV_EINVAL;
     const bound = this.bound;
@@ -244,7 +244,7 @@ export class Pipe extends KernelStreamWrap {
     return typeof fd === 'number' && fd >= 0 ? fd : UV_EBADF;
   }
 
-  protected override get receivesDescriptors(): boolean { return this.type === constants.IPC; }
+  protected override get [kReceivesDescriptors](): boolean { return this.type === constants.IPC; }
 
   /**
    * An IPC write may carry a handle. On a kernel pipe it is the descriptor's `sendmsg` (`kernel_stream.ts`). On the
@@ -255,13 +255,13 @@ export class Pipe extends KernelStreamWrap {
    * it with): EBADF.
    */
   protected override dispatchWrite(req: WriteWrap, bytes: Uint8Array, handle?: unknown): number {
-    if (this.kernelBacked) return super.dispatchWrite(req, bytes, handle);
+    if (this[kKernelBacked]) return super.dispatchWrite(req, bytes, handle);
     const native = nativeStreamFor(this);
     if (native) return native.write(req, [bytes], handle);
     if (handle === undefined || handle === null) return super.dispatchWrite(req, bytes);
-    if (!(handle instanceof Pipe) || handle.kernelBacked) return UV_EBADF;
+    if (!(handle instanceof Pipe) || handle[kKernelBacked]) return UV_EBADF;
     const given = handle.duplicate();
-    __adoptHandle(given, ownerOf(this.peer ?? this), this.peer ?? this);
+    __adoptHandle(given, ownerOf(this[kPeer] ?? this), this[kPeer] ?? this);
     const status = super.dispatchWrite(req, bytes, given);
     if (status !== 0) given.close();
     return status;
