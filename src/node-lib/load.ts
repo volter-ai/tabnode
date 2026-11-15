@@ -1,6 +1,7 @@
 // First, so a file compiled while the bundle is still evaluating finds them evaluated (ADR-0015).
-import { guestScopedText } from '../code-transforms';
-import { guestScopesOf, leftToRealm, NODE_LIB_PARAMETERS } from '../guest-scope';
+import { guestScopesOf, NODE_LIB_PARAMETERS } from '../guest-scope';
+import { scopedBody, type ScopedBody } from './scoped-body';
+import { isNodeLibFile, nodeLibBody } from './bodies';
 import { createOsBinding } from './binding/misc';
 import { createProcessBinding } from './binding/process_wrap';
 import { createSpawnSyncBinding } from './binding/spawn_sync';
@@ -31,7 +32,6 @@ import { traceSocketConnect } from '../socket-connect-trace';
  * `internalBinding(name)` is the libuv-shaped surface in `./binding/`.
  */
 import PRIMORDIALS_SOURCE from './primordials.js?raw';
-import { NODE_LIB_SOURCES } from './sources';
 import { nodeLibInternal } from './internals';
 import { nodeLibBinding } from './binding';
 import { nodeLibPublic } from './public-modules';
@@ -179,7 +179,7 @@ export function nodeLibProcessOf(): Record<string, unknown> {
 
 function nodeLibRequire(specifier: string): unknown {
   const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
-  if (NODE_LIB_SOURCES[name] !== undefined) return loadNodeLib(name);
+  if (isNodeLibFile(name)) return loadNodeLib(name);
   const internal = nodeLibInternal(name);
   if (internal !== undefined) {
     builtInternals ??= new Map<string, unknown>();
@@ -391,7 +391,7 @@ class NodeLibScope {
     if (name === 'path/win32') return this.require('path').win32;
     if (name === 'assert/strict') return this.require('assert').strict;
     if (name === 'util/types') return this.require('internal/util/types');
-    if (NODE_LIB_SOURCES[name] !== undefined) return this.load(name);
+    if (isNodeLibFile(name)) return this.load(name);
     const internal = nodeLibInternal(name, this.require, this.process);
     if (internal) {
       if (!this.internals.has(name)) this.internals.set(name, moduleSurface(internal()));
@@ -468,7 +468,7 @@ export function loadNodeLibFor(owner: object, name: string): any {
   return scopeFor(owner).require(name);
 }
 export function hasNodeLibModule(name: string): boolean {
-  return NODE_LIB_SOURCES[name] !== undefined || nodeLibPublic(name) !== undefined
+  return isNodeLibFile(name) || nodeLibPublic(name) !== undefined
     || ['path/posix', 'path/win32', 'assert/strict', 'util/types', 'fs/promises', 'timers/promises', 'dns/promises'].includes(name);
 }
 export function nativeModuleFor(owner: object, name: string, create: () => unknown): unknown {
@@ -486,22 +486,10 @@ export function nodeLibGlobalFor(owner: object): object {
  * inside `with` of the global scope object because they are dynamic.
  */
 interface ScopedFunction { compiled: Function; scoped: boolean }
-/**
- * Compiles `source` as the body of `function (parameters) {…}` with every free name resolved on the global it is
- * later given: the realm's own names, `globalThis`, `arguments` and the parameters are left as written, every other is
- * rewritten onto `__substrateGuestScope` and `__substrateGuestTypeof`, and a file the rewrite declines runs inside
- * `with (__substrateGuestScope)`, given the global scope object instead. Nothing a process lacks is read from the realm.
- * The function's parameter list and the names left as written are one list.
- */
-function compileScoped(parameters: readonly string[], source: string, sourceURL: string): ScopedFunction {
-  const bound = new Set([...parameters, 'globalThis', 'arguments']);
-  const prefix = `return function (${parameters.join(', ')}) {`;
-  const rewritten = guestScopedText(source, (key) => leftToRealm(key) || bound.has(key));
-  const body = rewritten === undefined
-    ? `with (__substrateGuestScope) { ${prefix}${source}\n} }\n//# sourceURL=${sourceURL}`
-    : `${prefix}${rewritten}\n}\n//# sourceURL=${sourceURL}`;
+/** A scoped body (scoped-body.ts) compiled, its outer parameters `globalThis` and the scope objects. */
+function compileBody({ body, scoped }: ScopedBody): ScopedFunction {
   // eslint-disable-next-line no-new-func
-  return { compiled: new Function('globalThis', '__substrateGuestScope', '__substrateGuestTypeof', body), scoped: rewritten !== undefined };
+  return { compiled: new Function('globalThis', '__substrateGuestScope', '__substrateGuestTypeof', body), scoped };
 }
 /** Calls a compiled file's outer function with a global and the scope objects over it. */
 function withGlobal(file: ScopedFunction, global: object): Function {
@@ -521,7 +509,7 @@ export function loadDependencyFor(owner: object, name: string, source: string, g
   return scopeFor(owner).surface(name, () => {
     let compiled = compiledDependencies.get(name);
     if (!compiled) {
-      compiled = compileScoped(['exports', 'require', 'module', 'process', ...globals], source, name);
+      compiled = compileBody(scopedBody(['exports', 'require', 'module', 'process', ...globals], source, name));
       compiledDependencies.set(name, compiled);
     }
     const global = nodeLibGlobalFor(owner) as Record<string, unknown>;
@@ -532,7 +520,7 @@ export function loadDependencyFor(owner: object, name: string, source: string, g
 }
 
 function newNodeLibRecord(name: string): NodeLibModule {
-  if (NODE_LIB_SOURCES[name] === undefined) throw new Error(`node-lib: no vendored file for '${name}'`);
+  if (!isNodeLibFile(name)) throw new Error(`node-lib: no vendored file for '${name}'`);
   return { exports: {}, id: name, filename: `node:${name}`, loaded: false };
 }
 
@@ -552,14 +540,14 @@ export function setNodeLibGlobal(of: (process: object) => object): void {
  * global as `globalThis` (a scope around the file's own, so a file that declares the name keeps its declaration).
  *
  * Every other free name the file reads is its process's global's too (ADR-0015), as Node compiles a builtin inside
- * its process's context. The file's text is rewritten for it once a realm, here (a spare pays it in
- * `precompileNodeLib`); the vendored file itself is unedited.
+ * its process's context. The file's text is rewritten for it when the library is built (bodies.ts), and compiled
+ * once a realm, here (a spare pays it in `precompileNodeLib`); the vendored file itself is unedited.
  */
 function compiledNodeLibFor(name: string): ScopedFunction {
   compiledNodeLib ??= new Map<string, ScopedFunction>();
   let compiled = compiledNodeLib.get(name);
   if (!compiled) {
-    compiled = compileScoped(NODE_LIB_PARAMETERS, NODE_LIB_SOURCES[name]!, `node:${name}`);
+    compiled = compileBody(nodeLibBody(name)!);
     compiledNodeLib.set(name, compiled);
   }
   return compiled;
@@ -570,7 +558,7 @@ function compiledNodeLibFor(name: string): ScopedFunction {
  * already compiled.
  */
 export function precompileNodeLib(name: string): boolean {
-  if (NODE_LIB_SOURCES[name] === undefined || compiledNodeLib?.has(name)) return false;
+  if (!isNodeLibFile(name) || compiledNodeLib?.has(name)) return false;
   compiledNodeLibFor(name);
   return true;
 }
