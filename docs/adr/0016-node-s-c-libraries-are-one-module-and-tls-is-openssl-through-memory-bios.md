@@ -147,12 +147,18 @@ shape (`ThrowCryptoError`: the message is `ERR_error_string_n`'s, with `library`
   (`getBundledRootCertificates()`, compiled into the module), would refuse every twin. Node's default as a realm's
   roots is browser-substrate ROADMAP's "96's Node bundled root store", a named difference until then.
   `tls.setDefaultCACertificates()` replaces the store as Node's `ResetRootCertStore` does.
-- **`InternalX509Certificate` is refused by name until `crypto` is OpenSSL's.** `internal/tls/wrap.js` takes it from
-  `internal/crypto/x509` for `getPeerX509Certificate()` and `getX509Certificate()`. *Why:* Node's class is
-  `crypto`'s `X509Certificate`, whose `publicKey` is a `KeyObject` of `internal/crypto/keys`, the engine's noble one
-  until §5; answering it half from OpenSSL and half from noble would be an approximation. A handshake never
-  constructs one: the binding's `getPeerX509Certificate()` answers a handle only for its presence, which
-  `wrap.js`'s verification reads. `getPeerCertificate()` is whole (Node's `X509ToObject` and `GetPeerCert`, §3).
+- **`crypto.X509Certificate` is Node's class over the module's OpenSSL; `InternalX509Certificate` is refused by name
+  until `crypto` is OpenSSL's.** `crypto.X509Certificate` is Node's `lib/internal/crypto/x509.js` class
+  (`src/shims/crypto-x509.ts`) over the binding's handle (`src/node-lib/binding/x509_certificate.ts`, the V8 half of
+  `crypto_x509.cc`, over the export layer's `tn_x509_*`): every value a certificate answers (its parse, PEM and DER,
+  names, dates, fingerprints, checks, `verify`, `checkPrivateKey`) is OpenSSL's, and `publicKey` is the engine's own
+  `KeyObject`, made from the certificate's SubjectPublicKeyInfo as `createPublicKey` makes any key; a key crosses into
+  `verify` and `checkPrivateKey` as its DER. *Why:* each object is whole, a certificate OpenSSL's and a key the
+  engine's, and they meet at the canonical encoding, so no value is approximated; the World's runtime reads its CA
+  through it (twin-world `ca-trust.ts`). `internal/tls/wrap.js` takes `InternalX509Certificate` from
+  `internal/crypto/x509` for `getPeerX509Certificate()` and `getX509Certificate()`, which stay refused: the binding's
+  handle there answers only its presence, which `wrap.js`'s verification reads. A handshake never constructs one, and
+  `getPeerCertificate()` is whole (Node's `X509ToObject` and `GetPeerCert`, §3).
   `internal/crypto/util` is hand-bound with Node's own `toBuf`, the one name `secure-context.js` takes.
 - **`TREE_TLS` is retired, a minor release.** The package no longer exports `TREE_TLS` or its types
   (`src/index.ts`): an exported-surface change, which RELEASING.md makes a minor release. *Why:* a process's TLS is
@@ -187,7 +193,10 @@ name what runs (browser-substrate ADR-0218 §3).
   OpenSSL 3.5.8 from Node v24.21.0's `deps/openssl` with the configuration in §1 (`libcrypto.a` 6,197,218 bytes,
   `libssl.a` 902,392 bytes, no compiler warning), ncrypto and the export layer, linked into `node-deps.wasm`,
   3,002,593 bytes (4.0 MB as the base64 the bundle carries, one string literal). Two builds in different scratch directories gave the
-  same bytes. Its imports are WASI's (`random_get`, `clock_time_get`, `environ_*`, `proc_exit`, and the file calls
+  same bytes. *Read 2026-11-15:* the committed module (3,002,593 bytes) does not come from the committed script: the
+  script at that commit's sources builds 2,446,826 bytes with every one of its 97 exports and a `target_features`
+  section the committed module lacks, so what else made it is not known; unexplained. The module with
+  `crypto.X509Certificate`'s exports is that build plus 3,118 bytes. Its imports are WASI's (`random_get`, `clock_time_get`, `environ_*`, `proc_exit`, and the file calls
   OpenSSL's loaders reach) and the five `tabnode` callbacks. Its compile and instantiation times are not yet read in
   a tab.
 - Built: the module, its realm loader (`src/node-lib/binding/node-deps.ts`), the `tls_wrap`, `crypto` and

@@ -24,6 +24,7 @@ import {
 } from '../node-internals';
 import { cryptoConstants as constants } from './crypto-constants';
 import { cipherNames, createCipherClasses } from './crypto-cipher';
+import { createX509Certificate } from './crypto-x509';
 import type { NodeCryptoExport, NodeCryptoUnavailable } from './crypto-exports';
 import * as asymmetric from './crypto-ec';
 import * as rsa from './crypto-rsa';
@@ -1718,6 +1719,16 @@ async function importKey(
 // Ciphers
 // ============================================================================
 
+// ============================================================================
+// Certificates (crypto-x509.ts: Node's X509Certificate over node-deps.wasm's OpenSSL)
+// ============================================================================
+
+const X509Certificate = createX509Certificate({
+  KeyObject,
+  createPublicKey: (key) => createPublicKey(key as unknown as KeyLike),
+  BufferFrom: (value) => Buffer.from(value),
+});
+
 const { Cipheriv, Decipheriv, createCipheriv, createDecipheriv } = createCipherClasses({
   toBuffer: (bytes) => Buffer.from(bytes),
   bytesOf: (value, encoding) => cryptoBytes(value, encoding, true),
@@ -1743,7 +1754,7 @@ const nodeExports = {
   DiffieHellman: unavailable('DiffieHellman'),
   DiffieHellmanGroup: unavailable('DiffieHellmanGroup'),
   ECDH: unavailable('ECDH'),
-  X509Certificate: unavailable('X509Certificate'),
+  X509Certificate,
   argon2: unavailable('argon2'),
   argon2Sync: unavailable('argon2Sync'),
   checkPrime: unavailable('checkPrime'),

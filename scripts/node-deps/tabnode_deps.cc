@@ -795,7 +795,7 @@ EXPORT(tn_x509_name) char* tn_x509_name(X509* x, int issuer, size_t* length) {
 // The text fields of X509ToObject and X509Certificate's methods; null answers "undefined".
 //  0 subjectaltname  1 infoAccess  2 valid_from  3 valid_to  4 fingerprint  5 fingerprint256  6 fingerprint512
 //  7 serialNumber    8 modulus     9 exponent    10 asn1Curve  11 nistCurve 12 pem 13 signatureAlgorithm
-//  14 signatureAlgorithmOid
+//  14 signatureAlgorithmOid  15 subject (X509Certificate's Subject, 297-305)  16 issuer (Issuer, 317-325)
 EXPORT(tn_x509_text) char* tn_x509_text(X509* x, int field, size_t* length) {
   ncrypto::X509View view(x);
   *length = 0;
@@ -857,6 +857,8 @@ EXPORT(tn_x509_text) char* tn_x509_text(X509* x, int field, size_t* length) {
       auto oid = view.getSignatureAlgorithmOID();
       return oid.has_value() ? Copy(oid->data(), oid->size(), length) : nullptr;
     }
+    case 15: return CopyBio(view.getSubject(), length);
+    case 16: return CopyBio(view.getIssuer(), length);
   }
   return nullptr;
 }
@@ -925,6 +927,84 @@ EXPORT(tn_x509_key_usage) char* tn_x509_key_usage(X509* x, size_t* length) {
 
 // The DER, malloc'd (GetDer, 172-181).
 EXPORT(tn_x509_der) size_t tn_x509_der(X509* x, unsigned char** out) { return ToDer(x, out); }
+
+// ---- X509Certificate (crypto_x509.cc 277-567) ---------------------------------------------------------------
+// The OpenSSL half of the `crypto` binding's X509Certificate handle; the V8 half is src/node-lib/binding/
+// x509_certificate.ts. A key crosses as its DER, the engine's KeyObject being the engine's own (ADR-0016 §5).
+
+// Parse (547-565): a PEM or DER certificate, through X509Pointer::Parse; null with the error ThrowCryptoError
+// would throw in *error.
+EXPORT(tn_x509_parse) X509* tn_x509_parse(const unsigned char* bytes, size_t length, int32_t* error) {
+  auto result = ncrypto::X509Pointer::Parse(ncrypto::Buffer<const unsigned char>{ .data = bytes, .len = length });
+  if (!result.value) {
+    *error = static_cast<int32_t>(result.error.value_or(0));
+    return nullptr;
+  }
+  return result.value.release();
+}
+
+// GetValidFromDate and GetValidToDate (226-234): the time in seconds, which the binding makes a Date of.
+EXPORT(tn_x509_valid_time) int64_t tn_x509_valid_time(X509* x, int to) {
+  ncrypto::X509View view(x);
+  return to ? view.getValidToTime() : view.getValidFromTime();
+}
+
+// CheckX509Subject (481-512) over checkHost (0), checkEmail (1) and checkIp (2): the X509View::CheckMatch, and
+// for a host the name that matched, malloc'd, in *matched (null where none was given).
+EXPORT(tn_x509_check_subject) int tn_x509_check_subject(X509* x, int kind, const char* subject, size_t length,
+                                                        uint32_t flags, char** matched, size_t* matched_length) {
+  ncrypto::X509View view(x);
+  std::string_view name(subject, length);
+  ncrypto::DataPointer peer;
+  ncrypto::X509View::CheckMatch result = kind == 0 ? view.checkHost(name, flags, &peer)
+    : kind == 1 ? view.checkEmail(name, flags) : view.checkIp(name, flags);
+  *matched = nullptr;
+  *matched_length = 0;
+  if (result == ncrypto::X509View::CheckMatch::MATCH && peer)
+    *matched = Copy(peer.get<const char>(), peer.size(), matched_length);
+  return static_cast<int>(result);
+}
+
+// The X509_CHECK_FLAG_* constants Initialize defines (982-987), from OpenSSL's x509v3.h.
+EXPORT(tn_x509_check_flag) uint32_t tn_x509_check_flag(int which) {
+  switch (which) {
+    case 0: return X509_CHECK_FLAG_ALWAYS_CHECK_SUBJECT;
+    case 1: return X509_CHECK_FLAG_NEVER_CHECK_SUBJECT;
+    case 2: return X509_CHECK_FLAG_NO_WILDCARDS;
+    case 3: return X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS;
+    case 4: return X509_CHECK_FLAG_MULTI_LABEL_WILDCARDS;
+    case 5: return X509_CHECK_FLAG_SINGLE_LABEL_SUBDOMAINS;
+  }
+  return 0;
+}
+
+// PublicKey (407-426): the certificate's public key as SubjectPublicKeyInfo DER, malloc'd; 0 with the error in
+// *error where getPublicKey refuses.
+EXPORT(tn_x509_public_key) size_t tn_x509_public_key(X509* x, unsigned char** out, int32_t* error) {
+  auto result = ncrypto::X509View(x).getPublicKey();
+  *out = nullptr;
+  if (!result.value) {
+    *error = static_cast<int32_t>(result.error.value_or(0));
+    return 0;
+  }
+  int length = i2d_PUBKEY(result.value.get(), out);
+  return length > 0 ? static_cast<size_t>(length) : 0;
+}
+
+// CheckPrivateKey (455-464), the key a PKCS#8 PrivateKeyInfo's DER; CheckPublicKey (466-476), `verify`, the key
+// a SubjectPublicKeyInfo's DER. -1 where the DER is no key.
+EXPORT(tn_x509_check_private_key) int tn_x509_check_private_key(X509* x, const unsigned char* der, size_t length) {
+  const unsigned char* p = der;
+  ncrypto::EVPKeyPointer key(d2i_AutoPrivateKey(nullptr, &p, static_cast<long>(length)));
+  if (!key) return -1;
+  return ncrypto::X509View(x).checkPrivateKey(key) ? 1 : 0;
+}
+EXPORT(tn_x509_verify) int tn_x509_verify(X509* x, const unsigned char* der, size_t length) {
+  const unsigned char* p = der;
+  ncrypto::EVPKeyPointer key(d2i_PUBKEY(nullptr, &p, static_cast<long>(length)));
+  if (!key) return -1;
+  return ncrypto::X509View(x).checkPublicKey(key) ? 1 : 0;
+}
 
 // X509Certificate::GetIssuerCert's walk (GetPeerCertificate's chain, crypto_common.cc): whether `issuer` issued `x`.
 EXPORT(tn_x509_issued_by) int tn_x509_issued_by(X509* x, X509* issuer) {

@@ -30,7 +30,7 @@ export const NODE_CRYPTO_EXPORTS = {
   KeyObject: 'implemented',
   Sign: 'implemented',
   Verify: 'implemented',
-  X509Certificate: 'throws',
+  X509Certificate: 'implemented',
   argon2: 'throws',
   argon2Sync: 'throws',
   checkPrime: 'throws',
