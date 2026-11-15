@@ -139,6 +139,17 @@ for another reason, which is hole 12's defect.
 A child process is `uv_spawn`, a clone with an entry, and an addon's spawn is musl's `posix_spawn`, as
 browser-substrate ADR-0236 step 5 records. `SYS_posix_spawn_v1` goes.
 
+### 7. On the machine, the realm's own `globalThis` is the process's global
+
+ADR-0015 resolves every free name of a process's code on its global by rewriting each one onto
+`__substrateGuestScope`, a Proxy (`src/guest-scope.ts:138`), or by running the file under `with`, because the engine
+runs many processes in one realm. On the machine it does not: each Node process has a worker and a realm of its own,
+and `node` is its own WALI program (§2). So there the realm's `globalThis` is the process's global, Node's bootstrap
+installs Node's globals on it (`lib/internal/bootstrap/node.js`), and a file compiles as Node compiles it, with no
+rewrite, no Proxy and no `with`. What stays is browser-substrate ADR-0236's hole 13: a page's engine carries no
+context across `await`, so `AsyncLocalStorage`'s rewrite of async functions remains, made once per file when the image
+is built.
+
 ## Where the evidence stops
 
 - **Read:** libuv compiles with the WALI toolchain (ADR-0234 §7); a task boundary costs 11.3 µs on the page's main
@@ -192,8 +203,8 @@ browser-substrate ADR-0236 step 5 records. `SYS_posix_spawn_v1` goes.
      `__substrateResume`, `__substrateRestore`). So the binding is the engine's frame register; `--async-context-frame`
      is on, as Node 24's default; Node's `internal/async_context_frame`, its `AsyncLocalStorage` (the async-context-frame
      form) and its timers run unmodified over it; the engine's own `AsyncLocalStorage` and `carryTimerCallbacks` go.
-  3. Standard streams: `tty_wrap`, `pipe_wrap` and the stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so
-     `process.stdout` is Node's.
+  3. Node's bootstrap on the realm's own global (§7), and the standard streams: `tty_wrap`, `pipe_wrap` and the
+     stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so `process.stdout` is Node's.
   4. `tcp_wrap` and `stream_wrap` over `uv_tcp_t`; `udp_wrap` over `uv_udp_t`.
   5. `process_wrap` and `spawn_sync` over `uv_spawn`, with libuv at a267f5688b.
   6. `fs` over `uv_fs_*` and its threadpool.
