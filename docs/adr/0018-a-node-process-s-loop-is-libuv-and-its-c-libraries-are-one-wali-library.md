@@ -243,8 +243,8 @@ is built.
      is made and runs in it, in Node's shape (`lib/async_hooks.js:180-292`). The engine's own storage and its timers'
      carrier are not.
      Every wait of the engine is a handle of libuv's loop (browser-substrate `packages/node/src/linux-uv-waits.ts`):
-     a binding's own handle where steps 3 to 6 give it one, and a `uv_poll_t` (`native/node/poll.c`) for the engine
-     device's descriptor, DNS and signals.
+     a binding's own handle where steps 3 to 6 and 8 give it one, and a `uv_poll_t` (`native/node/poll.c`) for the
+     engine device's descriptor and DNS.
      **Node's timers over the binding.** Node v24.21.0's `lib/timers.js`, `lib/timers/promises.js`,
      `lib/internal/timers.js`, `internal/linkedlist`, `internal/priority_queue`, `internal/async_context_frame` and
      `internal/async_local_storage/async_context_frame` and `run_scope` are vendored unchanged (`src/node-lib/`).
@@ -319,6 +319,34 @@ is built.
      Pipe, a TCP or a TTY of items 3 and 4; libuv's exit callback is `onexit`'s, with the signal's name as Node's
      `signo_string` gives it (`signo.c`). spawn_sync is Node's SyncProcessRunner in C over a loop of its own
      (`spawn_sync.c`). Node's `child_process` asks no door of the host: a child is the kernel's.
+
+**8. Signals are libuv's, and the process's signal exit is Node's** (built beside items 3 to 5, whose HandleWrap its
+handle is; numbered after item 7, so the numbers the code cites stand). `internalBinding('signal_wrap')` is Node's
+`src/signal_wrap.cc`: a `Signal` is the one HandleWrap over native/node's `uv_signal_t` (`signal_wrap.c`, its V8 half
+`src/node-lib/binding/signal_wrap.ts`), initialized when it is made, as SignalWrap's constructor CHECKs
+`uv_signal_init`; `start` and `stop` are `uv_signal_start` and `uv_signal_stop`, and libuv's callback is the program's
+`signal_received` import, which makes the wrap's `onsignal`, then drains. A listener reaches it as in Node: Node's own
+`lib/internal/process/signal.js`, vendored unchanged, listens on the process's `newListener` and `removeListener` as
+`lib/internal/bootstrap/switches/is_main_thread.js` attaches it (its signal part carried in `src/node-lib/stdio.ts`
+until §7), and makes one unreferenced `Signal` for each signal listened to, closed with its last listener. So the
+kernel delivers a signal to libuv's one handler for it (`uv__signal_handler`), which writes the loop's signal pipe,
+and every `uv_signal_t` on that signal runs in the poll phase: a SIGCHLD listener is a second `uv_signal_t` on
+SIGCHLD beside the loop's child watcher (`uv__wait_children`), as in Node, and never displaces it. A run's listeners
+are told to no host. The program's start is PlatformInit's signal part too (`stdio.c`, `src/node.cc:531-659`):
+ResetSignalHandlers (SIGPIPE and SIGXFSZ ignored, a signal inherited ignored the default again), then SignalExit for
+SIGINT and SIGTERM (`SA_RESETHAND`, every signal blocked while it runs), which runs ResetStdio and raises the signal
+again with its default action, so a death by either signal puts the standard streams back as an exit does; a
+listener's `uv_signal_start` takes the signal from it, and its last `uv_signal_stop` leaves the default, as in Node.
+The program's end is TearDownOncePerProcess's: ResetStdio, then ResetSignalHandlers. A realm with no `node` program
+keeps the engine's signals: a kill of one of its processes runs its listeners in the call (`src/shims/process.ts`
+`kill`, the engine registry's `receiveSignals`). Where this differs from Node:
+- SignalExit is an `sa_handler`: Node gives it as an `sa_sigaction` with no `SA_SIGINFO`, which Linux calls with the
+  signal alone, and a WebAssembly table call is checked against the function's type.
+- SignalWrap's count of the started wraps of each signal (`handled_signals`) is not kept. Its one reader is
+  `process._kill`'s `HasSignalJSHandler` (`src/node_process_methods.cc:199-205`), and `process.kill` is the engine's
+  (`src/shims/process.ts`), not Node's `_kill` over `uv_kill`: a kill of the process itself runs its listeners in the
+  call, and with none takes the signal's default action in the engine.
+
   6. `fs` over `uv_fs_*` and its threadpool. `internalBinding('fs')`, `fs_dir` and `fs_event_wrap` are Node's
      `src/node_file.cc`, `node_dir.cc`, `fs_event_wrap.cc` and `node_stat_watcher.cc`, split where V8 stands: the
      libuv half is `native/node` (`fs.c`, `fs_cp.c`, `fs_event.c`), the V8 half the engine's (`node_file.ts`,
@@ -343,7 +371,8 @@ is built.
 
 
 **For the host** (browser-substrate `linux-node-engine.ts`, `linux-uv-waits.ts`, `linux-system.ts`, and the
-process's tree, `linux-virtual-filesystem.ts`), items 1 to 6 together:
+process's tree, `linux-virtual-filesystem.ts`, and its signals and process table, `linux-process.ts`), items 1 to 6
+and 8 together:
 - *The one hookup.* In its `bootstrap` import, before Node's library runs, the host calls Tabnode's
   `attachLibnode({ exports, read, write })` once: the program's exports, `read(at, length)`, a copy of the process's
   memory, and `write(at, bytes)`, bytes into it (a browser's APIs refuse a view of shared memory). A second call with
@@ -360,7 +389,8 @@ process's tree, `linux-virtual-filesystem.ts`), items 1 to 6 together:
   libuv's buffer, freed when the import returns), `stream_written(id, status)`, `stream_shut(id, status)`,
   `stream_connection(server, status)`, `stream_connected(id, status, readable, writable)`, `udp_received(handle, nread,
   base, name, flags)` (`name` a `tabnode_address_t`, 0 with an error), `udp_sent(id, status)`, `process_exit(handle,
-  f64 exit status, signal name's address, its length)`, `fs_done(request)`, `fs_event(handle, filename, events,
+  f64 exit status, signal name's address, its length)`, `signal_received(handle, signum)` (SignalWrap's callback, the
+  handle's `onsignal`), `fs_done(request)`, `fs_event(handle, filename, events,
   status)` and `stat_watcher_change(handle, status)`. A handle is its address, a stream's or a socket's request its
   number, an fs request its address.
 - *The exports the host calls.* `tabnode_exit(status)`, Node's `process.reallyExit`: the run's end exits through it, so
@@ -370,8 +400,8 @@ process's tree, `linux-virtual-filesystem.ts`), items 1 to 6 together:
   `getLibuvNow()` `tabnode_timers_now()`, `scheduleTimer(ms)` `tabnode_schedule_timer(BigInt(ms))`,
   `toggleTimerRef(ref)` and `toggleImmediateRef(ref)` `tabnode_toggle_timer_ref` and `tabnode_toggle_immediate_ref`
   of 1 or 0, and `setupTimers(processImmediate, processTimers)` keeps the two; it has no `wake`, and keeps no
-  deadline. Its waits are the descriptors' that are no binding's handle (the engine device's descriptor, DNS,
-  signals), each `tabnode_poll_start(fd, events)` and `tabnode_poll_stop(fd)`. Its container is made before any of
+  deadline. Its waits are the descriptors' that are no binding's handle (the engine device's descriptor, DNS), each
+  `tabnode_poll_start(fd, events)` and `tabnode_poll_stop(fd)`. Its container is made before any of
   Node's timers load.
 - *What the run no longer reads.* A run whose realm has the program reads none of `stdinReader`, `stdioKind`,
   `terminal` or `onStdoutBytes`: its standard streams are libuv's. The engine's own lines (an uncaught exception's
@@ -383,6 +413,16 @@ process's tree, `linux-virtual-filesystem.ts`), items 1 to 6 together:
   rest the module loader and `process` use), `chdir` and the cwd, `TREE_SOCKETS` (a listener's port, for the
   machine's forwarding), `TREE_NATIVE`, `TREE_SYSTEM`, and of `TREE_DESCRIPTORS` `open`, `read`, `close`, `reserve`
   and `release` (an executable's header, the engine's descriptor numbers), until item 7.
+- *What the substrate stops serving* (item 8). A run's signal listeners: the registry is told none (it has no
+  `disposition`), so the host's handler for a listened signal (`linux-process.ts` `LinuxSignals`) and its delivery
+  into the run (`signals.deliver`'s `container.signalProcess`) go; the program's dispositions are its own
+  `sigaction`s, libuv's and SignalExit's. The start's dispositions (`linux-node-run.ts` `NODE_START_SIGNALS`, its
+  ResetSignalHandlers) go: they are the program's PlatformInit. The registry a host gives the program's run is a
+  `ProcessRegistry`, what every host answers: `publish`, `exec`, `forget`, `lookup`, `signal`, and `lookupGroup` and
+  `signalGroup`. Fork, exit_group and wait4 (`allocate`, `exit`, `reap`) are a `ChildProcessRegistry`'s, which only a
+  realm that makes its own children holds (the engine's own registry, or one installed with
+  `installProcessRegistry`), so `LinuxProcessRegistry`'s `allocate`, `exit` and `reap` go, and its `kernel` flag,
+  which nothing reads.
 - *What the kernel and the substrate provide.* The kernel's `clone` with an entry, musl's `clone(fn, stack, flags,
   arg)`, for `CLONE_VM | CLONE_VFORK` with no termination signal (libuv's probe, whose child writes the parent's
   memory) and with `SIGCHLD` (musl's `posix_spawn`): the child runs `fn(arg)` on the given stack in the caller's
@@ -390,8 +430,12 @@ process's tree, `linux-virtual-filesystem.ts`), items 1 to 6 together:
   handlers and pid, while the caller waits for its exec or its end; `waitpid(pid, …, __WCLONE)` reaps a child with no
   termination signal. Where the probe fails libuv forks, and a Node process has no fork, so every spawn fails.
   SIGCHLD reaches libuv's handler (its loop's child watcher, `uv__wait_children`'s `waitpid`): no part of the host
-  blocks it or reads it from a signalfd. `dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addchdir_np")` answers from
-  `libc.so`, or a spawn with a `cwd` forks. inotify in the process's kernel answers `fs.watch`.
+  blocks it or reads it from a signalfd. Every signal reaches the program's own handlers, functions of its table
+  given to `rt_sigaction` (libuv's `uv__signal_handler` with `SA_RESTART`, SignalExit with `SA_RESETHAND` and a full
+  mask), run at a call's return (libuv's `epoll_wait` then ends with EINTR); a handler's `raise` of a signal whose
+  disposition is the default ends the process by that signal, which its parent's wait reads.
+  `dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addchdir_np")` answers from `libc.so`, or a spawn with a `cwd` forks.
+  inotify in the process's kernel answers `fs.watch`.
 
 ## Consequences
 

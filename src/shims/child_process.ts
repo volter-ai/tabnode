@@ -54,7 +54,7 @@ import { nodeProcessHostFor, nodeProcessRealmToken, nodeProcessInput, type NodeP
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import { KernelStreamWrap, kKernelBacked } from '../node-lib/binding/kernel_stream';
 import { libnodeAttached } from '../node-lib/binding/libnode';
-import { installNodeStdio } from '../node-lib/stdio';
+import { installNodeSignals, installNodeStdio } from '../node-lib/stdio';
 import { Pipe, constants as pipeConstants } from '../node-lib/binding/pipe_wrap';
 import {
   WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
@@ -834,9 +834,10 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // Whose wait its end is: a nested node's parent run, a run forked here the realm's; any other run's parent is
   // elsewhere (the kernel's exec'd node: its own channel reports its exit) or is the host's.
   if (forkedHere) reaper = null;
-  // Where the realm's process is `node` on libuv's loop its standard streams are Node's (ADR-0018 item 3,
-  // node-lib/stdio.ts): the console writes to them, as Node's console writes to `process.stdout` and `process.stderr`,
-  // and nothing of the engine's stdin, terminal or output capture is made for this run.
+  // Where the realm's process is `node` on libuv's loop its standard streams and its signals are Node's (ADR-0018 items
+  // 3 and 8, node-lib/stdio.ts): the console writes to them, as Node's console writes to `process.stdout` and
+  // `process.stderr`, nothing of the engine's stdin, terminal or output capture is made for this run, and a signal
+  // listener is a uv_signal_t, its signal the kernel's.
   const nodeStdio = libnodeAttached();
   let nodeStreams: { stdout: { write(text: string): unknown }; stderr: { write(text: string): unknown } } | undefined;
   // Create a runtime with output capture for both console.log AND process.stdout.write
@@ -879,6 +880,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // Override process.exit to resolve the completion promise
   const proc = runtime.getProcess();
   if (nodeStdio) {
+    installNodeSignals(proc);
     installNodeStdio(proc);
     nodeStreams = proc as unknown as NonNullable<typeof nodeStreams>;
   }

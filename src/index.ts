@@ -78,8 +78,6 @@ export type { StdioKind } from './shims/child_process';
 export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter, type StdinReader } from './stdin-ring';
 /** Present from the release whose runs read `RunOptions.stdinReader`: a host gives one only to an engine that has it. */
 export const RUN_STDIN_READER = 1;
-/** Present from the release that tells a run's registry its signal listeners (ProcessRegistry.disposition). */
-export const RUN_SIGNAL_DISPOSITIONS = 1;
 /** Present from the release whose `run` (a shell line) reads `RunOptions.filesystem`, as `runNode` does. */
 export const RUN_LINE_FILESYSTEM = 1;
 import { stdinRingProblem, stdinRingWaitsAsync, type StdinReader } from './stdin-ring';
@@ -90,7 +88,7 @@ export { TREE_SOCKETS } from './host-sockets';
 export type { TreeSockets, InterfaceAddressEntry, SocketMessage, PollDescriptor } from './host-sockets';
 export { TREE_NATIVE, NATIVE_THREAD_MODULE } from './host-native';
 export type { TreeNative, NativeLoadRequest, NativeLoaded } from './host-native';
-export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
+export type { ProcessIdentity, ProcessRegistry, ChildProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 import type { ProcessRegistry } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
@@ -153,8 +151,10 @@ export interface RunOptions {
    */
   process?: { pid: number; ppid: number };
   /**
-   * The run's process registry, where its process has a kernel connection of its own: its numbers, its children,
-   * kill and lookup go through it (`installRunRegistry`).
+   * The run's process registry, where its process has a kernel connection of its own: its numbers, kill and lookup go
+   * through it (`installRunRegistry`). A `node` program's run is given a `ProcessRegistry`, its children being libuv's;
+   * a run whose children the engine makes in this realm (a shell line's `node`) is given a `ChildProcessRegistry`, which
+   * makes them.
    */
   registry?: ProcessRegistry;
   /**

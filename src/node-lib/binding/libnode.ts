@@ -11,9 +11,9 @@
  * (`attachLibnode`): the program's exports, and the process's memory through its one door, a copy read and bytes
  * written, since a browser's APIs refuse a view of shared memory. A realm the host gives no program (a tab's engine
  * with no machine) has no libuv: its streams are the engine's pairing and its fs the engine's own tree (`fs.ts`), and
- * a binding that is only libuv's (`process_wrap`, `spawn_sync`) answers that it has none. A binding over libuv is its
- * V8 half: it writes a call's arguments into the process's memory, calls the C, and reads the answer, as Node's C++
- * reads a uv_fs_t.
+ * a binding that is only libuv's (`process_wrap`, `spawn_sync`, `signal_wrap`) answers that it has none. A binding
+ * over libuv is its V8 half: it writes a call's arguments into the process's memory, calls the C, and reads the answer,
+ * as Node's C++ reads a uv_fs_t.
  */
 import { errname, getErrorMap } from './uv';
 
@@ -91,6 +91,10 @@ export interface LibnodeExports {
   tabnode_process_spawn(process: I32, options: I32): I32;
   tabnode_process_pid(process: I32): I32;
   tabnode_process_kill(process: I32, signal: I32): I32;
+  /** signal_wrap.c: SignalWrap's. */
+  tabnode_signal_new(): I32;
+  tabnode_signal_start(handle: I32, signum: I32): I32;
+  tabnode_signal_stop(handle: I32): I32;
   /** spawn_sync.c: SyncProcessRunner's run, and its result's release. */
   tabnode_spawn_sync(options: I32): I32;
   tabnode_spawn_sync_free(result: I32): void;
@@ -413,6 +417,8 @@ export interface HandleCallbacks {
   onUvRecv?(nread: number, base: number, name: number, flags: number): void;
   /** ProcessWrap::OnExit: the exit status, and the signal's name at `signal` (`length` bytes). */
   onUvExit?(exitStatus: number, signal: number, length: number): void;
+  /** SignalWrap's uv_signal_cb: the signal's number. */
+  onUvSignal?(signum: number): void;
   /** FSEventWrap::OnEvent: libuv's filename (a C string, 0 for none), its events and its status. */
   onUvFsEvent?(filename: number, events: number, status: number): void;
   /** StatWatcher::Callback: the status, both stats in the binding's arrays. */
@@ -490,6 +496,8 @@ export const libnodeImports = {
   process_exit: (handle: number, exitStatus: number, signal: number, length: number): void => {
     handleAt(handle).target.onUvExit?.(exitStatus, signal, length);
   },
+  /** SignalWrap's uv_signal_cb: the handle's `onsignal`. */
+  signal_received: (handle: number, signum: number): void => { handleAt(handle).target.onUvSignal?.(signum); },
   /** An asynchronous uv_fs_* completed: the request's After and its MakeCallback, or its promise's settling. */
   fs_done: (request: number): void => {
     const at = address(request);

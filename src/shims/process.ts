@@ -21,7 +21,7 @@ import { nodeActiveHandles, nodeActiveRequests } from '../node-lib/binding/handl
 /** The names Node 24's `process.binding` answers with `internalBinding(name)` (lib/internal/bootstrap/realm.js). */
 const PROCESS_BINDING_ALLOWED = new Set(['buffer', 'cares_wrap', 'config', 'constants', 'contextify', 'fs', 'fs_event_wrap', 'icu', 'inspector',
   'js_stream', 'os', 'pipe_wrap', 'process_wrap', 'spawn_sync', 'stream_wrap', 'tcp_wrap', 'tls_wrap', 'tty_wrap', 'udp_wrap', 'uv', 'zlib']);
-import { ownProcessPid, parentPidOf, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, publishSignalDisposition, type ProcessToken } from '../process-tokens';
+import { ownProcessPid, parentPidOf, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, type ProcessToken } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
 import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
 import { freemem as osFreemem } from './os';
@@ -637,14 +637,6 @@ export function createProcess(options?: {
 
   // Create an EventEmitter for process events
   const emitter = new EventEmitter();
-  // A signal's disposition is the process's listeners for it: told to its registry as they come and go, so a kernel
-  // that delivers its signals knows them (browser-substrate ADR-0129).
-  const publishDisposition = (name: string | symbol, adding: boolean): void => {
-    if (typeof name !== 'string' || !Object.hasOwn(__substrateSignals, name) || name === 'SIGKILL' || name === 'SIGSTOP') return;
-    try { publishSignalDisposition(proc, __substrateSignals[name]!, adding || emitter.listenerCount(name) > 0); } catch { /* a registry that refuses keeps its own view */ }
-  };
-  emitter.on('newListener', (name: string | symbol) => publishDisposition(name, true));
-  emitter.on('removeListener', (name: string | symbol) => publishDisposition(name, false));
   // Once the process is exiting (Node's `process._exiting`), `nextTick` queues nothing: Node's own test-next-tick
   // queues one from `exit` and requires that it never be called. Once it has ended, a tick queued before does not run
   // either: Node exits when the listeners return, and here the realm goes on. Between the two (a listener's throw left

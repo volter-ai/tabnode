@@ -57,6 +57,9 @@ TABNODE_IMPORT(udp_sent) void tabnode_udp_sent(int32_t id, int32_t status);
 // signal that ended the child (signo_string: its `signal_length` bytes, none for none).
 TABNODE_IMPORT(process_exit) void tabnode_process_exit(uv_process_t *handle, double exit_status, const char *signal,
                                                       uint32_t signal_length);
+// SignalWrap's uv_signal_cb (src/signal_wrap.cc:121-130, signal_wrap.c; ADR-0018 item 8): the handle's `onsignal`,
+// with the signal's number.
+TABNODE_IMPORT(signal_received) void tabnode_signal_received(uv_signal_t *handle, int signum);
 // The fs binding's completions (native/node fs.c, fs_event.c; ADR-0018 item 6). Each is what Node's C++ does in V8
 // at that point, and each is followed by the callback scope's close, a drain.
 struct tabnode_fs_s;

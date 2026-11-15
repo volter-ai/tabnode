@@ -20,6 +20,7 @@ import pipeWrapBinding from './pipe_wrap';
 import caresWrapBinding from './cares_wrap';
 import processWrapBinding from './process_wrap';
 import spawnSyncBinding from './spawn_sync';
+import signalWrapBinding from './signal_wrap';
 import ttyWrapBinding from './tty_wrap';
 import udpWrapBinding from './udp_wrap';
 import httpParserBinding from './http_parser';
@@ -59,6 +60,7 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   cares_wrap: () => caresWrapBinding,
   process_wrap: () => processWrapBinding,
   spawn_sync: () => spawnSyncBinding,
+  signal_wrap: () => signalWrapBinding,
   tty_wrap: () => ttyWrapBinding,
   udp_wrap: () => udpWrapBinding,
   http_parser: () => httpParserBinding,
