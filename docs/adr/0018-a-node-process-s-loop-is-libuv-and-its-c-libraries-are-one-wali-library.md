@@ -100,8 +100,9 @@ same way: V8 posts it to the isolate's platform, and Node's `PerIsolatePlatformD
 own C are libuv's threadpool here.
 
 The browser's own engine services are another case (browser-substrate ADR-0236, hole 12): `SubtleCrypto`,
-`WebAssembly.compile` and `instantiate` (and the streaming forms), a `Blob`'s reads, and `CompressionStream` and
-`DecompressionStream`. The browser settles each on the thread that asked, and a Node process's thread is blocked in
+`WebAssembly.compile` and `instantiate` (and the streaming forms), and `CompressionStream` and
+`DecompressionStream`. (A `Blob`'s reads are not among them once Node's own `lib/internal/blob.js` runs: its bytes are
+the process's, and `reader.pull`, `lib/internal/blob.js:440`, reads them there.) The browser settles each on the thread that asked, and a Node process's thread is blocked in
 Linux while its loop parks, so the answer waits for the park to end. Each is native work the program should keep, so
 each is a **device of the machine**, run by the machine's own worker, which never blocks (browser-substrate
 `host/machine.mjs`, "It never blocks and runs no kernel code"), reached through a driver in the kernel, as Linux
@@ -115,9 +116,10 @@ reaches a crypto accelerator through a descriptor (AF_ALG, `/dev/crypto`):
 
 `WebAssembly.compile` stays asynchronous, on the machine's worker, where the browser compiles it as it would for any
 page. What the device answers, Node does with OpenSSL, zlib or its C++ in the process (Node's `node:crypto`,
-`lib/internal/crypto/*`; its `CompressionStream` is zlib, `lib/internal/webstreams/compression.js:34-37`; its Blob
-reads are `reader.pull`, `lib/internal/blob.js:440`); here the browser's native implementation does it, faster than
-any of those compiled to WebAssembly.
+`lib/internal/crypto/*`; its `CompressionStream` is zlib, `lib/internal/webstreams/compression.js:34-37`); here the
+browser's native implementation does it, faster than any of those compiled to WebAssembly, except a call too small to
+be worth the round trip (browser-substrate ADR-0236 hole 12: 16.5 µs empty, 36.8 µs for a 256-byte SHA-256, read in
+Chrome).
 
 A synchronous form waits on the device too: the call blocks in Linux on the device's descriptor, as a blocking `read`
 waits on any device, while the machine's worker answers it. So the browser answers synchronous calls as well:
