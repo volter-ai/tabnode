@@ -212,7 +212,7 @@ is built.
   key (browser-substrate `imageHostPrograms`), which moves with each baseline release; a C program names its import
   module at compile time. The engine is named `host:tabnode` until an identity that also pins the interface between
   `libnode`'s C and the engine's JavaScript (both from one Tabnode commit) is decided.
-- **Order of building, each a step that runs before the next is written.** Today's engine is asynchronous end to end:
+- **Order of building: the items are built in this order and run together at the end run.** Today's engine is asynchronous end to end:
   `createContainer().runNode()` answers a promise of the run's end, its waits timer and descriptor registrations made
   from JavaScript through the process's raw calls (browser-substrate `linux-node-run.ts`). Under
   libuv, `bootstrap` starts Node's library and returns, and the process lives while libuv holds a referenced handle,
