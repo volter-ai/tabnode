@@ -9,6 +9,8 @@ import { loadNodeLibFor, nodeLibBindingFor } from './load';
 import type { BlobBinding } from './binding/blob';
 
 const urls = new WeakMap<object, typeof URL>();
+/** The realm's own `URL`, taken when this module loads: on a kernel the realm's global names the process's after. */
+const RealmURL = globalThis.URL;
 
 export function processUrl(process: object): typeof URL {
   let url = urls.get(process);
@@ -35,7 +37,7 @@ export function processUrl(process: object): typeof URL {
       },
     },
   };
-  url = new Proxy(globalThis.URL, {
+  url = new Proxy(RealmURL, {
     get: (target, key, receiver) => typeof key === 'string' && Object.prototype.hasOwnProperty.call(methods, key) ? methods[key]!.value : Reflect.get(target, key, receiver),
     getOwnPropertyDescriptor: (target, key) => typeof key === 'string' && Object.prototype.hasOwnProperty.call(methods, key) ? { ...methods[key] } : Reflect.getOwnPropertyDescriptor(target, key),
     // The process's own pair is the process's to replace; the realm's stays the realm's.

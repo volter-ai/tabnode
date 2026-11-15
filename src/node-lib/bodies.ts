@@ -3,15 +3,18 @@ import { scopedBody, type ScopedBody } from './scoped-body';
 import { NODE_LIB_SOURCES } from './sources';
 
 /**
- * Node's own files' bodies (scoped-body.ts), by the name Node's `require` calls each one: what a process's realm
- * compiles for a builtin. The library's build replaces this module with the bodies already made (vite.lib.config.js
- * `node-lib-bodies`), as Node embeds its library ready to run (js2c, its startup snapshot), so no process's realm parses
- * Node's library to rewrite it: in the machine that was 110 ms of every Node process's start, read 2026-11-14. Run from
- * source, a body is made on its first ask.
+ * Node's own files, by the name Node's `require` calls each one. A process whose global is its realm's own compiles
+ * the file as it is (load.ts); a process that shares its realm with others compiles its body (scoped-body.ts), made
+ * on its first ask in the realm.
  */
 const made = new Map<string, ScopedBody>();
 
-/** The vendored file's body, or undefined where Node's library has no file of the name. */
+/** The vendored file's text, or undefined where Node's library has no file of the name. */
+export function nodeLibSource(name: string): string | undefined {
+  return NODE_LIB_SOURCES[name];
+}
+
+/** The vendored file's scoped body, or undefined where Node's library has no file of the name. */
 export function nodeLibBody(name: string): ScopedBody | undefined {
   const source = NODE_LIB_SOURCES[name];
   if (source === undefined) return undefined;

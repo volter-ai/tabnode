@@ -2,8 +2,11 @@
  * WHAT A PROCESS'S GLOBAL HOLDS, AND HOW A FREE NAME REACHES IT (ADR-0015).
  *
  * Node compiles every builtin and every module inside its process's context, so a free name a file reads is that
- * process's global's, and a name the global does not hold is a `ReferenceError`. The engine runs many processes in
- * one realm, so no free name of a process's code is resolved on the realm's global except the realm's own intrinsics.
+ * process's global's, and a name the global does not hold is a `ReferenceError`. On a kernel a process's realm is its
+ * own and its global is the realm's, so a file compiles as Node compiles it and nothing here is used (runtime.ts
+ * __substrateInstallNodeGlobals). Off one the engine runs many processes in one realm (a container's `node` children,
+ * shims/child_process.ts), so no free name of a process's code is resolved on the realm's global except the realm's
+ * own intrinsics.
  *
  * Here are the name sets every compile site shares, and the objects a free name is resolved through:
  * - a rewritten body reads `__substrateGuestScope.X` (a `ReferenceError` where the global does not hold X) and

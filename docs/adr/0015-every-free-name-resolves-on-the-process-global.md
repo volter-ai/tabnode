@@ -178,6 +178,31 @@ guest's own.
 - **`vm.runInNewContext`** reads `undefined` for a name the sandbox lacks rather than throwing, and its intrinsics are
   the realm's.
 
+## Amended: on a kernel the realm is the process's
+
+Date: 2026-11-15. Served: browser-substrate ADR-0236, "What is reverted": "Each free name of a program's code read
+through a `Proxy` (`src/guest-scope.ts:138`), or the file run under `with`, so that many processes can share one realm
+(Tabnode ADR-0015). On the machine a process's realm is its own, so its global is the process's global and a file
+compiles as Node compiles it."
+
+This decision holds where processes share a realm: with no kernel, a container's `node` children are runtimes of
+the realm that runs the container (`shims/child_process.ts`, `new Runtime(tree, …)`). On a kernel (`onKernel()`, a
+tree that offers `TREE_SYSTEM`) each Node process has a worker and a realm of its own (browser-substrate ADR-0227 §2,
+ADR-0129 unit 3), stripped to the language before its program loads, and none of this decision applies:
+- **The global** is the realm's `globalThis`. The process whose code first runs there installs Node's globals on it
+  as Node's bootstrap does (`runtime.ts` `__substrateInstallNodeGlobals`), each the engine's own where it has one.
+- **A module body** is its lowered text in a wrapper of Node's parameters and the names the lowering's text uses,
+  compiled at the realm's global scope: no rewrite, no `with`. **Node's library and a dependency** compile as their
+  files are, where the global they run in is the realm's (`load.ts` `compilePlain`), which is also the engine's own
+  scope off a kernel. **A made function, `vm.runInThisContext`, `vm.compileFunction` and the REPL** compile at the
+  realm's global scope.
+- **The prepared format** moves to `tabnode-prepared-10`. A body is the file's lowering alone: the ES module
+  lowering, `import()`, awaits followed (browser-substrate ADR-0236 hole 13), and each `new X(…)` and `Function(…)`
+  wrapped so a made function's `import()` is its making module's, as V8 gives Node. Off a kernel the rewrite of §2
+  is made when a body is compiled. A file no pass edits is its own body, and the loader names and reads none for it.
+- **Off a kernel**, Node's library is carried as its files and each scoped body is made on its first ask in a realm,
+  where the library's build made them before; that first ask parses the file.
+
 ## Where the evidence stops
 
 - **Read:** Tabnode 2595132's `runtime.ts`, `node-lib/load.ts`, `code-transforms.ts`, `shims/vm.ts`, `shims/path.ts`,

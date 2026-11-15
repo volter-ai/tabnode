@@ -162,13 +162,16 @@ function classes(process: object, Channel: any, PortConstructor: any) {
   return { MessageChannel, MessagePort };
 }
 
+/** The realm's own channel and port, taken when this module loads: on a kernel the realm's global names the process's after. */
+const RealmMessageChannel = (globalThis as { MessageChannel?: typeof MessageChannel }).MessageChannel;
+const RealmMessagePort = (globalThis as { MessagePort?: unknown }).MessagePort;
 export function guestMessageGlobals(process: object): { MessageChannel: any; MessagePort: any } {
   let result = globals.get(process);
   if (!result) {
     // The worker's own port interface, read from a port: a kernel's host program's realm holds MessageChannel and not
     // the MessagePort name (browser-substrate ADR-0227 §4).
-    const HostMessagePort = (globalThis as { MessagePort?: unknown }).MessagePort ?? Object.getPrototypeOf(new MessageChannel().port1).constructor;
-    result = classes(process, globalThis.MessageChannel, HostMessagePort);
+    const HostMessagePort = RealmMessagePort ?? Object.getPrototypeOf(new RealmMessageChannel!().port1).constructor;
+    result = classes(process, RealmMessageChannel, HostMessagePort);
     globals.set(process, result);
   }
   return result;

@@ -9,6 +9,7 @@
 > **prepareModuleForImage**(`rawCode`, `resolvedPath`): `string`
 
 The body the loader would compile for this file, with no load hooks and no type stripping: what the image carries.
+A file the lowering leaves as it is answers its own text, and the loader asks for no body for it.
 
 ## Parameters
 

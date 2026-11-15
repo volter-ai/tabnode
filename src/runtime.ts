@@ -153,21 +153,39 @@ function walkAst(node: any, callback: (node: any) => void): void {
 }
 
 /**
- * On the in-page lane a guest module runs where the page's `document`,
- * `window`, and `location` are in scope, so a package that asks
- * `typeof document` to tell a browser from Node takes the browser path and
- * fails on Node work. A Node program sees none of them; the module wrapper
- * shadows them, and the guest's `globalThis` is a proxy over the host's that
- * answers for them.
+ * Each process's global. On a kernel it is the realm's own `globalThis`, with Node's globals installed on it
+ * (__substrateInstallNodeGlobals). Off one, a guest module runs in a realm others share, where the page's
+ * `document`, `window`, and `location` are in scope, so a package that asks `typeof document` to tell a browser from
+ * Node takes the browser path and fails on Node work. A Node program sees none of them; the module wrapper shadows
+ * them, and the guest's `globalThis` is a proxy over the host's that answers for them.
  */
 const __substrateGuestGlobals = new WeakMap<Process, Record<string, unknown>>();
+/** Whether a kernel's realm has had Node's globals installed (__substrateInstallNodeGlobals). */
+let __substrateRealmInstalled = false;
+/**
+ * Whether a process's code runs at its realm's own global scope: on a kernel, where the realm is one process's. The
+ * process whose code first runs there gives the realm Node's globals, as Node's bootstrap does before a program's
+ * first line; a runtime the engine makes for itself (a container's own) runs none.
+ */
+function __substrateOwnsRealm(process: Process): boolean {
+  if (!onKernel()) return false;
+  if (!__substrateRealmInstalled) { __substrateRealmInstalled = true; __substrateInstallNodeGlobals(process); }
+  return true;
+}
 const __substrateAsyncFunction = (async function() {}).constructor;
 const __substrateFunctionScope = Function("__substrateFunctionGlobals", "__substrateFunctionSource", "__dynamicImport", "with (__substrateFunctionGlobals) { return eval('(' + __substrateFunctionSource + ')'); }");
+/** The same at the realm's global scope, for a process whose global is its realm's own: only its loader is in scope. */
+const __substrateRealmFunctionScope = Function("__substrateFunctionSource", "__dynamicImport", "return eval('(' + __substrateFunctionSource + ')');");
 /**
- * A function's source made where its free names resolve on the process's global (ADR-0015 §2): inside `with` of the
- * process's global scope object, which answers the names the global holds and shadows the realm's others.
+ * A function's source made where its free names resolve on the process's global: on a kernel, the realm's global
+ * scope; off one, inside `with` of the process's global scope object, which answers the names the global holds and
+ * shadows the realm's others (ADR-0015 §2).
  */
 function __substrateMadeFunction(process: Process, source: string, dynamicImport?: unknown): Function {
+  if (__substrateOwnsRealm(process)) {
+    if (typeof dynamicImport !== "function") return __substrateSloppyEval(`(${source})`) as Function;
+    return __substrateRealmFunctionScope(__substrateRewriteDynamicImportsInScript(`(${source})`).slice(1, -1), dynamicImport) as Function;
+  }
   const scope = __substrateGuestScopes(process).withGlobal;
   if (typeof dynamicImport !== "function") return __substrateFunctionScope(scope, source) as Function;
   // Rewritten as an expression statement and unwrapped again, so the parser reads a function expression.
@@ -186,14 +204,18 @@ function __substrateMadeFunction(process: Process, source: string, dynamicImport
 function __substrateGuestConstructor(Constructor: unknown, process: Process, dynamicImport?: unknown): unknown {
   if (Constructor === intrinsicPromise) return guestPromise(process);
   if (Constructor !== Function && Constructor !== __substrateAsyncFunction) return Constructor;
-  return new Proxy(Constructor as object, { construct(target, args) {
-    const compiled = Reflect.construct(target as new (...args: unknown[]) => unknown, args);
+  // On a kernel the made function is the realm's own, as Node's is, unless its text holds an `import()` or a direct
+  // `eval` for the making module's loader to answer.
+  const made = (compiled: Function): Function => {
     const source = String(compiled);
+    if (__substrateOwnsRealm(process) && !/(?<![.$\w#])(?:import|eval)\s*\(/u.test(source)) return compiled;
     return __substrateMadeFunction(process, source, dynamicImport);
+  };
+  return new Proxy(Constructor as object, { construct(target, args) {
+    return made(Reflect.construct(target as new (...args: unknown[]) => unknown, args) as Function);
   }, apply(_target, _self, args) {
-    // `Function(...)` called makes the same function as `new Function(...)` (the rewrite wraps a free call of it).
-    const source = String(Reflect.apply(Constructor as (...args: unknown[]) => unknown, undefined, args));
-    return __substrateMadeFunction(process, source, dynamicImport);
+    // `Function(...)` called makes the same function as `new Function(...)` (the wrap is around a call of it too).
+    return made(Reflect.apply(Constructor as (...args: unknown[]) => unknown, undefined, args) as Function);
   } });
 }
 /**
@@ -230,12 +252,11 @@ function __substrateGuestVm(process: Process): unknown {
   const run = (code: string): unknown => {
     // Preserve the original argument order: acquire the actual guest-global
     // scope, then perform the single existing code coercion.
-    const { globals, scope, source } = observer.phase('setup', () => {
-      const globals = __substrateGuestGlobal(process);
-      return { globals, scope: __substrateGuestScopes(process).withGlobal, source: String(code) };
-    });
+    const { globals, source } = observer.phase('setup', () => ({ globals: __substrateGuestGlobal(process), source: String(code) }));
     observer.run('thisContext', source.length);
-    // A script's top-level `this` is its context's global, as in Node.
+    // A script's top-level `this` is its context's global, as in Node: on a kernel the realm's, at its global scope.
+    if (__substrateOwnsRealm(process)) return observer.phase('eval', () => __substrateSloppyEval(source));
+    const scope = __substrateGuestScopes(process).withGlobal;
     return observer.phase('eval', () => __substrateScriptScope.call(globals, scope, source));
   };
   class Script extends vmShim.Script {
@@ -338,37 +359,54 @@ function __substrateUnclaimGuestScoped(code: string): string {
   const at = code.startsWith(__substrateGuestScopedMarker) ? 0 : __substrateModuleMarker.length;
   return code.slice(0, at) + ' '.repeat(__substrateGuestScopedMarker.length) + code.slice(at + __substrateGuestScopedMarker.length);
 }
-/** What a rewritten `new` passes after its callee: the process, and the making module's dynamic import where it has one. */
+/** What a wrapped `new` passes after its callee: the process, and the making module's dynamic import where it has one. */
 const __substrateGuestConstructArgs = ",$process,typeof $dynamicImport==='function'?$dynamicImport:void 0";
+/** A constructor wrapped where a body calls it (__substrateWrapConstructors). */
+const __substrateConstruct = (callee: string): string => "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + __substrateGuestConstructArgs + "):" + callee + ")";
+/**
+ * Each `new X(...)` callee and each `Function(...)` call of a body, wrapped so that a function the body makes runs its
+ * `import()` through the making module's loader, as Node's does: V8 gives a made function's `import()` the referrer of
+ * the script that made it, and a page's engine cannot reach that, so the body passes its own loader where it makes one
+ * (`__substrateGuestConstructor`). Any other constructor passes through. Part of a body's lowering, so a prepared body
+ * carries it; a body that names the wrap itself is left as written, so a function's text is given back exactly.
+ */
+function __substrateWrapConstructors(code: string): string {
+  if (!/\b(?:new|Function)\b/u.test(code) || code.includes('__substrateGuestConstructor')) return code;
+  let ast;
+  try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true, allowHashBang: true }); }
+  catch { return code; }
+  const edits: Array<[number, number, string]> = [];
+  walkAst(ast, node => {
+    const callee = node.type === "NewExpression" ? node.callee : node.type === "CallExpression" && node.callee.type === "Identifier" && node.callee.name === "Function" ? node.callee : undefined;
+    if (callee?.type === "Identifier") edits.push([callee.start, callee.end, __substrateConstruct(callee.name)]);
+  });
+  ast = undefined;
+  return edits.length === 0 ? code : applySourceEdits(code, edits.sort((a, b) => b[0] - a[0]));
+}
+/**
+ * Off a kernel, a body's free names resolve on its process's global (ADR-0015 §2), since many processes share the
+ * realm: rewritten onto the scope objects and marked, or, where its names are dynamic, run inside `with`. On a kernel
+ * a body is compiled as it is.
+ */
 function __substrateScopeGlobalCalls(source: string): string {
-  // Every body comes here once, as written or as lowered: a mark already in it is the source's own text, not this
-  // pass's, and is never trusted (review of 2eaa5f41).
+  // Every body comes here once, as lowered: a mark already in it is the source's own text, not this pass's, and is
+  // never trusted (review of 2eaa5f41).
   const code = __substrateUnclaimGuestScoped(source);
-  // A body that names the scope or the constructor wrap itself keeps the `with` wrapper: a function's text is given
-  // back by reading those names as this pass's own (__substrateUnscopeGuestNames).
-  const reserved = code.includes('__substrateGuestScope') || code.includes('__substrateGuestConstructor') || code.includes('__substrateGuestTypeof');
+  // A body that names the scope itself keeps the `with` wrapper: a function's text is given back by reading those
+  // names as this pass's own (__substrateUnscopeGuestNames).
+  const reserved = code.includes('__substrateGuestScope') || code.includes('__substrateGuestTypeof');
   // No guest name, no constructor, nothing dynamic and no escaped name: nothing to rewrite, and Node's wrapper
   // form as it stands.
   if (!reserved && !__substrateMayNameGuest(code)) return __substrateMarkGuestScoped(code);
   let ast;
   try { ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", allowReturnOutsideFunction: true }); }
   catch { return code; }
-  // The making module's dynamic import goes with its process (Codex 91): a constructor that loads a module at
-  // construction (a Worker's module, a lazy class) imports from the module that wrote `new`, in either rewrite.
-  const construct = (callee: string): string => "(typeof __substrateGuestConstructor==='function'?__substrateGuestConstructor(" + callee + __substrateGuestConstructArgs + "):" + callee + ")";
-  const guestEdits = reserved ? undefined : __substrateGuestNameEdits(ast, code, __substrateKeptName, '__substrateGuestScope', construct, '__substrateGuestTypeof');
+  const guestEdits = reserved ? undefined : __substrateGuestNameEdits(ast, code, __substrateKeptName, '__substrateGuestScope', undefined, '__substrateGuestTypeof');
   if (guestEdits) return __substrateMarkGuestScoped(applySourceEdits(code, guestEdits.sort((a, b) => b[0] - a[0])));
   // A `with` statement or a direct eval in the body, whose names resolve at run time, an escaped guest name, or the
-  // reserved names above: the body keeps the `with` wrapper and the old rewrite below.
+  // reserved names above: the body keeps the `with` wrapper.
   const positions: Array<[number, number, string]> = [];
   walkAst(ast, node => {
-    // A function's source is also data: a program sends `String(fn)` to be
-    // run elsewhere (a browser page, a worker), where the module wrapper's
-    // names do not exist. The rewrite is the original `new` there.
-    if (node.type === "NewExpression" && node.callee.type === "Identifier") {
-      const callee = code.slice(node.callee.start, node.callee.end);
-      positions.push([node.callee.start, node.callee.end, construct(callee)]);
-    }
     // The narrow with-scope below keeps global replacements dynamic.
     // Remove its object receiver for ordinary calls (including local
     // bindings, whose bare-call receiver was already undefined).
@@ -420,12 +458,12 @@ const UNDICI_GLOBALS = new Set(['FormData', 'Headers', 'Request', 'Response', 'M
 const NODE_ENUMERABLE_GLOBALS = new Set(['global', 'clearImmediate', 'setImmediate', 'clearInterval', 'clearTimeout', 'setInterval', 'setTimeout', 'queueMicrotask', 'structuredClone', 'atob', 'btoa', 'performance', 'fetch', 'crypto', 'navigator']);
 /** The names whose shape the guest's global takes from Node: those fifteen and two it does not enumerate, `Buffer` and `globalThis`. `process` is not among them: see the `get` trap. `navigator` is among them and is the guest's own accessor from the start. */
 const NODE_GLOBALS = new Set([...NODE_ENUMERABLE_GLOBALS, 'Buffer', 'globalThis']);
-function __substrateGuestGlobal(process: Process): Record<string, unknown> {
-  let guest = __substrateGuestGlobals.get(process);
-  if (guest) return guest;
-  const host = globalThis as unknown as Record<string, unknown>;
-  // Node's own fetch and its interfaces are undici's (`internal/deps/undici/undici`), loaded at their first use, as
-  // Node's bootstrap exposes them: its connections are the process's `net` and `tls`, and so its kernel sockets.
+/**
+ * A process's `fetch` and its `WebAssembly` streaming calls. Node's own fetch and its interfaces are undici's
+ * (`internal/deps/undici/undici`), loaded at their first use, as Node's bootstrap exposes them: its connections are
+ * the process's `net` and `tls`, and so its kernel sockets.
+ */
+function __substrateWebGlobals(process: Process) {
   const undici = (): Record<string, unknown> => loadNodeLibFor(process, 'internal/deps/undici/undici') as Record<string, unknown>;
   let fetchImpl: ((input: unknown, init: unknown) => Promise<unknown>) | undefined;
   const fetch = function fetch(input: unknown, init: unknown = undefined): Promise<unknown> {
@@ -452,6 +490,92 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
         .then(module => WebAssembly.instantiate(module, imports).then(instance => ({ module, instance })));
     },
   };
+  return { undici, fetch, streamingWasm };
+}
+/** A namespace whose asynchronous calls the guest waits on: the calls are wrapped, everything else passes through. */
+function __substrateHeldNamespace(key: string, namespace: Record<string, unknown>, held: readonly string[], streamingWasm: Record<string, (...args: never[]) => Promise<unknown>>): unknown {
+  return new Proxy(namespace, {
+    get(target, name, receiver) {
+      if (key === "WebAssembly" && (name === "compileStreaming" || name === "instantiateStreaming")) return __substrateHeldAsync(streamingWasm[name]!, target);
+      const member = Reflect.get(target, name, receiver);
+      if (!held.includes(name as string) || typeof member !== "function") return member;
+      return __substrateHeldAsync(member as (...args: never[]) => Promise<unknown>, target);
+    },
+  });
+}
+/**
+ * ON A KERNEL A PROCESS'S GLOBAL IS ITS REALM'S OWN. Each Node process there has a worker and a realm of its own
+ * (browser-substrate ADR-0227 §2), stripped to the language and the interfaces the engine keeps before its program
+ * loads (task.mjs stripHostRealm), so Node's globals are installed on the realm's `globalThis` as Node's bootstrap
+ * installs them (lib/internal/bootstrap/node.js, web/exposed-wildcard.js, web/exposed-window-or-worker.js): an
+ * operation a writable, enumerable value; a namespace or an interface a value it does not enumerate; a lazy one an
+ * accessor. Each is the engine's own where it has one, as the guest global answers off a kernel.
+ */
+function __substrateInstallNodeGlobals(process: Process): void {
+  const realm = globalThis as unknown as Record<string, unknown>;
+  const { undici, fetch, streamingWasm } = __substrateWebGlobals(process);
+  const timers = guestTimerFunctions(process);
+  const realmClone = realm.structuredClone as (input: unknown, options?: { transfer?: unknown[] }) => unknown;
+  const realmMicrotask = realm.queueMicrotask as (callback: () => void) => void;
+  const value = (name: string, held: unknown, enumerable: boolean): void => {
+    Object.defineProperty(realm, name, { value: held, writable: true, enumerable, configurable: true });
+  };
+  // Node's defineLazyProperties: read on the first get and kept as a value from then; an assignment replaces it.
+  const lazy = (name: string, make: () => unknown, enumerable: boolean): void => {
+    const set = (held: unknown): void => { Object.defineProperty(realm, name, { value: held, writable: true }); };
+    Object.defineProperty(realm, name, { get() { const held = make(); set(held); return held; }, set, enumerable, configurable: true });
+  };
+  // Node's accessors that answer their object until a program assigns one (exposeGetterAndSetter,
+  // defineReplaceableLazyAttribute), in the shape NODE_GLOBAL_ACCESSORS measured.
+  const answered: Record<string, () => unknown> = {
+    performance: () => perfHooksShim.performance,
+    Buffer: () => loadNodeLibFor(process, 'buffer').Buffer,
+    crypto: () => cryptoShim.webcrypto,
+    URL: () => processUrl(process),
+    ...Object.fromEntries([...UNDICI_GLOBALS].map((name) => [name, () => undici()[name]])),
+  };
+  for (const [name, shape] of Object.entries(NODE_GLOBAL_ACCESSORS)) {
+    let assigned = false, held: unknown;
+    Object.defineProperty(realm, name, {
+      get: () => assigned ? held : answered[name]!(),
+      set: shape!.set ? (next: unknown) => { assigned = true; held = next; } : undefined,
+      configurable: true, enumerable: shape!.enumerable,
+    });
+  }
+  value('global', realm, true);
+  // Node's `process`: an accessor over the bootstrap's own, not enumerated.
+  let ownProcess: unknown = process;
+  Object.defineProperty(realm, 'process', { get: () => ownProcess, set: (next: unknown) => { ownProcess = next; }, enumerable: false, configurable: true });
+  for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"] as const) value(name, timers[name], true);
+  value('queueMicrotask', function queueMicrotask(callback: () => void) { return realmMicrotask.call(realm, callback); }, true);
+  value('structuredClone', function structuredClone(input: unknown, options?: { transfer?: unknown[] }) {
+    validateTransferList(options?.transfer);
+    return realmClone.call(realm, input, options);
+  }, true);
+  // `atob` and `btoa` are the `buffer` module's own, as in Node, where the global IS `require('buffer').atob`.
+  lazy('atob', () => (loadNodeLibFor(process, 'buffer') as Record<string, unknown>).atob, true);
+  lazy('btoa', () => (loadNodeLibFor(process, 'buffer') as Record<string, unknown>).btoa, true);
+  value('fetch', fetch, true);
+  value('console', processConsoles.get(process), false);
+  lazy('MessageChannel', () => guestMessageGlobals(process).MessageChannel, false);
+  lazy('MessagePort', () => guestMessageGlobals(process).MessagePort, false);
+  // Node's own navigator, scoped to this process; never WorkerNavigator.
+  Object.defineProperty(realm, 'navigator', { get: () => loadNodeLibFor(process, 'internal/navigator').navigator, enumerable: true, configurable: true });
+  lazy('Navigator', () => loadNodeLibFor(process, 'internal/navigator').Navigator, false);
+  for (const [name, held] of Object.entries(__substrateHeldNamespaces)) {
+    const namespace = realm[name];
+    if (namespace !== null && typeof namespace === 'object') value(name, __substrateHeldNamespace(name, namespace as Record<string, unknown>, held, streamingWasm), false);
+  }
+  // Node v24's V8 has no Temporal.
+  delete realm.Temporal;
+}
+function __substrateGuestGlobal(process: Process): Record<string, unknown> {
+  let guest = __substrateGuestGlobals.get(process);
+  if (guest) return guest;
+  const host = globalThis as unknown as Record<string, unknown>;
+  // On a kernel the realm is one process's, and its global is the realm's (__substrateOwnsRealm).
+  if (onKernel()) return host;
+  const { undici, fetch, streamingWasm } = __substrateWebGlobals(process);
   // A guest's global object is an ordinary object to the guest, as Node's is: what it assigns, defines or deletes
   // is ITS, and every trap below reads that before anything else. Two places hold it and nothing else does:
   //   - the proxy's own target, for a name the guest has assigned or defined (a value, or an accessor);
@@ -551,15 +675,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
       const held = __substrateHeldNamespaces[key as string];
       if (held !== undefined && value !== null && typeof value === "object") {
         if (boundGlobals.get(key)?.original !== value) {
-          const namespace = value as Record<string, unknown>;
-          boundGlobals.set(key, { original: value, bound: new Proxy(namespace, {
-            get(target, name, receiver) {
-              if (key === "WebAssembly" && (name === "compileStreaming" || name === "instantiateStreaming")) return __substrateHeldAsync(streamingWasm[name]!, target);
-              const member = Reflect.get(target, name, receiver);
-              if (!held.includes(name as string) || typeof member !== "function") return member;
-              return __substrateHeldAsync(member as (...args: never[]) => Promise<unknown>, target);
-            },
-          }) });
+          boundGlobals.set(key, { original: value, bound: __substrateHeldNamespace(key as string, value as Record<string, unknown>, held, streamingWasm) });
         }
         return boundGlobals.get(key)!.bound;
       }
@@ -681,7 +797,7 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
 // A process's builtins run in its global, as Node's run in its context.
 setNodeLibGlobal((process) => __substrateGuestGlobal(process as Process));
 /**
- * The objects a process's bodies resolve free names through (ADR-0015, `guest-scope.ts`), one set a process: a
+ * The objects a process's bodies resolve free names through off a kernel (ADR-0015, `guest-scope.ts`), one set a process: a
  * rewritten body reads `__substrateGuestScope.X` and `typeof __substrateGuestTypeof.X`, a declined one runs inside
  * `with` of the module scope. One set a process serves every body of it, read live, so a body's wrapper makes nothing
  * per body (S2 K1: Cal's server compiled 8,456 bodies to its first page).
@@ -974,6 +1090,7 @@ Object.defineProperty(globalThis, "__substrateEvalSource", {
 });
 /** A file's source made a body: shebang stripped, types stripped, ESM lowered, dynamic imports rewritten, awaits followed. */
 function __substratePrepareBody(rawCode: string, resolvedPath: string, format: string | undefined, process: unknown): string {
+  if (format === undefined && !__substrateLowers(rawCode, resolvedPath)) return rawCode;
   let code = rawCode;
 
   // Strip shebang line if present (e.g. #!/usr/bin/env node)
@@ -1011,7 +1128,15 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
     code = __substrateRewriteDynamicImportsInScript(code);
   }
 
-  return __substrateFollowAwaits(code);
+  return __substrateWrapConstructors(__substrateFollowAwaits(code));
+}
+/**
+ * Whether a pass of the lowering may edit a file, from words of its text: a shebang, types, `import` or `export`, a
+ * dynamic `import(` or direct `eval(`, an `await`, a constructor. A file with none is its own body, so the loader
+ * neither names nor reads one for it (compileRaw).
+ */
+function __substrateLowers(rawCode: string, resolvedPath: string): boolean {
+  return rawCode.startsWith('#!') || /[.](?:ts|mts|cts)$/u.test(resolvedPath) || /\b(?:import|export|eval|await|new|Function)\b/u.test(rawCode);
 }
 
 /**
@@ -1073,9 +1198,12 @@ export function preparedModuleKey(rawCode: string, resolvedPath: string): string
   const kind = preparedModuleKind(resolvedPath);
   return kind ? preparedModuleKeyOf(kind, bytesToHex(sha256(new TextEncoder().encode(rawCode)))) : undefined;
 }
-/** The body the loader would compile for this file, with no load hooks and no type stripping: what the image carries. */
+/**
+ * The body the loader would compile for this file, with no load hooks and no type stripping: what the image carries.
+ * A file the lowering leaves as it is answers its own text, and the loader asks for no body for it.
+ */
 export function prepareModuleForImage(rawCode: string, resolvedPath: string): string {
-  return __substrateScopeGlobalCalls(__substratePrepareBody(rawCode, resolvedPath, undefined, { execArgv: [], env: {} }));
+  return __substratePrepareBody(rawCode, resolvedPath, undefined, { execArgv: [], env: {} });
 }
 
 /**
@@ -1106,10 +1234,11 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
  * An instrument: how each of a process's compiles came by its body, said when its loading has been quiet for two
  * seconds and when it exits. `digest`: named by the tree's digest, the source never read. `carried`: of the digests
  * asked for a load, those the resolving stat had carried, so not asked again. `hash`: named by hashing
- * the source read. `kept`: prepared here and kept. The rest prepared here, by why no body could be taken.
+ * the source read. `own`: a file the lowering leaves as it is, compiled as read with no body asked. `kept`: prepared
+ * here and kept. The rest prepared here, by why no body could be taken.
  * `stats`: the resolver's stat probes for the same process (node-resolution.ts `ResolutionKept.probes`).
  */
-type PreparedCounts = { digest: number; carried: number; hash: number; kept: number; transpiled: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
+type PreparedCounts = { digest: number; carried: number; hash: number; own: number; kept: number; transpiled: number; noDirectory: number; notOwnText: number; format: number; types: number; notJavaScript: number; said: number; timer?: ReturnType<typeof setTimeout> };
 const __substratePreparedCounts = new WeakMap<object, PreparedCounts>();
 /** The processes whose prepared-body directory refused a body (EACCES, EPERM, EROFS): they keep none after (S2 R24). */
 const __substrateKeepingRefused = new WeakSet<object>();
@@ -1536,7 +1665,7 @@ function __substrateObserveHttp(process: object, module: unknown): void {
 function __substrateSayPrepared(process: object, counts: PreparedCounts, at: string): void {
   if (counts.timer !== undefined) { clearTimeout(counts.timer); counts.timer = undefined; }
   __substrateSayLoadClock(process, at);
-  const totals = { digest: counts.digest, hash: counts.hash, kept: counts.kept, transpiled: counts.transpiled, noDirectory: counts.noDirectory, notOwnText: counts.notOwnText, format: counts.format, types: counts.types, notJavaScript: counts.notJavaScript };
+  const totals = { digest: counts.digest, hash: counts.hash, own: counts.own, kept: counts.kept, transpiled: counts.transpiled, noDirectory: counts.noDirectory, notOwnText: counts.notOwnText, format: counts.format, types: counts.types, notJavaScript: counts.notJavaScript };
   const total = Object.values(totals).reduce((sum, value) => sum + value, 0);
   if (total === counts.said) return;
   counts.said = total;
@@ -1546,7 +1675,7 @@ function __substrateCountPrepared(process: object, how: Exclude<keyof PreparedCo
   if (!traceReadingRequested()) return;
   let counts = __substratePreparedCounts.get(process);
   if (!counts) {
-    counts = { digest: 0, carried: 0, hash: 0, kept: 0, transpiled: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
+    counts = { digest: 0, carried: 0, hash: 0, own: 0, kept: 0, transpiled: 0, noDirectory: 0, notOwnText: 0, format: 0, types: 0, notJavaScript: 0, said: 0 };
     __substratePreparedCounts.set(process, counts);
   }
   counts[how] += 1;
@@ -1795,30 +1924,51 @@ function __substrateBodyKind(code: string, strictBody: boolean): 'sync' | 'gener
   if (code.endsWith(__substrateTopLevelAwaitMarker)) return 'async';
   return strictBody && code.includes(__substrateAwaitMarker) ? 'generator' : 'sync';
 }
-/** The wrapper's parameters: the module's scope (`MODULE_WRAPPER_PARAMETERS`, which the rewrite leaves as written), then the engine's own. */
+/**
+ * How a body is compiled: on a kernel, where its process's global is its realm's own, as it is (`plain`); off one,
+ * its free names rewritten onto its process's scope (`scoped`), or run inside `with` of it where they are dynamic.
+ */
+type BodyForm = 'plain' | 'scoped' | 'with';
+function __substrateBodyForm(process: Process, lowered: string): { code: string; form: BodyForm } {
+  if (__substrateOwnsRealm(process)) return { code: lowered, form: 'plain' };
+  const code = __substrateScopeGlobalCalls(lowered);
+  return { code, form: __substrateGuestScoped(code) ? 'scoped' : 'with' };
+}
+/**
+ * The wrapper's parameters on a kernel: Node's own, then the names a lowered body's text uses (its `$` names,
+ * `import_meta`, `__dynamicImport`) and the constructor wrap. Every other name is the global's, as in Node.
+ */
+const __substratePlainWrapperParameters = ['$exports', 'exports', '$require', 'require', '$module', 'module', '__filename', '__dirname',
+  '$process', 'import_meta', '$dynamicImport', '__dynamicImport', '__substrateGuestConstructor'].join(', ');
+/** The wrapper's parameters off a kernel: the module's scope (`MODULE_WRAPPER_PARAMETERS`, which the rewrite leaves as written), then the engine's own. */
 const __substrateWrapperParameters = [...MODULE_WRAPPER_PARAMETERS, '__substrateGuestGlobal', '__substrateGuestConstructor', '__substrateGuestScope', '__substrateGuestTypeof'].join(', ');
 /**
  * A module's wrapper, one line as Node's `Module.wrap` is. Its scope is its parameters, given their values by
  * `__substrateRunWrapped` at the call: a header of `var` statements that took them from other parameters and from the
  * guest's global was parsed and compiled again for each body (S2 AC-LC15: 1,025 characters and 25 statements a body,
- * some 6 MB over a server's 6,171 bodies). The `$` names are the ones a lowered body's own text uses.
+ * some 6 MB over a server's 6,171 bodies). The `$` names are the ones a lowered body's own text uses. The inner
+ * function lets the body's own `let` and `const` shadow them.
  */
-function __substrateWrapBody(code: string, guestScoped: boolean, strictBody: boolean, sourceURL: string): string {
-  return `(function(${__substrateWrapperParameters}) { globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
-}).call(${strictBody ? 'void 0' : '$module.exports'}); }
+function __substrateWrapBody(code: string, form: BodyForm, strictBody: boolean, sourceURL: string): string {
+  const self = strictBody ? 'void 0' : '$module.exports';
+  if (form === 'plain') return `(function(${__substratePlainWrapperParameters}) { return (function() {${code}
+}).call(${self}); })${sourceURL}`;
+  return `(function(${__substrateWrapperParameters}) { globalThis.process = $process; ${form === 'scoped' ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
+}).call(${self}); }
 })${sourceURL}`;
 }
-/** Runs a wrapped body with its scope's values, read from the guest's global in the order its header read them; the guest
- *  scope objects, made once per process and reading nothing when made, are taken after them: the read scope for a
- *  rewritten body, the module's `with` object for a declined one (ADR-0015 §2). */
-function __substrateRunWrapped(fn: Function, guestScoped: boolean, exports: unknown, require: unknown, module: unknown, filename: string, dirname: string,
+/** Runs a wrapped body with its scope's values. Off a kernel they are read from the guest's global in the order its
+ *  header read them, and the guest scope objects, made once per process and reading nothing when made, are taken
+ *  after them: the read scope for a rewritten body, the module's `with` object for a declined one (ADR-0015 §2). */
+function __substrateRunWrapped(fn: Function, form: BodyForm, exports: unknown, require: unknown, module: unknown, filename: string, dirname: string,
   process: Process, console: unknown, importMeta: unknown, dynamicImport: unknown): unknown {
+  if (form === 'plain') return fn(exports, exports, require, require, module, module, filename, dirname, process, importMeta, dynamicImport, dynamicImport, __substrateGuestConstructor);
   const guest = __substrateGuestGlobal(process) as Record<string, unknown>;
   const scopes = guestScopesOf(guest);
   return fn(exports, exports, require, require, module, module, filename, dirname, process, process, console, importMeta,
     dynamicImport, dynamicImport, guest, guest, guest.Buffer, guest.queueMicrotask, guest.atob, guest.btoa, guest.structuredClone,
     guest.setTimeout, guest.clearTimeout, guest.setInterval, guest.clearInterval, guest.setImmediate, guest.clearImmediate,
-    __substrateGuestGlobal, __substrateGuestConstructor, guestScoped ? scopes.read : scopes.withModule, scopes.typeOf);
+    __substrateGuestGlobal, __substrateGuestConstructor, form === 'scoped' ? scopes.read : scopes.withModule, scopes.typeOf);
 }
 /**
  * Drives a body: a generator runs until an import is still settling or the
@@ -3330,7 +3480,7 @@ function createRequire(
         (module as Module & { filename?: string }).filename = resolvedPath;
         if (!Array.isArray(module.paths) || module.paths.length === 0) module.paths = Mod._nodeModulePaths(pathShim.dirname(resolvedPath));
         const retireEvidence = preparedSourceEvidence?.(module, resolvedPath, digest!);
-        try { runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', true, bodyUtf8Bytes); }
+        try { runModuleBody(module, body, resolvedPath, pathShim.dirname(resolvedPath), 'prepared', bodyUtf8Bytes); }
         finally { retireEvidence?.(); }
         return;
       }
@@ -3382,6 +3532,12 @@ function createRequire(
         if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') __substrateKeepingRefused.add(process as object);
       }
     }
+    // A file the lowering leaves as it is is its own body: no body is named or read for it.
+    if (compiling?.raw === content && format === undefined && !strips && !__substrateLowers(rawCode, resolvedPath)) {
+      __substrateCountPrepared(process, 'own');
+      runModuleBody(module, rawCode, resolvedPath, dirname, 'source');
+      return;
+    }
     const key = compiling?.raw === content && format === undefined && !strips ? __substrateTimeRead(process, 'key', () => preparedModuleKey(rawCode, resolvedPath))
       : handedTypeScript ? __substrateTimeRead(process, 'key', () => preparedModuleKeyOf(resolvedPath.endsWith('.cts') ? 'cjs' : 'js',
         bytesToHex(sha256(new TextEncoder().encode(`${HANDED_TYPESCRIPT_SALT}${content}`))))) : undefined;
@@ -3390,7 +3546,7 @@ function createRequire(
       const takenUtf8Bytes = __substratePreparedUtf8Bytes;
       if (taken !== undefined) {
         __substrateCountPrepared(process, 'hash');
-        runModuleBody(module, taken, resolvedPath, dirname, 'prepared', true, takenUtf8Bytes);
+        runModuleBody(module, taken, resolvedPath, dirname, 'prepared', takenUtf8Bytes);
         return;
       }
       // A file the image carries no body for (a package installed in the
@@ -3400,7 +3556,7 @@ function createRequire(
       // tree has the directory bodies are kept in; asked once the body's own
       // read has missed, so a taken body costs no question about it.
       if (vfs.existsSync(PREPARED_MODULES_DIR)) {
-        const body = __substrateTimeRead(process, 'transform', () => __substrateScopeGlobalCalls(prepareModuleCode(rawCode, resolvedPath)));
+        const body = __substrateTimeRead(process, 'transform', () => prepareModuleCode(rawCode, resolvedPath));
         // One write is one step of the tab's filesystem, so no reader sees
         // half a body; a rename after it failed in a forked process's realm
         // and left the half-named file behind.
@@ -3417,7 +3573,7 @@ function createRequire(
           }
         }
         __substrateCountPrepared(process, 'kept');
-        runModuleBody(module, body, resolvedPath, dirname, 'source', true);
+        runModuleBody(module, body, resolvedPath, dirname, 'source');
         return;
       }
     }
@@ -3457,7 +3613,7 @@ function createRequire(
    * hands the result to it; the engine's own pipeline is what makes the
    * body Node-shaped here.
    */
-  let runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', scoped = false, utf8Bytes?: number): void => {
+  let runModuleBody = (module: Module, prepared: string, resolvedPath: string, dirname: string, bodySource: 'prepared' | 'source', utf8Bytes?: number): void => {
     __substrateLoadPhase(process, vfs, 'link');
     const loadClock = __substrateLoadClocks.get(process);
     const bodyBegan = loadClock ? __substrateLoadNow() : 0;
@@ -3506,7 +3662,8 @@ function createRequire(
       const importMetaUrl = resolvedPath.startsWith('data:') ? resolvedPath : 'file://' + resolvedPath;
       const strictBody = code.startsWith(__substrateModuleMarker);
       if (strictBody) __substrateEsBodyRuns(process);
-      if (!scoped) code = __substrateScopeGlobalCalls(code);
+      const form = __substrateBodyForm(process, code);
+      code = form.code;
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
@@ -3520,9 +3677,7 @@ function createRequire(
       // returns Node handles and owns their ref/unref lifetime.
       const scriptName = __substrateScriptName(resolvedPath);
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
-      // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
-      const guestScoped = __substrateGuestScoped(code);
-      const wrappedCode = __substrateWrapBody(code, guestScoped, strictBody, sourceURL);
+      const wrappedCode = __substrateWrapBody(code, form.form, strictBody, sourceURL);
 
       // A lowered ES module body is a generator that yields at each import
       // still settling; a body that must wait, on a top-level `await` of its
@@ -3551,7 +3706,7 @@ function createRequire(
       const importMeta = createImportMeta(moduleRequire, importMetaUrl, dirname, resolvedPath);
 
       __substrateLoadPhase(process, vfs, 'evaluate');
-      const body = __substrateInStatWindow(process, () => withGuestExecution(() => __substrateRunWrapped(fn, guestScoped,
+      const body = __substrateInStatWindow(process, () => withGuestExecution(() => __substrateRunWrapped(fn, form.form,
         module.exports, moduleRequire, module, resolvedPath, dirname, process, consoleWrapper, importMeta, dynamicImport), 'module'));
       if (loadClock) __substrateKeepHeaviest(loadClock, resolvedPath, __substrateLoadNow() - bodyBegan);
 
@@ -3632,9 +3787,9 @@ function createRequire(
       };
     }
     const originalBody = runModuleBody;
-    runModuleBody = (module, prepared, resolvedPath, dirname, bodySource, scoped = false, utf8Bytes): void => {
+    runModuleBody = (module, prepared, resolvedPath, dirname, bodySource, utf8Bytes): void => {
       const source = sources ? observerMapGet(sources, module) as { sourceSha256: string; initialExports: unknown } | undefined : undefined;
-      originalBody(module, prepared, resolvedPath, dirname, bodySource, scoped, utf8Bytes);
+      originalBody(module, prepared, resolvedPath, dirname, bodySource, utf8Bytes);
       if (observes(resolvedPath)) {
         try {
           const loaded = observerDescriptor(module, 'loaded');
@@ -4261,7 +4416,8 @@ export class Runtime {
     try {
       const importMetaUrl = 'file://' + filename;
       const strictBody = code.startsWith(__substrateModuleMarker);
-      code = __substrateScopeGlobalCalls(code);
+      const form = __substrateBodyForm(this.process, __substrateWrapConstructors(code));
+      code = form.code;
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
@@ -4275,9 +4431,7 @@ export class Runtime {
       // returns Node handles and owns their ref/unref lifetime.
       const scriptName = __substrateScriptName(filename);
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
-      // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
-      const guestScoped = __substrateGuestScoped(code);
-      const wrappedCode = __substrateWrapBody(code, guestScoped, strictBody, sourceURL);
+      const wrappedCode = __substrateWrapBody(code, form.form, strictBody, sourceURL);
 
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(require, this.process, filename.startsWith('data:') ? filename : `file://${filename}`);
@@ -4297,7 +4451,7 @@ export class Runtime {
         try { fn = __substrateCompileBody(__substrateAsyncBody(wrappedCode), this.process, scriptName); }
         catch { throw syntaxError; }
       }
-      const body = __substrateInStatWindow(this.process, () => withGuestExecution(() => __substrateRunWrapped(fn, guestScoped,
+      const body = __substrateInStatWindow(this.process, () => withGuestExecution(() => __substrateRunWrapped(fn, form.form,
         module.exports, require, module, filename, dirname, this.process, consoleWrapper,
         createImportMeta(require, importMetaUrl, dirname, filename), dynamicImport), 'module'));
 
@@ -4445,11 +4599,11 @@ export class Runtime {
       'process',
       'Buffer',
       '__substrateReplScope',
-      // The REPL's free names are its process's global's, as a Node REPL's are its context's (ADR-0015 §3): the
-      // module scope's `with` object leaves its own require, console, process and Buffer to these parameters, and its
-      // engine-named locals to the generator.
+      // The REPL's free names are its process's global's, as a Node REPL's are its context's: on a kernel the realm's;
+      // off one, the module scope's `with` object leaves its own require, console, process and Buffer to these
+      // parameters, and its engine-named locals to the generator (ADR-0015 §3).
       `var __substrateReplCode, __substrateReplResult;
-with (__substrateReplScope) while (true) {
+${__substrateOwnsRealm(process) ? '' : 'with (__substrateReplScope) '}while (true) {
   __substrateReplCode = yield;
   try {
     __substrateReplResult = eval(__substrateReplCode);
@@ -4458,7 +4612,7 @@ with (__substrateReplScope) while (true) {
     yield { value: undefined, error: e };
   }
 }`
-    )(require, consoleWrapper, process, buffer, __substrateGuestScopes(process).withModule);
+    )(require, consoleWrapper, process, buffer, __substrateOwnsRealm(process) ? undefined : __substrateGuestScopes(process).withModule);
     replGen.next(); // prime the generator
 
     return {
