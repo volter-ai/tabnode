@@ -352,11 +352,6 @@ export function publishSignalDisposition(processObject: object, signal: number, 
   if (typeof pid === 'number') registryFor(token).disposition?.(pid, signal, handled);
 }
 
-/** Whether `caller`'s registry is a kernel's, whose kill reaches every image of a pid, not only this realm's runs. */
-export function signalsThroughKernel(caller: ProcessToken | null): boolean {
-  return registryFor(caller).kernel === true;
-}
-
 /** `kill(pid, signal)` by `caller` to another live process; whether one took it. */
 export function signalPid(pid: number, signal: string, caller: ProcessToken | null): boolean {
   return registryFor(caller).signal(pid, signal);

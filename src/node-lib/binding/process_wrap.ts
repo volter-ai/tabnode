@@ -1,630 +1,115 @@
-import { processCredentialsOf, copyProcessCredentials, spawnedProcessCredentials, type ProcessCredentials } from '../../process-credentials';
 /**
- * `internalBinding('process_wrap')`: one run of the engine, seen as libuv sees
- * a child process.
- *
- * libuv's `uv_spawn` starts a program with its descriptors already wired and
- * answers through `onexit` when it ends; `uv_process_kill` ends it. That is
- * the whole of what `internal/child_process.js` asks of a process, and it is
- * the whole of this file. Nothing here knows about `ChildProcess`, `stdio`
- * streams, `exec`'s buffering, `fork`'s IPC protocol or what a signal means:
- * those are Node's own and are vendored.
- *
- * What the engine already did for a spawned command stays and becomes this
- * file's implementation, through the one door the engine's process model
- * installs below: the routing of a command to the engine's `node`, to a
- * program the page registered, to a WALI pack, or to the shell. A `pipe`
- * stdio entry is paired with an end of its own here, so the child's writes to
- * fd 1 are reads on the parent's handle and the parent's writes to the stdin
- * handle are the child's fd 0 -- which is what a `uv_stdio_container_t` with
- * `UV_CREATE_PIPE` is. In a process with socket calls each entry is what
- * libuv makes it in the parent's kernel table (a socketpair, the parent's
- * descriptor, /dev/null) and the child is started with them at its numbers
- * (ADR-0010).
+ * `internalBinding('process_wrap')`: Node's src/process_wrap.cc (Node v24.21.0) over the program's uv_spawn
+ * (ADR-0018 §3, §6). A `Process` is a HandleWrap whose uv_process_t is native/node's (process_wrap.c); `spawn` reads
+ * its arguments as V8's half of Node's Spawn reads them, into one record the C turns into uv_process_options_t and
+ * spawns on the process's loop; `kill` is uv_process_kill; libuv's exit callback calls `onexit` with the exit status
+ * and the signal's name (`processExit`, an import of the program's), and the C then closes the callback's scope.
+ * Everything else, what a stdio entry is, a child's pipes, how a child is found and started, is libuv's.
  */
-import {
-  LibuvStreamWrap, WriteWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset, kPeer,
-} from './stream_wrap';
-import { kKernelBacked } from './kernel_stream';
-import { Pipe, constants as pipeConstants } from './pipe_wrap';
-import { nativeStreamFor } from '../../native-stream-binding';
-import { UV_EACCES, UV_EBADF, UV_ENOENT, UV_ESRCH, UV_EPERM, UV_EINVAL } from './uv';
-import { traceReadingRequested, traceOutput } from '../../trace-output';
-import {
-  registerHandle, refHandle, unrefHandle, handleHasRef, releaseHandle, __adoptHandle, observeNodeHandle, nodeHandleHasRef, nodeHandleIsInitialized,
-  ownerOf, ownerOfInstance, invokeOwned, type OwnedHandle,
-} from './handles';
-import { __runFor, type ProcessToken } from '../../process-tokens';
-import { withGuestCallback, queueBindingTask } from '../../guest-loop';
-import { handleForFd } from './fds';
-import { callingSockets, callingTree, type TreeSockets } from '../../host-sockets';
-import { treeDescriptorsOf } from '../../tree-descriptors';
-import { prepareChildStdio, type ChildStdioEntry, type PreparedChildStdio } from './child_stdio';
-import { descriptorWriter, type DescriptorWriter } from './fs';
-import { TTY, type TerminalState } from './tty_wrap';
-import { setTimeout, clearTimeout } from '../../system';
+import { CRecord, address, libnode } from '../../libnode';
+import { HandleWrap, uvStreamOf, kHandle } from './handle_wrap';
+import { startHandle, stopHandle, invokeOwned } from './handles';
 
-/** One entry of Node's `options.stdio`, as `getValidStdio` builds it. */
-export interface StdioEntry {
-  type: 'pipe' | 'overlapped' | 'ignore' | 'inherit' | 'fd' | 'wrap';
-  handle?: LibuvStreamWrap;
-  fd?: number;
-  ipc?: boolean;
-  readable?: boolean;
-  writable?: boolean;
-}
-
-/** Node24.21 src/process_wrap.cc's flags; these are not libuv's bit values. */
+/** process_wrap.cc:57-62's flags, as lib/internal/child_process.js passes them. */
 export const constants = Object.freeze({
   kProcessFlagDetached: 1 << 0,
   kProcessFlagWindowsHide: 1 << 1,
   kProcessFlagWindowsVerbatimArguments: 1 << 2,
 });
 
-/** What the engine's process runner receives after decoding the native call. */
-export interface ProcessSpawnOptions {
-  file: string;
-  args?: string[];
-  cwd?: string;
-  envPairs?: string[];
-  stdio: StdioEntry[];
-  detached?: boolean;
-  windowsHide?: boolean;
-  uid?: number;
-  gid?: number;
-}
+/** process_wrap.c's `struct process_spawn` (44 bytes) and `struct process_stdio` (12), field by field. */
+const SPAWN = { file: 0, args: 4, cwd: 8, env: 12, stdio: 16, stdioCount: 20, flags: 24, setUid: 28, uid: 32, setGid: 36, gid: 40, bytes: 44 };
+const STDIO = { type: 0, fd: 4, stream: 8, bytes: 12 };
+/** process_wrap.c's stdio types, by the string ParseStdioOptions compares `type` with. */
+const STDIO_TYPE = { ignore: 0, pipe: 1, overlapped: 2, wrap: 3, fd: 4 };
 
-/** The channel a forked child is started with, at the descriptor it is told. */
-export interface RunChannel {
-  /** The number the child's `NODE_CHANNEL_FD` names. */
-  fd: number;
-  /** The child's end of the channel, which its own `Pipe.open(fd)` finds. */
-  pipe: Pipe;
-  /** `json` or `advanced`, as `NODE_CHANNEL_SERIALIZATION_MODE` says. */
-  serialization: string;
-}
+/** V8's IsInt32 and IsUint32: a Number whose value is one, -0 not. */
+const isInt32 = (value: unknown): value is number => typeof value === 'number' && (value | 0) === value && !Object.is(value, -0);
+const isUint32 = (value: unknown): value is number => typeof value === 'number' && value >>> 0 === value && !Object.is(value, -0);
+/** Utf8Value's string: V8's ToString, which a Symbol refuses. */
+const text = (value: unknown): string => typeof value === 'string' ? value : `${value as string}`;
+/** A CHECK of Node's that the call's values do not meet. */
+const check = (what: string): Error => new TypeError(`CHECK(${what}) failed`);
 
-/** What the binding asks the engine's process model to run. */
-export interface RunRequest {
-  /** A snapshot of the actual spawning process, not its mutable guest getter methods. */
-  credentials: Readonly<ProcessCredentials>;
-  /** Present only for an explicit spawn uid/gid declaration; passed to new-child admission. */
-  runAs?: Readonly<ProcessCredentials>;
-  /** The run whose `Process` handle spawns it: its parent (the handle's NodeLibScope's process), or null for none. */
-  owner: ProcessToken | null;
-  /** The program, as the caller named it: a path, a name, or the shell. */
-  file: string;
-  /** argv, the file first, as Node builds it. */
-  args: string[];
-  cwd?: string;
-  env: Record<string, string>;
-  detached: boolean;
-  /**
-   * Where the child's fd 1 goes; null where nothing reads it. A pipe is a
-   * byte stream: a chunk the child wrote as bytes arrives as those bytes, and
-   * text only where the program that ran it produced text.
-   */
-  stdout: ((chunk: string | Uint8Array) => void) | null;
-  /** Where the child's fd 2 goes; null where nothing reads it. */
-  stderr: ((chunk: string | Uint8Array) => void) | null;
-  /**
-   * True when fd 2 is a pipe the parent holds. A run that ends uncaught or
-   * with a nonzero `process.exit` on that pipe writes one receipt to the
-   * host realm's console, because the parent may never read the pipe — the
-   * tab's extension host dies this way, its stderr going into `@vscode/spdlog`
-   * which does not load. Inherit and the host's own stdio are false.
-   */
-  stderrIsPipe: boolean;
-  /** True when the child's fd 0 is a pipe whose writer has not closed. */
-  stdinIsPipe: boolean;
-  terminal?: TerminalState;
-  /** The IPC channel the child is started with, where it has one. */
-  channel?: RunChannel;
-  /**
-   * The child's pipes past fd 2 (`stdio: [..., 'pipe', 'pipe']`), each at the
-   * number the child reads or writes it by, with the child's end of it.
-   */
-  descriptors: { fd: number; pipe: Pipe }[];
-  /**
-   * The child's descriptors as its own process is started with them, where the spawning process has socket calls
-   * (ADR-0010 §1): each `fd` of the child's table is the parent's descriptor `from` (a socketpair's child end, an
-   * inherited or named descriptor, a stream's, /dev/null), which the child's fork copies. Empty where the process has
-   * none.
-   */
-  kernelDescriptors: { fd: number; from: number }[];
-  /**
-   * The child is started as its own process with `kernelDescriptors` (a host runs it, ADR-0010 §2): called by the
-   * runner once the child is forked and before anything of it reaches its host. Each of its fds 0 to 2 and each pipe end
-   * made for it becomes blocking, and the parent closes its copies of what it made for the child, so it serves none of
-   * them. Absent where `kernelDescriptors` is empty.
-   */
-  handOver?(): void;
-  /** Called once, when the run has ended. */
-  exit(code: number, signal: string | null): void;
-}
+export class Process extends HandleWrap {
+  declare onexit: ((exitCode: number, signalCode: string) => void) | null;
+  /** Set where uv_spawn answered 0, as Spawn sets it on the object. */
+  declare pid: number;
 
-/** One run in flight, as the engine's process model hands it back. */
-export interface StartedRun {
-  /** The run's own name, so a handle it holds is counted as its own. */
-  token: ProcessToken | null;
-  /** The run's process number, made at its fork, which is what its own `process.pid` reports. */
-  pid: number;
-  /** libuv's `uv_process_kill`: 0, or `UV_ESRCH` for a run already over. */
-  kill(signal: string): number;
-  /** Bytes the parent wrote to the child's fd 0. */
-  writeStdin(bytes: Uint8Array): void | Promise<void>;
-  /** The parent closed the child's fd 0. */
-  endStdin(): void;
-  /**
-   * The parent's handle on this child was ref'd or unref'd. A child another runs (a host's program) is waited for by
-   * that host on the parent's behalf, and only while the handle is ref'd: `unref()` is how a program stops waiting.
-   */
-  setRef?(held: boolean): void;
-}
-
-/**
- * The engine's process model, installed by `initChildProcess`. Until it is
- * there is no engine to run anything, and a spawn answers `ENOENT`, which is
- * what a machine carrying no such program answers.
- */
-export interface ProcessRunner {
-  /** Whether the engine has a program under this name at all. */
-  resolves(request: RunRequest): boolean;
-  start(request: RunRequest): StartedRun;
-}
-
-let runner: ProcessRunner | null = null;
-
-/** The engine's process model takes this door once, when the VFS is known. */
-export function setProcessRunner(next: ProcessRunner): void {
-  runner = next;
-}
-
-let nextAsyncId = 1;
-
-/** `envPairs` is `KEY=value` strings; the engine's shell takes a record. */
-function environmentOf(envPairs: string[] | undefined): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const pair of envPairs ?? []) {
-    const at = pair.indexOf('=');
-    if (at <= 0) continue;
-    env[pair.slice(0, at)] = pair.slice(at + 1);
-  }
-  return env;
-}
-
-/** A signal named by number, as the name libuv reports for it. */
-const signalNames: Record<number, string> = {
-  1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 6: 'SIGABRT', 9: 'SIGKILL',
-  10: 'SIGUSR1', 12: 'SIGUSR2', 13: 'SIGPIPE', 14: 'SIGALRM', 15: 'SIGTERM',
-};
-function signalNameOf(signal: number | string): string {
-  if (typeof signal === 'string') return signal;
-  return signalNames[signal] ?? 'SIGTERM';
-}
-
-/**
- * The directory a child starts in when the caller named none: its parent's.
- * `execve` keeps the calling process's working directory, and Node's `fork`
- * passes no `cwd` at all -- `fork('./child.js')` from a program running in
- * `/work` means `/work/child.js`, and resolved against the engine's shell's
- * own root it meant `/child.js` and a child that exited 1.
- */
-// A shared realm's process global is whichever guest ran last. The spawning
-// handle belongs to the parent: inherited stdio and cwd must come from that
-// parent's process, even while a sibling starts or exits. A failed fork was
-// replaying stderr into its own closed IPC-backed stream (write EBADF).
-function parentProcess(token: ProcessToken | null) {
-  return token !== null ? __runFor(token)?.process
-    : (globalThis as unknown as { process?: { cwd?: () => string; stdout?: { write(chunk: string | Uint8Array): unknown }; stderr?: { write(chunk: string | Uint8Array): unknown } } }).process;
-}
-
-function spawningDirectory(token: ProcessToken | null): string | undefined {
-  const realm = parentProcess(token);
-  if (typeof realm?.cwd !== 'function') return undefined;
-  try { return realm.cwd(); } catch { return undefined; }
-}
-
-/**
- * Where an `inherit` entry's bytes go: the spawning program's own stream. An entry that names a descriptor by
- * number is the same thing said another way, and `stdio: 'inherit'` is said that way: Node's
- * `stdioStringToArray` turns the string into `[0, 1, 2]`, which `getValidStdio` hands on as `{ type: 'fd' }`.
- * The synchronous binding asks here too, so a child's bytes go where they go whichever call started it.
- */
-export function inheritedWriter(fd: number, token: ProcessToken | null): DescriptorWriter | null {
-  // a descriptor of the parent's own (a log file it opened) is written as the file
-  if (fd !== 1 && fd !== 2) return descriptorWriter(fd);
-  // Inherit the descriptor's original sink, not a guest replacement of
-  // process.stderr.write (a child commonly redirects its console over IPC).
-  if (token !== null) {
-    const parent = __runFor(token);
-    return (fd === 1 ? parent?.stdout : parent?.stderr) ?? null;
-  }
-  const realm = parentProcess(token);
-  const stream = fd === 1 ? realm?.stdout : realm?.stderr;
-  if (!stream || typeof stream.write !== 'function') return null;
-  return (chunk: string | Uint8Array) => {
-    try { stream.write(chunk); } catch { /* a stream that refuses still lets the child run */ }
-  };
-}
-
-/**
- * libuv's `uv_process_t`.
- *
- * The handle registers with the run that made it, as every handle here does,
- * so a parent waiting on a child is not idle: Node's loop holds a process
- * handle exactly that way, and `unref()` is how a program gives it up.
- */
-const credentialsByHandle = new WeakMap<object, Readonly<ProcessCredentials>>();
-
-export class Process implements OwnedHandle {
-  /** Set by `internal/child_process.js`; the only way an end is reported. */
-  onexit: ((exitCode: number, signalCode: string | null) => void) | null = null;
-  /**
-   * A process that never started has no pid, and `ChildProcess` copies this
-   * one straight onto itself: a child whose `spawn` answered `ENOENT` reports
-   * `pid === undefined`, as Node's does, rather than a number naming nothing.
-   */
-  pid: number | undefined = undefined;
-
-  private run: StartedRun | null = null;
-  private ended = false;
-  private closed = false;
-  /** The stdio entries this run was started with, and their far ends. */
-  private stdio: StdioEntry[] = [];
-  /** The child's ends this handle holds by number where they are no pairing's peer: a terminal's, a kernel channel's. */
-  private farEnds = new Map<number, TTY | Pipe>();
-  /** Writers holding their own reference to a parent's description (fd stdio), released at the child's end. */
-  private heldDescriptions: DescriptorWriter[] = [];
-  /** The child's stdio made in the parent's kernel table (ADR-0010 §1), where the process has socket calls. */
-  private prepared: PreparedChildStdio | undefined;
-  /** The file this process was spawned from, for the instrument below. */
-  private spawned = '';
-  private readonly asyncId = nextAsyncId++;
-
+  /** ProcessWrap's constructor (process_wrap.cc:110-116): its uv_process_t, marked uninitialized. */
   constructor() {
-    registerHandle(this);
+    super(libnode().exports.tabnode_process_new(), false, false);
   }
 
-  getAsyncId(): number {
-    return this.asyncId;
-  }
-
-  ref(): void {
-    if (!nodeHandleIsInitialized(this)) return;
-    refHandle(this);
-    this.run?.setRef?.(true);
-  }
-
-  unref(): void {
-    if (!nodeHandleIsInitialized(this)) return;
-    unrefHandle(this);
-    this.run?.setRef?.(false);
-  }
-
-  hasRef(): boolean {
-    return nodeHandleHasRef(this);
-  }
-
-  /**
-   * libuv's `uv_spawn`. Answers 0 for a run that started and a `UV_*` code for
-   * one that could not, which is what `ChildProcess.prototype.spawn` turns
-   * into an `error` event or a throw.
-   */
-  spawn(file: string, args: string[] | undefined, cwd: string | undefined,
-    envPairs: string[] | undefined, stdio: StdioEntry[], flags: number,
-    uid?: number, gid?: number): number {
-    const options: ProcessSpawnOptions = {
-      file, args, cwd, envPairs, stdio, uid, gid,
-      detached: (flags & constants.kProcessFlagDetached) !== 0,
-      windowsHide: (flags & constants.kProcessFlagWindowsHide) !== 0,
-    };
-    if (!runner) return UV_ENOENT;
-    const parentCredentials = credentialsByHandle.get(this) ?? copyProcessCredentials();
-    let credentials: Readonly<ProcessCredentials>;
-    try { credentials = spawnedProcessCredentials(parentCredentials, uid, gid); }
-    catch (cause) { return (cause as { code?: string })?.code === 'EPERM' ? UV_EPERM : UV_EINVAL; }
-    const env = environmentOf(options.envPairs);
-    this.stdio = options.stdio ?? [];
-    this.spawned = options.file;
-
-    // The spawning process's socket calls: where it has them its descriptors are a kernel's, and the child's stdio is
-    // made in its table as libuv makes it, by the preparation spawnSync shares.
-    const sockets = callingSockets();
-    if (sockets) {
-      const entries = Array.from({ length: Math.max(3, this.stdio.length) }, (_, index) => childStdioEntryOf(this.stdio[index], index));
-      const prepared = prepareChildStdio(entries, sockets, treeDescriptorsOf(callingTree()));
-      if (typeof prepared === 'number') return prepared;
-      this.prepared = prepared;
+  /** ProcessWrap::Spawn (process_wrap.cc:193-342), the arguments in its order: file, args, cwd, envPairs, stdio, flags, uid, gid. */
+  spawn(file: unknown, args: unknown, cwd: unknown, envPairs: unknown, stdio: unknown, flags: unknown, uid?: unknown, gid?: unknown): number {
+    if (typeof file !== 'string') throw check('args[0]->IsString()');
+    const record = new CRecord(SPAWN.bytes);
+    record.pointer(SPAWN.file, record.string(file));
+    if (uid !== undefined && uid !== null) {
+      if (!isInt32(uid)) throw check('uid_v->IsInt32()');
+      record.int32(SPAWN.setUid, 1);
+      record.int32(SPAWN.uid, uid);
     }
-    const request: RunRequest = {
-      credentials,
-      ...(uid != null || gid != null ? { runAs: credentials } : {}),
-      owner: ownerOfInstance(this),
-      file: options.file,
-      args: options.args ?? [options.file],
-      cwd: options.cwd ?? spawningDirectory(ownerOf(this)),
-      env,
-      detached: options.detached === true,
-      stdout: null,
-      stderr: null,
-      stderrIsPipe: false,
-      stdinIsPipe: false,
-      descriptors: [],
-      kernelDescriptors: this.prepared ? this.prepared.placed.map(each => ({ ...each })) : [],
-      ...(this.prepared ? { handOver: () => { this.handOver(); } } : {}),
-      exit: (code, signal) => { this.reportExit(code, signal); },
-    };
-
-    let stdinFar: LibuvStreamWrap | null = null;
-    for (let index = 0; index < this.stdio.length; index += 1) {
-      const entry = this.stdio[index];
-      if (!entry) continue;
-      if (index < 3 && !entry.ipc) {
-        const descriptor = entry.type === 'fd' || entry.type === 'inherit'
-          ? handleForFd(entry.fd ?? index) : entry.handle;
-        if (descriptor instanceof TTY && descriptor.slave) {
-          // Inherit an independent descriptor reference, never the parent's
-          // wrapper. Failed spawn and child exit release only this copy.
-          const inherited = descriptor.duplicate();
-          __adoptHandle(inherited, null);
-          this.farEnds.set(index, inherited);
-          request.terminal = inherited.terminal;
-          if (index === 0) { stdinFar = inherited; request.stdinIsPipe = true; }
-          else if (index === 1) request.stdout = chunk => this.toPipe(index, chunk);
-          else request.stderr = chunk => this.toPipe(index, chunk);
-          continue;
-        }
-      }
-      const far = this.pairFarEnd(entry, index, sockets);
-      if (typeof far === 'number') {
-        this.closeFarEnds();
-        return far;
-      }
-      if (entry.ipc) {
-        if (far) {
-          request.channel = {
-            fd: index,
-            pipe: far,
-            serialization: env.NODE_CHANNEL_SERIALIZATION_MODE || 'json',
-          };
-        }
-        continue;
-      }
-      if (index === 0) {
-        stdinFar = far;
-        request.stdinIsPipe = far !== null;
-        continue;
-      }
-      if (index > 2) {
-        // A pipe past fd 2 is the child's too, at its own number: libuv
-        // hands a child every `UV_CREATE_PIPE` entry, not only stdio's three.
-        if (far) request.descriptors.push({ fd: index, pipe: far });
-        continue;
-      }
-      if (far) {
-        const to = index;
-        const write = (chunk: string | Uint8Array): void => { this.toPipe(to, chunk); };
-        if (index === 1) request.stdout = write;
-        else {
-          request.stderr = write;
-          request.stderrIsPipe = true;
-        }
-      } else if (entry.type === 'inherit' || entry.type === 'fd') {
-        const inherited = inheritedWriter(entry.fd ?? index, ownerOf(this));
-        // A descriptor the caller names and does not hold fails the spawn (`spawn EBADF`), as libuv's does; in a
-        // process with socket calls the kernel has answered that already (`prepareChildStdio`).
-        if (inherited === null && (entry.fd ?? index) > 2 && !sockets) {
-          this.closeFarEnds();
-          return UV_EBADF;
-        }
-        if (inherited?.release) this.heldDescriptions.push(inherited);
-        if (index === 1) request.stdout = inherited;
-        else request.stderr = inherited;
-      }
+    if (gid !== undefined && gid !== null) {
+      if (!isInt32(gid)) throw check('gid_v->IsInt32()');
+      record.int32(SPAWN.setGid, 1);
+      record.int32(SPAWN.gid, gid);
     }
-
-    // Node marks the process wrap initialized after the native spawn attempt,
-    // including ENOENT; ChildProcess closes it from its existing error turn.
-    observeNodeHandle(this);
-    if (!runner.resolves(request)) {
-      // An unresolved spawn reports ENOENT; tracing retains the original request.
-      if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-not-resolved', at: Date.now(), file: request.file, args: request.args?.slice(0, 4), cwd: request.cwd ?? null });
-      this.closeFarEnds();
-      return UV_ENOENT;
-    }
-
-    try { this.run = runner.start(request); }
-    catch (cause) {
-      this.closeFarEnds();
-      const code = (cause as { code?: string })?.code;
-      // Keep the runner's refusal detail in the trace before mapping its errno.
-      if (traceReadingRequested()) traceOutput('[boot-trace]', { event: 'spawn-start-refused', at: Date.now(), file: request.file, args: request.args?.slice(0, 6), cwd: request.cwd ?? null, code: code ?? null, message: cause instanceof Error ? cause.message.slice(0, 300) : String(cause).slice(0, 300), stack: cause instanceof Error ? (cause.stack ?? '').split('\n').slice(0, 8).join(' | ') : null });
-      if (code === 'EPERM') return UV_EPERM;
-      if (code === 'EINVAL') return UV_EINVAL;
-      if (code === 'EACCES') return UV_EACCES;
-      throw cause;
-    }
-    // Reference changes after initialization also govern the owned child run.
-    if (!handleHasRef(this)) this.run.setRef?.(false);
-    // Forked, the child holds its own copies of what was made for it.
-    this.prepared?.closeMade();
-    // The number the parent reads off the handle is the child's own
-    // `process.pid`, made at its fork, as it is in Node.
-    this.pid = this.run.pid;
-    // A child that reads its own fd 0 was handed its end at its hand-over, which closed it here.
-    if (stdinFar && !stdinFar.closed) this.readStdinFrom(stdinFar);
-    return 0;
-  }
-
-  /**
-   * libuv's `uv_process_kill`: the run ends, or it was over already. Signal 0
-   * is the question "is it still there?", which kills nothing and answers 0
-   * for a run in flight and `ESRCH` for one that has ended.
-   */
-  kill(signal: number | string): number {
-    if (this.ended || !this.run) return UV_ESRCH;
-    if (signal === 0) return 0;
-    return this.run.kill(signalNameOf(signal));
-  }
-
-  close(callback?: () => void): void {
-    if (!this.closed) {
-      this.closed = true;
-      releaseHandle(this, true, 1);
-    }
-    if (callback) queueBindingTask(() => withGuestCallback(callback));
-  }
-
-  /**
-   * The other half of a `pipe` entry: the end the child holds. It belongs to
-   * no run -- the parent holds the handle Node gave it and the child holds the
-   * one it opens; this is the wire between them. In a process with socket
-   * calls it is the other end of a `socketpair` in the parent's table, which
-   * the child's fork copies (uv_spawn's `UV_CREATE_PIPE`), whether the entry
-   * is stdio or IPC; a failure to make it is the spawn's.
-   */
-  private pairFarEnd(entry: StdioEntry, index: number, sockets: TreeSockets | undefined): Pipe | number | null {
-    if (entry.type !== 'pipe' && entry.type !== 'overlapped') return null;
-    if (!entry.handle) return null;
-    const ends = this.prepared?.take(index);
-    if (ends && sockets && entry.handle instanceof Pipe) {
-      // Node's handle opens the parent's end and the far end the child's (uv__process_open_stream).
-      const far = entry.ipc ? new Pipe(pipeConstants.IPC) : Pipe.forDescriptor();
-      __adoptHandle(far, null);
-      this.farEnds.set(index, far);
-      const opened = entry.handle.open(ends.parent);
-      if (opened !== 0) { sockets.close(ends.parent); sockets.close(ends.child); return opened; }
-      const status = far.open(ends.child);
-      if (status !== 0) { sockets.close(ends.child); return status; }
-      return far;
-    }
-    const far = new Pipe(entry.ipc ? pipeConstants.IPC : pipeConstants.SOCKET);
-    __adoptHandle(far, null);
-    LibuvStreamWrap.pair(entry.handle, far);
-    return far;
-  }
-
-  /**
-   * The child is its own process, started with its kernel descriptors (ADR-0010 §2): its fds 0 to 2 and each pipe end
-   * made for it are made blocking, then the parent closes the ends it made for the child, whose fork holds its own
-   * copies, as libuv's parent closes a child's end after the fork.
-   */
-  private handOver(): void {
-    this.prepared?.makeBlocking();
-    for (const far of this.farEnds.values()) if (far instanceof Pipe && far[kKernelBacked]) far.close();
-  }
-
-  /** The far end of fd `index`, whoever holds it now. */
-  private farEndAt(index: number): LibuvStreamWrap | null {
-    return this.farEnds.get(index) ?? this.stdio[index]?.handle?.[kPeer] ?? null;
-  }
-
-  private closeFarEnds(): void {
-    // The child's own references to the parent's descriptions it wrote (fd stdio) end with it.
-    for (const writer of this.heldDescriptions.splice(0)) writer.release?.();
-    this.prepared?.closeAll();
-    for (let index = 0; index < this.stdio.length; index += 1) {
-      const far = this.farEndAt(index);
-      if (!far) continue;
-      try { far.close(); } catch { /* an end already closed is already given up */ }
-    }
-  }
-
-  /** The child wrote to fd `index`; the parent's handle reads it. */
-  private toPipe(index: number, chunk: string | Uint8Array): void {
-    const far = this.farEndAt(index);
-    if (!far || far.closed) return;
-    if (typeof chunk === 'string') far.writeUtf8String(new WriteWrap(), chunk);
-    else far.writeBuffer(new WriteWrap(), chunk);
-  }
-
-  /** Bytes the parent writes reach the child's fd 0; the parent's EOF ends it. */
-  private readStdinFrom(far: LibuvStreamWrap): void {
-    far.onread = (arrayBuffer: ArrayBuffer | null): void => {
-      const length = streamBaseState[kReadBytesOrError];
-      if (length <= 0 || arrayBuffer === null) { this.run?.endStdin(); return; }
-      const run = this.run;
-      const consumed = run?.writeStdin(new Uint8Array(arrayBuffer, streamBaseState[kArrayBufferOffset], length).slice());
-      if (consumed) {
-        far.readStop();
-        void consumed.then(() => {
-          if (this.run === run && !this.ended && !far.closed) far.readStart();
-        }, () => {
-          // A stopped receiver closes its input pipe. Do not resume a reader
-          // or deliver its queued bytes to a later run.
-          if (this.run === run && !this.ended) { far.close(); run?.endStdin(); }
-        });
+    if (Array.isArray(args)) record.pointer(SPAWN.args, record.strings(Array.from(args, text)));
+    if (typeof cwd === 'string') record.pointer(SPAWN.cwd, record.string(cwd));
+    if (Array.isArray(envPairs)) record.pointer(SPAWN.env, record.strings(Array.from(envPairs, text)));
+    if (!Array.isArray(stdio)) throw Object.assign(new TypeError('options.stdio must be an array'), { code: 'ERR_INVALID_ARG_TYPE' });
+    const entries = record.room(stdio.length * STDIO.bytes);
+    stdio.forEach((entry: { type?: unknown; handle?: unknown; fd?: unknown }, index) => {
+      const at = entries + index * STDIO.bytes;
+      const type = entry.type;
+      if (type === 'ignore') record.int32(at + STDIO.type, STDIO_TYPE.ignore);
+      else if (type === 'pipe' || type === 'overlapped' || type === 'wrap') {
+        record.int32(at + STDIO.type, STDIO_TYPE[type]);
+        record.uint32(at + STDIO.stream, uvStreamOf(entry.handle));
+      } else {
+        const fd = entry.fd;
+        if (typeof fd !== 'number') throw check('fd_value->IsNumber()');
+        record.int32(at + STDIO.type, STDIO_TYPE.fd);
+        record.int32(at + STDIO.fd, fd | 0);
       }
-    };
-    far.readStart();
+    });
+    record.pointer(SPAWN.stdio, entries);
+    record.uint32(SPAWN.stdioCount, stdio.length);
+    if (!isUint32(flags)) throw check('args[5]->IsUint32()');
+    record.uint32(SPAWN.flags, flags);
+
+    const { exports } = libnode();
+    const options = record.commit();
+    let err: number;
+    try { err = exports.tabnode_process_spawn(this[kHandle], options); }
+    finally { record.free(); }
+    this.markAsInitialized();
+    if (err === 0) {
+      this.pid = exports.tabnode_process_pid(this[kHandle]);
+      startHandle(this);
+    }
+    return err;
   }
 
-  /**
-   * The run has ended. The child's ends of the pairings close, so the parent's
-   * streams read EOF as they do when a real child's descriptors go, and
-   * `onexit` fires once, after them: Node's `flushStdio` runs on the tick
-   * after `onexit` and must find the bytes already delivered.
-   */
-  private reportExit(code: number, signal: string | null): void {
-    if (this.ended) return;
-    this.ended = true;
-    this.closeFarEnds();
-    this.run = null;
-    invokeOwned(this, 'onexit', code, signal);
-    this.sayLateClose();
-  }
-
-  /**
-   * An instrument. Node emits a child's `close` once it has exited and each of its piped stdio streams has closed
-   * (lib/internal/child_process.js `maybeClose`: `_closesGot === _closesNeeded`), which here follows the far ends
-   * closing above. A parent's pipe that has still not read end-of-file a moment after the exit is what keeps
-   * `close` back (a World's `up` waited 507 ms on a fallback timer for it, Cal run 49); this says which pipe, and
-   * what still holds its other end. It changes nothing.
-   */
-  private sayLateClose(): void {
-    const file = this.spawned;
-    const entries = this.stdio;
-    const timer = setTimeout(() => {
-      const late: unknown[] = [];
-      entries.forEach((entry, index) => {
-        if (index === 0 || (entry.type !== 'pipe' && entry.type !== 'overlapped') || !entry.handle) return;
-        const handle = entry.handle as unknown as { closed?: boolean; reading?: boolean; eofDelivered?: boolean; streamEndpoint?: { eof?: boolean; inbound?: unknown[]; peer?: { handles?: { size: number } } | null } };
-        if (handle.closed || handle.eofDelivered) return;
-        late.push({ fd: index, native: nativeStreamFor(entry.handle as never) !== undefined, reading: handle.reading === true, endOfFileQueued: handle.streamEndpoint?.eof === true,
-          unread: handle.streamEndpoint?.inbound?.length ?? null, otherEndHeldBy: handle.streamEndpoint?.peer ? handle.streamEndpoint.peer.handles?.size ?? null : 0 });
-      });
-      if (late.length > 0) traceOutput("[boot-trace]", { event: 'child-close-late', at: Date.now(), file, stdio: entries.map((entry) => entry.type), late });
-    }, 100);
-    (timer as { unref?: () => void }).unref?.();
+  /** ProcessWrap::Kill (process_wrap.cc:344-360): the signal as V8's Int32Value takes it. */
+  kill(signal: unknown): number {
+    const number = +(signal as number) | 0;
+    return libnode().exports.tabnode_process_kill(this[kHandle], number);
   }
 }
 
 /**
- * Node's stdio entry for the child's fd `index`, as the shared preparation reads it: an engine pty's slave is the
- * engine's terminal, not the kernel's, and is given nothing here.
+ * The program's `process_exit` (engine.h): ProcessWrap::OnExit (process_wrap.cc:362-378), its `onexit` made as
+ * MakeCallback makes it, with the exit status and the signal's name (OneByteString of signo_string), after libuv has
+ * stopped the handle (uv__wait_children).
  */
-function childStdioEntryOf(entry: StdioEntry | undefined, index: number): ChildStdioEntry {
-  if (!entry) return index < 3 ? { type: 'ignore' } : { type: 'none' };
-  if (index < 3 && !entry.ipc) {
-    const descriptor = entry.type === 'fd' || entry.type === 'inherit' ? handleForFd(entry.fd ?? index) : entry.handle;
-    if (descriptor instanceof TTY && descriptor.slave) return { type: 'none' };
-  }
-  switch (entry.type) {
-    case 'pipe': case 'overlapped': return entry.handle instanceof Pipe ? { type: 'pipe' } : { type: 'none' };
-    case 'inherit': case 'fd': return { type: 'inherit', fd: entry.fd ?? index };
-    case 'wrap': return { type: 'stream', handle: entry.handle };
-    case 'ignore': return { type: 'ignore' };
-  }
-}
-
-/** NodeLibScope supplies the parent even for a Runtime without a named run token. */
-export function createProcessBinding(parent: object): { Process: typeof Process; constants: typeof constants } {
-  class ScopedProcess extends Process {
-    constructor() { super(); credentialsByHandle.set(this, processCredentialsOf(parent)); }
-  }
-  Object.defineProperty(ScopedProcess, 'name', { value: Process.name, configurable: true });
-  return { Process: ScopedProcess, constants };
+export function processExit(handle: number, exitStatus: number, signalAt: number, signalLength: number): void {
+  const wrap = HandleWrap.at(handle, Process);
+  const signal = signalLength === 0 ? '' : String.fromCharCode(...libnode().read(address(signalAt), signalLength));
+  stopHandle(wrap);
+  invokeOwned(wrap, 'onexit', exitStatus, signal);
 }
 
 export default { Process, constants };

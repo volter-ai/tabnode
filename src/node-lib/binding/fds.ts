@@ -67,19 +67,6 @@ export function allocateFd(): number {
   return nextFd++;
 }
 
-
-/** Record a descriptor a run is started with, under that run's name. */
-export function registerRunFd(token: ProcessToken, fd: number, type: HandleType, handle: unknown): void {
-  let table = runFds.get(token);
-  if (!table) { table = new Map(); runFds.set(token, table); }
-  table.set(fd, { type, handle });
-}
-
-/** A run that has ended was started with nothing. */
-export function releaseRunFds(token: ProcessToken): void {
-  runFds.delete(token);
-}
-
 /** Trusted process admission reads copies of this run's descriptor entries. */
 export function inheritedRunFds(token: ProcessToken): Array<{ fd: number; type: HandleType; handle: unknown }> {
   return Array.from(runFds.get(token) ?? [], ([fd, entry]) => ({ fd, ...entry }));
