@@ -2140,7 +2140,7 @@ const builtinModules: Record<string, unknown> = {
   rollup: rollupShim,
   v8: v8Shim,
   readline: readlineModule,
-  // Node's own `lib/tls.js` over node-deps.wasm (ADR-0016); a process's `tls` is its own graph's (loadNodeLibFor).
+  // Node's own `lib/tls.js` over libnode.so's OpenSSL (ADR-0016, ADR-0018 item 7); a process's `tls` is its own graph's (loadNodeLibFor).
   tls: lazyModule<Record<string, unknown>>('tls'),
   http2: http2Shim,
   cluster: clusterShim,

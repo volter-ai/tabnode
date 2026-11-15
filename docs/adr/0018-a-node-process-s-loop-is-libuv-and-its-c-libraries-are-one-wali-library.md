@@ -176,8 +176,9 @@ is built.
   continuation. So `libnode.so` takes libuv at a267f5688b or the first release with it, as browser-substrate
   ADR-0236 step 5 says, a difference from Node v24.21.0's `deps/uv` named here; musl's `posix_spawn` is then a clone
   with an entry, and the probe needs `CLONE_VM` to share the memory.
-- **Not read:** whether every library of §1 builds as Node configures it under the WALI SDK (ADR-0016 built OpenSSL
-  with wasi-sdk, not the WALI SDK).
+- **Not read:** whether every library of §1 builds as Node configures it under the WALI SDK. OpenSSL's and ncrypto's
+  build is written (`scripts/build-libnode.sh`, ADR-0016 §1) and not run: it takes browser-substrate's side-module
+  toolchain for its C++ runtime, and none was prepared on the machine it was written on.
 - **Read 2026-11-15, on the Node host (Node v26.12.0), Rallly's image (browser-substrate `rallly:3e63239`) booted on
   a clone of its disk:** `node` and `libnode.so` built by `scripts/build-libnode.sh` from Node v24.21.0's tarball with
   the substrate's prepared native SDK, placed in Rallly's app container (`/opt/programs/bin/node-libuv`,
@@ -407,11 +408,37 @@ keeps the engine's signals: a kill of one of its processes runs its listeners in
      as §5 says. It replaces the engine's own `crypto` (`src/shims/crypto*.ts`: `sha.js`, `@noble`, RSA in BigInt)
      whole; until it lands, `crypto` is the engine's and what it refuses stays refused (browser-substrate VO-3806,
      manager's ruling 2026-11-15).
+     - **OpenSSL and ncrypto are `libnode.so`'s** (ADR-0016 §1: Node's configuration and each difference, the legacy
+       provider built in, every library linked whole), and the OpenSSL half of Node's `src/crypto/crypto_*.cc` and
+       `node_constants.cc` is the `node` program's glue, one C++ file per file of Node's (`native/node/crypto_util.cc`,
+       `crypto_context.cc`, `crypto_cipher.cc`, `crypto_tls.cc`, `crypto_x509.cc`, `node_constants.cc`), as items 3 to 6
+       put each binding's libuv half in the program: a library of the image imports nothing outside `env`, `GOT` and
+       `wali` (browser-substrate `dynamic-loader.mjs`), so what calls the engine is the program's. The V8 half is the
+       engine's TypeScript over `src/node-lib/binding/openssl.ts` (ADR-0016 §3). The glue, ncrypto and every other C++
+       here take the WALI SDK's one C++ runtime, libc++ and libc++abi from browser-substrate's side-module toolchain
+       (its ADR-0231 §1); each module links what it uses of it, as a side module does.
+     - **The process's OpenSSL** is started once, at the bindings' first use, as Node's start and InitCryptoOnce start
+       it (ADR-0016 §2); its randomness, clock, configuration file and modules are the kernel's calls. Its constants
+       (`DefineCryptoConstants`) and `process.versions.openssl` (GetOpenSSLVersion) are read from the program. A realm
+       the host gives no `node` program has no OpenSSL, as a Node built without it.
+     - **Addons through `dlopen`.** `process.dlopen` is Node's DLOpen (`src/node_binding.cc`): the program's `dlopen`
+       of the file, musl's, so the loader places the addon in the process's image, its `env` imports bound by name to
+       the program's and the libraries' definitions (libuv's `uv_*` and OpenSSL's among them, which an addon reaches
+       in Node's executable), and its Node-API (`napi_*`, emnapi's `napi` and `emnapi` modules, browser-substrate
+       ADR-0231 §2) the engine's emnapi, as Node's executable defines Node-API over V8. That needs of the host what
+       the note below says; until it does, `process.dlopen` is ADR-0011's over `TREE_NATIVE`.
+     - **What Node's crypto then takes** (the rest of the item): Node's `lib/crypto.js` and `lib/internal/crypto/*`
+       vendored unchanged, over `internalBinding('crypto')` whose methods are the OpenSSL half of Node's
+       `crypto_hash.cc`, `crypto_hmac.cc`, `crypto_random.cc`, `crypto_keys.cc`, `crypto_sig.cc`, `crypto_x509.cc`,
+       `crypto_cipher.cc`, `crypto_keygen.cc`, `crypto_dh.cc`, `crypto_ec.cc`, `crypto_pbkdf2.cc`, `crypto_scrypt.cc`,
+       `crypto_hkdf.cc` and `crypto_util.cc` in the same files of `native/node`, their V8 halves the engine's; each
+       asynchronous job (CryptoJob) `uv_queue_work` on libuv's threadpool, its completion an engine import followed
+       by a drain, as items 3 to 6's callbacks; `src/shims/crypto*.ts` and their `sha.js`, `@noble` and BigInt RSA go
+       with it, in one change.
 
-
-**For the host** (browser-substrate `linux-node-engine.ts`, `linux-uv-waits.ts`, `linux-system.ts`, and the
-process's tree, `linux-virtual-filesystem.ts`, and its signals and process table, `linux-process.ts`), items 1 to 6,
-8 and 9 together:
+**For the host** (browser-substrate `linux-node-engine.ts`, `linux-uv-waits.ts`, `linux-system.ts`, the process's
+tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-process.ts`, and the recipe
+`programs/node/24.21.0`), items 1 to 9 together:
 - *The one hookup.* In its `bootstrap` import, before Node's library runs, the host calls Tabnode's
   `attachLibnode({ exports, read, write })` once: the program's exports, `read(at, length)`, a copy of the process's
   memory, and `write(at, bytes)`, bytes into it (a browser's APIs refuse a view of shared memory). A second call with
@@ -429,9 +456,12 @@ process's tree, `linux-virtual-filesystem.ts`, and its signals and process table
   `stream_connection(server, status)`, `stream_connected(id, status, readable, writable)`, `udp_received(handle, nread,
   base, name, flags)` (`name` a `tabnode_address_t`, 0 with an error), `udp_sent(id, status)`, `process_exit(handle,
   f64 exit status, signal name's address, its length)`, `signal_received(handle, signum)` (SignalWrap's callback, the
-  handle's `onsignal`), `fs_done(request)`, `fs_event(handle, filename, events,
-  status)` and `stat_watcher_change(handle, status)`. A handle is its address, a stream's or a socket's request its
-  number, an fs request its address.
+  handle's `onsignal`), `fs_done(request)`, `fs_event(handle, filename, events, status)` and
+  `stat_watcher_change(handle, status)`; and OpenSSL's callbacks, made inside an export call of the engine's and
+  followed by no drain: `tls_handshake(tls, done)`, `tls_keylog(tls, line, length)`, `tls_new_session(tls, id,
+  id_length, der, der_length)`, `tls_cert(tls, servername, length, ocsp) -> i32` and `tls_alpn(tls, protocols, length)
+  -> i32`. A handle is its address, a stream's or a socket's request its number, an fs request its address, a TLS
+  connection its TnSsl's address.
 - *The process's end* (item 9). The host answers none of `before_exit`, `emit_exit` and `exit_code`, and `loop_idle`
   and the system's `idle` are gone; it calls no `tabnode_exit`. Its `bootstrap` starts the run and does not wait for
   its end: where the realm's process is the program, `runNode`'s promise never settles. The process ends at the
@@ -479,6 +509,23 @@ process's tree, `linux-virtual-filesystem.ts`, and its signals and process table
   disposition is the default ends the process by that signal, which its parent's wait reads.
   `dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addchdir_np")` answers from `libc.so`, or a spawn with a `cwd` forks.
   inotify in the process's kernel answers `fs.watch`.
+  OpenSSL's seeding is `getrandom` (else `/dev/urandom`) and its clock `clock_gettime`; it reads `OPENSSL_CONF`'s
+  file or `/etc/ssl/openssl.cnf` where the image has one (a missing file is no error, as in Node), and a provider
+  module from `/usr/lib/ossl-modules` only where the configuration or `crypto.setFips` asks for one.
+- *The build* (`scripts/build-libnode.sh`): `<native SDK> <side-module toolchain> <libuv a267f5688b archive>
+  <node-v24.21.0.tar.gz> <out>`. The side-module toolchain is browser-substrate's (its ADR-0231: `include/c++/v1`,
+  `lib/libc++.a`, `lib/libc++abi.a`), so the recipe depends on it beside the native SDK, and Node's release archive
+  is an input (OpenSSL, ncrypto, `node_root_certs.h`, `node_constants.cc`). `libnode.so` exports the whole of
+  libuv, OpenSSL and ncrypto.
+- *Addons through `dlopen`* (item 7): the program's `dlopen` of a `.node` reaches the loader, which refuses a
+  library's import outside `env`, `GOT` and `wali` and binds `env` by name in the program and the libraries. An addon
+  the side-module toolchain builds imports emnapi's `napi` and `emnapi` modules and Node-API's `env` functions, which
+  are the engine's (emnapi's JavaScript, one module per load, `createNapiModule`). So the host provides: the loader
+  answers those imports, at that `dlopen`, from the engine (which registers, for the process's worker, what a load
+  of a path imports); the loader hands the engine the addon's instance once its constructors have run, so emnapi's
+  `init` calls `napi_register_wasm_v1` over it; and `attachLibnode` gives the engine the process's
+  `WebAssembly.Memory` and function table, which emnapi's views and dynamic calls read in place. `TREE_NATIVE` and
+  `linux-tree-native.ts` then go.
 
 ## Consequences
 

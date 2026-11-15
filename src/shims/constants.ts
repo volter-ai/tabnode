@@ -18,7 +18,8 @@
  * in its temporal dead zone. Literals have no binding to access.
  */
 
-import { nodeCryptoConstants } from '../node-lib/binding/node-deps';
+import { nodeCryptoConstants } from '../node-lib/binding/openssl';
+import { libnodeAttached } from '../node-lib/binding/libnode';
 
 // Node's old `constants` module, the flat table of fs, os, and signal constants,
 // which graceful-fs still requires on its way into every React Router build; the
@@ -29,7 +30,7 @@ import { nodeCryptoConstants } from '../node-lib/binding/node-deps';
 // stay out of this flat table, which `require('constants')` answers beside the
 // engine's own `crypto` (BUILTINS.md, Kind 2): a number that names an option that
 // module cannot act on answers and then cannot act. The binding's `crypto` group
-// below, which `tls` reads, is OpenSSL's own, from node-deps.wasm (ADR-0016).
+// below, which `tls` reads, is OpenSSL's own, from the process's libnode.so (ADR-0018 item 7).
 // Its signals are Node's DefineSignalConstants (src/node_constants.cc) over the
 // machine's libc, the WALI SDK's musl for wasm32, read from its <signal.h>
 // through the SDK's preprocessor: the numbers the process's kernel and libuv
@@ -68,11 +69,12 @@ export function constantsBinding(): ConstantsBinding {
     // the flat table has never held.
     os: { UV_UDP_REUSEADDR: 4, dlopen: groups.dlopen, errno: groups.errno, signals: groups.signals, priority: groups.priority },
     fs: groups.fs,
-    // Node's DefineCryptoConstants as the built OpenSSL defines them (ADR-0016), compiled in when node-deps.wasm is
-    // built (node-crypto-constants.ts): reading the group instantiates nothing.
+    // Node's DefineCryptoConstants as libnode.so's OpenSSL defines them, compiled into the `node` program as Node
+    // compiles them into its binary (binding/openssl.ts): reading the group starts no OpenSSL. A realm with no
+    // program yet has the empty group of a Node without OpenSSL, kept only once the program is attached.
     get crypto() {
       const value = nodeCryptoConstants();
-      Object.defineProperty(this, 'crypto', { value, enumerable: true, configurable: true, writable: true });
+      if (libnodeAttached()) Object.defineProperty(this, 'crypto', { value, enumerable: true, configurable: true, writable: true });
       return value;
     },
     zlib: { Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3, Z_FINISH: 4, Z_BLOCK: 5, Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1, Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4, Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6, Z_NO_COMPRESSION: 0, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9, Z_DEFAULT_COMPRESSION: -1, Z_FILTERED: 1, Z_HUFFMAN_ONLY: 2, Z_RLE: 3, Z_FIXED: 4, Z_DEFAULT_STRATEGY: 0, ZLIB_VERNUM: 4784, Z_MIN_WINDOWBITS: 8, Z_MAX_WINDOWBITS: 15, Z_DEFAULT_WINDOWBITS: 15, Z_MIN_CHUNK: 64, Z_MAX_CHUNK: Infinity, Z_DEFAULT_CHUNK: 16384, Z_MIN_MEMLEVEL: 1, Z_MAX_MEMLEVEL: 9, Z_DEFAULT_MEMLEVEL: 8, Z_MIN_LEVEL: -1, Z_MAX_LEVEL: 9, Z_DEFAULT_LEVEL: -1, BROTLI_DECODE: 0, BROTLI_ENCODE: 1, BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_FINISH: 2, BROTLI_OPERATION_EMIT_METADATA: 3, BROTLI_PARAM_MODE: 0, BROTLI_MODE_GENERIC: 0, BROTLI_MODE_TEXT: 1, BROTLI_MODE_FONT: 2, BROTLI_PARAM_QUALITY: 1, BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11, BROTLI_DEFAULT_QUALITY: 11, BROTLI_PARAM_LGWIN: 2, BROTLI_MIN_WINDOW_BITS: 10, BROTLI_MAX_WINDOW_BITS: 24, BROTLI_DEFAULT_WINDOW: 22, BROTLI_PARAM_LGBLOCK: 3, BROTLI_MIN_INPUT_BLOCK_BITS: 16, BROTLI_MAX_INPUT_BLOCK_BITS: 24 },

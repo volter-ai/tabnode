@@ -1,11 +1,12 @@
 /**
- * `internalBinding('tls_wrap')`: Node's `TLSWrap` (src/crypto/crypto_tls.cc) over the realm's node-deps.wasm
- * (ADR-0016 §4). The connection's `SSL` lives in the module with two memory BIOs; the underlying stream's bytes are
+ * `internalBinding('tls_wrap')`: Node's `TLSWrap` (src/crypto/crypto_tls.cc) over OpenSSL in the process's
+ * `libnode.so` (ADR-0016 §4, ADR-0018 item 7). The connection's `SSL` lives in the process's memory with two memory
+ * BIOs; the underlying stream's bytes are
  * written into `enc_in`, `ClearOut` runs `SSL_read` and hands the plaintext to this handle's reader, writes run
  * `SSL_write`, and `EncOut` writes what `enc_out` holds to the underlying stream. OpenSSL never touches a socket.
  *
  * This file is the V8 half of `crypto_tls.cc` (the control flow between the streams and the callbacks into
- * JavaScript); the OpenSSL half is the export layer's (scripts/node-deps/tabnode_deps.cc). Each method names the
+ * JavaScript); the OpenSSL half is the program's (native/node/crypto_tls.cc). Each method names the
  * lines it carries. Node's `internal/tls/wrap.js` is vendored over it unmodified.
  *
  * What differs from Node, each by name: a write the underlying stream finished synchronously, and an `EncOut` with
@@ -22,8 +23,9 @@ import { forgetNodeHandle, invokeOwned, unrefHandle } from './handles';
 import { UV_ECANCELED, UV_EOF, UV_EPROTO } from './uv';
 import { queueBindingTask } from '../../guest-loop';
 import {
-  copyOut, cString, errorDetail, mallocAnswer, nodeDeps, opensslError, outAnswer, setTlsCallbacks, withBytes, withScratch,
-} from './node-deps';
+  copyOut, cString, errorDetail, int32, mallocAnswer, openssl, opensslError, outAnswer, withBytes, withScratch, word,
+} from './openssl';
+import { setTlsCallbacks } from './libnode';
 import { SecureContext, errorCodes, refusal } from './crypto';
 import { ownCertificate, peerCertificate } from './x509_object';
 import { listeningHandles } from './tcp_wrap';
@@ -39,7 +41,7 @@ const kClearOutChunkSize = 16384;
 
 type StreamHandle = LibuvStreamWrap & Record<string, any>;
 
-/** The realm's TLSWraps by their `TnSsl*`, for the module's callbacks. */
+/** The realm's TLSWraps by their `TnSsl*`, for OpenSSL's callbacks. */
 const wraps = new Map<number, TLSWrap>();
 
 export class TLSWrap extends LibuvStreamWrap {
@@ -78,7 +80,7 @@ export class TLSWrap extends LibuvStreamWrap {
     this.isServer = isServer;
     this.#hasActiveWriteFromPrevOwner = hasActiveWriteFromPrevOwner;
     // TLSWrap::InitSSL (476-527).
-    const ssl = nodeDeps().tn_ssl_new(sc._ctx, isServer ? 1 : 0) >>> 0;
+    const ssl = openssl().tabnode_ssl_new(sc._ctx, isServer ? 1 : 0) >>> 0;
     if (!ssl) throw opensslError('SSL_new');
     this.ssl = ssl;
     wraps.set(ssl, this);
@@ -95,7 +97,7 @@ export class TLSWrap extends LibuvStreamWrap {
     Object.defineProperty(this, 'writeQueueSize', {
       configurable: true,
       enumerable: true,
-      get: () => (this.ssl ? nodeDeps().tn_ssl_enc_out_pending(this.ssl) >>> 0 : 0),
+      get: () => (this.ssl ? openssl().tabnode_ssl_enc_out_pending(this.ssl) >>> 0 : 0),
       set: () => {},
     });
   }
@@ -115,8 +117,8 @@ export class TLSWrap extends LibuvStreamWrap {
     }
     if (!this.ssl || nread === 0) return;
     const bytes = new Uint8Array(buffer!, streamBaseState[kArrayBufferOffset]!, nread);
-    const deps = nodeDeps();
-    withBytes(bytes, (at, length) => deps.tn_ssl_enc_in(this.ssl, at, length));
+    const deps = openssl();
+    withBytes(bytes, (at, length) => deps.tabnode_ssl_enc_in(this.ssl, at, length));
     this.#cycle();
   }
 
@@ -127,9 +129,9 @@ export class TLSWrap extends LibuvStreamWrap {
    */
   override receive(buffer: Uint8Array): void {
     if (!this.ssl || !(buffer?.byteLength > 0)) return;
-    const deps = nodeDeps();
+    const deps = openssl();
     withBytes(new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength),
-      (at, length) => deps.tn_ssl_enc_in(this.ssl, at, length));
+      (at, length) => deps.tabnode_ssl_enc_in(this.ssl, at, length));
     this.#cycle();
   }
 
@@ -158,8 +160,8 @@ export class TLSWrap extends LibuvStreamWrap {
     if (this.#hasActiveWriteFromPrevOwner) return;
     if (this.established && this.#currentWrite) this.#writeCallbackScheduled = true;
     if (!this.ssl) return;
-    const deps = nodeDeps();
-    const pending = deps.tn_ssl_enc_out_pending(this.ssl) >>> 0;
+    const deps = openssl();
+    const pending = deps.tabnode_ssl_enc_out_pending(this.ssl) >>> 0;
     if (pending === 0) {
       if (!this.#pendingCleartext || this.#pendingCleartext.byteLength === 0) {
         if (!this.#inDoWrite) this.#invokeQueued(0);
@@ -167,7 +169,7 @@ export class TLSWrap extends LibuvStreamWrap {
       }
       return;
     }
-    const at = deps.tn_ssl_enc_out_peek(this.ssl) >>> 0;
+    const at = deps.tabnode_ssl_enc_out_peek(this.ssl) >>> 0;
     const data = copyOut(at, pending);
     this.#writeSize = pending;
     const request = new WriteWrap();
@@ -196,7 +198,7 @@ export class TLSWrap extends LibuvStreamWrap {
       this.#invokeQueued(status);
       return;
     }
-    nodeDeps().tn_ssl_enc_out_commit(this.ssl, this.#writeSize);
+    openssl().tabnode_ssl_enc_out_commit(this.ssl, this.#writeSize);
     this.#clearIn();
     this.#writeSize = 0;
     this.#encOut();
@@ -205,22 +207,22 @@ export class TLSWrap extends LibuvStreamWrap {
   /** ClearOut (786-911). */
   #clearOut(): void {
     if (this.eof || !this.ssl) return;
-    const deps = nodeDeps();
-    deps.tn_err_set_mark();
+    const deps = openssl();
+    deps.tabnode_err_set_mark();
     try {
       let read = 0;
-      const out = deps.tn_malloc(kClearOutChunkSize) >>> 0;
+      const out = deps.tabnode_malloc(kClearOutChunkSize) >>> 0;
       try {
         for (;;) {
-          read = deps.tn_ssl_read(this.ssl, out, kClearOutChunkSize);
+          read = deps.tabnode_ssl_read(this.ssl, out, kClearOutChunkSize);
           if (read <= 0) break;
           this.#emitRead(copyOut(out, read));
           if (!this.ssl) return;
         }
       } finally {
-        deps.tn_free(out);
+        deps.tabnode_free(out);
       }
-      const err = deps.tn_ssl_get_error(this.ssl, read);
+      const err = deps.tabnode_ssl_get_error(this.ssl, read);
       if (err === SSL_ERROR_ZERO_RETURN) {
         if (!this.eof) {
           this.eof = true;
@@ -231,16 +233,16 @@ export class TLSWrap extends LibuvStreamWrap {
       if (err !== SSL_ERROR_SSL && err !== SSL_ERROR_SYSCALL) return;
       const error = this.#sslError();
       // "When TLS Alert are stored in wbio, it should be flushed to socket before destroyed."
-      if (deps.tn_ssl_enc_out_pending(this.ssl) !== 0) this.#encOut();
+      if (deps.tabnode_ssl_enc_out_pending(this.ssl) !== 0) this.#encOut();
       invokeOwned(this, 'onerror', error);
     } finally {
-      deps.tn_err_pop_to_mark();
+      deps.tabnode_err_pop_to_mark();
     }
   }
 
   /** ClearOut's error object (874-905): GetBIOError's message; library, reason, and `ERR_SSL_` + the reason. */
   #sslError(): Error {
-    const { library, reason, reasonCode } = errorDetail(nodeDeps().tn_err_peek() >>> 0);
+    const { library, reason, reasonCode } = errorDetail(openssl().tabnode_err_peek() >>> 0);
     const error = new Error(this.#bioError()) as Error & Record<string, unknown>;
     error.library = library ?? undefined;
     error.function = undefined;
@@ -251,7 +253,7 @@ export class TLSWrap extends LibuvStreamWrap {
 
   /** GetBIOError (397-406), for ClearOut's error and ClearIn's EPROTO (963). */
   #bioError(): string {
-    return new TextDecoder('latin1').decode(mallocAnswer((lengthAt) => nodeDeps().tn_err_bio_error(lengthAt))!);
+    return new TextDecoder('latin1').decode(mallocAnswer((lengthAt) => openssl().tabnode_err_bio_error(lengthAt))!);
   }
 
   /** ClearIn (913-968). */
@@ -260,12 +262,12 @@ export class TLSWrap extends LibuvStreamWrap {
     const pending = this.#pendingCleartext;
     if (!pending || pending.byteLength === 0) return;
     this.#pendingCleartext = null;
-    const deps = nodeDeps();
-    deps.tn_err_set_mark();
+    const deps = openssl();
+    deps.tabnode_err_set_mark();
     try {
-      const written = withBytes(pending, (at, length) => deps.tn_ssl_write(this.ssl, at, length));
+      const written = withBytes(pending, (at, length) => deps.tabnode_ssl_write(this.ssl, at, length));
       if (written !== -1) return;
-      const err = deps.tn_ssl_get_error(this.ssl, written);
+      const err = deps.tabnode_ssl_get_error(this.ssl, written);
       if (err === SSL_ERROR_SSL || err === SSL_ERROR_SYSCALL) {
         this.#writeCallbackScheduled = true;
         this.#invokeQueued(UV_EPROTO, this.#bioError());
@@ -273,7 +275,7 @@ export class TLSWrap extends LibuvStreamWrap {
       }
       this.#pendingCleartext = pending;
     } finally {
-      deps.tn_err_pop_to_mark();
+      deps.tabnode_err_pop_to_mark();
     }
   }
 
@@ -318,7 +320,7 @@ export class TLSWrap extends LibuvStreamWrap {
     const length = buffer.byteLength;
     if (length === 0) {
       this.#clearOut();
-      if (nodeDeps().tn_ssl_enc_out_pending(this.ssl) === 0) {
+      if (openssl().tabnode_ssl_enc_out_pending(this.ssl) === 0) {
         this.#currentEmptyWrite = req;
         const request = new WriteWrap();
         request.handle = this._parent;
@@ -338,12 +340,12 @@ export class TLSWrap extends LibuvStreamWrap {
       this.#encOut();
       return 0;
     }
-    const deps = nodeDeps();
-    deps.tn_err_set_mark();
+    const deps = openssl();
+    deps.tabnode_err_set_mark();
     try {
-      const written = withBytes(buffer, (at, size) => deps.tn_ssl_write(this.ssl, at, size));
+      const written = withBytes(buffer, (at, size) => deps.tabnode_ssl_write(this.ssl, at, size));
       if (written === -1) {
-        const err = deps.tn_ssl_get_error(this.ssl, written);
+        const err = deps.tabnode_ssl_get_error(this.ssl, written);
         if (err === SSL_ERROR_SSL || err === SSL_ERROR_SYSCALL) {
           this.#currentWrite = null;
           return UV_EPROTO;
@@ -351,7 +353,7 @@ export class TLSWrap extends LibuvStreamWrap {
         this.#pendingCleartext = buffer.slice();
       }
     } finally {
-      deps.tn_err_pop_to_mark();
+      deps.tabnode_err_pop_to_mark();
     }
     this.bytesWritten += length;
     this.#inDoWrite = true;
@@ -362,11 +364,11 @@ export class TLSWrap extends LibuvStreamWrap {
 
   /** DoShutdown (1207-1217): close_notify, EncOut, then the underlying stream's shutdown with this request. */
   override shutdown(req: ShutdownWrap): number {
-    const deps = nodeDeps();
+    const deps = openssl();
     if (this.ssl) {
-      deps.tn_err_set_mark();
-      if (deps.tn_ssl_shutdown(this.ssl) === 0) deps.tn_ssl_shutdown(this.ssl);
-      deps.tn_err_pop_to_mark();
+      deps.tabnode_err_set_mark();
+      if (deps.tabnode_ssl_shutdown(this.ssl) === 0) deps.tabnode_ssl_shutdown(this.ssl);
+      deps.tabnode_err_pop_to_mark();
     }
     this.#shutdown = true;
     this.#encOut();
@@ -386,7 +388,7 @@ export class TLSWrap extends LibuvStreamWrap {
   }
 
   setVerifyMode(requestCert: boolean, rejectUnauthorized: boolean): void {
-    nodeDeps().tn_ssl_set_verify_mode(this.ssl, requestCert ? 1 : 0, rejectUnauthorized ? 1 : 0);
+    openssl().tabnode_ssl_set_verify_mode(this.ssl, requestCert ? 1 : 0, rejectUnauthorized ? 1 : 0);
   }
 
   /** EnableSessionCallbacks (1251-1265): a server's starts the ClientHello parser, which is not carried. */
@@ -394,10 +396,10 @@ export class TLSWrap extends LibuvStreamWrap {
     if (this.isServer) {
       throw refusal('A TLS server\'s session resumption events (\'resumeSession\', \'newSession\')');
     }
-    nodeDeps().tn_ssl_enable_session_callbacks(this.ssl);
+    openssl().tabnode_ssl_enable_session_callbacks(this.ssl);
   }
 
-  enableKeylogCallback(): void { nodeDeps().tn_ssl_enable_keylog(this.ssl); }
+  enableKeylogCallback(): void { openssl().tabnode_ssl_enable_keylog(this.ssl); }
 
   /** EnableTrace (1284-1305): SSL_trace to stderr; not carried. */
   enableTrace(): void { throw refusal('TLS tracing (enableTrace, --trace-tls)'); }
@@ -408,7 +410,7 @@ export class TLSWrap extends LibuvStreamWrap {
     this.#writeCallbackScheduled = true;
     this.#invokeQueued(UV_ECANCELED, 'Canceled because of SSL destruction');
     wraps.delete(this.ssl);
-    nodeDeps().tn_ssl_free(this.ssl);
+    openssl().tabnode_ssl_free(this.ssl);
     this.ssl = 0;
     if (this._parent && this._parent.onread) this._parent.onread = null;
   }
@@ -419,15 +421,15 @@ export class TLSWrap extends LibuvStreamWrap {
   }
 
   /** EnableALPNCb (1353-1361). */
-  enableALPNCb(): void { nodeDeps().tn_ssl_enable_alpn_cb(this.ssl); }
+  enableALPNCb(): void { openssl().tabnode_ssl_enable_alpn_cb(this.ssl); }
 
   /** GetServername/SetServername (1363-1392). */
   getServername(): string | false {
-    const name = cString(nodeDeps().tn_ssl_get_servername(this.ssl));
+    const name = cString(openssl().tabnode_ssl_get_servername(this.ssl));
     return name === null ? false : name;
   }
   setServername(name: string): void {
-    withBytes(String(name), (at) => nodeDeps().tn_ssl_set_servername(this.ssl, at));
+    withBytes(String(name), (at) => openssl().tabnode_ssl_set_servername(this.ssl, at));
   }
 
   /** PSK (1445-1570): not carried. */
@@ -438,7 +440,7 @@ export class TLSWrap extends LibuvStreamWrap {
   certCbDone(): void {
     const ctx = this.sni_context;
     if (ctx instanceof SecureContext) {
-      if (nodeDeps().tn_ssl_use_context(this.ssl, ctx._ctx) === 0) throw opensslError('CertCbDone');
+      if (openssl().tabnode_ssl_use_context(this.ssl, ctx._ctx) === 0) throw opensslError('CertCbDone');
     } else if (ctx !== null && typeof ctx === 'object') {
       invokeOwned(this, 'onerror', new TypeError('Invalid SNI context'));
       return;
@@ -452,14 +454,14 @@ export class TLSWrap extends LibuvStreamWrap {
   setALPNProtocols(protocols: Uint8Array): void {
     if (!ArrayBuffer.isView(protocols)) throw new TypeError('Must give a Buffer as first argument');
     withBytes(new Uint8Array(protocols.buffer, protocols.byteOffset, protocols.byteLength),
-      (at, length) => nodeDeps().tn_ssl_set_alpn_protocols(this.ssl, at, length));
+      (at, length) => openssl().tabnode_ssl_set_alpn_protocols(this.ssl, at, length));
   }
 
   /** SetKeyCert (1678-1703). */
   setKeyCert(context: unknown): void {
     if (!this.isServer) return;
     if (!(context instanceof SecureContext)) throw new TypeError('Must give a SecureContext as first argument');
-    if (nodeDeps().tn_ssl_use_context(this.ssl, context._ctx) !== 1) throw opensslError('SetKeyCert');
+    if (openssl().tabnode_ssl_use_context(this.ssl, context._ctx) !== 1) throw opensslError('SetKeyCert');
   }
 
   /** GetPeerCertificate (1705-1719). */
@@ -473,14 +475,14 @@ export class TLSWrap extends LibuvStreamWrap {
    * `wrap.js`'s verification reads it.
    */
   getPeerX509Certificate(): X509Handle | undefined {
-    const deps = nodeDeps();
+    const deps = openssl();
     const leaf = this.isServer
-      ? outAnswer((outAt) => deps.tn_ssl_peer_certificate(this.ssl, outAt))
-      : outAnswer((outAt) => deps.tn_ssl_peer_chain_certificate(this.ssl, 0, outAt));
+      ? outAnswer((outAt) => deps.tabnode_ssl_peer_certificate(this.ssl, outAt))
+      : outAnswer((outAt) => deps.tabnode_ssl_peer_chain_certificate(this.ssl, 0, outAt));
     return leaf ? new X509Handle(leaf) : undefined;
   }
   getX509Certificate(): X509Handle | undefined {
-    const der = outAnswer((outAt) => nodeDeps().tn_ssl_certificate(this.ssl, outAt));
+    const der = outAnswer((outAt) => openssl().tabnode_ssl_certificate(this.ssl, outAt));
     return der ? new X509Handle(der) : undefined;
   }
 
@@ -491,16 +493,16 @@ export class TLSWrap extends LibuvStreamWrap {
   getFinished(): Buffer | undefined { return this.#finished(false); }
   getPeerFinished(): Buffer | undefined { return this.#finished(true); }
   #finished(peer: boolean): Buffer | undefined {
-    const deps = nodeDeps();
+    const deps = openssl();
     return withScratch(128, (at) => {
-      const length = (peer ? deps.tn_ssl_peer_finished(this.ssl, at, 128) : deps.tn_ssl_finished(this.ssl, at, 128)) >>> 0;
+      const length = (peer ? deps.tabnode_ssl_peer_finished(this.ssl, at, 128) : deps.tabnode_ssl_finished(this.ssl, at, 128)) >>> 0;
       return length === 0 ? undefined : Buffer.from(copyOut(at, length));
     });
   }
 
   /** GetSession/SetSession/IsSessionReused (1810-1860). */
   getSession(): Buffer | undefined {
-    const der = outAnswer((outAt) => nodeDeps().tn_ssl_get_session(this.ssl, outAt));
+    const der = outAnswer((outAt) => openssl().tabnode_ssl_get_session(this.ssl, outAt));
     return der ? Buffer.from(der) : undefined;
   }
   setSession(session: Uint8Array): void {
@@ -513,32 +515,32 @@ export class TLSWrap extends LibuvStreamWrap {
       throw new ERR_INVALID_ARG_TYPE('Session', ['Buffer', 'TypedArray', 'DataView'], session);
     }
     const result = withBytes(new Uint8Array(session.buffer, session.byteOffset, session.byteLength),
-      (at, length) => nodeDeps().tn_ssl_set_session(this.ssl, at, length));
+      (at, length) => openssl().tabnode_ssl_set_session(this.ssl, at, length));
     if (result < 0) throw new Error('SSL_set_session error');
   }
-  isSessionReused(): boolean { return nodeDeps().tn_ssl_session_reused(this.ssl) !== 0; }
+  isSessionReused(): boolean { return openssl().tabnode_ssl_session_reused(this.ssl) !== 0; }
 
   /** VerifyError (1862-1891). */
   verifyError(): (Error & { code?: string }) | null | undefined {
-    const deps = nodeDeps();
-    const result = deps.tn_ssl_verify_result(this.ssl);
+    const deps = openssl();
+    const result = deps.tabnode_ssl_verify_result(this.ssl);
     if (result === 0) return null;
-    const reason = cString(deps.tn_x509_error_reason(result));
+    const reason = cString(deps.tabnode_x509_error_reason(result));
     if (reason === null) return undefined;
     const error = new Error(reason) as Error & { code?: string };
-    error.code = cString(deps.tn_x509_error_code(result)) ?? undefined;
+    error.code = cString(deps.tabnode_x509_error_code(result)) ?? undefined;
     return error;
   }
 
   /** GetCipher (1893-1899), GetCipherInfo (crypto_common.cc). */
   getCipher(): Record<string, string | undefined> | undefined {
-    const deps = nodeDeps();
-    const name = cString(deps.tn_ssl_cipher_name(this.ssl));
+    const deps = openssl();
+    const name = cString(deps.tabnode_ssl_cipher_name(this.ssl));
     if (name === null) return undefined;
     return {
       name,
-      standardName: cString(deps.tn_ssl_cipher_standard_name(this.ssl)) ?? undefined,
-      version: cString(deps.tn_ssl_cipher_version(this.ssl)) ?? undefined,
+      standardName: cString(deps.tabnode_ssl_cipher_standard_name(this.ssl)) ?? undefined,
+      version: cString(deps.tabnode_ssl_cipher_version(this.ssl)) ?? undefined,
     };
   }
 
@@ -551,13 +553,13 @@ export class TLSWrap extends LibuvStreamWrap {
 
   /** ExportKeyingMaterial (1996-2034). */
   exportKeyingMaterial(length: number, label: string, context?: Uint8Array): Buffer {
-    const deps = nodeDeps();
+    const deps = openssl();
     return withScratch(Math.max(1, length), (out) => withBytes(String(label), (labelAt, labelLength) => {
       const useContext = context !== undefined;
       const contextBytes = useContext
         ? new Uint8Array(context!.buffer, context!.byteOffset, context!.byteLength) : new Uint8Array(0);
       const ok = withBytes(contextBytes, (contextAt, contextLength) =>
-        deps.tn_ssl_export_keying_material(this.ssl, out, length, labelAt, labelLength, contextAt, contextLength,
+        deps.tabnode_ssl_export_keying_material(this.ssl, out, length, labelAt, labelLength, contextAt, contextLength,
           useContext ? 1 : 0));
       if (ok !== 1) throw opensslError('SSL_export_keying_material');
       return Buffer.from(copyOut(out, length));
@@ -566,15 +568,15 @@ export class TLSWrap extends LibuvStreamWrap {
 
   /** Renegotiate (2042-2048). */
   renegotiate(): void {
-    const deps = nodeDeps();
+    const deps = openssl();
     try {
-      if (deps.tn_ssl_renegotiate(this.ssl) !== 1) throw opensslError('');
-    } finally { deps.tn_err_clear(); }
+      if (deps.tabnode_ssl_renegotiate(this.ssl) !== 1) throw opensslError('');
+    } finally { deps.tabnode_err_clear(); }
   }
 
   /** GetTLSTicket (2050-2068). */
   getTLSTicket(): Buffer | undefined {
-    const ticket = outAnswer((outAt) => nodeDeps().tn_ssl_tls_ticket(this.ssl, outAt), false);
+    const ticket = outAnswer((outAt) => openssl().tabnode_ssl_tls_ticket(this.ssl, outAt), false);
     return ticket ? Buffer.from(ticket) : undefined;
   }
 
@@ -588,13 +590,12 @@ export class TLSWrap extends LibuvStreamWrap {
   /** GetEphemeralKeyInfo (2097-2113), GetEphemeralKey (crypto_common.cc). */
   getEphemeralKeyInfo(): Record<string, unknown> | null {
     if (this.isServer) return null;
-    const deps = nodeDeps();
+    const deps = openssl();
     const info: Record<string, unknown> = { type: undefined, name: undefined, size: undefined };
     const found = withScratch(8, (at) => {
-      const id = deps.tn_ssl_ephemeral_key(this.ssl, at, at + 4);
-      const view = new DataView(deps.memory.buffer);
-      const bits = view.getInt32(at, true);
-      const curve = cString(view.getUint32(at + 4, true));
+      const id = deps.tabnode_ssl_ephemeral_key(this.ssl, at, at + 4);
+      const bits = int32(at);
+      const curve = cString(word(at + 4));
       const EVP_PKEY_DH = 28, EVP_PKEY_EC = 408, EVP_PKEY_X25519 = 1034, EVP_PKEY_X448 = 1035;
       if (id === EVP_PKEY_DH) { info.type = 'DH'; info.size = bits; return true; }
       if ((id === EVP_PKEY_EC || id === EVP_PKEY_X25519 || id === EVP_PKEY_X448) && curve !== null) {
@@ -603,18 +604,18 @@ export class TLSWrap extends LibuvStreamWrap {
       return false;
     });
     if (!found) {
-      const group = cString(deps.tn_ssl_negotiated_group(this.ssl));
+      const group = cString(deps.tabnode_ssl_negotiated_group(this.ssl));
       if (group !== null) { info.type = 'TLSGroup'; info.name = group; }
     }
     return info;
   }
 
   /** GetProtocol (2115-2120). */
-  getProtocol(): string | null { return cString(nodeDeps().tn_ssl_get_version(this.ssl)); }
+  getProtocol(): string | null { return cString(openssl().tabnode_ssl_get_version(this.ssl)); }
 
   /** GetALPNNegotiatedProto (2122-2146). */
   getALPNNegotiatedProtocol(): string | false {
-    const selected = outAnswer((outAt) => nodeDeps().tn_ssl_get_alpn_selected(this.ssl, outAt), false);
+    const selected = outAnswer((outAt) => openssl().tabnode_ssl_get_alpn_selected(this.ssl, outAt), false);
     return selected && selected.byteLength > 0 ? new TextDecoder('latin1').decode(selected) : false;
   }
 
@@ -625,9 +626,9 @@ export class TLSWrap extends LibuvStreamWrap {
   }
 
   /** SetMaxSendFragment (2172-2183). */
-  setMaxSendFragment(size: number): number { return nodeDeps().tn_ssl_set_max_send_fragment(this.ssl, size | 0); }
+  setMaxSendFragment(size: number): number { return openssl().tabnode_ssl_set_max_send_fragment(this.ssl, size | 0); }
 
-  // ---- The module's callbacks ----------------------------------------------------------------------------
+  // ---- OpenSSL's callbacks --------------------------------------------------------------------------------
 
   /** SSLInfoCallback (599-639). */
   handshake(done: boolean): void {
@@ -686,7 +687,7 @@ class X509Handle {
   constructor(readonly der: Uint8Array) {}
 }
 
-// The module raises these only inside an `SSL_*` call of a live wrap.
+// OpenSSL raises these only inside an `SSL_*` call of a live wrap (the program's tls_* imports, libnode.ts).
 setTlsCallbacks({
   handshake: (ssl, done) => wraps.get(ssl)!.handshake(done !== 0),
   keylog: (ssl, line) => wraps.get(ssl)!.keylog(line),

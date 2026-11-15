@@ -52,7 +52,8 @@ from `system.ts`, never from the realm.
 - **time**: `process.hrtime` is `CLOCK_MONOTONIC` (Node's `uv_hrtime`); `performance.now()` is milliseconds of it since
   the engine began, `performance.timeOrigin` the wall clock then; `process.uptime()` counts on it. On a kernel the
   realm's `Date` is replaced, once, by one whose `now()` and argument-less construction read `CLOCK_REALTIME`; its
-  prototype, statics and `instanceof` are the intrinsic's. WASI's and node-deps' clocks are the same two.
+  prototype, statics and `instanceof` are the intrinsic's. WASI's clocks are the same two, and OpenSSL's in
+  `libnode.so` is the kernel's `clock_gettime` itself (ADR-0018 item 7).
 - **timers**: Node's own `lib/timers.js` and `lib/internal/timers.js` over the system's `timers` (ADR-0018 item 2), the
   loop's timer and check handles: a guest's global timers and its `timers` module are its graph's Node file, the
   engine's internal timers the library's, all over the realm's one timer list. Each Timeout and Immediate carries its

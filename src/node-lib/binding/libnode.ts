@@ -16,7 +16,8 @@
  * with no machine) has no libuv: its streams are the engine's pairing and its fs the engine's own tree (`fs.ts`), and
  * a binding that is only libuv's (`process_wrap`, `spawn_sync`, `signal_wrap`) answers that it has none. A binding
  * over libuv is its V8 half: it writes a call's arguments into the process's memory, calls the C, and reads the answer,
- * as Node's C++ reads a uv_fs_t.
+ * as Node's C++ reads a uv_fs_t. The crypto and tls_wrap bindings are the same over OpenSSL in libnode.so
+ * (`openssl.ts`), and what OpenSSL raises inside one of their calls comes back as the `tls_*` imports, inside that call.
  */
 import { errname, getErrorMap } from './uv';
 
@@ -512,11 +513,32 @@ const fsRequests = new Map<number, () => void>();
 /** An fs request's completion (`fs_done`), until it arrives. */
 export function awaitRequest(request: number, done: () => void): void { fsRequests.set(address(request), done); }
 
+/** The engine's side of the TLS callbacks (engine.h `tls_*`), by the connection's TnSsl address. */
+export interface TlsCallbacks {
+  handshake(tls: number, done: number): void;
+  keylog(tls: number, line: Uint8Array): void;
+  newSession(tls: number, id: Uint8Array, der: Uint8Array): void;
+  /** Answers 1 to continue the handshake, -1 to suspend it until `certCbDone`. */
+  cert(tls: number, servername: string, ocsp: boolean): number;
+  /** Answers the offset of the chosen protocol in `protocols`, or -1 (a fatal alert). */
+  alpn(tls: number, protocols: Uint8Array): number;
+}
+
+let tls: TlsCallbacks | undefined;
+/** The tls_wrap binding's callbacks, given once when it loads; OpenSSL raises them only for its connections. */
+export function setTlsCallbacks(callbacks: TlsCallbacks): void { tls = callbacks; }
+
+function tlsCallbacks(): TlsCallbacks {
+  if (!tls) throw new Error('node: OpenSSL called back a connection no tls_wrap binding holds');
+  return tls;
+}
+
 /**
  * The engine's imports the bindings answer (native/node engine.h), which the host puts among the program's
  * `host:tabnode` imports beside its own: each finds the handle by its address or the request by its number and calls
  * its JavaScript, as Node's C++ makes the callback with MakeCallback; the drain that closes the callback's scope is
- * the C's.
+ * the C's. The `tls_*` imports are OpenSSL's callbacks, made inside an SSL_* call the engine itself made, as Node's
+ * are made inside SSL_read: no scope closes after them.
  */
 export const libnodeImports = {
   /** The run's end, after `uv_run` returns (`LibnodeRunEnd`); each followed in C by a drain. */
@@ -556,4 +578,22 @@ export const libnodeImports = {
   },
   /** StatWatcher::Callback. */
   stat_watcher_change: (handle: number, status: number): void => { handleAt(handle).target.onUvStatChange?.(status); },
+  /** TLSWrap::SSLInfoCallback: a handshake began (0) or completed (1). Made inside the engine's own SSL_* call. */
+  tls_handshake: (connection: number, done: number): void => { tlsCallbacks().handshake(address(connection), done); },
+  /** KeylogCallback: one key log line. */
+  tls_keylog: (connection: number, line: number, length: number): void => {
+    tlsCallbacks().keylog(address(connection), libnode().read(address(line), address(length)));
+  },
+  /** NewSessionCallback: the session's id and DER. */
+  tls_new_session: (connection: number, id: number, idLength: number, der: number, derLength: number): void => {
+    const program = libnode();
+    tlsCallbacks().newSession(address(connection), program.read(address(id), address(idLength)),
+      program.read(address(der), address(derLength)));
+  },
+  /** SSLCertCallback: 1 continues the handshake, -1 suspends it. */
+  tls_cert: (connection: number, servername: number, length: number, ocsp: number): number =>
+    tlsCallbacks().cert(address(connection), decoder.decode(libnode().read(address(servername), address(length))), ocsp !== 0),
+  /** SelectALPNCallback's JavaScript branch: the chosen protocol's offset, or -1. */
+  tls_alpn: (connection: number, protocols: number, length: number): number =>
+    tlsCallbacks().alpn(address(connection), libnode().read(address(protocols), address(length))),
 };

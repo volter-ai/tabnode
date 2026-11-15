@@ -5,7 +5,7 @@
  * descriptor of its own table. The engine makes none of its own: a tree that is a client of a kernel offers that
  * kernel's socket calls for the process it serves under `TREE_SOCKETS`, beside the descriptor calls it offers under
  * `TREE_DESCRIPTORS` (ADR-0006), and `tcp_wrap`, `udp_wrap`, `pipe_wrap`, `dns` and `os` make their calls there (TLS
- * is Node's own over node-deps.wasm, on a kernel TCP connection, ADR-0016). The namespace, its loopback,
+ * is Node's own over libnode.so's OpenSSL, on a kernel TCP connection, ADR-0016). The namespace, its loopback,
  * its bind tables, its routes and its resolver are the kernel's; the engine holds no copy of any of them.
  *
  * Each call is Linux's call of its name, with Linux's numbers (`linux` below). A result is the call's return: a

@@ -1,10 +1,10 @@
 /**
  * A certificate as the object `getPeerCertificate()` answers: the V8 half of Node's `X509ToObject`
  * (src/crypto/crypto_x509.cc:720-855) and of `GetPeerCert`'s issuer walk (src/crypto/crypto_common.cc:80-171), over
- * the export layer's certificate half (scripts/node-deps/tabnode_deps.cc, "Certificates as objects"). ADR-0016 §3.
+ * their OpenSSL half in the program (native/node/crypto_x509.cc), over ncrypto's X509View in libnode.so. ADR-0016 §3.
  */
 import { Buffer } from '../buffer-module';
-import { mallocAnswer as answer, nodeDeps, outAnswer, withBytes } from './node-deps';
+import { mallocAnswer as answer, openssl, outAnswer, withBytes } from './openssl';
 
 type Certificate = Record<string, unknown>;
 const latin1 = (bytes: Uint8Array | null): string | undefined =>
@@ -13,7 +13,7 @@ const utf8 = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
 /** GetX509NameObject (crypto_x509.cc:611-667): a null-prototype object, an array where a key repeats. */
 function nameObject(x: number, issuer: boolean): Record<string, unknown> | undefined {
-  const bytes = answer((lengthAt) => nodeDeps().tn_x509_name(x, issuer ? 1 : 0, lengthAt));
+  const bytes = answer((lengthAt) => openssl().tabnode_x509_name(x, issuer ? 1 : 0, lengthAt));
   if (bytes === null) return undefined;
   const result: Record<string, unknown> = Object.create(null);
   const parts = utf8(bytes).split('\0');
@@ -31,20 +31,20 @@ function nameObject(x: number, issuer: boolean): Record<string, unknown> | undef
   return result;
 }
 
-/** X509ToObject (crypto_x509.cc:720-855) of the certificate `x` (an `X509*` of the module). */
+/** X509ToObject (crypto_x509.cc:720-855) of the certificate `x` (an `X509*` in the process's memory). */
 function x509ToObject(x: number): Certificate {
-  const deps = nodeDeps();
-  const text = (field: number) => latin1(answer((lengthAt) => deps.tn_x509_text(x, field, lengthAt)));
-  const usage = answer((lengthAt) => deps.tn_x509_key_usage(x, lengthAt));
-  const pubkey = answer((lengthAt) => deps.tn_x509_pubkey(x, lengthAt));
-  const bits = deps.tn_x509_bits(x);
-  const raw = outAnswer((outAt) => deps.tn_x509_der(x, outAt))!;
+  const deps = openssl();
+  const text = (field: number) => latin1(answer((lengthAt) => deps.tabnode_x509_text(x, field, lengthAt)));
+  const usage = answer((lengthAt) => deps.tabnode_x509_key_usage(x, lengthAt));
+  const pubkey = answer((lengthAt) => deps.tabnode_x509_pubkey(x, lengthAt));
+  const bits = deps.tabnode_x509_bits(x);
+  const raw = outAnswer((outAt) => deps.tabnode_x509_der(x, outAt))!;
   return {
     subject: nameObject(x, false),
     issuer: nameObject(x, true),
     subjectaltname: text(0),
     infoAccess: text(1),
-    ca: deps.tn_x509_is_ca(x) !== 0,
+    ca: deps.tabnode_x509_is_ca(x) !== 0,
     modulus: text(8),
     exponent: text(9),
     pubkey: pubkey === null ? undefined : Buffer.from(pubkey),
@@ -62,9 +62,9 @@ function x509ToObject(x: number): Certificate {
   };
 }
 
-/** A DER certificate copied out of the module, parsed into a new `X509*` of it (freed by the caller). */
+/** A DER certificate copied into the process's memory, parsed into a new `X509*` there (freed by the caller). */
 function x509FromDer(der: Uint8Array): number {
-  return withBytes(der, (at, length) => nodeDeps().tn_x509_from_der(at, length)) >>> 0;
+  return withBytes(der, (at, length) => openssl().tabnode_x509_from_der(at, length)) >>> 0;
 }
 
 /**
@@ -73,15 +73,15 @@ function x509FromDer(der: Uint8Array): number {
  * pointing at itself when self-signed. On a client the chain holds the leaf; on a server it does not.
  */
 export function peerCertificate(ssl: number, abbreviated: boolean, isServer: boolean): Certificate | undefined {
-  const deps = nodeDeps();
+  const deps = openssl();
   const ders: Uint8Array[] = [];
   if (isServer) {
-    const leaf = outAnswer((outAt) => deps.tn_ssl_peer_certificate(ssl, outAt));
+    const leaf = outAnswer((outAt) => deps.tabnode_ssl_peer_certificate(ssl, outAt));
     if (leaf) ders.push(leaf);
   }
-  const chainLength = deps.tn_ssl_peer_chain_length(ssl);
+  const chainLength = deps.tabnode_ssl_peer_chain_length(ssl);
   for (let index = 0; index < chainLength; index++) {
-    const der = outAnswer((outAt) => deps.tn_ssl_peer_chain_certificate(ssl, index, outAt));
+    const der = outAnswer((outAt) => deps.tabnode_ssl_peer_chain_certificate(ssl, index, outAt));
     if (der) ders.push(der);
   }
   if (ders.length === 0) return undefined;
@@ -94,7 +94,7 @@ export function peerCertificate(ssl: number, abbreviated: boolean, isServer: boo
     let object = first;
     const owned = [cert];
     for (;;) {
-      const index = certs.findIndex((ca) => deps.tn_x509_issued_by(cert, ca) !== 0);
+      const index = certs.findIndex((ca) => deps.tabnode_x509_issued_by(cert, ca) !== 0);
       if (index < 0) break;
       const caInfo = x509ToObject(certs[index]!);
       object.issuerCertificate = caInfo;
@@ -103,28 +103,28 @@ export function peerCertificate(ssl: number, abbreviated: boolean, isServer: boo
       owned.push(cert);
     }
     // GetLastIssuedCert (crypto_common.cc:139-171).
-    while (deps.tn_x509_issued_by(cert, cert) === 0) {
-      const ca = deps.tn_ssl_issuer_from_store(ssl, cert) >>> 0;
+    while (deps.tabnode_x509_issued_by(cert, cert) === 0) {
+      const ca = deps.tabnode_ssl_issuer_from_store(ssl, cert) >>> 0;
       if (!ca) break;
       const caInfo = x509ToObject(ca);
       object.issuerCertificate = caInfo;
       object = caInfo;
-      if (ca === cert) { deps.tn_x509_free(ca); break; }
+      if (ca === cert) { deps.tabnode_x509_free(ca); break; }
       owned.push(ca);
       cert = ca;
     }
-    if (deps.tn_x509_issued_by(cert, cert) !== 0) object.issuerCertificate = object;
-    for (const x of owned) deps.tn_x509_free(x);
+    if (deps.tabnode_x509_issued_by(cert, cert) !== 0) object.issuerCertificate = object;
+    for (const x of owned) deps.tabnode_x509_free(x);
     return first;
   } finally {
-    for (const x of certs) deps.tn_x509_free(x);
+    for (const x of certs) deps.tabnode_x509_free(x);
   }
 }
 
 /** GetCert (crypto_common.cc:76-84): this end's own certificate, or undefined. */
 export function ownCertificate(ssl: number): Certificate | undefined {
-  const der = outAnswer((outAt) => nodeDeps().tn_ssl_certificate(ssl, outAt));
+  const der = outAnswer((outAt) => openssl().tabnode_ssl_certificate(ssl, outAt));
   if (!der) return undefined;
   const x = x509FromDer(der);
-  try { return x509ToObject(x); } finally { nodeDeps().tn_x509_free(x); }
+  try { return x509ToObject(x); } finally { openssl().tabnode_x509_free(x); }
 }
