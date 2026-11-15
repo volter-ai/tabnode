@@ -2,11 +2,11 @@
 
 Status: Proposed (design; nothing built).
 
-Date: 2026-11-14. Served: browser-substrate ADR-0234 §7 ("A Node process's loop is libuv itself") and ADR-0236 step 5
-("Tabnode's loop becomes libuv's"; done when `node` in the tab runs Next.js's standalone server and Prisma's CLI), card
-VO-3806. Supersedes, when built: ADR-0017's loop (`system.ts`, "the engine's own loop"), the substrate's
-`linux-event-loop.ts`, and ADR-0016 §1's "why not the WALI library now", whose condition (a loader) the substrate now
-meets.
+Date: 2026-11-14. Served: browser-substrate ADR-0234 §7 ("A Node process's loop is libuv itself"), ADR-0236 hole 12
+("A host program parked in Linux receives none of the engine's work") and ADR-0236 step 5 ("Tabnode's loop becomes
+libuv's"; done when `node` in the tab runs Next.js's standalone server and Prisma's CLI), card VO-3806. Supersedes,
+when built: ADR-0017's loop (`system.ts`, "the engine's own loop"), the substrate's `linux-event-loop.ts`, and
+ADR-0016 §1's "why not the WALI library now", whose condition (a loader) the substrate now meets.
 
 ## Context
 
@@ -87,11 +87,52 @@ suspension resumes from that task. The resume is a task, not a microtask, becaus
 would run before the microtasks the drained ones queue. A callback that blocks (a synchronous fs call) blocks the
 worker on its word, as today.
 
-### 5. Asynchronous work is libuv's threadpool
+### 5. Asynchronous work completes into the loop's poll: libuv's threadpool, and the machine's devices
 
-`uv_queue_work` runs on libuv's threads, which are the process's pthreads and so the machine's tasks; a completion
-reaches the loop through `uv_async_send`. With OpenSSL in `libnode.so`, crypto's asynchronous calls are Node's own
-threadpool work, not WebCrypto's promises. So no browser promise is pending on the loop, and the poll bound goes.
+Node's asynchronous work reaches its loop through one door, a descriptor its poll sees. `uv_queue_work` runs on
+libuv's threads, which are the process's pthreads and so the machine's tasks, and its completion is `uv_async_send`
+(Node's `ThreadPoolWork::ScheduleWork`, `src/threadpoolwork-inl.h:37`). The engine's own completed work arrives the
+same way: V8 posts it to the isolate's platform, and Node's `PerIsolatePlatformData::PostTaskImpl` wakes the loop with
+`uv_async_send(flush_tasks_)` (`src/node_platform.cc:343-363`), whose tasks run after `uv_run` returns
+(`platform->DrainTasks`, `src/api/embed_helpers.cc:46`). So fs requests, `getaddrinfo` and the work Node does in its
+own C are libuv's threadpool here.
+
+The browser's own engine services are another case (browser-substrate ADR-0236, hole 12): `SubtleCrypto`,
+`WebAssembly.compile` and `instantiate` (and the streaming forms), a `Blob`'s reads, and `CompressionStream` and
+`DecompressionStream`. The browser settles each on the thread that asked, and a Node process's thread is blocked in
+Linux while its loop parks, so the answer waits for the park to end. Each is native work the program should keep, so
+each is a **device of the machine**, run by the machine's own worker, which never blocks (browser-substrate
+`host/machine.mjs`, "It never blocks and runs no kernel code"), reached through a driver in the kernel, as Linux
+reaches a crypto accelerator through a descriptor (AF_ALG, `/dev/crypto`):
+- a request is a descriptor the program waits on in its loop's epoll, as any descriptor;
+- the device runs the browser's call on its own worker, completes bytes into the buffer the request queued, and sends
+  an object (a `CryptoKey`, a `WebAssembly.Module`, both serializable between a page's workers) to the program's
+  worker by message;
+- the descriptor turns readable, so the park ends through Linux and the request's callback runs in the poll phase,
+  as a threadpool completion's does.
+
+`WebAssembly.compile` stays asynchronous, on the machine's worker, where the browser compiles it as it would for any
+page. What the device answers, Node does with OpenSSL, zlib or its C++ in the process (Node's `node:crypto`,
+`lib/internal/crypto/*`; its `CompressionStream` is zlib, `lib/internal/webstreams/compression.js:34-37`; its Blob
+reads are `reader.pull`, `lib/internal/blob.js:440`); here the browser's native implementation does it, faster than
+any of those compiled to WebAssembly.
+
+OpenSSL stays in `libnode.so` for what Node's crypto needs and WebCrypto does not have. Read in Tabnode's
+`src/shims/crypto.ts` (2026-11-15), which today answers `node:crypto` in JavaScript (`sha.js`, `@noble/hashes`) and
+uses the realm's `SubtleCrypto` for `webcrypto.subtle`, the asynchronous `sign` and `verify`, and `generateKeyPair`:
+- every synchronous form, which a promise cannot answer: `createHash` and `createHmac` with their incremental
+  `update`, `hash`, `pbkdf2Sync`, `hkdfSync`, `scryptSync`, `sign` and `verify` without a callback,
+  `generateKeyPairSync`, `createCipheriv`'s `update` and `final`;
+- algorithms WebCrypto does not define: MD5, SHA-224, SHA-512/256, SHA-3, SHAKE, BLAKE2, RIPEMD-160, scrypt, argon2,
+  ChaCha20-Poly1305 and the AES modes beside CBC, CTR and GCM, DSA, Diffie-Hellman groups, `ECDH` on any curve,
+  RSA's raw `privateEncrypt` and `publicDecrypt`, primes (`checkPrime`, `generatePrime`), `X509Certificate`;
+- TLS, OpenSSL through memory BIOs (ADR-0016).
+
+*Open: the device is not designed.* It is the machine's (browser-substrate `host/machine.mjs`, and a driver in its
+kernel), not this engine's: its descriptor's kind, its request layout, how an object's message is matched to its
+request, and how an `Atomics.waitAsync` on memory outside the process's memory (a wait the realm makes on memory no
+Linux call reaches) is answered are unread. Until it exists, each of those services answers only when the park ends
+for another reason, which is hole 12's defect.
 
 ### 6. Children are `uv_spawn`
 
