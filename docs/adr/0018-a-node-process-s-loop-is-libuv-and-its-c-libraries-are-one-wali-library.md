@@ -238,14 +238,54 @@ is built.
      storage's store, as one frame", restored where each async function it compiles resumes (`src/shims/async_hooks.ts`,
      `__substrateResume`, `__substrateRestore`). So the binding is the engine's frame register; `--async-context-frame`
      is on, as Node 24's default; Node's `internal/async_context_frame`, its `AsyncLocalStorage` (the async-context-frame
-     form) and its timers run unmodified over it; the engine's own `AsyncLocalStorage` and `carryTimerCallbacks` go.
+     form) and its timers run unmodified over it (`src/shims/async_hooks.ts`: the frame is
+     `internalBinding('async_context_frame')`; taking Node's `AsyncLocalStorage` reads its `enabled`, as
+     `lib/async_hooks.js:297-301` does, which makes the frame active). Node's `AsyncResource` takes the frame when it
+     is made and runs in it, in Node's shape (`lib/async_hooks.js:180-292`). The engine's own storage and its timers'
+     carrier are not.
      *Built and run 2026-11-15, its waits:* every wait of the engine is a handle of libuv's loop (browser-substrate
-     `packages/node/src/linux-uv-waits.ts`): the engine's nearest deadline is `env.c`'s timer through the binding's
-     `scheduleTimer` and `toggleTimerRef`, a deadline that has come (a completion or an immediate it holds) the
-     immediate check and idle handles through `immediateInfo` and `toggleImmediateRef`, and a descriptor a `uv_poll_t`
-     (`native/node/poll.c`) until each binding owns its handle (steps 3 to 6). `linux-event-loop.ts`, its park and its
-     4 ms bound went. *Not built:* Node's `lib/timers.js` and `lib/internal/timers.js` over the binding, in place of
-     `system.ts`'s list, which still answers the deadline; so `system.ts`'s loop has not gone. The run's end is still the
+     `packages/node/src/linux-uv-waits.ts`), a descriptor a `uv_poll_t` (`native/node/poll.c`) until each binding owns
+     its handle (steps 3 to 6). `linux-event-loop.ts`, its park and its 4 ms bound went.
+     **Node's timers over the binding.** Node v24.21.0's `lib/timers.js`, `lib/timers/promises.js`,
+     `lib/internal/timers.js`, `internal/linkedlist`, `internal/priority_queue`, `internal/async_context_frame` and
+     `internal/async_local_storage/async_context_frame` and `run_scope` are vendored unchanged (`src/node-lib/`).
+     `internalBinding('timers')` (`src/node-lib/binding/timers.ts`) is `src/timers.cc` over the system's handles
+     (`system.ts` `SystemTimers`), and holds what is Node's C++ above them: RunTimers calls `processTimers` again
+     after a throw (`src/env.cc:1552-1611`) and CheckImmediate makes each `processImmediate` a callback
+     (`src/env.cc:1613-1636`), each throw reported as the process's uncaught exception, to the run whose context frame
+     is current, which Node's timers leave the throwing callback's; each call is a callback scope whose ticks run when
+     it returns. `env.c` calls each once and its loops are libuv's. The bootstrap of `internal/timers` calls
+     `setupTimers` with `getTimerCallbacks(runNextTicks)`'s two, as `lib/internal/bootstrap/node.js` does. There is one
+     Environment a realm, as there is one loop: `internal/timers` and `internal/async_context_frame` are the realm's
+     one file in every process's graph (`src/node-lib/load.ts` `REALM_ENVIRONMENT`), and each process's `timers` and
+     `timers/promises` are its own files over them, its global timers that module's functions, as Node's bootstrap
+     makes them. What a process's `timers` makes is counted for that process (`src/guest-timers.ts`, from Node's own
+     `_destroyed` and `hasRef()`) for the run's end the engine still decides. The engine's own timers are the library
+     graph's `timers` (`src/engine-timers.ts`). The binding's arrays are taken once, as an Environment holds them from
+     before its library loads: `net` and `child_process` load on first use, never while the bundle evaluates, and a
+     kernel's system offered after Node's timers were set up over the realm's loop is refused (`useTreeSystem`). Over
+     no kernel the handles are the realm's: a `setTimeout` the timer, a `MessageChannel`'s task the check
+     (`system.ts` `realmTimers`). Where this differs from Node:
+     - `runNextTicks` between two timers or two immediates is the tick queue alone: a page's engine cannot run its
+       microtask queue from inside a call, so the microtasks a callback queues run at `node`'s drain after the rest
+       of its phase, where Node runs them before the next callback.
+     - An fs request's completion (`engine-timers.ts` `queueCompletion`) is an immediate of the check phase, where
+       libuv runs it in the poll phase, until `fs` is `uv_fs_*` (step 6); a message due to a port the process listens
+       to holds a referenced immediate (`portMessagesDue`), so libuv's poll does not block while the worker has it to
+       deliver, where a Node port is its own `uv_async_t`.
+     - `internal/timers`'s own `process` (its `TimeoutOverflowWarning`) is the realm library's process, not the
+       process whose timer it warns of.
+     *For the host* (browser-substrate `linux-uv-waits.ts`, `linux-system.ts`, `linux-node-engine.ts`): the tree's
+     system has no `wake`; it offers `timers`, a `SystemTimers` over `node`'s exports: `immediateInfo` a
+     `Uint32Array` of 3 at `tabnode_immediate_info()` and `timeoutInfo` an `Int32Array` of 1 at
+     `tabnode_timeout_info()`, both views of the process's memory, which is shared and so keeps them across its
+     growth; `getLibuvNow()` is `tabnode_timers_now()`; `scheduleTimer(ms)` is `tabnode_schedule_timer(BigInt(ms))`;
+     `toggleTimerRef(ref)` and `toggleImmediateRef(ref)` are `tabnode_toggle_timer_ref` and
+     `tabnode_toggle_immediate_ref` of 1 or 0; `setupTimers(processImmediate, processTimers)` keeps the two. The
+     import `process_timers(now)` answers `processTimers(now)`, the next expiry (positive where a referenced timer
+     holds the loop, negative where none does, 0 for none), and `process_immediate()` calls `processImmediate()`.
+     `env.c`'s handles drive them (`run_timers`, `check_immediate`); the host keeps no deadline, and its waits are the
+     descriptors' alone. Its container is made, as now, before any of Node's timers load. The run's end is still the
      engine's own count, which ends the process by `exit_group`; `beforeExit` and `exit` from `main` are Node's once the
      handles are libuv's. The engine decides it when the loop would wait, never on a timer: `env.c`'s unreferenced
      prepare handle, Node's `idle_prepare_handle_` (`src/env.cc:1142-1155`, `1303-1307`), tells the engine

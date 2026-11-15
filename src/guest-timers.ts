@@ -1,118 +1,86 @@
 import { pendingGuestPorts, stopGuestPorts } from './guest-message-ports';
-import { __reportUncaughtException } from './shims/process';
-import { withGuestCallback } from './guest-loop';
-import { nodeTimeout, timerHandleOf } from './node-lib/timers';
-import { engineTimers } from './system';
+import { onNodeLibLoaded } from './node-lib/load';
 
 /**
- * Referenced timers and message ports: what Node's loop counts to decide
- * a program is done. A timer the guest sets through its globals or module is
- * held here until it fires, is cleared, or is unref'd, and the `node`
- * command's end-of-program rule asks how many remain.
+ * A PROCESS'S TIMERS are Node's own (ADR-0018 item 2): its `lib/timers.js`, the one its `require('timers')` answers and
+ * its globals are, as Node's bootstrap makes `globalThis.setTimeout` that module's (lib/internal/bootstrap/node.js),
+ * over the realm's timer lists and the loop's handles (node-lib/binding/timers.ts). Each Timeout and Immediate the
+ * process makes through them is counted for it here, for the run's end the engine still decides by its own count
+ * (ADR-0018 item 2). Node's own objects say whether each is pending and referenced (`_destroyed`, `hasRef()`), so
+ * nothing of theirs is wrapped: only the three schedulers, which record what they make.
  */
-const __substratePendingTimers = new WeakMap<object, Set<unknown>>();
-export function pendingGuestTimers(process: object): number {
-  return (__substratePendingTimers.get(process)?.size ?? 0) + pendingGuestPorts(process);
+type NodeTimer = { _destroyed: boolean; hasRef(): boolean; _idleTimeout?: number; _repeat?: number | null; _onImmediate?: unknown };
+type TimerFunction = (...args: any[]) => unknown;
+const made = new WeakMap<object, Set<NodeTimer>>();
+const processTimers = new WeakMap<object, Record<string, TimerFunction>>();
+
+function heldBy(process: object): Set<NodeTimer> {
+  let held = made.get(process);
+  if (!held) { held = new Set(); made.set(process, held); }
+  return held;
 }
-// What each pending timer is, for the line that says what held a program after its entry returned: "pending
-// timer" alone did not say whether it was a retry a second long or an interval a heartbeat keeps.
-const __substrateTimerKinds = new WeakMap<object, string>();
-/** Each timer and port the process still holds, named by its kind and delay ("a 1000 ms timeout"). */
+
+/** The pending ones; a timer that fired or was cleared is let go. */
+function pending(process: object): NodeTimer[] {
+  const held = made.get(process);
+  if (!held) return [];
+  const live: NodeTimer[] = [];
+  for (const timer of held) {
+    if (timer._destroyed) held.delete(timer);
+    else live.push(timer);
+  }
+  return live;
+}
+
+/** Referenced timers and message ports: what Node's loop counts to decide a program is done. */
+export function pendingGuestTimers(process: object): number {
+  let count = 0;
+  for (const timer of pending(process)) if (timer.hasRef()) count++;
+  return count + pendingGuestPorts(process);
+}
+
+/** Each referenced timer and port the process still holds, named by its kind and delay ("a 1000 ms timeout"). */
 export function pendingGuestTimerKinds(process: object): string[] {
-  const kinds: string[] = [...(__substratePendingTimers.get(process) ?? [])].map((id) => (id && typeof id === "object" ? __substrateTimerKinds.get(id) : undefined) ?? "a timer");
+  const kinds = pending(process).filter((timer) => timer.hasRef()).map((timer) => ('_onImmediate' in timer ? 'an immediate'
+    : `a ${timer._idleTimeout ?? 0} ms ${timer._repeat ? 'interval' : 'timeout'}`));
   const ports = pendingGuestPorts(process);
-  if (ports > 0) kinds.push(`${ports} message port${ports === 1 ? "" : "s"}`);
+  if (ports > 0) kinds.push(`${ports} message port${ports === 1 ? '' : 's'}`);
   return kinds;
 }
-/**
- * Close this process's message ports and clear every timer it still holds.
- * Ending a Node process clears the ones its loop was waiting on. The ids are
- * the engine's own timer list's (system.ts), whose one clear ends any kind.
- */
+
+/** Close this process's message ports and clear every timer it still holds, as ending a Node process does. */
 export function stopGuestTimers(process: object): void {
   stopGuestPorts(process);
-  const held = __substratePendingTimers.get(process);
-  if (!held) return;
-  for (const id of [...held]) engineTimers.clearTimeout(timerHandleOf(id));
-  held.clear();
+  const timers = processTimers.get(process);
+  for (const timer of pending(process)) {
+    if ('_onImmediate' in timer) timers?.clearImmediate?.(timer);
+    else timers?.clearTimeout?.(timer);
+  }
+  made.get(process)?.clear();
 }
+
 /**
- * A process's timers: the engine's own list's (system.ts, ADR-0017), whose deadlines are the system's monotonic clock
- * and whose wake is the process's loop, counted for the process. No realm timer stands behind them.
+ * Each process's `timers` module, as its graph loads it (node-lib/load.ts `onNodeLibLoaded`): its three schedulers
+ * record what they make for the process, keeping Node's own function's properties (`util.promisify.custom`).
  */
-export function guestTimerFunctions(process: object) {
-  let pending = __substratePendingTimers.get(process);
-  if (!pending) { pending = new Set(); __substratePendingTimers.set(process, pending); }
-  const held = pending;
-  const host = engineTimers;
-  const hostSetTimeout = host.setTimeout;
-  const hostSetInterval = host.setInterval;
-  const hostClearTimeout = host.clearTimeout;
-  const hostClearInterval = host.clearInterval;
-  const hostSetImmediate = host.setImmediate;
-  const hostClearImmediate = host.clearImmediate;
-  // Node's timers answer a `Timeout`: an object with `ref`, `unref`,
-  // `hasRef` and `refresh`, which vitest and many packages call. A browser's
-  // answer a number. The engine used to correct this by replacing the realm's
-  // `setTimeout`, which in a Node host replaced the host's own; the
-  // correction belongs to the guest that reads Node's shape, so it is made
-  // here, on the guest's timer, and a host that already answers a `Timeout`
-  // keeps its own. The shape itself is `src/node-lib/timers.ts`: Node's own
-  // files take their timers from `require('timers')` rather than from the
-  // realm, and a timer made through one is cleared through the other.
-  const handleOf = timerHandleOf;
-  // An exception a timer callback throws is that program's uncaught
-  // exception: Node gives it to the process's `uncaughtException` listeners,
-  // else prints the stack to that process's stderr and exits it 1, and every
-  // other process is untouched. The engine's timers are the realm's own, so
-  // an uncaught throw left the guest's frames and reached the realm's global
-  // `error` event — in the tab the worker's, which the substrate's container
-  // reads as a dead host and disposes, killing openvscode-server's extension
-  // host and every other program in the tab along with the one that threw.
-  // A callback with no owning program (the engine imported as a library) is
-  // rethrown, so the host reports it as it always did.
-  const inProcess = (fn: (...a: unknown[]) => void) => (...args: unknown[]): void => {
-    try { withGuestCallback(() => fn(...args), 'timer', fn); }
-    catch (error) { if (!__reportUncaughtException(process, error)) throw error; }
-  };
-  const track = (id: unknown, kind?: string): unknown => {
-    held.add(id);
-    if (kind && id && typeof id === "object") __substrateTimerKinds.set(id, kind);
-    if (id && typeof id === "object" && typeof (id as { unref?: unknown }).unref === "function") {
-      const handle = id as { unref: () => unknown; ref: () => unknown };
-      const unref = handle.unref.bind(handle);
-      const ref = handle.ref.bind(handle);
-      handle.unref = () => { held.delete(id); return unref(); };
-      handle.ref = () => { held.add(id); return ref(); };
+onNodeLibLoaded((name, exports, require) => {
+  if (name !== 'timers') return;
+  const process = require('process') as object;
+  const timers = exports as Record<string, TimerFunction>;
+  for (const key of ['setTimeout', 'setInterval', 'setImmediate']) {
+    const schedule = timers[key]!;
+    const counted = {
+      [key](this: unknown, ...args: unknown[]): unknown {
+        const timer = Reflect.apply(schedule, this, args) as NodeTimer;
+        heldBy(process).add(timer);
+        return timer;
+      },
+    }[key]!;
+    for (const property of Reflect.ownKeys(schedule)) {
+      if (property === 'name' || property === 'prototype') continue;
+      Reflect.defineProperty(counted, property, Reflect.getOwnPropertyDescriptor(schedule, property)!);
     }
-    return id;
-  };
-  return {
-    setTimeout(fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) {
-      let id: unknown;
-      const call = inProcess(fn);
-      id = nodeTimeout(hostSetTimeout.call(host, (...args: unknown[]) => { held.delete(id); call(...args); }, ms, ...rest));
-      return track(id, `a ${Number(ms) || 0} ms timeout`);
-    },
-    setInterval(fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) {
-      return track(nodeTimeout(hostSetInterval.call(host, inProcess(fn), ms, ...rest)), `a ${Number(ms) || 0} ms interval`);
-    },
-    // AN IMMEDIATE IS WORK THE LOOP WAITS FOR, as a timer is: Node's loop does not end while one is queued. The
-    // guest's bare `setImmediate` used to be the realm's own, counted by nothing, so a program whose only pending
-    // work was one (a database binding answering its caller a turn later) was taken for finished and ended with
-    // exit 0 before the callback ran: audiobookshelf stopped at "Loading extension" with status 0, and the error its
-    // callback carried was printed after its process had been reaped. Held until it runs or is cleared, and its
-    // throw is the program's uncaught exception, as a timer's is. `require('timers').setImmediate` was counted
-    // already (node-lib/timers.ts, through setTimeout).
-    setImmediate(fn: (...a: unknown[]) => void, ...rest: unknown[]) {
-      if (typeof fn !== "function" || !hostSetImmediate) return hostSetImmediate?.call(host, fn, ...rest);
-      let id: unknown;
-      const call = inProcess(fn);
-      id = nodeTimeout(hostSetImmediate.call(host, (...args: unknown[]) => { held.delete(id); call(...args); }, ...rest));
-      return track(id, "an immediate");
-    },
-    clearImmediate(id: unknown) { held.delete(id); return hostClearImmediate?.call(host, handleOf(id)); },
-    clearTimeout(id: unknown) { held.delete(id); return hostClearTimeout.call(host, handleOf(id)); },
-    clearInterval(id: unknown) { held.delete(id); return hostClearInterval.call(host, handleOf(id)); },
-  };
-}
+    timers[key] = counted;
+  }
+  processTimers.set(process, timers);
+});

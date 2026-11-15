@@ -28,7 +28,8 @@ import type { NodeCryptoExport, NodeCryptoUnavailable } from './crypto-exports';
 import * as asymmetric from './crypto-ec';
 import * as rsa from './crypto-rsa';
 import type { AsymmetricKey, DsaEncoding, KeyEncodingType } from './crypto-ec';
-import { randomFill as systemRandomFill, randomUUID as systemRandomUUID, setTimeout } from '../system';
+import { randomFill as systemRandomFill, randomUUID as systemRandomUUID } from '../system';
+import { setTimeout } from '../engine-timers';
 export { constants };
 
 /** The realm's SubtleCrypto, taken when this module loads (`webcrypto` below). */

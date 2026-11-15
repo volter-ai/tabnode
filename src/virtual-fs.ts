@@ -5,7 +5,7 @@
 import type { VFSSnapshot, VFSFileEntry } from './runtime-interface';
 import { uint8ToBase64, base64ToUint8 } from './utils/binary-encoding';
 import { Readable } from './node-lib/stream-module';
-import { setTimeout } from './system';
+import { setTimeout } from './engine-timers';
 import { engineConsole as console } from './system';
 
 /**

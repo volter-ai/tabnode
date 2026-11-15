@@ -1,4 +1,4 @@
-import { setTimeout } from './system';
+import { setTimeout } from './engine-timers';
 /**
  * Node's `overrideStackTrace`, as the realm's stack hook reads it.
  *

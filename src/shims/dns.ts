@@ -19,11 +19,11 @@ import { heldWork } from '../host-globals';
 import { queueGuestNextTick } from '../guest-loop';
 import { adaToAscii } from '../node-lib/binding/ada_idna';
 import { libRequire } from '../node-lib/require-hook';
-import { AsyncLocalStorage } from './async_hooks';
+import { contextFrame, inContextFrame } from './async_hooks';
 import {
   callingSockets, captureCallingSockets, ipv6Text, linux, socketAddress, socketAddressBuffer, type TreeSockets,
 } from '../host-sockets';
-import { setTimeout, clearTimeout, setImmediate } from '../system';
+import { setTimeout, clearTimeout, setImmediate } from '../engine-timers';
 
 // DNS lookup callback type
 type LookupCallback = (err: Error | null, address?: string, family?: number) => void;
@@ -33,9 +33,9 @@ type ResolveCallback = (err: Error | null, addresses?: string[]) => void;
 
 /** The calling call's context, to answer it in: its run (the async context) and its process's socket calls. */
 function captureCaller(): <T>(continuation: () => T) => T {
-  const snapshot = AsyncLocalStorage.snapshot();
+  const frame = contextFrame();
   const sockets = captureCallingSockets();
-  return <T>(continuation: () => T): T => snapshot(() => sockets(continuation)) as T;
+  return <T>(continuation: () => T): T => inContextFrame(frame, () => sockets(continuation));
 }
 
 /**

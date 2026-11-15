@@ -22,6 +22,7 @@
  * (`src/shims/child_process.ts`), never by editing either vendored file.
  */
 import { loadNodeLib } from './load';
+import { lazyModule } from './lazy';
 
 /** Node's `child_process` module object, as a program receives it. */
 export interface ChildProcessModule {
@@ -36,8 +37,8 @@ export interface ChildProcessModule {
   _forkChild: (fd: number, serializationMode: string) => void;
 }
 
-/** The loaded module: Node's own `child_process.js`, evaluated once. */
-export const childProcessModule = loadNodeLib('child_process') as unknown as ChildProcessModule;
+/** The module: Node's own `child_process.js`, evaluated once, on its first use (`net-module.ts` says why). */
+export const childProcessModule = lazyModule<ChildProcessModule>('child_process');
 
 /**
  * `setupChannel` from Node's `internal/child_process.js`: what wires one end

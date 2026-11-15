@@ -23,7 +23,7 @@
  * how many handles a run holds, how to let them go, and how to move one to
  * another run when it is sent over IPC.
  */
-import { loadNodeLib } from './load';
+import { lazyExport, lazyModule } from './lazy';
 import type { DuplexLike } from './stream-module';
 import type { EventEmitter } from './events-module';
 import type { ProcessToken } from '../process-tokens';
@@ -154,17 +154,20 @@ export interface NetModule {
   _setSimultaneousAccepts(handle?: unknown): void;
 }
 
-/** The loaded module: Node's own `net.js`, evaluated once. */
-export const netModule = loadNodeLib('net') as unknown as NetModule;
+/**
+ * The module: Node's own `net.js`, evaluated once, on its first use. Never while the bundle evaluates: `net.js`
+ * takes Node's timers, whose loop is the process's system's, taken when a container is made (ADR-0018 item 2).
+ */
+export const netModule = lazyModule<NetModule>('net');
 
-export const Socket = netModule.Socket;
-export const Server = netModule.Server;
-export const createServer = netModule.createServer;
-export const createConnection = netModule.createConnection;
-export const connect = netModule.connect;
-export const isIP = netModule.isIP;
-export const isIPv4 = netModule.isIPv4;
-export const isIPv6 = netModule.isIPv6;
+export const Socket = lazyExport<NetModule['Socket']>('net', 'Socket');
+export const Server = lazyExport<NetModule['Server']>('net', 'Server');
+export const createServer = lazyExport<NetModule['createServer']>('net', 'createServer');
+export const createConnection = lazyExport<NetModule['createConnection']>('net', 'createConnection');
+export const connect = lazyExport<NetModule['connect']>('net', 'connect');
+export const isIP = lazyExport<NetModule['isIP']>('net', 'isIP');
+export const isIPv4 = lazyExport<NetModule['isIPv4']>('net', 'isIPv4');
+export const isIPv6 = lazyExport<NetModule['isIPv6']>('net', 'isIPv6');
 
 /** How many ref'd handles the named run holds, as Node's loop counts them. */
 export { __ownedHandleCount, __ownedHandleKinds };

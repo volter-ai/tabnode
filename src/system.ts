@@ -4,14 +4,14 @@
  *
  * A tree that is a client of a kernel (ADR-0006) offers the process's Linux calls for these under `TREE_SYSTEM`, and
  * the engine and every guest it runs take them only from there, as a native Node takes them from libuv over the same
- * calls: `clock_gettime` for `process.hrtime`, `performance.now` and `Date`; a timer list of the engine's own whose
- * nearest deadline the process's loop parks for in `epoll_pwait`; `getrandom`; `uname`, `sysinfo`,
- * `sched_getaffinity` and `/proc`. Nothing here reads the realm's global for them: a realm a kernel's host program
+ * calls: `clock_gettime` for `process.hrtime`, `performance.now` and `Date`; the loop's side of Node's `timers`
+ * binding, libuv's timer and check handles, under Node's own `lib/timers.js` (ADR-0018 item 2); `getrandom`; `uname`,
+ * `sysinfo`, `sched_getaffinity` and `/proc`. Nothing here reads the realm's global for them: a realm a kernel's host program
  * runs in has none to read (browser-substrate ADR-0227 §4, "A host program never reaches around the kernel").
  *
  * A container made over no kernel (the engine as a library in a page or a Node process, with its own in-memory tree)
  * has no Linux beneath it. Its system is the realm's own primitives, taken when this module loads, behind the same
- * interface, so the engine has one code path: its facts are the realm's (a page's clock, its `crypto`, its timers),
+ * interface, so the engine has one code path: its facts are the realm's (a page's clock, its `crypto`, its tasks),
  * and what `os` reports where no kernel answers is said at `realmSystem`'s site.
  */
 
@@ -31,6 +31,34 @@ export interface SystemInfo {
 }
 
 /**
+ * THE LOOP'S SIDE OF NODE'S `timers` BINDING (Node v24.21.0 src/timers.cc over its Environment, src/env.cc): one timer
+ * for every JavaScript timer and a check handle for immediates, which Node's own `lib/internal/timers.js` drives through
+ * `internalBinding('timers')` (node-lib/binding/timers.ts). On a kernel they are libuv's, in `node`'s C (Tabnode
+ * native/node env.c): the two arrays are that C's memory and each call is one of its exports. Over no kernel they are the
+ * realm's (`realmTimers`).
+ */
+export interface SystemTimers {
+  /** Node's `ImmediateInfo` (kCount, kRefCount, kHasOutstanding), read by the check handle where the JavaScript writes. */
+  readonly immediateInfo: Uint32Array;
+  /** Node's `timeoutInfo`: [0] is the count of referenced timers. */
+  readonly timeoutInfo: Int32Array;
+  /** The loop's now, in whole milliseconds since its start (Environment::GetNowUint64). */
+  getLibuvNow(): number;
+  /** Starts the timer handle to expire in `durationMs` (Environment::ScheduleTimer). */
+  scheduleTimer(durationMs: number): void;
+  /** Whether the timer handle holds the loop (Environment::ToggleTimerRef). */
+  toggleTimerRef(ref: boolean): void;
+  /** Whether a referenced immediate keeps the loop's poll from blocking (Environment::ToggleImmediateRef). */
+  toggleImmediateRef(ref: boolean): void;
+  /**
+   * What the handles call (Node's `setupTimers`): `processTimers` from the timer handle's callback with the loop's now,
+   * answering the next expiry (Environment::RunTimers), and `processImmediate` from the check handle's while an
+   * immediate is queued and again while one is outstanding (Environment::CheckImmediate).
+   */
+  setupTimers(processImmediate: () => void, processTimers: (now: number) => number): void;
+}
+
+/**
  * A process's system calls, as a kernel's tree offers them. Each is the Linux call of its name, made by the calling
  * process; a failure throws an error carrying the call's `code`.
  */
@@ -45,11 +73,8 @@ export interface TreeSystem {
   affinity(): number;
   /** A file of the kernel's (`/proc/...`), read whole; undefined where it cannot be read. */
   file(path: string): string | undefined;
-  /**
-   * The engine's timers' nearest deadline, in milliseconds of CLOCK_MONOTONIC (null: none). The process's loop parks
-   * no later than it, and calls `due` once it has come, from a turn of its own (no caller on the stack).
-   */
-  wake(deadline: number | null, due: () => void): void;
+  /** The loop's timer and check handles, under Node's timers. */
+  readonly timers: SystemTimers;
   /**
    * `run`, once, when the process's loop next has nothing to do now and would wait, as libuv asks whether its loop is
    * alive before it blocks (`uv__loop_alive`): a run's end is decided then. Absent on the realm's system, whose run
@@ -109,11 +134,90 @@ export const realmProcess = realmHost === 'node' ? realmNode as unknown as {
   getBuiltinModule?(name: string): unknown; execPath?: string;
 } : null;
 
-let realmWake: unknown;
+/**
+ * THE REALM'S LOOP, for a container over no kernel: libuv's timer and check handles over the realm's own tasks, in the
+ * order libuv runs them. The timer handle is one realm `setTimeout`; when it expires, the timers run (RunTimers), then
+ * the check phase, as libuv's iteration goes on from its timers to its check. The check phase is one task of the realm's
+ * (a `MessageChannel`'s message, which no clamp delays): posted when a referenced immediate is queued, as libuv's idle
+ * handle keeps its poll from blocking, and again while one is outstanding or a referenced one remains, as each
+ * iteration of libuv's loop runs its check; an unreferenced immediate alone waits for the next iteration, here the next
+ * expiry. Between two tasks the realm runs the microtasks, as `node`'s drain does after each callback. Where the realm
+ * is a Node host's, a handle that does not hold the loop does not hold that host either (`unref`).
+ */
+function realmTimers(): SystemTimers {
+  const immediateInfo = new Uint32Array(3);
+  const timeoutInfo = new Int32Array(1);
+  const clock = (): number => (realmNow ? realmNow() : realmDateNow());
+  const base = clock();
+  const now = (): number => Math.floor(clock() - base);
+  let processImmediate: (() => void) | undefined;
+  let processTimers: ((now: number) => number) | undefined;
+  let timer: unknown;
+  let timerRef = false;
+  let immediateRef = false;
+  let check: MessageChannel | undefined;
+  let checkPosted = false;
+  const refTimer = (): void => {
+    const handle = timer as { ref?(): void; unref?(): void } | undefined;
+    if (handle && typeof handle === 'object') { if (timerRef) handle.ref?.(); else handle.unref?.(); }
+  };
+  const refCheck = (): void => {
+    const port = check?.port1 as unknown as { ref?(): void; unref?(): void } | undefined;
+    if (immediateRef) port?.ref?.(); else port?.unref?.();
+  };
+  const postCheck = (): void => {
+    if (checkPosted) return;
+    checkPosted = true;
+    if (!check) {
+      check = new MessageChannel();
+      check.port1.onmessage = runCheck;
+      refCheck();
+    }
+    check.port2.postMessage(null);
+  };
+  // CheckImmediate (env.cc:1613-1636), one call a task: the next is posted while one is outstanding.
+  function runCheck(): void {
+    checkPosted = false;
+    if (immediateInfo[0] === 0) return;
+    processImmediate!();
+    if (immediateInfo[2]) { postCheck(); return; }
+    if (immediateInfo[1] === 0) loop.toggleImmediateRef(false);
+    else postCheck();
+  }
+  // RunTimers (env.cc:1552-1611): the due timers, then the next expiry's handle, then this iteration's check phase.
+  const runTimers = (): void => {
+    timer = undefined;
+    const expiry = processTimers!(now());
+    if (expiry !== 0) {
+      const duration = Math.abs(expiry) - now();
+      loop.scheduleTimer(duration > 0 ? duration : 1);
+      loop.toggleTimerRef(expiry > 0);
+    } else loop.toggleTimerRef(false);
+    if (immediateInfo[0] > 0) postCheck();
+  };
+  const loop: SystemTimers = {
+    immediateInfo,
+    timeoutInfo,
+    getLibuvNow: now,
+    scheduleTimer(durationMs) {
+      if (timer !== undefined) realmClearTimeout?.(timer);
+      timer = realmSetTimeout?.(runTimers, durationMs);
+      refTimer();
+    },
+    toggleTimerRef(ref) { timerRef = ref; refTimer(); },
+    toggleImmediateRef(ref) {
+      immediateRef = ref;
+      if (ref) postCheck();
+      refCheck();
+    },
+    setupTimers(immediate, timers) { processImmediate = immediate; processTimers = timers; },
+  };
+  return loop;
+}
 
 /**
  * The realm's system, for a container over no kernel. Its clocks are the realm's (`performance`'s shared clock, Date's
- * wall clock), its randomness the realm's `crypto`, its timers' wake the realm's `setTimeout`. No kernel answers `os`
+ * wall clock), its randomness the realm's `crypto`, its loop's handles the realm's tasks (`realmTimers`). No kernel answers `os`
  * here: `uname` and `sysinfo` are the fixed figures the engine has always given a page (a Linux x64 of 4 GiB, 2 CPUs),
  * which describe no machine.
  */
@@ -130,19 +234,17 @@ const realmSystem: TreeSystem = {
     totalram: 4 * 1024 ** 3, freeram: 2 * 1024 ** 3, sharedram: 0, bufferram: 0, totalswap: 0, freeswap: 0, procs: 1 }),
   affinity: () => 2,
   file: () => undefined,
-  wake(deadline, due) {
-    if (realmWake !== undefined) realmClearTimeout?.(realmWake);
-    realmWake = undefined;
-    if (deadline === null || !realmSetTimeout) return;
-    realmWake = realmSetTimeout(() => { realmWake = undefined; due(); }, Math.max(0, deadline - monotonicMs()));
-  },
+  get timers() { return realmLoop ??= realmTimers(); },
   // The engine's diagnostics over no kernel are the realm's console's, as they always were there.
   trace: realmSay ? (line: string) => realmSay(line) : null,
 };
 
 // ---- the process's system ----
 
+let realmLoop: SystemTimers | undefined;
 let current: TreeSystem = realmSystem;
+/** The system whose loop Node's timers were set up over (systemTimers), once they are. */
+let timersOf: TreeSystem | undefined;
 
 /**
  * The system the engine's processes take their facts from: a kernel's tree's from the first container made over one
@@ -151,17 +253,24 @@ let current: TreeSystem = realmSystem;
 export function useTreeSystem(tree: unknown): void {
   const offered = treeSystemOf(tree);
   if (!offered || offered === current) return;
+  // Node's timers take their binding's arrays once, as Node's Environment holds them from before its library loads: a
+  // loop's handles are not moved under timers already made.
+  if (timersOf !== undefined) throw new Error('tabnode: Node\'s timers were set up over another system\'s loop before this one was offered');
   current = offered;
   // The engine's clock counts from here on the kernel's clock; nothing measured before it is the guests'.
   startedMs = monotonicMs();
   originMs = realtimeMs();
   installRealmDate();
-  // A timer set before the kernel's system was taken (a module's load) is the kernel loop's from now.
-  scheduleWake();
 }
 
 /** The process's system. */
 export function system(): TreeSystem { return current; }
+
+/** The loop's handles Node's `timers` binding is made over (node-lib/binding/timers.ts): the system's, from then on. */
+export function systemTimers(): SystemTimers {
+  timersOf = current;
+  return current.timers;
+}
 
 /** Whether the engine's facts come from a kernel. */
 export function onKernel(): boolean { return current !== realmSystem; }
@@ -216,166 +325,6 @@ export const performance = {
   now: (): number => monotonicMs() - startedMs,
   get timeOrigin(): number { return originMs; },
 };
-
-// ---- the engine's timers ----
-
-/**
- * THE ENGINE'S OWN LOOP: its timers, its completions and its immediates, in libuv's phases. Each timer's deadline
- * is a reading of the system's monotonic clock; the process's loop is told the nearest one (`wake`) and calls back
- * when it has come, and the due timers then run, one task each, in deadline order (libuv's timer phase); then the
- * engine's completed asynchronous work (an fs request's answer, which libuv runs from its poll phase), one task
- * each; then the immediates queued before them (its check phase). While a completion or an immediate waits, the
- * wake is now, so the loop does not park. No realm timer is taken: on a kernel the loop parks for the deadline in
- * `epoll_pwait`, and each turn between two due items is that loop's own; over no kernel the realm's `setTimeout`
- * is the wake and a worker task of the engine's own the turn.
- *
- * Handles are numbers, as a browser's are; Node's `Timeout` is built over one where a guest asks
- * (`node-lib/timers.ts`).
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Callback = (...args: any[]) => void;
-interface Timer { id: number; due: number; fn: Callback; args: unknown[]; every: number | null }
-const timers = new Map<number, Timer>();
-const immediates = new Map<number, { fn: Callback; args: unknown[] }>();
-const completions: Array<() => void> = [];
-let nextId = 1;
-/** A task of the worker's own between two timers, so the microtasks one leaves run before the next (made at first use:
- *  importing the engine opens nothing, host-globals.ts). */
-let turn: MessageChannel | undefined;
-let turnPosted = false;
-
-/**
- * What carries a program's context into its timers' callbacks (async_hooks.ts: AsyncLocalStorage's store, the entry
- * account): set by it once, applied to each callback as it is scheduled.
- */
-type Carrier = (callback: Callback, kind: 'setTimeout' | 'setInterval' | 'setImmediate') => Callback;
-let carrier: Carrier | undefined;
-export function carryTimerCallbacks(carry: Carrier): void { carrier = carry; }
-const carry = (fn: unknown, kind: 'setTimeout' | 'setInterval' | 'setImmediate'): Callback =>
-  typeof fn !== 'function' ? () => {} : carrier ? carrier(fn as Callback, kind) : fn as Callback;
-
-/**
- * Messages posted to a port the process listens to and not yet delivered (guest-message-ports.ts). The worker delivers
- * them from its task queue, which runs only between the loop's turns, so each is work due now, as a Node port's message
- * is its handle's (src/node_messaging.cc, a MessagePort's uv_async_t): the loop does not wait while one is queued.
- */
-let messagesDue = 0;
-export function portMessagesDue(change: number): void {
-  if (change === 0) return;
-  messagesDue += change;
-  scheduleWake();
-}
-
-function scheduleWake(): void {
-  let nearest: number | null = null;
-  if (immediates.size > 0 || completions.length > 0 || messagesDue > 0) nearest = 0;
-  else for (const timer of timers.values()) if (nearest === null || timer.due < nearest) nearest = timer.due;
-  current.wake(nearest, runDue);
-}
-
-function later(ms: unknown): number {
-  const delay = Number(ms);
-  // Node's: a delay that is not a number in [1, 2^31 - 1] is 1 ms.
-  return monotonicMs() + (delay >= 1 && delay <= 2147483647 ? delay : 1);
-}
-
-/** Run the earliest due timer, else the immediates queued until now; another turn follows while more are due. */
-function runDue(): void {
-  const now = monotonicMs();
-  let next: Timer | undefined;
-  for (const timer of timers.values()) if (timer.due <= now && (!next || timer.due < next.due)) next = timer;
-  if (next) {
-    if (next.every === null) timers.delete(next.id);
-    else next.due = Math.max(now, next.due) + next.every;
-    postTurn();
-    call(next.fn, next.args);
-    return;
-  }
-  const completion = completions.shift();
-  if (completion) {
-    postTurn();
-    call(completion, []);
-    return;
-  }
-  const queued = [...immediates];
-  immediates.clear();
-  for (let at = 0; at < queued.length; at++) {
-    const [, { fn, args }] = queued[at]!;
-    // An immediate's throw is the process's uncaught exception; the ones after it still run, on the next turn.
-    if (!call(fn, args)) { for (const rest of queued.slice(at + 1)) immediates.set(rest[0], rest[1]); break; }
-  }
-  scheduleWake();
-}
-
-function postTurn(): void {
-  // On a kernel the process's loop is the one loop: the next due item's turn is its wake (call's scheduleWake).
-  if (onKernel() || turnPosted) return;
-  turnPosted = true;
-  if (!turn) {
-    turn = new MessageChannel();
-    turn.port1.onmessage = () => { turnPosted = false; runDue(); };
-    // A Node host's port would hold its loop open by itself; what holds it is a pending timer's wake.
-    (turn.port1 as unknown as { unref?(): void }).unref?.();
-  }
-  turn.port2.postMessage(null);
-}
-
-/**
- * Completed asynchronous work, run from a turn of the loop as libuv runs a completed request's callback: an fs
- * request's answer, as a libuv filesystem completion arrives from the loop, never from the tick or the promise queue,
- * so a chain of them cannot run ahead of the process's other work. Answers its cancellation (the owning process's end
- * cancels work not yet begun).
- */
-export function queueCompletion(run: () => void): () => void {
-  completions.push(run);
-  scheduleWake();
-  return () => {
-    const at = completions.indexOf(run);
-    if (at >= 0) { completions.splice(at, 1); scheduleWake(); }
-  };
-}
-
-/** A callback's throw is reported as the realm reports an uncaught error: out of its own microtask. */
-function call(fn: Callback, args: unknown[]): boolean {
-  try { fn(...args); return true; }
-  catch (error) { queueMicrotask(() => { throw error; }); return false; }
-  finally { scheduleWake(); }
-}
-
-export function setTimeout(fn: Callback, ms?: number, ...args: unknown[]): number {
-  const id = nextId++;
-  timers.set(id, { id, due: later(ms), fn: carry(fn, 'setTimeout'), args, every: null });
-  scheduleWake();
-  return id;
-}
-
-export function setInterval(fn: Callback, ms?: number, ...args: unknown[]): number {
-  const id = nextId++;
-  const every = Number(ms) >= 1 && Number(ms) <= 2147483647 ? Number(ms) : 1;
-  timers.set(id, { id, due: monotonicMs() + every, fn: carry(fn, 'setInterval'), args, every });
-  scheduleWake();
-  return id;
-}
-
-export function setImmediate(fn: Callback, ...args: unknown[]): number {
-  const id = nextId++;
-  immediates.set(id, { fn: carry(fn, 'setImmediate'), args });
-  scheduleWake();
-  return id;
-}
-
-/** One clear for every kind, as Node's and a browser's clears accept each other's ids. */
-function clear(id: unknown): void {
-  const key = typeof id === 'number' ? id : Number(id);
-  if (!timers.delete(key) && !immediates.delete(key)) return;
-  scheduleWake();
-}
-export const clearTimeout: (id?: unknown) => void = clear;
-export const clearInterval: (id?: unknown) => void = clear;
-export const clearImmediate: (id?: unknown) => void = clear;
-
-/** The engine's timers as one record, for a caller that takes them by name. */
-export const engineTimers = { setTimeout, setInterval, setImmediate, clearTimeout, clearInterval, clearImmediate };
 
 // ---- Date on a kernel ----
 
