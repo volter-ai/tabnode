@@ -183,13 +183,14 @@ name what runs (browser-substrate ADR-0218 §3).
 
 ## Where the evidence stops
 
-- Built on 2026-11-10 (themachine, wasi-sdk 34.0 arm64-macos) by `scripts/build-node-deps-wasm.sh`, about 40 s:
-  OpenSSL 3.5.8 from Node v24.21.0's `deps/openssl` with the configuration in §1 (`libcrypto.a` 6,197,218 bytes,
-  `libssl.a` 902,392 bytes, no compiler warning), ncrypto and the export layer, linked into `node-deps.wasm`,
-  3,002,593 bytes (4.0 MB as the base64 the bundle carries, one string literal). Two builds in different scratch directories gave the
-  same bytes. *Read 2026-11-15:* the committed module (3,002,593 bytes) does not come from the committed script: the
-  script at that commit's sources builds 2,446,826 bytes with every one of its 97 exports and a `target_features`
-  section the committed module lacks, so what else made it is not known; unexplained. Its imports are WASI's (`random_get`, `clock_time_get`, `environ_*`, `proc_exit`, and the file calls
+- Built on 2026-11-15 by `scripts/build-node-deps-wasm.sh` alone (wasi-sdk 34.0 arm64-macos, as it fetches it): OpenSSL
+  3.5.8 from Node v24.21.0's `deps/openssl` with the configuration in §1, ncrypto and the export layer, linked into
+  `node-deps.wasm`, 2,446,826 bytes (sha256 `42ee5ea3…c286c`, 3.3 MB as the base64 the bundle carries, one string
+  literal). Two builds in different scratch directories gave the same bytes. The module committed before it, 3,002,593
+  bytes, was built on another machine whose environment is not recorded, and the script does not reproduce it: it
+  lacks the bulk-memory sections (`datacount`, `target_features`) wasi-sdk 34's compiler emits, and holds 1,449 bytes
+  of globals against 8 and 500 KB more code, a compiler other than the one the script fetches or configured otherwise.
+  The tab readings below were taken on that module and are not yet read again on this one. Its imports are WASI's (`random_get`, `clock_time_get`, `environ_*`, `proc_exit`, and the file calls
   OpenSSL's loaders reach) and the five `tabnode` callbacks. Its compile and instantiation times are not yet read in
   a tab.
 - Built: the module, its realm loader (`src/node-lib/binding/node-deps.ts`), the `tls_wrap`, `crypto` and
