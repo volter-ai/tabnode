@@ -4,6 +4,7 @@
 #ifndef TABNODE_ENGINE_H
 #define TABNODE_ENGINE_H
 #include <stdint.h>
+#include <uv.h>
 
 #define TABNODE_IMPORT(name) __attribute__((import_module("host:tabnode"), import_name(#name)))
 
@@ -27,6 +28,19 @@ TABNODE_IMPORT(poll_ready) void tabnode_poll_ready(int fd, int status, int event
 // src/env.cc:1303-1312): it has nothing to do now, its poll would block. The engine decides there what it decides
 // when its loop would park (a run's end), as libuv asks `uv__loop_alive` before it blocks.
 TABNODE_IMPORT(loop_idle) void tabnode_loop_idle(void);
+// The fs binding's completions (native/node fs.c, fs_event.c; ADR-0018 item 6). Each is what Node's C++ does in V8
+// at that point, and each is followed by the callback scope's close, a drain.
+struct tabnode_fs_s;
+// An asynchronous request completed on libuv's threadpool (its uv_fs_cb, run on the loop): the request's After
+// (node_file.cc AfterNoArgs, AfterStat, AfterInteger, ..., node_dir.cc AfterOpenDir, AfterDirRead) and its
+// MakeCallback, or its promise's settling. The engine frees the request.
+TABNODE_IMPORT(fs_done) void tabnode_fs_done(struct tabnode_fs_s *request);
+// A uv_fs_event_t's change (FSEventWrap::OnEvent): libuv's filename (NULL for none), events and status.
+TABNODE_IMPORT(fs_event) void tabnode_fs_event(uv_fs_event_t *handle, const char *filename, int events, int status);
+// A uv_fs_poll_t's change (StatWatcher::Callback), its current and previous stats in the binding's stat arrays.
+TABNODE_IMPORT(stat_watcher_change) void tabnode_stat_watcher_change(uv_fs_poll_t *handle, int status);
+// A handle uv_close has closed (HandleWrap::OnClose): its wrap is closed and its onclose runs; C frees it after.
+TABNODE_IMPORT(handle_closed) void tabnode_handle_closed(uv_handle_t *handle);
 // The close of a callback's scope (Node's InternalCallbackScope::Close, src/api/callback.cc): the tick queue, then the
 // microtasks, which a browser runs only between tasks, so the engine answers it by a suspension that resumes from the
 // next task (a `Suspending` import).

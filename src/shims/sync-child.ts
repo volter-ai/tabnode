@@ -138,7 +138,7 @@ function workerSource(): string {
     "const inNode = typeof self === 'undefined' || typeof self.postMessage !== 'function';",
     "const port = inNode ? (await import('node:worker_threads')).parentPort : self;",
     "const encoder = new TextEncoder(), decoder = new TextDecoder();",
-    "let control, toParent, toWorker, engine, holdsLinks = false;",
+    "let control, toParent, toWorker, engine;",
     // A message to the caller, chunked; each chunk waits for the caller to take it.
     "function send(text) {",
     "  const bytes = encoder.encode(text); let offset = 0;",
@@ -192,7 +192,6 @@ function workerSource(): string {
     "function proxyOf(VirtualFS) {",
     "  const stubs = new Map();",
     "  return class ProxyVFS extends VirtualFS {",
-    "    get holdsLinks() { return holdsLinks; }",
     "    existsSync(p) { return call('existsSync', [p]); }",
     "    statSync(p) { return reviveStat(call('statSync', [p])); }",
     "    lstatSync(p) { return reviveStat(call('lstatSync', [p])); }",
@@ -229,7 +228,6 @@ function workerSource(): string {
     // The sentinel the caller's first bound waits on: written before anything
     // that can block, so the caller learns the thread has the run.
     "    send(JSON.stringify({ t: 'begin' }));",
-    "    holdsLinks = message.holdsLinks === true;",
     "    if (!engine) engine = await Promise.race([",
     "      import(message.engineURL),",
     "      new Promise((resolve, reject) => setTimeout(() => reject(new Error('the thread could not load the engine within ' + (message.loadWaitMs / 1000) + ' s from ' + message.engineURL)), message.loadWaitMs)),",
@@ -468,7 +466,6 @@ export function runSyncChild(request: SyncChildRequest): SyncChildResult {
     ...(request.input ? { input: { b64: base64(request.input) } } : {}),
     engineURL: engineModuleURL(),
     loadWaitMs: ENGINE_LOAD_WAIT_MS,
-    holdsLinks: (tree as unknown as { holdsLinks?: boolean }).holdsLinks === true,
   });
   const streamed: Record<1 | 2, Uint8Array[]> = { 1: [], 2: [] };
   // The first message of a run is the thread's `begin`, and it is waited for

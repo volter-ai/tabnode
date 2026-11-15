@@ -67,6 +67,11 @@ export { runPid, processByPid };
 export { installProcessRegistry, installProcessIdAllocator, __currentProcessToken as currentProcessToken } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
+// A Node process whose program is `node` (ADR-0018): the host gives its exports and memory, and answers the program's
+// imports the bindings over libuv complete through (native/node engine.h fs_done, fs_event, stat_watcher_change,
+// handle_closed).
+export { installLibnode, libnodeInstalled, libnodeImports } from './node-lib/binding/libnode';
+export type { LibnodeMemory } from './node-lib/binding/libnode';
 export type { StdioKind } from './shims/child_process';
 export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter, type StdinReader } from './stdin-ring';
 /** Present from the release whose runs read `RunOptions.stdinReader`: a host gives one only to an engine that has it. */

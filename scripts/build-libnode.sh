@@ -1,6 +1,7 @@
 #!/bin/bash
-# Builds `node` and `libnode.so` (ADR-0018 §1, §2): Node's start, the loop's own handles and the engine's descriptor
-# waits (native/node) as a WALI program, linked position-independent against `libnode.so` and `libc.so`; and
+# Builds `node` and `libnode.so` (ADR-0018 §1, §2): Node's start, the loop's own handles, the engine's descriptor
+# waits and the fs binding's C over uv_fs_* (native/node, item 6) as a WALI program, linked position-independent
+# against `libnode.so` and `libc.so`; and
 # `libnode.so`, the one shared library of Node's C, which holds libuv today: the 35 sources libuv's CMakeLists.txt
 # compiles on Linux (its uv_sources, the unix and Linux lists and their defines), from Node v24.21.0's deps/uv (libuv
 # 1.52.1), unchanged. Both are compiled by browser-substrate's prepared native SDK with its Linux headers, whose
@@ -38,7 +39,8 @@ done
 wait
 mkdir -p "$out"
 "$cc" -shared -pthread -Wl,--soname=libnode.so -o "$out/libnode.so" "${objects[@]}"
-for source in node_main env poll; do
+for source in node_main env poll fs fs_cp fs_event; do
   "$cc" "${flags[@]}" -I"$uv/include" -c "$repo/native/node/$source.c" -o "$work/$source.o"
 done
-"$cc" -pthread -o "$out/node" "$work/node_main.o" "$work/env.o" "$work/poll.o" -L"$out" -lnode
+"$cc" -pthread -o "$out/node" "$work/node_main.o" "$work/env.o" "$work/poll.o" "$work/fs.o" "$work/fs_cp.o" \
+  "$work/fs_event.o" -L"$out" -lnode
