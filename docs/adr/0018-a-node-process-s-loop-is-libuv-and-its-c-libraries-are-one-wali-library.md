@@ -1,6 +1,6 @@
 # ADR-0018: A Node process's loop is libuv, and Node's C libraries are one WALI library in its memory
 
-Status: Proposed (design; nothing built).
+Status: Proposed. Step 1 built and run, step 2's waits built and run (2026-11-15); the rest is design.
 
 Date: 2026-11-14. Served: browser-substrate ADR-0234 §7 ("A Node process's loop is libuv itself"), ADR-0236 hole 12
 ("A host program parked in Linux receives none of the engine's work") and ADR-0236 step 5 ("Tabnode's loop becomes
@@ -82,10 +82,12 @@ goes.
 libuv calls C: each handle's callbacks are `libnode`'s glue, as Node's `src/*_wrap.cc` callbacks are (`OnRead`,
 `OnConnection`, `AfterWrite`). The glue calls the handle's JavaScript (an import, as `MakeCallback` calls into V8),
 and when it returns calls `drain`, a `Suspending` import, before it returns to libuv, as Node's
-`InternalCallbackScope` closes: the stack suspends, the worker runs its microtasks and then one task, and the
-suspension resumes from that task. The resume is a task, not a microtask, because a resume queued as a microtask
-would run before the microtasks the drained ones queue. A callback that blocks (a synchronous fs call) blocks the
-worker on its word, as today.
+`InternalCallbackScope` closes: the stack suspends, the worker runs its microtasks and then its event loop's other
+work, and the suspension resumes from the worker's next task (the machine realm's `task`, browser-substrate
+`host/task.mjs`). The resume is a task, not a microtask, because a resume queued as a microtask would run before the
+microtasks the drained ones queue. Its kind is the host's: in a tab a port's message, one task; on the Node host an
+immediate, because Node serves a port up to 1,000 messages in one callback, so a message the realm posts itself runs
+before the loop's other work. A callback that blocks (a synchronous fs call) blocks the worker on its word, as today.
 
 ### 5. Asynchronous work completes into the loop's poll: libuv's threadpool, and the machine's devices
 
@@ -167,27 +169,54 @@ is built.
   continuation. So `libnode.so` takes libuv at a267f5688b or the first release with it, as browser-substrate
   ADR-0236 step 5 says, a difference from Node v24.21.0's `deps/uv` named here; musl's `posix_spawn` is then a clone
   with an entry, and the probe needs `CLONE_VM` to share the memory.
-- **Not read:** the loader run on a Node process's worker, which holds no
-  loader today; a task boundary's cost on a Node process's worker; whether every library of §1 builds as Node
-  configures it under the WALI SDK (ADR-0016 built OpenSSL with wasi-sdk, not the WALI SDK).
+- **Not read:** whether every library of §1 builds as Node configures it under the WALI SDK (ADR-0016 built OpenSSL
+  with wasi-sdk, not the WALI SDK).
+- **Read 2026-11-15, on the Node host (Node v26.12.0), Rallly's image (browser-substrate `rallly:3e63239`) booted on
+  a clone of its disk:** `node` and `libnode.so` built by `scripts/build-libnode.sh` from Node v24.21.0's tarball with
+  the substrate's prepared native SDK, placed in Rallly's app container (`/opt/programs/bin/node-libuv`,
+  `/opt/programs/lib/libnode.so`) and run there beside the image's own `/usr/bin/node`, today's host program, in one
+  machine. The loader loads `libnode.so` on the program's worker; a kernel wait of the program (libuv's `epoll_wait`)
+  blocks that worker as any program's does; `node -e "setTimeout(() => console.log('ok'), 50)"` prints `ok` and ends 0.
+  Each reading is a `docker exec` of `sh -c` timed from the host (an exec of `true` takes 77 to 98 ms), five times:
+  - `node -e "console.log('ok')"`: libuv 215 to 291 ms (median 261), today 267 to 387 ms (median 272);
+  - the 50 ms timer program: libuv 272 to 346 ms (median 334), today 265 to 326 ms (median 287); over three boots,
+    seven each, medians 323 and 300 ms. **Slower than today's** by more than the print's difference, its cause not
+    read;
+  - one 50 ms timer's lateness, read by the program: libuv 0.61 to 3.30 ms (median 1.30), today 1.39 to 2.40 ms
+    (median 1.92);
+  - a chain of 1,000 `setImmediate`s, per turn: libuv 27.5 to 56.8 µs (median 32.7), today 7.4 to 14.8 µs (median
+    8.8). The turn is libuv's iteration (its `epoll_wait` with no timeout, a call into the machine's kernel) and the
+    drain, an immediate of the Node host's worker. In a bare Node worker an immediate's turn is 17 to 43 µs and a port
+    message's 8.5 to 11 µs; today's turn is a port message inside Node's batch of 1,000, which serves nothing else
+    meanwhile. **This reading is slower than today's**: a callback's turn costs about four times as much on the Node
+    host. The tab's drain (a port message, one task) is not read on a Node worker's equivalent there.
+  - `crypto.subtle.deriveBits` (PBKDF2, 4,096 iterations) awaited beside a 1 s interval, once in each of three boots:
+    libuv 52 and 52 ms; today 4,254, 4,718 and 4,941 ms. With the drain resumed by a port's message instead it was not
+    settled in 15 s (Node's batch). 52 ms is the next callback libuv makes, the engine's own 50 ms run check (read in
+    `src/shims/child_process.ts:1356, 1430`; its count of the run's handles, which goes with steps 3 to 6); with no
+    callback the answer waits for the park to end, which is §5's device.
 - **Read 2026-11-14, browser-substrate `packages/wali/linux/host`:** one realm module (`task.mjs`) runs both kinds of
   image: `runImage` instantiates a WALI program, or runs a host program (`runHost`) where the image's facts name one,
   and only in an exec worker of the `"node"` kind (`task.mjs:435-446`); the machine starts that kind for an exec whose
   image is a host program (`machine.mjs:151, 235`). So `node` as a WALI program takes one fact more on its image:
   that its imports name the engine, so its exec gets a `"node"` worker and the engine registered for it (as host
-  programs are, `hostPrograms`) answers those imports. *Not read:* a WALI program's kernel waits on that worker,
-  which for a host program block on the worker's word (browser-substrate ADR-0227).
+  programs are, `hostPrograms`) answers those imports. Its kernel waits on that worker were read 2026-11-15 (below).
 - **Open: the engine's identity.** A host program is registered under a digest of the Node baseline's host-executable
   key (browser-substrate `imageHostPrograms`), which moves with each baseline release; a C program names its import
   module at compile time. The engine is named `host:tabnode` until an identity that also pins the interface between
   `libnode`'s C and the engine's JavaScript (both from one Tabnode commit) is decided.
 - **Order of building, each a step that runs before the next is written.** Today's engine is asynchronous end to end:
-  `createContainer().runNode()` answers a promise of the run's end, its waits `LinuxEventLoop`'s timer and descriptor
-  registrations made from JavaScript through the process's raw calls (browser-substrate `linux-node-run.ts`). Under
+  `createContainer().runNode()` answers a promise of the run's end, its waits timer and descriptor registrations made
+  from JavaScript through the process's raw calls (browser-substrate `linux-node-run.ts`). Under
   libuv, `bootstrap` starts Node's library and returns, and the process lives while libuv holds a referenced handle,
   so the engine's waits become libuv's handles first:
-  1. `node` as a WALI program on the Node worker: its `main`, the loop's own handles (`env.c`), the six engine
-     imports. *Built 2026-11-14 (native/node), linked; not run.*
+  1. `node` as a WALI program on the Node worker: its `main`, the loop's own handles (`env.c`), the engine's
+     imports, a drain after each of Node's callback scopes (the bootstrap's, StartExecution's, and each process
+     event's, ProcessEmit's). *Built 2026-11-14 (native/node); run 2026-11-15* (above): the image's facts name the
+     engine its imports name, and its task's worker answers them from the module registered under that name
+     (browser-substrate `host/image.mjs` `engine`, `host/task.mjs` `engineImports`); it runs in the worker its exec
+     lands in, which needs no worker of the `"node"` kind, since a Node host's two kinds are one and a tab's differ
+     only by their script's name for its memory measurement.
   2. The engine's waits as libuv's: its timers on `env.c`'s timer, through the `timers` binding Node's
      `lib/internal/timers.js` drives; `linux-event-loop.ts` and `system.ts`'s loop go. *Read 2026-11-14:* the binding
      is `immediateInfo` and `timeoutInfo` (arrays the JavaScript keeps in C's memory, both now in `env.c`),
@@ -203,6 +232,15 @@ is built.
      `__substrateResume`, `__substrateRestore`). So the binding is the engine's frame register; `--async-context-frame`
      is on, as Node 24's default; Node's `internal/async_context_frame`, its `AsyncLocalStorage` (the async-context-frame
      form) and its timers run unmodified over it; the engine's own `AsyncLocalStorage` and `carryTimerCallbacks` go.
+     *Built and run 2026-11-15, its waits:* every wait of the engine is a handle of libuv's loop (browser-substrate
+     `packages/node/src/linux-uv-waits.ts`): the engine's nearest deadline is `env.c`'s timer through the binding's
+     `scheduleTimer` and `toggleTimerRef`, a deadline that has come (a completion or an immediate it holds) the
+     immediate check and idle handles through `immediateInfo` and `toggleImmediateRef`, and a descriptor a `uv_poll_t`
+     (`native/node/poll.c`) until each binding owns its handle (steps 3 to 6). `linux-event-loop.ts`, its park and its
+     4 ms bound went. *Not built:* Node's `lib/timers.js` and `lib/internal/timers.js` over the binding, in place of
+     `system.ts`'s list, which still answers the deadline; so `system.ts`'s loop has not gone. The run's end is still the
+     engine's own count, which ends the process by `exit_group`; `beforeExit` and `exit` from `main` are Node's once the
+     handles are libuv's.
   3. Node's bootstrap on the realm's own global (§7), and the standard streams: `tty_wrap`, `pipe_wrap` and the
      stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so `process.stdout` is Node's.
   4. `tcp_wrap` and `stream_wrap` over `uv_tcp_t`; `udp_wrap` over `uv_udp_t`.

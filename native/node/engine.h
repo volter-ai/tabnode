@@ -16,8 +16,13 @@ TABNODE_IMPORT(process_timers) double tabnode_process_timers(double now);
 TABNODE_IMPORT(process_immediate) void tabnode_process_immediate(void);
 // `process.emit('beforeExit')` (Node's EmitProcessBeforeExit): answers 0, or nonzero where the process is stopping.
 TABNODE_IMPORT(before_exit) int tabnode_before_exit(void);
-// `process.emit('exit')` and the exit code (Node's EmitProcessExitInternal).
-TABNODE_IMPORT(exit) int tabnode_exit(void);
+// `process.emit('exit')` (Node's EmitProcessExitInternal, src/api/hooks.cc:61-89).
+TABNODE_IMPORT(emit_exit) void tabnode_emit_exit(void);
+// The exit code once 'exit's listeners and their microtasks have run (hooks.cc:91-92).
+TABNODE_IMPORT(exit_code) int tabnode_exit_code(void);
+// A descriptor the engine waits on is ready (poll.c): libuv's status and its events (UV_READABLE, UV_WRITABLE,
+// UV_DISCONNECT).
+TABNODE_IMPORT(poll_ready) void tabnode_poll_ready(int fd, int status, int events);
 // The close of a callback's scope (Node's InternalCallbackScope::Close, src/api/callback.cc): the tick queue, then the
 // microtasks, which a browser runs only between tasks, so the engine answers it by a suspension that resumes from the
 // next task (a `Suspending` import).
