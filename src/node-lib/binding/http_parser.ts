@@ -28,7 +28,7 @@
  */
 import { LLHTTP_WASM_BASE64 } from './llhttp-wasm';
 import { suppliedHttpParserModule, httpParserUnavailable } from '../../http-parser-module';
-import { htmlAtob as atob } from './buffer';
+import { moduleBytes } from '../../module-bytes';
 
 /** llhttp's `llhttp_type`. */
 const TYPE_REQUEST = 1;
@@ -112,7 +112,7 @@ function llhttp(): LlhttpExports {
   let module = suppliedHttpParserModule();
   if (module === undefined) {
     try {
-      const binary = Uint8Array.from(atob(LLHTTP_WASM_BASE64), (character) => character.charCodeAt(0));
+      const binary = moduleBytes(LLHTTP_WASM_BASE64);
       module = new WebAssembly.Module(binary);
     } catch (error) {
       throw httpParserUnavailable(error);

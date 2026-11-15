@@ -8,8 +8,8 @@
  */
 import { NODE_DEPS_WASM_BASE64 } from './node-deps-wasm';
 import { randomFill, system } from '../../system';
-import { htmlAtob as atob } from './buffer';
 import { NODE_CRYPTO_CONSTANTS } from './node-crypto-constants';
+import { moduleBytes } from '../../module-bytes';
 
 /** The module's exports (scripts/node-deps/tabnode_deps.cc). Pointers and sizes are wasm32 numbers. */
 interface NodeDepsExports {
@@ -52,7 +52,7 @@ class NodeDepsExit extends Error {
 /** The realm's instance, made on the first ask. */
 export function nodeDeps(): NodeDepsExports {
   if (instance) return instance;
-  compiled ??= new WebAssembly.Module(Uint8Array.from(atob(NODE_DEPS_WASM_BASE64), (c) => c.charCodeAt(0)));
+  compiled ??= new WebAssembly.Module(moduleBytes(NODE_DEPS_WASM_BASE64));
   let exports: NodeDepsExports | undefined;
   const view = () => new DataView(exports!.memory.buffer);
   const bytes = (at: number, length: number) => new Uint8Array(exports!.memory.buffer, at >>> 0, length >>> 0);
