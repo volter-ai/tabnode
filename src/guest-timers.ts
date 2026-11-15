@@ -5,9 +5,10 @@ import { onNodeLibLoaded } from './node-lib/load';
  * A PROCESS'S TIMERS are Node's own (ADR-0018 item 2): its `lib/timers.js`, the one its `require('timers')` answers and
  * its globals are, as Node's bootstrap makes `globalThis.setTimeout` that module's (lib/internal/bootstrap/node.js),
  * over the realm's timer lists and the loop's handles (node-lib/binding/timers.ts). Each Timeout and Immediate the
- * process makes through them is counted for it here, for the run's end the engine still decides by its own count
- * (ADR-0018 item 2). Node's own objects say whether each is pending and referenced (`_destroyed`, `hasRef()`), so
- * nothing of theirs is wrapped: only the three schedulers, which record what they make.
+ * process makes through them is counted for it here, for the run's end the engine decides by its own count in a realm
+ * with no `node` program; on libuv's loop the run's end is libuv's (ADR-0018 item 7). Node's own objects say whether
+ * each is pending and referenced (`_destroyed`, `hasRef()`), so nothing of theirs is wrapped: only the three
+ * schedulers, which record what they make.
  */
 type NodeTimer = { _destroyed: boolean; hasRef(): boolean; _idleTimeout?: number; _repeat?: number | null; _onImmediate?: unknown };
 type TimerFunction = (...args: any[]) => unknown;
