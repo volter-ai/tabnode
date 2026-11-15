@@ -103,13 +103,28 @@ function track(process: object, port: Port): Port {
     // remove/once identities on the thread host's actual EventEmitter.
     if (original.emit) define('emit', (...args: unknown[]) => withGuestCallback(() => original.emit(...args), 'message'));
     // Preserve the thread host's actual EventEmitter and transport semantics.
-    for (const name of ['on', 'addListener', 'once', 'prependListener', 'prependOnceListener', 'removeListener', 'off', 'removeAllListeners']) if (original[name]) {
+    // Every way a program listens: the emitter's calls, the event target's, and the `onmessage` handler React's and
+    // undici's ports are given.
+    for (const name of ['on', 'addListener', 'once', 'prependListener', 'prependOnceListener', 'removeListener', 'off', 'removeAllListeners', 'addEventListener', 'removeEventListener']) if (original[name]) {
       define(name, (...args: unknown[]) => {
         const previous = programs('message');
         const result = original[name](...args);
         activate(previous, programs('message'));
         return result;
       });
+    }
+    for (const type of ['message', 'messageerror']) {
+      let owner = Object.getPrototypeOf(port);
+      while (owner && !Object.getOwnPropertyDescriptor(owner, 'on' + type)?.set) owner = Object.getPrototypeOf(owner);
+      const handler = owner && Object.getOwnPropertyDescriptor(owner, 'on' + type);
+      if (!handler?.set || !handler.get) continue;
+      Object.defineProperty(port, 'on' + type, { configurable: true, enumerable: handler.enumerable,
+        get: () => handler.get!.call(port),
+        set(value) {
+          const previous = programs('message');
+          handler.set!.call(port, value);
+          activate(previous, programs('message'));
+        } });
     }
     return port;
   }
