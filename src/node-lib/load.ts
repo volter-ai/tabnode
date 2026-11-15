@@ -38,6 +38,11 @@ import { ownedRun, ownerOfInstance, setInstanceOwner, withNodeResourceScope } fr
 import { __tokenForProcess, type ProcessToken } from '../process-tokens';
 import { createProcess, type Process } from '../shims/process';
 import { createFsBindings } from './binding/fs';
+import { libnodeAttached } from './binding/libnode';
+import { fsContext } from './binding/fs_req';
+import { createNodeFileBinding } from './binding/node_file';
+import { createNodeDirBinding } from './binding/node_dir';
+import { createFsEventWrapBinding } from './binding/fs_event_wrap';
 import { createDiagnosticsChannelBinding } from './binding/diagnostics_channel';
 import { createWasmWebApiBinding } from './binding/wasm_web_api';
 import { createBlobBinding } from './binding/blob';
@@ -408,6 +413,13 @@ class NodeLibScope {
     if (!this.bindings.has(name)) {
       if (REALM_BINDINGS.has(name)) {
         this.bindings.set(name, internalBinding(name));
+      } else if (['fs', 'fs_dir', 'fs_event_wrap'].includes(name) && libnodeAttached()) {
+        // A process whose program is `node`: its fs is libuv's, uv_fs_* in its kernel (ADR-0018 item 6).
+        const context = fsContext(() => this.require('buffer').Buffer,
+          (value) => (this.require('internal/errors') as { determineSpecificType(value: unknown): string }).determineSpecificType(value));
+        this.bindings.set('fs', bindingSurface(createNodeFileBinding(context).fsBinding, this.owner, this.process));
+        this.bindings.set('fs_dir', bindingSurface(createNodeDirBinding(context).fsDirBinding, this.owner, this.process));
+        this.bindings.set('fs_event_wrap', bindingSurface(createFsEventWrapBinding(context).fsEventWrapBinding, this.owner, this.process));
       } else if (['fs', 'fs_dir', 'fs_event_wrap'].includes(name)) {
         // Exported handles and encoded names belong to this graph; the fd
         // allocator, open-file descriptions and filesystem remain shared OS state.

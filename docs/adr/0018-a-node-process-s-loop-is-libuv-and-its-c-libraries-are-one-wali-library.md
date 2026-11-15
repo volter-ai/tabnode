@@ -269,95 +269,71 @@ is built.
      - `runNextTicks` between two timers or two immediates is the tick queue alone: a page's engine cannot run its
        microtask queue from inside a call, so the microtasks a callback queues run at `node`'s drain after the rest
        of its phase, where Node runs them before the next callback.
-     - An fs request's completion (`engine-timers.ts` `queueCompletion`) is an immediate of the check phase, where
-       libuv runs it in the poll phase, until `fs` is `uv_fs_*` (step 6); a message due to a port the process listens
-       to holds a referenced immediate (`portMessagesDue`), so libuv's poll does not block while the worker has it to
-       deliver, where a Node port is its own `uv_async_t`.
+     - In a realm with no `node` program, an fs request's completion (`engine-timers.ts` `queueCompletion`) is an
+       immediate of the check phase, where libuv runs it in the poll phase (item 6 is `uv_fs_*`); a message due to a
+       port the process listens to holds a referenced immediate (`portMessagesDue`), so libuv's poll does not block
+       while the worker has it to deliver, where a Node port is its own `uv_async_t`.
      - `internal/timers`'s own `process` (its `TimeoutOverflowWarning`) is the realm library's process, not the
        process whose timer it warns of.
-     *For the host* (browser-substrate `linux-uv-waits.ts`, `linux-system.ts`, `linux-node-engine.ts`): the tree's
-     system has no `wake`; it offers `timers`, a `SystemTimers` over `node`'s exports: `immediateInfo` a
-     `Uint32Array` of 3 at `tabnode_immediate_info()` and `timeoutInfo` an `Int32Array` of 1 at
-     `tabnode_timeout_info()`, both views of the process's memory, which is shared and so keeps them across its
-     growth; `getLibuvNow()` is `tabnode_timers_now()`; `scheduleTimer(ms)` is `tabnode_schedule_timer(BigInt(ms))`;
-     `toggleTimerRef(ref)` and `toggleImmediateRef(ref)` are `tabnode_toggle_timer_ref` and
-     `tabnode_toggle_immediate_ref` of 1 or 0; `setupTimers(processImmediate, processTimers)` keeps the two. The
-     import `process_timers(now)` answers `processTimers(now)`, the next expiry (positive where a referenced timer
-     holds the loop, negative where none does, 0 for none), and `process_immediate()` calls `processImmediate()`.
-     `env.c`'s handles drive them (`run_timers`, `check_immediate`); the host keeps no deadline, and its waits are the
-     descriptors' alone. Its container is made, as now, before any of Node's timers load. The run's end is still the
-     engine's own count, which ends the process by `exit_group`; `beforeExit` and `exit` from `main` are Node's once the
-     handles are libuv's. The engine decides it when the loop would wait, never on a timer: `env.c`'s unreferenced
-     prepare handle, Node's `idle_prepare_handle_` (`src/env.cc:1142-1155`, `1303-1307`), tells the engine
-     (`loop_idle`) before each poll that would block, as the system's `idle` asks.
+     The run's end is still the engine's own count; it decides it when the loop would wait, never on a timer:
+     `env.c`'s unreferenced prepare handle, Node's `idle_prepare_handle_` (`src/env.cc:1142-1155`, `1303-1307`),
+     tells the engine (`loop_idle`) before each poll that would block. `beforeExit` and `exit` from `main` are Node's
+     once the run's end is libuv's.
   3. Node's bootstrap on the realm's own global (§7), and the standard streams: `tty_wrap`, `pipe_wrap` and the
      stream base over `uv_tty_t`, `uv_pipe_t` and `uv_write`, so `process.stdout` is Node's. The glue is
      `native/node`'s, one C file per file of Node's (`handle_wrap.c`, `stream_wrap.c`, `pipe_wrap.c`, `tty_wrap.c`),
-     built into the `node` program: a wrap is libuv's handle followed by its JavaScript object's number (`wrap.h`), a
-     request libuv's request, its object's number and the bytes it owns until its callback. The binding's object owns
-     the wrap as Node's HandleWrap owns its handle and keeps what that object keeps (its state, its close callback,
-     its requests in flight); a read, a write (tried at once, the rest `uv_write2`, an IPC pipe's handle with it), a
-     shutdown, a listen, an accept and a connect are libuv's, and each callback is an import that calls the object's
-     JavaScript, then drains. A JavaScript buffer is not in the process's memory, so a write's bytes are copied
-     there, and a read's out of libuv's buffer into an ArrayBuffer, as Node's managed buffer is released into one.
-     The run's count asks libuv of each such handle (active and referenced, closing, or with a request in flight)
-     until the run's end is libuv's. `uv_guess_handle` answers every descriptor's type. The program's start is
-     Node's PlatformInit for fds 0 to 2 (`stdio.c`: `/dev/null` for one not open, each one's flags and a terminal's
-     termios recorded) and its exit Node's ResetStdio (libuv's terminal mode reset, O_NONBLOCK and termios put back),
-     run by `exit(3)`, which is also `process.reallyExit`. `process.stdout`, `process.stderr` and `process.stdin` are
-     made as Node's `lib/internal/bootstrap/switches/is_main_thread.js` makes them, on first read, and the console
-     writes to them; that file is the bootstrap's, so until §7 its stream part is carried in the engine
-     (`src/node-lib/stdio.ts`), line for line.
+     built into the `node` program. **There is one HandleWrap** (`handle_wrap.c`, `src/node-lib/binding/handle_wrap.ts`),
+     Node's `src/handle_wrap.cc` split where V8 stands, and every handle of items 3 to 6 is one: a handle is a block of
+     the process's memory that begins with its `uv_handle_t`, so its address is its wrap's and every callback into the
+     engine names the handle by it, as Node's `handle->data` names its wrap. The binding's object owns its HandleWrap
+     and keeps what Node's object keeps: its state (initialized, closing, closed), its close callback and its requests
+     in flight; `close`, `ref`, `unref` and `hasRef` are libuv's calls once the state allows them. The block is the
+     binding's until the handle is initialized (MarkAsInitialized), freed with its object where it never is (Node's
+     OnGCCollect of an uninitialized wrap), and libuv's from then; OnClose makes the close callback where Close was
+     given one, closes that callback's scope only then (a drain), and frees the block, as Node's OnClose drops its
+     wrap. A stream's or a socket's request (`wrap.h` `tabnode_req_t`) is libuv's request, the number its JavaScript
+     gave it and the bytes it owns until its callback. A read, a write (tried at once, the rest `uv_write2`, an IPC
+     pipe's handle with it), a shutdown, a listen, an accept and a connect are libuv's, and each callback is an import
+     that calls the object's JavaScript, then drains. A JavaScript buffer is not in the process's memory, so a write's
+     bytes are copied there (`memory.c`, the one allocator of the bytes and records the engine hands the C), and a
+     read's out of libuv's buffer into an ArrayBuffer, as Node's managed buffer is released into one. The run's count
+     asks libuv of each initialized handle (active and referenced, closing, or with a request in flight) until the
+     run's end is libuv's. `uv_guess_handle` answers every descriptor's type. The program's start is Node's
+     PlatformInit for fds 0 to 2 (`stdio.c`: `/dev/null` for one not open, each one's flags and a terminal's termios
+     recorded) and its exit Node's ResetStdio (libuv's terminal mode reset, O_NONBLOCK and termios put back), run by
+     `exit(3)`, which is also `process.reallyExit`. `process.stdout`, `process.stderr` and `process.stdin` are made as
+     Node's `lib/internal/bootstrap/switches/is_main_thread.js` makes them, on first read, and the console writes to
+     them; that file is the bootstrap's, so until §7 its stream part is carried in the engine (`src/node-lib/stdio.ts`),
+     line for line.
   4. `tcp_wrap` and `stream_wrap` over `uv_tcp_t`; `udp_wrap` over `uv_udp_t`, in the same shape (`tcp_wrap.c`,
      `udp_wrap.c`): an address goes to libuv as Node's binding takes it, its text and its port, parsed by
      `uv_ip4_addr` or `uv_ip6_addr`, and a name comes back as AddressToJS makes it. A realm with no libuv (a tab's
      engine with no machine) has no IPv4, IPv6 or AF_UNIX, and its pipes and terminals are the engine's pairing.
-
-     *For the host (items 3 and 4).* The `node` program imports, beside step 2's, eight callbacks of libuv's, each
-     answered by Tabnode's `libuvImports` (exported by the package) and followed in C by `drain`: `handle_closed(id)`,
-     a handle's close callback (HandleWrap::OnClose); `stream_read(id, nread, base)`, a stream's read, `base` libuv's
-     buffer in the process's memory, freed when the import returns (LibuvStreamWrap::OnUvRead);
-     `stream_written(id, status)` and `stream_shut(id, status)`, a write's and a shutdown's completion;
-     `stream_connection(id, status)`, a listener's connection (ConnectionWrap::OnConnection);
-     `stream_connected(id, status, readable, writable)`, a connect's completion (AfterConnect);
-     `udp_received(id, nread, base, name, flags)`, a datagram and its sender's address (UDPWrap::OnRecv); and
-     `udp_sent(id, status)`, a send's completion. The host gives Tabnode the program once, in its `bootstrap` import
-     and before the run starts: `attachLibuv({ exports, read, write })`, the program's exports and its memory's copy
-     out and copy in. The program exports `tabnode_exit(status)`, Node's `process.reallyExit`, through which a run's
-     end exits so ResetStdio runs. No import goes: `poll_ready` and `poll.c` are no handle's of these items, and still
-     answer the waits that are not yet libuv's handles (the engine device's descriptor, DNS, children, signals, file
-     watches). A run whose realm has libuv reads none of `onStdoutBytes`, `stdinReader`, `stdioKind` or `terminal`
-     for its streams; the engine's own lines (an uncaught exception's report) still go to `onStderrBytes`, on a
-     descriptor libuv may have made non-blocking, which answers EAGAIN where its pipe is full.
-  5. `process_wrap` and `spawn_sync` over `uv_spawn`, with libuv at a267f5688b.
-     libuv is libuv's own source at a267f5688be25e8d4628e296245a041adc2ca072, GitHub's archive of it pinned by
-     SHA-256 02d51895…a0af (`scripts/build-libnode.sh`), where Node v24.21.0 pins 1.52.1 in `deps/uv`: its version
-     says 1.53.1-dev, its 35 Linux sources and CMake's Linux defines are 1.52.1's, and its difference is the spawn
-     (`src/unix/process.c`: `posix_spawn` after the clone probe, fork only where `posix_spawn` cannot carry the
-     options: a uid or gid). A `Process` is a HandleWrap whose `uv_process_t` is native/node's (`process_wrap.c`,
-     over HandleWrap's `handle_wrap.c`), and a `pipe`, `overlapped` or `wrap` stdio entry names its handle's
-     `uv_stream_t` (StreamForWrap), so those handles are items 3's and 4's; spawn_sync is Node's SyncProcessRunner in
-     C over a loop of its own (`spawn_sync.c`).
-     *For the host:*
-     - Imports added to `host:tabnode` (engine.h), answered by Tabnode's `libnodeImports`, which the host puts
-       among the program's imports: `handle_closed(handle) -> i32`, HandleWrap::OnClose (the wrap closed, its close
-       callback made; nonzero where it was, and the C drains); `process_exit(handle, f64 exit status, signal name's
-       address, its length)`, ProcessWrap::OnExit (`onexit` made; the C drains). None removed.
-     - Tabnode's `attachLibnode` is given the program before Node's library runs: its exports, and the process's
-       memory's `read` and `write`, through which a binding writes a call's record (`tabnode_malloc`) and reads a
-       result.
-     - The kernel's `clone` with an entry, musl's `clone(fn, stack, flags, arg)`, for `CLONE_VM | CLONE_VFORK` with
-       no termination signal (libuv's probe, whose child writes the parent's memory) and with `SIGCHLD` (musl's
-       `posix_spawn`): the child runs `fn(arg)` on the given stack in the caller's memory, on a worker of its own
-       running only the program's WebAssembly, with its own descriptor table, signal handlers and pid, while the
-       caller waits for its exec or its end; `waitpid(pid, …, __WCLONE)` reaps a child with no termination signal.
-       Where the probe fails, libuv forks, and a Node process has no fork, so every spawn fails.
-     - SIGCHLD reaches libuv's handler (its loop's child watcher, `uv__wait_children`'s `waitpid`): no part of the
-       host blocks it or reads it from a signalfd. `dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addchdir_np")`
-       answers from `libc.so`, or a spawn with a `cwd` forks.
-     - Node's `child_process` reaches no door of the host: the engine's process runner and the synchronous child's
-       host door are not asked by `process_wrap` or `spawn_sync`.
-  6. `fs` over `uv_fs_*` and its threadpool.
+  5. `process_wrap` and `spawn_sync` over `uv_spawn`, with libuv at a267f5688b: libuv's own source at
+     a267f5688be25e8d4628e296245a041adc2ca072, GitHub's archive of it pinned by SHA-256 02d51895…a0af
+     (`scripts/build-libnode.sh`), where Node v24.21.0 pins 1.52.1 in `deps/uv`; every `native/node` source is compiled
+     against it. Its version says 1.53.1-dev, its 35 Linux sources and CMake's Linux defines are 1.52.1's, and its
+     difference is the spawn (`src/unix/process.c`: `posix_spawn` after the clone probe, fork only where `posix_spawn`
+     cannot carry the options: a uid or gid). A `Process`'s handle is a HandleWrap over native/node's `uv_process_t`
+     (`process_wrap.c`), made uninitialized and marked initialized by `spawn` whatever `uv_spawn` answers, as Node's
+     ProcessWrap is; a `pipe`, `overlapped` or `wrap` stdio entry names its handle's `uv_stream_t` (StreamForWrap), a
+     Pipe, a TCP or a TTY of items 3 and 4; libuv's exit callback is `onexit`'s, with the signal's name as Node's
+     `signo_string` gives it (`signo.c`). spawn_sync is Node's SyncProcessRunner in C over a loop of its own
+     (`spawn_sync.c`). Node's `child_process` asks no door of the host: a child is the kernel's.
+  6. `fs` over `uv_fs_*` and its threadpool. `internalBinding('fs')`, `fs_dir` and `fs_event_wrap` are Node's
+     `src/node_file.cc`, `node_dir.cc`, `fs_event_wrap.cc` and `node_stat_watcher.cc`, split where V8 stands: the
+     libuv half is `native/node` (`fs.c`, `fs_cp.c`, `fs_event.c`), the V8 half the engine's (`node_file.ts`,
+     `node_dir.ts`, `fs_event_wrap.ts`, FSReqBase in `fs_req.ts`). A request owns its `uv_fs_t` in the process's memory,
+     its arguments written in the room after it, and is named by its address; a synchronous call is `uv_fs_*` with no
+     callback, as `SyncCall`; an asynchronous one runs on libuv's threadpool (the process's pthreads) and completes
+     into the loop, where its callback calls the engine (`fs_done`), which runs the request's After and its
+     `MakeCallback` or settles its promise, then drains. What Node's C++ decides in C (`MKDirpSync`, `MKDirpAsync`,
+     `ReadFileUtf8`, `WriteFileUtf8`) is decided in C the same way; `RmSync` and the `cpSync` calls are C++ over
+     `std::filesystem`, and libnode has no C++ library, so their `std::filesystem` calls are written over the POSIX
+     calls libc++ makes for them. `fs.watch` is an FSEvent, a HandleWrap over a `uv_fs_event_t` (inotify in the
+     process's kernel), made uninitialized and initialized by `start`; `fs.watchFile` a StatWatcher, a HandleWrap over
+     a `uv_fs_poll_t`, initialized when it is made. A realm the host gives no `node` program keeps the engine's own
+     tree's binding (`fs.ts`), which no longer reaches a kernel's descriptors.
   7. OpenSSL and the rest of §1 into `libnode.so`; addons through `dlopen`; the process's raw calls and
      `linux-calls.ts` go. **Crypto is Node's own, landed as one piece:** Node's `lib/internal/crypto/*`, `keys.js`'s
      `KeyObject` and `x509.js`'s `X509Certificate` among them, over the `crypto` binding, whose glue is `libnode`'s C
@@ -365,6 +341,58 @@ is built.
      as §5 says. It replaces the engine's own `crypto` (`src/shims/crypto*.ts`: `sha.js`, `@noble`, RSA in BigInt)
      whole; until it lands, `crypto` is the engine's and what it refuses stays refused (browser-substrate VO-3806,
      manager's ruling 2026-11-15).
+
+
+**For the host** (browser-substrate `linux-node-engine.ts`, `linux-uv-waits.ts`, `linux-system.ts`, and the
+process's tree, `linux-virtual-filesystem.ts`), items 1 to 6 together:
+- *The one hookup.* In its `bootstrap` import, before Node's library runs, the host calls Tabnode's
+  `attachLibnode({ exports, read, write })` once: the program's exports, `read(at, length)`, a copy of the process's
+  memory, and `write(at, bytes)`, bytes into it (a browser's APIs refuse a view of shared memory). A second call with
+  another program throws.
+- *The engine's imports* (`host:tabnode`, native/node `engine.h`). The host answers its own: `bootstrap(argc, argv)`
+  (starts the run; 0 or a status to exit with), `drain()` (a `Suspending` import: the worker runs its microtasks and
+  its other work and the stack resumes from its next task), `process_timers(now)` (`processTimers(now)`: the next
+  expiry, positive where a referenced timer holds the loop, negative where none does, 0 for none),
+  `process_immediate()` (`processImmediate()`), `poll_ready(fd, status, events)` (a `uv_poll_t` of `poll.c` is
+  ready), `loop_idle()` (the loop is about to block: the engine decides its run's end there), `before_exit()`,
+  `emit_exit()` and `exit_code()`. It puts Tabnode's `libnodeImports` beside them, one table answering every binding
+  callback, each followed in C by `drain` where it made a callback: `handle_closed(handle) -> i32` (HandleWrap::OnClose;
+  nonzero where it made the close callback; the C frees the handle after), `stream_read(stream, nread, base)` (`base`
+  libuv's buffer, freed when the import returns), `stream_written(id, status)`, `stream_shut(id, status)`,
+  `stream_connection(server, status)`, `stream_connected(id, status, readable, writable)`, `udp_received(handle, nread,
+  base, name, flags)` (`name` a `tabnode_address_t`, 0 with an error), `udp_sent(id, status)`, `process_exit(handle,
+  f64 exit status, signal name's address, its length)`, `fs_done(request)`, `fs_event(handle, filename, events,
+  status)` and `stat_watcher_change(handle, status)`. A handle is its address, a stream's or a socket's request its
+  number, an fs request its address.
+- *The exports the host calls.* `tabnode_exit(status)`, Node's `process.reallyExit`: the run's end exits through it, so
+  ResetStdio runs. The tree's system offers `timers`, a `SystemTimers` over `env.c`'s exports: `immediateInfo` a
+  `Uint32Array` of 3 at `tabnode_immediate_info()` and `timeoutInfo` an `Int32Array` of 1 at
+  `tabnode_timeout_info()` (views of the process's memory, which is shared and so keeps them across its growth),
+  `getLibuvNow()` `tabnode_timers_now()`, `scheduleTimer(ms)` `tabnode_schedule_timer(BigInt(ms))`,
+  `toggleTimerRef(ref)` and `toggleImmediateRef(ref)` `tabnode_toggle_timer_ref` and `tabnode_toggle_immediate_ref`
+  of 1 or 0, and `setupTimers(processImmediate, processTimers)` keeps the two; it has no `wake`, and keeps no
+  deadline. Its waits are the descriptors' that are no binding's handle (the engine device's descriptor, DNS,
+  signals), each `tabnode_poll_start(fd, events)` and `tabnode_poll_stop(fd)`. Its container is made before any of
+  Node's timers load.
+- *What the run no longer reads.* A run whose realm has the program reads none of `stdinReader`, `stdioKind`,
+  `terminal` or `onStdoutBytes`: its standard streams are libuv's. The engine's own lines (an uncaught exception's
+  report) still go to `onStderrBytes`, on a descriptor libuv may have made non-blocking, which answers EAGAIN where
+  its pipe is full. `process_wrap` and `spawn_sync` ask no door of the host for a child. The process's tree stops
+  serving `fs`: its `watch` (`linux-file-watches.ts`), `holdsLinks`, and of `TREE_DESCRIPTORS` `write`, `fstat`,
+  `ftruncate`, `fsync`, `fchmod`, `chown`, `fchown`, `futimes`, `dup`, `advisoryLocks` and `absent` go. It keeps
+  what the engine's loader and the bindings not over libuv read: its path calls (`readFileSync`, `statSync` and the
+  rest the module loader and `process` use), `chdir` and the cwd, `TREE_SOCKETS` (a listener's port, for the
+  machine's forwarding), `TREE_NATIVE`, `TREE_SYSTEM`, and of `TREE_DESCRIPTORS` `open`, `read`, `close`, `reserve`
+  and `release` (an executable's header, the engine's descriptor numbers), until item 7.
+- *What the kernel and the substrate provide.* The kernel's `clone` with an entry, musl's `clone(fn, stack, flags,
+  arg)`, for `CLONE_VM | CLONE_VFORK` with no termination signal (libuv's probe, whose child writes the parent's
+  memory) and with `SIGCHLD` (musl's `posix_spawn`): the child runs `fn(arg)` on the given stack in the caller's
+  memory, on a worker of its own running only the program's WebAssembly, with its own descriptor table, signal
+  handlers and pid, while the caller waits for its exec or its end; `waitpid(pid, …, __WCLONE)` reaps a child with no
+  termination signal. Where the probe fails libuv forks, and a Node process has no fork, so every spawn fails.
+  SIGCHLD reaches libuv's handler (its loop's child watcher, `uv__wait_children`'s `waitpid`): no part of the host
+  blocks it or reads it from a signalfd. `dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addchdir_np")` answers from
+  `libc.so`, or a spawn with a `cwd` forks. inotify in the process's kernel answers `fs.watch`.
 
 ## Consequences
 

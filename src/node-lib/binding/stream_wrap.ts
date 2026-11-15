@@ -161,7 +161,7 @@ export class LibuvStreamWrap implements OwnedHandle {
 
   /**
    * `active`: whether the handle holds its run's loop from its start (the engine's pairing does). A handle that is
-   * libuv's (`kernel_stream.ts`) is counted by libuv's own answer, registered by its wrap (`libuv.ts`).
+   * libuv's (`kernel_stream.ts`) is counted by libuv's own answer, registered by its HandleWrap (`handle_wrap.ts`).
    */
   constructor(active = true, libuvBacked = false) {
     if (!libuvBacked) registerHandle(this, true, active);

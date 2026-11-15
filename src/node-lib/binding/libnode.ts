@@ -11,12 +11,17 @@
  * (`attachLibnode`): the program's exports, and the process's memory through its one door, a copy read and bytes
  * written, since a browser's APIs refuse a view of shared memory. A realm the host gives no program (a tab's engine
  * with no machine) has no libuv: its streams are the engine's pairing and its fs the engine's own tree (`fs.ts`), and
- * a binding that is only libuv's (`process_wrap`, `spawn_sync`) answers that it has none.
+ * a binding that is only libuv's (`process_wrap`, `spawn_sync`) answers that it has none. A binding over libuv is its
+ * V8 half: it writes a call's arguments into the process's memory, calls the C, and reads the answer, as Node's C++
+ * reads a uv_fs_t.
  */
 import { errname, getErrorMap } from './uv';
 
 /** A pointer, a size or an i32 as the program answers it. */
 type I32 = number;
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 /** What native/node exports to the bindings, by its C names; each is named for the Node function it carries. */
 export interface LibnodeExports {
@@ -89,10 +94,90 @@ export interface LibnodeExports {
   /** spawn_sync.c: SyncProcessRunner's run, and its result's release. */
   tabnode_spawn_sync(options: I32): I32;
   tabnode_spawn_sync_free(result: I32): void;
+  /** fs.c, fs_cp.c and fs_event.c: node_file.cc's, node_dir.cc's, fs_event_wrap.cc's and node_stat_watcher.cc's. */
+  tabnode_fs_new(room: I32): I32;
+  tabnode_fs_room(request: I32): I32;
+  tabnode_fs_free(request: I32): void;
+  tabnode_fs_result(request: I32): number;
+  tabnode_fs_path(request: I32): I32;
+  tabnode_fs_ptr(request: I32): I32;
+  tabnode_fs_first_path(request: I32): I32;
+  tabnode_fs_data(request: I32): I32;
+  tabnode_fs_data_length(request: I32): I32;
+  tabnode_fs_stat_fields(): I32;
+  tabnode_fs_bigint_stat_fields(): I32;
+  tabnode_fs_statfs_fields(): I32;
+  tabnode_fs_bigint_statfs_fields(): I32;
+  tabnode_fs_fill_request_stats(request: I32): void;
+  tabnode_fs_fill_request_statfs(request: I32): void;
+  tabnode_fs_error_kind(): I32;
+  tabnode_fs_error_errno(): I32;
+  tabnode_fs_error_syscall(): I32;
+  tabnode_fs_error_code(): I32;
+  tabnode_fs_error_message(): I32;
+  tabnode_fs_error_path(): I32;
+  tabnode_fs_error_dest(): I32;
+  tabnode_uv_err_name(err: I32): I32;
+  tabnode_uv_strerror(err: I32): I32;
+  tabnode_strerror(errorno: I32): I32;
+  tabnode_strlen(text: I32): I32;
+  tabnode_fs_access(request: I32, path: I32, mode: I32, async: I32): I32;
+  tabnode_fs_close(request: I32, fd: I32, async: I32): I32;
+  tabnode_fs_open(request: I32, path: I32, flags: I32, mode: I32, async: I32): I32;
+  tabnode_fs_read(request: I32, fd: I32, nbufs: I32, position: bigint, async: I32): I32;
+  tabnode_fs_write(request: I32, fd: I32, nbufs: I32, position: bigint, async: I32): I32;
+  tabnode_fs_stat(request: I32, path: I32, async: I32): I32;
+  tabnode_fs_lstat(request: I32, path: I32, async: I32): I32;
+  tabnode_fs_fstat(request: I32, fd: I32, async: I32): I32;
+  tabnode_fs_statfs(request: I32, path: I32, async: I32): I32;
+  tabnode_fs_symlink(request: I32, target: I32, path: I32, flags: I32, async: I32): I32;
+  tabnode_fs_link(request: I32, src: I32, dest: I32, async: I32): I32;
+  tabnode_fs_readlink(request: I32, path: I32, async: I32): I32;
+  tabnode_fs_rename(request: I32, from: I32, to: I32, async: I32): I32;
+  tabnode_fs_ftruncate(request: I32, fd: I32, length: bigint, async: I32): I32;
+  tabnode_fs_fdatasync(request: I32, fd: I32, async: I32): I32;
+  tabnode_fs_fsync(request: I32, fd: I32, async: I32): I32;
+  tabnode_fs_unlink(request: I32, path: I32, async: I32): I32;
+  tabnode_fs_rmdir(request: I32, path: I32, async: I32): I32;
+  tabnode_fs_mkdir(request: I32, path: I32, mode: I32, async: I32): I32;
+  tabnode_fs_mkdirp(request: I32, path: I32, mode: I32, async: I32): I32;
+  tabnode_fs_realpath(request: I32, path: I32, async: I32): I32;
+  tabnode_fs_scandir(request: I32, path: I32, async: I32): I32;
+  tabnode_fs_scandir_next(request: I32): I32;
+  tabnode_fs_scanned_name(): I32;
+  tabnode_fs_scanned_type(): I32;
+  tabnode_fs_copyfile(request: I32, src: I32, dest: I32, flags: I32, async: I32): I32;
+  tabnode_fs_chmod(request: I32, path: I32, mode: I32, async: I32): I32;
+  tabnode_fs_fchmod(request: I32, fd: I32, mode: I32, async: I32): I32;
+  tabnode_fs_chown(request: I32, path: I32, uid: I32, gid: I32, async: I32): I32;
+  tabnode_fs_fchown(request: I32, fd: I32, uid: I32, gid: I32, async: I32): I32;
+  tabnode_fs_lchown(request: I32, path: I32, uid: I32, gid: I32, async: I32): I32;
+  tabnode_fs_utime(request: I32, path: I32, atime: number, mtime: number, async: I32): I32;
+  tabnode_fs_futime(request: I32, fd: I32, atime: number, mtime: number, async: I32): I32;
+  tabnode_fs_lutime(request: I32, path: I32, atime: number, mtime: number, async: I32): I32;
+  tabnode_fs_mkdtemp(request: I32, template: I32, async: I32): I32;
+  tabnode_fs_read_file_utf8(request: I32, path: I32, fd: I32, flags: I32): I32;
+  tabnode_fs_write_file_utf8(request: I32, path: I32, fd: I32, flags: I32, mode: I32, data: I32, length: I32): I32;
+  tabnode_fs_rm_sync(path: I32, maxRetries: I32, recursive: I32, retryDelay: I32): I32;
+  tabnode_fs_cp_check_paths(src: I32, dest: I32, dereference: I32, recursive: I32): I32;
+  tabnode_fs_cp_override_file(src: I32, dest: I32, mode: I32, preserveTimestamps: I32): I32;
+  tabnode_fs_cp_copy_dir(src: I32, dest: I32, force: I32, dereference: I32, errorOnExist: I32, verbatimSymlinks: I32,
+    preserveTimestamps: I32): I32;
+  tabnode_fs_opendir(request: I32, path: I32, async: I32): I32;
+  tabnode_fs_dir_adopt(dir: I32): void;
+  tabnode_fs_readdir(request: I32, dir: I32, entries: I32, async: I32): I32;
+  tabnode_fs_dir_entry_name(dir: I32, index: I32): I32;
+  tabnode_fs_dir_entry_type(dir: I32, index: I32): I32;
+  tabnode_fs_closedir(request: I32, dir: I32, async: I32): I32;
+  tabnode_fs_event_new(): I32;
+  tabnode_fs_event_init(handle: I32): I32;
+  tabnode_fs_event_start(handle: I32, path: I32, flags: I32): I32;
+  tabnode_stat_watcher_new(): I32;
+  tabnode_stat_watcher_start(handle: I32, path: I32, interval: I32): I32;
 }
 
 /** The program as its host gives it: its exports once instantiated, and the process's memory's one door. */
-export interface Libnode {
+export interface LibnodeProgram {
   readonly exports: LibnodeExports;
   /** A copy of `length` bytes of the process's memory at `at`. */
   read(at: number, length: number): Uint8Array;
@@ -100,12 +185,32 @@ export interface Libnode {
   write(at: number, bytes: Uint8Array): void;
 }
 
+/** The program as the bindings reach it: the host's, and a C string's bytes read through its door. */
+export interface Libnode extends LibnodeProgram {
+  /** The NUL-terminated bytes at a pointer (none for NULL). */
+  cBytes(pointer: number): Uint8Array | null;
+  /** The same, decoded as UTF-8, as V8's String::NewFromUtf8 decodes it. */
+  cString(pointer: number): string | null;
+}
+
+let given: LibnodeProgram | undefined;
 let attached: Libnode | undefined;
 
 /** The realm's process is `node` on libuv's loop: its program, given once by the host's `bootstrap`. */
-export function attachLibnode(program: Libnode): void {
-  if (attached && attached !== program) throw new Error('the realm already has its process\'s node program');
-  attached = program;
+export function attachLibnode(program: LibnodeProgram): void {
+  if (given && given !== program) throw new Error('the realm already has its process\'s node program');
+  if (given) return;
+  given = program;
+  const { exports, read, write } = program;
+  const cBytes = (pointer: number): Uint8Array | null => {
+    const at = address(pointer);
+    if (at === 0) return null;
+    return read(at, address(exports.tabnode_strlen(at)));
+  };
+  attached = {
+    exports, read, write, cBytes,
+    cString: (pointer) => { const bytes = cBytes(pointer); return bytes === null ? null : decoder.decode(bytes); },
+  };
 }
 
 /** Whether the realm's process is the program `node`, whose bindings are libuv's. */
@@ -142,9 +247,6 @@ export function readRecord(at: number, length: number): DataView {
   const bytes = libnode().read(address(at), length);
   return new DataView(bytes.buffer, bytes.byteOffset, length);
 }
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 /**
  * `text` as Node's Utf8Value makes it (its UTF-8, NUL-terminated) in the process's memory for the length of `call`,
@@ -311,6 +413,10 @@ export interface HandleCallbacks {
   onUvRecv?(nread: number, base: number, name: number, flags: number): void;
   /** ProcessWrap::OnExit: the exit status, and the signal's name at `signal` (`length` bytes). */
   onUvExit?(exitStatus: number, signal: number, length: number): void;
+  /** FSEventWrap::OnEvent: libuv's filename (a C string, 0 for none), its events and its status. */
+  onUvFsEvent?(filename: number, events: number, status: number): void;
+  /** StatWatcher::Callback: the status, both stats in the binding's arrays. */
+  onUvStatChange?(status: number): void;
 }
 
 /** An initialized handle, as libuv's callbacks find it by its address (Node's handle->data). */
@@ -354,6 +460,12 @@ function complete(id: number, status: number, ...rest: number[]): void {
   done(status, ...rest);
 }
 
+/** Each fs request in flight by its address (fs.h `tabnode_fs_t`, which begins with its uv_fs_t). */
+const fsRequests = new Map<number, () => void>();
+
+/** An fs request's completion (`fs_done`), until it arrives. */
+export function awaitRequest(request: number, done: () => void): void { fsRequests.set(address(request), done); }
+
 /**
  * The engine's imports the bindings answer (native/node engine.h), which the host puts among the program's
  * `host:tabnode` imports beside its own: each finds the handle by its address or the request by its number and calls
@@ -378,4 +490,18 @@ export const libnodeImports = {
   process_exit: (handle: number, exitStatus: number, signal: number, length: number): void => {
     handleAt(handle).target.onUvExit?.(exitStatus, signal, length);
   },
+  /** An asynchronous uv_fs_* completed: the request's After and its MakeCallback, or its promise's settling. */
+  fs_done: (request: number): void => {
+    const at = address(request);
+    const done = fsRequests.get(at);
+    if (!done) throw new Error(`node: libuv completed an fs request no binding holds (${at})`);
+    fsRequests.delete(at);
+    done();
+  },
+  /** FSEventWrap::OnEvent. */
+  fs_event: (handle: number, filename: number, events: number, status: number): void => {
+    handleAt(handle).target.onUvFsEvent?.(filename, events, status);
+  },
+  /** StatWatcher::Callback. */
+  stat_watcher_change: (handle: number, status: number): void => { handleAt(handle).target.onUvStatChange?.(status); },
 };

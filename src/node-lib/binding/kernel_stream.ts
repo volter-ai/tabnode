@@ -2,7 +2,7 @@
  * Node's LibuvStreamWrap over libuv's `uv_stream_t` (ADR-0018 §3, items 3 and 4): what `tcp_wrap`'s TCP,
  * `pipe_wrap`'s Pipe and `tty_wrap`'s TTY share where the realm's process is `node` on libuv's loop, as Node's
  * `src/stream_wrap.cc`, the JavaScript-facing half of `src/stream_base.cc` and `src/connection_wrap.cc` are shared by
- * its TCPWrap, PipeWrap and TTYWrap (Node v24.21.0). The handle is a uv_handle_t in the process's memory (`libuv.ts`,
+ * its TCPWrap, PipeWrap and TTYWrap (Node v24.21.0). The handle is a uv_handle_t in the process's memory (`handle_wrap.ts`,
  * native/node); a read, a write, a shutdown, a listen and an accept are libuv's calls through native/node's glue, and
  * their order, their buffering, half-close, end of stream, ref and unref and close are libuv's.
  *

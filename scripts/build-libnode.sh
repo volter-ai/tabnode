@@ -1,13 +1,13 @@
 #!/bin/bash
 # Builds `node` and `libnode.so` (ADR-0018 §1, §2, §3): Node's start and its standard streams' start and end, the
 # loop's own handles, the engine's descriptor waits and the bindings' C over libuv (native/node: one HandleWrap, the
-# stream, TCP, pipe, TTY and UDP wraps, process_wrap and spawn_sync, as Node's src/*_wrap.cc and spawn_sync.cc) as a
-# WALI program, linked position-independent against `libnode.so` and `libc.so`; and `libnode.so`, the one shared
-# library of Node's C, which holds libuv today: the 35 sources libuv's CMakeLists.txt compiles on Linux (its
-# uv_sources, the unix and Linux lists and their defines), unchanged. Both are compiled by browser-substrate's prepared
-# native SDK with its Linux headers, whose compile wrapper adds WebAssembly exception handling and whose link wrapper
-# makes a program PIE with the run path /opt/programs/lib, where the machine places `libc.so` and this library beside
-# it.
+# stream, TCP, pipe, TTY and UDP wraps, process_wrap, spawn_sync, and fs over uv_fs_*, as Node's src/*_wrap.cc,
+# spawn_sync.cc, node_file.cc, node_dir.cc and fs_event_wrap.cc) as a WALI program, linked position-independent
+# against `libnode.so` and `libc.so`; and `libnode.so`, the one shared library of Node's C, which holds libuv today:
+# the 35 sources libuv's CMakeLists.txt compiles on Linux (its uv_sources, the unix and Linux lists and their
+# defines), unchanged. Both are compiled by browser-substrate's prepared native SDK with its Linux headers, whose
+# compile wrapper adds WebAssembly exception handling and whose link wrapper makes a program PIE with the run path
+# /opt/programs/lib, where the machine places `libc.so` and this library beside it.
 #
 # libuv is libuv's own source at a267f5688b (2026-10-16, "unix,process: don't raise SIGCHLD from posix_spawn probe",
 # #5317; its version.h says 1.53.1-dev), not Node v24.21.0's deps/uv (libuv 1.52.1), as ADR-0018's evidence says:
@@ -49,10 +49,10 @@ mkdir -p "$out"
 "$cc" -shared -pthread -Wl,--soname=libnode.so -o "$out/libnode.so" "${objects[@]}"
 # native/node: Node's start (node_main) and its standard streams' (stdio), its Environment's handles (env), the
 # engine's descriptor waits (poll), and the bindings' C, each over the Node source it names (memory, signo,
-# handle_wrap, stream_wrap, tcp_wrap, pipe_wrap, tty_wrap, udp_wrap, process_wrap, spawn_sync).
+# handle_wrap, stream_wrap, tcp_wrap, pipe_wrap, tty_wrap, udp_wrap, process_wrap, spawn_sync, fs, fs_cp, fs_event).
 program=()
 for source in node_main stdio env poll memory signo handle_wrap stream_wrap tcp_wrap pipe_wrap tty_wrap udp_wrap \
-  process_wrap spawn_sync; do
+  process_wrap spawn_sync fs fs_cp fs_event; do
   "$cc" "${flags[@]}" -D_GNU_SOURCE -I"$uv/include" -c "$repo/native/node/$source.c" -o "$work/$source.o"
   program+=("$work/$source.o")
 done

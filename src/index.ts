@@ -72,7 +72,7 @@ export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process
  * answers the program's binding callbacks with `libnodeImports`, among its `host:tabnode` imports.
  */
 export { attachLibnode, libnodeImports } from './node-lib/binding/libnode';
-export type { Libnode, LibnodeExports } from './node-lib/binding/libnode';
+export type { LibnodeProgram, LibnodeExports } from './node-lib/binding/libnode';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
 export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter, type StdinReader } from './stdin-ring';

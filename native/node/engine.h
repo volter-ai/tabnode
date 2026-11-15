@@ -57,6 +57,17 @@ TABNODE_IMPORT(udp_sent) void tabnode_udp_sent(int32_t id, int32_t status);
 // signal that ended the child (signo_string: its `signal_length` bytes, none for none).
 TABNODE_IMPORT(process_exit) void tabnode_process_exit(uv_process_t *handle, double exit_status, const char *signal,
                                                       uint32_t signal_length);
+// The fs binding's completions (native/node fs.c, fs_event.c; ADR-0018 item 6). Each is what Node's C++ does in V8
+// at that point, and each is followed by the callback scope's close, a drain.
+struct tabnode_fs_s;
+// An asynchronous request completed on libuv's threadpool (its uv_fs_cb, run on the loop): the request's After
+// (node_file.cc AfterNoArgs, AfterStat, AfterInteger, ..., node_dir.cc AfterOpenDir, AfterDirRead) and its
+// MakeCallback, or its promise's settling. The engine frees the request.
+TABNODE_IMPORT(fs_done) void tabnode_fs_done(struct tabnode_fs_s *request);
+// A uv_fs_event_t's change (FSEventWrap::OnEvent): libuv's filename (NULL for none), events and status.
+TABNODE_IMPORT(fs_event) void tabnode_fs_event(uv_fs_event_t *handle, const char *filename, int events, int status);
+// A uv_fs_poll_t's change (StatWatcher::Callback), its current and previous stats in the binding's stat arrays.
+TABNODE_IMPORT(stat_watcher_change) void tabnode_stat_watcher_change(uv_fs_poll_t *handle, int status);
 // The loop is about to wait (env.c's idle prepare handle, as Node's idle_prepare_handle_ marks its isolate idle,
 // src/env.cc:1303-1312): it has nothing to do now, its poll would block. The engine decides there what it decides
 // when its loop would park (a run's end), as libuv asks `uv__loop_alive` before it blocks.
