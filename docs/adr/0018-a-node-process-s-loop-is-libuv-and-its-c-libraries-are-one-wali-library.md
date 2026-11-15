@@ -119,12 +119,17 @@ page. What the device answers, Node does with OpenSSL, zlib or its C++ in the pr
 reads are `reader.pull`, `lib/internal/blob.js:440`); here the browser's native implementation does it, faster than
 any of those compiled to WebAssembly.
 
+A synchronous form waits on the device too: the call blocks in Linux on the device's descriptor, as a blocking `read`
+waits on any device, while the machine's worker answers it. So the browser answers synchronous calls as well:
+`createHash` and `createHmac` with their incremental `update`, `hash`, `pbkdf2Sync`, `hkdfSync`, `sign` and `verify`
+without a callback, `generateKeyPairSync`, `createCipheriv`'s `update` and `final`. A call too small to be worth the
+device's round trip (a digest of a few hundred bytes) is answered in the process, by OpenSSL, where a reading shows
+the round trip costs more than the work; the bound is measured, not assumed.
+
 OpenSSL stays in `libnode.so` for what Node's crypto needs and WebCrypto does not have. Read in Tabnode's
 `src/shims/crypto.ts` (2026-11-15), which today answers `node:crypto` in JavaScript (`sha.js`, `@noble/hashes`) and
 uses the realm's `SubtleCrypto` for `webcrypto.subtle`, the asynchronous `sign` and `verify`, and `generateKeyPair`:
-- every synchronous form, which a promise cannot answer: `createHash` and `createHmac` with their incremental
-  `update`, `hash`, `pbkdf2Sync`, `hkdfSync`, `scryptSync`, `sign` and `verify` without a callback,
-  `generateKeyPairSync`, `createCipheriv`'s `update` and `final`;
+- the calls below the measured bound above;
 - algorithms WebCrypto does not define: MD5, SHA-224, SHA-512/256, SHA-3, SHAKE, BLAKE2, RIPEMD-160, scrypt, argon2,
   ChaCha20-Poly1305 and the AES modes beside CBC, CTR and GCM, DSA, Diffie-Hellman groups, `ECDH` on any curve,
   RSA's raw `privateEncrypt` and `publicDecrypt`, primes (`checkPrime`, `generatePrime`), `X509Certificate`;
