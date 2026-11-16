@@ -34,6 +34,13 @@ configuration. The
 program needs `libc.so` and the SDK's C++ runtime alone (browser-substrate ADR-0238 §4), and links through the SDK's
 `c++`, which adds that runtime. No build names a runtime library or a tag object.
 
+**The program's bytes are its inputs' alone.** Node's own build compiles from paths relative to its tree and ships
+OpenSSL's build information generated once (`buildinf.h`). So the build maps its own directories out of what it
+compiles (`-ffile-prefix-map`), its working directory included, and OpenSSL's build date is the recipe's
+`SOURCE_DATE_EPOCH`, never the wall clock. Its compile flags are Node's Release flags (`-O3` for every target, as
+`common.gypi` sets them). What every module of the machine is compiled with (threads, atomics, bulk memory, the
+Linux headers) is the SDK's to give (browser-substrate ADR-0240 §2), not the build's to restate.
+
 ### 2. It exports what Node's executable exports
 
 The program is linked with `-rdynamic`, as `common.gypi` links Node's. An addon `dlopen`ed into the process binds
