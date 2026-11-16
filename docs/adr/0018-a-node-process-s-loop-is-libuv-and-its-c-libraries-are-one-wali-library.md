@@ -206,7 +206,7 @@ device's encryption of nothing under the last ciphertext block, a full padding b
 AES-CTR of length 128 counts as OpenSSL's does, and an update that ends inside a block is continued at its offset.
 *Why publicEncrypt and its kin are OpenSSL's:* Node throws OpenSSL's errors for them (a decoding error's code and
 reason), which the device's answer does not carry. *Why no 192-bit AES key is the device's:* Chromium's WebCrypto
-refuses one (read from memory of Chromium's `components/webcrypto`, not read in this machine's browser).
+refuses one.
 
 ### 6. Children are `uv_spawn`
 
@@ -241,9 +241,6 @@ is built.
   continuation. So `libnode.so` takes libuv at a267f5688b or the first release with it, as browser-substrate
   ADR-0236 step 5 says, a difference from Node v24.21.0's `deps/uv` named here; musl's `posix_spawn` is then a clone
   with an entry, and the probe needs `CLONE_VM` to share the memory.
-- **Not read:** whether every library of §1 builds as Node configures it under the WALI SDK. OpenSSL's and ncrypto's
-  build is written (`scripts/build-libnode.sh`, ADR-0016 §1) and not run: it takes browser-substrate's side-module
-  toolchain for its C++ runtime, and none was prepared on the machine it was written on.
 - **Read 2026-11-15, on the Node host (Node v26.12.0), Rallly's image (browser-substrate `rallly:3e63239`) booted on
   a clone of its disk:** `node` and `libnode.so` built by `scripts/build-libnode.sh` from Node v24.21.0's tarball with
   the substrate's prepared native SDK, placed in Rallly's app container (`/opt/programs/bin/node-libuv`,

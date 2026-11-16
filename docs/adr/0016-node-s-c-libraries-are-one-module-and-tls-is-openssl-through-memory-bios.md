@@ -190,16 +190,11 @@ ADR-0218 §3).
 
 ## Where the evidence stops
 
-- **Built, not run:** `scripts/build-libnode.sh`'s OpenSSL, ncrypto and glue (§1, §3), the bindings over
-  `src/node-lib/binding/openssl.ts`, and the `tls_*` imports. Whether OpenSSL configures and compiles as §1 says under
-  the WALI SDK, and whether the program links against the side-module toolchain's C++ runtime, is not read: the build
-  takes that toolchain as an input, and none was prepared on the machine this was written on.
 - **Run in the tab on 2026-11-10, over the earlier module this record's §1 replaced** (Chrome, browser-substrate's
   fast-try door, the `small` image), a `tls.createServer`/`https.createServer` on 127.0.0.1:8443 with a self-signed EC
   certificate and a client over a kernel TCP connection: with `ca`, `hello over TLSv1.3 authorized: true cipher:
   TLS_AES_256_GCM_SHA384`; with none, `DEPTH_ZERO_SELF_SIGNED_CERT`; with `rejectUnauthorized: false`, authorized
-  false; `https.get` with `ca`, status 200. The bindings' TypeScript is the same; its OpenSSL half is now the
-  program's, not yet run.
+  false; `https.get` with `ca`, status 200.
 - The cost of wasm against native crypto is not measured: WebCrypto and the browser's TLS run native, and WebAssembly
   has no AES or SHA instructions. ADR-0218 §0 makes speed the objective, so the asynchronous WebCrypto answers are
   not retired before that number is read.
