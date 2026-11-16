@@ -10,8 +10,8 @@
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { hashbangAsComment, lowerModuleForV8, prepareScriptForV8, PREPARED_MODULES_DIR, TOP_LEVEL_AWAIT_MARKER } from '../runtime';
-import { PREPARED_MODULES_KEPT, preparedModuleKeyOf } from '../prepared-key';
+import { hashbangAsComment, keepPreparedBody, lowerModuleForV8, prepareScriptForV8, PREPARED_MODULES_DIR, TOP_LEVEL_AWAIT_MARKER, type PreparedBodyTree } from '../runtime';
+import { preparedModuleKeyOf } from '../prepared-key';
 import { wrapperLines } from '../stack-overrides';
 
 const indirectEval = eval;
@@ -55,13 +55,9 @@ export function hostInitializeImportMeta(id: unknown, meta: object, wrap: object
 }
 
 /** Where a process's prepared bodies are kept: its tree, the one its image's bodies are in. */
-interface PreparedTree {
+interface PreparedTree extends PreparedBodyTree {
   existsSync(path: string): boolean;
   readFileSync(path: string, encoding: 'utf8'): string;
-  writeFileSync(path: string, data: string): void;
-  appendFileSync(path: string, data: string): void;
-  renameSync(from: string, to: string): void;
-  unlinkSync(path: string): void;
 }
 let preparedTree: PreparedTree | undefined;
 let keepingRefused = false;
@@ -75,23 +71,7 @@ function prepared(kind: 'node-cjs' | 'node-esm', text: string, make: (text: stri
   const path = `${PREPARED_MODULES_DIR}/${key}`;
   try { return tree.readFileSync(path, 'utf8'); } catch { /* none kept */ }
   const body = make(text);
-  if (!keepingRefused && tree.existsSync(PREPARED_MODULES_DIR)) {
-    // Kept whole or not at all. On the machine the tree is the kernel's, shared by every process of the World, and a
-    // write is no single step: another process reading the key while this one writes it (a service and its health
-    // check load the same modules at once), or a write cut short (ENOSPC), read half a body under the body's own
-    // name, and compiled it. The body is written under a name of its own and renamed onto the key, which rename(2)
-    // does at once: a reader finds the whole body or none.
-    const partial = `${path}.${bytesToHex(globalThis.crypto.getRandomValues(new Uint8Array(8)))}.partial`;
-    try {
-      tree.writeFileSync(partial, body);
-      tree.renameSync(partial, path);
-      tree.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${key}\n`);
-    } catch (cause) {
-      try { tree.unlinkSync(partial); } catch { /* none written, or renamed */ }
-      const code = (cause as { code?: unknown } | null)?.code;
-      if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') keepingRefused = true;
-    }
-  }
+  if (!keepingRefused && tree.existsSync(PREPARED_MODULES_DIR) && keepPreparedBody(tree, key, body)) keepingRefused = true;
   return body;
 }
 

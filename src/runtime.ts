@@ -1061,6 +1061,35 @@ function __substratePrepareBody(rawCode: string, resolvedPath: string, format: s
  * every process's memory.
  */
 export const PREPARED_MODULES_DIR = '/opt/.tabnode/prepared';
+/** The tree a body is kept in: the process's, the one its image's bodies are in. */
+export interface PreparedBodyTree {
+  writeFileSync(path: string, data: string): void;
+  appendFileSync(path: string, data: string): void;
+  renameSync(from: string, to: string): void;
+  unlinkSync(path: string): void;
+}
+/**
+ * A prepared body kept under `key` in PREPARED_MODULES_DIR, whole or not at all, and its key added to the directory's
+ * list of kept keys (PREPARED_MODULES_KEPT). A tree's write is no single step (the machine's tree writes a file as
+ * open(O_TRUNC) and a loop of write(2)), so a body written onto its key could be read in part, by a process reading
+ * the key while it is written or after a write cut short, under the body's own name. It is written under a name of its
+ * own and renamed onto the key, which rename(2) does at once: a reader finds the whole body or none. Answers whether
+ * the directory refused the process (EACCES, EPERM, EROFS), whose credentials then keep it none.
+ */
+export function keepPreparedBody(tree: PreparedBodyTree, key: string, body: string): boolean {
+  const path = `${PREPARED_MODULES_DIR}/${key}`;
+  const partial = `${path}.${bytesToHex(globalThis.crypto.getRandomValues(new Uint8Array(8)))}.partial`;
+  try {
+    tree.writeFileSync(partial, body);
+    tree.renameSync(partial, path);
+    tree.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${key}\n`);
+    return false;
+  } catch (cause) {
+    try { tree.unlinkSync(partial); } catch { /* none written, or renamed */ }
+    const code = (cause as { code?: unknown } | null)?.code;
+    return code === 'EACCES' || code === 'EPERM' || code === 'EROFS';
+  }
+}
 /** The prefix a handed TypeScript text is hashed under for its kept body's name (compileRaw): never a file's own digest. */
 const HANDED_TYPESCRIPT_SALT = 'tabnode handed typescript text\0';
 /** The prefix a ts-node transpile's identity is hashed under for its captured text's name (__substrateTranspileKey). */
@@ -3461,11 +3490,7 @@ function createRequire(
       && /\.(?:ts|mts|cts)$/u.test(resolvedPath) && !resolvedPath.endsWith('.d.ts');
     // The text ts-node handed, kept under the transpile's key (builtinLoad) for a later run to hand on itself.
     if (handedTypeScript && compiling.transpileKey && !__substrateKeepingRefused.has(process as object) && vfs.existsSync(PREPARED_MODULES_DIR)) {
-      try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${compiling.transpileKey}`, content); vfs.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${compiling.transpileKey}\n`); }
-      catch (cause) {
-        const code = (cause as { code?: unknown } | null)?.code;
-        if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') __substrateKeepingRefused.add(process as object);
-      }
+      if (keepPreparedBody(vfs, compiling.transpileKey, content)) __substrateKeepingRefused.add(process as object);
     }
     const key = compiling?.raw === content && format === undefined && !strips ? __substrateTimeRead(process, 'key', () => preparedModuleKey(rawCode, resolvedPath))
       : handedTypeScript ? __substrateTimeRead(process, 'key', () => preparedModuleKeyOf(resolvedPath.endsWith('.cts') ? 'cjs' : 'js',
@@ -3486,21 +3511,12 @@ function createRequire(
       // read has missed, so a taken body costs no question about it.
       if (vfs.existsSync(PREPARED_MODULES_DIR)) {
         const body = __substrateTimeRead(process, 'transform', () => __substrateScopeGlobalCalls(prepareModuleCode(rawCode, resolvedPath)));
-        // One write is one step of the tab's filesystem, so no reader sees
-        // half a body; a rename after it failed in a forked process's realm
-        // and left the half-named file behind.
         // What was kept is also said, one key a line, in a list beside the bodies: a reader that wants the bodies
         // made in the tab (a dry run's capture) reads the list, where telling them from an image's own tens of
         // thousands meant listing the directory.
-        // A process the directory refuses (an image's user under a root-owned directory: Rallly's, ten EACCES a boot)
-        // prepares its own and asks no more: the refusal is its credentials' (one that changes them later only keeps less).
-        if (!__substrateKeepingRefused.has(process as object)) {
-          try { vfs.writeFileSync(`${PREPARED_MODULES_DIR}/${key}`, body); vfs.appendFileSync(`${PREPARED_MODULES_DIR}/${PREPARED_MODULES_KEPT}`, `${key}\n`); }
-          catch (cause) {
-            const code = (cause as { code?: unknown } | null)?.code;
-            if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') __substrateKeepingRefused.add(process as object);
-          }
-        }
+        // A process the directory refuses (an image's user under a root-owned directory) prepares its own and asks no
+        // more: the refusal is its credentials' (one that changes them later only keeps less).
+        if (!__substrateKeepingRefused.has(process as object) && keepPreparedBody(vfs, key, body)) __substrateKeepingRefused.add(process as object);
         __substrateCountPrepared(process, 'kept');
         runModuleBody(module, body, resolvedPath, dirname, 'source', true);
         return;
