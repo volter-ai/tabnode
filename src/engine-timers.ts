@@ -46,11 +46,11 @@ export function queueCompletion(run: () => void): () => void {
 }
 
 /**
- * Messages posted to a port the process listens to and not yet delivered (guest-message-ports.ts). On a kernel the
- * worker delivers them from its task queue, which runs only between the loop's callbacks (`node`'s drain), so each is
- * work due now, as a Node port's message is its handle's (src/node_messaging.cc, a MessagePort's uv_async_t): while
- * one is queued, a referenced immediate keeps libuv's poll from blocking, and each check phase's drain lets the worker
- * deliver. Over no kernel the realm delivers them on its own.
+ * Messages posted to an engine port the process listens to and not yet delivered (guest-message-ports.ts), in a realm
+ * with no `node` program; a `node` program's port is its own uv_async_t (binding/messaging.ts, ADR-0018 item 9). On a
+ * kernel the worker delivers them from its task queue, which runs only between the loop's callbacks, so each is work
+ * due now, as a Node port's message is its handle's: while one is queued, a referenced immediate keeps the loop's poll
+ * from blocking, and each check phase lets the worker deliver. Over no kernel the realm delivers them on its own.
  */
 let messagesDue = 0;
 let messageTurn: EngineTimer | undefined;

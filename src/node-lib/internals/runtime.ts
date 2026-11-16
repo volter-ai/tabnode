@@ -2,6 +2,7 @@ import { drainGuestNextTicks } from '../../guest-loop';
 import { constantsBinding } from '../../shims/constants';
 import { AsyncResource } from '../../shims/async_hooks';
 import { handleOwnerSymbol } from '../binding/owner-symbol';
+import { defineOnHost, forGuestRealm } from '../../host-globals';
 /**
  * The internals Node's `net` names that are neither vendored nor a binding:
  * async ids, stream defaults, the option table, and the three
@@ -67,51 +68,20 @@ export const internalTaskQueues = {
   runNextTicks: drainGuestNextTicks,
 };
 
-/** `internal/event_target`: the one symbol `abort_listener.js` reads. */
-// Registry symbols, not unique ones: the engine's bundle can be evaluated
-// more than once in a realm -- a page's copy and a worker's -- and each
-// evaluation would otherwise mint its own key. The default below was defined
-// under one key and `events.js` read another, so a fresh `EventTarget`
-// answered nothing while one that had been set answered fine.
-const kEventsSymbol = Symbol.for('nodejs.event_target.events');
-// Every `EventTarget` answers the symbol above with an empty map, for the
-// reason given on `kEvents` below. One getter on the prototype, installed
-// where the binding is defined rather than inside a guest's realm, because
-// `events.js` reads it off whatever target it was handed.
-if (typeof EventTarget === 'function' && !(kEventsSymbol in EventTarget.prototype)) {
-  const empty = new Map<unknown, unknown>();
-  Object.defineProperty(EventTarget.prototype, kEventsSymbol, { get: () => empty, configurable: true });
-}
-
-export const internalEventTarget = {
-  kResistStopPropagation: Symbol('kResistStopPropagation'),
-  /** `internal/streams/operators.js` marks its abort listener weak with this. */
-  kWeakHandler: Symbol('kWeakHandler'),
-  /**
-   * Whether a thing is an `EventTarget`. `events.js` asks before it treats a
-   * value as one -- `once`, `on`, `getEventListeners` and `setMaxListeners`
-   * all take either an emitter or a target. Node's own `EventTarget` is a
-   * class in `internal/event_target.js`; the engine's is the realm's, which
-   * is where that class comes from in the first place.
-   */
-  isEventTarget: (value: unknown): boolean =>
-    typeof EventTarget === 'function' && value instanceof EventTarget,
-  /**
-   * The map Node keeps its own EventTarget's listeners in.
-   *
-   * THE LOSS, named: the realm's `EventTarget` keeps its listeners where no
-   * JavaScript can reach them. The DOM has no way to ask what is listening --
-   * `addEventListener` is a door in, and there is no door out -- so
-   * `events.getEventListeners(target)` cannot answer for one. It reads this
-   * map unguarded, so every target answers with an empty one: the call
-   * reports no listeners rather than throwing at a program that asked a fair
-   * question. An `EventEmitter` is unaffected; it answers from its own
-   * `listeners()`, which is the branch above this one in `events.js`.
-   */
-  kEvents: kEventsSymbol,
-  kNewListener: Symbol('kNewListener'),
-  kRemoveListener: Symbol('kRemoveListener'),
-};
+/**
+ * Node's own `internal/event_target` (vendored) answers whether a value is an EventTarget by its constructor's
+ * `Symbol.for('nodejs.event_target')`, which Node's EventTarget class carries. A process's `EventTarget`, `AbortSignal`
+ * and the rest of the realm's targets are the realm's (guest-scope.ts), so the realm's EventTarget carries it too while
+ * a guest exists: `events.setMaxListeners(n, signal)`, `events.once` and `getEventListeners` take them, as Node takes
+ * its own.
+ */
+forGuestRealm(() => {
+  if (typeof EventTarget !== 'function') return;
+  const kIsEventTarget = Symbol.for('nodejs.event_target');
+  if (!Object.prototype.hasOwnProperty.call(EventTarget, kIsEventTarget)) {
+    defineOnHost(EventTarget, kIsEventTarget, { value: true, configurable: true });
+  }
+});
 
 /**
  * `internal/options`: the command-line options Node's `net`, `http` and

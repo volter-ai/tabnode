@@ -100,6 +100,9 @@ export interface LibnodeExports {
   tabnode_signal_new(): I32;
   tabnode_signal_start(handle: I32, signum: I32): I32;
   tabnode_signal_stop(handle: I32): I32;
+  /** node_messaging.c: MessagePort's uv_async_t and its TriggerAsync. */
+  tabnode_message_port_new(): I32;
+  tabnode_message_port_trigger(handle: I32): void;
   /** process_methods.c: process._kill's uv_kill. */
   tabnode_kill(pid: I32, signal: I32): I32;
   /** uv.c: uv.cc's error table (12 bytes an entry, its count at `countAt`), ErrName and GetErrMessage into 50 bytes. */
@@ -473,6 +476,10 @@ export interface HandleCallbacks {
   onUvExit?(exitStatus: number, signal: number, length: number): void;
   /** SignalWrap's uv_signal_cb: the signal's number. */
   onUvSignal?(signum: number): void;
+  /** MessagePort::OnMessage's start: -1 for a detached port, else its processing limit. */
+  onUvMessagePending?(): number;
+  /** One turn of MessagePort::OnMessage's loop: 0 none emitted, 1 one emitted, 2 emitting failed. */
+  onUvMessage?(): number;
   /** FSEventWrap::OnEvent: libuv's filename (a C string, 0 for none), the event's name the C chose, and the status. */
   onUvFsEvent?(filename: number, event: string, status: number): void;
   /** StatWatcher::Callback: the status, both stats in the binding's arrays. */
@@ -579,6 +586,9 @@ export const libnodeImports = {
   },
   /** SignalWrap's uv_signal_cb: the handle's `onsignal`. */
   signal_received: (handle: number, signum: number): void => { handleAt(handle).target.onUvSignal?.(signum); },
+  /** MessagePort::OnMessage over the port's uv_async_t: its processing limit, then each turn of its loop. */
+  message_port_pending: (handle: number): number => handleAt(handle).target.onUvMessagePending?.() ?? -1,
+  message_port_message: (handle: number): number => handleAt(handle).target.onUvMessage?.() ?? 0,
   /** An asynchronous uv_fs_* completed: the request's After and its MakeCallback, or its promise's settling. */
   fs_done: (request: number): void => {
     const at = address(request);

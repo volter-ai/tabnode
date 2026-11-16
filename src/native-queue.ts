@@ -5,7 +5,9 @@
  * its callback (a table index) and its data (a pointer). Many threads write, under the lock; the main side alone reads.
  * The counters wrap modulo 2³²: the fill is their difference as a signed 32-bit number, never more than `SLOTS`, and a
  * slot is a counter's low bits. Nothing in it is the engine's, so a thread's worker imports it with `native-thread.ts`
- * alone.
+ * alone. Its wait stands outside libuv's loop, so it is a realm's with no `node` program: the machine's `TREE_NATIVE`
+ * loads no `.node`, and an addon in a `node` program's process is ADR-0018 item 7's, whose threads' wake is a
+ * `uv_async_t` of the program, as a Node threadsafe function's is (ADR-0018 item 9).
  */
 import { waitAsync } from './stdin-ring';
 

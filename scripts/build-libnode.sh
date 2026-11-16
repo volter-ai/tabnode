@@ -3,7 +3,7 @@
 # C: libuv, OpenSSL 3.5.8 and ncrypto. `node` is a WALI program linked position-independent against it and `libc.so`:
 # Node's start and its standard streams' and signals' start and end, the loop's own handles, the engine's descriptor
 # waits and the bindings' glue over libuv, OpenSSL and ncrypto (native/node: one HandleWrap, the stream, TCP, pipe, TTY
-# and UDP wraps, process_wrap, spawn_sync, signal_wrap, fs over uv_fs_*, and the crypto and tls_wrap bindings' OpenSSL
+# and UDP wraps, process_wrap, spawn_sync, signal_wrap, MessagePort, fs over uv_fs_*, and the crypto and tls_wrap bindings' OpenSSL
 # half, as Node's src/*_wrap.cc, spawn_sync.cc, node_file.cc, node_dir.cc, fs_event_wrap.cc, node_constants.cc and
 # src/crypto/*.cc). Every compile is browser-substrate's prepared native SDK with its Linux headers, whose compile
 # wrapper adds WebAssembly exception handling and whose link wrapper makes a program PIE with the run path
@@ -147,12 +147,12 @@ sed -n '30,78p' "$work/$node/src/node_constants.h" > "$work/generated/node_const
 # native/node: Node's start (node_main) and its standard streams' and signals' (stdio), its Environment's handles
 # (env), the engine's descriptor waits (poll), and the bindings' C, each over the Node source it names (memory, signo,
 # handle_wrap, stream_wrap, tcp_wrap, pipe_wrap, tty_wrap, udp_wrap, process_wrap, spawn_sync, signal_wrap,
-# process_methods, uv, fs, fs_cp, fs_event); and the crypto and tls_wrap bindings' C++ over ncrypto and OpenSSL, and
+# process_methods, uv, fs, fs_cp, fs_event, node_messaging); and the crypto and tls_wrap bindings' C++ over ncrypto and OpenSSL, and
 # Node's constants (crypto_util, crypto_context, crypto_cipher, crypto_tls, crypto_x509, node_constants), with the
 # defines ncrypto gives its dependents (ncrypto.gyp).
 program=()
 for source in node_main stdio env poll memory signo handle_wrap stream_wrap tcp_wrap pipe_wrap tty_wrap udp_wrap \
-  process_wrap spawn_sync signal_wrap process_methods uv fs fs_cp fs_event; do
+  process_wrap spawn_sync signal_wrap process_methods uv fs fs_cp fs_event node_messaging; do
   "$cc" "${flags[@]}" -D_GNU_SOURCE -I"$uv/include" -c "$repo/native/node/$source.c" -o "$work/$source.o" &
   pids+=($!)
   program+=("$work/$source.o")

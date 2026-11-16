@@ -46,6 +46,7 @@ import { createFsEventWrapBinding } from './binding/fs_event_wrap';
 import { createDiagnosticsChannelBinding } from './binding/diagnostics_channel';
 import { createWasmWebApiBinding } from './binding/wasm_web_api';
 import { createBlobBinding } from './binding/blob';
+import { createMessagingBinding } from './binding/messaging';
 import { errorsBinding } from './binding/misc';
 import { errorSourcePositions } from '../error-source';
 import { stackOverrideMap } from '../stack-overrides';
@@ -429,6 +430,9 @@ class NodeLibScope {
         this.bindings.set('fs_event_wrap', bindingSurface(fs.fsEventWrapBinding, this.owner, this.process));
       } else if (name === 'os') {
         this.bindings.set(name, createOsBinding(this.process));
+      } else if (name === 'messaging') {
+        // Its MessagePort is this graph's, whose `internal/worker/io` reshapes its prototype (ADR-0018 item 9).
+        this.bindings.set(name, createMessagingBinding(this.require));
       } else if (name === 'errors') {
         this.bindings.set(name, { ...errorsBinding, getErrorSourcePositions: (error: object) => errorSourcePositions(this.process, error) });
       } else if (name === 'diagnostics_channel') {
