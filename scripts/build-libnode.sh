@@ -184,8 +184,14 @@ for source in common/debug common/entropy_common common/fse_decompress compress/
   pids+=($!)
   deps+=("$object")
 done
+# llhttp's api.c binds, under __wasm__, the parser of a standalone module whose host is JavaScript (undici's
+# llhttp.wasm): callbacks it imports from that host (wasm_on_*), llhttp_alloc and llhttp_free. libnode.so's llhttp is
+# Node's for a Linux program, whose callbacks node_http_parser sets, so api.c is compiled as Node's Linux build compiles
+# it, without __wasm__; llhttp.c keeps it, where it names the architecture (its SIMD over wasm_simd128.h).
 for source in llhttp api http; do
-  "$cc" "${depflags[@]}" -I"$llhttpsrc" -I"$llhttpsrc/include" -c "$llhttpsrc/src/$source.c" -o "$work/llhttp-$source.o" &
+  native=(); [ "$source" = api ] && native=(-U__wasm__)
+  "$cc" "${depflags[@]}" ${native[@]+"${native[@]}"} -I"$llhttpsrc" -I"$llhttpsrc/include" -c "$llhttpsrc/src/$source.c" \
+    -o "$work/llhttp-$source.o" &
   pids+=($!)
   deps+=("$work/llhttp-$source.o")
 done
