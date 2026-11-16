@@ -38,7 +38,7 @@ import { ownedRun, ownerOfInstance, setInstanceOwner, withNodeResourceScope } fr
 import { __tokenForProcess, type ProcessToken } from '../process-tokens';
 import { createProcess, type Process } from '../shims/process';
 import { createFsBindings } from './binding/fs';
-import { libnodeAttached } from './binding/libnode';
+import { isNodeProgramRealm, programForm } from './binding/libnode';
 import { fsContext } from './binding/fs_req';
 import { createNodeFileBinding } from './binding/node_file';
 import { createNodeDirBinding } from './binding/node_dir';
@@ -394,16 +394,7 @@ function bindingSurface(value: unknown, owner: () => ProcessToken | null, proces
 export const REALM_ENVIRONMENT: ReadonlySet<string> = new Set(['internal/timers', 'internal/async_context_frame', 'internal/crypto/keys']);
 const REALM_BINDINGS = new Set(['timers', 'async_context_frame', 'task_queue']);
 
-/**
- * Whether this realm is the process of a `node` program (ADR-0018 §7): its global is the realm's own `globalThis`, and
- * every file the engine compiles in it, the engine's own library's among them, is compiled as Node compiles one, with
- * no free name rewritten, no Proxy and no `with`. The host says so when it makes the realm's worker, before the engine
- * loads, as `globalThis[Symbol.for('tabnode.realm')] = 'node'`, so the answer holds from the engine's first compile.
- */
-export const NODE_PROGRAM_REALM = Symbol.for('tabnode.realm');
-export function isNodeProgramRealm(): boolean {
-  return (globalThis as unknown as Record<symbol, unknown>)[NODE_PROGRAM_REALM] === 'node';
-}
+export { NODE_PROGRAM_REALM, isNodeProgramRealm } from './binding/libnode';
 
 /** A realm's own loaders, where its process is `node` and Node's bootstrap made them (realm.ts). */
 export interface RealmLoaders {
@@ -456,7 +447,7 @@ class NodeLibScope {
     if (!this.bindings.has(name)) {
       if (REALM_BINDINGS.has(name)) {
         this.bindings.set(name, internalBinding(name));
-      } else if (['fs', 'fs_dir', 'fs_event_wrap'].includes(name) && libnodeAttached()) {
+      } else if (['fs', 'fs_dir', 'fs_event_wrap'].includes(name) && programForm(`internalBinding('${name}')`)) {
         // A process whose program is `node`: its fs is libuv's, uv_fs_* in its kernel (ADR-0018 item 6).
         const context = fsContext(() => this.require('buffer').Buffer,
           (value) => (this.require('internal/errors') as { determineSpecificType(value: unknown): string }).determineSpecificType(value),

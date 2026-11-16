@@ -17,9 +17,9 @@ import { adaToAscii } from './ada_idna';
 import { hostnameToUnicode } from '../internals/url';
 
 /**
- * `internalBinding('constants')` (`src/shims/constants.ts`): the program's compiled constants where the realm has the
- * `node` program, the engine's tables where it has none. Built on the first property read, not when this file is
- * evaluated: the realm's program is attached by then, and the table is the program's.
+ * `internalBinding('constants')` (`src/shims/constants.ts`): the program's compiled constants on a realm the host
+ * named a `node` program's, the engine's tables on any other. Built on the first property read, not when this file is
+ * evaluated; on a node realm a read before the program is attached is an error that names itself (programForm).
  */
 // eslint-disable-next-line no-var, vars-on-top
 var __constants: Record<string, unknown> | undefined;

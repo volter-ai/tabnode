@@ -16,7 +16,7 @@
 import { LibuvStreamWrap, type WriteWrap, type ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync } from './stream_wrap';
 import { invokeOwned, observeNodeRequest, ownedRun, ownerOfInstance, type OwnedHandle } from './handles';
 import { uvConstant } from './uv';
-import { fromMemory, intoMemory, libnode, libnodeAttached, type HandleCallbacks } from './libnode';
+import { fromMemory, intoMemory, libnode, programForm, type HandleCallbacks } from './libnode';
 import { HandleWrap, completeRequest } from './handle_wrap';
 
 /** libuv's `uv__handle_fd`: the kernel descriptor a handle is, -1 while it has none. */
@@ -42,7 +42,7 @@ export function registerKernelHandle(type: CarriedType, make: () => KernelHandle
 }
 
 /** Whether the realm's process is libuv's: its handles are made over its loop. */
-export function realmHasLibuv(): boolean { return libnodeAttached(); }
+export function realmHasLibuv(): boolean { return programForm('a handle\'s libuv'); }
 
 export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks {
   readonly #kernel: boolean;

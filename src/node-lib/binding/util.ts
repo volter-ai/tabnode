@@ -39,7 +39,7 @@ import { guessHandleTypeOfFd } from './fds';
 /** internal/util's `handleTypes`, in its order: the binding answers an index into it, as Node's does. */
 const HANDLE_TYPES = ['TCP', 'TTY', 'UDP', 'FILE', 'PIPE', 'UNKNOWN'];
 import { stdioKindOf } from './tty_wrap';
-import { intoMemory, libnode, libnodeAttached } from './libnode';
+import { intoMemory, libnode, programForm } from './libnode';
 import { mallocAnswer } from './openssl';
 import { nodeLibInternalRequire } from '../load';
 import { stackOverrides } from '../../stack-overrides';
@@ -273,7 +273,7 @@ export const utilBinding = {
   // (ERR_INVALID_FD_TYPE: undefined): a program reading a pipe its parent passed at fd 3 could not open it.
   guessHandleType: (fd: number) => {
     // Where the realm's process is `node` on libuv's loop, every descriptor is libuv's to say (GuessHandleType).
-    if (libnodeAttached()) return HANDLE_TYPES.indexOf(guessHandleTypeOfFd(fd));
+    if (programForm("internalBinding('util').guessHandleType")) return HANDLE_TYPES.indexOf(guessHandleTypeOfFd(fd));
     const type = fd !== 0 && fd !== 1 && fd !== 2 ? guessHandleTypeOfFd(fd)
       : ((kind) => kind === 'tty' ? 'TTY' : kind === 'file' || kind === 'char' ? 'FILE' : guessHandleTypeOfFd(fd))(stdioKindOf(fd));
     return HANDLE_TYPES.indexOf(type);

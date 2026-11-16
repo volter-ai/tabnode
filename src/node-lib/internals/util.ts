@@ -25,7 +25,7 @@
  * Node's own code, on the bindings under `../binding/`.
  */
 
-import { libnodeAttached } from '../binding/libnode';
+import { programForm } from '../binding/libnode';
 import { nodeLibInternalRequire } from '../load';
 
 /**
@@ -87,9 +87,9 @@ export const internalUtilTypes: Record<string, (value: unknown) => boolean> = {
   isWeakSet: (value) => hasSlot(value, WeakSet.prototype.has, ['x']),
   // Node's (lib/internal/util/types.js:84-127): none where the process has no OpenSSL, else `internal/crypto/keys`'
   // own, the realm's one file (load.ts REALM_ENVIRONMENT).
-  isKeyObject: (value) => libnodeAttached()
+  isKeyObject: (value) => programForm('util.types.isKeyObject')
     && (nodeLibInternalRequire('internal/crypto/keys') as { isKeyObject(value: unknown): boolean }).isKeyObject(value),
-  isCryptoKey: (value) => libnodeAttached()
+  isCryptoKey: (value) => programForm('util.types.isCryptoKey')
     && (nodeLibInternalRequire('internal/crypto/keys') as { isCryptoKey(value: unknown): boolean }).isCryptoKey(value),
   isExternal: () => false,
   isProxy: (value) => (typeof value === 'object' || typeof value === 'function') && value !== null && recordedProxies.has(value as object),

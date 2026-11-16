@@ -18,7 +18,7 @@
  * and dlopen modes, its signals the ones its own `process.kill` raises (`engineSignals`), and the empty crypto and
  * zlib groups of a realm with no OpenSSL and no zlib.
  */
-import { libnode, libnodeAttached } from '../node-lib/binding/libnode';
+import { libnode, programForm } from '../node-lib/binding/libnode';
 import { mallocAnswer } from '../node-lib/binding/openssl';
 
 /** The signals a realm with no program names, by the numbers its own `process.kill` raises (`src/shims/process.ts`). */
@@ -96,7 +96,7 @@ export function programGroup(name: string): Group {
  * handles reach no libuv.
  */
 export function wrapConstants<T extends Record<string, number>>(binding: string, engine: T): T {
-  return libnodeAttached() ? programGroup(binding) as T : engine;
+  return programForm(`internalBinding('${binding}').constants`) ? programGroup(binding) as T : engine;
 }
 
 /** CreatePerContextProperties (node_constants.cc:1335-1422) over the program's groups. */
@@ -130,9 +130,9 @@ let binding: ConstantsBinding | null = null;
 
 /**
  * `process.binding('constants')` and `internalBinding('constants')`, built on the first ask and kept, as Node hands
- * out the same object every time: the program's where the realm has it (attached before Node's library runs), the
- * engine's otherwise.
+ * out the same object every time: the program's on a realm the host named a `node` program's, where a read before the
+ * program is attached is an error naming itself and keeps nothing (programForm), the engine's on any other.
  */
 export function constantsBinding(): ConstantsBinding {
-  return binding ??= libnodeAttached() ? programBinding() : engineBinding();
+  return binding ??= programForm("internalBinding('constants')") ? programBinding() : engineBinding();
 }

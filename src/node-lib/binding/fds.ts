@@ -18,7 +18,7 @@ import type { ProcessToken } from '../../process-tokens';
 import { currentOwner } from './handles';
 import { nativeInheritedFdType } from '../../native-stream-binding';
 import { treeDescriptorsOf, type TreeDescriptors } from '../../tree-descriptors';
-import { libnode, libnodeAttached } from './libnode';
+import { libnode, programForm } from './libnode';
 
 /** What libuv answers for a descriptor. */
 export type HandleType = 'TCP' | 'TTY' | 'UDP' | 'FILE' | 'PIPE' | 'UNKNOWN';
@@ -106,7 +106,7 @@ export const HANDLE_TYPE_NAMES: readonly HandleType[] = ['TCP', 'TTY', 'UDP', 'F
  * descriptor; else a descriptor the engine opened is what it opened, and the three standard ones are pipes.
  */
 export function guessHandleTypeOfFd(fd: number): HandleType {
-  if (libnodeAttached()) return HANDLE_TYPE_NAMES[libnode().exports.tabnode_guess_handle(Number(fd) | 0)] ?? 'UNKNOWN';
+  if (programForm('a descriptor\'s handle type')) return HANDLE_TYPE_NAMES[libnode().exports.tabnode_guess_handle(Number(fd) | 0)] ?? 'UNKNOWN';
   const open = tableOfAskingRun()?.get(fd) ?? openFds.get(fd);
   if (open) return open.type;
   const inherited = nativeInheritedFdType(fd);

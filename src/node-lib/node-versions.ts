@@ -8,7 +8,7 @@
  * so the loader cannot import it back). This file imports only the program's
  * door (`binding/libnode`, which imports nothing of the engine's), so both can.
  */
-import { libnode, libnodeAttached } from './binding/libnode';
+import { libnode, programForm } from './binding/libnode';
 
 /** The version a guest reports where its image names none; the vendored compatibility version. */
 export const NODE_LTS_VERSION = "24.21.0";
@@ -82,7 +82,7 @@ function kept(target: object, name: string, value: string | undefined): string |
 function libraryVersions(): {
   zlib: string; brotli: string; zstd: string; llhttp: string; merve: string; simdjson: string; modules: string; napi: string;
 } | undefined {
-  if (!libnodeAttached()) return undefined;
+  if (!programForm('process.versions')) return undefined;
   const program = libnode();
   const exports = program.exports as unknown as {
     tabnode_zlib_version(): number; tabnode_brotli_version(): number; tabnode_zstd_version(): number; tabnode_llhttp_version(): number;
@@ -107,7 +107,7 @@ function libraryVersions(): {
  * it has none), from the program's `tabnode_openssl_version` (native/node/crypto_util.cc).
  */
 function opensslVersion(): string | undefined {
-  if (!libnodeAttached()) return undefined;
+  if (!programForm('process.versions')) return undefined;
   const program = libnode();
   const exports = program.exports as unknown as { tabnode_openssl_version(): number };
   const version = program.cString(exports.tabnode_openssl_version()) ?? "";

@@ -2284,8 +2284,6 @@ const builtinModules: Record<string, unknown> = {
       table(data: unknown) { this._write('out', [data]); }
     },
   },
-  // util/types is accessed as a subpath
-  'util/types': utilShim.types,
   // path subpaths: Node's own two flavours, the very objects path.posix and
   // path.win32 name (Node's test-path-posix-exists.js asserts that identity).
   'path/posix': pathShim.posix,
@@ -2299,6 +2297,13 @@ Object.defineProperty(builtinModules, 'assert/strict', {
   configurable: true,
   enumerable: true,
   get(): unknown { return (assertModule as { strict: unknown }).strict; },
+});
+// `util/types` is `util`'s own `types`, read when a guest asks, as `assert/strict` is: reading it here would load
+// Node's `util` when the engine is imported, before a node realm's program is attached (ADR-0018 §7).
+Object.defineProperty(builtinModules, 'util/types', {
+  configurable: true,
+  enumerable: true,
+  get(): unknown { return (utilShim as { types: unknown }).types; },
 });
 // A builtin NAME is a promise that `require` of it loads a module. Every name the engine lists
 // (`shims/module.ts`, which is what `module.builtinModules` and `isBuiltin` answer from) has a module in this table,
@@ -2318,7 +2323,10 @@ Object.defineProperty(builtinModules, 'assert/strict', {
 // namespaces, so the assignment threw. Every builtin the table holds is handed
 // out as a mutable copy, the way http and https already were.
 for (const __substrateName of Object.keys(builtinModules)) {
-  const __substrateModule = builtinModules[__substrateName];
+  // An entry read when a guest asks (`assert/strict`, `util/types`) is not read here.
+  const __substrateEntry = Object.getOwnPropertyDescriptor(builtinModules, __substrateName);
+  if (!__substrateEntry || !('value' in __substrateEntry)) continue;
+  const __substrateModule = __substrateEntry.value;
   if (__substrateModule && typeof __substrateModule === "object" && Object.isFrozen(__substrateModule)) builtinModules[__substrateName] = makeMutable(__substrateModule as Record<string, unknown>);
 }
 /** Every proxy the engine's realm made, so `util.types.isProxy` can name one. */

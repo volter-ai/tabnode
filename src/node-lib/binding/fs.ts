@@ -120,14 +120,15 @@ function callingCwd(): string {
  * One table, one answer.
  */
 function flagBits(): { create: number; excl: number; truncate: number; append: number; nonblock: number } {
-  const fs = (constantsBinding as unknown as { fs?: Record<string, number> }).fs ?? {};
-  return {
-    create: fs.O_CREAT ?? 0o100,
-    excl: fs.O_EXCL ?? 0o200,
-    truncate: fs.O_TRUNC ?? 0o1000,
-    append: fs.O_APPEND ?? 0o2000,
-    nonblock: fs.O_NONBLOCK ?? 0o4000,
+  const fs = (constantsBinding as unknown as { fs: Record<string, number | undefined> }).fs;
+  // Both forms of the table hold every one (shims/constants.ts): a flag it lacks is the table's defect, not a number
+  // to make up here.
+  const bit = (name: string): number => {
+    const value = fs[name];
+    if (typeof value !== 'number') throw new Error(`fs: the constants binding has no ${name}`);
+    return value;
   };
+  return { create: bit('O_CREAT'), excl: bit('O_EXCL'), truncate: bit('O_TRUNC'), append: bit('O_APPEND'), nonblock: bit('O_NONBLOCK') };
 }
 
 /** Node's utf8 read: a leading U+FEFF is the file's text, kept (a default TextDecoder drops it); bad bytes are U+FFFD. */

@@ -7,7 +7,7 @@
  * answers itself, is the one libuv returns. A realm with no program has no libuv, and its numbers are the engine's own
  * table below, Linux's, since a program reads `err.errno` and `err.code` and expects the pair a Linux Node reports.
  */
-import { address, libnode, libnodeAttached, readRecord, withRoom } from './libnode';
+import { address, libnode, programForm, readRecord, withRoom } from './libnode';
 
 /** The engine's own table, for a realm with no `node` program: the codes Node's `net`, `child_process` and their
  * internals name, with Linux's numbers. */
@@ -133,7 +133,7 @@ function readEngineErrors(): UvErrors {
 }
 
 function errors(): UvErrors {
-  if (libnodeAttached()) return programErrors ??= readProgramErrors();
+  if (programForm("internalBinding('uv')")) return programErrors ??= readProgramErrors();
   return engineErrors ??= readEngineErrors();
 }
 

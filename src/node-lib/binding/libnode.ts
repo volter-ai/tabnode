@@ -277,11 +277,36 @@ export interface Libnode extends LibnodeProgram {
 let given: LibnodeProgram | undefined;
 let attached: Libnode | undefined;
 
+/**
+ * Whether this realm is the process of a `node` program (ADR-0018 §7): its global is the realm's own `globalThis`, and
+ * every file the engine compiles in it, the engine's own library's among them, is compiled as Node compiles one, with
+ * no free name rewritten, no Proxy and no `with`. The host says so when it makes the realm's worker, before the engine
+ * loads, as `globalThis[Symbol.for('tabnode.realm')] = 'node'`, so the answer holds from the engine's first compile.
+ */
+export const NODE_PROGRAM_REALM = Symbol.for('tabnode.realm');
+export function isNodeProgramRealm(): boolean {
+  return (globalThis as unknown as Record<symbol, unknown>)[NODE_PROGRAM_REALM] === 'node';
+}
+
+/**
+ * Whether what `reader` answers is the program's: on a realm the host named a `node` program's, always, so a read
+ * there before the host's `bootstrap` has attached the program is an error that names the reader; on any other
+ * realm, never, and the reader answers its engine form. The realm's identity decides the form, not the moment of the
+ * first read, so no answer built before the program exists is ever kept for it.
+ */
+export function programForm(reader: string): boolean {
+  if (!isNodeProgramRealm()) return false;
+  if (!attached) {
+    throw new Error(`node: ${reader} was read before the node program was attached; on this realm it is the program's (ADR-0018 §7)`);
+  }
+  return true;
+}
+
 /** The realm's process is `node` on libuv's loop: its program, given once by the host's `bootstrap`. */
 export function attachLibnode(program: LibnodeProgram): void {
   if (given && given !== program) throw new Error('the realm already has its process\'s node program');
-  // The realm is the program's from before the engine loaded (load.ts isNodeProgramRealm, ADR-0018 §7).
-  if ((globalThis as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.realm')] !== 'node') {
+  // The realm is the program's from before the engine loaded (isNodeProgramRealm, ADR-0018 §7).
+  if (!isNodeProgramRealm()) {
     throw new Error("node: the host did not name this realm a node program's before the engine loaded (globalThis[Symbol.for('tabnode.realm')] = 'node')");
   }
   if (given) return;
@@ -338,7 +363,10 @@ export function libnodeAttached(): boolean { return attached !== undefined; }
 
 /** The program a binding calls: refused where the realm has none, since a binding over libuv is its C. */
 export function libnode(): Libnode {
-  if (!attached) throw new Error('this realm has no node program: its bindings over libuv are the program\'s C (ADR-0018 §3)');
+  if (!attached) {
+    if (isNodeProgramRealm()) programForm("the node program's exports");
+    throw new Error('this realm has no node program: its bindings over libuv are the program\'s C (ADR-0018 §3)');
+  }
   return attached;
 }
 

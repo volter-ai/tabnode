@@ -224,7 +224,12 @@ ADR-0015 resolves every free name of a process's code on its global by rewriting
 many processes in one realm. On the machine it does not: each Node process has a worker and a realm of its own, and
 `node` is its own WALI program (§2). The host names such a realm the program's when it makes the worker, before the
 engine loads (`globalThis[Symbol.for('tabnode.realm')] = 'node'`, `src/node-lib/load.ts` `isNodeProgramRealm`), and
-`attachLibnode` refuses a realm it did not name. So where the realm's process is `node`, the realm is that process's
+`attachLibnode` refuses a realm it did not name. The realm's name, not the moment of a first read, decides which form a
+program-dependent answer takes (`programForm`, `src/node-lib/binding/libnode.ts`): the constants, the wraps'
+constants, libuv's errors, the handle types, the fs binding, `crypto` and `process.versions` are the program's on a
+node realm, where a read before the host's `bootstrap` attaches the program is an error naming the reader, and the
+engine's on any other. Nothing of the engine evaluates Node's library when it is imported: its `path`, `url` and
+builtin tables load Node's files on first use. So where the realm's process is `node`, the realm is that process's
 (`src/node-lib/realm.ts`, `src/node-program.ts`), and no guest scope over its `globalThis` is made:
 
 - **Its start before V8 is Node's.** The program's `main` runs InitializeOncePerProcess as Node's `node` does, before
