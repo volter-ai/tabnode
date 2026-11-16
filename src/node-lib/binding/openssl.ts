@@ -24,11 +24,6 @@ export function openssl(): OpensslExports {
   return libnode().exports as OpensslExports;
 }
 
-/** `use` with `text` as a NUL-terminated string in the process's memory, or a NULL pointer for null. */
-export function withCStringOrNull<T>(text: string | null, use: (at: number) => T): T {
-  return text === null ? use(0) : withBytes(text, (at) => use(at));
-}
-
 /** A NUL-terminated string at `at` in the process's memory (null for a null pointer). */
 export function cString(at: number): string | null {
   return libnode().cString(address(at));
