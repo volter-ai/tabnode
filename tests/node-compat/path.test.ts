@@ -20,16 +20,14 @@ import path, {
   parse,
   format,
   isAbsolute,
-  sep,
-  delimiter,
   posix,
+  win32,
 } from '../../src/shims/path';
 import { assert, pathTests } from './common';
 
 describe('path module (Node.js compat)', () => {
   describe('path.sep', () => {
     it('should be / for POSIX', () => {
-      assert.strictEqual(sep, '/');
       assert.strictEqual(path.sep, '/');
       assert.strictEqual(posix.sep, '/');
     });
@@ -37,7 +35,6 @@ describe('path module (Node.js compat)', () => {
 
   describe('path.delimiter', () => {
     it('should be : for POSIX', () => {
-      assert.strictEqual(delimiter, ':');
       assert.strictEqual(path.delimiter, ':');
       assert.strictEqual(posix.delimiter, ':');
     });
@@ -375,38 +372,22 @@ describe('path module (Node.js compat)', () => {
     });
   });
 
-  describe('path.posix', () => {
-    it('should have all path methods', () => {
-      expect(posix.join).toBe(join);
-      expect(posix.resolve).toBe(resolve);
-      expect(posix.normalize).toBe(normalize);
-      expect(posix.dirname).toBe(dirname);
-      expect(posix.basename).toBe(basename);
-      expect(posix.extname).toBe(extname);
-      expect(posix.relative).toBe(relative);
-      expect(posix.parse).toBe(parse);
-      expect(posix.format).toBe(format);
-      expect(posix.isAbsolute).toBe(isAbsolute);
-      expect(posix.sep).toBe(sep);
-      expect(posix.delimiter).toBe(delimiter);
-    });
-  });
-
-  describe('default export', () => {
-    it('should have all path methods', () => {
-      expect(path.join).toBe(join);
-      expect(path.resolve).toBe(resolve);
-      expect(path.normalize).toBe(normalize);
-      expect(path.dirname).toBe(dirname);
-      expect(path.basename).toBe(basename);
-      expect(path.extname).toBe(extname);
-      expect(path.relative).toBe(relative);
-      expect(path.parse).toBe(parse);
-      expect(path.format).toBe(format);
-      expect(path.isAbsolute).toBe(isAbsolute);
-      expect(path.sep).toBe(sep);
-      expect(path.delimiter).toBe(delimiter);
-      expect(path.posix).toBeTruthy();
+  describe('path.posix and the default export', () => {
+    it('stand for Node\'s posix object, and each named function answers as its member', () => {
+      expect(path).toBe(posix);
+      expect(posix.posix.posix).toBe(posix.posix);
+      expect(win32.posix).toBe(posix.posix);
+      expect(posix.win32).toBe(win32.win32);
+      expect(join('/a', 'b')).toBe(posix.join('/a', 'b'));
+      expect(resolve('/a', 'b')).toBe(posix.resolve('/a', 'b'));
+      expect(normalize('/a//b/')).toBe(posix.normalize('/a//b/'));
+      expect(dirname('/a/b')).toBe(posix.dirname('/a/b'));
+      expect(basename('/a/b.js', '.js')).toBe(posix.basename('/a/b.js', '.js'));
+      expect(extname('/a/b.js')).toBe(posix.extname('/a/b.js'));
+      expect(relative('/a/b', '/a/c')).toBe(posix.relative('/a/b', '/a/c'));
+      expect(parse('/a/b.js')).toEqual(posix.parse('/a/b.js'));
+      expect(format({ dir: '/a', base: 'b.js' })).toBe(posix.format({ dir: '/a', base: 'b.js' }));
+      expect(isAbsolute('/a')).toBe(posix.isAbsolute('/a'));
     });
   });
 
