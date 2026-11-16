@@ -1,13 +1,14 @@
 #!/bin/bash
-# Builds `node` and `libnode.so` (ADR-0018 §1, §2, §3, items 7, 8 and 10). `libnode.so` is the one shared library of
-# Node's C: libuv, OpenSSL 3.5.8 and ncrypto, zlib, brotli 1.2.0, zstd 1.5.7, llhttp 9.4.3, merve, simdutf and simdjson. `node` is a WALI program linked position-independent against it and `libc.so`:
-# Node's start and its standard streams' and signals' start and end, the loop's own handles, the engine's descriptor
-# waits and the bindings' glue over libuv, OpenSSL and ncrypto (native/node: one HandleWrap, the stream, TCP, pipe, TTY
-# and UDP wraps, process_wrap, spawn_sync, signal_wrap, MessagePort, fs over uv_fs_*, and the crypto and tls_wrap bindings' OpenSSL
-# half, as Node's src/*_wrap.cc, spawn_sync.cc, node_file.cc, node_dir.cc, fs_event_wrap.cc, node_constants.cc, node.cc's start, node_options.cc and
-# src/crypto/*.cc). Every compile is browser-substrate's prepared native SDK with its Linux headers, whose compile
-# wrapper adds WebAssembly exception handling and whose link wrapper makes a program PIE with the run path
-# /opt/programs/lib, where the machine places `libc.so` and this library beside it.
+# Builds the WALI program `node`, Node's native half as one program, as Node's own build links its executable
+# (ADR-0019 §1, §2; ADR-0018 §3, items 7, 8 and 10): Node's C libraries, libuv, OpenSSL 3.5.8 and ncrypto, zlib,
+# brotli 1.2.0, zstd 1.5.7, llhttp 9.4.3, merve, simdutf and simdjson; and Node's start and its standard streams' and
+# signals' start and end, the loop's own handles, the engine's descriptor waits and the bindings' glue over them
+# (native/node: one HandleWrap, the stream, TCP, pipe, TTY and UDP wraps, process_wrap, spawn_sync, signal_wrap,
+# MessagePort, fs over uv_fs_*, and the crypto and tls_wrap bindings' OpenSSL half, as Node's src/*_wrap.cc,
+# spawn_sync.cc, node_file.cc, node_dir.cc, fs_event_wrap.cc, node_constants.cc, node.cc's start, node_options.cc and
+# src/crypto/*.cc). It needs `libc.so` and the SDK's C++ runtime alone. Every compile is browser-substrate's prepared
+# native SDK with its Linux headers, whose compile wrapper adds WebAssembly exception handling and whose link wrapper
+# makes a program PIE with the run path /opt/programs/lib, where the machine places `libc.so` and the C++ runtime.
 #
 # libuv is libuv's own source at a267f5688b (2026-10-16, "unix,process: don't raise SIGCHLD from posix_spawn probe",
 # #5317; its version.h says 1.53.1-dev), not Node v24.21.0's deps/uv (libuv 1.52.1), as ADR-0018's evidence says:
@@ -21,33 +22,29 @@
 #   https://nodejs.org/dist/v24.21.0/node-v24.21.0.tar.gz
 # OpenSSL is configured with Node's options (deps/openssl/config/Makefile:33-36) and no-asm, as Node's no-asm
 # configurations have it, and compiled with Node's defines (deps/openssl/openssl.gyp, openssl_common.gypi, and
-# common.gypi's for a shared libnode), its legacy provider built in as Node's libopenssl holds it. Each difference is
-# named where it is made below (ADR-0016 §1).
+# common.gypi's), its legacy provider built in as Node's libopenssl holds it. Each difference is named where it is
+# made below (ADR-0016 §1).
 #
-# ncrypto, Node's crypto glue and every other C++ here use the process's one C++ runtime (browser-substrate
-# ADR-0231 §1): the side-module toolchain's libc++.so, libc++ and libc++abi whole, which node and libnode.so both link
-# shared, as Linux's node links libstdc++.so.6, so the process holds one copy of libc++'s state (its locale ids,
-# facets and guards). Each module also links the toolchain's position-independent libunwind.a, its symbols hidden,
-# because the landing-pad context a module's catches use is that module's own; it is given before the SDK's own
-# -lunwind, whose sysroot archive is not position-independent (browser-substrate ADR-0236 step 4). The unwinder imports
-# the C++ exception tag, and the program defines and exports it once, linking lib/cpp-exception-tag.o, so the process
-# has one tag that libnode.so and libc++.so import (browser-substrate ADR-0236 hole 7).
+# A change to Node's sources is a patch in native/patches, a recorded series applied in its order to the unpacked
+# release tree before any of Node's sources is compiled.
 #
-# Usage: scripts/build-libnode.sh <native SDK> <side-module toolchain> \
+# ncrypto, Node's crypto glue and every other C++ here use the SDK's C++ runtime, libc++ and libc++abi as shared
+# libraries, as Linux's node links libstdc++.so.6 (browser-substrate ADR-0238 §4). The SDK's C++ driver compiles
+# against its headers and adds libc++ and libc++abi to the link, and the SDK's link wrapper adds the one hidden
+# unwinder a C++ link takes, so the script names no runtime library. The program's start file defines the process's
+# exception tags, which every library imports (ADR-0238 §2).
+#
+# Usage: scripts/build-libnode.sh <native SDK> \
 #   <libuv-a267f5688be25e8d4628e296245a041adc2ca072.tar.gz> <node-v24.21.0.tar.gz> <out directory>
 # The script owns its scratch: a directory of its own from mktemp -d, removed by its EXIT trap however it ends.
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 sdk="$(cd "$1" && pwd)"
-cxxrt="$(cd "$2" && pwd)"
-uv_archive="$3"
-node_archive="$4"
-out="$5"
+uv_archive="$2"
+node_archive="$3"
+out="$4"
 echo "02d51895eb7a5fbeb283f3f2a237307987f4c114fb8ba947c7d80c9d5f8ca0af  $uv_archive" | shasum -a 256 -c - >/dev/null
 echo "622424efb5dc0c26c93fbb619ff10737ee289c605b837c88778e186925d82777  $node_archive" | shasum -a 256 -c - >/dev/null
-for runtime in include/c++/v1/__config lib/libc++.so lib/libunwind.a lib/cpp-exception-tag.o; do
-  [ -f "$cxxrt/$runtime" ] || { echo "$cxxrt is not the side-module toolchain: it has no $runtime" >&2; exit 1; }
-done
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 jobs=$(getconf _NPROCESSORS_ONLN)
@@ -72,10 +69,8 @@ cc="$sdk/bin/cc"
 cxx="$sdk/bin/cxx"
 # libuv and OpenSSL include Linux's own headers (linux/errqueue.h, linux/if_packet.h), the SDK's beside musl's.
 flags=(-fPIC -pthread -matomics -mbulk-memory -O2 -idirafter "$sdk/linux-headers/usr/include")
-# Node's C++ (common.gypi cflags_cc: -fno-rtti -fno-exceptions -std=gnu++20) over the one C++ runtime's headers.
-cxxflags=(-std=gnu++20 -fno-rtti -fno-exceptions -nostdinc++ -isystem "$cxxrt/include/c++/v1")
-# What a module links of the C++ runtime it uses.
-cxxlibs=(-L"$cxxrt/lib" -lc++ "$cxxrt/lib/libunwind.a")
+# Node's C++ (common.gypi cflags_cc: -fno-rtti -fno-exceptions -std=gnu++20), over the SDK's libc++ headers.
+cxxflags=(-std=gnu++20 -fno-rtti -fno-exceptions)
 
 # libuv's CMakeLists.txt at a267f5688b: uv_sources (175-187), the unix list and its defines (230-258), proctitle
 # (284-286) and Linux's (328-336).
@@ -96,6 +91,10 @@ finish
 # zlib, brotli, zstd and llhttp's sources (item 10, below), unpacked first: OpenSSL is configured over the first three.
 tar xzf "$node_archive" -C "$work" "$node/deps/zlib" "$node/deps/brotli" "$node/deps/zstd" "$node/deps/llhttp" \
   "$node/deps/merve" "$node/deps/v8/third_party/simdutf" "$node/deps/simdjson" "$node/src/node_zlib.cc"
+# Node's sources with native/patches' changes, in its series' order, once every source a patch names is unpacked.
+while read -r patch; do
+  "$sdk/bin/patch" -s -p1 -d "$work/$node" < "$repo/native/patches/$patch"
+done < "$repo/native/patches/series"
 zlibsrc="$work/$node/deps/zlib"
 brotlisrc="$work/$node/deps/brotli"
 zstdsrc="$work/$node/deps/zstd"
@@ -106,7 +105,7 @@ simdjsonsrc="$work/$node/deps/simdjson"
 
 # OpenSSL 3.5.8 with Node's Configure options (no-tests no-shared no-afalgeng enable-ssl-trace enable-fips, and zlib,
 # enable-brotli and enable-zstd over Node's own deps/zlib, deps/brotli and deps/zstd for RFC 8879 certificate
-# compression, their headers the ones libnode.so's copies are built from) and no-asm.
+# compression, their headers the ones the program's copies are built from) and no-asm.
 # Differences from Node's, each named:
 # - linux-generic64, where Node configures its host's target: wasm32-linux-muslwali has a 64-bit `long` and 32-bit
 #   pointers, OpenSSL's SIXTY_FOUR_BIT_LONG, the target browser-substrate's own OpenSSL recipe takes
@@ -117,8 +116,9 @@ simdjsonsrc="$work/$node/deps/simdjson"
 #   engine, as Node's does.
 # Node's tree is stripped of doc/; Configure reads doc/build.info, so an empty one is written in this scratch copy,
 # which compiles nothing differently. Node's defines for the library (openssl.gyp: OPENSSL_NO_HW,
-# OPENSSL_API_COMPAT=0x10100001L, STATIC_LEGACY; openssl_common.gypi: TERMIOS; common.gypi: OPENSSL_THREADS, and no
-# OPENSSL_NO_PINSHARED, as for a shared libnode) are Configure's -D arguments, so every compile has them.
+# OPENSSL_API_COMPAT=0x10100001L, STATIC_LEGACY; openssl_common.gypi: TERMIOS; common.gypi: OPENSSL_THREADS, and
+# OPENSSL_NO_PINSHARED, as for an executable that links its own OpenSSL) are Configure's -D arguments, so every
+# compile has them.
 (
   cd "$openssl"
   mkdir -p doc && : > doc/build.info
@@ -126,7 +126,8 @@ simdjsonsrc="$work/$node/deps/simdjson"
     "$sdk/bin/perl" ./Configure linux-generic64 no-tests no-shared no-afalgeng enable-ssl-trace enable-fips no-asm \
     zlib --with-zlib-include="$zlibsrc" enable-brotli --with-brotli-include="$brotlisrc/c/include" \
     enable-zstd --with-zstd-include="$zstdsrc/lib" --prefix=/usr --libdir=lib --openssldir=/etc/ssl \
-    -DOPENSSL_NO_HW -DOPENSSL_API_COMPAT=0x10100001L -DSTATIC_LEGACY -DTERMIOS -DOPENSSL_THREADS >/dev/null
+    -DOPENSSL_NO_HW -DOPENSSL_API_COMPAT=0x10100001L -DSTATIC_LEGACY -DTERMIOS -DOPENSSL_THREADS \
+    -DOPENSSL_NO_PINSHARED >/dev/null
   # libcrypto and libssl, and the legacy provider as Node's libopenssl builds it in: its implementations
   # (providers/liblegacy.a) and its entry (legacyprov.c), whose STATIC_LEGACY form is ossl_legacy_provider_init, the
   # built-in provider crypto/provider_predefined.c names.
@@ -189,14 +190,10 @@ for source in common/debug common/entropy_common common/fse_decompress compress/
   pids+=($!)
   deps+=("$object")
 done
-# llhttp's api.c binds, under __wasm__, the parser of a standalone module whose host is JavaScript (undici's
-# llhttp.wasm): callbacks it imports from that host (wasm_on_*), llhttp_alloc and llhttp_free. libnode.so's llhttp is
-# Node's for a Linux program, whose callbacks node_http_parser sets, so api.c is compiled as Node's Linux build compiles
-# it, without __wasm__; llhttp.c keeps it, where it names the architecture (its SIMD over wasm_simd128.h).
+# llhttp is Node's for a Linux program, whose callbacks node_http_parser sets: api.c's JavaScript-host API is compiled
+# off Linux alone, by native/patches' platform test (ADR-0019 §4).
 for source in llhttp api http; do
-  native=(); [ "$source" = api ] && native=(-U__wasm__)
-  "$cc" "${depflags[@]}" ${native[@]+"${native[@]}"} -I"$llhttpsrc" -I"$llhttpsrc/include" -c "$llhttpsrc/src/$source.c" \
-    -o "$work/llhttp-$source.o" &
+  "$cc" "${depflags[@]}" -I"$llhttpsrc" -I"$llhttpsrc/include" -c "$llhttpsrc/src/$source.c" -o "$work/llhttp-$source.o" &
   pids+=($!)
   deps+=("$work/llhttp-$source.o")
 done
@@ -217,18 +214,6 @@ finish
 mkdir -p "$work/generated"
 { sed -n '74,88p' "$work/$node/src/node_zlib.cc"; sed -n '146,159p' "$work/$node/src/node_zlib.cc"
   sed -n '1922,2106p' "$work/$node/src/node_zlib.cc"; } > "$work/generated/node_zlib_constants.inc"
-
-mkdir -p "$out"
-# libnode.so holds the whole of libuv, OpenSSL (libssl and libcrypto) and ncrypto, as gyp links every static dependency
-# of Node's shared library whole (node.gyp:1141), so the program and an addon find all of each in the image. The legacy
-# provider's entry is linked with them, and its implementations come from providers/liblegacy.a as the entry needs
-# them: Node's source list holds each file once where the default and the legacy provider share it
-# (cipher_tdes_common.c, ripemd_prov.c, prov_running.c), and liblegacy.a has its own copy of those, which libcrypto
-# already defines.
-"$cc" -shared -pthread -Wl,--soname=libnode.so -o "$out/libnode.so" "${objects[@]}" \
-  "$work/ncrypto.o" "$work/ncrypto-engine.o" "$openssl/providers/legacy-dso-legacyprov.o" "${deps[@]}" \
-  -Wl,--whole-archive "$openssl/libssl.a" "$openssl/libcrypto.a" -Wl,--no-whole-archive \
-  "$openssl/providers/liblegacy.a" "${cxxlibs[@]}"
 
 # Node's constants, compiled as Node writes them (native/node/node_constants.cc): the system headers and fallbacks
 # node_constants.cc includes (30-113), every Define* function CreatePerContextProperties calls (126-1333), and
@@ -301,8 +286,7 @@ for source in crypto_util crypto_context crypto_cipher crypto_tls crypto_x509 cr
 done
 # The zlib, http_parser and cjs_lexer bindings' C (node_zlib, node_http_parser, node_cjs_lexer: Node's src/node_zlib.cc,
 # src/node_http_parser.cc and src/node_cjs_lexer.cc below V8), over the headers of the zlib, brotli, zstd, llhttp and
-# merve in libnode.so, with the
-# defines zstd gives its dependents (zstd.gyp all_dependent_settings).
+# merve the program links, with the defines zstd gives its dependents (zstd.gyp all_dependent_settings).
 for source in node_zlib node_http_parser node_cjs_lexer; do
   "$cc" "${flags[@]}" -D_GNU_SOURCE "${zstddefines[@]}" -I"$uv/include" -I"$zlibsrc" -I"$brotlisrc/c/include" \
     -I"$zstdsrc/lib" -I"$llhttpsrc/include" -I"$mervesrc" -c "$repo/native/node/$source.c" -o "$work/$source.o" &
@@ -310,4 +294,16 @@ for source in node_zlib node_http_parser node_cjs_lexer; do
   program+=("$work/$source.o")
 done
 finish
-"$cc" -pthread -o "$out/node" "${program[@]}" "$cxxrt/lib/cpp-exception-tag.o" -L"$out" -lnode "${cxxlibs[@]}"
+
+# The program, linked as Node's own build links its executable (ADR-0019 §1, §2). Every object is linked whole, as
+# node.gyp links node_base (654-657) and node.gypi links libuv, zlib and OpenSSL's libssl and libcrypto (168-170,
+# 207-209, 416-418) into a node that is not shared, so an addon dlopen'd into the process finds all of each. It is
+# linked with -rdynamic, as common.gypi links it (586), so the addon binds its imports to the program's definitions.
+# The legacy provider's entry is linked with them, and its implementations come from providers/liblegacy.a as the
+# entry needs them: Node's source list holds each file once where the default and the legacy provider share it
+# (cipher_tdes_common.c, ripemd_prov.c, prov_running.c), and liblegacy.a has its own copy of those, which libcrypto
+# already defines. The SDK's C++ driver links it, which adds the C++ runtime.
+mkdir -p "$out"
+"$cxx" -pthread -rdynamic -o "$out/node" "${program[@]}" "${objects[@]}" "$work/ncrypto.o" "$work/ncrypto-engine.o" \
+  "$openssl/providers/legacy-dso-legacyprov.o" "${deps[@]}" \
+  -Wl,--whole-archive "$openssl/libssl.a" "$openssl/libcrypto.a" -Wl,--no-whole-archive "$openssl/providers/liblegacy.a"

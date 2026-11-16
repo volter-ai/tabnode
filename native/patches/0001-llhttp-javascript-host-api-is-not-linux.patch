@@ -1,0 +1,30 @@
+Subject: llhttp's JavaScript-host API is compiled only off Linux
+
+llhttp's api.c reads `__wasm__` as "a standalone module whose host is JavaScript" (undici's llhttp.wasm): under it,
+the parser's callbacks are imports from that host (wasm_on_*), and llhttp_alloc and llhttp_free make a parser with
+them. `__wasm__` names the instruction set. Node's program on the machine is a Linux program, where the compiler
+defines `__linux__` for its target, and its llhttp is Node's for Linux, whose callbacks node_http_parser sets
+(browser-substrate ADR-0238 §5; Tabnode ADR-0019 §4). The test is made the platform's, the form a fix sent upstream
+takes. llhttp.c's `__wasm__` names the architecture (its SIMD over wasm_simd128.h) and is unchanged.
+
+diff --git a/deps/llhttp/src/api.c b/deps/llhttp/src/api.c
+--- a/deps/llhttp/src/api.c
++++ b/deps/llhttp/src/api.c
+@@ -39,7 +39,7 @@
+ }
+ 
+ 
+-#if defined(__wasm__)
++#if defined(__wasm__) && !defined(__linux__)
+ 
+ extern int wasm_on_message_begin(llhttp_t * p);
+ extern int wasm_on_url(llhttp_t* p, const char* at, size_t length);
+@@ -78,7 +78,7 @@
+   free(parser);
+ }
+ 
+-#endif  // defined(__wasm__)
++#endif  // defined(__wasm__) && !defined(__linux__)
+ 
+ /* Some getters required to get stuff from the parser */
+ 
