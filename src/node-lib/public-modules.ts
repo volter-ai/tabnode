@@ -18,7 +18,6 @@ import { processHostsReaderOf } from '../process-hostname';
 import * as clusterShim from '../shims/cluster';
 import { asyncHooksModule } from '../shims/async_hooks';
 import v8Shim from '../shims/v8';
-import * as cryptoShim from '../shims/crypto';
 import * as vmShim from '../shims/vm';
 import * as workerThreadsShim from '../shims/worker_threads';
 import * as http2Shim from '../shims/http2';
@@ -32,7 +31,6 @@ var __table: Record<string, () => unknown> | undefined;
 export function nodeLibPublic(name: string, require?: (name: string) => any, _process?: object): (() => unknown) | undefined {
   if (_process && name === 'dns') return () => createDnsModule(processHostsReaderOf(_process));
   if (require && name === 'async_hooks') return () => asyncHooksModule(require);
-  if (require && name === 'crypto') return () => cryptoShim.createCryptoModule(require);
   __table ??= {
   dns: createDnsModule,
   cluster: () => clusterShim,
@@ -40,7 +38,6 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   // Node's `events.js` builds `EventEmitterAsyncResource` by extending its
   // `AsyncResource`; its `AsyncLocalStorage` is Node's own, of the graph that asks.
   async_hooks: () => asyncHooksModule(),
-  crypto: () => cryptoShim,
   vm: () => vmShim,
   worker_threads: () => workerThreadsShim,
   http2: () => http2Shim,

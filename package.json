@@ -71,8 +71,6 @@
   "dependencies": {
     "@emnapi/core": "1.11.3",
     "@emnapi/runtime": "1.11.3",
-    "@noble/ciphers": "2.4.0",
-    "@noble/curves": "2.3.0",
     "@noble/hashes": "2.3.0",
     "@sqlite.org/sqlite-wasm": "3.53.4-build2",
     "acorn": "^8.15.0",
@@ -84,7 +82,6 @@
     "just-bash": "2.14.5",
     "pako": "^2.1.0",
     "resolve.exports": "^2.0.3",
-    "sha.js": "2.4.12",
     "vite-plugin-wasm": "^3.5.0"
   },
   "devDependencies": {

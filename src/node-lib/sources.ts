@@ -133,6 +133,34 @@ import INTERNAL_PER_CONTEXT_MESSAGEPORT from './internal/per_context/messageport
 import INTERNAL_EVENT_TARGET from './internal/event_target.js?raw';
 import INTERNAL_WEBIDL from './internal/webidl.js?raw';
 import INTERNAL_PERF_UTILS from './internal/perf/utils.js?raw';
+import CRYPTO from './crypto.js?raw';
+import INTERNAL_CRYPTO_AES from './internal/crypto/aes.js?raw';
+import INTERNAL_CRYPTO_ARGON2 from './internal/crypto/argon2.js?raw';
+import INTERNAL_CRYPTO_CERTIFICATE from './internal/crypto/certificate.js?raw';
+import INTERNAL_CRYPTO_CFRG from './internal/crypto/cfrg.js?raw';
+import INTERNAL_CRYPTO_CHACHA20_POLY1305 from './internal/crypto/chacha20_poly1305.js?raw';
+import INTERNAL_CRYPTO_CIPHER from './internal/crypto/cipher.js?raw';
+import INTERNAL_CRYPTO_DIFFIEHELLMAN from './internal/crypto/diffiehellman.js?raw';
+import INTERNAL_CRYPTO_EC from './internal/crypto/ec.js?raw';
+import INTERNAL_CRYPTO_HASH from './internal/crypto/hash.js?raw';
+import INTERNAL_CRYPTO_HASHNAMES from './internal/crypto/hashnames.js?raw';
+import INTERNAL_CRYPTO_HKDF from './internal/crypto/hkdf.js?raw';
+import INTERNAL_CRYPTO_KEM from './internal/crypto/kem.js?raw';
+import INTERNAL_CRYPTO_KEYGEN from './internal/crypto/keygen.js?raw';
+import INTERNAL_CRYPTO_KEYS from './internal/crypto/keys.js?raw';
+import INTERNAL_CRYPTO_MAC from './internal/crypto/mac.js?raw';
+import INTERNAL_CRYPTO_ML_DSA from './internal/crypto/ml_dsa.js?raw';
+import INTERNAL_CRYPTO_ML_KEM from './internal/crypto/ml_kem.js?raw';
+import INTERNAL_CRYPTO_PBKDF2 from './internal/crypto/pbkdf2.js?raw';
+import INTERNAL_CRYPTO_RANDOM from './internal/crypto/random.js?raw';
+import INTERNAL_CRYPTO_RSA from './internal/crypto/rsa.js?raw';
+import INTERNAL_CRYPTO_SCRYPT from './internal/crypto/scrypt.js?raw';
+import INTERNAL_CRYPTO_SIG from './internal/crypto/sig.js?raw';
+import INTERNAL_CRYPTO_UTIL from './internal/crypto/util.js?raw';
+import INTERNAL_CRYPTO_WEBCRYPTO from './internal/crypto/webcrypto.js?raw';
+import INTERNAL_CRYPTO_WEBCRYPTO_UTIL from './internal/crypto/webcrypto_util.js?raw';
+import INTERNAL_CRYPTO_WEBIDL from './internal/crypto/webidl.js?raw';
+import INTERNAL_CRYPTO_X509 from './internal/crypto/x509.js?raw';
 
 import INTERNAL_STREAMS_ITER_TYPES from './internal/streams/iter/types.js?raw';
 
@@ -302,4 +330,32 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/event_target': INTERNAL_EVENT_TARGET,
   'internal/webidl': INTERNAL_WEBIDL,
   'internal/perf/utils': INTERNAL_PERF_UTILS,
+  'crypto': CRYPTO,
+  'internal/crypto/aes': INTERNAL_CRYPTO_AES,
+  'internal/crypto/argon2': INTERNAL_CRYPTO_ARGON2,
+  'internal/crypto/certificate': INTERNAL_CRYPTO_CERTIFICATE,
+  'internal/crypto/cfrg': INTERNAL_CRYPTO_CFRG,
+  'internal/crypto/chacha20_poly1305': INTERNAL_CRYPTO_CHACHA20_POLY1305,
+  'internal/crypto/cipher': INTERNAL_CRYPTO_CIPHER,
+  'internal/crypto/diffiehellman': INTERNAL_CRYPTO_DIFFIEHELLMAN,
+  'internal/crypto/ec': INTERNAL_CRYPTO_EC,
+  'internal/crypto/hash': INTERNAL_CRYPTO_HASH,
+  'internal/crypto/hashnames': INTERNAL_CRYPTO_HASHNAMES,
+  'internal/crypto/hkdf': INTERNAL_CRYPTO_HKDF,
+  'internal/crypto/kem': INTERNAL_CRYPTO_KEM,
+  'internal/crypto/keygen': INTERNAL_CRYPTO_KEYGEN,
+  'internal/crypto/keys': INTERNAL_CRYPTO_KEYS,
+  'internal/crypto/mac': INTERNAL_CRYPTO_MAC,
+  'internal/crypto/ml_dsa': INTERNAL_CRYPTO_ML_DSA,
+  'internal/crypto/ml_kem': INTERNAL_CRYPTO_ML_KEM,
+  'internal/crypto/pbkdf2': INTERNAL_CRYPTO_PBKDF2,
+  'internal/crypto/random': INTERNAL_CRYPTO_RANDOM,
+  'internal/crypto/rsa': INTERNAL_CRYPTO_RSA,
+  'internal/crypto/scrypt': INTERNAL_CRYPTO_SCRYPT,
+  'internal/crypto/sig': INTERNAL_CRYPTO_SIG,
+  'internal/crypto/util': INTERNAL_CRYPTO_UTIL,
+  'internal/crypto/webcrypto': INTERNAL_CRYPTO_WEBCRYPTO,
+  'internal/crypto/webcrypto_util': INTERNAL_CRYPTO_WEBCRYPTO_UTIL,
+  'internal/crypto/webidl': INTERNAL_CRYPTO_WEBIDL,
+  'internal/crypto/x509': INTERNAL_CRYPTO_X509,
 };

@@ -553,6 +553,23 @@ function tlsCallbacks(): TlsCallbacks {
   return tls;
 }
 
+/** The crypto binding's side of its imports (engine.h `crypto_job_done`, `engine_ready`; ADR-0018 §5, item 7). */
+export interface CryptoCallbacks {
+  /** A CryptoJob's completion: answers nonzero where it made a callback. */
+  jobDone(job: number, status: number): number;
+  /** The engine device's descriptor is readable. */
+  engineReady(status: number): void;
+}
+
+let crypto: CryptoCallbacks | undefined;
+/** The crypto binding's callbacks, given once when it loads; libuv completes only the jobs it schedules. */
+export function setCryptoCallbacks(callbacks: CryptoCallbacks): void { crypto = callbacks; }
+
+function cryptoCallbacks(): CryptoCallbacks {
+  if (!crypto) throw new Error('node: libuv completed crypto work no crypto binding holds');
+  return crypto;
+}
+
 /**
  * The engine's imports the bindings answer (native/node engine.h), which the host puts among the program's
  * `host:tabnode` imports beside its own: each finds the handle by its address or the request by its number and calls
@@ -603,6 +620,10 @@ export const libnodeImports = {
   },
   /** StatWatcher::Callback. */
   stat_watcher_change: (handle: number, status: number): void => { handleAt(handle).target.onUvStatChange?.(status); },
+  /** CryptoJob::AfterThreadPoolWork: 1 where it made the job's callback, whose scope the C closes; the C frees the job. */
+  crypto_job_done: (job: number, status: number): number => cryptoCallbacks().jobDone(address(job), status),
+  /** The engine device's answer waits (engine_device.c's uv_poll_t); the C drains after. */
+  engine_ready: (status: number): void => { cryptoCallbacks().engineReady(status); },
   /** TLSWrap::SSLInfoCallback: a handshake began (0) or completed (1). Made inside the engine's own SSL_* call. */
   tls_handshake: (connection: number, done: number): void => { tlsCallbacks().handshake(address(connection), done); },
   /** KeylogCallback: one key log line. */

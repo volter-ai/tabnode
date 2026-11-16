@@ -21,8 +21,7 @@ preparation failure. Generate `docs/api/` from the selected declarations. Keep
 the original preparation/build evidence, notices and exact source identity.
 The publisher consumes these outputs; it never reruns their producers.
 A script that reads the engine from its own source rather than a build
-(`scripts/native-probe.mjs`, the surface's binding probe, and
-`scripts/crypto-ed25519-volume.mjs`) bundles it through one private owner,
+(`scripts/native-probe.mjs`, the surface's binding probe) bundles it through one private owner,
 `scripts/source-bundle.mjs`: esbuild, with Vite's `?raw` imports read as text,
 a relative specifier beside its importer and a bare one by its package's
 exports.

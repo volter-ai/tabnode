@@ -20,8 +20,12 @@ export function processUrl(process: object): typeof URL {
     createObjectURL: {
       configurable: true, writable: true, enumerable: true,
       value: function createObjectURL(obj: unknown): string {
+        // lib/internal/url.js:1253-1265: a process with no OpenSSL has no `internal/crypto/random`.
+        let cryptoRandom: { randomUUID(): string } | undefined;
+        try { cryptoRandom = loadNodeLibFor(process, 'internal/crypto/random') as { randomUUID(): string }; } catch { /* lazyCryptoRandom */ }
+        if (cryptoRandom === undefined) throw new (codes().ERR_NO_CRYPTO!)();
         if (!blob().isBlob(obj)) throw new (codes().ERR_INVALID_ARG_TYPE!)('obj', 'Blob', obj);
-        const id = (loadNodeLibFor(process, 'crypto') as { randomUUID(): string }).randomUUID();
+        const id = cryptoRandom.randomUUID();
         binding().storeDataObject(id, obj as Blob, (obj as Blob).size, (obj as Blob).type);
         return `blob:nodedata:${id}`;
       },
