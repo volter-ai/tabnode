@@ -11,7 +11,7 @@ export const REALM_ENVIRONMENT_IDS = ['internal/timers', 'internal/async_context
 /** What the node realm makes itself: its process, the realm's web streams and the engine's SQLite (realm.ts). */
 export const REALM_OWN_IDS = ['process', 'stream/web', 'sqlite'] as const;
 
-/** A public id that is another module's member (realm.ts ALIASES). */
+/** A public id that is another module's member (load.ts ALIASES). */
 export const REALM_ALIAS_IDS = ['fs/promises', 'dns/promises', 'path/posix', 'path/win32', 'util/types'] as const;
 
 /** The realm's own web classes under Node's ids (realm.ts REALM_WEB_MODULES). */
@@ -31,7 +31,7 @@ export const ENGINE_INTERNAL_IDS = ['internal/deps/acorn/acorn/dist/acorn', 'int
 
 /** The engine's own public modules (public-modules.ts, BUILTINS.md Kind 2). */
 export const ENGINE_PUBLIC_IDS = ['dns', 'cluster', 'v8', 'async_hooks', 'vm', 'worker_threads', 'http2', 'inspector',
-  'inspector/promises', 'perf_hooks', 'repl', 'domain', 'util/types', 'fs/promises'] as const;
+  'inspector/promises', 'perf_hooks', 'repl', 'domain'] as const;
 
 export type RealmAliasId = typeof REALM_ALIAS_IDS[number];
 export type RealmWebModuleId = typeof REALM_WEB_MODULE_IDS[number];

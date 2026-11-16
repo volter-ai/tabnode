@@ -26,7 +26,8 @@ export { createFsShim } from './shims/fs';
 export type { FsShim } from './shims/fs';
 export { createProcess } from './shims/process';
 export type { Process, ProcessEnv } from './shims/process';
-export * as path from './shims/path';
+// Node's `path` object, every member its own (`sep` and `delimiter` among them), as the library's other modules are.
+export { default as path } from './shims/path';
 export { httpModule as http, httpsModule as https } from './node-lib/http-module';
 import { __endOwnedProcess, __ownedServerPorts } from './node-lib/net-module';
 export { netModule as net } from './node-lib/net-module';

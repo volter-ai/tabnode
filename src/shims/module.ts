@@ -3,8 +3,6 @@
  * Provides basic module system functionality
  */
 
-import * as pathShim from './path';
-
 export function createRequire(filename: string): (id: string) => unknown {
   // Return a require function that can be used by modules
   return function require(id: string): unknown {

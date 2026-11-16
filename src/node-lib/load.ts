@@ -186,9 +186,27 @@ function vendoredOutsideBootstrap(name: string): boolean {
   return isNodeLibFile(name) && !BOOTSTRAP_FILES.has(name);
 }
 
+/** Node's own aliases among its public ids (lib/fs/promises.js, lib/path/posix.js and the rest), over the files they name. */
+const ALIASES = {
+  'fs/promises': (require) => require('internal/fs/promises').exports,
+  'dns/promises': (require) => require('dns').promises,
+  'path/posix': (require) => require('path').posix,
+  'path/win32': (require) => require('path').win32,
+  'util/types': (require) => require('internal/util/types'),
+} satisfies Record<RealmAliasId, (require: NodeLibRequire) => unknown>;
+
+/** The module an alias id names, read through the graph's own `require`; undefined for an id that is no alias. */
+export function nodeLibAlias(name: string, require: NodeLibRequire): (() => unknown) | undefined {
+  if (!Object.prototype.hasOwnProperty.call(ALIASES, name)) return undefined;
+  const alias = ALIASES[name as RealmAliasId];
+  return () => alias(require);
+}
+
 function nodeLibRequire(specifier: string): unknown {
   const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
   if (vendoredOutsideBootstrap(name)) return loadNodeLib(name);
+  const alias = nodeLibAlias(name, nodeLibRequire);
+  if (alias) return alias();
   const internal = nodeLibInternal(name);
   if (internal !== undefined) {
     builtInternals ??= new Map<string, unknown>();
@@ -395,7 +413,7 @@ export const REALM_ENVIRONMENT: ReadonlySet<string> = new Set<string>(REALM_ENVI
 const REALM_BINDINGS = new Set(['timers', 'async_context_frame', 'task_queue']);
 
 export { NODE_PROGRAM_REALM, isNodeProgramRealm } from './binding/libnode';
-import { REALM_ENVIRONMENT_IDS } from './engine-builtin-ids';
+import { REALM_ENVIRONMENT_IDS, type RealmAliasId } from './engine-builtin-ids';
 
 /** A realm's own loaders, where its process is `node` and Node's bootstrap made them (realm.ts). */
 export interface RealmLoaders {
@@ -418,12 +436,9 @@ class NodeLibScope {
     const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
     if (this.realm) return this.realm.require(name);
     if (name === 'process') return this.process;
-    if (name === 'fs/promises') return this.require('internal/fs/promises').exports;
-    if (name === 'dns/promises') return this.require('dns').promises;
-    if (name === 'path/posix') return this.require('path').posix;
-    if (name === 'path/win32') return this.require('path').win32;
+    const alias = nodeLibAlias(name, this.require);
+    if (alias) return alias();
     if (name === 'assert/strict') return this.require('assert').strict;
-    if (name === 'util/types') return this.require('internal/util/types');
     if (REALM_ENVIRONMENT.has(name)) return loadNodeLib(name);
     if (vendoredOutsideBootstrap(name)) return this.load(name);
     const internal = nodeLibInternal(name, this.require, this.process);
@@ -524,8 +539,8 @@ export function loadNodeLibFor(owner: object, name: string): any {
   return scopeFor(owner).require(name);
 }
 export function hasNodeLibModule(name: string): boolean {
-  return isNodeLibFile(name) || nodeLibPublic(name) !== undefined
-    || ['path/posix', 'path/win32', 'assert/strict', 'util/types', 'fs/promises', 'timers/promises', 'dns/promises'].includes(name);
+  return isNodeLibFile(name) || nodeLibPublic(name) !== undefined || Object.prototype.hasOwnProperty.call(ALIASES, name)
+    || ['assert/strict', 'timers/promises'].includes(name);
 }
 export function nativeModuleFor(owner: object, name: string, create: () => unknown): unknown {
   return scopeFor(owner).surface(name, create);

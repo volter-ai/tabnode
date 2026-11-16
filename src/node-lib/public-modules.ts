@@ -26,7 +26,6 @@ import * as perfHooksShim from '../shims/perf_hooks';
 import { type EnginePublicId } from './engine-builtin-ids';
 import * as replShim from '../shims/repl';
 import * as domainShim from '../shims/domain';
-import { nodeLibInternalRequire } from './load';
 
 /** Built on the first ask, for the reason `./binding/index.ts` gives. */
 // eslint-disable-next-line no-var, vars-on-top
@@ -51,12 +50,6 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   repl: () => replShim,
   // The engine's own `domain` (BUILTINS.md Kind 2).
   domain: () => domainShim,
-  // `internal/fs/cp/cp.js` requires the public alias; it is the same object
-  // as `internal/util/types`, which is `util.types`.
-  'util/types': () => nodeLibInternalRequire('internal/util/types'),
-  // `internal/fs/promises.js` exports `{ exports, FileHandle }`; the public
-  // `fs/promises` module is the inner `exports` object, as `fs.js` reads it.
-  'fs/promises': () => (nodeLibInternalRequire('internal/fs/promises') as { exports: unknown }).exports,
   } satisfies Record<EnginePublicId, () => unknown>);
 
 

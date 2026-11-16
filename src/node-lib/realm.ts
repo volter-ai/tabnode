@@ -23,8 +23,8 @@
  * `internal/crypto/keys` (load.ts REALM_ENVIRONMENT).
  */
 import { nodeLibNames, nodeLibSource } from './bodies';
-import { primordialsOf, loadNodeLib, REALM_ENVIRONMENT, moduleSurface } from './load';
-import { ENGINE_BUILTIN_IDS, type RealmAliasId, type RealmWebModuleId } from './engine-builtin-ids';
+import { primordialsOf, loadNodeLib, nodeLibAlias, REALM_ENVIRONMENT, moduleSurface } from './load';
+import { ENGINE_BUILTIN_IDS, type RealmWebModuleId } from './engine-builtin-ids';
 import { nodeLibInternal } from './internals';
 import { nodeLibPublic } from './public-modules';
 import { internalBlobOf } from './internals/buffer-and-streams';
@@ -150,15 +150,6 @@ const REALM_WEB_MODULES: Readonly<Record<string, readonly string[]>> = {
   'internal/file': ['File'],
 } satisfies Record<RealmWebModuleId, readonly string[]>;
 
-/** Node's own aliases among its public ids (lib/fs/promises.js, lib/path/posix.js and the rest), over the files they name. */
-const ALIASES: Readonly<Record<string, (require: (id: string) => any) => unknown>> = {
-  'fs/promises': (require) => require('internal/fs/promises').exports,
-  'dns/promises': (require) => require('dns').promises,
-  'path/posix': (require) => require('path').posix,
-  'path/win32': (require) => require('path').win32,
-  'util/types': (require) => require('internal/util/types'),
-} satisfies Record<RealmAliasId, (require: (id: string) => any) => unknown>;
-
 /**
  * Node's bootstrap of the realm whose process is `node`: the per-context scripts, `internal/bootstrap/realm`, `node`,
  * the web exposure, the two switches, and `process.env`.
@@ -195,8 +186,8 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
   const engineModule = (id: string): (() => unknown) | undefined => {
     if (REALM_ENVIRONMENT.has(id)) return () => loadNodeLib(id);
     if (id === 'process') return () => process;
-    const alias = ALIASES[id];
-    if (alias) return () => alias(require);
+    const alias = nodeLibAlias(id, require);
+    if (alias) return alias;
     const webNames = REALM_WEB_MODULES[id];
     if (webNames) return () => Object.fromEntries(webNames.map((name) => [name, web[name]]));
     if (id === 'internal/blob') {
