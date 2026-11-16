@@ -180,6 +180,22 @@ export const credentialsBinding = {
 export const encodingBinding = {
   toASCII: (value: string): string => adaToAscii(value),
   toUnicode: (value: string): string => (nodeLibInternalRequire('punycode') as { toUnicode(value: string): string }).toUnicode(value),
+  /**
+   * DecodeUTF8 (src/encoding_binding.cc): a buffer source's bytes as UTF-8, its BOM kept where `ignoreBOM`, and
+   * ERR_ENCODING_INVALID_ENCODED_DATA where `fatal` and the bytes are not UTF-8.
+   */
+  decodeUTF8: (buffer: ArrayBuffer | ArrayBufferView, ignoreBOM?: boolean, fatal?: boolean): string => {
+    const bytes = ArrayBuffer.isView(buffer) ? new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+      : new Uint8Array(buffer);
+    try {
+      return new TextDecoder('utf-8', { ignoreBOM: ignoreBOM === true, fatal: fatal === true }).decode(bytes);
+    } catch {
+      throw Object.assign(new TypeError('The encoded data was not valid for encoding utf-8'),
+        { code: 'ERR_ENCODING_INVALID_ENCODED_DATA' });
+    }
+  },
+  /** EncodeUtf8String (src/encoding_binding.cc): a string's UTF-8 as a Uint8Array. */
+  encodeUtf8String: (value: string): Uint8Array => new TextEncoder().encode(value),
 };
 
 /**

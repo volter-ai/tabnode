@@ -42,7 +42,6 @@ import eventsShim from './node-lib/events-module';
 import { streamModule as streamShim, streamPromisesModule as streamPromises, streamConsumersModule } from './node-lib/stream-module';
 import { fileURLToPath } from './node-lib/internals/url';
 import utilShim from './node-lib/util-module';
-import * as cryptoShim from './shims/crypto';
 import { createDnsModule } from './shims/dns';
 import { bufferModule as bufferShim } from './node-lib/buffer-module';
 import { initChildProcess } from './shims/child_process';
@@ -80,6 +79,7 @@ import { registerHandle, unrefHandle, releaseHandle, ownedRun } from './node-lib
 import * as rollupShim from './shims/rollup';
 import * as v8Shim from './shims/v8';
 import { lazyModule } from './node-lib/lazy';
+import { libnodeAttached } from './node-lib/binding/libnode';
 import * as http2Shim from './shims/http2';
 import * as clusterShim from './shims/cluster';
 import * as replShim from './shims/repl';
@@ -517,8 +517,18 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     ['performance', () => perfHooksShim.performance],
     // The process's own console, the one its modules are given.
     ['console', () => processConsoles.get(process)],
-    // Node's Web Crypto, whose randomness is the system's (shims/crypto.ts `webcrypto`).
-    ['crypto', () => cryptoShim.webcrypto],
+    // Node's Web Crypto (lib/internal/bootstrap/web/exposed-window-or-worker.js:105-129): the process's
+    // `internal/crypto/webcrypto`'s `crypto` and its interfaces, over the crypto binding; with no OpenSSL (a realm with
+    // no `node` program) the global throws ERR_NO_CRYPTO and the interfaces are none of Node's.
+    ['crypto', () => {
+      if (!libnodeAttached()) {
+        const { ERR_NO_CRYPTO } = (loadNodeLibFor(process, 'internal/errors') as { codes: Record<string, new () => Error> }).codes;
+        throw new ERR_NO_CRYPTO!();
+      }
+      return (loadNodeLibFor(process, 'internal/crypto/webcrypto') as Record<string, unknown>).crypto;
+    }],
+    ...(libnodeAttached() ? (['Crypto', 'CryptoKey', 'SubtleCrypto'] as const).map((name): [string, () => unknown] =>
+      [name, () => (loadNodeLibFor(process, 'internal/crypto/webcrypto') as Record<string, unknown>)[name]]) : []),
     // The timers are the process's `require('timers')`'s, Node's own (guest-timers.ts; ADR-0018 item 2), as Node's
     // bootstrap makes them its globals: no realm timer.
     ...(["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"] as const)
@@ -2117,7 +2127,8 @@ const builtinModules: Record<string, unknown> = {
   util: utilShim,
   tty: ttyModule,
   os: osModule,
-  crypto: cryptoShim,
+  // Node's own `lib/crypto.js`, over the crypto binding (ADR-0018 item 7).
+  crypto: lazyModule('crypto'),
   zlib: zlibModule,
   dns: createDnsModule(),
   child_process: childProcessShim,

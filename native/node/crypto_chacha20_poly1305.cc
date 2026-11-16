@@ -20,6 +20,10 @@ struct ChaCha20Poly1305CipherConfig {
   Cipher cipher;
   ByteSource iv;
   ByteSource additional_data;
+  ChaCha20Poly1305CipherConfig() = default;
+  // Its move (crypto_chacha20_poly1305.cc): a Cipher copies and does not move.
+  ChaCha20Poly1305CipherConfig(ChaCha20Poly1305CipherConfig&& other) noexcept
+      : cipher(other.cipher), iv(std::move(other.iv)), additional_data(std::move(other.additional_data)) {}
 };
 
 // ChaCha20Poly1305CipherTraits::DoCipher (151-336), OpenSSL's branch.

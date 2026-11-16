@@ -143,13 +143,11 @@ without a callback, `generateKeyPairSync`, `createCipheriv`'s `update` and `fina
 device's round trip (a digest of a few hundred bytes) is answered in the process, by OpenSSL, where a reading shows
 the round trip costs more than the work; the bound is measured, not assumed.
 
-OpenSSL stays in `libnode.so` for what Node's crypto needs and WebCrypto does not have. Read in Tabnode's
-`src/shims/crypto.ts` (2026-11-15), which today answers `node:crypto` in JavaScript (`sha.js`, `@noble/hashes`) and
-uses the realm's `SubtleCrypto` for `webcrypto.subtle`, the asynchronous `sign` and `verify`, and `generateKeyPair`:
+OpenSSL stays in `libnode.so` for what Node's crypto needs and WebCrypto does not have:
 - the calls below the measured bound above;
 - algorithms WebCrypto does not define: MD5, SHA-224, SHA-512/256, SHA-3, SHAKE, BLAKE2, RIPEMD-160, scrypt, argon2,
-  ChaCha20-Poly1305 and the AES modes beside CBC, CTR and GCM, DSA, Diffie-Hellman groups, `ECDH` on any curve,
-  RSA's raw `privateEncrypt` and `publicDecrypt`, primes (`checkPrime`, `generatePrime`), `X509Certificate`;
+  ChaCha20-Poly1305 and the AES modes beside CBC, CTR, GCM and KW, DSA, Diffie-Hellman groups, `ECDH` on any other
+  curve, RSA's raw `privateEncrypt` and `publicDecrypt`, primes (`checkPrime`, `generatePrime`), `X509Certificate`;
 - TLS, OpenSSL through memory BIOs (ADR-0016).
 
 *The device* is browser-substrate ADR-0236 hole 12's `/dev/engine`: its driver is the kernel's
@@ -158,16 +156,21 @@ of 256 tags shared with the device), and the device is the machine's own thread 
 `engineCall`, `engineEncode`), which runs SubtleCrypto's calls (`encrypt`, `decrypt`, `sign`, `verify`, `digest`,
 `generateKey`, `deriveKey`, `deriveBits`, `importKey`, `exportKey`, `wrapKey`, `unwrapKey`) and keeps each key it
 answers as a handle of the session, as a hardware key store does. A request and an answer hold at most 1 MiB
-(`WASM_ENGINE_BYTES`); a call larger is refused by name and never split (hole 12's open item). The process's session is
+(`WASM_ENGINE_BYTES`), and a call's bytes may be more: a request that would be larger sends its arguments' bytes first
+in `part` calls (an assembly's id and its next bytes, in order) and names each argument by its assembly (`$a`), and an
+answer whose bytes exceed the room its call asked holds them in the session (`$h`, a handle and a length), read back
+by `take` calls each within an answer's room and let go when the last piece is taken, as AF_ALG takes a hash's input
+over several sends. So a call of any size is the device's. The process's session is
 the `node` program's descriptor (`native/node/engine_device.c`): a synchronous call blocks in Linux on it (a poll, then
 the read), and while an asynchronous call's answer is due it is a `uv_poll_t` of the loop whose readiness is the
 engine's `engine_ready` import followed by a drain, so its callback runs in the poll phase. The wire is the device's,
 as its other client writes it (browser-substrate `packages/node/src/linux-web-crypto.ts`), in Tabnode's
 `src/node-lib/binding/engine_device.ts`.
 
-*The routing is the binding's, per call.* Node's `lib/internal/crypto/*` is unchanged; each class of
-`internalBinding('crypto')` (a Hash, an Hmac, a Sign, a job) chooses where its call is answered, so there is one
-binding and no second crypto module:
+*The routing is the binding's, per call.* Node's `lib/crypto.js` and `lib/internal/crypto/*` are unchanged; each class
+of `internalBinding('crypto')` (a Hash, an Hmac, a Sign, a CipherBase, an ECDH, a job) chooses where its call is
+answered, so there is one binding and no second crypto module. Where the device answers a call, Node's checks of its
+arguments are still the glue's, before it (a key pair's validity, a peer's point, a cipher's key and IV lengths):
 
 | Call | Answered by |
 |---|---|
@@ -175,11 +178,16 @@ binding and no second crypto module:
 | The same of 4 KiB or less, and every other digest and HMAC (MD5, SHA-224, SHA-512/256, SHA-3, SHAKE and an XOF length, cSHAKE, BLAKE2, RIPEMD-160) | OpenSSL |
 | PBKDF2 and HKDF, every one (`pbkdf2`, `pbkdf2Sync`, `hkdf`, `hkdfSync`, `subtle.deriveBits`) | the device (`deriveBits`) |
 | A signature and its verification by RSASSA-PKCS1-v1_5, RSA-PSS, ECDSA on P-256, P-384, P-521, and Ed25519 (`sign`, `verify`, `createSign`, `createVerify`, `subtle.sign`) | the device (`sign`, `verify`) |
-| A key pair or secret WebCrypto generates (RSA, EC on its curves, Ed25519, X25519, AES, HMAC) | the device (`generateKey`) |
-| A key's import or export in a form WebCrypto holds (raw, SPKI, PKCS#8, JWK) of those keys | the device (`importKey`, `exportKey`) |
-| AES-CBC, AES-CTR, AES-GCM, AES-KW, RSA-OAEP (`createCipheriv`'s `update` and `final`, `subtle.encrypt`) | the device (`encrypt`, `decrypt`, `wrapKey`, `unwrapKey`) |
-| ECDH and X25519 agreement on curves WebCrypto has | the device (`deriveBits`) |
-| scrypt, argon2, ChaCha20-Poly1305, the AES modes beside CBC, CTR, GCM and KW, DSA, Diffie-Hellman groups, ECDH on any other curve, RSA's raw `privateEncrypt` and `publicDecrypt`, primes, `X509Certificate`, PEM and PKCS#1/SEC1 parsing, KeyObject's details | OpenSSL |
+| A key pair WebCrypto generates (`generateKeyPair`, `generateKeyPairSync`, `subtle.generateKey`): RSA of the RSASSA-PKCS1-v1_5 or RSA-OAEP variant with a public exponent of 3 or 65537 and a modulus of 256 to 16,384 bits in whole bytes, EC on P-256, P-384 or P-521 with its curve named, Ed25519, X25519 | the device (`generateKey`, extractable, so OpenSSL can take its copy) |
+| A secret of whole bytes (`generateKey`, `generateKeySync`, `subtle.generateKey` of AES and HMAC) | the device (`generateKey` of an HMAC key) |
+| A key's import or export in a form WebCrypto holds (raw, SPKI, PKCS#8) of those keys, where a call the device answers needs it | the device (`importKey`, `exportKey`) |
+| A generated key's encoding (PEM, DER, JWK, raw) | OpenSSL, of its copy |
+| `createCipheriv` and `createDecipheriv` of AES-128-CBC, AES-256-CBC, AES-128-CTR or AES-256-CTR: each update's whole blocks past what OpenSSL's context holds | the device (`encrypt`, `decrypt`) |
+| The same ciphers' bytes held between updates (a partial block, a decryption's last block) and `final` (the padding and its errors) | OpenSSL, its context started again where the device left the stream |
+| `subtle.encrypt` and `subtle.decrypt` of AES-CBC (a 16-byte IV), AES-CTR, AES-GCM (a tag of WebCrypto's lengths) and AES-KW (`wrapKey`, `unwrapKey`) with a 128- or 256-bit key, and of RSA-OAEP over a WebCrypto digest | the device (`encrypt`, `decrypt`, `wrapKey`, `unwrapKey`) |
+| ECDH on P-256, P-384, P-521 and X25519 agreement (an ECDH object's `computeSecret`, `crypto.diffieHellman`, `subtle.deriveBits`) | the device (`deriveBits`) |
+| `createCipheriv` of AES-GCM, CCM, OCB, the wrap modes and every other cipher; AES-192; `publicEncrypt`, `privateDecrypt`, `privateEncrypt`, `publicDecrypt` | OpenSSL |
+| scrypt, argon2, ChaCha20-Poly1305, KMAC, TurboSHAKE and KangarooTwelve (Node's own C++), key encapsulation, DSA, Diffie-Hellman groups and primes, ECDH on any other curve, X448, Ed448, ML-DSA, ML-KEM, SLH-DSA, RSA-PSS keys, primes, `X509Certificate`, SPKAC, PEM and PKCS#1/SEC1 parsing, KeyObject's details | OpenSSL |
 | TLS | OpenSSL (ADR-0016) |
 | Randomness (`randomBytes`, `randomFill`, `randomUUID`) | OpenSSL's, the kernel's `getrandom` |
 
@@ -188,6 +196,17 @@ The bound is the measured one of hole 12 (the device 39.1 µs at 4 KiB against S
 a WebCrypto digest keeps its input until then. A key is held where it is answered: its KeyObjectData in OpenSSL, its
 CryptoKey in the device's session, or both, each side taking its copy from the other's export the first time a call it
 answers needs one (`src/node-lib/binding/crypto_keys.ts`).
+
+*Why a CipherBase's AES-GCM is OpenSSL's:* Node's `update` answers its bytes when it returns and `final` the tag;
+WebCrypto's AES-GCM answers a whole message and its tag at once, and holds no state between two calls, so no device
+call answers an `update` before `final`. AES-CBC and AES-CTR carry their state in the stream itself (the last
+ciphertext block, the counter), which the binding keeps: WebCrypto's AES-CBC always pads, so an encryption's whole
+blocks are the device's answer less its padding block and a decryption's are answered with one block more (the
+device's encryption of nothing under the last ciphertext block, a full padding block once decrypted); WebCrypto's
+AES-CTR of length 128 counts as OpenSSL's does, and an update that ends inside a block is continued at its offset.
+*Why publicEncrypt and its kin are OpenSSL's:* Node throws OpenSSL's errors for them (a decoding error's code and
+reason), which the device's answer does not carry. *Why no 192-bit AES key is the device's:* Chromium's WebCrypto
+refuses one (read from memory of Chromium's `components/webcrypto`, not read in this machine's browser).
 
 ### 6. Children are `uv_spawn`
 
@@ -458,13 +477,14 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
      `linux-calls.ts` go. **Crypto is Node's own, landed as one piece:** Node's `lib/internal/crypto/*`, `keys.js`'s
      `KeyObject` and `x509.js`'s `X509Certificate` among them, over the `crypto` binding, whose glue is `libnode`'s C
      as Node's `src/crypto/crypto_*.cc` is, over ncrypto and OpenSSL, each call answered by the device or by OpenSSL
-     as §5 says. It replaces the engine's own `crypto` (`src/shims/crypto*.ts`: `sha.js`, `@noble`, RSA in BigInt)
-     whole; until it lands, `crypto` is the engine's and what it refuses stays refused (browser-substrate VO-3806,
-     manager's ruling 2026-11-15).
+     as §5 says: `require('crypto')`, `node:crypto` and `globalThis.crypto` (with `Crypto`, `CryptoKey` and
+     `SubtleCrypto`) are Node's own (browser-substrate VO-3806, manager's ruling 2026-11-15). TLS's
+     `getPeerX509Certificate()` and `getX509Certificate()` are Node's `X509Certificate` over the binding's.
      - **OpenSSL and ncrypto are `libnode.so`'s** (ADR-0016 §1: Node's configuration and each difference, the legacy
        provider built in, every library linked whole), and the OpenSSL half of Node's `src/crypto/crypto_*.cc` and
        `node_constants.cc` is the `node` program's glue, one C++ file per file of Node's (`native/node/crypto_util.cc`,
-       `crypto_context.cc`, `crypto_cipher.cc`, `crypto_tls.cc`, `crypto_x509.cc`, `node_constants.cc`), as items 3 to 6
+       `crypto_context.cc`, `crypto_cipher.cc`, `crypto_tls.cc`, `crypto_x509.cc`, `crypto_keys.cc`, `crypto_keygen.cc`,
+       `crypto_aes.cc`, `crypto_dh.cc`, `crypto_ec.cc` and the rest, `node_constants.cc`), as items 3 to 6
        put each binding's libuv half in the program: a library of the image imports nothing outside `env`, `GOT` and
        `wali` (browser-substrate `dynamic-loader.mjs`), so what calls the engine is the program's. The V8 half is the
        engine's TypeScript over `src/node-lib/binding/openssl.ts` (ADR-0016 §3). The glue, ncrypto and every other C++
@@ -480,14 +500,18 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
        in Node's executable), and its Node-API (`napi_*`, emnapi's `napi` and `emnapi` modules, browser-substrate
        ADR-0231 §2) the engine's emnapi, as Node's executable defines Node-API over V8. That needs of the host what
        the note below says; until it does, `process.dlopen` is ADR-0011's over `TREE_NATIVE`.
-     - **What Node's crypto then takes** (the rest of the item): Node's `lib/crypto.js` and `lib/internal/crypto/*`
-       vendored unchanged, over `internalBinding('crypto')` whose methods are the OpenSSL half of Node's
+     - **What Node's crypto takes.** Node's `lib/crypto.js`, `lib/internal/crypto/*` and `lib/internal/webidl.js`,
+       vendored unchanged, over `internalBinding('crypto')`, whose methods are the OpenSSL half of Node's
        `crypto_hash.cc`, `crypto_hmac.cc`, `crypto_random.cc`, `crypto_keys.cc`, `crypto_sig.cc`, `crypto_x509.cc`,
-       `crypto_cipher.cc`, `crypto_keygen.cc`, `crypto_dh.cc`, `crypto_ec.cc`, `crypto_pbkdf2.cc`, `crypto_scrypt.cc`,
-       `crypto_hkdf.cc` and `crypto_util.cc` in the same files of `native/node`, their V8 halves the engine's; each
-       asynchronous job (CryptoJob) `uv_queue_work` on libuv's threadpool, its completion an engine import followed
-       by a drain, as items 3 to 6's callbacks; `src/shims/crypto*.ts` and their `sha.js`, `@noble` and BigInt RSA go
-       with it, in one change.
+       `crypto_cipher.cc`, `crypto_keygen.cc`, `crypto_rsa.cc`, `crypto_dsa.cc`, `crypto_dh.cc`, `crypto_ec.cc`,
+       `crypto_pqc.cc`, `crypto_aes.cc`, `crypto_chacha20_poly1305.cc`, `crypto_kmac.cc`, `crypto_turboshake.cc`,
+       `crypto_argon2.cc`, `crypto_kem.cc`, `crypto_spkac.cc`, `crypto_pbkdf2.cc`, `crypto_scrypt.cc`, `crypto_hkdf.cc`
+       and `crypto_util.cc` in the same files of `native/node`, their V8 halves the engine's
+       (`src/node-lib/binding/crypto*.ts`); each asynchronous job (CryptoJob) `uv_queue_work` on libuv's threadpool,
+       its completion an engine import followed by a drain, as items 3 to 6's callbacks. Node's Environment keeps the
+       binding's NativeKeyObject and NativeCryptoKey constructors, made once, so `internal/crypto/keys` is the realm's
+       one file, as `internal/timers` is (item 2). With no OpenSSL there is no `crypto` binding: `require('crypto')`
+       and `globalThis.crypto` throw ERR_NO_CRYPTO, as in a Node built without it.
 
 **For the host** (browser-substrate `linux-node-engine.ts`, `linux-uv-waits.ts`, `linux-system.ts`, the process's
 tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-process.ts`, and the recipe
@@ -566,7 +590,8 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   `dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addchdir_np")` answers from `libc.so`, or a spawn with a `cwd` forks.
   inotify in the process's kernel answers `fs.watch`.
   The engine device is `/dev/engine` (browser-substrate ADR-0236 hole 12), which the program opens itself, read and
-  write and poll on its descriptor as on any device's, a request and an answer of at most 1 MiB each.
+  write and poll on its descriptor as on any device's, a request and an answer of at most 1 MiB each, a call's bytes
+  beyond that in its `part` and `take` calls (browser-substrate c9199adc437).
   OpenSSL's seeding is `getrandom` (else `/dev/urandom`) and its clock `clock_gettime`; it reads `OPENSSL_CONF`'s
   file or `/etc/ssl/openssl.cnf` where the image has one (a missing file is no error, as in Node), and a provider
   module from `/usr/lib/ossl-modules` only where the configuration or `crypto.setFips` asks for one.

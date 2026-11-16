@@ -12,8 +12,6 @@
  */
 import { internalUtilTypes } from './util';
 import * as acorn from 'acorn';
-import { internalCryptoKeys } from './crypto-keys';
-import { internalCryptoUtil, internalCryptoX509 } from './crypto-tls';
 import {
   internalConsoleGlobal, internalProcessExecution,
   internalProcessWarning, internalSourceMapCache, internalJsTransferable,
@@ -38,9 +36,6 @@ import { locksOf } from './locks';
 // eslint-disable-next-line no-var, vars-on-top
 var __table: Record<string, () => unknown> | undefined;
 export function nodeLibInternal(name: string, require?: (name: string) => any, process?: any): (() => unknown) | undefined {
-  if (name === 'internal/crypto/keys') return () => internalCryptoKeys;
-  if (name === 'internal/crypto/util') return () => internalCryptoUtil;
-  if (name === 'internal/crypto/x509') return () => internalCryptoX509;
   if (name === 'internal/deps/acorn/acorn/dist/acorn') return () => acorn;
   if (name === 'internal/modules/helpers') return () => ({
     // Node's: a file URL as its path, anything else as it is (lib/internal/modules/helpers.js).
@@ -101,6 +96,9 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   'internal/source_map/source_map_cache': () => internalSourceMapCache,
   'internal/deps/amaro/dist/index': () => internalAmaro(),
   'internal/worker/js_transferable': () => internalJsTransferable,
+  // `internal/worker`'s `ownsProcessState` (lib/internal/worker.js: `isMainThread`), which crypto.js's setFips reads:
+  // every process here is a main thread (`worker_threads`' isMainThread).
+  'internal/worker': () => ({ isMainThread: true, ownsProcessState: true }),
 };;
   return __table[name];
 }

@@ -34,8 +34,11 @@ const DEVICE_CURVES: Record<string, string> = {
 /** A WebCrypto job's configuration (WebCryptoKeyGenConfig, crypto_keygen.h:25-38), the last arguments of its job. */
 interface WebCryptoConfig { algorithm: unknown; usages: number; publicUsages: number; privateUsages: number; extractable: boolean }
 
-/** The device's generation of a key: its algorithm and usages, and what it answers (a pair, or a secret). */
-interface DeviceGeneration { algorithm: Record<string, unknown>; usages: string[]; pair: boolean }
+/**
+ * The device's generation of a key: its algorithm and usages, what it answers (a pair, or a secret), and the
+ * algorithm the binding's other calls import the key for (crypto_keys.ts `deviceKey`'s cache), where it differs.
+ */
+interface DeviceGeneration { algorithm: Record<string, unknown>; usages: string[]; pair: boolean; importedAs?: Record<string, unknown> }
 
 /** A key pair's job (KeyGenJob<KeyPairGenTraits<…>>) or a secret's (KeyGenJob<SecretKeyGenTraits>). */
 class KeyGenJob extends CryptoJob {
@@ -60,7 +63,7 @@ class KeyGenJob extends CryptoJob {
     const generation = this.generation;
     if (!generation) return undefined;
     const args = [generation.algorithm, true, generation.usages];
-    const name = JSON.stringify(generation.algorithm);
+    const name = JSON.stringify(generation.importedAs ?? generation.algorithm);
     return {
       call: (sync: boolean) => (sync ? engineCallSync('generateKey', args) : engineCallAsync('generateKey', args)),
       result: (value: unknown) => {
@@ -132,7 +135,7 @@ export class RsaKeyPairGenJob extends KeyGenJob {
       && bits % 8 === 0 && bits >= 256 && bits <= 16384;
     super(mode, KIND.rsa, true, args, device ? {
       algorithm: { name: 'RSASSA-PKCS1-v1_5', modulusLength: bits, publicExponent: exponentBytes(exponent), hash: 'SHA-256' },
-      usages: ['sign', 'verify'], pair: true,
+      usages: ['sign', 'verify'], pair: true, importedAs: { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
     } : undefined);
   }
 }

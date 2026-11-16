@@ -198,6 +198,10 @@ export function internalUrlOf(require: Require, process?: object) {
     domainToASCII,
     domainToUnicode,
     isURL,
+    /** `isURLInstance` (lib/internal/url.js:860): an instance of the process's `URL`, as Node's brand check asks. */
+    isURLInstance: (value: unknown): boolean => typeof value === 'object' && value !== null && value instanceof realmURL(),
+    /** `getURLHref` (lib/internal/url.js:862-865): the URL's href. */
+    getURLHref: (value: URL): string => value.href,
     fileURLToPath,
     /** `fileURLToPathBuffer(path, options)` (lib/internal/url.js:1650-1664 over getPathBufferFromURLPosix/Win32). */
     fileURLToPathBuffer(path: unknown, options?: unknown): Uint8Array {

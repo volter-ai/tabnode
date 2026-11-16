@@ -14,7 +14,7 @@ import { address } from './libnode';
 import { withBytes } from './openssl';
 import { engineCallAsync, engineCallSync, type EngineKey } from './engine_device';
 import { answer, bufferSource, checked, CryptoJob, glue, rethrow, toArrayBuffer, toBuffer, Values } from './crypto_util';
-import { handleFromKeyData, kKeyTypePrivate, kKeyTypePublic, KeyObjectHandle, opensslBindingValues } from './crypto_keys';
+import { handleFromKeyData, isKeyObjectHandle, kKeyTypePrivate, kKeyTypePublic, KeyObjectHandle, opensslBindingValues } from './crypto_keys';
 
 const dhs = new FinalizationRegistry<number>((dh) => glue().tabnode_dh_free(dh));
 const ecdhs = new FinalizationRegistry<number>((ecdh) => glue().tabnode_ecdh_free(ecdh));
@@ -179,8 +179,10 @@ function getCurves(): string[] {
 
 /** DHBitsJob (DHBitsTraits, crypto_dh.cc:510-556): (mode, the public key's slots, the private key's slots). */
 export class DHBitsJob extends CryptoJob {
+  private readonly args: unknown[];
   constructor(mode: number, ...args: unknown[]) {
     super(mode);
+    this.args = args;
     const exports = glue();
     this.adopt(new Values(args).call((at, length) => exports.tabnode_dh_bits_job_new(mode, at, length)));
   }
@@ -195,8 +197,11 @@ export class DHBitsJob extends CryptoJob {
   protected device() {
     const exports = glue();
     const values = opensslBindingValues();
-    const privateHandle = handleFromKeyData(address(exports.tabnode_dh_bits_job_key(this.job, 1)));
-    const publicHandle = handleFromKeyData(address(exports.tabnode_dh_bits_job_key(this.job, 0)));
+    // A key given as its handle (a CryptoKey's, WebCrypto's ECDH) keeps the device's CryptoKey of it.
+    const privateHandle = isKeyObjectHandle(this.args[5]) ? this.args[5]
+      : handleFromKeyData(address(exports.tabnode_dh_bits_job_key(this.job, 1)));
+    const publicHandle = isKeyObjectHandle(this.args[0]) ? this.args[0]
+      : handleFromKeyData(address(exports.tabnode_dh_bits_job_key(this.job, 0)));
     const privateKey = privateHandle.opensslKey(), publicKey = publicHandle.opensslKey();
     const id = exports.tabnode_key_id(privateKey);
     if (id !== exports.tabnode_key_id(publicKey)) return undefined;

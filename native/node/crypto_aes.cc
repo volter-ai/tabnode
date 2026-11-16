@@ -27,13 +27,20 @@ enum class AESKeyVariant {
 #endif
 };
 
-// AESCipherConfig (crypto_aes.h:62-77).
+// AESCipherConfig (crypto_aes.h:62-77, its move at crypto_aes.cc:487-497): a Cipher copies and does not move.
 struct AESCipherConfig {
   AESKeyVariant variant;
   Cipher cipher;
   size_t length = 0;
   ByteSource iv;  // Used for both iv or counter
   ByteSource additional_data;
+  AESCipherConfig() = default;
+  AESCipherConfig(AESCipherConfig&& other) noexcept
+      : variant(other.variant),
+        cipher(other.cipher),
+        length(other.length),
+        iv(std::move(other.iv)),
+        additional_data(std::move(other.additional_data)) {}
 };
 
 constexpr size_t kAesBlockSize = 16;
@@ -219,7 +226,7 @@ WebCryptoCipherStatus DoAesCipher(const KeyObjectData& key_data, WebCryptoCipher
 }
 
 // The variants' ciphers (VARIANTS, crypto_aes.h).
-Cipher VariantCipher(AESKeyVariant variant) {
+const Cipher& VariantCipher(AESKeyVariant variant) {
   switch (variant) {
     case AESKeyVariant::CTR_128: return Cipher::AES_128_CTR;
     case AESKeyVariant::CTR_192: return Cipher::AES_192_CTR;

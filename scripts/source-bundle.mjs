@@ -1,5 +1,5 @@
 // The engine bundled from its own source, for the scripts that read it rather than a published build (RELEASING.md,
-// "Build the library"): native-probe.mjs, which produces the release's surface, and crypto-ed25519-volume.mjs. One
+// "Build the library"): native-probe.mjs, which produces the release's surface. One
 // owner of how the source is bundled: esbuild, an ESM module for Node, Vite's `?raw` imports read as text (a relative
 // specifier is a file beside its importer, a bare one a package's file as the package exports it), a dependency's
 // compiled `.node` left as the require it was, and a `require` for the bundle's CommonJS dependencies.

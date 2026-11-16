@@ -41,7 +41,6 @@ Basis: the Node-fidelity study and its independent review (card VO-3806's commen
   (`linux-virtual-filesystem.ts:26-28, 43-45`), so in the tab every handshake fails
   `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. Rallly's `prisma migrate deploy` exited 1 on a missing
   `TLSSocket.secureConnecting` (browser-substrate 02b0d4899), a property Node's own `internal/tls/wrap.js` has.
-- `crypto` is JavaScript: @noble/hashes and @noble/curves, WebCrypto for randomness and the asynchronous calls.
 - Two of Node's C libraries already run as WebAssembly, each in its own module and memory: llhttp (the 9.3.0 build
   Node v24.21.0's `deps/undici` ships, not the 9.4.3 Node links; `binding/llhttp-wasm.ts`) and Ada's IDNA (`binding/ada-idna-wasm.ts`, built from Node
   v24.21.0's `deps/ada` by wasi-sdk 34.0, ADR-0009 §3).
@@ -138,10 +137,11 @@ binary; `--tls-cipher-list` is Node's `DEFAULT_CIPHER_LIST_CORE` from the same s
   synchronously, inside the `SSL_*` call that raised them, as in Node. Where Node defers to `SetImmediate` (a write
   the underlying stream finished synchronously, `EncOut` inside `DoWrite`), the binding defers to its binding turn, as
   the engine's stream bindings do.
-- **`internalBinding('crypto')`** (`src/node-lib/binding/crypto.ts`) is, for now, what `tls` reaches: `SecureContext`
+- **`internalBinding('crypto')`** (`src/node-lib/binding/crypto.ts`) is what `tls` reaches of it: `SecureContext`
   (an `SSL_CTX` in the process's memory, initialised as `SecureContext::Init`), the root-certificate calls and
-  `getSSLCiphers`. An error Node throws from C++ is made as its `THROW_ERR_*` makes it, the message as given with its
-  `code`. The binding's `crypto` constants group is §3's; the options table answers Node's TLS options.
+  `getSSLCiphers`, beside the rest of Node's crypto binding (§5). An error Node throws from C++ is made as its
+  `THROW_ERR_*` makes it, the message as given with its `code`. The binding's `crypto` constants group is §3's; the
+  options table answers Node's TLS options.
 - **A context lives as Node's does.** A `SecureContext`'s `SSL_CTX` reference is released by `close()` or when the
   object is collected (a `FinalizationRegistry`), and a connection holding the context keeps the `SSL_CTX`, whose own
   ex_data owns the context's ticket keys, so a connection never outlives what its callbacks read.
@@ -154,13 +154,10 @@ binary; `--tls-cipher-list` is Node's `DEFAULT_CIPHER_LIST_CORE` from the same s
   (`getBundledRootCertificates()`, compiled into the program), would refuse every twin. Node's default as a realm's
   roots is browser-substrate ROADMAP's "96's Node bundled root store", a named difference until then.
   `tls.setDefaultCACertificates()` replaces the store as Node's `ResetRootCertStore` does.
-- **`InternalX509Certificate` is refused by name until `crypto` is OpenSSL's.** `internal/tls/wrap.js` takes it from
-  `internal/crypto/x509` for `getPeerX509Certificate()` and `getX509Certificate()`. *Why:* Node's class is
-  `crypto`'s `X509Certificate`, whose `publicKey` is a `KeyObject` of `internal/crypto/keys`, the engine's noble one
-  until §5; answering it half from OpenSSL and half from noble would be an approximation. A handshake never
-  constructs one: the binding's `getPeerX509Certificate()` answers a handle only for its presence, which
-  `wrap.js`'s verification reads. `getPeerCertificate()` is whole (Node's `X509ToObject` and `GetPeerCert`, §3).
-  `internal/crypto/util` is hand-bound with Node's own `toBuf`, the one name `secure-context.js` takes.
+- **`getPeerX509Certificate()` and `getX509Certificate()` are Node's `X509Certificate`.** `internal/tls/wrap.js`
+  wraps the binding's X509Certificate handle in `internal/crypto/x509`'s `InternalX509Certificate`, Node's own file
+  (§5): the peer's certificate, its issuer the next of the peer's chain, as `X509Certificate::GetPeerCert` makes it.
+  `getPeerCertificate()` is Node's `X509ToObject` and `GetPeerCert` (§3).
 - **`TREE_TLS` is retired, a minor release.** The package no longer exports `TREE_TLS` or its types
   (`src/index.ts`): an exported-surface change, which RELEASING.md makes a minor release. *Why:* a process's TLS is
   now the library inside it, as a Linux process's is, so a host has nothing to offer; browser-substrate's Linux Node
@@ -177,10 +174,11 @@ binary; `--tls-cipher-list` is Node's `DEFAULT_CIPHER_LIST_CORE` from the same s
 
 ### 5. `crypto` is Node's own, with `libnode.so`
 
-Node's `lib/internal/crypto/*`, its `KeyObject` and `X509Certificate` among them, lands as one piece over the
-`crypto` binding (ADR-0018, item 7 of its order), each of whose calls is answered by the engine device (the browser's
-WebCrypto, `/dev/engine`) or by the OpenSSL in `libnode.so` through the program's glue of §3, as ADR-0018 §5 routes it.
-Until then `crypto` is the engine's own, and TLS (§4) is the part of the OpenSSL binding that runs.
+Node's `lib/crypto.js` and `lib/internal/crypto/*`, its `KeyObject` and `X509Certificate` among them, run unchanged
+over the `crypto` binding (ADR-0018, item 7 of its order), each of whose calls is answered by the engine device (the
+browser's WebCrypto, `/dev/engine`) or by the OpenSSL in `libnode.so` through the program's glue of §3, as ADR-0018 §5
+routes it. `require('crypto')`, `node:crypto` and `globalThis.crypto` are Node's; a realm with no `node` program has
+no OpenSSL and no `crypto` binding, as a Node built without it.
 
 ### 6. Measured as ADR-0021 orders
 

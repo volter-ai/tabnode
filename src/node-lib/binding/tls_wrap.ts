@@ -27,7 +27,7 @@ import {
 } from './openssl';
 import { setTlsCallbacks } from './libnode';
 import { SecureContext, errorCodes, refusal } from './crypto';
-import { ownCertificate, peerCertificate } from './x509_object';
+import { ownCertificate, peerCertificate, x509CertificateOf, type X509Certificate } from './x509_object';
 import { listeningHandles } from './tcp_wrap';
 import { handleOwnerSymbol } from './owner-symbol';
 import type { TreeSockets } from '../../host-sockets';
@@ -470,20 +470,31 @@ export class TLSWrap extends LibuvStreamWrap {
   }
 
   /**
-   * GetPeerX509Certificate/GetX509Certificate (1721-1752): the binding's `X509Certificate` handle. Its methods are
-   * `crypto`'s, and `InternalX509Certificate` is refused by name (ADR-0016 §4), so only the handle's presence is used:
-   * `wrap.js`'s verification reads it.
+   * GetPeerX509Certificate (1721-1733) and X509Certificate::GetPeerCert (crypto_x509.cc:901-923): the binding's
+   * X509Certificate of the peer's certificate (a server's peer's own, else the first of the peer's chain), whose
+   * issuer is the next of the chain and so on (X509Certificate::New over an issuer chain, 864-890), which Node's
+   * `InternalX509Certificate` wraps. Node takes the certificates out of the SSL's chain as it builds them; here the
+   * chain is read and left as it is.
    */
-  getPeerX509Certificate(): X509Handle | undefined {
+  getPeerX509Certificate(): X509Certificate | undefined {
     const deps = openssl();
-    const leaf = this.isServer
-      ? outAnswer((outAt) => deps.tabnode_ssl_peer_certificate(this.ssl, outAt))
-      : outAnswer((outAt) => deps.tabnode_ssl_peer_chain_certificate(this.ssl, 0, outAt));
-    return leaf ? new X509Handle(leaf) : undefined;
+    const chain: Uint8Array[] = [];
+    const count = deps.tabnode_ssl_peer_chain_length(this.ssl);
+    for (let index = 0; index < count; index++) {
+      const der = outAnswer((outAt) => deps.tabnode_ssl_peer_chain_certificate(this.ssl, index, outAt));
+      if (der) chain.push(der);
+    }
+    let leaf = this.isServer ? outAnswer((outAt) => deps.tabnode_ssl_peer_certificate(this.ssl, outAt)) : null;
+    if (!leaf && chain.length === 0) return undefined;
+    if (!leaf) leaf = chain.shift()!;
+    let issuer: X509Certificate | undefined;
+    for (let index = chain.length - 1; index >= 0; index--) issuer = x509CertificateOf(chain[index]!, issuer);
+    return x509CertificateOf(leaf, issuer);
   }
-  getX509Certificate(): X509Handle | undefined {
+  /** GetX509Certificate (1745-1752), X509Certificate::GetCert (892-898): this side's certificate. */
+  getX509Certificate(): X509Certificate | undefined {
     const der = outAnswer((outAt) => openssl().tabnode_ssl_certificate(this.ssl, outAt));
-    return der ? new X509Handle(der) : undefined;
+    return der ? x509CertificateOf(der) : undefined;
   }
 
   /** GetCertificate (1735-1743). */
@@ -680,11 +691,6 @@ export function listensWithTls(sockets: TreeSockets, port: number): boolean {
     const owner = (handle as unknown as Record<symbol, unknown>)[handleOwnerSymbol] as Record<string, any> | undefined;
     return owner?._sharedCreds?.context instanceof SecureContext;
   });
-}
-
-/** The handle `getPeerX509Certificate()` answers: the certificate's DER. */
-class X509Handle {
-  constructor(readonly der: Uint8Array) {}
 }
 
 // OpenSSL raises these only inside an `SSL_*` call of a live wrap (the program's tls_* imports, libnode.ts).

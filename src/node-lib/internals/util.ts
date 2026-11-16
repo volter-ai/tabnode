@@ -17,12 +17,16 @@
  * record. undici's `Headers` guard asks it of every init it converts, and a
  * proxy the host made before the guest's realm existed is not in the record.
  *
- * `isExternal` is always false: nothing in a tab is a native handle.
+ * `isExternal` is always false: nothing in a tab is a native handle. `isKeyObject` and `isCryptoKey` are Node's,
+ * over `internal/crypto/keys`.
  *
  * `internal/util` itself is no longer here: it is Node's own file now, and
  * every name the vendored files used to take from a hand-bound object is
  * Node's own code, on the bindings under `../binding/`.
  */
+
+import { libnodeAttached } from '../binding/libnode';
+import { nodeLibInternalRequire } from '../load';
 
 /**
  * Every proxy a guest's realm has made. `runtime.ts` fills it, from the
@@ -81,8 +85,12 @@ export const internalUtilTypes: Record<string, (value: unknown) => boolean> = {
   isSet: (value) => hasSlot(value, setSize),
   isWeakMap: (value) => hasSlot(value, WeakMap.prototype.has, ['x']),
   isWeakSet: (value) => hasSlot(value, WeakSet.prototype.has, ['x']),
-  isKeyObject: () => false,
-  isCryptoKey: (value) => typeof CryptoKey !== 'undefined' && value instanceof CryptoKey,
+  // Node's (lib/internal/util/types.js:84-127): none where the process has no OpenSSL, else `internal/crypto/keys`'
+  // own, the realm's one file (load.ts REALM_ENVIRONMENT).
+  isKeyObject: (value) => libnodeAttached()
+    && (nodeLibInternalRequire('internal/crypto/keys') as { isKeyObject(value: unknown): boolean }).isKeyObject(value),
+  isCryptoKey: (value) => libnodeAttached()
+    && (nodeLibInternalRequire('internal/crypto/keys') as { isCryptoKey(value: unknown): boolean }).isCryptoKey(value),
   isExternal: () => false,
   isProxy: (value) => (typeof value === 'object' || typeof value === 'function') && value !== null && recordedProxies.has(value as object),
 };

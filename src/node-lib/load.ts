@@ -370,8 +370,11 @@ function bindingSurface(value: unknown, owner: () => ProcessToken | null, proces
  * system.ts), whose timer and check handles the `timers` binding drives, so the timer lists over them are the realm's
  * too: every graph's `internal/timers` is the realm's one file, and so is the context frame its timers and Node's
  * `AsyncLocalStorage` keep their stores in. Each process's `timers` and `timers/promises` are its own files over them.
+ * So is `internal/crypto/keys`: the crypto binding's NativeKeyObject and NativeCryptoKey classes are made once, as
+ * Node's Environment keeps their constructors (crypto_keys.cc CreateNativeKeyObjectClass, CreateCryptoKeyClass), so
+ * the file that makes them, and its KeyObject and CryptoKey, are the realm's (ADR-0018 item 7).
  */
-const REALM_ENVIRONMENT = new Set(['internal/timers', 'internal/async_context_frame']);
+const REALM_ENVIRONMENT = new Set(['internal/timers', 'internal/async_context_frame', 'internal/crypto/keys']);
 const REALM_BINDINGS = new Set(['timers', 'async_context_frame', 'task_queue']);
 
 class NodeLibScope {
