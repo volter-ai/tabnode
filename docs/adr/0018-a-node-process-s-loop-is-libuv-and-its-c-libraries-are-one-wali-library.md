@@ -791,7 +791,8 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   OpenSSL's seeding is `getrandom` (else `/dev/urandom`) and its clock `clock_gettime`; it reads `OPENSSL_CONF`'s
   file or `/etc/ssl/openssl.cnf` where the image has one (a missing file is no error, as in Node), and a provider
   module from `/usr/lib/ossl-modules` only where the configuration or `crypto.setFips` asks for one.
-- *The build* (`scripts/build-node.sh`): `<native SDK> <libuv a267f5688b archive> <node-v24.21.0.tar.gz> <out>`.
+- *The build* (`scripts/build-node.sh`): `<libuv a267f5688b archive> <node-v24.21.0.tar.gz> <out>`, with the native
+  SDK's tools on `PATH` by the target's triple (browser-substrate ADR-0240 §2).
   Its C++ runtime is the native SDK's, which the SDK's `c++` links (browser-substrate ADR-0238 §4), and Node's
   release archive is an input (OpenSSL, ncrypto, zlib, brotli, zstd, llhttp, merve, V8's simdutf and simdjson, `node_root_certs.h`,
   `node_constants.cc` and `.h`, `node_zlib.cc`'s constants, `tracing/trace_event_common.h`, `node_options.cc`, `.h`

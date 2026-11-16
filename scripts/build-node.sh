@@ -6,9 +6,11 @@
 # (native/node: one HandleWrap, the stream, TCP, pipe, TTY and UDP wraps, process_wrap, spawn_sync, signal_wrap,
 # MessagePort, fs over uv_fs_*, and the crypto and tls_wrap bindings' OpenSSL half, as Node's src/*_wrap.cc,
 # spawn_sync.cc, node_file.cc, node_dir.cc, fs_event_wrap.cc, node_constants.cc, node.cc's start, node_options.cc and
-# src/crypto/*.cc). It needs `libc.so` and the SDK's C++ runtime alone. Every compile is browser-substrate's prepared
-# native SDK with its Linux headers, whose compile wrapper adds WebAssembly exception handling and whose link wrapper
-# makes a program PIE with the run path /opt/programs/lib, where the machine places `libc.so` and the C++ runtime.
+# src/crypto/*.cc). It needs `libc.so` and the SDK's C++ runtime alone. Every compile and the link are the target's
+# compilers, found on PATH by the target's triple as any cross build finds them (wasm32-unknown-linux-musl-cc and -c++):
+# browser-substrate's prepared native SDK presents them so (browser-substrate ADR-0240 §2, ADR-0236 step 4). Its compile
+# driver gives the sysroot, Linux's own headers among it, and WebAssembly exception handling, and its link wrapper makes
+# a program PIE with the run path /opt/programs/lib, where the machine places `libc.so` and the C++ runtime.
 #
 # libuv is libuv's own source at a267f5688b (2026-10-16, "unix,process: don't raise SIGCHLD from posix_spawn probe",
 # #5317; its version.h says 1.53.1-dev), not Node v24.21.0's deps/uv (libuv 1.52.1), as ADR-0018's evidence says:
@@ -35,15 +37,15 @@
 # unwinder a C++ link takes, so the script names no runtime library. The program's start file defines the process's
 # exception tags, which every library imports (ADR-0238 §2).
 #
-# Usage: scripts/build-node.sh <native SDK> \
-#   <libuv-a267f5688be25e8d4628e296245a041adc2ca072.tar.gz> <node-v24.21.0.tar.gz> <out directory>
-# The script owns its scratch: a directory of its own from mktemp -d, removed by its EXIT trap however it ends.
+# Usage: scripts/build-node.sh <libuv-a267f5688be25e8d4628e296245a041adc2ca072.tar.gz> <node-v24.21.0.tar.gz> \
+#   <out directory>
+# with the target's tools and `patch` on PATH. The script owns its scratch: a directory of its own from mktemp -d, removed
+# by its EXIT trap however it ends.
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
-sdk="$(cd "$1" && pwd)"
-uv_archive="$2"
-node_archive="$3"
-out="$4"
+uv_archive="$1"
+node_archive="$2"
+out="$3"
 echo "02d51895eb7a5fbeb283f3f2a237307987f4c114fb8ba947c7d80c9d5f8ca0af  $uv_archive" | shasum -a 256 -c - >/dev/null
 echo "622424efb5dc0c26c93fbb619ff10737ee289c605b837c88778e186925d82777  $node_archive" | shasum -a 256 -c - >/dev/null
 work=$(mktemp -d)
@@ -74,26 +76,26 @@ tar xzf "$node_archive" -C "$work" "$node/deps/openssl/openssl" "$node/deps/ncry
   "$node/src/node_dotenv.h" "$node/src/node_dotenv.cc" "$node/src/node_config_file.h" "$node/src/node_config_file.cc" \
   "$node/src/node_task_runner.h" "$node/src/node_task_runner.cc"
 ncrypto="$work/$node/deps/ncrypto"
-cc="$sdk/bin/cc"
-cxx="$sdk/bin/cxx"
+cc=wasm32-unknown-linux-musl-cc
+cxx=wasm32-unknown-linux-musl-c++
 # Every compile, OpenSSL's and each dependency's included, is Node's Release build for Linux (common.gypi, for every
 # target: -O3 and -fno-omit-frame-pointer in the Release configuration, _GLIBCXX_USE_CXX11_ABI=1, _FILE_OFFSET_BITS=64
 # and __STDC_FORMAT_MACROS, and OPENSSL_NO_PINSHARED, OPENSSL_THREADS and OPENSSL_NO_ASM where Node's OpenSSL is its
 # own, no-asm, in an executable (770-789); its warning flags aside). Node's -pthread, with atomics and bulk memory, is
 # what every module of the machine is compiled with, which the SDK's compile driver gives (browser-substrate
 # ADR-0240 §2).
-# Linux's own headers (linux/errqueue.h and linux/if_packet.h, which libuv and OpenSSL include) are the target's and
-# belong in the SDK's sysroot; the SDK lays them beside it, in linux-headers, read after musl's.
+# Linux's own headers (linux/errqueue.h and linux/if_packet.h, which libuv and OpenSSL include) are the target's, in
+# its sysroot, which the compile driver gives.
 # The program's bytes name no directory of the build (ADR-0019 §1). Node's gyp build names a source relative to its
-# tree (its make generator compiles $(srcdir)/deps/uv/src/unix/core.c, srcdir being the tree from out/); here each
-# directory a compile reads is mapped out, so every name is relative to its root: the checkout's (native/node/fs.c,
-# native/openssl/config/archs/linux-generic64/no-asm/crypto/params_idx.c),
-# the scratch's (node-v24.21.0/deps/ncrypto/ncrypto.cc, libuv-a267f5688be25e8d4628e296245a041adc2ca072/src/unix/core.c,
-# generated/node_options_header.inc) and the SDK's (its headers, by their path in the SDK).
+# tree (its make generator compiles $(srcdir)/deps/uv/src/unix/core.c, srcdir being the tree from out/). The roots a
+# build is given (the checkout it runs from, the sysroot, its temporary directory) are the compile driver's to map,
+# from the recipe runner's table (browser-substrate ADR-0240 §2). The scratch is the script's own: mktemp -d names it at
+# random inside the temporary directory, so it is mapped out here, and its sources are named relative to it
+# (node-v24.21.0/deps/ncrypto/ncrypto.cc, libuv-a267f5688be25e8d4628e296245a041adc2ca072/src/unix/core.c,
+# generated/node_options_header.inc).
 flags=(-fPIC -O3 -fno-omit-frame-pointer -D_FILE_OFFSET_BITS=64 -D_GLIBCXX_USE_CXX11_ABI=1 -D__STDC_FORMAT_MACROS
   -DOPENSSL_NO_PINSHARED -DOPENSSL_THREADS -DOPENSSL_NO_ASM
-  -idirafter "$sdk/linux-headers/usr/include"
-  -ffile-prefix-map="$repo/"= -ffile-prefix-map="$work/"= -ffile-prefix-map="$sdk/"=)
+  -ffile-prefix-map="$work/"=)
 # Node's C++ (common.gypi cflags_cc: -fno-rtti -fno-exceptions -fno-strict-aliasing -std=gnu++20), over the SDK's libc++
 # headers.
 cxxflags=(-fno-rtti -fno-exceptions -fno-strict-aliasing -std=gnu++20)
@@ -118,7 +120,7 @@ tar xzf "$node_archive" -C "$work" "$node/deps/zlib" "$node/deps/brotli" "$node/
   "$node/deps/merve" "$node/deps/v8/third_party/simdutf" "$node/deps/simdjson" "$node/src/node_zlib.cc"
 # Node's sources with native/patches' changes, in its series' order, once every source a patch names is unpacked.
 while read -r patch; do
-  "$sdk/bin/patch" -s -p1 -d "$work/$node" < "$repo/native/patches/$patch"
+  patch -s -p1 -d "$work/$node" < "$repo/native/patches/$patch"
 done < "$repo/native/patches/series"
 zlibsrc="$work/$node/deps/zlib"
 brotlisrc="$work/$node/deps/brotli"

@@ -41,7 +41,9 @@ never configures OpenSSL while it builds: a maintainer's step runs OpenSSL's own
 this target (`configure.py`'s `valid_arch` has no wasm32), so Tabnode runs Node's procedure for it once, for
 ADR-0016's `linux-generic64` `no-asm`, and keeps the generated set as source beside Node's; the build compiles OpenSSL
 from that set with Node's flags, with no OpenSSL Configure, Makefile or host compiler at build time. The build maps
-its own directories out of what it compiles (`-ffile-prefix-map`). Its compile flags are Node's Release flags (`-O3`
+its own scratch out of what it compiles (`-ffile-prefix-map`); the roots it is given (its checkout, the sysroot, its
+temporary directory) are the SDK's compile driver's to map, from the recipe runner's table (browser-substrate ADR-0240
+§2). It takes the target's compilers by the target's triple on `PATH`, as any cross build does. Its compile flags are Node's Release flags (`-O3`
 for every target, as `common.gypi` sets them). What every module of the machine is compiled with (threads, atomics,
 bulk memory, the Linux headers) is the SDK's to give (browser-substrate ADR-0240 §2), not the build's to restate.
 
