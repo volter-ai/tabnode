@@ -182,8 +182,8 @@ arguments are still the glue's, before it (a key pair's validity, a peer's point
 | A secret of whole bytes (`generateKey`, `generateKeySync`, `subtle.generateKey` of AES and HMAC) | the device (`generateKey` of an HMAC key) |
 | A key's import or export in a form WebCrypto holds (raw, SPKI, PKCS#8) of those keys, where a call the device answers needs it | the device (`importKey`, `exportKey`) |
 | A generated key's encoding (PEM, DER, JWK, raw) | OpenSSL, of its copy |
-| `createCipheriv` and `createDecipheriv` of AES-128-CBC, AES-256-CBC, AES-128-CTR or AES-256-CTR: each update's whole blocks past what OpenSSL's context holds | the device (`encrypt`, `decrypt`) |
-| The same ciphers' bytes held between updates (a partial block, a decryption's last block) and `final` (the padding and its errors) | OpenSSL, its context started again where the device left the stream |
+| `createCipheriv` and `createDecipheriv` of AES-128-CBC, AES-256-CBC, AES-128-CTR or AES-256-CTR: an update whose whole blocks past what OpenSSL's context holds are more than 4 KiB, the digests' bound | the device (`encrypt`, `decrypt`), OpenSSL's context then started again where the device left the stream |
+| The same ciphers' update of 4 KiB or less, their bytes held between updates (a partial block, a decryption's last block) and `final` (the padding and its errors) | OpenSSL, its context continuing |
 | `subtle.encrypt` and `subtle.decrypt` of AES-CBC (a 16-byte IV), AES-CTR, AES-GCM (a tag of WebCrypto's lengths) and AES-KW (`wrapKey`, `unwrapKey`) with a 128- or 256-bit key, and of RSA-OAEP over a WebCrypto digest | the device (`encrypt`, `decrypt`, `wrapKey`, `unwrapKey`) |
 | ECDH on P-256, P-384, P-521 and X25519 agreement (an ECDH object's `computeSecret`, `crypto.diffieHellman`, `subtle.deriveBits`) | the device (`deriveBits`) |
 | `createCipheriv` of AES-GCM, CCM, OCB, the wrap modes and every other cipher; AES-192; `publicEncrypt`, `privateDecrypt`, `privateEncrypt`, `publicDecrypt` | OpenSSL |
@@ -192,7 +192,8 @@ arguments are still the glue's, before it (a key pair's validity, a peer's point
 | Randomness (`randomBytes`, `randomFill`, `randomUUID`) | OpenSSL's, the kernel's `getrandom` |
 
 The bound is the measured one of hole 12 (the device 39.1 µs at 4 KiB against SHA-256 compiled to WebAssembly
-35.9 µs; at 64 KiB 117 µs against 769 µs); a Hash and an Hmac learn their input's length only at `digest`, so one over
+35.9 µs; at 64 KiB 117 µs against 769 µs), one bound for every call it applies to, a digest's input and a cipher
+update's whole blocks alike; a Hash and an Hmac learn their input's length only at `digest`, so one over
 a WebCrypto digest keeps its input until then. A key is held where it is answered: its KeyObjectData in OpenSSL, its
 CryptoKey in the device's session, or both, each side taking its copy from the other's export the first time a call it
 answers needs one (`src/node-lib/binding/crypto_keys.ts`).

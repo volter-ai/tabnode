@@ -10,9 +10,9 @@
  *
  * ROUTING (ADR-0018 §5). Each call of the binding is answered by the engine device (`engine_device.ts`, the
  * browser's WebCrypto on the machine's thread) where WebCrypto defines the operation and the call is above the
- * measured bound, and by OpenSSL in libnode.so otherwise; the choice is each binding class's, per call, through
- * `deviceAnswers`. The bound is browser-substrate ADR-0236 hole 12's reading: a digest's or an HMAC's input above
- * 4 KiB (the device 39.1 µs at 4 KiB against SHA-256 compiled to WebAssembly 35.9 µs; at 64 KiB 117 µs against 769 µs).
+ * measured bound, and by OpenSSL in libnode.so otherwise; the choice is each binding class's, per call. The bound is
+ * browser-substrate ADR-0236 hole 12's reading, one for every call it applies to (a digest's or an HMAC's input, a
+ * cipher update's whole blocks) above 4 KiB (the device 39.1 µs at 4 KiB against SHA-256 compiled to WebAssembly 35.9 µs; at 64 KiB 117 µs against 769 µs).
  */
 import { Buffer } from '../buffer-module';
 import { messagingBinding } from './misc';
@@ -24,8 +24,11 @@ export const kCryptoJobAsync = 0;
 export const kCryptoJobSync = 1;
 export const kCryptoJobWebCrypto = 2;
 
-/** The measured bound above which a digest's or an HMAC's input is the device's (ADR-0236 hole 12). */
-export const DEVICE_DIGEST_BOUND = 4096;
+/**
+ * The measured bound above which a call is the device's (ADR-0236 hole 12): a digest's or an HMAC's input, and a
+ * CipherBase update's whole blocks (crypto_cipher.ts); at or below it the process answers, by OpenSSL.
+ */
+export const DEVICE_BOUND = 4096;
 
 /** WebCrypto's digests (WebCrypto §30, `SHA-1`, `SHA-256`, `SHA-384`, `SHA-512`) by OpenSSL's names for them. */
 const WEBCRYPTO_DIGESTS: Record<string, string> = {
@@ -39,7 +42,7 @@ export function webCryptoDigest(name: string): string | undefined {
 
 /** The device answers a digest or an HMAC of `length` input bytes when WebCrypto defines it and it is above the bound. */
 export function deviceAnswersDigest(name: string, length: number): boolean {
-  return webCryptoDigest(name) !== undefined && length > DEVICE_DIGEST_BOUND;
+  return webCryptoDigest(name) !== undefined && length > DEVICE_BOUND;
 }
 
 /** The program's crypto exports, with OpenSSL started. */

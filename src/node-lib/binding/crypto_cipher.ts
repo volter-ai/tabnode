@@ -3,9 +3,10 @@
  * (CipherBase, PublicKeyCipher, getCiphers, getSSLCiphers, getCipherInfo), over its OpenSSL half
  * (native/node/crypto_cipher.cc) and the engine device.
  *
- * Routing (ADR-0018 §5). A CipherBase over AES-CBC or AES-CTR with a 128- or 256-bit key is the device's for every
- * whole block an update gives it (`encrypt` and `decrypt` of AES-CBC or AES-CTR over the key's device CryptoKey),
- * and OpenSSL's for the bytes its context holds between updates and for `final` (the padding, and the errors Node
+ * Routing (ADR-0018 §5). A CipherBase over AES-CBC or AES-CTR with a 128- or 256-bit key is the device's for an
+ * update whose whole blocks are more than the measured bound the digests share (crypto_util.ts `DEVICE_BOUND`:
+ * `encrypt` and `decrypt` of AES-CBC or AES-CTR over the key's device CryptoKey), and OpenSSL's for a smaller update
+ * (its context simply continues), for the bytes its context holds between updates and for `final` (the padding, and the errors Node
  * throws for a wrong final block or a bad decrypt): before each device answer the binding knows what OpenSSL's
  * context holds (Node's own rule, `ossl_cipher_generic_block_update`: a decryption with padding holds back the last
  * whole block, every other holds the partial block), and after it the context is started again where the device left
@@ -22,7 +23,7 @@ import { Buffer } from '../buffer-module';
 import { address } from './libnode';
 import { withBytes, withScratch, word } from './openssl';
 import { engineCallSync, type EngineKey } from './engine_device';
-import { answer, bufferSource, cppError, decodeInput, glue, rethrow, setFields, toBuffer, Values } from './crypto_util';
+import { answer, bufferSource, cppError, decodeInput, DEVICE_BOUND, glue, rethrow, setFields, toBuffer, Values } from './crypto_util';
 import { isKeyObjectHandle, type KeyObjectHandle } from './crypto_keys';
 import { mallocAnswer } from './openssl';
 
@@ -138,16 +139,24 @@ export class CipherBase {
     if (held.byteLength) this.feed(held);
   }
 
-  /** AES-CBC: the whole blocks past what OpenSSL holds after this update are the device's; null where there are none. */
+  /**
+   * AES-CBC: the whole blocks past what OpenSSL holds after this update are the device's where they are more than
+   * the measured bound, OpenSSL's otherwise (its context continues as it is); null where OpenSSL answers.
+   */
   private cbcUpdate(device: DeviceStream, bytes: Uint8Array): Uint8Array | null {
     const available = concat(device.held, bytes);
     const pads = glue().tabnode_cipher_pads(this.cipher) === 1;
     const total = available.byteLength;
     const held = !this.encrypting && pads ? (total === 0 ? 0 : ((total - 1) % 16) + 1) : total % 16;
     const blocks = available.subarray(0, total - held);
-    if (blocks.byteLength === 0) {
-      device.held = available;
-      return null;
+    if (blocks.byteLength <= DEVICE_BOUND) {
+      device.held = available.slice(total - held);
+      if (blocks.byteLength === 0) return null;
+      if (!this.encrypting) device.chain = blocks.slice(blocks.byteLength - 16);
+      const out = this.feed(bytes);
+      // OpenSSL's output is the blocks it answered; an encryption's chain is its last ciphertext block.
+      if (this.encrypting) device.chain = out.slice(out.byteLength - 16);
+      return out;
     }
     const iv = device.chain;
     let out: Uint8Array;
@@ -166,13 +175,20 @@ export class CipherBase {
     return out;
   }
 
-  /** AES-CTR: every byte of the update is the device's, from the keystream's offset in its block. */
+  /**
+   * AES-CTR: an update of more than the measured bound is the device's, from the keystream's offset in its block;
+   * one at or below it OpenSSL's (its context continues as it is); null where OpenSSL answers.
+   */
   private ctrUpdate(device: DeviceStream, bytes: Uint8Array): Uint8Array | null {
-    if (bytes.byteLength === 0) return null;
+    const total = device.offset + bytes.byteLength;
+    if (bytes.byteLength <= DEVICE_BOUND) {
+      device.chain = advance(device.chain, Math.floor(total / 16));
+      device.offset = total % 16;
+      return null;
+    }
     const input = concat(new Uint8Array(device.offset), bytes);
     const stream = new Uint8Array(engineCallSync('encrypt', [{ name: 'AES-CTR', counter: device.chain, length: 128 },
       device.key(), input]) as ArrayBuffer);
-    const total = device.offset + bytes.byteLength;
     device.chain = advance(device.chain, Math.floor(total / 16));
     device.offset = total % 16;
     this.rechain(device.chain, new Uint8Array(device.offset));
