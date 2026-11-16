@@ -28,7 +28,9 @@
 # ADR-0231 §1): libc++, libc++abi and libunwind, position-independent, from the side-module toolchain, whose
 # include/c++/v1, lib/libc++.a, lib/libc++abi.a and lib/libunwind.a this script reads. Each module links what it uses of
 # it, as a side module does (ADR-0231 §3), the unwinder libc++abi calls among it, given before the SDK's own -lunwind,
-# whose sysroot archive is not position-independent (browser-substrate ADR-0236 step 4).
+# whose sysroot archive is not position-independent (browser-substrate ADR-0236 step 4). The unwinder imports the C++
+# exception tag, and the program defines and exports it once, linking lib/cpp-exception-tag.o, so the process has one
+# tag that libnode.so imports (browser-substrate ADR-0236 hole 7).
 #
 # Usage: scripts/build-libnode.sh <native SDK> <side-module toolchain> \
 #   <libuv-a267f5688be25e8d4628e296245a041adc2ca072.tar.gz> <node-v24.21.0.tar.gz> <out directory>
@@ -42,7 +44,7 @@ node_archive="$4"
 out="$5"
 echo "02d51895eb7a5fbeb283f3f2a237307987f4c114fb8ba947c7d80c9d5f8ca0af  $uv_archive" | shasum -a 256 -c - >/dev/null
 echo "622424efb5dc0c26c93fbb619ff10737ee289c605b837c88778e186925d82777  $node_archive" | shasum -a 256 -c - >/dev/null
-for runtime in include/c++/v1/__config lib/libc++.a lib/libc++abi.a lib/libunwind.a; do
+for runtime in include/c++/v1/__config lib/libc++.a lib/libc++abi.a lib/libunwind.a lib/cpp-exception-tag.o; do
   [ -f "$cxxrt/$runtime" ] || { echo "$cxxrt is not the side-module toolchain: it has no $runtime" >&2; exit 1; }
 done
 work=$(mktemp -d)
@@ -297,4 +299,4 @@ for source in node_zlib node_http_parser node_cjs_lexer; do
   program+=("$work/$source.o")
 done
 finish
-"$cc" -pthread -o "$out/node" "${program[@]}" -L"$out" -lnode "${cxxlibs[@]}"
+"$cc" -pthread -o "$out/node" "${program[@]}" "$cxxrt/lib/cpp-exception-tag.o" -L"$out" -lnode "${cxxlibs[@]}"
