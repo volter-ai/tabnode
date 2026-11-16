@@ -4928,7 +4928,10 @@ function __substrateStackTracePolyfill(): void {
  * Node's, as in Node.
  */
 export function routeErrorStacks(callback: (global: object, error: unknown, trace: unknown[]) => unknown): void {
-  interface CallSite { getFileName(): string | null; getScriptNameOrSourceURL?(): string | null }
+  interface CallSite {
+    getFileName(): string | null; getScriptNameOrSourceURL?(): string | null;
+    getLineNumber(): number | null; getColumnNumber(): number | null; toString(): string;
+  }
   const held = Object.getOwnPropertyDescriptor(Error, 'prepareStackTrace');
   let current: unknown = held && 'value' in held ? held.value : held?.get?.call(Error);
   // A line of a text the realm compiled in a wrapper, read without the wrapper's lines (stack-overrides.ts).
@@ -4938,6 +4941,18 @@ export function routeErrorStacks(callback: (global: object, error: unknown, trac
     const lines = name === null || name === undefined ? undefined : wrapperLines.get(name);
     return lines ? line - lines : line;
   };
+  // A call site's text (what Node's defaultPrepareStackTrace joins) ends in its location, `name:line:column`, which
+  // V8 serializes last: its line is read back as getLineNumber's is.
+  const text = (target: CallSite): string => {
+    const serialized = target.toString();
+    const line = target.getLineNumber();
+    const column = target.getColumnNumber();
+    const read = unwrapped(target, line);
+    if (read === line || column === null) return serialized;
+    const location = `:${line}:${column}`;
+    const at = serialized.lastIndexOf(location);
+    return at < 0 ? serialized : `${serialized.slice(0, at)}:${read}:${column}${serialized.slice(at + location.length)}`;
+  };
   const named = (site: CallSite): CallSite => new Proxy(site, {
     get(target, key) {
       if (key === 'getFileName') return () => target.getFileName() ?? (target.getScriptNameOrSourceURL?.() || null);
@@ -4945,6 +4960,7 @@ export function routeErrorStacks(callback: (global: object, error: unknown, trac
         const read = Reflect.get(target, key) as (() => unknown) | undefined;
         return read === undefined ? undefined : () => unwrapped(target, read.call(target));
       }
+      if (key === 'toString') return () => text(target);
       const value = Reflect.get(target, key) as unknown;
       return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
     },

@@ -50,8 +50,10 @@ export const stackOverrideMap = {
 /**
  * The lines a compiled text's wrapper puts before its first line, by the text's source URL (src/node-lib/v8-host.ts).
  * V8's ScriptCompiler::CompileFunction and its source text modules have no wrapper in their source; the realm's
- * `eval` does, on a line of its own so the text's first line keeps its columns, and a call site's line in that text
- * is read back without it. A script compiled under the same name with no wrapper records none, the last compile of a
+ * `eval` does, on a line of its own so the text's first line keeps its columns, and a call site's line in that text,
+ * its own and in its text, is read back without it (runtime.ts `routeErrorStacks`). A ScriptOrigin's own line and
+ * column offsets are no wrapper's: they stand in the compiled source as the blank lines and columns before the text
+ * (v8-host.ts `offset`). A script compiled under the same name with no wrapper records none, the last compile of a
  * name the one its call sites are read against.
  */
 export const wrapperLines = new Map<string, number>();
