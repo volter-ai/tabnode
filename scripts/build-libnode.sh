@@ -130,7 +130,11 @@ simdjsonsrc="$work/$node/deps/simdjson"
   # libcrypto and libssl, and the legacy provider as Node's libopenssl builds it in: its implementations
   # (providers/liblegacy.a) and its entry (legacyprov.c), whose STATIC_LEGACY form is ossl_legacy_provider_init, the
   # built-in provider crypto/provider_predefined.c names.
-  "$sdk/bin/make" -j"$jobs" build_libs providers/liblegacy.a providers/legacy-dso-legacyprov.o >/dev/null
+  # A file target of OpenSSL's Makefile depends on no generated header: its build_* targets run build_generated first
+  # (safestack.h, opensslv.h and the rest, made from their .in), so the legacy provider's files are made after
+  # build_libs has made them, never beside it in one parallel make.
+  "$sdk/bin/make" -j"$jobs" build_libs >/dev/null
+  "$sdk/bin/make" -j"$jobs" providers/liblegacy.a providers/legacy-dso-legacyprov.o >/dev/null
 )
 
 # ncrypto (deps/ncrypto/ncrypto.gyp): ncrypto.cc with its strict defines, and engine.cc as its ncrypto_engine target.
