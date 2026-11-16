@@ -6,7 +6,8 @@ import wasm from 'vite-plugin-wasm';
 
 /**
  * Node's own files' bodies (src/node-lib/bodies.ts) made here, once, by the same scopedBody a process would run, and
- * carried in that module's place: no process's realm parses Node's library to rewrite it.
+ * carried in that module's place with each file's own text: no process's realm parses Node's library to rewrite it,
+ * and the realm whose process is `node` compiles the text as Node's BuiltinLoader does (ADR-0018 §7).
  */
 function nodeLibBodies() {
   const module = resolve(__dirname, 'src/node-lib/bodies.ts');
@@ -19,7 +20,7 @@ function nodeLibBodies() {
           contents: `import { NODE_LIB_PARAMETERS } from './src/guest-scope';
 import { scopedBody } from './src/node-lib/scoped-body';
 import { NODE_LIB_SOURCES } from './src/node-lib/sources';
-export default Object.fromEntries(Object.entries(NODE_LIB_SOURCES).map(([name, source]) => [name, scopedBody(NODE_LIB_PARAMETERS, source, \`node:\${name}\`)]));`,
+export default Object.fromEntries(Object.entries(NODE_LIB_SOURCES).map(([name, source]) => [name, { ...scopedBody(NODE_LIB_PARAMETERS, source, \`node:\${name}\`), source }]));`,
           resolveDir: __dirname,
           loader: 'ts',
         },
@@ -38,7 +39,9 @@ export default Object.fromEntries(Object.entries(NODE_LIB_SOURCES).map(([name, s
       });
       const { default: bodies } = await import(`data:text/javascript;base64,${Buffer.from(maker.outputFiles[0].text).toString('base64')}`);
       return `const BODIES = ${JSON.stringify(bodies)};
-export function nodeLibBody(name) { return BODIES[name]; }
+export function nodeLibBody(name) { const made = BODIES[name]; return made && { body: made.body, scoped: made.scoped }; }
+export function nodeLibSource(name) { return BODIES[name]?.source; }
+export function nodeLibNames() { return Object.keys(BODIES); }
 export function isNodeLibFile(name) { return BODIES[name] !== undefined; }
 `;
     },

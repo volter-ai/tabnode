@@ -2,6 +2,7 @@
  * npm Registry Client
  * Fetches package metadata from npm registry
  */
+import { realmFetch } from '../system';
 
 export interface PackageVersion {
   name: string;
@@ -128,7 +129,7 @@ export class Registry {
     const __pin = __pins instanceof Map ? __pins.get(packageName) : void 0;
     if (typeof __pin === "string") {
       const pinnedUrl = `${this.registryFor(packageName)}/${encodePackageName(packageName)}/${__pin}`;
-      const pinnedResponse = await fetch(pinnedUrl, { headers: { Accept: "application/json" } });
+      const pinnedResponse = await realmFetch(pinnedUrl, { headers: { Accept: "application/json" } });
       if (pinnedResponse.ok) {
         const versionData = await pinnedResponse.json() as PackageVersion;
         if (versionData && versionData.dist && versionData.dist.tarball) {
@@ -141,7 +142,7 @@ export class Registry {
 
     const url = `${this.registryFor(packageName)}/${encodePackageName(packageName)}`;
 
-    const response = await fetch(url, {
+    const response = await realmFetch(url, {
       headers: {
         Accept: 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8',
       },
@@ -204,7 +205,7 @@ export class Registry {
    * Download tarball as ArrayBuffer
    */
   async downloadTarball(tarballUrl: string): Promise<ArrayBuffer> {
-    const response = await fetch(tarballUrl);
+    const response = await realmFetch(tarballUrl);
 
     if (!response.ok) {
       throw new Error(`Failed to download tarball: ${response.status}`);

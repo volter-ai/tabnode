@@ -170,9 +170,23 @@ export function nodeLibProcessOf(): Record<string, unknown> {
   });
 }
 
+/**
+ * Node's own files vendored for the bootstrap of a realm whose process is `node` (ADR-0018 §7) that the engine also
+ * answers by hand (./internals): a graph that runs no bootstrap -- the library's, and every process's in a realm with
+ * no `node` program -- keeps the engine's answer for these names, which is what it was built over.
+ */
+const BOOTSTRAP_FILES = new Set(['internal/async_hooks', 'internal/process/task_queues', 'internal/process/permission',
+  'internal/options', 'internal/assert', 'internal/v8/startup_snapshot', 'internal/abort_controller',
+  'internal/console/global', 'internal/process/execution', 'internal/process/warning', 'internal/source_map/source_map_cache',
+  'internal/worker/js_transferable', 'internal/modules/helpers', 'internal/process/per_thread', 'internal/bootstrap/realm']);
+/** Whether a graph that runs no bootstrap loads the vendored file of the name. */
+function vendoredOutsideBootstrap(name: string): boolean {
+  return isNodeLibFile(name) && !BOOTSTRAP_FILES.has(name);
+}
+
 function nodeLibRequire(specifier: string): unknown {
   const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
-  if (isNodeLibFile(name)) return loadNodeLib(name);
+  if (vendoredOutsideBootstrap(name)) return loadNodeLib(name);
   const internal = nodeLibInternal(name);
   if (internal !== undefined) {
     builtInternals ??= new Map<string, unknown>();
@@ -375,20 +389,39 @@ function bindingSurface(value: unknown, owner: () => ProcessToken | null, proces
  * Node's Environment keeps their constructors (crypto_keys.cc CreateNativeKeyObjectClass, CreateCryptoKeyClass), so
  * the file that makes them, and its KeyObject and CryptoKey, are the realm's (ADR-0018 item 7).
  */
-const REALM_ENVIRONMENT = new Set(['internal/timers', 'internal/async_context_frame', 'internal/crypto/keys']);
+export const REALM_ENVIRONMENT: ReadonlySet<string> = new Set(['internal/timers', 'internal/async_context_frame', 'internal/crypto/keys']);
 const REALM_BINDINGS = new Set(['timers', 'async_context_frame', 'task_queue']);
+
+/**
+ * The process a realm whose program is `node` is (ADR-0018 §7): its global is the realm's own `globalThis`, its code
+ * compiled as Node compiles it, with no free name rewritten, no Proxy and no `with` (realm.ts).
+ */
+const nodeRealmProcesses = new WeakSet<object>();
+export function markNodeRealmProcess(process: object): void { nodeRealmProcesses.add(process); }
+export function isNodeRealmProcess(process: unknown): boolean {
+  return process !== null && typeof process === 'object' && nodeRealmProcesses.has(process);
+}
+
+/** A realm's own loaders, where its process is `node` and Node's bootstrap made them (realm.ts). */
+export interface RealmLoaders {
+  require(id: string): unknown;
+  internalBinding(name: string): unknown;
+}
 
 class NodeLibScope {
   private readonly modules = new Map<string, NodeLibModule>();
   private readonly internals = new Map<string, unknown>();
   private readonly bindings = new Map<string, unknown>();
   private readonly surfaces = new Map<string, unknown>();
+  /** Node's BuiltinModule and internalBinding of the realm, once its bootstrap has run: this process's whole graph. */
+  realm: RealmLoaders | undefined;
   constructor(readonly process: object) {}
   /** The run this scope's process is (a guest's own runtime has none: the realm process's). */
   private readonly owner = (): ProcessToken | null => __tokenForProcess(this.process as Process);
 
   readonly require: NodeLibRequire = (specifier) => {
     const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
+    if (this.realm) return this.realm.require(name);
     if (name === 'process') return this.process;
     if (name === 'fs/promises') return this.require('internal/fs/promises').exports;
     if (name === 'dns/promises') return this.require('dns').promises;
@@ -397,7 +430,7 @@ class NodeLibScope {
     if (name === 'assert/strict') return this.require('assert').strict;
     if (name === 'util/types') return this.require('internal/util/types');
     if (REALM_ENVIRONMENT.has(name)) return loadNodeLib(name);
-    if (isNodeLibFile(name)) return this.load(name);
+    if (vendoredOutsideBootstrap(name)) return this.load(name);
     const internal = nodeLibInternal(name, this.require, this.process);
     if (internal) {
       if (!this.internals.has(name)) this.internals.set(name, moduleSurface(internal()));
@@ -413,7 +446,10 @@ class NodeLibScope {
     return this.surfaces.get(name);
   }
 
-  readonly binding = (name: string): unknown => {
+  readonly binding = (name: string): unknown => this.realm ? this.realm.internalBinding(name) : this.engineBinding(name);
+
+  /** The engine's own binding of a name for this process, which a realm's internalBinding answers a name it makes none of with. */
+  readonly engineBinding = (name: string): unknown => {
     if (!this.bindings.has(name)) {
       if (REALM_BINDINGS.has(name)) {
         this.bindings.set(name, internalBinding(name));
@@ -478,6 +514,16 @@ function scopeFor(owner: object): NodeLibScope {
 /** process.binding and vendored internalBinding share the same process-owned native surface. */
 export function nodeLibBindingFor(owner: object, name: string): unknown { return scopeFor(owner).binding(name); }
 
+/** The engine's own binding of a name for a process, beneath any realm's loaders (realm.ts `engineBinding`). */
+export function engineBindingFor(owner: object, name: string): unknown { return scopeFor(owner).engineBinding(name); }
+
+/** A process's graph becomes its realm's: every builtin and binding it asks for is Node's bootstrap's (ADR-0018 §7). */
+export function adoptRealmLoaders(owner: object, loaders: RealmLoaders): void {
+  const scope = scopeFor(owner);
+  if (scope.realm) throw new Error('node-lib: this process already has its realm\'s loaders');
+  scope.realm = loaders;
+}
+
 export function loadNodeLibFor(owner: object, name: string): any {
   return scopeFor(owner).require(name);
 }
@@ -512,6 +558,7 @@ function withGlobal(file: ScopedFunction, global: object): Function {
 }
 
 const compiledDependencies = new Map<string, ScopedFunction>();
+const dependencyEval = eval;
 /**
  * A dependency's CommonJS file evaluated once per process, as its builtins are (`compileNodeLib`): its `process`,
  * `require` and `globalThis` are that process's, and each name of `globals` is that process's global's value of the
@@ -521,6 +568,15 @@ const compiledDependencies = new Map<string, ScopedFunction>();
 export function loadDependencyFor(owner: object, name: string, source: string, globals: readonly string[],
   given: Readonly<Record<string, unknown>> = {}): unknown {
   return scopeFor(owner).surface(name, () => {
+    // Where the realm is the process's (ADR-0018 §7), the file is compiled as Node compiles one, at the realm's scope.
+    if (isNodeRealmProcess(owner)) {
+      const parameters = ['exports', 'require', 'module', 'process', ...globals];
+      const made = dependencyEval(`(function (${parameters.join(', ')}) {${source}\n})\n//# sourceURL=${name}`) as Function;
+      const realm = globalThis as unknown as Record<string, unknown>;
+      const module = { exports: {} as unknown };
+      made(module.exports, scopeFor(owner).require, module, owner, ...globals.map((key) => key in given ? given[key] : realm[key]));
+      return module.exports;
+    }
     let compiled = compiledDependencies.get(name);
     if (!compiled) {
       compiled = compileBody(scopedBody(['exports', 'require', 'module', 'process', ...globals], source, name));

@@ -99,6 +99,17 @@ const realm = globalThis as unknown as {
   crypto?: { getRandomValues?(into: Uint8Array): Uint8Array };
   setTimeout?: RealmTimer; clearTimeout?: (id: unknown) => void;
 };
+/**
+ * The realm's own `fetch`, taken when the engine loads, for the engine's own requests (an npm registry's, a bundler's
+ * wasm): where the realm's process is `node`, the global `fetch` is Node's undici over the process's sockets
+ * (ADR-0018 §7), which is the program's, not the engine's.
+ */
+const realmFetchFunction = typeof (globalThis as { fetch?: unknown }).fetch === 'function'
+  ? (globalThis as unknown as { fetch: typeof fetch }).fetch.bind(globalThis) : undefined;
+export function realmFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+  if (!realmFetchFunction) throw new Error('this realm has no fetch of its own');
+  return realmFetchFunction(input, init);
+}
 const realmPerformance = realm.performance;
 const realmNow = typeof realmPerformance?.now === 'function' ? realmPerformance.now.bind(realmPerformance) : undefined;
 const realmOrigin = realmNow && typeof realmPerformance?.timeOrigin === 'number' ? realmPerformance.timeOrigin : Date.now();

@@ -563,8 +563,10 @@ export function setDetachKey(buffer: ArrayBuffer, _key: unknown): void {
  * transfer list, and that is the only detach there is here.
  */
 export function detachArrayBuffer(buffer: ArrayBuffer): void {
-  try { structuredClone(buffer, { transfer: [buffer] }); } catch { /* a realm that refuses leaves it attached */ }
+  try { realmStructuredClone(buffer, { transfer: [buffer] }); } catch { /* a realm that refuses leaves it attached */ }
 }
+/** The realm's own structured clone: where the realm's process is `node` the global one is Node's (ADR-0018 §7). */
+const realmStructuredClone: typeof structuredClone = globalThis.structuredClone.bind(globalThis);
 export function copyArrayBuffer(dest: ArrayBuffer, destOffset: number, source: ArrayBuffer, sourceOffset: number, length: number): void {
   new Uint8Array(dest).set(new Uint8Array(source, sourceOffset, length), destOffset);
 }

@@ -26,7 +26,8 @@ import udpWrapBinding from './udp_wrap';
 import { httpParserBinding } from './http_parser';
 import bufferBinding from './buffer';
 import { constantsBinding, osBinding, configBinding, errorsBinding, credentialsBinding, encodingBinding, typesBinding, traceEventsBinding, performanceBinding, urlBinding, urlPatternBinding } from './misc';
-import { createMessagingBinding, messagingSymbols, workerBinding } from './messaging';
+import { createMessagingBinding, workerBinding } from './messaging';
+import { perIsolateSymbols } from './symbols';
 import utilBinding from './util';
 import { stringDecoderBinding } from './string_decoder';
 import fsBinding, { fsDirBinding, fsEventWrapBinding } from './fs';
@@ -37,7 +38,6 @@ import cryptoBinding from './crypto';
 import { libnodeAttached } from './libnode';
 import tlsWrapBinding from './tls_wrap';
 import jsStreamBinding from './js_stream';
-import { handleOwnerSymbol } from './owner-symbol';
 import { AsyncResource, asyncContextFrameBinding } from '../../shims/async_hooks';
 import { createTimersBinding, taskQueueBinding } from './timers';
 
@@ -103,10 +103,8 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   },
   tls_wrap: () => tlsWrapBinding,
   js_stream: () => jsStreamBinding,
-  // `internalBinding('symbols')` (env_properties.h PER_ISOLATE_SYMBOL_PROPERTIES), the names a vendored file
-  // reads: `internal/tls/wrap.js` keys a PSK exchange by `onpskexchange`; `owner_symbol` is the engine's one;
-  // `internal/worker/io.js` reads a port's `handle_onclose`, `oninit` and `no_message_symbol` (messaging.ts).
-  symbols: () => ({ onpskexchange: Symbol('onpskexchange'), owner_symbol: handleOwnerSymbol, ...messagingSymbols }),
+  // `internalBinding('symbols')` (env_properties.h PER_ISOLATE_SYMBOL_PROPERTIES), one of each a realm (symbols.ts).
+  symbols: () => perIsolateSymbols(),
   fs_dir: () => fsDirBinding,
   fs_event_wrap: () => fsEventWrapBinding,
 };;

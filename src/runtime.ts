@@ -24,7 +24,7 @@ import type { PackageJson } from './types/package-json';
 import { simpleHash } from './utils/hash';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey } from './prepared-key';
+import { PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey, type PreparedModuleForm } from './prepared-key';
 import { uint8ToBase64, uint8ToHex } from './utils/binary-encoding';
 import { createFsShim, FsShim } from './shims/fs';
 import * as pathShim from './shims/path';
@@ -51,7 +51,7 @@ import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
 import { kRunFilesystem } from './node-lib/binding/fs';
 import { byteLengthUtf8 } from './node-lib/binding/buffer';
 import { processUrl } from './node-lib/object-urls';
-import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor, setNodeLibGlobal, nodeLibBindingFor } from './node-lib/load';
+import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor, setNodeLibGlobal, nodeLibBindingFor, isNodeRealmProcess } from './node-lib/load';
 import { fsModule, fsModuleFor } from './node-lib/fs-module';
 import {
   assertModule, querystringModule, punycodeModule, stringDecoderModule, urlModule, constantsModule,
@@ -194,6 +194,8 @@ const __substrateFunctionScope = Function("__substrateFunctionGlobals", "__subst
  * process's global scope object, which answers the names the global holds and shadows the realm's others.
  */
 function __substrateMadeFunction(process: Process, source: string, dynamicImport?: unknown): Function {
+  // Where the realm is the process's (ADR-0018 §7), a function is made at the realm's own scope, as V8 makes Node's.
+  if (isNodeRealmProcess(process)) return __substrateIndirectEval(`(${typeof dynamicImport === 'function' ? __substrateRewriteDynamicImportsInScript(`(${source})`).slice(1, -1) : source})`) as Function;
   const scope = __substrateGuestScopes(process).withGlobal;
   if (typeof dynamicImport !== "function") return __substrateFunctionScope(scope, source) as Function;
   // Rewritten as an expression statement and unwrapped again, so the parser reads a function expression.
@@ -232,6 +234,8 @@ function __substrateGuestConstructor(Constructor: unknown, process: Process, dyn
  * (`__substrateGuestConstructor`).
  */
 const __substrateScriptScope = Function("__substrateScriptGlobals", "__substrateScriptSource", "with (__substrateScriptGlobals) { return eval(__substrateScriptSource); }");
+/** The realm's own global scope, where a script runs in the realm whose process is `node`. */
+const __substrateIndirectEval = eval;
 const __substrateGuestVms = new WeakMap<Process, unknown>();
 function __substrateGuestVm(process: Process): unknown {
   let vm = __substrateGuestVms.get(process);
@@ -254,6 +258,13 @@ function __substrateGuestVm(process: Process): unknown {
     },
   };
   const run = (code: string): unknown => {
+    // Where the realm is the process's (ADR-0018 §7), the script runs at the realm's global scope, its `this` the
+    // realm's global, as Node's ContextifyScript runs one in its main context.
+    if (isNodeRealmProcess(process)) {
+      const source = String(code);
+      observer.run('thisContext', source.length);
+      return observer.phase('eval', () => __substrateIndirectEval(source));
+    }
     // Preserve the original argument order: acquire the actual guest-global
     // scope, then perform the single existing code coercion.
     const { globals, scope, source } = observer.phase('setup', () => {
@@ -447,6 +458,9 @@ const NODE_ENUMERABLE_GLOBALS = new Set(['global', 'clearImmediate', 'setImmedia
 /** The names whose shape the guest's global takes from Node: those fifteen and two it does not enumerate, `Buffer` and `globalThis`. `process` is not among them: see the `get` trap. `navigator` is among them and is the guest's own accessor from the start. */
 const NODE_GLOBALS = new Set([...NODE_ENUMERABLE_GLOBALS, 'Buffer', 'globalThis']);
 function __substrateGuestGlobal(process: Process): Record<string, unknown> {
+  // The realm whose process is `node` is that process's (ADR-0018 §7): its global is the realm's own, on which Node's
+  // bootstrap installed Node's globals.
+  if (isNodeRealmProcess(process)) return globalThis as unknown as Record<string, unknown>;
   let guest = __substrateGuestGlobals.get(process);
   if (guest) return guest;
   const host = globalThis as unknown as Record<string, unknown>;
@@ -1106,13 +1120,17 @@ function __substrateTranspileKey(process: unknown, module: object, ownCompile: u
 }
 export { PREPARED_MODULES_FORMAT, PREPARED_MODULES_KEPT, preparedModuleKind, preparedModuleKeyOf, isPreparedModuleKey };
 /** The name a prepared body goes under, for a caller that has the file's text: its bytes are hashed here. Undefined for a file no body is prepared for. */
-export function preparedModuleKey(rawCode: string, resolvedPath: string): string | undefined {
-  const kind = preparedModuleKind(resolvedPath);
+export function preparedModuleKey(rawCode: string, resolvedPath: string, form: PreparedModuleForm = 'guest'): string | undefined {
+  const kind = preparedModuleKind(resolvedPath, form);
   return kind ? preparedModuleKeyOf(kind, bytesToHex(sha256(new TextEncoder().encode(rawCode)))) : undefined;
 }
-/** The body the loader would compile for this file, with no load hooks and no type stripping: what the image carries. */
-export function prepareModuleForImage(rawCode: string, resolvedPath: string): string {
-  return __substrateScopeGlobalCalls(__substratePrepareBody(rawCode, resolvedPath, undefined, { execArgv: [], env: {} }));
+/**
+ * The body the loader would compile for this file, with no load hooks and no type stripping: what the image carries,
+ * for a realm of `form`'s (a `node` program's realm compiles it unrewritten, ADR-0018 §7).
+ */
+export function prepareModuleForImage(rawCode: string, resolvedPath: string, form: PreparedModuleForm = 'guest'): string {
+  const body = __substratePrepareBody(rawCode, resolvedPath, undefined, { execArgv: [], env: {} });
+  return form === 'node' ? body : __substrateScopeGlobalCalls(body);
 }
 
 /**
@@ -1130,7 +1148,7 @@ function __substrateTracePreparedGate(vfs: { existsSync(path: string): boolean }
   said.first = true;
   if (own) said.own = true;
   const exists = (path: string): boolean | string => { try { return vfs.existsSync(path); } catch (cause) { return cause instanceof Error ? cause.message : String(cause); } };
-  const key = preparedModuleKey(content, resolvedPath);
+  const key = preparedModuleKey(content, resolvedPath, __substratePreparedForm(process));
   if (traceReadingRequested()) traceOutput("[boot-trace]", {
     event: 'prepared-bodies', where: 'compile', which, at: Date.now(), file: resolvedPath, bytes: content.length,
     rawIsOwn: compiling?.raw === content, handedRaw: compiling !== undefined, format: compiling?.format ?? null,
@@ -1840,10 +1858,23 @@ const __substrateWrapperParameters = [...MODULE_WRAPPER_PARAMETERS, '__substrate
  * guest's global was parsed and compiled again for each body (S2 AC-LC15: 1,025 characters and 25 statements a body,
  * some 6 MB over a server's 6,171 bodies). The `$` names are the ones a lowered body's own text uses.
  */
-function __substrateWrapBody(code: string, guestScoped: boolean, strictBody: boolean, sourceURL: string): string {
+function __substrateWrapBody(code: string, guestScoped: boolean, strictBody: boolean, sourceURL: string, nodeRealm = false): string {
+  // Where the realm is the process's (ADR-0018 §7) the body's free names are the realm's own: no scope, no `with`, and
+  // the realm's `process` is the process already.
+  if (nodeRealm) return `(function(${__substrateWrapperParameters}) { { return (function() {${code}
+}).call(${strictBody ? 'void 0' : '$module.exports'}); }
+})${sourceURL}`;
   return `(function(${__substrateWrapperParameters}) { globalThis.process = $process; ${guestScoped ? '{' : 'with (__substrateGuestScope) {'} return (function() {${code}
 }).call(${strictBody ? 'void 0' : '$module.exports'}); }
 })${sourceURL}`;
+}
+/** A body's free names made the process's (ADR-0015 §2), where its realm is not the process's own (ADR-0018 §7). */
+function __substrateScopeFor(process: unknown, code: string): string {
+  return isNodeRealmProcess(process) ? code : __substrateScopeGlobalCalls(code);
+}
+/** The form a process's bodies are prepared in: the realm whose process is `node` compiles them as Node does. */
+function __substratePreparedForm(process: unknown): PreparedModuleForm {
+  return isNodeRealmProcess(process) ? 'node' : 'guest';
 }
 /** Runs a wrapped body with its scope's values, read from the guest's global in the order its header read them; the guest
  *  scope objects, made once per process and reading nothing when made, are taken after them: the read scope for a
@@ -1851,11 +1882,11 @@ function __substrateWrapBody(code: string, guestScoped: boolean, strictBody: boo
 function __substrateRunWrapped(fn: Function, guestScoped: boolean, exports: unknown, require: unknown, module: unknown, filename: string, dirname: string,
   process: Process, console: unknown, importMeta: unknown, dynamicImport: unknown): unknown {
   const guest = __substrateGuestGlobal(process) as Record<string, unknown>;
-  const scopes = guestScopesOf(guest);
+  const scopes = isNodeRealmProcess(process) ? undefined : guestScopesOf(guest);
   return fn(exports, exports, require, require, module, module, filename, dirname, process, process, console, importMeta,
     dynamicImport, dynamicImport, guest, guest, guest.Buffer, guest.queueMicrotask, guest.atob, guest.btoa, guest.structuredClone,
     guest.setTimeout, guest.clearTimeout, guest.setInterval, guest.clearInterval, guest.setImmediate, guest.clearImmediate,
-    __substrateGuestGlobal, __substrateGuestConstructor, guestScoped ? scopes.read : scopes.withModule, scopes.typeOf);
+    __substrateGuestGlobal, __substrateGuestConstructor, scopes && (guestScoped ? scopes.read : scopes.withModule), scopes?.typeOf);
 }
 /**
  * Drives a body: a generator runs until an import is still settling or the
@@ -2045,6 +2076,13 @@ export interface RuntimeOptions {
   tty?: boolean | readonly [boolean, boolean, boolean];
   /** This run's process number; minted where none is given. Its parent's is its registry's, read when asked. */
   pid?: number;
+  /**
+   * The process this runtime loads modules for, where the realm's program is `node`: Node's own process object, which
+   * Node's bootstrap makes and decorates (node-lib/realm.ts, ADR-0018 §7). The runtime makes none of its own, defines
+   * no `dlopen` on it (Node's bootstrap takes `internalBinding('process_methods').dlopen`, this runtime's `dlopen`) and
+   * gives it no console: its console is Node's (`setProcessConsole`).
+   */
+  process?: Process;
 }
 
 export interface RequireFunction {
@@ -3355,7 +3393,7 @@ function createRequire(
     if (source === undefined && format === undefined && !(__hooks && __hooks.hasSyncLoad) && !resolvedPath.startsWith('data:')
       && (module as Module & { _compile?: unknown })._compile === Mod.__substrateOwnCompile
       && !transformsTypes(process as { execArgv?: string[]; env?: Record<string, string> })) {
-      const kind = preparedModuleKind(resolvedPath);
+      const kind = preparedModuleKind(resolvedPath, __substratePreparedForm(process));
       // The digest the resolving stat carried, where the resolution that answered this path is the last one this
       // process made, and made by the tree's own stat in it (`resolveModule` drops it at every start, so a resolution
       // answered from a cache leaves none): the stat and this load are one `require`, with no load hook (above), so
@@ -3428,8 +3466,9 @@ function createRequire(
         if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') __substrateKeepingRefused.add(process as object);
       }
     }
-    const key = compiling?.raw === content && format === undefined && !strips ? __substrateTimeRead(process, 'key', () => preparedModuleKey(rawCode, resolvedPath))
-      : handedTypeScript ? __substrateTimeRead(process, 'key', () => preparedModuleKeyOf(resolvedPath.endsWith('.cts') ? 'cjs' : 'js',
+    const form = __substratePreparedForm(process);
+    const key = compiling?.raw === content && format === undefined && !strips ? __substrateTimeRead(process, 'key', () => preparedModuleKey(rawCode, resolvedPath, form))
+      : handedTypeScript ? __substrateTimeRead(process, 'key', () => preparedModuleKeyOf(form === 'node' ? (resolvedPath.endsWith('.cts') ? 'node-cjs' : 'node-js') : resolvedPath.endsWith('.cts') ? 'cjs' : 'js',
         bytesToHex(sha256(new TextEncoder().encode(`${HANDED_TYPESCRIPT_SALT}${content}`))))) : undefined;
     if (key) {
       const taken = __substrateTimeRead(process, 'prepared', () => __substrateReadPrepared(vfs, key));
@@ -3446,7 +3485,7 @@ function createRequire(
       // tree has the directory bodies are kept in; asked once the body's own
       // read has missed, so a taken body costs no question about it.
       if (vfs.existsSync(PREPARED_MODULES_DIR)) {
-        const body = __substrateTimeRead(process, 'transform', () => __substrateScopeGlobalCalls(prepareModuleCode(rawCode, resolvedPath)));
+        const body = __substrateTimeRead(process, 'transform', () => __substrateScopeFor(process, prepareModuleCode(rawCode, resolvedPath)));
         // One write is one step of the tab's filesystem, so no reader sees
         // half a body; a rename after it failed in a forked process's realm
         // and left the half-named file behind.
@@ -3552,7 +3591,7 @@ function createRequire(
       const importMetaUrl = resolvedPath.startsWith('data:') ? resolvedPath : 'file://' + resolvedPath;
       const strictBody = code.startsWith(__substrateModuleMarker);
       if (strictBody) __substrateEsBodyRuns(process);
-      if (!scoped) code = __substrateScopeGlobalCalls(code);
+      if (!scoped) code = __substrateScopeFor(process, code);
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
@@ -3568,7 +3607,7 @@ function createRequire(
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
       // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
       const guestScoped = __substrateGuestScoped(code);
-      const wrappedCode = __substrateWrapBody(code, guestScoped, strictBody, sourceURL);
+      const wrappedCode = __substrateWrapBody(code, guestScoped, strictBody, sourceURL, isNodeRealmProcess(process));
 
       // A lowered ES module body is a generator that yields at each import
       // still settling; a body that must wait, on a top-level `await` of its
@@ -4052,6 +4091,8 @@ function createRequire(
  * Its output is the process's own (`onConsole`, its fd 1 and 2), never the realm's (ADR-0017: no realm console).
  */
 const processConsoles = new WeakMap<object, Console>();
+/** A process's console, where it is not the runtime's own: Node's, made by its bootstrap (node-lib/realm.ts). */
+export function setProcessConsole(process: object, console: Console): void { processConsoles.set(process, console); }
 
 /**
  * Create a console wrapper that can capture output. A program's console is its own output (`onConsole`: its fd 1 and 2);
@@ -4115,11 +4156,13 @@ export class Runtime {
   private options: RuntimeOptions;
   /** Cache for pre-processed code (after ESM transform) before eval */
   private processedCodeCache: Map<string, string> = new Map();
+  /** binding::DLOpen of this runtime's process (src/node_binding.cc), `process.dlopen` (ADR-0011 §1). */
+  readonly dlopen: (...args: unknown[]) => void;
 
   constructor(vfs: VirtualFS, options: RuntimeOptions = {}) {
     this.vfs = vfs;
     // Create process first so we can get cwd for fs shim
-    this.process = createProcess({
+    this.process = options.process ?? createProcess({
       cwd: options.cwd || '/',
       env: options.env,
       credentials: options.credentials,
@@ -4155,16 +4198,14 @@ export class Runtime {
     // Create fs shim with cwd getter for relative path resolution
     this.fsShim = createFsShim(vfs, () => this.process.cwd());
     this.options = options;
-    processConsoles.set(this.process, createConsoleWrapper(options.onConsole));
+    if (!options.process) processConsoles.set(this.process, createConsoleWrapper(options.onConsole));
     // Node's `process.dlopen(module, filename[, flags])` (ADR-0011 §1), which a loader calls in place of `require`
     // when it wants its own flags (Prisma's library engine), and which the `.node` extension calls for `require`. Its
     // checks are DLOpen's; a host stand-in's package is answered as `require` answers it; every other path is opened
     // in this process and its initializer called on this target's exports, however often the file was opened before.
     // The binding map is the substrate prelude's wrapper of this function. The flags name dynamic-linker modes and
     // have nothing to act on here.
-    Object.defineProperty(this.process, 'dlopen', {
-      configurable: true, enumerable: true, writable: true,
-      value: (...args: unknown[]): void => {
+    const dlopen = (...args: unknown[]): void => {
         if (args.length < 2) {
           throw Object.assign(new TypeError('process.dlopen needs at least 2 arguments'), { code: 'ERR_MISSING_ARGS' });
         }
@@ -4189,8 +4230,9 @@ export class Runtime {
         try { bytes = this.vfs.readFileSync(file) as Uint8Array; }
         catch { throw Object.assign(new Error(file + ': cannot open shared object file: No such file or directory'), { code: 'ERR_DLOPEN_FAILED' }); }
         dlopenNative(this.process, target, exports, file, bytes);
-      },
-    });
+    };
+    this.dlopen = dlopen;
+    if (!options.process) Object.defineProperty(this.process, 'dlopen', { configurable: true, enumerable: true, writable: true, value: dlopen });
 
     // Initialize child_process with VFS for bash command support
     initChildProcess(vfs);
@@ -4307,7 +4349,7 @@ export class Runtime {
     try {
       const importMetaUrl = 'file://' + filename;
       const strictBody = code.startsWith(__substrateModuleMarker);
-      code = __substrateScopeGlobalCalls(code);
+      code = __substrateScopeFor(this.process, code);
       // The wrapper is one line and the body begins on it, as Node's
       // `Module.wrap` is one line, so a module's line N is line N of the
       // script V8 compiles and a stack names the module's own lines. The
@@ -4323,7 +4365,7 @@ export class Runtime {
       const sourceURL = scriptName === undefined ? '' : `\n//# sourceURL=${scriptName}`;
       // A body whose guest names were rewritten where free runs as Node runs one, with no `with` (__substrateScopeGlobalCalls).
       const guestScoped = __substrateGuestScoped(code);
-      const wrappedCode = __substrateWrapBody(code, guestScoped, strictBody, sourceURL);
+      const wrappedCode = __substrateWrapBody(code, guestScoped, strictBody, sourceURL, isNodeRealmProcess(this.process));
 
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(require, this.process, filename.startsWith('data:') ? filename : `file://${filename}`);
@@ -4479,6 +4521,8 @@ export class Runtime {
     const consoleWrapper = processConsoles.get(this.process);
     const process = this.process;
     const buffer = bufferShim.Buffer;
+    // Where the realm is the process's (ADR-0018 §7), the REPL's free names are the realm's own.
+    const nodeRealm = isNodeRealmProcess(process);
 
     // Use a Generator to maintain a persistent eval scope.
     // Generator functions preserve their local scope across yields, so
@@ -4495,7 +4539,7 @@ export class Runtime {
       // module scope's `with` object leaves its own require, console, process and Buffer to these parameters, and its
       // engine-named locals to the generator.
       `var __substrateReplCode, __substrateReplResult;
-with (__substrateReplScope) while (true) {
+${nodeRealm ? '' : 'with (__substrateReplScope) '}while (true) {
   __substrateReplCode = yield;
   try {
     __substrateReplResult = eval(__substrateReplCode);
@@ -4504,7 +4548,7 @@ with (__substrateReplScope) while (true) {
     yield { value: undefined, error: e };
   }
 }`
-    )(require, consoleWrapper, process, buffer, __substrateGuestScopes(process).withModule);
+    )(require, consoleWrapper, process, buffer, nodeRealm ? undefined : __substrateGuestScopes(process).withModule);
     replGen.next(); // prime the generator
 
     return {
@@ -4865,6 +4909,54 @@ function __substrateStackTracePolyfill(): void {
  * function per function it set, so the save-and-restore every package writes
  * around `prepareStackTrace` restores what it saved.
  */
+/**
+ * V8's stack hook made Node's PrepareStackTraceCallback (src/node_errors.cc), where the realm's process is `node` (ADR-0018
+ * §7): Node's bootstrap hands its `prepareStackTraceCallback` to `internalBinding('errors')` and then defines
+ * `Error.prepareStackTrace` as its own `ErrorPrepareStackTrace`. V8 in Node calls the callback, never the property; a
+ * page's engine has only the property. So the property becomes an accessor again: what a program reads and sets is
+ * what Node's code reads and sets, and the function V8 is handed calls Node's callback with the realm's global, each
+ * call site naming its frame's file (a module's body is an evaluated script, whose `getFileName()` V8 leaves null).
+ * While the callback runs, the property reads back what was set, so the callback finds the program's own function or
+ * Node's, as in Node.
+ */
+export function routeErrorStacks(callback: (global: object, error: unknown, trace: unknown[]) => unknown): void {
+  interface CallSite { getFileName(): string | null; getScriptNameOrSourceURL?(): string | null }
+  const held = Object.getOwnPropertyDescriptor(Error, 'prepareStackTrace');
+  let current: unknown = held && 'value' in held ? held.value : held?.get?.call(Error);
+  const named = (site: CallSite): CallSite => new Proxy(site, {
+    get(target, key) {
+      if (key === 'getFileName') return () => target.getFileName() ?? (target.getScriptNameOrSourceURL?.() || null);
+      const value = Reflect.get(target, key) as unknown;
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+  let inside = 0;
+  const routers = new WeakMap<object, (error: unknown, sites: CallSite[]) => unknown>();
+  const routed = new WeakMap<object, unknown>();
+  let routerOfNone: ((error: unknown, sites: CallSite[]) => unknown) | undefined;
+  const routerFor = (value: unknown): (error: unknown, sites: CallSite[]) => unknown => {
+    const known = value !== null && (typeof value === 'object' || typeof value === 'function') ? routers.get(value as object) : routerOfNone;
+    if (known) return known;
+    const router = (error: unknown, sites: CallSite[]): unknown => {
+      inside++;
+      try { noteStackFormed(error, "Node's prepareStackTraceCallback"); return callback(globalThis, error, sites.map(named)); }
+      finally { inside--; }
+    };
+    routed.set(router, value);
+    if (value !== null && (typeof value === 'object' || typeof value === 'function')) routers.set(value as object, router);
+    else routerOfNone = router;
+    return router;
+  };
+  Object.defineProperty(Error, 'prepareStackTrace', {
+    configurable: true,
+    enumerable: false,
+    get: () => (inside > 0 ? current : routerFor(current)),
+    set(value: unknown) {
+      current = typeof value === 'function' && routed.has(value) ? routed.get(value) : value;
+    },
+  });
+}
+
 function __substrateCallSiteFileNames(): void {
   // Safari has no V8 call sites; there the engine builds them itself from the
   // stack's text, where the script's name is already all there is.

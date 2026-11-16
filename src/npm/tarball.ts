@@ -4,6 +4,7 @@
  */
 
 import pako from 'pako';
+import { realmFetch } from '../system';
 import { VirtualFS } from '../virtual-fs';
 import * as path from '../shims/path';
 
@@ -236,7 +237,7 @@ export async function downloadAndExtract(
 
   onProgress?.(`Downloading ${url}...`);
 
-  const response = await fetch(url);
+  const response = await realmFetch(url);
   if (!response.ok) {
     throw new Error(`Failed to download tarball: ${response.status}`);
   }

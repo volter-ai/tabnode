@@ -54,6 +54,11 @@ const CLONE_TRANSFER_NEEDED = 'Object that needs transfer was found in message b
 const CLONE_UNTRANSFERABLE = 'Found invalid value in transferList.';
 const TRANSFER_UNSUPPORTED = 'Cannot transfer object of unsupported type.';
 const dataCloneError = (message: string): Error => new DOMException(message, 'DataCloneError');
+/**
+ * The realm's own structured clone, taken when the engine loads: where the realm's process is `node`, the global
+ * `structuredClone` is Node's (`internal/worker/js_transferable`), which is this binding's.
+ */
+const realmStructuredClone: typeof structuredClone = globalThis.structuredClone.bind(globalThis);
 const nodeError = (Base: ErrorConstructor | TypeErrorConstructor, code: string, message: string): Error =>
   Object.assign(new Base(message), { code });
 const invalidArgType = (message: string): Error => nodeError(TypeError, 'ERR_INVALID_ARG_TYPE', message);
@@ -157,7 +162,7 @@ function serialize(message: Message, input: unknown, transferList: readonly unkn
   };
   const value = write(input);
   for (let index = 0; index < hosts.length; index++) placeholders[index] ??= {};
-  message.graph = structuredClone({ value, hosts: placeholders }, { transfer: buffers });
+  message.graph = realmStructuredClone({ value, hosts: placeholders }, { transfer: buffers });
   // SerializerDelegate::Finish: each port transferred, MessagePort::TransferForMessaging.
   message.transferables = hosts.map((port) => port.transferForMessaging());
 }
@@ -201,7 +206,7 @@ function deserialize(message: Message, binding: Binding, portList?: { ports?: ob
   if (portList !== undefined && hosts.length > 0) portList.ports = hosts;
   const graph = message.graph!;
   message.unread -= 1;
-  return restore(message.unread > 0 ? structuredClone(graph) : graph, hosts);
+  return restore(message.unread > 0 ? realmStructuredClone(graph) : graph, hosts);
 }
 
 /** A SiblingGroup (node_messaging.cc:1564-1665): the ports a message posted to one of them reaches. */
@@ -454,7 +459,11 @@ function newPort(binding: Binding, data?: MessagePortData, group?: SiblingGroup)
 const unwrap = (object: unknown): PortWrap | undefined => (isObject(object) ? wraps.get(object) : undefined);
 
 /** The binding of one graph: its MessagePort constructor, whose prototype Node's io.js reshapes, is that graph's. */
-export function createMessagingBinding(require?: (name: string) => any) {
+/**
+ * `perContext` is the realm's per-context exports where Node's bootstrap made them (realm.ts, ADR-0018 §7): Node's
+ * binding takes `emitMessage` from them (src/node_messaging.cc, GetEmitMessageFunction), not from a require.
+ */
+export function createMessagingBinding(require?: (name: string) => any, perContext?: { emitMessage?: unknown }) {
   if (!require) return { get DOMException() { return globalThis.DOMException; } };
   // HandleWrap's and AsyncWrap's prototype methods (handle_wrap.cc:40-86), which MessagePort's template inherits.
   const handleWrapPrototype = {
@@ -496,7 +505,7 @@ export function createMessagingBinding(require?: (name: string) => any) {
   let emitMessage: ReturnType<Binding['emitMessage']> | undefined;
   const binding: Binding = {
     MessagePort,
-    emitMessage: () => emitMessage ??= (require('internal/per_context/messageport') as { emitMessage: ReturnType<Binding['emitMessage']> }).emitMessage,
+    emitMessage: () => emitMessage ??= (perContext ?? require('internal/per_context/messageport') as { emitMessage: ReturnType<Binding['emitMessage']> }).emitMessage as ReturnType<Binding['emitMessage']>,
     emitWarning: (text) => { (require('process') as { emitWarning(text: string): void }).emitWarning(text); },
   };
   const portArgument = (value: unknown): object => {

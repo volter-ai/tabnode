@@ -106,6 +106,10 @@ const constants = {
   kDisallowCloneAndTransfer: 0,
   kTransferable: 1,
   kCloneable: 2,
+  // Environment's ExitInfoField (src/env.h:1082-1087), the indices of `process[exit_info_private_symbol]`.
+  kExiting: 0,
+  kExitCode: 1,
+  kHasExitCode: 2,
 };
 
 // A real rejection handler marks the host promise handled; no invented state.
@@ -118,13 +122,35 @@ function isIndexKey(key: string): boolean {
 }
 
 export const utilBinding = {
+  // V8's private symbols of Node's isolate (src/env_properties.h PER_ISOLATE_PRIVATE_SYMBOL_PROPERTIES), named as
+  // Node names them. A page's engine has no private symbols: each is a symbol, which reflection on an object that
+  // carries one can see, where V8's private symbol is invisible.
   privateSymbols: {
-    arrow_message_private_symbol: Symbol('arrow_message_private_symbol'),
-    decorated_private_symbol: Symbol('decorated_private_symbol'),
-    untransferable_object_private_symbol: Symbol('untransferable_object_private_symbol'),
-    host_defined_option_symbol: Symbol('host_defined_option_symbol'),
-    transfer_mode_private_symbol: Symbol('transfer_mode_private_symbol'),
+    arrow_message_private_symbol: Symbol('node:arrowMessage'),
+    contextify_context_private_symbol: Symbol('node:contextify:context'),
+    decorated_private_symbol: Symbol('node:decorated'),
+    empty_context_frame_sentinel_symbol: Symbol('node:empty_context_frame_sentinel'),
+    transfer_mode_private_symbol: Symbol('node:transfer_mode'),
+    host_defined_option_symbol: Symbol('node:host_defined_option_symbol'),
+    js_transferable_wrapper_private_symbol: Symbol('node:js_transferable_wrapper'),
+    entry_point_module_private_symbol: Symbol('node:entry_point_module'),
+    entry_point_promise_private_symbol: Symbol('node:entry_point_promise'),
+    module_source_private_symbol: Symbol('node:module_source'),
+    module_export_names_private_symbol: Symbol('node:module_export_names'),
+    module_circular_visited_private_symbol: Symbol('node:module_circular_visited'),
+    module_export_private_symbol: Symbol('node:module_export'),
+    module_first_parent_private_symbol: Symbol('node:module_first_parent'),
+    module_last_parent_private_symbol: Symbol('node:module_last_parent'),
+    napi_type_tag: Symbol('node:napi:type_tag'),
+    napi_wrapper: Symbol('node:napi:wrapper'),
+    untransferable_object_private_symbol: Symbol('node:untransferableObject'),
+    exit_info_private_symbol: Symbol('node:exit_info_private_symbol'),
+    promise_trace_id: Symbol('node:promise_trace_id'),
+    source_map_data_private_symbol: Symbol('node:source_map_data_private_symbol'),
   },
+  // Environment::should_abort_on_uncaught_toggle (src/env.h): 1 while an uncaught exception may abort, which
+  // `--abort-on-uncaught-exception` asks for and the engine never is.
+  shouldAbortOnUncaughtToggle: new Uint32Array(1),
   constants,
   constructSharedArrayBuffer(length: number): SharedArrayBuffer {
     if (typeof SharedArrayBuffer !== 'function') {

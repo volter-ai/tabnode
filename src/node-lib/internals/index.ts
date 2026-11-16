@@ -32,6 +32,14 @@ import { internalUrl, internalUrlOf } from './url';
 import { internalAmaro } from './amaro';
 import { locksOf } from './locks';
 
+/** Every name this table answers, its conditional names with the rest: what a realm's builtin ids hold of it. */
+export function nodeLibInternalNames(): string[] {
+  nodeLibInternal('internal/util/types');
+  return [...new Set(['internal/deps/acorn/acorn/dist/acorn', 'internal/modules/helpers', 'internal/webstreams/adapters',
+    'internal/url', 'internal/locks', 'internal/options', 'internal/blob', 'internal/process/per_thread',
+    'internal/process/execution', 'internal/process/warning', ...Object.keys(__table!)])];
+}
+
 /** Built on the first ask, for the reason `./binding/index.ts` gives. */
 // eslint-disable-next-line no-var, vars-on-top
 var __table: Record<string, () => unknown> | undefined;

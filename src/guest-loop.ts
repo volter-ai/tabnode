@@ -97,6 +97,13 @@ function scheduleTickDrain(): void {
   });
 }
 
+/**
+ * Where the realm's process is `node`, its ticks are Node's own task queue (`internal/process/task_queues`): a callback
+ * scope's close calls its tick callback as InternalCallbackScope::Close does (node-lib/binding/task_queue.ts).
+ */
+let nodeTicks: (() => void) | undefined;
+export function setNodeTickCallback(callback: () => void): void { nodeTicks = callback; }
+
 export function drainGuestNextTicks(): void {
   if (drainingTicks) return;
   drainingTicks = true;
@@ -108,6 +115,7 @@ export function drainGuestNextTicks(): void {
     drainingTicks = false;
     scheduleTickDrain();
   }
+  nodeTicks?.();
 }
 
 /**

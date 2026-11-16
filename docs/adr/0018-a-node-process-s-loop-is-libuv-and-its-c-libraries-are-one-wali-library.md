@@ -220,13 +220,80 @@ browser-substrate ADR-0236 step 5 records. `SYS_posix_spawn_v1` goes.
 ### 7. On the machine, the realm's own `globalThis` is the process's global
 
 ADR-0015 resolves every free name of a process's code on its global by rewriting each one onto
-`__substrateGuestScope`, a Proxy (`src/guest-scope.ts:138`), or by running the file under `with`, because the engine
-runs many processes in one realm. On the machine it does not: each Node process has a worker and a realm of its own,
-and `node` is its own WALI program (§2). So there the realm's `globalThis` is the process's global, Node's bootstrap
-installs Node's globals on it (`lib/internal/bootstrap/node.js`), and a file compiles as Node compiles it, with no
-rewrite, no Proxy and no `with`. What stays is browser-substrate ADR-0236's hole 13: a page's engine carries no
-context across `await`, so `AsyncLocalStorage`'s rewrite of async functions remains, made once per file when the image
-is built.
+`__substrateGuestScope`, a Proxy (`src/guest-scope.ts`), or by running the file under `with`, because the engine runs
+many processes in one realm. On the machine it does not: each Node process has a worker and a realm of its own, and
+`node` is its own WALI program (§2). So where the realm's process is `node`, the realm is that process's
+(`src/node-lib/realm.ts`, `src/node-program.ts`):
+
+- **Its process is Node's.** The process object is CreateProcessObject's (`src/node_process_object.cc`): an instance of
+  a function named `process`, its exit info under `exit_info_private_symbol`, `version`, `versions`, `arch`,
+  `platform`, `release` and `_rawDebug`. Node's bootstrap makes the rest of it.
+- **Node's bootstrap runs on the realm's `globalThis`, in Node's order** (`src/api/environment.cc`
+  InitializePrimordials, `src/node_realm.cc` RunBootstrapping and BootstrapRealm): `internal/per_context/primordials`,
+  `domexception` and `messageport`; `internal/bootstrap/realm`, whose `BuiltinModule` is the process's builtin loader
+  and whose `internalBinding` its bindings' loader; `internal/bootstrap/node`, which makes `process` an
+  EventEmitter, installs `process`, `global`, `Buffer`, the timers, `queueMicrotask`, `setImmediate` and every
+  method of `process` as Node defines them; `internal/bootstrap/web/exposed-wildcard` and `exposed-window-or-worker`
+  (`console`, `URL`, `AbortController`, `EventTarget`, `structuredClone`, `fetch`, `crypto` and the rest);
+  `internal/bootstrap/switches/is_main_thread` (`process.stdout`, `process.stderr` and `process.stdin`, and signal
+  listeners as `uv_signal_t`s, item 8) and `does_own_process_state` (`cwd`, `chdir`, `umask` and the credential
+  setters); then `process.env`, the Environment's env proxy over the run's environment. Every builtin is compiled as
+  BuiltinLoader compiles it: its own text the body of a function of its kind's parameters, at the realm's scope.
+- **The engine is Node's embedder.** As `node::StartExecution` does with an embedder's callback, the run's start runs
+  `internal/process/pre_execution`'s `prepareMainThreadExecution` with the module loaders left to the embedder
+  (`initializeModules` false), and `markBootstrapComplete`; the embedder's entry is the engine's loader
+  (`src/runtime.ts`), which runs the run's preloads and then its file or its `-e` source. A body compiles as a
+  CommonJS body in the engine's one-line wrapper, or as an ES module the engine lowers, with no free name rewritten,
+  no Proxy and no `with`; a body prepared for this realm is named by the `node-js` and `node-cjs` kinds
+  (`src/prepared-key.ts`, `prepareModuleForImage(…, 'node')`). `vm.runInThisContext`, `vm.compileFunction`, a function
+  a program makes and the REPL compile at the realm's scope.
+- **What follows is Node's.** `console` is Node's `internal/console/global` (`util.format` over `util.inspect`, written
+  to `process.stdout` and `process.stderr`); the standard streams and signal listeners are `is_main_thread.js`'s;
+  `process.exit`, `process.kill`, `process.nextTick`, `process.emitWarning`, `process.hrtime` and the rest are
+  `internal/process/per_thread`'s, `task_queues`' and `warning`'s; an uncaught exception is
+  `internalBinding('errors').triggerUncaughtException`, TriggerUncaughtException over Node's `process._fatalException`
+  (`internal/process/execution`); a rejection is `internal/process/promises`'; a child's IPC channel is
+  `pre_execution`'s `setupChildProcessIpcChannel`. A builtin id whose file is not vendored is the engine's module of
+  that id: `vm`, `worker_threads`, `v8`, `perf_hooks`, `dns`, `async_hooks`, `cluster`, `inspector`, `http2`, the
+  hand-bound internals (`src/node-lib/internals`), and the realm's own web streams, `TextEncoder`, `TextDecoder`,
+  `Blob`, `File` and `URL` (`internal/url` over the realm's WHATWG parser, `installObjectURLMethods` putting Node's
+  `createObjectURL` and `revokeObjectURL` on it); `internal/timers`, `internal/async_context_frame` and
+  `internal/crypto/keys` are the realm's one Environment's (item 2, item 7).
+- **The bindings the bootstrap asks for are Node's C++, split where V8 stands.** `builtins` (`src/node_builtins.cc`),
+  `process_methods` (`node_process_methods.cc`: uv_hrtime, uv_cwd, uv_chdir, umask, uv_getrusage,
+  uv_resident_set_memory, uv_kill, uv_os_getpid and abort in `native/node/process_methods.c`), `credentials`
+  (`node_credentials.cc`: getuid and the rest, the setters by name or id, getgroups and initgroups in
+  `native/node/credentials.c`), `async_wrap` (`async_wrap.cc` and AsyncHooks' stack), `task_queue`
+  (`node_task_queue.cc`), `options` (`node_options.cc` over its option table, `src/node-lib/binding/options-table.ts`,
+  and the run's NODE_OPTIONS and command line), `errors` (`node_errors.cc`), `config` (`node_config.cc`), `symbols`
+  and `util`'s private symbols (`env_properties.h`), `trace_events`, `performance`, `permission`, `mksnapshot`,
+  `worker`, `module_wrap`'s synthetic module and `contextify` in the realm's one context. V8's stack hook is Node's
+  PrepareStackTraceCallback: `Error.prepareStackTrace` is an accessor whose function V8 calls hands the call sites,
+  each naming its file, to Node's `prepareStackTraceCallback`, while the property reads back what a program or Node
+  set (`src/runtime.ts` `routeErrorStacks`).
+- **What stays** is browser-substrate ADR-0236's hole 13: a page's engine carries no context across `await`, so
+  `AsyncLocalStorage`'s rewrite of async functions remains, made once per file when the image is built.
+
+A realm with no `node` program keeps ADR-0015's scope as it is, and its graphs keep the engine's hand-bound answers for
+the names the bootstrap's realm takes from Node's files (`src/node-lib/load.ts` BOOTSTRAP_FILES). Where the realm whose
+process is `node` differs from Node:
+- The module loaders are the engine's, not `internal/modules/cjs/loader` and `internal/modules/esm` (which load, as
+  `is_main_thread.js` loads them, and run nothing): `module_wrap` compiles no source text module and binds no
+  `createRequiredModuleFacade` or `throwIfPromiseRejected`, and `cjs_lexer` no `parse`.
+- V8's private symbols are symbols, which reflection on an object that carries one can see.
+- `runMicrotasks` cannot run the realm's microtask queue from inside a call: the microtasks ticks queue run when the call
+  that runs them returns. Code that runs in no callback scope (a continuation the browser settled) has its ticks run
+  from a microtask, as `tickInfo`'s fields turn on.
+- A rejection with no handler is the realm's `unhandledrejection` (a Node host's `unhandledRejection`), raised after the
+  checkpoint that left it unhandled; a handler added later is `rejectionhandled`.
+- No V8 PromiseHook reaches `async_hooks`; a destroy hook runs from an unreferenced immediate.
+- `process.env`'s store is the run's environment, which its children are spawned with, not libc's environ.
+- MemoryUsage's heap fields are the realm's `performance.memory` where it reports one, else the resident size.
+- The engine has no inspector, ICU, tracing agent or snapshot builder, and no permission model: `config` says so as a
+  Node built without them does.
+- The CA store is the image's bundle as `--use-openssl-ca` makes it (ADR-0016 §4).
+- The realm's structured clone carries no host object of Node's JavaScript (a `JSTransferable`'s clone or transfer).
+- The arrow of a fatal exception's source line is not printed: V8's message for it is not a page's to read.
 
 ## Where the evidence stops
 
@@ -365,10 +432,8 @@ is built.
      `uv_guess_handle` answers every descriptor's type. The program's start is Node's
      PlatformInit for fds 0 to 2 (`stdio.c`: `/dev/null` for one not open, each one's flags and a terminal's termios
      recorded) and its exit Node's ResetStdio (libuv's terminal mode reset, O_NONBLOCK and termios put back), run by
-     `exit(3)`, which is also `process.reallyExit`. `process.stdout`, `process.stderr` and `process.stdin` are made as
-     Node's `lib/internal/bootstrap/switches/is_main_thread.js` makes them, on first read, and the console writes to
-     them; that file is the bootstrap's, so until §7 its stream part is carried in the engine (`src/node-lib/stdio.ts`),
-     line for line.
+     `exit(3)`, which is also `process.reallyExit`. `process.stdout`, `process.stderr` and `process.stdin` are Node's
+     `lib/internal/bootstrap/switches/is_main_thread.js`'s, made on first read, and Node's console writes to them (§7).
   4. `tcp_wrap` and `stream_wrap` over `uv_tcp_t`; `udp_wrap` over `uv_udp_t`, in the same shape (`tcp_wrap.c`,
      `udp_wrap.c`): an address goes to libuv as Node's binding takes it, its text and its port, parsed by
      `uv_ip4_addr` or `uv_ip6_addr`, and a name comes back as AddressToJS makes it. A realm with no libuv (a tab's
@@ -392,8 +457,8 @@ handle is; numbered after item 7, so the numbers the code cites stand). `interna
 `uv_signal_init`; `start` and `stop` are `uv_signal_start` and `uv_signal_stop`, and libuv's callback is the program's
 `signal_received` import, which makes the wrap's `onsignal`, then drains. A listener reaches it as in Node: Node's own
 `lib/internal/process/signal.js`, vendored unchanged, listens on the process's `newListener` and `removeListener` as
-`lib/internal/bootstrap/switches/is_main_thread.js` attaches it (its signal part carried in `src/node-lib/stdio.ts`
-until §7), and makes one unreferenced `Signal` for each signal listened to, closed with its last listener. So the
+`lib/internal/bootstrap/switches/is_main_thread.js` attaches it (§7), and makes one unreferenced `Signal` for each
+signal listened to, closed with its last listener. So the
 kernel delivers a signal to libuv's one handler for it (`uv__signal_handler`), which writes the loop's signal pipe,
 and every `uv_signal_t` on that signal runs in the poll phase: a SIGCHLD listener is a second `uv_signal_t` on
 SIGCHLD beside the loop's child watcher (`uv__wait_children`), as in Node, and never displaces it. A run's listeners
@@ -403,8 +468,7 @@ SIGINT and SIGTERM (`SA_RESETHAND`, every signal blocked while it runs), which r
 again with its default action, so a death by either signal puts the standard streams back as an exit does; a
 listener's `uv_signal_start` takes the signal from it, and its last `uv_signal_stop` leaves the default, as in Node.
 The program's end is TearDownOncePerProcess's: ResetStdio, then ResetSignalHandlers. `process.kill` is Node's
-(`lib/internal/process/per_thread.js:254-280`, carried line for line where the run starts, `src/shims/child_process.ts`)
-over `process._kill`, Node's Kill (`src/node_process_methods.cc:185-209`): `uv_kill` in the program
+(`lib/internal/process/per_thread.js:254-280`, §7) over `process._kill`, Node's Kill (`src/node_process_methods.cc:185-209`): `uv_kill` in the program
 (`process_methods.c`), a signal's name read from the program's compiled `os.signals` (§3). So the kernel delivers the
 signal: to the process itself, a listener's `uv_signal_t` runs it on the loop, and with none the signal's default
 action ends the process, which emits no `'exit'`, as Node's dies of the signal; to a child or a group, the kernel's.
@@ -443,11 +507,12 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
      exiting, its code, 13 (kUnsettledTopLevelAwait) where it had none and its entry's top-level `await` is unsettled,
      and `process.emit('exit', code)`; `exit_code` is the code its listeners left, or 1 where the emission failed
      (`src/node_main_instance.cc:109-110`), which `main` returns, so `exit(3)` runs ResetStdio. Each emission is a
-     callback scope of the process's run, its throw the process's uncaught exception. `process.exit` is Node's
-     (`lib/internal/process/per_thread.js:229-242`) and `process.reallyExit` the program's `exit(3)` (`tabnode_exit`,
-     `src/node_process_methods.cc:502-511`), from inside whatever callback calls it; an exception nobody handles ends
-     the process as `_fatalException` and TriggerUncaughtException do (`lib/internal/process/execution.js:161-171`,
-     `src/node_errors.cc:743`, `1395-1399`), through Environment::Exit, the same `exit(3)`; an outcome the run answers
+     callback scope of the process's run, its throw the process's uncaught exception (`src/node-program.ts`).
+     `process.exit` is Node's own (`lib/internal/process/per_thread.js:229-242`, §7) and `process.reallyExit` the
+     program's `exit(3)` (`tabnode_exit`, `src/node_process_methods.cc:502-511`), from inside whatever callback calls
+     it; an exception nobody handles is `internalBinding('errors').triggerUncaughtException`, TriggerUncaughtException
+     over Node's own `_fatalException` (`lib/internal/process/execution.js`, `src/node_errors.cc:1293-1400`), which
+     ends the process through Environment::Exit, the same `exit(3)`; an outcome the run answers
      before its process starts (a refusal of its command line) is its exit. So no count of the engine's own is kept
      on the loop: a handle's wrap keeps its owner and Node's lists of it (`registerLibuvHandle`), and an fs request
      only Node's. Node's idle prepare and check handles mark its isolate idle for V8's CPU profiler

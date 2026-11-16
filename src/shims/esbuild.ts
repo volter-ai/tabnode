@@ -7,7 +7,7 @@ import { heldWork } from '../host-globals';
 import type { VirtualFS } from '../virtual-fs';
 import { ESBUILD_WASM_BINARY_CDN, ESBUILD_WASM_BROWSER_CDN, ESBUILD_WASM_VERSION } from '../config/cdn';
 import { __nodeResolverFor } from '../node-resolver';
-import { realmHost } from '../system';
+import { realmFetch, realmHost } from '../system';
 
 /**
  * Node.js built-in module names. Used by the VFS plugin to provide empty stubs
@@ -706,7 +706,7 @@ function receive(message) {
     const checked = async (url) => {
       const pin = pins && pins[url];
       if (!pin) return undefined;
-      const response = await fetch(url, { credentials: 'omit', redirect: 'error' });
+      const response = await realmFetch(url, { credentials: 'omit', redirect: 'error' });
       if (!response.ok) throw new Error('Compiler file unavailable: ' + url + ' (' + response.status + ')');
       const bytes = new Uint8Array(await response.arrayBuffer());
       const hashed = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));

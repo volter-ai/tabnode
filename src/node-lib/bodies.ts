@@ -20,6 +20,16 @@ export function nodeLibBody(name: string): ScopedBody | undefined {
   return body;
 }
 
+/** The vendored file's own text, as Node's BuiltinLoader compiles it (ADR-0018 §7), or undefined where there is none. */
+export function nodeLibSource(name: string): string | undefined {
+  return NODE_LIB_SOURCES[name];
+}
+
+/** Every vendored file's name: a realm's builtin ids. */
+export function nodeLibNames(): string[] {
+  return Object.keys(NODE_LIB_SOURCES);
+}
+
 /** Whether Node's library has a file of the name. */
 export function isNodeLibFile(name: string): boolean {
   return NODE_LIB_SOURCES[name] !== undefined;

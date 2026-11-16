@@ -25,6 +25,12 @@ import * as inspectorShim from '../shims/inspector';
 import * as perfHooksShim from '../shims/perf_hooks';
 import { nodeLibInternalRequire } from './load';
 
+/** Every name this table answers: what a realm's builtin ids hold of it. */
+export function nodeLibPublicNames(): string[] {
+  nodeLibPublic('dns');
+  return [...new Set(['dns', 'async_hooks', ...Object.keys(__table!)])];
+}
+
 /** Built on the first ask, for the reason `./binding/index.ts` gives. */
 // eslint-disable-next-line no-var, vars-on-top
 var __table: Record<string, () => unknown> | undefined;

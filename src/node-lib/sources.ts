@@ -188,10 +188,122 @@ import INTERNAL_STREAMS_ITER_SHARE from './internal/streams/iter/share.js?raw';
 
 import INTERNAL_ERRORS_ERROR_SOURCE from './internal/errors/error_source.js?raw';
 
+// Node's bootstrap and what it loads where the realm's process is `node` (ADR-0018 §7).
+import BOOTSTRAP_BOOTSTRAP_REALM from './internal/bootstrap/realm.js?raw';
+import BOOTSTRAP_BOOTSTRAP_NODE from './internal/bootstrap/node.js?raw';
+import BOOTSTRAP_BOOTSTRAP_WEB_EXPOSED_WILDCARD from './internal/bootstrap/web/exposed-wildcard.js?raw';
+import BOOTSTRAP_BOOTSTRAP_WEB_EXPOSED_WINDOW_OR_WORKER from './internal/bootstrap/web/exposed-window-or-worker.js?raw';
+import BOOTSTRAP_BOOTSTRAP_SWITCHES_IS_MAIN_THREAD from './internal/bootstrap/switches/is_main_thread.js?raw';
+import BOOTSTRAP_BOOTSTRAP_SWITCHES_DOES_OWN_PROCESS_STATE from './internal/bootstrap/switches/does_own_process_state.js?raw';
+import BOOTSTRAP_PER_CONTEXT_DOMEXCEPTION from './internal/per_context/domexception.js?raw';
+import BOOTSTRAP_PROCESS_PER_THREAD from './internal/process/per_thread.js?raw';
+import BOOTSTRAP_PROCESS_TASK_QUEUES from './internal/process/task_queues.js?raw';
+import BOOTSTRAP_PROCESS_PROMISES from './internal/process/promises.js?raw';
+import BOOTSTRAP_PROCESS_EXECUTION from './internal/process/execution.js?raw';
+import BOOTSTRAP_PROCESS_WARNING from './internal/process/warning.js?raw';
+import BOOTSTRAP_PROCESS_PRE_EXECUTION from './internal/process/pre_execution.js?raw';
+import BOOTSTRAP_PROCESS_PERMISSION from './internal/process/permission.js?raw';
+import BOOTSTRAP_PROCESS_FINALIZATION from './internal/process/finalization.js?raw';
+import BOOTSTRAP_PROCESS_REPORT from './internal/process/report.js?raw';
+import BOOTSTRAP_ASYNC_HOOKS from './internal/async_hooks.js?raw';
+import BOOTSTRAP_PROMISE_HOOKS from './internal/promise_hooks.js?raw';
+import BOOTSTRAP_ASYNC_LOCAL_STORAGE_ASYNC_HOOKS from './internal/async_local_storage/async_hooks.js?raw';
+import BOOTSTRAP_TRACE_EVENTS_ASYNC_HOOKS from './internal/trace_events_async_hooks.js?raw';
+import BOOTSTRAP_CONSOLE_CONSTRUCTOR from './internal/console/constructor.js?raw';
+import BOOTSTRAP_CONSOLE_GLOBAL from './internal/console/global.js?raw';
+import BOOTSTRAP_CLI_TABLE from './internal/cli_table.js?raw';
+import BOOTSTRAP_OPTIONS from './internal/options.js?raw';
+import BOOTSTRAP_WORKER_JS_TRANSFERABLE from './internal/worker/js_transferable.js?raw';
+import BOOTSTRAP_V8_STARTUP_SNAPSHOT from './internal/v8/startup_snapshot.js?raw';
+import BOOTSTRAP_MODULES_HELPERS from './internal/modules/helpers.js?raw';
+import BOOTSTRAP_SOURCE_MAP_SOURCE_MAP_CACHE from './internal/source_map/source_map_cache.js?raw';
+import BOOTSTRAP_SOURCE_MAP_SOURCE_MAP_CACHE_MAP from './internal/source_map/source_map_cache_map.js?raw';
+import BOOTSTRAP_SOURCE_MAP_PREPARE_STACK_TRACE from './internal/source_map/prepare_stack_trace.js?raw';
+import BOOTSTRAP_SOURCE_MAP_SOURCE_MAP from './internal/source_map/source_map.js?raw';
+import BOOTSTRAP_ASSERT from './internal/assert.js?raw';
+import BOOTSTRAP_VM from './internal/vm.js?raw';
+import BOOTSTRAP_DNS_UTILS from './internal/dns/utils.js?raw';
+import BOOTSTRAP_MODULES_CJS_LOADER from './internal/modules/cjs/loader.js?raw';
+import BOOTSTRAP_MODULES_ESM_LOADER from './internal/modules/esm/loader.js?raw';
+import BOOTSTRAP_MODULES_ESM_UTILS from './internal/modules/esm/utils.js?raw';
+import BOOTSTRAP_MODULES_ESM_ASSERT from './internal/modules/esm/assert.js?raw';
+import BOOTSTRAP_MODULES_ESM_GET_FORMAT from './internal/modules/esm/get_format.js?raw';
+import BOOTSTRAP_MODULES_ESM_LOAD from './internal/modules/esm/load.js?raw';
+import BOOTSTRAP_MODULES_ESM_MODULE_JOB from './internal/modules/esm/module_job.js?raw';
+import BOOTSTRAP_MODULES_ESM_MODULE_MAP from './internal/modules/esm/module_map.js?raw';
+import BOOTSTRAP_MODULES_ESM_RESOLVE from './internal/modules/esm/resolve.js?raw';
+import BOOTSTRAP_MODULES_ESM_TRANSLATORS from './internal/modules/esm/translators.js?raw';
+import BOOTSTRAP_MODULES_ESM_HOOKS from './internal/modules/esm/hooks.js?raw';
+import BOOTSTRAP_MODULES_ESM_INITIALIZE_IMPORT_META from './internal/modules/esm/initialize_import_meta.js?raw';
+import BOOTSTRAP_MODULES_ESM_CREATE_DYNAMIC_MODULE from './internal/modules/esm/create_dynamic_module.js?raw';
+import BOOTSTRAP_MODULES_ESM_SHARED_CONSTANTS from './internal/modules/esm/shared_constants.js?raw';
+import BOOTSTRAP_MODULES_RUN_MAIN from './internal/modules/run_main.js?raw';
+import BOOTSTRAP_MODULES_PACKAGE_JSON_READER from './internal/modules/package_json_reader.js?raw';
+import BOOTSTRAP_MODULES_PACKAGE_MAP from './internal/modules/package_map.js?raw';
+import BOOTSTRAP_DATA_URL from './internal/data_url.js?raw';
+import BOOTSTRAP_ABORT_CONTROLLER from './internal/abort_controller.js?raw';
+import BOOTSTRAP_UTIL_TRACE_SIGINT from './internal/util/trace_sigint.js?raw';
+import BOOTSTRAP_FREEZE_INTRINSICS from './internal/freeze_intrinsics.js?raw';
+
 /** The Node the vendored files come from, reported in `BUILTINS.md`. */
 export const NODE_LIB_VERSION = 'v24.21.0';
 
 export const NODE_LIB_SOURCES: Record<string, string> = {
+  'internal/bootstrap/realm': BOOTSTRAP_BOOTSTRAP_REALM,
+  'internal/bootstrap/node': BOOTSTRAP_BOOTSTRAP_NODE,
+  'internal/bootstrap/web/exposed-wildcard': BOOTSTRAP_BOOTSTRAP_WEB_EXPOSED_WILDCARD,
+  'internal/bootstrap/web/exposed-window-or-worker': BOOTSTRAP_BOOTSTRAP_WEB_EXPOSED_WINDOW_OR_WORKER,
+  'internal/bootstrap/switches/is_main_thread': BOOTSTRAP_BOOTSTRAP_SWITCHES_IS_MAIN_THREAD,
+  'internal/bootstrap/switches/does_own_process_state': BOOTSTRAP_BOOTSTRAP_SWITCHES_DOES_OWN_PROCESS_STATE,
+  'internal/per_context/domexception': BOOTSTRAP_PER_CONTEXT_DOMEXCEPTION,
+  'internal/process/per_thread': BOOTSTRAP_PROCESS_PER_THREAD,
+  'internal/process/task_queues': BOOTSTRAP_PROCESS_TASK_QUEUES,
+  'internal/process/promises': BOOTSTRAP_PROCESS_PROMISES,
+  'internal/process/execution': BOOTSTRAP_PROCESS_EXECUTION,
+  'internal/process/warning': BOOTSTRAP_PROCESS_WARNING,
+  'internal/process/pre_execution': BOOTSTRAP_PROCESS_PRE_EXECUTION,
+  'internal/process/permission': BOOTSTRAP_PROCESS_PERMISSION,
+  'internal/process/finalization': BOOTSTRAP_PROCESS_FINALIZATION,
+  'internal/process/report': BOOTSTRAP_PROCESS_REPORT,
+  'internal/async_hooks': BOOTSTRAP_ASYNC_HOOKS,
+  'internal/promise_hooks': BOOTSTRAP_PROMISE_HOOKS,
+  'internal/async_local_storage/async_hooks': BOOTSTRAP_ASYNC_LOCAL_STORAGE_ASYNC_HOOKS,
+  'internal/trace_events_async_hooks': BOOTSTRAP_TRACE_EVENTS_ASYNC_HOOKS,
+  'internal/console/constructor': BOOTSTRAP_CONSOLE_CONSTRUCTOR,
+  'internal/console/global': BOOTSTRAP_CONSOLE_GLOBAL,
+  'internal/cli_table': BOOTSTRAP_CLI_TABLE,
+  'internal/options': BOOTSTRAP_OPTIONS,
+  'internal/worker/js_transferable': BOOTSTRAP_WORKER_JS_TRANSFERABLE,
+  'internal/v8/startup_snapshot': BOOTSTRAP_V8_STARTUP_SNAPSHOT,
+  'internal/modules/helpers': BOOTSTRAP_MODULES_HELPERS,
+  'internal/source_map/source_map_cache': BOOTSTRAP_SOURCE_MAP_SOURCE_MAP_CACHE,
+  'internal/source_map/source_map_cache_map': BOOTSTRAP_SOURCE_MAP_SOURCE_MAP_CACHE_MAP,
+  'internal/source_map/prepare_stack_trace': BOOTSTRAP_SOURCE_MAP_PREPARE_STACK_TRACE,
+  'internal/source_map/source_map': BOOTSTRAP_SOURCE_MAP_SOURCE_MAP,
+  'internal/assert': BOOTSTRAP_ASSERT,
+  'internal/vm': BOOTSTRAP_VM,
+  'internal/dns/utils': BOOTSTRAP_DNS_UTILS,
+  'internal/modules/cjs/loader': BOOTSTRAP_MODULES_CJS_LOADER,
+  'internal/modules/esm/loader': BOOTSTRAP_MODULES_ESM_LOADER,
+  'internal/modules/esm/utils': BOOTSTRAP_MODULES_ESM_UTILS,
+  'internal/modules/esm/assert': BOOTSTRAP_MODULES_ESM_ASSERT,
+  'internal/modules/esm/get_format': BOOTSTRAP_MODULES_ESM_GET_FORMAT,
+  'internal/modules/esm/load': BOOTSTRAP_MODULES_ESM_LOAD,
+  'internal/modules/esm/module_job': BOOTSTRAP_MODULES_ESM_MODULE_JOB,
+  'internal/modules/esm/module_map': BOOTSTRAP_MODULES_ESM_MODULE_MAP,
+  'internal/modules/esm/resolve': BOOTSTRAP_MODULES_ESM_RESOLVE,
+  'internal/modules/esm/translators': BOOTSTRAP_MODULES_ESM_TRANSLATORS,
+  'internal/modules/esm/hooks': BOOTSTRAP_MODULES_ESM_HOOKS,
+  'internal/modules/esm/initialize_import_meta': BOOTSTRAP_MODULES_ESM_INITIALIZE_IMPORT_META,
+  'internal/modules/esm/create_dynamic_module': BOOTSTRAP_MODULES_ESM_CREATE_DYNAMIC_MODULE,
+  'internal/modules/esm/shared_constants': BOOTSTRAP_MODULES_ESM_SHARED_CONSTANTS,
+  'internal/modules/run_main': BOOTSTRAP_MODULES_RUN_MAIN,
+  'internal/modules/package_json_reader': BOOTSTRAP_MODULES_PACKAGE_JSON_READER,
+  'internal/modules/package_map': BOOTSTRAP_MODULES_PACKAGE_MAP,
+  'internal/data_url': BOOTSTRAP_DATA_URL,
+  'internal/abort_controller': BOOTSTRAP_ABORT_CONTROLLER,
+  'internal/util/trace_sigint': BOOTSTRAP_UTIL_TRACE_SIGINT,
+  'internal/freeze_intrinsics': BOOTSTRAP_FREEZE_INTRINSICS,
   'internal/streams/fast-utf8-stream': FAST_UTF8_STREAM,
   'internal/errors/error_source': INTERNAL_ERRORS_ERROR_SOURCE,
   'internal/streams/iter/share': INTERNAL_STREAMS_ITER_SHARE,

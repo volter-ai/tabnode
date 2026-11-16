@@ -103,8 +103,34 @@ export interface LibnodeExports {
   /** node_messaging.c: MessagePort's uv_async_t and its TriggerAsync. */
   tabnode_message_port_new(): I32;
   tabnode_message_port_trigger(handle: I32): void;
-  /** process_methods.c: process._kill's uv_kill. */
+  /** process_methods.c: node_process_methods.cc's libuv and libc half (uv_kill, uv_hrtime, uv_cwd, uv_chdir, umask, uv_getrusage, uv_resident_set_memory, abort). */
   tabnode_kill(pid: I32, signal: I32): I32;
+  tabnode_hrtime(): bigint;
+  tabnode_uptime(): number;
+  tabnode_cwd(buffer: I32, size: I32): I32;
+  tabnode_chdir(path: I32): I32;
+  tabnode_umask(hasMask: I32, mask: I32): I32;
+  tabnode_cpu_usage(fields: I32, thread: I32): I32;
+  tabnode_resource_usage(fields: I32): I32;
+  tabnode_rss(rss: I32): I32;
+  tabnode_constrained_memory(): number;
+  tabnode_available_memory(): number;
+  tabnode_abort(): void;
+  tabnode_getpid(): I32;
+  tabnode_getppid(): I32;
+  /** credentials.c: node_credentials.cc's POSIX half (getuid and the rest, the setters by name or id, getgroups, initgroups). */
+  tabnode_getuid(): I32;
+  tabnode_geteuid(): I32;
+  tabnode_getgid(): I32;
+  tabnode_getegid(): I32;
+  tabnode_errno(): I32;
+  tabnode_getgroups(size: I32, groups: I32): I32;
+  tabnode_setuid(name: I32, id: I32): I32;
+  tabnode_seteuid(name: I32, id: I32): I32;
+  tabnode_setgid(name: I32, id: I32): I32;
+  tabnode_setegid(name: I32, id: I32): I32;
+  tabnode_setgroups(count: I32, names: I32, ids: I32): I32;
+  tabnode_initgroups(user: I32, uid: I32, group: I32, gid: I32): I32;
   /** uv.c: uv.cc's error table (12 bytes an entry, its count at `countAt`), ErrName and GetErrMessage into 50 bytes. */
   tabnode_uv_errors(countAt: I32): I32;
   tabnode_uv_err_name_r(err: I32, name: I32): void;

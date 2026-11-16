@@ -53,6 +53,9 @@ export function createTimersBinding(): Record<string, unknown> {
   };
 }
 
-/** `internalBinding('task_queue')` as far as `internal/timers` reads it: V8's own microtask queue. */
+/**
+ * `internalBinding('task_queue')` of a realm with no `node` program, as far as `internal/timers` reads it: V8's own
+ * microtask queue. The realm whose process is `node` has Node's whole binding (task_queue.ts).
+ */
 const enqueue = globalThis.queueMicrotask.bind(globalThis);
 export const taskQueueBinding = { enqueueMicrotask: (callback: () => void): void => enqueue(callback) };

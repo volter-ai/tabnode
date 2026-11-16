@@ -10,9 +10,11 @@ import type { BlobBinding } from './binding/blob';
 
 const urls = new WeakMap<object, typeof URL>();
 
-export function processUrl(process: object): typeof URL {
-  let url = urls.get(process);
-  if (url) return url;
+/**
+ * Node's `URL.createObjectURL` and `URL.revokeObjectURL` of `process` (lib/internal/url.js installObjectURLMethods),
+ * over its blob binding: the descriptors Node's class gets.
+ */
+export function objectUrlMethodsOf(process: object): Record<string, PropertyDescriptor> {
   const codes = (): Record<string, new (...args: unknown[]) => Error> => (loadNodeLibFor(process, 'internal/errors') as { codes: Record<string, new (...args: unknown[]) => Error> }).codes;
   const blob = (): { isBlob(value: unknown): boolean } => loadNodeLibFor(process, 'internal/blob') as { isBlob(value: unknown): boolean };
   const binding = (): BlobBinding => nodeLibBindingFor(process, 'blob') as BlobBinding;
@@ -39,6 +41,13 @@ export function processUrl(process: object): typeof URL {
       },
     },
   };
+  return methods;
+}
+
+export function processUrl(process: object): typeof URL {
+  let url = urls.get(process);
+  if (url) return url;
+  const methods = objectUrlMethodsOf(process);
   url = new Proxy(globalThis.URL, {
     get: (target, key, receiver) => typeof key === 'string' && Object.prototype.hasOwnProperty.call(methods, key) ? methods[key]!.value : Reflect.get(target, key, receiver),
     getOwnPropertyDescriptor: (target, key) => typeof key === 'string' && Object.prototype.hasOwnProperty.call(methods, key) ? { ...methods[key] } : Reflect.getOwnPropertyDescriptor(target, key),
