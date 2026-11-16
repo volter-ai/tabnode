@@ -3,7 +3,7 @@
  *
  * Node's `http.js`, `https.js` and the five `_http_*.js` files, vendored
  * unmodified, on `./binding/http_parser.ts`: Node's own binding over llhttp,
- * the parser Node links, in the process's libnode.so (ADR-0018 item 10).
+ * the parser Node links, in the process's `node` program (ADR-0018 item 10).
  * `Agent`, `ClientRequest`, `IncomingMessage`, `OutgoingMessage`, `Server` and
  * `ServerResponse` are Node's own code, over the engine's `net`.
  *

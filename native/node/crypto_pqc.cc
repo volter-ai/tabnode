@@ -1,5 +1,5 @@
 // POST-QUANTUM KEYS OF THE crypto BINDING (Tabnode ADR-0018 item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_pqc.cc, over ncrypto and OpenSSL 3.5's ML-DSA, ML-KEM and SLH-DSA in libnode.so: a key's AKP JWK,
+// src/crypto/crypto_pqc.cc, over ncrypto and OpenSSL 3.5's ML-DSA, ML-KEM and SLH-DSA in the program: a key's AKP JWK,
 // and the algorithms' names and kinds.
 #include <cstring>
 

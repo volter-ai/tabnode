@@ -1,6 +1,6 @@
 /**
  * `internalBinding('zlib')` (ADR-0018 §1, item 10): Node v24.21.0's src/node_zlib.cc over the zlib (Chromium's, as
- * Node's deps/zlib ships it), brotli and zstd in the process's libnode.so. Its C is the `node` program's
+ * Node's deps/zlib ships it), brotli and zstd in the process's `node` program, and so is its C
  * (native/node/node_zlib.c): every context (ZlibContext, BrotliEncoderContext, BrotliDecoderContext,
  * ZstdCompressContext, ZstdDecompressContext) and CompressionStream's state, its checks, its errors and its writes,
  * a `write` on libuv's threadpool (uv_queue_work) completing on the loop through the program's `zlib_done`, after
@@ -11,16 +11,16 @@
  * MakeCallback makes them, in the stream's owner's run. Node's own `lib/zlib.js` runs over it unchanged.
  *
  * A realm the host gives no `node` program has no zlib, as it has no OpenSSL: its streams and `crc32` answer that
- * the realm has no program (`libnode`).
+ * the realm has no program (`nodeProgram`).
  */
-import { address, fromMemory, intoMemory, libnode, readRecord, setZlibCallbacks, type LibnodeExports } from './libnode';
+import { address, fromMemory, intoMemory, nodeProgram, readRecord, setZlibCallbacks, type NodeProgramExports } from './program';
 import { codeError } from './fs_req';
 import { invokeOwned, ownedRun, ownerOfInstance } from './handles';
 
 type I32 = number;
 
 /** native/node/node_zlib.c's exports, by their C names. */
-interface ZlibExports extends LibnodeExports {
+interface ZlibExports extends NodeProgramExports {
   tabnode_zlib_new(kind: I32, mode: I32): I32;
   tabnode_zlib_free(stream: I32): void;
   tabnode_zlib_init_stream(stream: I32): void;
@@ -44,7 +44,7 @@ interface ZlibExports extends LibnodeExports {
 }
 
 function program(): ZlibExports {
-  return libnode().exports as ZlibExports;
+  return nodeProgram().exports as ZlibExports;
 }
 
 /** The stream kinds node_zlib.c makes, one a class of Node's MakeClass. */
@@ -158,7 +158,7 @@ class CompressionStream {
     }
     const x = program();
     const room = address(x.tabnode_zlib_room(this.#stream, inLen + outLen));
-    if (input && inLen > 0) libnode().write(room, input.subarray(inOff, inOff + inLen));
+    if (input && inLen > 0) nodeProgram().write(room, input.subarray(inOff, inOff + inLen));
     const pending = { out, outOff, outLen, inLen, room };
     if (async) {
       // ScheduleWork, with the stream held (Ref) until its work is done.
@@ -352,7 +352,7 @@ class ZstdStream extends CompressionStream {
   }
 
   #errorMessage(): string {
-    return libnode().cString(program().tabnode_zlib_error_message(this.stream)) ?? '';
+    return nodeProgram().cString(program().tabnode_zlib_error_message(this.stream)) ?? '';
   }
 }
 
@@ -376,13 +376,12 @@ function crc32(data: unknown, value: unknown): number {
 }
 
 /**
- * The program's zlib callbacks (engine.h `zlib_error`, `zlib_done`), which `libnodeImports` answers: EmitError's
+ * The program's zlib callbacks (engine.h `zlib_error`, `zlib_done`), which `nodeProgramImports` answers: EmitError's
  * MakeCallback of `onerror`, and a threadpool write's end. The C closes the scope of each made on the loop.
  */
 setZlibCallbacks({
   zlib_error: (stream, message, code, err) => {
-    const lib = libnode();
-    streamAt(stream).emitError(lib.cString(message) ?? '', err, lib.cString(code) ?? '');
+    streamAt(stream).emitError(nodeProgram().cString(message) ?? '', err, nodeProgram().cString(code) ?? '');
   },
   zlib_done: (stream, written) => { streamAt(stream).writeDone(written !== 0); },
 });
@@ -395,7 +394,7 @@ export const zlibBinding = {
   ZstdCompress,
   ZstdDecompress,
   crc32,
-  get ZLIB_VERSION(): string { return libnode().cString(program().tabnode_zlib_version()) ?? ''; },
+  get ZLIB_VERSION(): string { return nodeProgram().cString(program().tabnode_zlib_version()) ?? ''; },
 };
 
 export default zlibBinding;

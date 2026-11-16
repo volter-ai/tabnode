@@ -15,7 +15,7 @@ import { internalAsyncHooks } from '../internals/runtime';
 import { nodeLibInternalRequire } from '../load';
 import { rememberSocketConnect, traceSocketConnect } from '../../socket-connect-trace';
 import { uvConstant } from './uv';
-import { libnode, sockOrPeerName, withCString } from './libnode';
+import { nodeProgram, sockOrPeerName, withCString } from './program';
 import { wrapConstants } from '../../shims/constants';
 import { callingSockets, type TreeSockets } from '../../host-sockets';
 
@@ -100,7 +100,7 @@ export class TCP extends KernelStreamWrap {
   constructor(type: number = tcpConstants().SOCKET) {
     super(realmHasLibuv(), false);
     this.type = type;
-    if (this[kKernelBacked]) this.attachUv(libnode().exports.tabnode_tcp_init(), true);
+    if (this[kKernelBacked]) this.attachUv(nodeProgram().exports.tabnode_tcp_init(), true);
   }
 
   /** ConnectionWrap::OnConnection's client: TCPWrap::Instantiate with SOCKET. */
@@ -122,7 +122,7 @@ export class TCP extends KernelStreamWrap {
     if (!this[kKernelBacked]) return uvConstant('UV_EAFNOSUPPORT');
     if (!handle) return uvConstant('UV_EBADF');
     const given = isUint32(flags) ? flags : 0;
-    return withCString(String(address), (ip) => libnode().exports.tabnode_tcp_bind(handle.wrap, family, ip, Number(port) | 0, given));
+    return withCString(String(address), (ip) => nodeProgram().exports.tabnode_tcp_bind(handle.wrap, family, ip, Number(port) | 0, given));
   }
 
   /** TCPWrap::Listen: uv_listen, whose connections are ConnectionWrap::OnConnection's. */
@@ -130,7 +130,7 @@ export class TCP extends KernelStreamWrap {
     const handle = this.liveUv();
     if (!this[kKernelBacked]) return uvConstant('UV_EAFNOSUPPORT');
     if (!handle) return uvConstant('UV_EBADF');
-    const err = libnode().exports.tabnode_stream_listen(handle.wrap, Number(backlog) | 0);
+    const err = nodeProgram().exports.tabnode_stream_listen(handle.wrap, Number(backlog) | 0);
     if (err !== 0) return err;
     const port = this.#localPort();
     if (!this.listening) {
@@ -191,7 +191,7 @@ export class TCP extends KernelStreamWrap {
       try { done(status, readable, writable); }
       finally { traceSocketConnect('binding-returned', socket, timer(), status); }
     });
-    const err = withCString(String(address), (ip) => libnode().exports.tabnode_tcp_connect(handle.wrap, id, family, ip, Number(port) | 0));
+    const err = withCString(String(address), (ip) => nodeProgram().exports.tabnode_tcp_connect(handle.wrap, id, family, ip, Number(port) | 0));
     if (err) handle.undispatch(id);
     else observeNodeRequest(req, this);
     return err;
@@ -209,7 +209,7 @@ export class TCP extends KernelStreamWrap {
   #name(peer: 0 | 1, out: Partial<SockName>): number {
     const handle = this.liveUv();
     if (!handle) return uvConstant('UV_EBADF');
-    return sockOrPeerName((at) => libnode().exports.tabnode_tcp_name(handle.wrap, peer, at), out as Record<string, unknown>);
+    return sockOrPeerName((at) => nodeProgram().exports.tabnode_tcp_name(handle.wrap, peer, at), out as Record<string, unknown>);
   }
 
   /** TCPWrap::SetNoDelay: uv_tcp_nodelay. */
@@ -217,7 +217,7 @@ export class TCP extends KernelStreamWrap {
     const handle = this.liveUv();
     if (!this[kKernelBacked]) return 0;
     if (!handle) return uvConstant('UV_EBADF');
-    return libnode().exports.tabnode_tcp_nodelay(handle.wrap, enable === true ? 1 : 0);
+    return nodeProgram().exports.tabnode_tcp_nodelay(handle.wrap, enable === true ? 1 : 0);
   }
 
   /** TCPWrap::SetKeepAlive: uv_tcp_keepalive_ex, an interval of 1 s and 10 probes where none is given. */
@@ -225,7 +225,7 @@ export class TCP extends KernelStreamWrap {
     const handle = this.liveUv();
     if (!this[kKernelBacked]) return 0;
     if (!handle) return uvConstant('UV_EBADF');
-    return libnode().exports.tabnode_tcp_keepalive(handle.wrap, Number(enable) | 0, Number(delay) >>> 0,
+    return nodeProgram().exports.tabnode_tcp_keepalive(handle.wrap, Number(enable) | 0, Number(delay) >>> 0,
       isUint32(interval) ? interval : 1, isUint32(count) ? count : 10);
   }
 
@@ -233,13 +233,13 @@ export class TCP extends KernelStreamWrap {
   setTypeOfService(tos: number): number {
     const handle = this.liveUv();
     if (!handle) return uvConstant('UV_EBADF');
-    return libnode().exports.tabnode_tcp_set_tos(handle.wrap, Number(tos) | 0);
+    return nodeProgram().exports.tabnode_tcp_set_tos(handle.wrap, Number(tos) | 0);
   }
 
   getTypeOfService(): number {
     const handle = this.liveUv();
     if (!handle) return uvConstant('UV_EBADF');
-    return libnode().exports.tabnode_tcp_get_tos(handle.wrap);
+    return nodeProgram().exports.tabnode_tcp_get_tos(handle.wrap);
   }
 
   setSimultaneousAccepts(_enable: boolean): number {
@@ -250,7 +250,7 @@ export class TCP extends KernelStreamWrap {
   open(fd: number): number {
     const handle = this.liveUv();
     if (!handle) return uvConstant('UV_EBADF');
-    return libnode().exports.tabnode_tcp_open(handle.wrap, Math.trunc(Number(fd)));
+    return nodeProgram().exports.tabnode_tcp_open(handle.wrap, Math.trunc(Number(fd)));
   }
 
   /** TCPWrap::Reset: uv_tcp_close_reset (the peer reads ECONNRESET), its callback HandleWrap::OnClose. */
@@ -258,7 +258,7 @@ export class TCP extends KernelStreamWrap {
     const handle = this.liveUv();
     if (!this[kKernelBacked]) { this.close(callback); return 0; }
     if (!handle || handle.closing) return 0;
-    const err = libnode().exports.tabnode_tcp_reset(handle.wrap);
+    const err = nodeProgram().exports.tabnode_tcp_reset(handle.wrap);
     this.closed = true;
     handle.closingWith(err === 0 ? callback : undefined);
     return err;

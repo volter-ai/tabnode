@@ -1,5 +1,5 @@
 // THE HMACS OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_hmac.cc, over ncrypto and OpenSSL in libnode.so: Hmac and HmacJob. Which HMAC calls OpenSSL
+// src/crypto/crypto_hmac.cc, over ncrypto and OpenSSL in the program: Hmac and HmacJob. Which HMAC calls OpenSSL
 // answers and which the engine device answers is the binding's routing (src/node-lib/binding/crypto_hmac.ts).
 #include <openssl/err.h>
 

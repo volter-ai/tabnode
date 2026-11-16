@@ -1,5 +1,5 @@
 // THE SIGNATURES OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_sig.cc, over ncrypto and OpenSSL in libnode.so: Sign, Verify and SignJob, and the signature
+// src/crypto/crypto_sig.cc, over ncrypto and OpenSSL in the program: Sign, Verify and SignJob, and the signature
 // conversions the engine device's answers take (P1363 to DER and back). Which signatures OpenSSL answers and which the
 // device answers is the binding's routing (src/node-lib/binding/crypto_sig.ts). The helpers from ApplyRSAOptions to
 // VerifyPrehashed (crypto_sig.cc:76-226, 289-335, 382-504) are Node's, unchanged but for DCHECK, CHECK and their

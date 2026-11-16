@@ -5,12 +5,12 @@
  * of them, which `require('constants')` answers (graceful-fs requires it on its way into every React Router build).
  *
  * Where the realm's process is the `node` program, every number is the program's: Node's Define* functions compiled
- * against the WALI SDK's musl headers, libuv's uv.h and libnode.so's OpenSSL (native/node node_constants.cc), as
+ * against the WALI SDK's musl headers, libuv's uv.h and the program's OpenSSL (native/node node_constants.cc), as
  * Node's binary holds its system's, read once from the program's text (`tabnode_constants`). So `fs.openSync`'s
  * `O_CREAT` is the one musl's open(2) and the process's kernel read, `os.constants.errno` and `os.constants.signals`
  * are the numbers the kernel and libuv deliver, and `signal_wrap` starts a uv_signal_t on the number musl gives the
  * name. The zlib group is DefineZlibConstants (src/node_zlib.cc:1922-2106) compiled against the zlib, brotli and
- * zstd headers of libnode.so's own (ADR-0018 item 10), so `zlib.js`'s modes and flushes are the ones the program's
+ * zstd headers of the program's own copies (ADR-0018 item 10), so `zlib.js`'s modes and flushes are the ones the program's
  * binding switches on.
  *
  * A realm with no program (a tab's engine with no machine) has no libc, and its numbers are the engine's own tables
@@ -18,7 +18,7 @@
  * and dlopen modes, its signals the ones its own `process.kill` raises (`engineSignals`), and the empty crypto and
  * zlib groups of a realm with no OpenSSL and no zlib.
  */
-import { libnode, programForm } from '../node-lib/binding/libnode';
+import { nodeProgram, programForm } from '../node-lib/binding/program';
 import { mallocAnswer } from '../node-lib/binding/openssl';
 
 /** The signals a realm with no program names, by the numbers its own `process.kill` raises (`src/shims/process.ts`). */
@@ -70,7 +70,7 @@ let programGroups: Map<string, Group> | undefined;
  */
 export function programConstants(): Map<string, Group> {
   if (programGroups) return programGroups;
-  const exports = libnode().exports;
+  const exports = nodeProgram().exports;
   const text = new TextDecoder().decode(mallocAnswer((lengthAt) => exports.tabnode_constants(lengthAt)) ?? new Uint8Array());
   const groups = new Map<string, Group>();
   for (const line of text.split('\n')) {

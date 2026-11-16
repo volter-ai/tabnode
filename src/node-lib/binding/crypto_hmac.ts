@@ -8,7 +8,7 @@
  * only at `digest`, so an Hmac of a WebCrypto digest keeps its input until then. The device takes at most 1 MiB a call.
  */
 import { Buffer } from '../buffer-module';
-import { address } from './libnode';
+import { address } from './program';
 import { withBytes } from './openssl';
 import { engineCallAsync, engineCallSync, type EngineKey } from './engine_device';
 import {

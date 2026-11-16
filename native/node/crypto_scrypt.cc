@@ -1,5 +1,5 @@
 // SCRYPT OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_scrypt.cc, over ncrypto and OpenSSL in libnode.so: ScryptJob, OpenSSL's (WebCrypto has no scrypt).
+// src/crypto/crypto_scrypt.cc, over ncrypto and OpenSSL in the program: ScryptJob, OpenSSL's (WebCrypto has no scrypt).
 #include <openssl/err.h>
 
 #include "crypto_util.h"

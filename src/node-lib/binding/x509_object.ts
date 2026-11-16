@@ -1,10 +1,10 @@
 /**
  * A certificate as the object `getPeerCertificate()` answers: the V8 half of Node's `X509ToObject`
  * (src/crypto/crypto_x509.cc:720-855) and of `GetPeerCert`'s issuer walk (src/crypto/crypto_common.cc:80-171), over
- * their OpenSSL half in the program (native/node/crypto_x509.cc), over ncrypto's X509View in libnode.so. ADR-0016 §3.
+ * their OpenSSL half in the program (native/node/crypto_x509.cc), over ncrypto's X509View in the program. ADR-0016 §3.
  */
 import { Buffer } from '../buffer-module';
-import { address } from './libnode';
+import { address } from './program';
 import { mallocAnswer as answer, openssl, outAnswer, withBytes, withScratch, word, copyOut } from './openssl';
 import { bufferSource, checked, glue, rethrow } from './crypto_util';
 import { handleFromKeyData, handleOf } from './crypto_keys';

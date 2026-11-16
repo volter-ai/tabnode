@@ -16,7 +16,7 @@
 import { LibuvStreamWrap, type WriteWrap, type ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync } from './stream_wrap';
 import { invokeOwned, observeNodeRequest, ownedRun, ownerOfInstance, type OwnedHandle } from './handles';
 import { uvConstant } from './uv';
-import { fromMemory, intoMemory, libnode, programForm, type HandleCallbacks } from './libnode';
+import { fromMemory, intoMemory, nodeProgram, programForm, type HandleCallbacks } from './program';
 import { HandleWrap, completeRequest } from './handle_wrap';
 
 /** libuv's `uv__handle_fd`: the kernel descriptor a handle is, -1 while it has none. */
@@ -65,7 +65,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
     } });
     Object.defineProperty(this, 'writeQueueSize', { configurable: true, enumerable: true, get: () => {
       const handle = this.#uv;
-      return handle?.alive ? libnode().exports.tabnode_stream_write_queue_size(handle.wrap) : 0;
+      return handle?.alive ? nodeProgram().exports.tabnode_stream_write_queue_size(handle.wrap) : 0;
     } });
   }
 
@@ -104,13 +104,13 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
   override readStart(): number {
     if (!this.#kernel) return super.readStart();
     const handle = this.liveUv();
-    return handle ? libnode().exports.tabnode_stream_read_start(handle.wrap) : uvConstant('UV_EINVAL');
+    return handle ? nodeProgram().exports.tabnode_stream_read_start(handle.wrap) : uvConstant('UV_EINVAL');
   }
 
   override readStop(): number {
     if (!this.#kernel) return super.readStop();
     const handle = this.liveUv();
-    return handle ? libnode().exports.tabnode_stream_read_stop(handle.wrap) : uvConstant('UV_EINVAL');
+    return handle ? nodeProgram().exports.tabnode_stream_read_stop(handle.wrap) : uvConstant('UV_EINVAL');
   }
 
   /** StreamBase::UseUserBuffer: reads land in `buffer`, at most its length at a time. */
@@ -119,14 +119,14 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
     const handle = this.liveUv();
     if (!handle) return;
     this.userBuffer = buffer;
-    libnode().exports.tabnode_stream_use_buffer(handle.wrap, buffer.byteLength);
+    nodeProgram().exports.tabnode_stream_use_buffer(handle.wrap, buffer.byteLength);
   }
 
   /** LibuvStreamWrap::SetBlocking. */
   setBlocking(enable: unknown): number {
     const handle = this.liveUv();
     if (!this.#kernel || !handle) return uvConstant('UV_EINVAL');
-    return libnode().exports.tabnode_stream_set_blocking(handle.wrap, enable === true ? 1 : 0);
+    return nodeProgram().exports.tabnode_stream_set_blocking(handle.wrap, enable === true ? 1 : 0);
   }
 
   /** StreamBase::Shutdown over LibuvStreamWrap::DoShutdown; AfterUvShutdown reports to `oncomplete`. */
@@ -135,7 +135,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
     const handle = this.liveUv();
     if (!handle) return uvConstant('UV_EINVAL');
     const id = handle.dispatch((status) => completeRequest(req, status, this, undefined));
-    const err = libnode().exports.tabnode_stream_shutdown(handle.wrap, id);
+    const err = nodeProgram().exports.tabnode_stream_shutdown(handle.wrap, id);
     if (err) handle.undispatch(id);
     else observeNodeRequest(req, this);
     return err;
@@ -160,7 +160,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
     this.bytesWritten += length;
     const bytes = intoMemory(buffer);
     const id = own.dispatch((status) => completeRequest(req, status, this, undefined));
-    const answer = libnode().exports.tabnode_stream_write(own.wrap, id, bytes, length, send);
+    const answer = nodeProgram().exports.tabnode_stream_write(own.wrap, id, bytes, length, send);
     if (answer === 1) observeNodeRequest(req, this);
     else own.undispatch(id);
     streamBaseState[kBytesWritten] = length;
@@ -192,12 +192,12 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
     const handle = this.#uv;
     if (!handle?.alive) return;
     if (this.isIpc && nread > 0) {
-      const type = CARRIED[libnode().exports.tabnode_pipe_pending_type(handle.wrap)];
+      const type = CARRIED[nodeProgram().exports.tabnode_pipe_pending_type(handle.wrap)];
       const make = type === undefined ? undefined : kernelHandles[type];
       if (make) {
         const carried = this.#instantiate(make);
         // AcceptHandle aborts where uv_accept of a handle the pipe holds fails.
-        if (libnode().exports.tabnode_stream_accept(handle.wrap, carried[kUvWrap]) !== 0) throw new Error('uv_accept of a carried handle failed');
+        if (nodeProgram().exports.tabnode_stream_accept(handle.wrap, carried[kUvWrap]) !== 0) throw new Error('uv_accept of a carried handle failed');
         this.pendingHandle = carried;
       }
     }
@@ -209,7 +209,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
       const next = this.#emit(nread, undefined);
       if (next instanceof Uint8Array) {
         this.userBuffer = next;
-        if (handle.alive) libnode().exports.tabnode_stream_use_buffer(handle.wrap, next.byteLength);
+        if (handle.alive) nodeProgram().exports.tabnode_stream_use_buffer(handle.wrap, next.byteLength);
       }
       return;
     }
@@ -241,7 +241,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
     if (status === 0) {
       const made = this.#instantiate(() => this.makeClient());
       if (!made) return;
-      if (libnode().exports.tabnode_stream_accept(handle.wrap, made[kUvWrap]) !== 0) { made.close(); return; }
+      if (nodeProgram().exports.tabnode_stream_accept(handle.wrap, made[kUvWrap]) !== 0) { made.close(); return; }
       client = made;
     }
     invokeOwned(this, 'onconnection', status, client);

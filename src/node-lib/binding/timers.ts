@@ -18,7 +18,7 @@
  */
 import { systemTimers } from '../../system';
 import { withGuestCallback, withGuestExecution } from '../../guest-loop';
-import { programForm } from './libnode';
+import { programForm } from './program';
 import { reportUncaughtInFrame } from '../../shims/async_hooks';
 
 function uncaught(error: unknown): void {

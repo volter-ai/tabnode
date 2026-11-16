@@ -11,14 +11,14 @@
  * object if it never is, as Node's uninitialized wrap goes when it is collected (BaseObject::OnGCCollect); once
  * initialized it is libuv's, and the C frees it after OnClose, as Node's OnClose drops its wrap.
  */
-import { address, dispatchRequest, forgetHandle, forgetRequest, libnode, openHandle, type HandleCallbacks, type OpenHandle } from './libnode';
+import { address, dispatchRequest, forgetHandle, forgetRequest, nodeProgram, openHandle, type HandleCallbacks, type OpenHandle } from './program';
 import { invokeOwned, ownedRun, ownerOfInstance, registerLibuvHandle, releaseLibuvHandle, type OwnedHandle } from './handles';
 
 const kInitialized = 0, kClosing = 1, kClosed = 2;
 
 /** The memory of a handle never initialized, freed once its wrap is collected; an initialized one is libuv's. */
 const uninitialized = new FinalizationRegistry<{ at: number; libuvs: boolean }>(({ at, libuvs }) => {
-  if (!libuvs) libnode().exports.tabnode_free(at);
+  if (!libuvs) nodeProgram().exports.tabnode_free(at);
 });
 
 export class HandleWrap implements OpenHandle {
@@ -56,14 +56,14 @@ export class HandleWrap implements OpenHandle {
   get closing(): boolean { return this.#state === kClosing; }
 
   /** HandleWrap::Ref, Unref and HasRef (handle_wrap.cc:40-63). */
-  ref(): void { if (this.alive) libnode().exports.tabnode_handle_ref(this.wrap); }
-  unref(): void { if (this.alive) libnode().exports.tabnode_handle_unref(this.wrap); }
-  hasRef(): boolean { return this.alive && libnode().exports.tabnode_handle_has_ref(this.wrap) !== 0; }
+  ref(): void { if (this.alive) nodeProgram().exports.tabnode_handle_ref(this.wrap); }
+  unref(): void { if (this.alive) nodeProgram().exports.tabnode_handle_unref(this.wrap); }
+  hasRef(): boolean { return this.alive && nodeProgram().exports.tabnode_handle_has_ref(this.wrap) !== 0; }
 
   /** HandleWrap::Close (handle_wrap.cc:72-86): once, from initialized; the callback is kept for OnClose. */
   close(callback?: unknown): void {
     if (this.#state !== kInitialized) return;
-    libnode().exports.tabnode_handle_close(this.wrap);
+    nodeProgram().exports.tabnode_handle_close(this.wrap);
     this.closingWith(callback);
   }
 
@@ -74,7 +74,7 @@ export class HandleWrap implements OpenHandle {
   }
 
   /** uv_fileno: the descriptor, or a negative error where the handle has none. */
-  fileno(): number { return this.alive ? libnode().exports.tabnode_handle_fileno(this.wrap) : -9; }
+  fileno(): number { return this.alive ? nodeProgram().exports.tabnode_handle_fileno(this.wrap) : -9; }
 
   /** A request dispatched under this handle (a write, a shutdown, a connect, a send), libuv's until it completes. */
   dispatch(complete: (status: number, ...rest: number[]) => void): number { return dispatchRequest(complete); }

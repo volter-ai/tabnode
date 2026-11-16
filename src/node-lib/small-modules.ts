@@ -33,5 +33,5 @@ export const ttyModule = lazyModule<Record<string, unknown>>('tty');
 export const readlineModule = lazyModule<Record<string, unknown>>('readline');
 export const readlinePromisesModule = lazyModule<Record<string, unknown>>('readline/promises');
 
-/** `zlib`, on the zlib, brotli and zstd in the process's libnode.so (ADR-0018 item 10). */
+/** `zlib`, on the zlib, brotli and zstd in the process's `node` program (ADR-0018 item 10). */
 export const zlibModule = lazyModule<Record<string, unknown>>('zlib');

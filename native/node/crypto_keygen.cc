@@ -1,5 +1,5 @@
 // KEY GENERATION OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_keygen.h and crypto_keygen.cc, over ncrypto and OpenSSL in libnode.so: the key pair jobs
+// src/crypto/crypto_keygen.h and crypto_keygen.cc, over ncrypto and OpenSSL in the program: the key pair jobs
 // (RsaKeyPairGenJob, DsaKeyPairGenJob, EcKeyPairGenJob, DhKeyPairGenJob, NidKeyPairGenJob, each algorithm's
 // AdditionalConfig and Setup in its own file) and SecretKeyGenJob, and how a pair's halves are encoded (EncodeKey).
 // A key WebCrypto generates is the engine device's (the binding's routing, src/node-lib/binding/crypto_keygen.ts),

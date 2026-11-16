@@ -1,6 +1,6 @@
 // NODE'S CONSTANTS (Tabnode ADR-0018 §3): Node v24.21.0's src/node_constants.cc, every Define* function its
 // CreatePerContextProperties calls (126-1333), compiled from Node's own text against the WALI SDK's musl headers,
-// libuv's uv.h and the OpenSSL libnode.so holds, as Node compiles them into its binary against its system's: the
+// libuv's uv.h and the OpenSSL the program links, as Node compiles them into its binary against its system's: the
 // errno, signal, priority, fs, crypto, zlib, dlopen, trace and internal groups, and os's UV_UDP_REUSEADDR (1388). The build
 // extracts the functions, the system headers and fallbacks the file includes (30-113) and node_constants.h's own
 // definitions (30-78) from Node's tarball (scripts/build-libnode.sh); tracing/trace_event_common.h is Node's, which its
@@ -8,7 +8,7 @@
 // from which the engine builds `internalBinding('constants')` (src/shims/constants.ts).
 //
 // DefineZlibConstants is src/node_zlib.cc's (1922-2106), with the chunk and level bounds (74-88) and the mode enum
-// (146-159) it reads, compiled against the zlib, brotli and zstd headers of libnode.so's own copies (ADR-0018 item 10),
+// (146-159) it reads, compiled against the zlib, brotli and zstd headers of the program's own copies (ADR-0018 item 10),
 // as node_zlib.cc includes them.
 //
 // Beside them, the constants the wraps' Initialize functions define from uv.h and their own headers, written the same

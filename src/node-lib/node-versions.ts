@@ -6,9 +6,9 @@
  * vendored file is handed where the realm has none, built in
  * `src/node-lib/load.ts` (`shims/process.ts` imports `node-lib/events-module`,
  * so the loader cannot import it back). This file imports only the program's
- * door (`binding/libnode`, which imports nothing of the engine's), so both can.
+ * door (`binding/program`, which imports nothing of the engine's), so both can.
  */
-import { libnode, programForm } from './binding/libnode';
+import { nodeProgram, programForm } from './binding/program';
 
 /** The version a guest reports where its image names none; the vendored compatibility version. */
 export const NODE_LTS_VERSION = "24.21.0";
@@ -36,7 +36,7 @@ export function nodeVersions(node: string = NODE_LTS_VERSION): {
 } {
   // `https.js` calls `assertCrypto()`, which is `!process.versions.openssl`.
   // `openssl` names the OpenSSL that runs, read when it is first read: the
-  // OpenSSL in the process's libnode.so (ADR-0018 item 7), as Node's
+  // OpenSSL in the process's `node` program (ADR-0018 item 7), as Node's
   // GetOpenSSLVersion reads it (node_metadata.cc:57-78), and none in a realm
   // the host gives no `node` program, which has no OpenSSL. A worker compiles
   // `internal/util` against this table before any guest process exists, so
@@ -51,7 +51,7 @@ export function nodeVersions(node: string = NODE_LTS_VERSION): {
       if (value !== undefined) Object.defineProperty(this, "openssl", { value, enumerable: true, configurable: true, writable: true });
       return value;
     },
-    // zlib, brotli, zstd, llhttp and merve are libnode.so's (ADR-0018 item 10, §7), read as Node's Metadata::Versions
+    // zlib, brotli, zstd, llhttp and merve are the program's (ADR-0018 item 10, §7), read as Node's Metadata::Versions
     // reads them (node_metadata.cc:104-133), and kept as `openssl` is.
     get zlib() { return kept(this, "zlib", libraryVersions()?.zlib); },
     get brotli() { return kept(this, "brotli", libraryVersions()?.brotli); },
@@ -83,7 +83,7 @@ function libraryVersions(): {
   zlib: string; brotli: string; zstd: string; llhttp: string; merve: string; simdjson: string; modules: string; napi: string;
 } | undefined {
   if (!programForm('process.versions')) return undefined;
-  const program = libnode();
+  const program = nodeProgram();
   const exports = program.exports as unknown as {
     tabnode_zlib_version(): number; tabnode_brotli_version(): number; tabnode_zstd_version(): number; tabnode_llhttp_version(): number;
     tabnode_merve_version(): number; tabnode_simdjson_version(): number; tabnode_modules_version(): number;
@@ -108,7 +108,7 @@ function libraryVersions(): {
  */
 function opensslVersion(): string | undefined {
   if (!programForm('process.versions')) return undefined;
-  const program = libnode();
+  const program = nodeProgram();
   const exports = program.exports as unknown as { tabnode_openssl_version(): number };
   const version = program.cString(exports.tabnode_openssl_version()) ?? "";
   const words = version.split(" ");
@@ -128,6 +128,6 @@ export function nodeRelease(node: string = NODE_LTS_VERSION): { name: string; lt
 /*
  * Keys of Node's `process.versions` this engine does not answer, because it carries no such thing or another
  * thing in its place, and a version of what is not there would be a lie: ada, ares, cldr, icu, nbytes, ncrypto,
- * nghttp2, nghttp3, ngtcp2, sqlite, tz, undici, unicode, uvwasi; and simdutf, which on the machine is libnode.so's
+ * nghttp2, nghttp3, ngtcp2, sqlite, tz, undici, unicode, uvwasi; and simdutf, which on the machine is the program's
  * under merve but has no C interface to name its version. `acorn` is answered where the process object is made, from the parser's own version.
  */

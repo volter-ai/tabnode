@@ -1,5 +1,5 @@
 // THE TLSWrap OF THE tls_wrap BINDING (Tabnode ADR-0018 item 7, ADR-0016 §3, §4): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_tls.cc, over ncrypto and OpenSSL in libnode.so. A connection is an SSL whose two BIOs are memory
+// src/crypto/crypto_tls.cc, over ncrypto and OpenSSL in the program. A connection is an SSL whose two BIOs are memory
 // buffers; the engine's TLSWrap (src/node-lib/binding/tls_wrap.ts) writes the underlying stream's bytes into enc_in,
 // drains enc_out to it, and runs ClearIn, ClearOut and EncOut over these calls. OpenSSL never touches a socket. What
 // OpenSSL raises inside an SSL_* call reaches the engine through its tls_* imports (engine.h), synchronously, as

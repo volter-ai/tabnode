@@ -1,5 +1,5 @@
 // ChaCha20-Poly1305 OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_chacha20_poly1305.cc, over ncrypto and OpenSSL in libnode.so: ChaCha20Poly1305CipherJob. WebCrypto
+// src/crypto/crypto_chacha20_poly1305.cc, over ncrypto and OpenSSL in the program: ChaCha20Poly1305CipherJob. WebCrypto
 // defines no ChaCha20-Poly1305, so it is OpenSSL's. The body is Node's OpenSSL branch, unchanged but for CHECK.
 #include "crypto_util.h"
 

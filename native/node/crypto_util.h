@@ -1,6 +1,6 @@
 // What the crypto binding's glue shares (Tabnode ADR-0018 §1, §5, item 7; ADR-0016 §3), as Node v24.21.0's
 // src/crypto/crypto_util.h declares it for src/crypto/*.cc: the OpenSSL half of Node's crypto_*.cc, over ncrypto and
-// OpenSSL in libnode.so, with the V8 half (argument unwrapping, result objects, MakeCallback) removed. That half is the
+// OpenSSL in the program, with the V8 half (argument unwrapping, result objects, MakeCallback) removed. That half is the
 // engine's TypeScript (src/node-lib/binding/openssl.ts, crypto_util.ts and the bindings over them), which calls these
 // files' exports through the program and reads their answers in the process's memory. Every function names the lines
 // it carries. Nothing here is a policy of the engine's own: where a body differs from Node's, the difference is said

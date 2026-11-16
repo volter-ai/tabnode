@@ -1,7 +1,7 @@
 /**
  * `internalBinding('crypto')` (ADR-0018 item 7, ADR-0016 §4), the binding Node's own `lib/crypto.js`,
  * `lib/internal/crypto/*` and `tls` run over: `SecureContext`, an `SSL_CTX` of the OpenSSL in the process's
- * `libnode.so`, and the root-certificate calls of `lib/tls.js` here, the V8 half of Node's
+ * `node` program, and the root-certificate calls of `lib/tls.js` here, the V8 half of Node's
  * `src/crypto/crypto_context.cc` over its OpenSSL half in the program (native/node/crypto_context.cc), each method naming
  * the lines it carries; every other part is its file's (crypto_keys.ts, crypto_hash.ts, crypto_hmac.ts,
  * crypto_random.ts, crypto_sig.ts, x509_object.ts, crypto_kdf.ts, crypto_cipher.ts, crypto_keygen.ts, crypto_dh.ts,
@@ -13,7 +13,7 @@
  */
 import { Buffer } from '../buffer-module';
 import { nodeLibInternalRequire, nodeLibProcessOf } from '../load';
-import { setCryptoCallbacks } from './libnode';
+import { setCryptoCallbacks } from './program';
 import { copyOut, cString, openssl, opensslError, withBytes, withScratch } from './openssl';
 import {
   bufferSource, checked, cryptoJobDone, glue, kCryptoJobAsync, kCryptoJobSync, kCryptoJobWebCrypto, takeThrown,
@@ -280,7 +280,7 @@ export class SecureContext {
   }
 
   /**
-   * SecureContext::SetCertificateCompression, 2167-2243: libnode.so's OpenSSL is built without zlib, brotli and zstd
+   * SecureContext::SetCertificateCompression, 2167-2243: the program's OpenSSL is built without zlib, brotli and zstd
    * (ADR-0016 §1), so a preference is refused by name. The TLS 1.3 check is Node's, first.
    */
   setCertificateCompression(_packed: number): void {
@@ -289,7 +289,7 @@ export class SecureContext {
       throw cppError(TypeError, 'ERR_INVALID_ARG_VALUE',
         'certificateCompression requires a TLS protocol range that includes TLSv1.3');
     }
-    throw refusal('TLS certificate compression (libnode.so has no zlib, brotli or zstd yet)');
+    throw refusal('TLS certificate compression (the node program\'s OpenSSL has no zlib, brotli or zstd yet)');
   }
 
   /** SecureContext::LoadPKCS12, 2265-2376: not yet carried, so refused by name. */
@@ -355,7 +355,7 @@ function resetRootCertStore(certificates: string[]): void {
 /** StartLoadingCertificatesOffThread, 975-1030: Node's optimisation; the store is read on first use here. */
 function startLoadingCertificatesOffThread(): void {}
 
-/** GetCertificateCompressionAlgorithms, 2245-2256: none, libnode.so's OpenSSL having no zlib, brotli or zstd (ADR-0016 §1). */
+/** GetCertificateCompressionAlgorithms, 2245-2256: none, the program's OpenSSL having no zlib, brotli or zstd (ADR-0016 §1). */
 function getCertificateCompressionAlgorithms(): string[] { return []; }
 
 /** GetFipsCrypto, SetFipsCrypto, TestFipsCrypto (crypto_util.cc:207-242). */

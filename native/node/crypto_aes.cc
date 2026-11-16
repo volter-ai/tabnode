@@ -1,5 +1,5 @@
 // AES OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's src/crypto/crypto_aes.cc,
-// over ncrypto and OpenSSL in libnode.so: AESCipherJob (WebCrypto's AES-CTR, AES-CBC, AES-GCM, AES-KW and AES-OCB).
+// over ncrypto and OpenSSL in the program: AESCipherJob (WebCrypto's AES-CTR, AES-CBC, AES-GCM, AES-KW and AES-OCB).
 // The engine device answers the variants the browser holds (the binding's routing,
 // src/node-lib/binding/crypto_webcrypto.ts); these are the rest. The bodies are Node's (its OpenSSL branch, not
 // BoringSSL's), unchanged but for CHECK and their `env` argument.

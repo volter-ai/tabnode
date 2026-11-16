@@ -19,7 +19,7 @@ import {
 import { handleOf, opensslBindingValues, type KeyObjectHandle } from './crypto_keys';
 import { kWebCryptoCipherEncrypt } from './crypto_cipher';
 import { mallocAnswer } from './openssl';
-import { libnode } from './libnode';
+import { nodeProgram } from './program';
 
 /** AESKeyVariant (crypto_aes.h), as AES::Initialize names each kKeyVariantAES_*. */
 const AES_VARIANTS = ['CTR_128', 'CTR_192', 'CTR_256', 'CBC_128', 'CBC_192', 'CBC_256', 'GCM_128', 'GCM_192',
@@ -208,7 +208,7 @@ export class KEMEncapsulateJob extends ArgumentsJob {
   }
   /** KEMEncapsulateJob::ToResult (127-176): { sharedKey, ciphertext } for WebCrypto, else [sharedKey, ciphertext]. */
   protected encode(): unknown {
-    const program = libnode();
+    const program = nodeProgram();
     const sharedKey = this.out();
     const ciphertext = withLength((lengthAt) => glue().tabnode_kem_job_ciphertext(this.job, lengthAt), program);
     if (this.mode === kCryptoJobWebCrypto) {
@@ -222,7 +222,7 @@ export class KEMEncapsulateJob extends ArgumentsJob {
 }
 
 /** A borrowed answer (`(…, size_t* length) => const void*`) copied out. */
-function withLength(get: (lengthAt: number) => number, program: ReturnType<typeof libnode>): Uint8Array {
+function withLength(get: (lengthAt: number) => number, program: ReturnType<typeof nodeProgram>): Uint8Array {
   const lengthAt = program.exports.tabnode_malloc(4) >>> 0;
   try {
     const at = get(lengthAt) >>> 0;

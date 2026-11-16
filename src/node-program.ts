@@ -4,10 +4,10 @@
  * program has read its command line with Node's own parser (native/node/node_start.cc): Node's process object, Node's bootstrap on the realm's own
  * global, and the main script `StartExecution` selects (src/node.cc), run as Node runs it, which prepares the process
  * (`prepareMainThreadExecution`) and runs its entry through Node's own module loaders. The process runs on from there;
- * its end is libuv's, the run's `beforeExit`, `exit` and code given to `main` (`attachLibnodeRun`).
+ * its end is libuv's, the run's `beforeExit`, `exit` and code given to `main` (`attachNodeProgramRun`).
  */
 import type { VirtualFS } from './virtual-fs';
-import { attachLibnodeRun, libnode } from './node-lib/binding/libnode';
+import { attachNodeProgramRun, nodeProgram } from './node-lib/binding/program';
 import { adoptRealmLoaders, engineBindingFor } from './node-lib/load';
 import { bootstrapNodeRealm, createNodeProcessObject, runNodeMain, type NodeRealm } from './node-lib/realm';
 import { processArgs } from './node-lib/binding/options';
@@ -38,7 +38,7 @@ const kExiting = 0, kExitCode = 1, kHasExitCode = 2;
 
 /** The process starts: its options, its bootstrap, then its main script. The process runs on; it ends at its exit. */
 export function startNodeProgram(launch: NodeProgramLaunch): void {
-  const exports = libnode().exports;
+  const exports = nodeProgram().exports;
   let realm: NodeRealm | undefined;
   /** A synchronous write to fd 2, as FPrintF(stderr) and fflush make one: the program's write(2) through libuv's fs. */
   const writeStderr = (text: string): void => {
@@ -105,7 +105,7 @@ export function startNodeProgram(launch: NodeProgramLaunch): void {
     inRun(() => { withGuestCallback(() => (process.emit as (event: string, code: number) => boolean).call(process, event, code), 'process', event); });
   };
   const exitCodeOr = (fallback: number): number => (exitInfo[kHasExitCode] ? exitInfo[kExitCode]! : fallback);
-  attachLibnodeRun({
+  attachNodeProgramRun({
     // EmitProcessBeforeExit (src/api/hooks.cc): 'beforeExit' with the exit code, kNoFailure where none; nonzero where
     // the emission failed, where Node's loop stops.
     beforeExit: () => {

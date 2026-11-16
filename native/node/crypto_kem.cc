@@ -1,5 +1,5 @@
 // KEY ENCAPSULATION OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_kem.cc, over ncrypto and OpenSSL 3.5 in libnode.so: KEMEncapsulateJob and KEMDecapsulateJob
+// src/crypto/crypto_kem.cc, over ncrypto and OpenSSL 3.5 in the program: KEMEncapsulateJob and KEMDecapsulateJob
 // (ML-KEM, and RSA, EC and X25519/X448 DHKEM). WebCrypto's standard defines no encapsulation, so it is OpenSSL's.
 #include "crypto_util.h"
 

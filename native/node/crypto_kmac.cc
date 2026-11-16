@@ -1,5 +1,5 @@
 // KMAC OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_kmac.cc, over ncrypto and OpenSSL in libnode.so: KmacJob (WebCrypto's KMAC128 and KMAC256, which
+// src/crypto/crypto_kmac.cc, over ncrypto and OpenSSL in the program: KmacJob (WebCrypto's KMAC128 and KMAC256, which
 // WebCrypto's standard does not define, so OpenSSL's). DeriveBits is Node's, unchanged; its cSHAKE path is
 // crypto_hash.cc's DeriveCShakeBits.
 #include <openssl/core_names.h>

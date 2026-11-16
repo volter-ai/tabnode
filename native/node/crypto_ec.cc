@@ -1,5 +1,5 @@
 // ELLIPTIC CURVES OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_ec.cc and crypto_common.cc's ECPointToBuffer, over ncrypto and OpenSSL in libnode.so: an EC, an
+// src/crypto/crypto_ec.cc and crypto_common.cc's ECPointToBuffer, over ncrypto and OpenSSL in the program: an EC, an
 // Ed25519/Ed448 or an X25519/X448 key's JWK and its details, the ECDH class, ECDHConvertKey, getCurves, and
 // EcKeyPairGenJob's configuration and Setup. Where the engine device answers an agreement or a key generation is the
 // binding's routing (src/node-lib/binding/crypto_dh.ts, crypto_keygen.ts).

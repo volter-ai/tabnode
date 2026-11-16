@@ -1,5 +1,5 @@
 // THE http_parser BINDING'S C (Tabnode ADR-0018 §1, item 10): Node v24.21.0's src/node_http_parser.cc below V8, over
-// the llhttp 9.4.3 (Node's deps/llhttp) that libnode.so holds. A Parser (tabnode_http_parser_t) is Node's: its llhttp_t
+// the llhttp 9.4.3 (Node's deps/llhttp) that the program links. A Parser (tabnode_http_parser_t) is Node's: its llhttp_t
 // and settings, its StringPtrs over the bytes llhttp hands it and the slab they are saved into, its header counts and
 // limits, its timestamps and its ConnectionsList; a ConnectionsList is Node's two ordered sets of parsers. Each
 // callback llhttp makes runs Node's member function here; where that function calls into V8 (a callback's lookup and

@@ -1,5 +1,5 @@
 // THE RANDOMNESS OF THE crypto BINDING (Tabnode ADR-0018 item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_random.cc, over ncrypto and OpenSSL in libnode.so, whose randomness is the kernel's getrandom
+// src/crypto/crypto_random.cc, over ncrypto and OpenSSL in the program, whose randomness is the kernel's getrandom
 // (ADR-0018 item 7, "The process's OpenSSL"): RandomBytesJob, RandomPrimeJob and CheckPrimeJob. WebCrypto's
 // randomness is not a call of the engine device's (its getRandomValues is the process's own), so OpenSSL answers
 // every one of these.

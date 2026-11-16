@@ -1,22 +1,22 @@
 /**
- * THE PROCESS'S `node` PROGRAM, AS THE BINDINGS REACH IT (ADR-0018 §2, §3, §4). On the machine a Node process is the
- * WALI program `node`, whose C (Tabnode's `native/node`, over libuv in `libnode.so`) is the libuv half of each
- * binding, as Node's `src/*_wrap.cc` and `src/node_file.cc` are: every handle a binding makes is a uv_handle_t in the
- * process's memory (`handle_wrap.ts`), every request its uv_req_t, and a binding's JavaScript calls the program's
- * exports. libuv's callbacks reach the bindings as the engine's imports (`native/node/engine.h`), which
- * `libnodeImports` answers, each followed in C by a drain, as Node's MakeCallback is followed by its
+ * THE PROCESS'S `node` PROGRAM, AS THE BINDINGS REACH IT (ADR-0018 §2, §3, §4; ADR-0019 §3). On the machine a Node
+ * process is the WALI program `node`, whose C (Tabnode's `native/node`, over the libuv linked into it) is the libuv
+ * half of each binding, as Node's `src/*_wrap.cc` and `src/node_file.cc` are: every handle a binding makes is a
+ * uv_handle_t in the process's memory (`handle_wrap.ts`), every request its uv_req_t, and a binding's JavaScript calls
+ * the program's exports. libuv's callbacks reach the bindings as the engine's imports (`native/node/engine.h`), which
+ * `nodeProgramImports` answers, each followed in C by a drain, as Node's MakeCallback is followed by its
  * InternalCallbackScope's close.
  *
  * The host that runs the program attaches it once, in its `bootstrap` import, before Node's library runs
- * (`attachLibnode`): the program's exports, and the process's memory through its one door, a copy read and bytes
+ * (`attachNodeProgram`): the program's exports, and the process's memory through its one door, a copy read and bytes
  * written, since a browser's APIs refuse a view of shared memory. The run's end is libuv's (ADR-0018 item 7): `main`
  * spins the loop as Node's SpinEventLoopInternal does and asks the process's run, which gives its end once
- * (`attachLibnodeRun`), for `beforeExit`, `exit` and the code it returns; `process.exit` is the program's exit
+ * (`attachNodeProgramRun`), for `beforeExit`, `exit` and the code it returns; `process.exit` is the program's exit
  * (`reallyExit`). A realm the host gives no program (a tab's engine
  * with no machine) has no libuv: its streams are the engine's pairing and its fs the engine's own tree (`fs.ts`), and
  * a binding that is only libuv's (`process_wrap`, `spawn_sync`, `signal_wrap`) answers that it has none. A binding
  * over libuv is its V8 half: it writes a call's arguments into the process's memory, calls the C, and reads the answer,
- * as Node's C++ reads a uv_fs_t. The crypto and tls_wrap bindings are the same over OpenSSL in libnode.so
+ * as Node's C++ reads a uv_fs_t. The crypto and tls_wrap bindings are the same over the program's OpenSSL
  * (`openssl.ts`), and what OpenSSL raises inside one of their calls comes back as the `tls_*` imports, inside that call.
  */
 import { errname, getErrorMessage } from './uv';
@@ -29,7 +29,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /** What native/node exports to the bindings, by its C names; each is named for the Node function it carries. */
-export interface LibnodeExports {
+export interface NodeProgramExports {
   /** memory.c: the allocator a call's record and a request's bytes are made and freed with. */
   tabnode_malloc(size: I32): I32;
   tabnode_free(at: I32): void;
@@ -258,8 +258,8 @@ export interface LibnodeExports {
 }
 
 /** The program as its host gives it: its exports once instantiated, and the process's memory's one door. */
-export interface LibnodeProgram {
-  readonly exports: LibnodeExports;
+export interface NodeProgram {
+  readonly exports: NodeProgramExports;
   /** A copy of `length` bytes of the process's memory at `at`. */
   read(at: number, length: number): Uint8Array;
   /** `bytes` into the process's memory at `at`. */
@@ -267,15 +267,15 @@ export interface LibnodeProgram {
 }
 
 /** The program as the bindings reach it: the host's, and a C string's bytes read through its door. */
-export interface Libnode extends LibnodeProgram {
+export interface AttachedNodeProgram extends NodeProgram {
   /** The NUL-terminated bytes at a pointer (none for NULL). */
   cBytes(pointer: number): Uint8Array | null;
   /** The same, decoded as UTF-8, as V8's String::NewFromUtf8 decodes it. */
   cString(pointer: number): string | null;
 }
 
-let given: LibnodeProgram | undefined;
-let attached: Libnode | undefined;
+let given: NodeProgram | undefined;
+let attached: AttachedNodeProgram | undefined;
 
 /**
  * Whether this realm is the process of a `node` program (ADR-0018 §7): its global is the realm's own `globalThis`, and
@@ -303,7 +303,7 @@ export function programForm(reader: string): boolean {
 }
 
 /** The realm's process is `node` on libuv's loop: its program, given once by the host's `bootstrap`. */
-export function attachLibnode(program: LibnodeProgram): void {
+export function attachNodeProgram(program: NodeProgram): void {
   if (given && given !== program) throw new Error('the realm already has its process\'s node program');
   // The realm is the program's from before the engine loaded (isNodeProgramRealm, ADR-0018 §7).
   if (!isNodeProgramRealm()) {
@@ -328,22 +328,22 @@ export function attachLibnode(program: LibnodeProgram): void {
  * (src/api/embed_helpers.cc:40-76): `beforeExit` (EmitProcessBeforeExit, src/api/hooks.cc:33-51), 0 or nonzero where
  * its emission failed; `emitExit` (EmitProcessExitInternal, hooks.cc:61-93); and `exitCode`, the code `main` returns.
  */
-export interface LibnodeRunEnd {
+export interface NodeProgramRunEnd {
   beforeExit(): number;
   emitExit(): void;
   exitCode(): number;
 }
 
-let runEnd: LibnodeRunEnd | undefined;
+let runEnd: NodeProgramRunEnd | undefined;
 
 /** The realm's process gives its end once, before its first callback (`launchNode`). */
-export function attachLibnodeRun(end: LibnodeRunEnd): void {
+export function attachNodeProgramRun(end: NodeProgramRunEnd): void {
   if (runEnd) throw new Error('the realm\'s node program already has its process');
   runEnd = end;
 }
 
 /** The process `main` ends: none where libuv's loop emptied before the run made it. */
-function theRunEnd(): LibnodeRunEnd {
+function theRunEnd(): NodeProgramRunEnd {
   if (!runEnd) throw new Error('node: libuv\'s loop ended before the run made its process');
   return runEnd;
 }
@@ -355,11 +355,11 @@ function theRunEnd(): LibnodeRunEnd {
 export function reallyExit(code: unknown): void {
   let status = 0;
   try { status = (code as number) | 0; } catch { /* Int32Value's Nothing: kNoFailure */ }
-  libnode().exports.tabnode_exit(status);
+  nodeProgram().exports.tabnode_exit(status);
 }
 
 /** The program a binding calls: refused where the realm has none, since a binding over libuv is its C. */
-export function libnode(): Libnode {
+export function nodeProgram(): AttachedNodeProgram {
   if (!attached) {
     if (isNodeProgramRealm()) programForm("the node program's exports");
     throw new Error('this realm has no node program: its bindings over libuv are the program\'s C (ADR-0018 §3)');
@@ -374,7 +374,7 @@ export function address(value: number): number {
 
 /** `bytes` copied into room the call they are handed to owns (a write's, a send's): the room's address. */
 export function intoMemory(bytes: Uint8Array): number {
-  const { exports, write } = libnode();
+  const { exports, write } = nodeProgram();
   const at = address(exports.tabnode_malloc(bytes.byteLength));
   if (bytes.byteLength) write(at, bytes);
   return at;
@@ -382,14 +382,14 @@ export function intoMemory(bytes: Uint8Array): number {
 
 /** A copy of `length` bytes of the process's memory at `at`, an ArrayBuffer of its own. */
 export function fromMemory(at: number, length: number): ArrayBuffer {
-  const bytes = libnode().read(address(at), length);
+  const bytes = nodeProgram().read(address(at), length);
   if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) return bytes.buffer as ArrayBuffer;
   return bytes.slice().buffer as ArrayBuffer;
 }
 
 /** A record of `length` bytes at `at`, read whole once: its fields at offsets from 0. */
 export function readRecord(at: number, length: number): DataView {
-  const bytes = libnode().read(address(at), length);
+  const bytes = nodeProgram().read(address(at), length);
   return new DataView(bytes.buffer, bytes.byteOffset, length);
 }
 
@@ -403,12 +403,12 @@ export function withCString<T>(text: string | null, call: (at: number, length: n
   const room = new Uint8Array(bytes.byteLength + 1);
   room.set(bytes);
   const at = intoMemory(room);
-  try { return call(at, bytes.byteLength); } finally { libnode().exports.tabnode_free(at); }
+  try { return call(at, bytes.byteLength); } finally { nodeProgram().exports.tabnode_free(at); }
 }
 
 /** Room of `size` bytes for a call's out-parameters, read back as a DataView, for the length of `call`. */
 export function withRoom<T>(size: number, call: (at: number) => T, read: (view: DataView, answer: T) => void): T {
-  const program = libnode();
+  const program = nodeProgram();
   const at = address(program.exports.tabnode_malloc(size));
   try {
     const answer = call(at);
@@ -489,7 +489,7 @@ export class CRecord {
 
   /** The record written into the process's memory: its address, which `free` gives back. */
   commit(): number {
-    const program = libnode();
+    const program = nodeProgram();
     const at = address(program.exports.tabnode_malloc(this.size));
     for (const { slot, target } of this.pointers) this.view.setUint32(slot, at + target, true);
     program.write(at, this.bytes.slice(0, this.size));
@@ -499,7 +499,7 @@ export class CRecord {
 
   /** The record's memory, given back once the call that read it has returned. */
   free(): void {
-    if (this.at !== 0) libnode().exports.tabnode_free(this.at);
+    if (this.at !== 0) nodeProgram().exports.tabnode_free(this.at);
     this.at = 0;
   }
 }
@@ -696,8 +696,8 @@ function httpParsers(): HttpParserCallbacks {
  * the C's. The `tls_*` imports are OpenSSL's callbacks, made inside an SSL_* call the engine itself made, as Node's
  * are made inside SSL_read: no scope closes after them.
  */
-export const libnodeImports = {
-  /** The run's end, after `uv_run` returns (`LibnodeRunEnd`); each followed in C by a drain. */
+export const nodeProgramImports = {
+  /** The run's end, after `uv_run` returns (`NodeProgramRunEnd`); each followed in C by a drain. */
   before_exit: (): number => theRunEnd().beforeExit(),
   emit_exit: (): void => { theRunEnd().emitExit(); },
   exit_code: (): number => theRunEnd().exitCode(),
@@ -735,7 +735,7 @@ export const libnodeImports = {
   },
   /** FSEventWrap::OnEvent. */
   fs_event: (handle: number, filename: number, event: number, status: number): void => {
-    handleAt(handle).target.onUvFsEvent?.(filename, libnode().cString(event) ?? '', status);
+    handleAt(handle).target.onUvFsEvent?.(filename, nodeProgram().cString(event) ?? '', status);
   },
   /** StatWatcher::Callback. */
   stat_watcher_change: (handle: number, status: number): void => { handleAt(handle).target.onUvStatChange?.(status); },
@@ -747,20 +747,20 @@ export const libnodeImports = {
   tls_handshake: (connection: number, done: number): void => { tlsCallbacks().handshake(address(connection), done); },
   /** KeylogCallback: one key log line. */
   tls_keylog: (connection: number, line: number, length: number): void => {
-    tlsCallbacks().keylog(address(connection), libnode().read(address(line), address(length)));
+    tlsCallbacks().keylog(address(connection), nodeProgram().read(address(line), address(length)));
   },
   /** NewSessionCallback: the session's id and DER. */
   tls_new_session: (connection: number, id: number, idLength: number, der: number, derLength: number): void => {
-    const program = libnode();
+    const program = nodeProgram();
     tlsCallbacks().newSession(address(connection), program.read(address(id), address(idLength)),
       program.read(address(der), address(derLength)));
   },
   /** SSLCertCallback: 1 continues the handshake, -1 suspends it. */
   tls_cert: (connection: number, servername: number, length: number, ocsp: number): number =>
-    tlsCallbacks().cert(address(connection), decoder.decode(libnode().read(address(servername), address(length))), ocsp !== 0),
+    tlsCallbacks().cert(address(connection), decoder.decode(nodeProgram().read(address(servername), address(length))), ocsp !== 0),
   /** SelectALPNCallback's JavaScript branch: the chosen protocol's offset, or -1. */
   tls_alpn: (connection: number, protocols: number, length: number): number =>
-    tlsCallbacks().alpn(address(connection), libnode().read(address(protocols), address(length))),
+    tlsCallbacks().alpn(address(connection), nodeProgram().read(address(protocols), address(length))),
   /** CompressionStream::EmitError's MakeCallback of `onerror`; on the loop, the C closes its scope. */
   zlib_error: (stream: number, message: number, code: number, err: number): void => {
     zlibs().zlib_error(stream, message, code, err);

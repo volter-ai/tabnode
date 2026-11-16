@@ -53,7 +53,7 @@ import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
 import { nodeProcessHostFor, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import { KernelStreamWrap, kKernelBacked } from '../node-lib/binding/kernel_stream';
-import { programForm, reallyExit } from '../node-lib/binding/libnode';
+import { programForm, reallyExit } from '../node-lib/binding/program';
 import { startNodeProgram } from '../node-program';
 import { constantsBinding } from './constants';
 import { Pipe } from '../node-lib/binding/pipe_wrap';

@@ -1,10 +1,10 @@
 /**
  * OPENSSL AS THE crypto AND tls_wrap BINDINGS REACH IT (ADR-0018 §1, item 7; ADR-0016 §3). OpenSSL 3.5.8 and ncrypto
- * are in the process's `libnode.so`, and the OpenSSL half of Node's `src/crypto/crypto_*.cc` is the `node` program's
+ * are in the process's `node` program, and the OpenSSL half of Node's `src/crypto/crypto_*.cc` is the `node` program's
  * glue (`native/node/crypto_*.cc`), whose exports these bindings call through the program
- * (`libnode.ts`): bytes are copied into the process's memory for a call and its answer copied out, as a browser's
+ * (`program.ts`): bytes are copied into the process's memory for a call and its answer copied out, as a browser's
  * APIs refuse a view of shared memory. What OpenSSL raises inside a call (a handshake, a key log line, a session, the
- * certificate and ALPN callbacks) reaches the engine as its `tls_*` imports (`libnodeImports`).
+ * certificate and ALPN callbacks) reaches the engine as its `tls_*` imports (`nodeProgramImports`).
  *
  * A realm the host gives no `node` program has no OpenSSL, as a Node built without it: its TLS and its bindings over
  * OpenSSL answer that it has none.
@@ -14,19 +14,19 @@
  * `--openssl-config` or OPENSSL_CONF, `--openssl-shared-config`, FIPS, then InitCryptoOnce with
  * `--openssl-legacy-provider` and `--secure-heap`; a configuration error ends the process there, as Node's does.
  */
-import { address, libnode, type LibnodeExports } from './libnode';
+import { address, nodeProgram, type NodeProgramExports } from './program';
 
 /** The program's exports of `native/node/crypto_*.cc`, by their C names. */
-export type OpensslExports = LibnodeExports & { [name: `tabnode_${string}`]: (...args: any[]) => any };
+export type OpensslExports = NodeProgramExports & { [name: `tabnode_${string}`]: (...args: any[]) => any };
 
 /** The program's OpenSSL exports, started by its `main`. */
 export function openssl(): OpensslExports {
-  return libnode().exports as OpensslExports;
+  return nodeProgram().exports as OpensslExports;
 }
 
 /** A NUL-terminated string at `at` in the process's memory (null for a null pointer). */
 export function cString(at: number): string | null {
-  return libnode().cString(address(at));
+  return nodeProgram().cString(address(at));
 }
 
 /**
@@ -34,7 +34,7 @@ export function cString(at: number): string | null {
  * `use` gets the pointer and the byte length.
  */
 export function withBytes<T>(data: Uint8Array | string, use: (at: number, length: number) => T): T {
-  const program = libnode();
+  const program = nodeProgram();
   const source = typeof data === 'string' ? new TextEncoder().encode(data) : data;
   const room = new Uint8Array(source.byteLength + 1);
   room.set(source);
@@ -49,7 +49,7 @@ export function withBytes<T>(data: Uint8Array | string, use: (at: number, length
 
 /** Runs `use` with a scratch area of `length` bytes in the process's memory, zeroed, freeing it after. */
 export function withScratch<T>(length: number, use: (at: number) => T): T {
-  const program = libnode();
+  const program = nodeProgram();
   const at = address(program.exports.tabnode_malloc(length));
   try {
     program.write(at, new Uint8Array(length));
@@ -61,7 +61,7 @@ export function withScratch<T>(length: number, use: (at: number) => T): T {
 
 /** The unsigned 32-bit word at `at` (a size_t or a pointer on wasm32). */
 export function word(at: number): number {
-  const bytes = libnode().read(address(at), 4);
+  const bytes = nodeProgram().read(address(at), 4);
   return new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);
 }
 
@@ -79,7 +79,7 @@ export function mallocAnswer(call: (lengthAt: number) => number): Uint8Array | n
     const at = address(call(lengthAt));
     if (!at) return null;
     const bytes = copyOut(at, word(lengthAt));
-    libnode().exports.tabnode_free(at);
+    nodeProgram().exports.tabnode_free(at);
     return bytes;
   });
 }
@@ -95,14 +95,14 @@ export function outAnswer(call: (outAt: number) => number, owned = true): Uint8A
     const at = word(outAt);
     if (!at) return null;
     const bytes = copyOut(at, length);
-    if (owned) libnode().exports.tabnode_free(at);
+    if (owned) nodeProgram().exports.tabnode_free(at);
     return bytes;
   });
 }
 
 /** Copies `length` bytes at `at` out of the process's memory. */
 export function copyOut(at: number, length: number): Uint8Array {
-  return libnode().read(address(at), address(length));
+  return nodeProgram().read(address(at), address(length));
 }
 
 /**

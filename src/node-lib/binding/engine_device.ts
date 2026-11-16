@@ -28,7 +28,7 @@
  * the device letting the held bytes go when their last piece is taken (browser-substrate `host/machine.mjs`
  * `engineCall`, as `packages/node/src/linux-web-crypto.ts` uses it). So a call of any size is the device's.
  */
-import { address, libnode } from './libnode';
+import { address, nodeProgram } from './program';
 
 /** The device's bound on a request's call and on an answer (engine.c `WASM_ENGINE_BYTES`). */
 export const ENGINE_BYTES = 1 << 20;
@@ -104,7 +104,7 @@ class EngineSession {
     void this.callAsync('forget', [handle]).catch(() => {});
   });
 
-  private exports(): DeviceExports { return libnode().exports as unknown as DeviceExports; }
+  private exports(): DeviceExports { return nodeProgram().exports as unknown as DeviceExports; }
 
   private descriptor(): number {
     if (this.fd >= 0) return this.fd;
@@ -196,7 +196,7 @@ class EngineSession {
     const fd = this.descriptor();
     const tag = this.nextTag++ >>> 0;
     const request = encodeRequest(tag, call, args);
-    const program = libnode();
+    const program = nodeProgram();
     const at = address(this.exports().tabnode_malloc(request.byteLength));
     try {
       program.write(at, request);
@@ -220,7 +220,7 @@ class EngineSession {
         const length = this.exports().tabnode_engine_read(this.fd, at, room);
         if (length === EAGAIN) return;
         if (length < 0) throw Object.assign(new Error(`read /dev/engine: ${-length}`), { errno: length, syscall: 'read' });
-        const bytes = libnode().read(at, length);
+        const bytes = nodeProgram().read(at, length);
         const view = new DataView(bytes.buffer, bytes.byteOffset, length);
         const tag = view.getUint32(0, true);
         const answer = { status: view.getInt32(4, true), bytes: bytes.slice(HEADER, length) };

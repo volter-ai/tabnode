@@ -13,7 +13,7 @@
  *   null write is a valid address in WebAssembly's memory.
  * - `_debugProcess` signals SIGUSR1 as Node's does on POSIX; `_debugEnd` has no inspector to stop.
  */
-import { address, libnode, reallyExit, withCString, withRoom } from './libnode';
+import { address, nodeProgram, reallyExit, withCString, withRoom } from './program';
 import { errname, getErrorMessage } from './uv';
 import { nodeActiveHandles, nodeActiveRequests } from './handles';
 import { __tokenForProcess } from '../../process-tokens';
@@ -74,7 +74,7 @@ function heapStatistics(): { total: number; used: number } | undefined {
 }
 
 export function createProcessMethodsBinding(host: ProcessMethodsHost): Record<string, unknown> {
-  const program = () => libnode().exports;
+  const program = () => nodeProgram().exports;
   // BindingData's hrtime_buffer (node_process_methods.cc:643-661): three Uint32s, the first two read as one uint64 by
   // hrtimeBigInt.
   const hrtimeBuffer = new Uint32Array(3);
@@ -191,7 +191,7 @@ export function createProcessMethodsBinding(host: ProcessMethodsHost): Record<st
 
 /** Cwd (node_process_methods.cc:160-181): uv_cwd, its failure Node's message. */
 function readCwd(): string {
-  const program = libnode();
+  const program = nodeProgram();
   const size = 4096;
   const at = address(program.exports.tabnode_malloc(size));
   try {

@@ -1,5 +1,5 @@
 // RSA OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's src/crypto/crypto_rsa.cc,
-// over ncrypto and OpenSSL in libnode.so: a key's JWK and its details, RsaKeyPairGenJob's configuration and Setup, and
+// over ncrypto and OpenSSL in the program: a key's JWK and its details, RsaKeyPairGenJob's configuration and Setup, and
 // RSACipherJob (RSA-OAEP). Which of them the engine device answers is the binding's routing
 // (src/node-lib/binding/crypto_keygen.ts, crypto_webcrypto.ts).
 #include <openssl/rsa.h>

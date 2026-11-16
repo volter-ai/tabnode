@@ -6,7 +6,7 @@
  * for a value of the wrong kind, and the result object built from the record the C answers.
  */
 import { libRequire } from '../require-hook';
-import { CRecord, address, libnode, readRecord } from './libnode';
+import { CRecord, address, nodeProgram, readRecord } from './program';
 import { uvConstant } from './uv';
 
 /** spawn_sync.c's `struct spawn_sync` (80 bytes) and `struct spawn_sync_stdio` (28), field by field. */
@@ -136,7 +136,7 @@ function bufferClass(): { from(bytes: ArrayBuffer, offset: number, length: numbe
 
 /** BuildResultObject and BuildOutputArray (spawn_sync.cc:692-786), from the C's record of them. */
 function resultOf(at: number): Record<string, unknown> {
-  const program = libnode();
+  const program = nodeProgram();
   const view = readRecord(at, RESULT.bytes);
   const result: Record<string, unknown> = {};
   const error = view.getInt32(RESULT.error, true);
@@ -169,7 +169,7 @@ function resultOf(at: number): Record<string, unknown> {
 /** SyncProcessRunner::Spawn (spawn_sync.cc:380-405): the options read, the run, and its result. */
 function spawn(options: unknown): Record<string, unknown> {
   const record = parseOptions(options);
-  const { exports } = libnode();
+  const { exports } = nodeProgram();
   const at = record.commit();
   let result: number;
   try { result = address(exports.tabnode_spawn_sync(at)); }

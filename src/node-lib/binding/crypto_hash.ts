@@ -11,7 +11,7 @@
  * device takes at most 1 MiB a call: a larger input is refused by the device's bound (engine_device.ts), by name.
  */
 import { Buffer } from '../buffer-module';
-import { address } from './libnode';
+import { address } from './program';
 import { withBytes, withScratch, word } from './openssl';
 import { engineCallAsync, engineCallSync } from './engine_device';
 import {

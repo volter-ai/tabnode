@@ -1,5 +1,5 @@
 // PBKDF2 OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_pbkdf2.cc, over ncrypto and OpenSSL in libnode.so: PBKDF2Job. The engine device answers a PBKDF2
+// src/crypto/crypto_pbkdf2.cc, over ncrypto and OpenSSL in the program: PBKDF2Job. The engine device answers a PBKDF2
 // over a digest WebCrypto defines (the binding's routing, src/node-lib/binding/crypto_kdf.ts); this is the rest.
 #include "crypto_util.h"
 

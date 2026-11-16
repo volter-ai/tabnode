@@ -71,7 +71,7 @@ import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
 import * as perfHooksShim from './shims/perf_hooks';
 import * as workerThreadsShim from './shims/worker_threads';
 import { guestMessageGlobals, guestMessageModule } from './guest-message-ports';
-import { programForm } from './node-lib/binding/libnode';
+import { programForm } from './node-lib/binding/program';
 
 /**
  * A process's MessageChannel, MessagePort and BroadcastChannel in a realm with no `node` program: the engine's ports
@@ -2238,7 +2238,7 @@ const builtinModules: Record<string, unknown> = {
   rollup: rollupShim,
   v8: v8Shim,
   readline: readlineModule,
-  // Node's own `lib/tls.js` over libnode.so's OpenSSL (ADR-0016, ADR-0018 item 7); a process's `tls` is its own graph's (loadNodeLibFor).
+  // Node's own `lib/tls.js` over the `node` program's OpenSSL (ADR-0016, ADR-0018 item 7); a process's `tls` is its own graph's (loadNodeLibFor).
   tls: lazyModule<Record<string, unknown>>('tls'),
   http2: http2Shim,
   cluster: clusterShim,

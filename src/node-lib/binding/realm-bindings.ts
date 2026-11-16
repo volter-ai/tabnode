@@ -12,7 +12,7 @@
  * - The permission model is never on, so every `has` is true.
  */
 import * as acorn from 'acorn';
-import { reallyExit } from './libnode';
+import { reallyExit } from './program';
 import { compileFunction, compileScript, magicComment } from '../v8-host';
 import { Script as VmSandboxScript } from '../../shims/vm';
 import { performance as systemPerformance } from '../../system';

@@ -1,5 +1,5 @@
 // ARGON2 OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_argon2.cc, over ncrypto and OpenSSL 3.5 in libnode.so: Argon2Job. WebCrypto's standard defines no
+// src/crypto/crypto_argon2.cc, over ncrypto and OpenSSL 3.5 in the program: Argon2Job. WebCrypto's standard defines no
 // Argon2, so it is OpenSSL's.
 #include "crypto_util.h"
 

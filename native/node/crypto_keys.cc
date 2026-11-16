@@ -1,5 +1,5 @@
 // THE KEYS OF THE crypto BINDING (Tabnode ADR-0018 item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_keys.cc, over ncrypto and OpenSSL in libnode.so. KeyObjectData and the key arguments' five slots
+// src/crypto/crypto_keys.cc, over ncrypto and OpenSSL in the program. KeyObjectData and the key arguments' five slots
 // (GetPrivateKeyFromJs, GetPublicOrPrivateKeyFromJs, the encodings), and KeyObjectHandle's methods. A handle is a
 // KeyObjectData* the engine's KeyObjectHandle holds (one reference, freed with it). NativeKeyObject and
 // NativeCryptoKey hold no OpenSSL state of their own (only a handle's data and V8 values), so they are the engine's

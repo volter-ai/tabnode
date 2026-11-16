@@ -3,13 +3,13 @@
  * (src/node_file.h, src/node_file-inl.h), GetReqWrap, AsyncCall, SyncCall and FSReqAfterScope, as the V8 half of a
  * request whose uv_fs_t is native/node's (fs.h) in the process's memory. A synchronous call is uv_fs_* with no callback
  * and blocks in Linux; an asynchronous one runs on libuv's threadpool and its completion arrives as the program's
- * `fs_done` import (libnode.ts), which runs the request's After and its MakeCallback. Node's C++ hands libuv its
+ * `fs_done` import (program.ts), which runs the request's After and its MakeCallback. Node's C++ hands libuv its
  * buffers' own bytes; a Buffer here is the realm's memory, not the process's, so a call's bytes are copied into the
  * request's room and a read's out of it, which is the one thing this layer adds to Node's.
  */
 import type { Buffer as NodeBuffer } from '../buffer-module';
 import { AsyncResource } from '../internals/runtime';
-import { awaitRequest, type Libnode } from './libnode';
+import { awaitRequest, type AttachedNodeProgram } from './program';
 import { currentOwner, ownedRun, observeNodeRequest, forgetNodeRequest } from './handles';
 import type { ProcessToken } from '../../process-tokens';
 import { kUsePromises } from './fs';
@@ -77,14 +77,14 @@ const names = new Map<number, string>();
 const messages = new Map<number, string>();
 
 /** UVException (src/api/exceptions.cc): `code: message, syscall 'path' -> 'dest'`, with errno, code and the rest. */
-export function uvException(lib: Libnode, err: number, syscall: string, message: string | null, path: string | null,
+export function uvException(program: AttachedNodeProgram, err: number, syscall: string, message: string | null, path: string | null,
   dest: string | null): Error {
   let code = names.get(err);
-  if (code === undefined) { code = lib.cString(lib.exports.tabnode_uv_err_name(err)) ?? ''; names.set(err, code); }
+  if (code === undefined) { code = program.cString(program.exports.tabnode_uv_err_name(err)) ?? ''; names.set(err, code); }
   let text = message;
   if (!text) {
     text = messages.get(err) ?? null;
-    if (text === null) { text = lib.cString(lib.exports.tabnode_uv_strerror(err)) ?? ''; messages.set(err, text); }
+    if (text === null) { text = program.cString(program.exports.tabnode_uv_strerror(err)) ?? ''; messages.set(err, text); }
   }
   let said = `${code}: ${text}, ${syscall}`;
   if (path !== null) said += ` '${path}'`;
@@ -99,17 +99,17 @@ export function uvException(lib: Libnode, err: number, syscall: string, message:
 }
 
 /** errors::errno_string: a positive errno's name, and none for any other number. */
-function errnoString(lib: Libnode, errorno: number): string {
+function errnoString(program: AttachedNodeProgram, errorno: number): string {
   if (errorno <= 0) return '';
-  const name = lib.cString(lib.exports.tabnode_uv_err_name(-errorno)) ?? '';
+  const name = program.cString(program.exports.tabnode_uv_err_name(-errorno)) ?? '';
   return name.startsWith('Unknown system error') ? '' : name;
 }
 
 /** ErrnoException (exceptions.cc): `CODE, message 'path'`, with errno, code, path and syscall. */
-export function errnoException(lib: Libnode, errorno: number, syscall: string | null, message: string | null,
+export function errnoException(program: AttachedNodeProgram, errorno: number, syscall: string | null, message: string | null,
   path: string | null): Error {
-  const code = errnoString(lib, errorno);
-  const text = message || (lib.cString(lib.exports.tabnode_strerror(errorno)) ?? '');
+  const code = errnoString(program, errorno);
+  const text = message || (program.cString(program.exports.tabnode_strerror(errorno)) ?? '');
   let said = `${code}, ${text}`;
   if (path !== null) said += ` '${path}'`;
   const error = new Error(said) as Error & Record<string, unknown>;
@@ -126,12 +126,12 @@ export function codeError(code: string, message: string, Kind: ErrorConstructor 
 }
 
 /** The error a composite call of native/node decided (fs.h tabnode_fs_error), made as V8 would make it. */
-export function recordedError(lib: Libnode): Error {
-  const x = lib.exports;
-  const text = (pointer: number): string | null => { const value = lib.cString(pointer); return value ? value : null; };
+export function recordedError(program: AttachedNodeProgram): Error {
+  const x = program.exports;
+  const text = (pointer: number): string | null => { const value = program.cString(pointer); return value ? value : null; };
   const kind = x.tabnode_fs_error_kind(), errorno = x.tabnode_fs_error_errno();
-  if (kind === 1) return uvException(lib, errorno, text(x.tabnode_fs_error_syscall()) ?? '', null, text(x.tabnode_fs_error_path()), text(x.tabnode_fs_error_dest()));
-  if (kind === 2) return errnoException(lib, errorno, text(x.tabnode_fs_error_syscall()), text(x.tabnode_fs_error_message()), text(x.tabnode_fs_error_path()));
+  if (kind === 1) return uvException(program, errorno, text(x.tabnode_fs_error_syscall()) ?? '', null, text(x.tabnode_fs_error_path()), text(x.tabnode_fs_error_dest()));
+  if (kind === 2) return errnoException(program, errorno, text(x.tabnode_fs_error_syscall()), text(x.tabnode_fs_error_message()), text(x.tabnode_fs_error_path()));
   return codeError(text(x.tabnode_fs_error_code()) ?? '', text(x.tabnode_fs_error_message()) ?? '');
 }
 
@@ -203,11 +203,11 @@ export class Room {
     return at;
   }
   /** The request, made with this room and its parts written: its pointer and its room's. */
-  open(lib: Libnode): { request: number; base: number } {
-    const request = lib.exports.tabnode_fs_new(this.size) >>> 0;
+  open(program: AttachedNodeProgram): { request: number; base: number } {
+    const request = program.exports.tabnode_fs_new(this.size) >>> 0;
     if (request === 0) throw codeError('ERR_MEMORY_ALLOCATION_FAILED', 'Failed to allocate memory');
-    const base = lib.exports.tabnode_fs_room(request) >>> 0;
-    for (const { at, bytes } of this.parts) lib.write(base + at, bytes);
+    const base = program.exports.tabnode_fs_room(request) >>> 0;
+    for (const { at, bytes } of this.parts) program.write(base + at, bytes);
     return { request, base };
   }
 }
@@ -295,11 +295,11 @@ export function statArrays(): StatArrays {
 }
 
 /** The C's stat fields (fs.c stat_fields), `count` of them, as doubles or as int64s. */
-export function readStatFields(lib: Libnode, bigint: boolean, count: number, statfs = false): Float64Array | BigInt64Array {
-  const x = lib.exports;
+export function readStatFields(program: AttachedNodeProgram, bigint: boolean, count: number, statfs = false): Float64Array | BigInt64Array {
+  const x = program.exports;
   const at = (statfs ? (bigint ? x.tabnode_fs_bigint_statfs_fields() : x.tabnode_fs_statfs_fields())
     : (bigint ? x.tabnode_fs_bigint_stat_fields() : x.tabnode_fs_stat_fields())) >>> 0;
-  const bytes = lib.read(at, count * 8);
+  const bytes = program.read(at, count * 8);
   return bigint ? new BigInt64Array(bytes.buffer, bytes.byteOffset, count) : new Float64Array(bytes.buffer, bytes.byteOffset, count);
 }
 
@@ -326,18 +326,18 @@ export interface Done { request: number; base: number; result: number; path: str
  * An After (node_file.cc AfterNoArgs, AfterStat, ...), past FSReqAfterScope::Proceed: it reads what it needs out of
  * the request and answers what to deliver once the request is gone (FSReqAfterScope::Clear runs first).
  */
-export type After = (lib: Libnode, req: FSReq, done: Done) => () => void;
+export type After = (program: AttachedNodeProgram, req: FSReq, done: Done) => () => void;
 
 /** FSReqAfterScope: an error rejects with its UVException; otherwise the After runs. The request is freed before the
  *  answer is delivered, as Node clears its uv_fs_t first. */
-function complete(lib: Libnode, req: FSReq, done: Done, after: After, proceed = true): void {
+function complete(program: AttachedNodeProgram, req: FSReq, done: Done, after: After, proceed = true): void {
   let deliver: () => void;
   try {
     deliver = proceed && done.result < 0
-      ? () => reject(req, uvException(lib, done.result, req.syscall, null, done.path, req.dest))
-      : after(lib, req, done);
+      ? () => reject(req, uvException(program, done.result, req.syscall, null, done.path, req.dest))
+      : after(program, req, done);
   } finally {
-    lib.exports.tabnode_fs_free(done.request);
+    program.exports.tabnode_fs_free(done.request);
   }
   deliver();
 }
@@ -365,27 +365,27 @@ export interface Call {
 }
 
 /** AsyncCall where `req` is one, else SyncCallAndThrowOnError (or its predicate). Answers SetReturnValue's value. */
-export function dispatch(lib: Libnode, room: Room, req: FSReq | null, call: Call): unknown {
-  const { request, base } = room.open(lib);
+export function dispatch(program: AttachedNodeProgram, room: Room, req: FSReq | null, call: Call): unknown {
+  const { request, base } = room.open(program);
   if (req) {
     req.syscall = call.syscall;
     req.dest = call.asyncDest ? call.dest ?? null : null;
     req.encoding = call.encoding ?? 'utf8';
     let err: number;
-    try { err = call.call(request, base, 1); } catch (error) { lib.exports.tabnode_fs_free(request); throw error; }
+    try { err = call.call(request, base, 1); } catch (error) { program.exports.tabnode_fs_free(request); throw error; }
     const proceed = !(call.after as OwnErrorsAfter)[ownErrors];
     // A dispatch that fails at once: `after` with that result and no path, now (AsyncDestCall).
-    if (err < 0) complete(lib, req, { request, base, result: err, path: null }, call.after, proceed);
-    else pend(lib, req, request, base, call.after, proceed);
+    if (err < 0) complete(program, req, { request, base, result: err, path: null }, call.after, proceed);
+    else pend(program, req, request, base, call.after, proceed);
     return returnValue(req);
   }
   try {
     const result = call.call(request, base, 0);
-    if ((call.throwIf ?? isUvError)(result)) throw uvException(lib, result, call.syscall, null, call.path ?? null, call.dest ?? null);
+    if ((call.throwIf ?? isUvError)(result)) throw uvException(program, result, call.syscall, null, call.path ?? null, call.dest ?? null);
     if (result < 0) return undefined;
     return call.sync ? call.sync(request, base, result) : undefined;
   } finally {
-    lib.exports.tabnode_fs_free(request);
+    program.exports.tabnode_fs_free(request);
   }
 }
 
@@ -393,15 +393,15 @@ export function dispatch(lib: Libnode, room: Room, req: FSReq | null, call: Call
  * SyncCall with a context object (`ctx`): the error's number and syscall are put in it, and the call answers its
  * result, as Node's WriteBuffer, WriteString and OpenFileHandle forms do.
  */
-export function syncCallWithContext(lib: Libnode, room: Room, ctx: unknown, syscall: string,
+export function syncCallWithContext(program: AttachedNodeProgram, room: Room, ctx: unknown, syscall: string,
   call: (request: number, base: number) => number, value: (request: number, base: number, result: number) => unknown): unknown {
-  const { request, base } = room.open(lib);
+  const { request, base } = room.open(program);
   try {
     const result = call(request, base);
     if (result < 0 && typeof ctx === 'object' && ctx !== null) Object.assign(ctx, { errno: result, syscall });
     return value(request, base, result);
   } finally {
-    lib.exports.tabnode_fs_free(request);
+    program.exports.tabnode_fs_free(request);
   }
 }
 
@@ -412,13 +412,13 @@ export const isUvError = (result: number): boolean => result < 0;
  * end is libuv's, ADR-0018 item 7), and a request Node's getActiveResourcesInfo lists. Its completion is the program's
  * `fs_done`.
  */
-function pend(lib: Libnode, req: FSReq, request: number, base: number, after: After, proceed: boolean): void {
+function pend(program: AttachedNodeProgram, req: FSReq, request: number, base: number, after: After, proceed: boolean): void {
   const listed = req.callback ?? req.promise!;
   observeNodeRequest(listed);
   awaitRequest(request, () => {
     forgetNodeRequest(listed);
-    const x = lib.exports;
-    complete(lib, req, { request, base, result: x.tabnode_fs_result(request), path: lib.cString(x.tabnode_fs_path(request)) }, after, proceed);
+    const x = program.exports;
+    complete(program, req, { request, base, result: x.tabnode_fs_result(request), path: program.cString(x.tabnode_fs_path(request)) }, after, proceed);
   });
 }
 
@@ -428,15 +428,15 @@ export const afterNoArgs: After = (_lib, req) => () => resolve(req, undefined);
 export const afterInteger: After = (_lib, req, done) => () => resolve(req, done.result);
 /** AfterStringPtr: req->ptr in the request's encoding (readlink, realpath). */
 export function afterStringPtr(context: FsContext): After {
-  return (lib, req, done) => {
-    const bytes = lib.cBytes(lib.exports.tabnode_fs_ptr(done.request)) ?? new Uint8Array(0);
+  return (program, req, done) => {
+    const bytes = program.cBytes(program.exports.tabnode_fs_ptr(done.request)) ?? new Uint8Array(0);
     return () => resolve(req, context.encode(bytes, req.encoding));
   };
 }
 /** AfterStringPath: req->path in the request's encoding (mkdtemp). */
 export function afterStringPath(context: FsContext): After {
-  return (lib, req, done) => {
-    const bytes = lib.cBytes(lib.exports.tabnode_fs_path(done.request)) ?? new Uint8Array(0);
+  return (program, req, done) => {
+    const bytes = program.cBytes(program.exports.tabnode_fs_path(done.request)) ?? new Uint8Array(0);
     return () => resolve(req, context.encode(bytes, req.encoding));
   };
 }

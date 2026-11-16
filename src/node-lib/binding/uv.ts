@@ -7,7 +7,7 @@
  * answers itself, is the one libuv returns. A realm with no program has no libuv, and its numbers are the engine's own
  * table below, Linux's, since a program reads `err.errno` and `err.code` and expects the pair a Linux Node reports.
  */
-import { address, libnode, programForm, readRecord, withRoom } from './libnode';
+import { address, nodeProgram, programForm, readRecord, withRoom } from './program';
 
 /** The engine's own table, for a realm with no `node` program: the codes Node's `net`, `child_process` and their
  * internals name, with Linux's numbers. */
@@ -83,16 +83,16 @@ let engineErrors: UvErrors | undefined;
 
 /** uv.cc's per_process::uv_errors_map as the program compiled it (uv.c `tabnode_uv_errors`): 12 bytes an entry. */
 function readProgramErrors(): UvErrors {
-  const lib = libnode();
+  const program = nodeProgram();
   let at = 0, count = 0;
-  withRoom(4, (countAt) => { at = address(lib.exports.tabnode_uv_errors(countAt)); }, (view) => { count = view.getUint32(0, true); });
+  withRoom(4, (countAt) => { at = address(program.exports.tabnode_uv_errors(countAt)); }, (view) => { count = view.getUint32(0, true); });
   const table = readRecord(at, count * 12);
   const entries: [number, string, string][] = [];
   const values = new Map<string, number>();
   for (let i = 0; i < count; i++) {
     const value = table.getInt32(i * 12, true);
-    const name = lib.cString(table.getUint32(i * 12 + 4, true)) ?? '';
-    const message = lib.cString(table.getUint32(i * 12 + 8, true)) ?? '';
+    const name = program.cString(table.getUint32(i * 12 + 4, true)) ?? '';
+    const message = program.cString(table.getUint32(i * 12 + 8, true)) ?? '';
     entries.push([value, name, message]);
     values.set(`UV_${name}`, value);
   }
@@ -109,8 +109,8 @@ function readProgramErrors(): UvErrors {
   return {
     values, entries,
     map: () => new Map(entries.map(([value, name, message]) => [value, [name, message]])),
-    errname: (code) => into50((room) => lib.exports.tabnode_uv_err_name_r(code, room)),
-    message: (code) => into50((room) => lib.exports.tabnode_uv_strerror_r(code, room)),
+    errname: (code) => into50((room) => program.exports.tabnode_uv_err_name_r(code, room)),
+    message: (code) => into50((room) => program.exports.tabnode_uv_strerror_r(code, room)),
   };
 }
 

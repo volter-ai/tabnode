@@ -39,7 +39,7 @@ import { guessHandleTypeOfFd } from './fds';
 /** internal/util's `handleTypes`, in its order: the binding answers an index into it, as Node's does. */
 const HANDLE_TYPES = ['TCP', 'TTY', 'UDP', 'FILE', 'PIPE', 'UNKNOWN'];
 import { stdioKindOf } from './tty_wrap';
-import { intoMemory, libnode, programForm } from './libnode';
+import { intoMemory, nodeProgram, programForm } from './program';
 import { mallocAnswer } from './openssl';
 import { nodeLibInternalRequire } from '../load';
 import { stackOverrides } from '../../stack-overrides';
@@ -406,7 +406,7 @@ export function createUtilBinding(require: (name: string) => unknown) {
  */
 function programParseEnv(content: unknown): Record<string, string> {
   if (typeof content !== 'string') throw new TypeError('parseEnv: a string');
-  const program = libnode();
+  const program = nodeProgram();
   const bytes = new TextEncoder().encode(content);
   const at = intoMemory(bytes);
   try {

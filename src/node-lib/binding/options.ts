@@ -6,7 +6,7 @@
  * object, getCLIOptionsInfo `{ options, aliases }` with both Maps SafeMaps, getOptionsAsFlags an array,
  * getEnvOptionsInputType an object and getNamespaceOptionsInputType a Map of objects.
  */
-import { libnode } from './libnode';
+import { nodeProgram } from './program';
 import { mallocAnswer } from './openssl';
 
 /** OptionType (src/node_options.h), as Initialize defines it (node_options.cc:2149-2158). */
@@ -21,7 +21,7 @@ const decoder = new TextDecoder();
 
 /** A program answer's JSON, read. */
 function answer<T>(name: Answer): T {
-  const exports = libnode().exports;
+  const exports = nodeProgram().exports;
   const bytes = mallocAnswer((lengthAt) => exports[name](lengthAt));
   if (bytes === null) throw new Error(`options: the program gave no answer to ${name}`);
   return JSON.parse(decoder.decode(bytes)) as T;

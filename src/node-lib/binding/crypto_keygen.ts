@@ -13,7 +13,7 @@
  * `id-RSASSA-PSS` encoding), other exponents and sizes, an explicit curve and every other curve, Ed448, X448, DSA, DH,
  * ML-DSA, ML-KEM and SLH-DSA are OpenSSL's.
  */
-import { address } from './libnode';
+import { address } from './program';
 import { withScratch, word } from './openssl';
 import { engineCallAsync, engineCallSync, type EngineKey } from './engine_device';
 import { answer, CryptoJob, glue, kCryptoJobWebCrypto, setFields, toBuffer, Values } from './crypto_util';

@@ -1,6 +1,6 @@
 /**
  * `internalBinding('http_parser')` (ADR-0018 §1, item 10): Node v24.21.0's src/node_http_parser.cc over the llhttp
- * 9.4.3 (Node's deps/llhttp) in the process's libnode.so. Its C is the `node` program's
+ * 9.4.3 (Node's deps/llhttp) in the process's `node` program, and so is its C
  * (native/node/node_http_parser.c): the Parser's llhttp_t and settings, its StringPtrs and their slab, its header
  * counts and limits, Execute and its answer, and the ConnectionsList's two ordered sets. This file is its V8 half:
  * each method reads its arguments as V8 reads them, a buffer is copied into the process's memory for the length of
@@ -17,9 +17,9 @@
  * for a socket that is no StreamBase. `free`'s EmitTraceEventDestroy has no trace to emit to.
  *
  * A realm the host gives no `node` program has no llhttp, as it has no OpenSSL: the binding answers that the realm
- * has no program (`libnode`).
+ * has no program (`nodeProgram`).
  */
-import { address, fromMemory, intoMemory, libnode, readRecord, setHttpParserCallbacks, withRoom, type LibnodeExports } from './libnode';
+import { address, fromMemory, intoMemory, nodeProgram, readRecord, setHttpParserCallbacks, withRoom, type NodeProgramExports } from './program';
 import { ownedRun, ownerOfInstance } from './handles';
 import { AsyncResource } from '../../shims/async_hooks';
 import { Buffer } from '../buffer-module';
@@ -28,7 +28,7 @@ import { internalOptions } from '../internals/runtime';
 type I32 = number;
 
 /** native/node/node_http_parser.c's exports, by their C names. */
-interface HttpParserExports extends LibnodeExports {
+interface HttpParserExports extends NodeProgramExports {
   tabnode_http_parser_new(): I32;
   tabnode_http_parser_close(parser: I32): void;
   tabnode_http_parser_remove(parser: I32): void;
@@ -44,7 +44,7 @@ interface HttpParserExports extends LibnodeExports {
 }
 
 function program(): HttpParserExports {
-  return libnode().exports as HttpParserExports;
+  return nodeProgram().exports as HttpParserExports;
 }
 
 /** OneByteString: each byte one UTF-16 unit, as V8 makes a Latin-1 string (TextDecoder's "latin1" is windows-1252). */
@@ -58,7 +58,7 @@ function oneByteString(bytes: Uint8Array): string {
 
 /** A string of `length` bytes at `at` in the process's memory, read as OneByteString reads it ("" for none). */
 function oneByteAt(at: number, length: number): string {
-  return length === 0 ? '' : oneByteString(libnode().read(address(at), length));
+  return length === 0 ? '' : oneByteString(nodeProgram().read(address(at), length));
 }
 
 /** The table node_http_parser.c lays a callback's strings out in: count, URL, status message, the headers. */
@@ -84,7 +84,7 @@ function parserTables(): ParserTables {
   const x = program();
   let text = '';
   withRoom(4, (lengthAt) => address(x.tabnode_http_parser_binding(lengthAt)), (view, at) => {
-    text = new TextDecoder().decode(libnode().read(at, view.getUint32(0, true)));
+    text = new TextDecoder().decode(nodeProgram().read(at, view.getUint32(0, true)));
     x.tabnode_free(at);
   });
   const parsed: ParserTables = { constants: new Map(), methods: [], allMethods: [] };
@@ -341,7 +341,7 @@ export class ConnectionsList {
 }
 
 /**
- * The program's llhttp callbacks (engine.h `http_parser_*`), which `libnodeImports` answers, each inside the engine's
+ * The program's llhttp callbacks (engine.h `http_parser_*`), which `nodeProgramImports` answers, each inside the engine's
  * own `execute` or `finish`: no scope closes after them.
  */
 setHttpParserCallbacks({

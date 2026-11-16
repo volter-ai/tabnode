@@ -10,7 +10,7 @@
  * as OpenSSL converts it. Diffie-Hellman groups and primes, ECDH on every other curve, and X448 are OpenSSL's.
  */
 import { Buffer } from '../buffer-module';
-import { address } from './libnode';
+import { address } from './program';
 import { withBytes } from './openssl';
 import { engineCallAsync, engineCallSync, type EngineKey } from './engine_device';
 import { answer, bufferSource, checked, CryptoJob, glue, rethrow, toArrayBuffer, toBuffer, Values } from './crypto_util';

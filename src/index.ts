@@ -67,14 +67,14 @@ export { runPid, processByPid };
 export { installProcessRegistry, installProcessIdAllocator, __currentProcessToken as currentProcessToken } from './process-tokens';
 export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process-host';
 /**
- * The realm's process is the WALI program `node` on libuv's loop (ADR-0018 §2, §3): the host gives the program's
- * exports and its memory's door once (`attachLibnode`, in its `bootstrap` import, before Node's library runs), and
+ * The realm's process is the WALI program `node` on libuv's loop (ADR-0018 §2, §3; ADR-0019 §3): the host gives the
+ * program's exports and its memory's door once (`attachNodeProgram`, in its `bootstrap` import, before Node's library runs), and
  * answers the program's binding callbacks and the run's end (`before_exit`, `emit_exit`, `exit_code`; ADR-0018 item 7)
- * with `libnodeImports`, among its `host:tabnode` imports. The process ends at the program's exit: `main` returning
+ * with `nodeProgramImports`, among its `host:tabnode` imports. The process ends at the program's exit: `main` returning
  * its code, or `process.exit`'s exit(3).
  */
-export { attachLibnode, libnodeImports } from './node-lib/binding/libnode';
-export type { LibnodeProgram, LibnodeExports } from './node-lib/binding/libnode';
+export { attachNodeProgram, nodeProgramImports } from './node-lib/binding/program';
+export type { NodeProgram, NodeProgramExports } from './node-lib/binding/program';
 export type { NodeProcessLaunch, NodeProcessHost } from './node-process-host';
 export type { StdioKind } from './shims/child_process';
 export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter, type StdinReader } from './stdin-ring';
@@ -249,7 +249,7 @@ export function createContainer(options?: ContainerOptions): {
    * `argv[0]` is the program's name (`process.argv0`), then Node's options,
    * the script or `-e` source, and its arguments. No command line is built and
    * no shell runs; `env` is the whole environment. The options and the answer
-   * are `run`'s. Where the realm's process is the program `node` (`attachLibnode`), the process ends at the
+   * are `run`'s. Where the realm's process is the program `node` (`attachNodeProgram`), the process ends at the
    * program's exit, which ends its realm, and this never settles (ADR-0018 item 7).
    */
   runNode: (argv: readonly string[], options?: RunOptions) => Promise<RunResult>;

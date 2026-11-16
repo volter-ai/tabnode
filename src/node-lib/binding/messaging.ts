@@ -26,7 +26,7 @@
  * A realm the host gives no `node` program has no libuv: there a port is the engine's (guest-message-ports.ts), and
  * this binding answers only `DOMException`.
  */
-import { libnode, type HandleCallbacks } from './libnode';
+import { nodeProgram, type HandleCallbacks } from './program';
 import { HandleWrap } from './handle_wrap';
 import { ownedRun, ownerOfInstance, type OwnedHandle } from './handles';
 import { nextHandleAsyncId } from './stream_wrap';
@@ -287,7 +287,7 @@ class PortWrap implements OwnedHandle, HandleCallbacks {
   readonly asyncId = nextHandleAsyncId();
 
   constructor(readonly object: object, readonly binding: Binding) {
-    this.handle = new HandleWrap(this, this, libnode().exports.tabnode_message_port_new(), true);
+    this.handle = new HandleWrap(this, this, nodeProgram().exports.tabnode_message_port_new(), true);
     wraps.set(object, this);
   }
 
@@ -298,7 +298,7 @@ class PortWrap implements OwnedHandle, HandleCallbacks {
 
   triggerAsync(): void {
     if (this.handleClosing) return;
-    libnode().exports.tabnode_message_port_trigger(this.handle.wrap);
+    nodeProgram().exports.tabnode_message_port_trigger(this.handle.wrap);
   }
 
   /**

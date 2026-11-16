@@ -1,5 +1,5 @@
 // THE HASHES OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_hash.cc, over ncrypto and OpenSSL in libnode.so: the digests' cache (GetDigestImplementation),
+// src/crypto/crypto_hash.cc, over ncrypto and OpenSSL in the program: the digests' cache (GetDigestImplementation),
 // getHashes and getCachedAliases, oneShotDigest, Hash, HashJob and CShakeJob. Which digest calls OpenSSL answers and
 // which the engine device answers is the binding's routing (src/node-lib/binding/crypto_hash.ts); these are
 // OpenSSL's. The Keccak helpers and DeriveCShakeBits (crypto_hash.cc:608-776, 876-939) are Node's, unchanged but for

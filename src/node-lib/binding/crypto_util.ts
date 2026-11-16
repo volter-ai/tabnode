@@ -10,13 +10,13 @@
  *
  * ROUTING (ADR-0018 §5). Each call of the binding is answered by the engine device (`engine_device.ts`, the
  * browser's WebCrypto on the machine's thread) where WebCrypto defines the operation and the call is above the
- * measured bound, and by OpenSSL in libnode.so otherwise; the choice is each binding class's, per call. The bound is
+ * measured bound, and by OpenSSL in the program otherwise; the choice is each binding class's, per call. The bound is
  * browser-substrate ADR-0236 hole 12's reading, one for every call it applies to (a digest's or an HMAC's input, a
  * cipher update's whole blocks) above 4 KiB (the device 39.1 µs at 4 KiB against SHA-256 compiled to WebAssembly 35.9 µs; at 64 KiB 117 µs against 769 µs).
  */
 import { Buffer } from '../buffer-module';
 import { createMessagingBinding } from './messaging';
-import { address, CRecord, libnode } from './libnode';
+import { address, CRecord, nodeProgram } from './program';
 import { copyOut, cString, errorDetail, mallocAnswer, openssl, type OpensslExports } from './openssl';
 
 /** CryptoJobMode (crypto_util.h:262). */
@@ -382,7 +382,7 @@ export abstract class CryptoJob {
   /** The job's bytes (its out_), copied out. */
   protected out(): Uint8Array {
     const exports = glue();
-    return libnodeOut((lengthAt) => exports.tabnode_job_out(this.job, lengthAt));
+    return programOut((lengthAt) => exports.tabnode_job_out(this.job, lengthAt));
   }
 
   /** CryptoJob::Run (crypto_util.h:380-407). */
@@ -457,8 +457,8 @@ export abstract class CryptoJob {
 }
 
 /** A borrowed answer (`(…, size_t* length) => const void*`) copied out. */
-function libnodeOut(call: (lengthAt: number) => number): Uint8Array {
-  const program = libnode();
+function programOut(call: (lengthAt: number) => number): Uint8Array {
+  const program = nodeProgram();
   const lengthAt = address(program.exports.tabnode_malloc(4));
   try {
     const at = address(call(lengthAt));

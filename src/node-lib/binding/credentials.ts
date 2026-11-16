@@ -4,7 +4,7 @@
  * `internal/bootstrap/node.js` and `switches/does_own_process_state.js` wrap it. `safeGetenv` and `getTempDir` read
  * the Environment's store, RealEnvStore over libc's environ (env_var.ts), and nothing where SafeGetenv refuses.
  */
-import { address, libnode, withCString } from './libnode';
+import { address, nodeProgram, withCString } from './program';
 import { constantsBinding } from '../../shims/constants';
 import type { EnvStore } from './env_var';
 
@@ -12,7 +12,7 @@ import type { EnvStore } from './env_var';
 export function errnoException(errno: number, syscall: string): Error {
   const names = constantsBinding().os.errno as Record<string, number>;
   const code = Object.keys(names).find((name) => names[name] === errno) ?? '';
-  const program = libnode();
+  const program = nodeProgram();
   const message = program.cString(program.exports.tabnode_strerror(errno)) ?? '';
   return Object.assign(new Error(`${code}: ${message}, ${syscall}`), { errno, code, syscall });
 }
@@ -24,7 +24,7 @@ function credentialOf(value: unknown): { name: string | null; id: number } {
 }
 
 export function createCredentialsBinding(env: EnvStore): Record<string, unknown> {
-  const program = () => libnode().exports;
+  const program = () => nodeProgram().exports;
   const lastErrno = (): number => program().tabnode_errno();
   const setter = (call: 'tabnode_setuid' | 'tabnode_seteuid' | 'tabnode_setgid' | 'tabnode_setegid', syscall: string) =>
     (value: unknown): number => {
@@ -63,7 +63,7 @@ export function createCredentialsBinding(env: EnvStore): Record<string, unknown>
       try {
         const found = exports.tabnode_getgroups(count, room);
         if (found === -1) throw errnoException(lastErrno(), 'getgroups');
-        const bytes = libnode().read(room, found * 4);
+        const bytes = nodeProgram().read(room, found * 4);
         const view = new DataView(bytes.buffer, bytes.byteOffset, found * 4);
         const groups: number[] = [];
         for (let index = 0; index < found; index++) groups.push(view.getUint32(index * 4, true));
@@ -94,15 +94,15 @@ export function createCredentialsBinding(env: EnvStore): Record<string, unknown>
             at = address(exports.tabnode_malloc(bytes.byteLength + 1));
             const room = new Uint8Array(bytes.byteLength + 1);
             room.set(bytes);
-            libnode().write(at, room);
+            nodeProgram().write(at, room);
             strings.push(at);
           }
           nameTable.setUint32(index * 4, at, true);
           idTable.setUint32(index * 4, id, true);
         });
         if (credentials.length > 0) {
-          libnode().write(names, new Uint8Array(nameTable.buffer));
-          libnode().write(ids, new Uint8Array(idTable.buffer));
+          nodeProgram().write(names, new Uint8Array(nameTable.buffer));
+          nodeProgram().write(ids, new Uint8Array(idTable.buffer));
         }
         const answer = exports.tabnode_setgroups(credentials.length, names, ids);
         if (answer === -1) throw errnoException(lastErrno(), 'setgroups');

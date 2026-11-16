@@ -6,7 +6,7 @@
  * EnvDefiner intercept, a name they do not answer falling through to the object and its prototype as V8's
  * interceptors fall through.
  */
-import { address, libnode, withCString } from './libnode';
+import { address, nodeProgram, withCString } from './program';
 
 /** UV_ENOBUFS. */
 const UV_ENOBUFS = -105;
@@ -26,7 +26,7 @@ export interface EnvStore {
 export const realEnvStore: EnvStore = {
   /** Get (105-124): uv_os_getenv into 256 bytes, again into the size it asked for where they were too few. */
   get(key) {
-    const program = libnode();
+    const program = nodeProgram();
     return withCString(key, (keyAt) => {
       const sizeAt = address(program.exports.tabnode_malloc(4));
       let size = 256;
@@ -54,11 +54,11 @@ export const realEnvStore: EnvStore = {
   },
   /** Set (144-156): uv_os_setenv. */
   set(key, value) {
-    withCString(key, (keyAt) => withCString(value, (valueAt) => libnode().exports.tabnode_setenv(keyAt, valueAt)));
+    withCString(key, (keyAt) => withCString(value, (valueAt) => nodeProgram().exports.tabnode_setenv(keyAt, valueAt)));
   },
   /** Query (159-179): uv_os_getenv into two bytes; present unless it answers UV_ENOENT. */
   has(key) {
-    const program = libnode();
+    const program = nodeProgram();
     return withCString(key, (keyAt) => {
       const sizeAt = address(program.exports.tabnode_malloc(4 + 2));
       try {
@@ -69,11 +69,11 @@ export const realEnvStore: EnvStore = {
   },
   /** Delete (186-192): uv_os_unsetenv. */
   delete(key) {
-    withCString(key, (keyAt) => libnode().exports.tabnode_unsetenv(keyAt));
+    withCString(key, (keyAt) => nodeProgram().exports.tabnode_unsetenv(keyAt));
   },
   /** Enumerate (194-218): uv_os_environ's names. */
   keys() {
-    const program = libnode();
+    const program = nodeProgram();
     const countAt = address(program.exports.tabnode_malloc(4));
     try {
       const items = program.exports.tabnode_environ(countAt);

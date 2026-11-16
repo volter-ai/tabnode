@@ -1,5 +1,5 @@
 // THE zlib BINDING'S C (Tabnode ADR-0018 §1, item 10): Node v24.21.0's src/node_zlib.cc below V8, over the zlib
-// (Chromium's, as Node's deps/zlib ships it), brotli and zstd that libnode.so holds. A stream (tabnode_zlib_t) is
+// (Chromium's, as Node's deps/zlib ships it), brotli and zstd that the program links. A stream (tabnode_zlib_t) is
 // Node's CompressionStream over its context: ZlibContext, BrotliEncoderContext, BrotliDecoderContext,
 // ZstdCompressContext or ZstdDecompressContext, each as Node's C++ writes it. A write runs the context's
 // DoThreadPoolWork in the call (writeSync) or on libuv's threadpool (write: uv_queue_work, ThreadPoolWork::

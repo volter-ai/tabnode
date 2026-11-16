@@ -1,5 +1,5 @@
 // DSA OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's src/crypto/crypto_dsa.cc,
-// over ncrypto and OpenSSL in libnode.so: a key's details and DsaKeyPairGenJob's configuration and Setup. WebCrypto
+// over ncrypto and OpenSSL in the program: a key's details and DsaKeyPairGenJob's configuration and Setup. WebCrypto
 // defines no DSA, so every call here is OpenSSL's.
 #include <optional>
 

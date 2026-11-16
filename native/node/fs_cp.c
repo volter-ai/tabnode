@@ -1,6 +1,6 @@
 // rmSync and the cpSync calls (Tabnode ADR-0018 item 6): Node v24.21.0's RmSync, CpSyncCheckPaths, CpSyncOverrideFile
-// and CpSyncCopyDir (src/node_file.cc) are C++ over std::filesystem, and libnode has no C++ library, so the
-// std::filesystem calls they make are written here over the POSIX calls libc++ makes for them (its
+// and CpSyncCopyDir (src/node_file.cc) are C++ over std::filesystem, and the std::filesystem calls they make are
+// written here over the POSIX calls libc++ makes for them (its
 // filesystem/operations.cpp: symlink_status is lstat, status stat, remove remove(3), remove_all a walk that removes
 // children first and never follows a link, create_directories mkdir from the first missing parent, copy_file an open,
 // a check and a copy of the bytes). What Node decides around them (the retries, the checks, each error and its

@@ -1,5 +1,5 @@
 // HKDF OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_hkdf.cc, over ncrypto and OpenSSL in libnode.so: HKDFJob. The engine device answers an HKDF over a
+// src/crypto/crypto_hkdf.cc, over ncrypto and OpenSSL in the program: HKDFJob. The engine device answers an HKDF over a
 // digest WebCrypto defines (the binding's routing, src/node-lib/binding/crypto_kdf.ts); this is the rest.
 #include "crypto_util.h"
 

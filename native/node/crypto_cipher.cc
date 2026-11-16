@@ -1,5 +1,5 @@
 // THE CIPHERS OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_cipher.cc, over ncrypto and OpenSSL in libnode.so: GetCipherInfo, GetSSLCiphers, GetCiphers,
+// src/crypto/crypto_cipher.cc, over ncrypto and OpenSSL in the program: GetCipherInfo, GetSSLCiphers, GetCiphers,
 // CipherBase (createCipheriv and createDecipheriv) and PublicKeyCipher (publicEncrypt, privateDecrypt,
 // privateEncrypt, publicDecrypt). Which of a CipherBase's updates the engine device answers is the binding's routing
 // (src/node-lib/binding/crypto_cipher.ts); the context here is OpenSSL's, and it is set to where the device left the

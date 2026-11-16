@@ -1,5 +1,5 @@
 // SPKAC OF THE crypto BINDING (Tabnode ADR-0018 item 7): the OpenSSL half of Node v24.21.0's src/crypto/crypto_spkac.cc
-// (crypto.Certificate), over ncrypto and OpenSSL in libnode.so. Each answers Node's empty string for empty input
+// (crypto.Certificate), over ncrypto and OpenSSL in the program. Each answers Node's empty string for empty input
 // before it calls here (the engine's half).
 #include "crypto_util.h"
 

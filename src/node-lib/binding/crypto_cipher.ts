@@ -20,7 +20,7 @@
  * and publicDecrypt are OpenSSL's: Node's errors for them are OpenSSL's.
  */
 import { Buffer } from '../buffer-module';
-import { address } from './libnode';
+import { address } from './program';
 import { withBytes, withScratch, word } from './openssl';
 import { engineCallSync, type EngineKey } from './engine_device';
 import { answer, bufferSource, cppError, decodeInput, DEVICE_BOUND, glue, rethrow, setFields, toBuffer, Values } from './crypto_util';

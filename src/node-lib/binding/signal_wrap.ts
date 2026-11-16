@@ -14,7 +14,7 @@
  * and its profiler's, which a tab does not have, so the count decides nothing and is not kept (process_methods.c).
  * SIGPROF's refusal while the inspector listens is the inspector's too.
  */
-import { libnode, type HandleCallbacks } from './libnode';
+import { nodeProgram, type HandleCallbacks } from './program';
 import { HandleWrap } from './handle_wrap';
 import { invokeOwned, type OwnedHandle } from './handles';
 import { nextHandleAsyncId } from './stream_wrap';
@@ -26,7 +26,7 @@ export class Signal implements OwnedHandle, HandleCallbacks {
 
   /** SignalWrap's constructor (signal_wrap.cc:88-95): its uv_signal_t, initialized. */
   constructor() {
-    this.#handle = new HandleWrap(this, this, libnode().exports.tabnode_signal_new(), true);
+    this.#handle = new HandleWrap(this, this, nodeProgram().exports.tabnode_signal_new(), true);
   }
 
   getAsyncId(): number { return this.#asyncId; }
@@ -43,14 +43,14 @@ export class Signal implements OwnedHandle, HandleCallbacks {
   start(signum: unknown): number | undefined {
     const handle = this.#handle;
     if (handle.wrap === 0) return undefined;
-    return libnode().exports.tabnode_signal_start(handle.wrap, +(signum as number) | 0);
+    return nodeProgram().exports.tabnode_signal_start(handle.wrap, +(signum as number) | 0);
   }
 
   /** SignalWrap::Stop (signal_wrap.cc:143-154): uv_signal_stop; libuv's answer. */
   stop(): number | undefined {
     const handle = this.#handle;
     if (handle.wrap === 0) return undefined;
-    return libnode().exports.tabnode_signal_stop(handle.wrap);
+    return nodeProgram().exports.tabnode_signal_stop(handle.wrap);
   }
 
   /** Start's callback (signal_wrap.cc:121-130), the program's `signal_received`: `onsignal` made as MakeCallback makes it. */

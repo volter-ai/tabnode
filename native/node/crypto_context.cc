@@ -1,5 +1,5 @@
 // THE SecureContext OF THE crypto BINDING (Tabnode ADR-0018 item 7, ADR-0016 §3, §4): the OpenSSL half of Node
-// v24.21.0's src/crypto/crypto_context.cc, over ncrypto and OpenSSL in libnode.so. A SecureContext is an SSL_CTX and
+// v24.21.0's src/crypto/crypto_context.cc, over ncrypto and OpenSSL in the program. A SecureContext is an SSL_CTX and
 // what Node's object keeps beside it (TnContext, crypto_util.h); the process's root store is Node's, filled from the
 // PEM the binding hands in (the image's bundle and NODE_EXTRA_CA_CERTS, as --use-openssl-ca makes it).
 #include <openssl/core_names.h>

@@ -8,7 +8,7 @@
  * `process_exit` import), and the C then closes the callback's scope. Everything else, what a stdio entry is, a
  * child's pipes, how a child is found and started, is libuv's.
  */
-import { CRecord, address, libnode, type HandleCallbacks } from './libnode';
+import { CRecord, address, nodeProgram, type HandleCallbacks } from './program';
 import { HandleWrap } from './handle_wrap';
 import { kUvWrap } from './kernel_stream';
 import { invokeOwned, type OwnedHandle } from './handles';
@@ -54,7 +54,7 @@ export class Process implements OwnedHandle, HandleCallbacks {
 
   /** ProcessWrap's constructor (process_wrap.cc:110-116): its uv_process_t, marked uninitialized. */
   constructor() {
-    this.#handle = new HandleWrap(this, this, libnode().exports.tabnode_process_new(), false);
+    this.#handle = new HandleWrap(this, this, nodeProgram().exports.tabnode_process_new(), false);
   }
 
   getAsyncId(): number { return this.#asyncId; }
@@ -102,7 +102,7 @@ export class Process implements OwnedHandle, HandleCallbacks {
     if (!isUint32(flags)) throw check('args[5]->IsUint32()');
     record.uint32(SPAWN.flags, flags);
 
-    const { exports } = libnode();
+    const { exports } = nodeProgram();
     const options = record.commit();
     let err: number;
     const handle = this.#handle;
@@ -121,7 +121,7 @@ export class Process implements OwnedHandle, HandleCallbacks {
     const handle = this.#handle;
     if (handle.wrap === 0) return undefined;
     const number = +(signal as number) | 0;
-    return libnode().exports.tabnode_process_kill(handle.wrap, number);
+    return nodeProgram().exports.tabnode_process_kill(handle.wrap, number);
   }
 
   /**
@@ -130,7 +130,7 @@ export class Process implements OwnedHandle, HandleCallbacks {
    * (uv__wait_children), so it no longer holds the loop.
    */
   onUvExit(exitStatus: number, signalAt: number, signalLength: number): void {
-    const signal = signalLength === 0 ? '' : String.fromCharCode(...libnode().read(address(signalAt), signalLength));
+    const signal = signalLength === 0 ? '' : String.fromCharCode(...nodeProgram().read(address(signalAt), signalLength));
     invokeOwned(this, 'onexit', exitStatus, signal);
   }
 }

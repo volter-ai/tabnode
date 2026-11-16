@@ -12,7 +12,7 @@
  * refused by the device's error.
  */
 import { Buffer } from '../buffer-module';
-import { address } from './libnode';
+import { address } from './program';
 import { cString } from './openssl';
 import { engineCallAsync, engineCallSync, type EngineKey } from './engine_device';
 import { answer, checked, cppError, glue, rethrow, setFields, setKeyDataReader, toBuffer, Values } from './crypto_util';
@@ -304,7 +304,7 @@ export const keysBinding = {
 
 /**
  * The OpenSSL values the binding defines (NODE_DEFINE_CONSTANT of Keys::Initialize, Sign::Initialize, the keygen
- * and X509Certificate initializers), as libnode.so's OpenSSL defines them, read once from the program.
+ * and X509Certificate initializers), as the program's OpenSSL defines them, read once from it.
  */
 let opensslValues: Record<string, number> | undefined;
 export function opensslBindingValues(): Record<string, number> {

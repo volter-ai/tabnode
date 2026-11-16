@@ -35,7 +35,7 @@ import blobBinding from './blob';
 import zlibBinding from './zlib';
 import modulesBinding from './modules';
 import cryptoBinding from './crypto';
-import { programForm } from './libnode';
+import { programForm } from './program';
 import tlsWrapBinding from './tls_wrap';
 import jsStreamBinding from './js_stream';
 import { AsyncResource, asyncContextFrameBinding } from '../../shims/async_hooks';
@@ -94,7 +94,7 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   task_queue: () => taskQueueBinding,
   zlib: () => zlibBinding,
   modules: () => modulesBinding,
-  // Node's crypto and TLS over OpenSSL in the process's libnode.so (ADR-0016 §4, ADR-0018 item 7): `crypto`, `tls_wrap`,
+  // Node's crypto and TLS over OpenSSL in the process's `node` program (ADR-0016 §4, ADR-0018 item 7): `crypto`, `tls_wrap`,
   // and the JSStream a TLS socket over a JavaScript stream is made of. A realm with no `node` program has no OpenSSL,
   // and so no `crypto` binding, as a Node built without it (node_binding.cc: "No such binding").
   crypto: () => {

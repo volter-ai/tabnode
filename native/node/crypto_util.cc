@@ -1,6 +1,6 @@
 // THE crypto BINDING'S UTILITIES (Tabnode ADR-0018 item 7, ADR-0016 §3): the OpenSSL half of Node v24.21.0's
 // src/crypto/crypto_util.cc, crypto_timing.cc and of the process's OpenSSL start in src/node.cc, over ncrypto and
-// OpenSSL in libnode.so. The error queue as the binding reads it into Node's error shape (ThrowCryptoError), the
+// OpenSSL in the program. The error queue as the binding reads it into Node's error shape (ThrowCryptoError), the
 // process's OpenSSL start and InitCryptoOnce (which `main` runs), the version string process.versions reads, the thrown error,
 // ByteSource, a CryptoJob's threadpool work, and the binding's FIPS, engine, secure heap and timing calls.
 #include <openssl/conf.h>

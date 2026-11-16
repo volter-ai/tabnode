@@ -1,6 +1,6 @@
 /**
  * `internalBinding('tls_wrap')`: Node's `TLSWrap` (src/crypto/crypto_tls.cc) over OpenSSL in the process's
- * `libnode.so` (ADR-0016 §4, ADR-0018 item 7). The connection's `SSL` lives in the process's memory with two memory
+ * `node` program (ADR-0016 §4, ADR-0018 item 7). The connection's `SSL` lives in the process's memory with two memory
  * BIOs; the underlying stream's bytes are
  * written into `enc_in`, `ClearOut` runs `SSL_read` and hands the plaintext to this handle's reader, writes run
  * `SSL_write`, and `EncOut` writes what `enc_out` holds to the underlying stream. OpenSSL never touches a socket.
@@ -25,7 +25,7 @@ import { queueBindingTask } from '../../guest-loop';
 import {
   copyOut, cString, errorDetail, int32, mallocAnswer, openssl, opensslError, outAnswer, withBytes, withScratch, word,
 } from './openssl';
-import { setTlsCallbacks } from './libnode';
+import { setTlsCallbacks } from './program';
 import { SecureContext, errorCodes, refusal } from './crypto';
 import { ownCertificate, peerCertificate, x509CertificateOf, type X509Certificate } from './x509_object';
 import { listeningHandles } from './tcp_wrap';
@@ -693,7 +693,7 @@ export function listensWithTls(sockets: TreeSockets, port: number): boolean {
   });
 }
 
-// OpenSSL raises these only inside an `SSL_*` call of a live wrap (the program's tls_* imports, libnode.ts).
+// OpenSSL raises these only inside an `SSL_*` call of a live wrap (the program's tls_* imports, program.ts).
 setTlsCallbacks({
   handshake: (ssl, done) => wraps.get(ssl)!.handshake(done !== 0),
   keylog: (ssl, line) => wraps.get(ssl)!.keylog(line),

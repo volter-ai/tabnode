@@ -38,7 +38,7 @@ import { ownedRun, ownerOfInstance, setInstanceOwner, withNodeResourceScope } fr
 import { __tokenForProcess, type ProcessToken } from '../process-tokens';
 import { createProcess, type Process } from '../shims/process';
 import { createFsBindings } from './binding/fs';
-import { isNodeProgramRealm, programForm } from './binding/libnode';
+import { isNodeProgramRealm, programForm } from './binding/program';
 import { fsContext } from './binding/fs_req';
 import { createNodeFileBinding } from './binding/node_file';
 import { createNodeDirBinding } from './binding/node_dir';
@@ -412,7 +412,7 @@ function bindingSurface(value: unknown, owner: () => ProcessToken | null, proces
 export const REALM_ENVIRONMENT: ReadonlySet<string> = new Set<string>(REALM_ENVIRONMENT_IDS);
 const REALM_BINDINGS = new Set(['timers', 'async_context_frame', 'task_queue']);
 
-export { NODE_PROGRAM_REALM, isNodeProgramRealm } from './binding/libnode';
+export { NODE_PROGRAM_REALM, isNodeProgramRealm } from './binding/program';
 import { REALM_ENVIRONMENT_IDS, type RealmAliasId } from './engine-builtin-ids';
 
 /** A realm's own loaders, where its process is `node` and Node's bootstrap made them (realm.ts). */

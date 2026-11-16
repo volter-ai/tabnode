@@ -50,7 +50,7 @@ import { createNodeModulesBinding } from './binding/node_modules';
 import { promiseHandlerAddedAfterReject } from './binding/task_queue';
 import { routeErrorStacks } from '../runtime';
 import { createEnvProxy, realEnvStore } from './binding/env_var';
-import { libnode, withCString } from './binding/libnode';
+import { nodeProgram, withCString } from './binding/program';
 
 const indirectEval = eval;
 
@@ -320,12 +320,12 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
   // program's (process_methods.c), "node" where libuv has none.
   setPatchedFacts(process, {
     title: () => {
-      const program = libnode();
+      const program = nodeProgram();
       const at = program.exports.tabnode_get_process_title();
       if (at === 0) return 'node';
       try { return program.cString(at) ?? 'node'; } finally { program.exports.tabnode_free(at); }
     },
-    setTitle: (value: string) => { withCString(value, (at) => libnode().exports.tabnode_set_process_title(at)); },
+    setTitle: (value: string) => { withCString(value, (at) => nodeProgram().exports.tabnode_set_process_title(at)); },
     argv: run.argv, execArgv: run.execArgv, pid: run.pid, ppid: () => run.ppid(), execPath: run.execPath,
   });
 

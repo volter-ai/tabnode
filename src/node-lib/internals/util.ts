@@ -25,7 +25,7 @@
  * Node's own code, on the bindings under `../binding/`.
  */
 
-import { programForm } from '../binding/libnode';
+import { programForm } from '../binding/program';
 import { nodeLibInternalRequire } from '../load';
 
 /**

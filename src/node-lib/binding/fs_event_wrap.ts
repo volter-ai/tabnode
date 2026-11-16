@@ -3,7 +3,7 @@
  * FSEvent is a HandleWrap over a uv_fs_event_t in the process's memory, so `fs.watch` is libuv's inotify watch in the
  * process's kernel, and each change is the program's `fs_event` import.
  */
-import { libnode, type HandleCallbacks } from './libnode';
+import { nodeProgram, type HandleCallbacks } from './program';
 import { HandleWrap } from './handle_wrap';
 import { Room, codeError, parseEncoding, pathBytes, type FsContext } from './fs_req';
 import { uvConstant } from './uv';
@@ -22,7 +22,7 @@ export function createFsEventWrapBinding(context: FsContext) {
     readonly #owner: ProcessToken | null = currentOwner();
 
     constructor() {
-      this.#handle = new HandleWrap(this, this, libnode().exports.tabnode_fs_event_new(), false);
+      this.#handle = new HandleWrap(this, this, nodeProgram().exports.tabnode_fs_event_new(), false);
     }
 
     /** GetInitialized: the handle is not closing (IsHandleClosing: closing or closed). */
@@ -31,23 +31,23 @@ export function createFsEventWrapBinding(context: FsContext) {
     /** FSEventWrap::Start(filename, persistent, recursive, encoding) (fs_event_wrap.cc:139-181): 0, or libuv's error. */
     start(path: unknown, persistent: unknown, recursive: unknown, encoding: unknown): number {
       if (this.initialized) throw codeError('ERR_INVALID_STATE', 'FSEvent: already started');
-      const lib = libnode();
+      const program = nodeProgram();
       const handle = this.#handle.wrap;
       this.#encoding = parseEncoding(encoding);
-      let err = lib.exports.tabnode_fs_event_init(handle);
+      let err = program.exports.tabnode_fs_event_init(handle);
       if (err !== 0) return err;
       const room = new Room();
       const at = room.cstr(pathBytes(path));
-      const { request, base } = room.open(lib);
-      try { err = lib.exports.tabnode_fs_event_start(handle, base + at, recursive === true ? 1 : 0); }
-      finally { lib.exports.tabnode_fs_free(request); }
+      const { request, base } = room.open(program);
+      try { err = program.exports.tabnode_fs_event_start(handle, base + at, recursive === true ? 1 : 0); }
+      finally { program.exports.tabnode_fs_free(request); }
       this.#handle.markAsInitialized();
       if (err !== 0) {
         this.#handle.close(undefined);
         return err;
       }
       // Check for persistent argument
-      if (persistent !== true) lib.exports.tabnode_handle_unref(handle);
+      if (persistent !== true) program.exports.tabnode_handle_unref(handle);
       return err;
     }
 
@@ -61,7 +61,7 @@ export function createFsEventWrapBinding(context: FsContext) {
     /** FSEventWrap::OnEvent: the status, the event's name the C chose (fs_event.c), and the filename encoded. */
     onUvFsEvent(filename: number, event: string, status: number): void {
       const argv: unknown[] = [status, event, null];
-      const name = libnode().cBytes(filename);
+      const name = nodeProgram().cBytes(filename);
       if (name !== null) {
         try { argv[2] = context.encode(name, this.#encoding); }
         catch { argv[0] = uvConstant('UV_EINVAL'); argv[2] = context.encode(name, 'buffer'); }

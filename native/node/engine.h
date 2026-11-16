@@ -1,4 +1,4 @@
-// The engine's imports (Tabnode ADR-0018 §2): what libnode's C calls in the realm's JavaScript, as Node's C++ calls
+// The engine's imports (Tabnode ADR-0018 §2): what the program's C calls in the realm's JavaScript, as Node's C++ calls
 // into V8. One module, `host:tabnode`, the identity the substrate registers the engine under (its `hostPrograms`); the
 // machine answers it from the engine module's `imports` (browser-substrate host/task.mjs).
 #ifndef TABNODE_ENGINE_H

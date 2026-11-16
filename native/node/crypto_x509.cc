@@ -1,6 +1,6 @@
 // THE CERTIFICATES OF THE crypto BINDING (Tabnode ADR-0018 item 7, ADR-0016 §3): the OpenSSL half of Node v24.21.0's
 // src/crypto/crypto_x509.cc (X509ToObject and X509Certificate's fields) and of crypto_common.cc's issuer walk, over
-// ncrypto's X509View and OpenSSL in libnode.so. A certificate is an X509* the engine holds until it frees it.
+// ncrypto's X509View and OpenSSL in the program. A certificate is an X509* the engine holds until it frees it.
 #include <openssl/ec.h>
 #include <openssl/x509v3.h>
 

@@ -11,7 +11,7 @@
  * learns its key only at its end, so one over a WebCrypto digest keeps its input until then.
  */
 import { Buffer } from '../buffer-module';
-import { address } from './libnode';
+import { address } from './program';
 import { withBytes } from './openssl';
 import { engineCallAsync, engineCallSync } from './engine_device';
 import {
