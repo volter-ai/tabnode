@@ -27,8 +27,10 @@ a shared library here") and ADR-0238 (exec of a dynamic program, its C++ runtime
 
 ### 1. `/usr/bin/node` is one WALI program
 
-Node's native half is linked into the program as Node's default build links it: libuv, OpenSSL and ncrypto, llhttp,
-Ada, zlib, brotli, zstd, nghttp2, simdutf, merve and Node's glue (ADR-0018 §3), each with Node's configuration. The
+Node's native half is linked into the program as Node's default build links it: each of Node's `deps/` libraries a
+binding of the program uses (libuv, OpenSSL and ncrypto, llhttp, zlib, brotli, zstd, merve, simdutf and simdjson;
+Ada and nghttp2 when their bindings are the program's, ADR-0018) and Node's glue (ADR-0018 §3), each with Node's
+configuration. The
 program needs `libc.so` and the SDK's C++ runtime alone (browser-substrate ADR-0238 §4), and links through the SDK's
 `c++`, which adds that runtime. No build names a runtime library or a tag object.
 
@@ -58,5 +60,5 @@ corrects it, never by undefining `__wasm__` for a list of files.
 
 ## Consequences
 
-- `libnode.so`, its soname and its place in the image's run path go. `scripts/build-libnode.sh` links one program.
+- `libnode.so`, its soname and its place in the image's run path go. `scripts/build-node.sh` links one program.
 - ADR-0018's sentences that name `libnode.so` as a module read as the program's C.
