@@ -3,7 +3,7 @@
 // libuv's uv.h and the OpenSSL the program links, as Node compiles them into its binary against its system's: the
 // errno, signal, priority, fs, crypto, zlib, dlopen, trace and internal groups, and os's UV_UDP_REUSEADDR (1388). The build
 // extracts the functions, the system headers and fallbacks the file includes (30-113) and node_constants.h's own
-// definitions (30-78) from Node's tarball (scripts/build-libnode.sh); tracing/trace_event_common.h is Node's, which its
+// definitions (30-78) from Node's tarball (scripts/build-node.sh); tracing/trace_event_common.h is Node's, which its
 // env-inl.h includes. Only V8 is not here: a Define* function's target is the text its definitions are written into,
 // from which the engine builds `internalBinding('constants')` (src/shims/constants.ts).
 //

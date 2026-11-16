@@ -376,7 +376,7 @@ process is `node` differs from Node, the browser or the page's engine decides:
   ADR-0236 step 5 says, a difference from Node v24.21.0's `deps/uv` named here; musl's `posix_spawn` is then a clone
   with an entry, and the probe needs `CLONE_VM` to share the memory.
 - **Read 2026-11-15, on the Node host (Node v26.12.0), Rallly's image (browser-substrate `rallly:3e63239`) booted on
-  a clone of its disk:** `node` and `libnode.so` built by `scripts/build-libnode.sh` from Node v24.21.0's tarball with
+  a clone of its disk:** `node` and `libnode.so` built by `scripts/build-node.sh` from Node v24.21.0's tarball with
   the substrate's prepared native SDK, placed in Rallly's app container (`/opt/programs/bin/node-libuv`,
   `/opt/programs/lib/libnode.so`) and run there beside the image's own `/usr/bin/node`, today's host program, in one
   machine. The loader loads `libnode.so` on the program's worker; a kernel wait of the program (libuv's `epoll_wait`)
@@ -503,7 +503,7 @@ process is `node` differs from Node, the browser or the page's engine decides:
      engine with no machine) has no IPv4, IPv6 or AF_UNIX, and its pipes and terminals are the engine's pairing.
   5. `process_wrap` and `spawn_sync` over `uv_spawn`, with libuv at a267f5688b: libuv's own source at
      a267f5688be25e8d4628e296245a041adc2ca072, GitHub's archive of it pinned by SHA-256 02d51895…a0af
-     (`scripts/build-libnode.sh`), where Node v24.21.0 pins 1.52.1 in `deps/uv`; every `native/node` source is compiled
+     (`scripts/build-node.sh`), where Node v24.21.0 pins 1.52.1 in `deps/uv`; every `native/node` source is compiled
      against it. Its version says 1.53.1-dev, its 35 Linux sources and CMake's Linux defines are 1.52.1's, and its
      difference is the spawn (`src/unix/process.c`: `posix_spawn` after the clone probe, fork only where `posix_spawn`
      cannot carry the options: a uid or gid). A `Process`'s handle is a HandleWrap over native/node's `uv_process_t`
@@ -677,7 +677,7 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
      them**: the part of item 7's "rest of §1" a server's request path uses, numbered after item 9 so the numbers
      cited stand. The program holds Node v24.21.0's `deps/zlib` (Chromium's zlib, 1.3.2.1-motley), `deps/brotli`
      (1.2.0), `deps/zstd` (1.5.7) and `deps/llhttp` (9.4.3), each compiled from Node's release archive with its gyp
-     file's sources and defines and Node's Release flags (`scripts/build-libnode.sh`), zlib as zlib.gyp builds it for
+     file's sources and defines and Node's Release flags (`scripts/build-node.sh`), zlib as zlib.gyp builds it for
      an architecture with neither x86's nor NEON's optimizations (`CPU_NO_SIMD`, `inflate.c`).
      `internalBinding('zlib')` is Node's `src/node_zlib.cc` split where V8 stands. The C (`native/node/node_zlib.c`)
      holds every context (ZlibContext, BrotliEncoderContext, BrotliDecoderContext, ZstdCompressContext,
@@ -815,7 +815,7 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   OpenSSL's seeding is `getrandom` (else `/dev/urandom`) and its clock `clock_gettime`; it reads `OPENSSL_CONF`'s
   file or `/etc/ssl/openssl.cnf` where the image has one (a missing file is no error, as in Node), and a provider
   module from `/usr/lib/ossl-modules` only where the configuration or `crypto.setFips` asks for one.
-- *The build* (`scripts/build-libnode.sh`): `<native SDK> <libuv a267f5688b archive> <node-v24.21.0.tar.gz> <out>`.
+- *The build* (`scripts/build-node.sh`): `<native SDK> <libuv a267f5688b archive> <node-v24.21.0.tar.gz> <out>`.
   Its C++ runtime is the native SDK's, which the SDK's `c++` links (browser-substrate ADR-0238 §4), and Node's
   release archive is an input (OpenSSL, ncrypto, zlib, brotli, zstd, llhttp, merve, V8's simdutf and simdjson, `node_root_certs.h`,
   `node_constants.cc` and `.h`, `node_zlib.cc`'s constants, `tracing/trace_event_common.h`, `node_options.cc`, `.h`

@@ -1,6 +1,6 @@
 // NODE'S START BEFORE V8 (Tabnode ADR-0018 §7): what Node v24.21.0's node::Start does from its command line to its
 // environment, compiled from Node's own text as Node compiles it into its binary, each range extracted from Node's
-// tarball (scripts/build-libnode.sh):
+// tarball (scripts/build-node.sh):
 // - the options: node_options.h's structs and OptionsParser (19-699), node_options-inl.h's AddOption, Implies, Insert
 //   and Parse (12-520), and node_options.cc's per_process options, every CheckOptions (40-311), the four parsers and
 //   their tables (389-1662), and HandleEnvOptions and ParseNodeOptionsEnvVar (2171-2240), with node.h's

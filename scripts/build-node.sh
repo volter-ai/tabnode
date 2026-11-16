@@ -34,7 +34,7 @@
 # unwinder a C++ link takes, so the script names no runtime library. The program's start file defines the process's
 # exception tags, which every library imports (ADR-0238 §2).
 #
-# Usage: scripts/build-libnode.sh <native SDK> \
+# Usage: scripts/build-node.sh <native SDK> \
 #   <libuv-a267f5688be25e8d4628e296245a041adc2ca072.tar.gz> <node-v24.21.0.tar.gz> <out directory>
 # The script owns its scratch: a directory of its own from mktemp -d, removed by its EXIT trap however it ends.
 set -euo pipefail

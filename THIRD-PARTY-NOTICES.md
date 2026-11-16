@@ -7,13 +7,13 @@ third-party bodies also retain their notices here.
 | What | Where | Origin | Licence |
 |---|---|---|---|
 | Node.js's own library files, unmodified | `src/node-lib/**/*.js` | `nodejs/node` v24.21.0, `lib/`, and `deps/undici/undici.js` (undici's bundle, llhttp's WebAssembly inside it) | MIT, `src/node-lib/LICENSE` |
-| zlib (Chromium's, 1.3.2.1-motley), brotli 1.2.0, zstd 1.5.7 and llhttp 9.4.3, built into the `node` program by `scripts/build-libnode.sh`, and the zlib and http_parser bindings' glue over them | `native/node/node_zlib.c`, `native/node/node_http_parser.c` (the build's output is not carried here) | Node.js v24.21.0, `deps/zlib`, `deps/brotli`, `deps/zstd` and `deps/llhttp`; the glue carries `src/node_zlib.cc`'s and `src/node_http_parser.cc`'s C half | zlib's licence, brotli MIT, zstd BSD-3-Clause, llhttp MIT; notices below; the glue MIT, `src/node-lib/LICENSE` |
+| zlib (Chromium's, 1.3.2.1-motley), brotli 1.2.0, zstd 1.5.7 and llhttp 9.4.3, built into the `node` program by `scripts/build-node.sh`, and the zlib and http_parser bindings' glue over them | `native/node/node_zlib.c`, `native/node/node_http_parser.c` (the build's output is not carried here) | Node.js v24.21.0, `deps/zlib`, `deps/brotli`, `deps/zstd` and `deps/llhttp`; the glue carries `src/node_zlib.cc`'s and `src/node_http_parser.cc`'s C half | zlib's licence, brotli MIT, zstd BSD-3-Clause, llhttp MIT; notices below; the glue MIT, `src/node-lib/LICENSE` |
 | Ada's `ada::idna`, compiled to WebAssembly by `scripts/build-ada-idna-wasm.sh` | `src/node-lib/binding/ada-idna-wasm.ts` | Node.js v24.21.0, `deps/ada` (Ada 4.0.0; `ada.h` 32-240, `ada.cpp` 140-6720) | MIT, Ada's notice below |
 | The Ada module's runtime, as `scripts/build-ada-idna-wasm.sh` links it: wasi-libc (`libc.a`, `crt1-reactor.o`), libc++ and libc++abi (the `noeh` builds), and compiler-rt's builtins | `src/node-lib/binding/ada-idna-wasm.ts` | wasi-sdk 34.0: wasi-libc at `2e6fb9d8ee0cdf9e431fbcabe8af3115de000a13`, llvm-project at `895aa2c896ada719451be2e3673c83da8ddf1141` | wasi-libc MIT, with its musl, cloudlibc and dlmalloc notices; libc++, libc++abi and compiler-rt Apache-2.0 WITH LLVM-exception; notices below |
-| OpenSSL 3.5.8 and ncrypto, built into the `node` program by `scripts/build-libnode.sh`, and the crypto bindings' glue over them | `native/node/crypto_*.cc`, `native/node/node_constants.cc` (the build's output is not carried here) | Node.js v24.21.0, `deps/openssl/openssl` (OpenSSL 3.5.8), `deps/ncrypto`, `src/node_root_certs.h` and `src/node_constants.cc`; the glue carries `src/crypto/crypto_*.cc`'s OpenSSL half | OpenSSL Apache-2.0, its notice below; ncrypto, Node's root list and constants MIT, `src/node-lib/LICENSE` |
-| merve and simdutf, built into the `node` program by `scripts/build-libnode.sh`, and the cjs_lexer binding's glue over merve | `native/node/node_cjs_lexer.c` (the build's output is not carried here) | Node.js v24.21.0, `deps/merve` and `deps/v8/third_party/simdutf`; the glue carries `src/node_cjs_lexer.cc`'s C half | merve MIT, simdutf MIT, notices below; the glue MIT, `src/node-lib/LICENSE` |
-| Node's start before V8 (its options, env files, config file and `--run`), compiled into the `node` program from Node's own source by `scripts/build-libnode.sh`, and their glue | `native/node/node_start.cc` (the build's output is not carried here) | Node.js v24.21.0, `src/node_options.cc`, `node_options.h`, `node_options-inl.h`, `node.h`, `node_revert.h`, `node_version.h`, `node_exit_code.h`, `util.h`, `util-inl.h`, `util.cc`, `debug_utils-inl.h`, `node_dotenv.h` and `.cc`, `node_config_file.h` and `.cc`, `node_task_runner.h` and `.cc`, `quic/guard.h` and `large_pages/node_large_page.cc` | MIT, `src/node-lib/LICENSE` |
-| simdjson 4.6.7, built into the `node` program by `scripts/build-libnode.sh` | (the build's output is not carried here) | Node.js v24.21.0, `deps/simdjson` | Apache-2.0, its notice below |
+| OpenSSL 3.5.8 and ncrypto, built into the `node` program by `scripts/build-node.sh`, and the crypto bindings' glue over them | `native/node/crypto_*.cc`, `native/node/node_constants.cc` (the build's output is not carried here) | Node.js v24.21.0, `deps/openssl/openssl` (OpenSSL 3.5.8), `deps/ncrypto`, `src/node_root_certs.h` and `src/node_constants.cc`; the glue carries `src/crypto/crypto_*.cc`'s OpenSSL half | OpenSSL Apache-2.0, its notice below; ncrypto, Node's root list and constants MIT, `src/node-lib/LICENSE` |
+| merve and simdutf, built into the `node` program by `scripts/build-node.sh`, and the cjs_lexer binding's glue over merve | `native/node/node_cjs_lexer.c` (the build's output is not carried here) | Node.js v24.21.0, `deps/merve` and `deps/v8/third_party/simdutf`; the glue carries `src/node_cjs_lexer.cc`'s C half | merve MIT, simdutf MIT, notices below; the glue MIT, `src/node-lib/LICENSE` |
+| Node's start before V8 (its options, env files, config file and `--run`), compiled into the `node` program from Node's own source by `scripts/build-node.sh`, and their glue | `native/node/node_start.cc` (the build's output is not carried here) | Node.js v24.21.0, `src/node_options.cc`, `node_options.h`, `node_options-inl.h`, `node.h`, `node_revert.h`, `node_version.h`, `node_exit_code.h`, `util.h`, `util-inl.h`, `util.cc`, `debug_utils-inl.h`, `node_dotenv.h` and `.cc`, `node_config_file.h` and `.cc`, `node_task_runner.h` and `.cc`, `quic/guard.h` and `large_pages/node_large_page.cc` | MIT, `src/node-lib/LICENSE` |
+| simdjson 4.6.7, built into the `node` program by `scripts/build-node.sh` | (the build's output is not carried here) | Node.js v24.21.0, `deps/simdjson` | Apache-2.0, its notice below |
 | The engine this repository is a fork of | the tree | `macaly/almostnode` 0.2.14 | MIT, `LICENSE` |
 | SQLite 3.53.4 WebAssembly, embedded unchanged by `src/node-lib/sqlite-wasm.ts` | worker build | `@sqlite.org/sqlite-wasm` 3.53.4-build2, source `sqlite/sqlite-wasm` at `b30a8a19cab9a7928ac6b44bbc91f0b65e56324d` | SQLite public-domain dedication; Emscripten runtime notices below |
 | just-bash browser entry and its JavaScript dependency bodies | runtime-worker build from `src/worker/runtime-worker.ts` | `just-bash` 2.14.5, source `vercel-labs/just-bash` at `2bbbfaf8cc769109361ba29b55f5647a43988b14` | Apache-2.0 and the dependency licences below |
@@ -3140,7 +3140,7 @@ THE SOFTWARE.
 
 ## zlib, brotli, zstd and llhttp notices
 
-The licences of the libraries `scripts/build-libnode.sh` compiles into the `node` program from Node.js v24.21.0's release
+The licences of the libraries `scripts/build-node.sh` compiles into the `node` program from Node.js v24.21.0's release
 archive (SHA-256 `622424efb5dc0c26c93fbb619ff10737ee289c605b837c88778e186925d82777`), as Node carries them, unchanged.
 
 `deps/zlib/LICENSE`:
@@ -3258,7 +3258,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## merve and simdutf notices
 
-The licences of the CommonJS lexer and the UTF library `scripts/build-libnode.sh` compiles into the `node` program from
+The licences of the CommonJS lexer and the UTF library `scripts/build-node.sh` compiles into the `node` program from
 Node.js v24.21.0's release archive (SHA-256 `622424efb5dc0c26c93fbb619ff10737ee289c605b837c88778e186925d82777`), as
 Node carries them, unchanged.
 

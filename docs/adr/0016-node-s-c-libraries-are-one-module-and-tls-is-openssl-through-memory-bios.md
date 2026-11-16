@@ -59,7 +59,7 @@ Basis: the Node-fidelity study and its independent review (card VO-3806's commen
 
 OpenSSL 3.5.8 (`deps/openssl/openssl`) and ncrypto (`deps/ncrypto`) are in the WALI program `node`, Node's native
 half in the Node process's memory (ADR-0019 §1), built from Node v24.21.0's own source tarball (pinned by digest) by
-`scripts/build-libnode.sh` with the WALI SDK, and linked whole into it, as `node.gypi` links OpenSSL into Node's
+`scripts/build-node.sh` with the WALI SDK, and linked whole into it, as `node.gypi` links OpenSSL into Node's
 executable (`node.gypi:416-418`), so an addon finds all of OpenSSL in the program.
 The rest of ADR-0018 §1's libraries (llhttp, Ada, zlib, brotli, zstd, nghttp2) join it in that record's order.
 
