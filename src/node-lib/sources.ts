@@ -205,6 +205,23 @@ import BOOTSTRAP_PROCESS_PRE_EXECUTION from './internal/process/pre_execution.js
 import BOOTSTRAP_PROCESS_PERMISSION from './internal/process/permission.js?raw';
 import BOOTSTRAP_PROCESS_FINALIZATION from './internal/process/finalization.js?raw';
 import BOOTSTRAP_PROCESS_REPORT from './internal/process/report.js?raw';
+import BOOTSTRAP_PUBLIC_VM from './vm.js?raw';
+import BOOTSTRAP_PUBLIC_STREAM_DUPLEX from './_stream_duplex.js?raw';
+import BOOTSTRAP_PUBLIC_STREAM_PASSTHROUGH from './_stream_passthrough.js?raw';
+import BOOTSTRAP_PUBLIC_STREAM_READABLE from './_stream_readable.js?raw';
+import BOOTSTRAP_PUBLIC_STREAM_TRANSFORM from './_stream_transform.js?raw';
+import BOOTSTRAP_PUBLIC_STREAM_WRAP from './_stream_wrap.js?raw';
+import BOOTSTRAP_PUBLIC_STREAM_WRITABLE from './_stream_writable.js?raw';
+import BOOTSTRAP_PUBLIC_CONSOLE from './console.js?raw';
+import BOOTSTRAP_PUBLIC_SYS from './sys.js?raw';
+import BOOTSTRAP_PUBLIC_TRACE_EVENTS from './trace_events.js?raw';
+import BOOTSTRAP_VM_MODULE from './internal/vm/module.js?raw';
+import BOOTSTRAP_MAIN_RUN_MAIN_MODULE from './internal/main/run_main_module.js?raw';
+import BOOTSTRAP_MAIN_EVAL_STRING from './internal/main/eval_string.js?raw';
+import BOOTSTRAP_MAIN_EVAL_STDIN from './internal/main/eval_stdin.js?raw';
+import BOOTSTRAP_MAIN_CHECK_SYNTAX from './internal/main/check_syntax.js?raw';
+import BOOTSTRAP_MAIN_PRINT_HELP from './internal/main/print_help.js?raw';
+import BOOTSTRAP_MODULE from './module.js?raw';
 import BOOTSTRAP_ASYNC_HOOKS from './internal/async_hooks.js?raw';
 import BOOTSTRAP_PROMISE_HOOKS from './internal/promise_hooks.js?raw';
 import BOOTSTRAP_ASYNC_LOCAL_STORAGE_ASYNC_HOOKS from './internal/async_local_storage/async_hooks.js?raw';
@@ -265,6 +282,23 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/process/permission': BOOTSTRAP_PROCESS_PERMISSION,
   'internal/process/finalization': BOOTSTRAP_PROCESS_FINALIZATION,
   'internal/process/report': BOOTSTRAP_PROCESS_REPORT,
+  'vm': BOOTSTRAP_PUBLIC_VM,
+  '_stream_duplex': BOOTSTRAP_PUBLIC_STREAM_DUPLEX,
+  '_stream_passthrough': BOOTSTRAP_PUBLIC_STREAM_PASSTHROUGH,
+  '_stream_readable': BOOTSTRAP_PUBLIC_STREAM_READABLE,
+  '_stream_transform': BOOTSTRAP_PUBLIC_STREAM_TRANSFORM,
+  '_stream_wrap': BOOTSTRAP_PUBLIC_STREAM_WRAP,
+  '_stream_writable': BOOTSTRAP_PUBLIC_STREAM_WRITABLE,
+  'console': BOOTSTRAP_PUBLIC_CONSOLE,
+  'sys': BOOTSTRAP_PUBLIC_SYS,
+  'trace_events': BOOTSTRAP_PUBLIC_TRACE_EVENTS,
+  'internal/vm/module': BOOTSTRAP_VM_MODULE,
+  'internal/main/run_main_module': BOOTSTRAP_MAIN_RUN_MAIN_MODULE,
+  'internal/main/eval_string': BOOTSTRAP_MAIN_EVAL_STRING,
+  'internal/main/eval_stdin': BOOTSTRAP_MAIN_EVAL_STDIN,
+  'internal/main/check_syntax': BOOTSTRAP_MAIN_CHECK_SYNTAX,
+  'internal/main/print_help': BOOTSTRAP_MAIN_PRINT_HELP,
+  'module': BOOTSTRAP_MODULE,
   'internal/async_hooks': BOOTSTRAP_ASYNC_HOOKS,
   'internal/promise_hooks': BOOTSTRAP_PROMISE_HOOKS,
   'internal/async_local_storage/async_hooks': BOOTSTRAP_ASYNC_LOCAL_STORAGE_ASYNC_HOOKS,

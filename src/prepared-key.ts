@@ -12,19 +12,24 @@ export const PREPARED_MODULES_KEPT = '.kept';
 /**
  * Which realm a body is prepared for (ADR-0018 §7): `guest`, a realm whose processes' free names resolve on their
  * scope objects (ADR-0015), whose bodies are rewritten for them; `node`, the realm whose process is `node`, whose
- * global is the realm's own, whose bodies are compiled as Node compiles them, unrewritten.
+ * modules Node's own loaders compile: a CommonJS body (`node-cjs`) or a source text module's lowering (`node-esm`).
  */
 export type PreparedModuleForm = 'guest' | 'node';
 /** How a file is compiled, which is part of its body's name: undefined for a file no body is prepared for. */
-export type PreparedModuleKind = 'js' | 'cjs' | 'node-js' | 'node-cjs';
+export type PreparedModuleKind = 'js' | 'cjs' | 'node-cjs' | 'node-esm';
+/**
+ * The kind of body an image prepares for a file. For the `node` form a `.mjs` file is a source text module and every
+ * other JavaScript file a CommonJS body, the form Node's CommonJS loader compiles; an ES module of a `.js` file is
+ * prepared where it first runs, its package's type known there.
+ */
 export function preparedModuleKind(resolvedPath: string, form: PreparedModuleForm = 'guest'): PreparedModuleKind | undefined {
   const extension = /\.(js|cjs|mjs)$/u.exec(resolvedPath)?.[1];
   // Node also loads extensionless JavaScript executables (for example a
   // package's bin entry). Their preparation is identical to ordinary JS.
   const extensionless = !resolvedPath.slice(resolvedPath.lastIndexOf('/') + 1).includes('.');
   if (!extension && !extensionless) return undefined;
-  const kind = extension === 'cjs' ? 'cjs' : 'js';
-  return form === 'node' ? `node-${kind}` : kind;
+  if (form === 'node') return extension === 'mjs' ? 'node-esm' : 'node-cjs';
+  return extension === 'cjs' ? 'cjs' : 'js';
 }
 /**
  * The name a prepared body goes under, from the plain SHA-256 of the file's bytes (64 lowercase hex): the format,
@@ -36,5 +41,5 @@ export function preparedModuleKeyOf(kind: PreparedModuleKind, contentSha256: str
 }
 /** Whether a name is a prepared body's, of this format. */
 export function isPreparedModuleKey(name: string): boolean {
-  return name.startsWith(`${PREPARED_MODULES_FORMAT}.`) && /^\.(?:node-)?(?:js|cjs)\.[0-9a-f]{64}$/u.test(name.slice(PREPARED_MODULES_FORMAT.length));
+  return name.startsWith(`${PREPARED_MODULES_FORMAT}.`) && /^\.(?:js|cjs|node-cjs|node-esm)\.[0-9a-f]{64}$/u.test(name.slice(PREPARED_MODULES_FORMAT.length));
 }

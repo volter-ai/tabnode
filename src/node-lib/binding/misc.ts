@@ -180,6 +180,10 @@ export const encodingBinding = {
  * serialization, not set, since the setter would encode it again.
  */
 export const urlBinding = {
+  /** CanParse (node_url.cc): whether the input parses, against the base where one is given, by the realm's parser. */
+  canParse(input: unknown, base?: unknown): boolean {
+    try { new URL(`${input}`, base === undefined ? undefined : `${base}`); return true; } catch { return false; }
+  },
   format(href: string, hash: boolean, unicode: boolean, search: boolean, auth: boolean): string {
     let url: URL;
     try { url = new URL(href); } catch { return href; }

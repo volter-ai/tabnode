@@ -77,8 +77,16 @@ export function createTaskQueueBinding(): Record<string, unknown> {
   };
 }
 
+/** The realm's promise reject callback (Realm::promise_reject_callback), which ThrowIfPromiseRejected calls too. */
+let promiseRejectCallback: ((type: number, promise: unknown, reason: unknown) => void) | undefined;
+/** A rejected promise told as handled after its rejection (module_wrap's ThrowIfPromiseRejected). */
+export function promiseHandlerAddedAfterReject(promise: unknown): void {
+  promiseRejectCallback?.(promiseRejectEvents.kPromiseHandlerAddedAfterReject, promise, undefined);
+}
+
 /** The realm's own reports of a rejection nobody handled, and of a handler added after one, as V8's events. */
 function listenForRejections(callback: (type: number, promise: unknown, reason: unknown) => void): void {
+  promiseRejectCallback = callback;
   const report = (type: number, promise: unknown, reason: unknown): void => {
     try { callback(type, promise, reason); }
     catch (error) {

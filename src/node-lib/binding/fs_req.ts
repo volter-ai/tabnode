@@ -55,11 +55,14 @@ export interface FsContext {
   encode(bytes: Uint8Array, encoding: Encoding): string | Uint8Array;
   /** Node's `internal/errors` determineSpecificType, which DetermineSpecificErrorType mirrors. */
   specificType(value: unknown): string;
+  /** A builtin of the process's graph, for what Node's C++ answers with its JavaScript's (PathResolve, its errors). */
+  require(id: string): any;
 }
 
-export function fsContext(Bytes: () => typeof NodeBuffer, specificType: (value: unknown) => string): FsContext {
+export function fsContext(Bytes: () => typeof NodeBuffer, specificType: (value: unknown) => string, require: (id: string) => any): FsContext {
   return {
     Bytes,
+    require,
     encode: (bytes, encoding) => {
       const buffer = Bytes().from(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength);
       return encoding === 'buffer' ? Bytes().from(bytes) : (buffer as { toString(encoding: string): string }).toString(encoding);

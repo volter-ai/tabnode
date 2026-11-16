@@ -23,6 +23,8 @@ import * as workerThreadsShim from '../shims/worker_threads';
 import * as http2Shim from '../shims/http2';
 import * as inspectorShim from '../shims/inspector';
 import * as perfHooksShim from '../shims/perf_hooks';
+import * as replShim from '../shims/repl';
+import * as domainShim from '../shims/domain';
 import { nodeLibInternalRequire } from './load';
 
 /** Every name this table answers: what a realm's builtin ids hold of it. */
@@ -48,7 +50,12 @@ export function nodeLibPublic(name: string, require?: (name: string) => any, _pr
   worker_threads: () => workerThreadsShim,
   http2: () => http2Shim,
   inspector: () => inspectorShim,
+  'inspector/promises': () => inspectorShim,
   perf_hooks: () => perfHooksShim,
+  // A stand-in that refuses the REPL by name (shims/repl.ts says why it is not Node's file).
+  repl: () => replShim,
+  // The engine's own `domain` (BUILTINS.md Kind 2).
+  domain: () => domainShim,
   // `internal/fs/cp/cp.js` requires the public alias; it is the same object
   // as `internal/util/types`, which is `util.types`.
   'util/types': () => nodeLibInternalRequire('internal/util/types'),

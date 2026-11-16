@@ -746,6 +746,48 @@ export function createNodeFileBinding(context: FsContext, arrays: StatArrays = s
       cpCall(lib, [src, dest], (b, [s, d]) => lib.exports.tabnode_fs_cp_copy_dir(b + s!, b + d!, flag(force), flag(dereference),
         flag(errorOnExist), flag(verbatimSymlinks), flag(preserveTimestamps)));
     },
+
+    /**
+     * GetFormatOfExtensionlessFile (src/node_file.cc): EXTENSIONLESS_FORMAT_WASM where the file's first four bytes are
+     * WebAssembly's magic, else EXTENSIONLESS_FORMAT_JAVASCRIPT, which a file that cannot be opened or read is too.
+     */
+    getFormatOfExtensionlessFile(path: unknown): number {
+      let fd: number;
+      try { fd = fsBinding.open(path, 0, 0) as number; } catch { return 0; }
+      try {
+        const head = new Uint8Array(4);
+        let read: number;
+        try { read = fsBinding.read(fd, head, 0, 4, 0) as number; } catch { return 0; }
+        return read === 4 && head[0] === 0x00 && head[1] === 0x61 && head[2] === 0x73 && head[3] === 0x6d ? 1 : 0;
+      } finally { fsBinding.close(fd); }
+    },
+
+    /**
+     * BindingData::LegacyMainResolve (src/node_file.cc): the index into legacyMainResolve's extensions of the first
+     * file found, the package's `main` with each of the seven before its `./index` with the three after; where none is
+     * a file, ERR_MODULE_NOT_FOUND for the package imported from `base`'s path.
+     */
+    legacyMainResolve(packagePath: unknown, main?: unknown, base?: unknown): number {
+      const extensions = ['', '.js', '.json', '.node', '/index.js', '/index.json', '/index.node', '.js', '.json', '.node'];
+      const path = context.require('path') as { resolve(...parts: string[]): string };
+      const isFile = (file: string): boolean => fsBinding.internalModuleStat(file) === 0;
+      let initial = '';
+      if (typeof main === 'string') {
+        const start = path.resolve(String(packagePath), main);
+        initial = start;
+        for (let index = 0; index < 7; index++) if (isFile(start + extensions[index])) return index;
+      }
+      const index = path.resolve(String(packagePath), './index');
+      for (let at = 7; at < 10; at++) if (isFile(index + extensions[at])) return at;
+      if (initial === '') initial = `${index}.js`;
+      const codes = (context.require('internal/errors') as { codes: Record<string, new (message: string) => Error> }).codes;
+      if (typeof base !== 'string') {
+        throw new codes.ERR_INVALID_ARG_TYPE!('The "base" argument must be of type string or an instance of URL.');
+      }
+      let from: string;
+      try { from = (context.require('internal/url') as { fileURLToPath(url: string): string }).fileURLToPath(base); } catch { throw new codes.ERR_INVALID_URL!('Invalid URL'); }
+      throw new codes.ERR_MODULE_NOT_FOUND!(`Cannot find package '${initial}' imported from ${from}`);
+    },
   };
 
   /** A stat a synchronous call made, into the binding's global array (FillGlobalStatsArray). */

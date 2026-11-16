@@ -171,14 +171,16 @@ export function nodeLibProcessOf(): Record<string, unknown> {
 }
 
 /**
- * Node's own files vendored for the bootstrap of a realm whose process is `node` (ADR-0018 §7) that the engine also
- * answers by hand (./internals): a graph that runs no bootstrap -- the library's, and every process's in a realm with
- * no `node` program -- keeps the engine's answer for these names, which is what it was built over.
+ * Node's own files vendored for the realm whose process is `node` (ADR-0018 §7) that a graph running no bootstrap
+ * does not take -- the library's, and every process's in a realm with no `node` program: it keeps the engine's own
+ * answer for these names (./internals, the engine's `module`, `vm`, `console` and the rest), which it was built over.
  */
 const BOOTSTRAP_FILES = new Set(['internal/async_hooks', 'internal/process/task_queues', 'internal/process/permission',
   'internal/options', 'internal/assert', 'internal/v8/startup_snapshot', 'internal/abort_controller',
   'internal/console/global', 'internal/process/execution', 'internal/process/warning', 'internal/source_map/source_map_cache',
-  'internal/worker/js_transferable', 'internal/modules/helpers', 'internal/process/per_thread', 'internal/bootstrap/realm']);
+  'internal/worker/js_transferable', 'internal/modules/helpers', 'internal/process/per_thread', 'internal/bootstrap/realm',
+  'module', 'vm', 'internal/vm/module', '_stream_duplex', '_stream_passthrough', '_stream_readable', '_stream_transform',
+  '_stream_wrap', '_stream_writable', 'console', 'sys', 'trace_events']);
 /** Whether a graph that runs no bootstrap loads the vendored file of the name. */
 function vendoredOutsideBootstrap(name: string): boolean {
   return isNodeLibFile(name) && !BOOTSTRAP_FILES.has(name);
@@ -456,7 +458,8 @@ class NodeLibScope {
       } else if (['fs', 'fs_dir', 'fs_event_wrap'].includes(name) && libnodeAttached()) {
         // A process whose program is `node`: its fs is libuv's, uv_fs_* in its kernel (ADR-0018 item 6).
         const context = fsContext(() => this.require('buffer').Buffer,
-          (value) => (this.require('internal/errors') as { determineSpecificType(value: unknown): string }).determineSpecificType(value));
+          (value) => (this.require('internal/errors') as { determineSpecificType(value: unknown): string }).determineSpecificType(value),
+          (id) => this.require(id));
         this.bindings.set('fs', bindingSurface(createNodeFileBinding(context).fsBinding, this.owner, this.process));
         this.bindings.set('fs_dir', bindingSurface(createNodeDirBinding(context).fsDirBinding, this.owner, this.process));
         this.bindings.set('fs_event_wrap', bindingSurface(createFsEventWrapBinding(context).fsEventWrapBinding, this.owner, this.process));

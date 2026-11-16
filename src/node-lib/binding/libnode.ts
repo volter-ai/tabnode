@@ -117,6 +117,13 @@ export interface LibnodeExports {
   tabnode_available_memory(): number;
   tabnode_abort(): void;
   tabnode_getpid(): I32;
+  /** node_cjs_lexer.c: node_cjs_lexer.cc's Parse over merve (merve_c.h). */
+  tabnode_cjs_parse(input: I32, length: I32): I32;
+  tabnode_cjs_valid(analysis: I32): I32;
+  tabnode_cjs_free(analysis: I32): void;
+  tabnode_cjs_exports(analysis: I32): I32;
+  tabnode_cjs_reexports(analysis: I32): I32;
+  tabnode_cjs_name(analysis: I32, reexport: I32, index: I32, out: I32): void;
   tabnode_getppid(): I32;
   /** credentials.c: node_credentials.cc's POSIX half (getuid and the rest, the setters by name or id, getgroups, initgroups). */
   tabnode_getuid(): I32;

@@ -3,24 +3,21 @@
  * it answers a main thread's Environment that owns its process's state: `config` (src/node_config.cc), `errors`
  * (src/node_errors.cc), `trace_events` (src/node_trace_events.cc), `performance` (src/node_perf.cc), `permission`
  * (src/permission/permission.cc), `mksnapshot` (src/node_snapshotable.cc), `worker` (src/node_worker.cc),
- * `module_wrap` (src/module_wrap.cc) and `contextify` (src/node_contextify.cc).
+ * and `contextify` (src/node_contextify.cc).
  *
  * Where these differ from Node:
  * - The engine has no inspector, no ICU, no tracing agent and no snapshot builder: `config` says so as a Node built
  *   without them does, no trace category is ever enabled, and nothing is a snapshot being built.
- * - `module_wrap`'s ModuleWrap is a synthetic module's (a builtin's ESM facade); a source text module is not compiled
- *   here, and `createRequiredModuleFacade` and `throwIfPromiseRejected` are not bound: the program's modules are the
- *   engine's loader's (runtime.ts), not Node's `internal/modules/esm`.
  * - `contextify` compiles in the realm's one context; a context of `vm`'s is the engine's `vm` module's.
  * - The permission model is never on, so every `has` is true.
  */
 import * as acorn from 'acorn';
 import { reallyExit } from './libnode';
+import { compileFunction, compileScript, magicComment } from '../v8-host';
+import { Script as VmSandboxScript } from '../../shims/vm';
 import { performance as systemPerformance } from '../../system';
 import { errorSourcePositions } from '../../error-source';
 import { nodeVersions } from '../node-versions';
-
-const indirectEval = eval;
 
 /** NODE_PERFORMANCE_MILESTONES (src/node_perf_common.h:27-35). */
 const MILESTONES = ['TIME_ORIGIN_TIMESTAMP', 'TIME_ORIGIN', 'ENVIRONMENT', 'NODE_START', 'V8_START', 'LOOP_START', 'LOOP_EXIT', 'BOOTSTRAP_COMPLETE'];
@@ -238,163 +235,131 @@ export function createWorkerBinding(base: Record<string, unknown>): Record<strin
   };
 }
 
-/** Module::Status (V8) and ModulePhase (src/module_wrap.h:36-39), as CreatePerContextProperties defines them. */
-const MODULE_STATUS = { kUninstantiated: 0, kInstantiating: 1, kInstantiated: 2, kEvaluating: 3, kEvaluated: 4, kErrored: 5 };
+/** ShouldRetryAsESM's messages (src/node_contextify.cc): ESM syntax, and what only CommonJS's scope refuses. */
+const ESM_SYNTAX_ERRORS = ['Cannot use import statement outside a module', "Unexpected token 'export'", "Cannot use 'import.meta' outside a module"];
+const THROWS_ONLY_IN_CJS = ["Identifier 'module' has already been declared", "Identifier 'exports' has already been declared",
+  "Identifier 'require' has already been declared", "Identifier '__filename' has already been declared",
+  "Identifier '__dirname' has already been declared", 'await is only valid in async functions and the top level bodies of modules'];
+const MAYBE_TOP_LEVEL_AWAIT = ['missing ) after argument list', 'SyntaxError: Unexpected'];
+/** The parameters of a CommonJS module's function (GetCJSParameters). */
+const CJS_PARAMETERS = ['exports', 'require', 'module', '__filename', '__dirname'];
+
+/** V8's message of a compile's exception, as Message::Get gives it: its name and message. */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
 
 /**
- * `internalBinding('module_wrap')`: ModuleWrap's synthetic form (`new ModuleWrap(url, context, exportNames,
- * evaluationSteps)`), whose namespace is a module namespace object (null-prototyped, `[Symbol.toStringTag]` 'Module',
- * not extensible, each export a live binding read through a getter, where V8's binding is a data property).
+ * ShouldRetryAsESM: an ES module's syntax, or a refusal only CommonJS's scope makes of a text that compiles as a
+ * source text module (V8's module parse, the engine's parser's).
  */
-export function createModuleWrapBinding(): Record<string, unknown> {
-  let importModuleDynamically: unknown;
-  let initializeImportMeta: unknown;
-  class ModuleWrap {
-    url!: string;
-    #exports = new Map<string, unknown>();
-    #names: string[] = [];
-    #steps: ((this: ModuleWrap) => void) | undefined;
-    #status = MODULE_STATUS.kUninstantiated;
-    #error: unknown;
-    #namespace: object | undefined;
-    #source: unknown;
-    constructor(url: unknown, context: unknown, exportNames: unknown, evaluationSteps: unknown) {
-      if (typeof url !== 'string') throw new TypeError('ModuleWrap: a URL');
-      if (context !== undefined && (context === null || typeof context !== 'object')) throw new TypeError('ModuleWrap: a context');
-      if (!Array.isArray(exportNames) || typeof evaluationSteps !== 'function') {
-        throw new Error('module_wrap: a source text module is not compiled in this realm');
-      }
-      Object.defineProperty(this, 'url', { value: url, enumerable: true });
-      this.#names = exportNames.map(String);
-      for (const name of this.#names) this.#exports.set(name, undefined);
-      this.#steps = evaluationSteps as (this: ModuleWrap) => void;
-    }
-    link(): void {}
-    getModuleRequests(): unknown[] { return []; }
-    instantiate(): void { if (this.#status === MODULE_STATUS.kUninstantiated) this.#status = MODULE_STATUS.kInstantiated; }
-    evaluate(_timeout?: unknown, _breakOnSigint?: unknown): Promise<undefined> {
-      if (this.#status === MODULE_STATUS.kErrored) return Promise.reject(this.#error);
-      if (this.#status === MODULE_STATUS.kEvaluated) return Promise.resolve(undefined);
-      this.#status = MODULE_STATUS.kEvaluating;
-      try { this.#steps!.call(this); } catch (error) { this.#status = MODULE_STATUS.kErrored; this.#error = error; return Promise.reject(error); }
-      this.#status = MODULE_STATUS.kEvaluated;
-      return Promise.resolve(undefined);
-    }
-    evaluateSync(): unknown { void this.evaluate(); if (this.#status === MODULE_STATUS.kErrored) throw this.#error; return this.getNamespace(); }
-    setExport(name: unknown, value: unknown): void {
-      const key = String(name);
-      if (!this.#exports.has(key)) throw new ReferenceError(`Export '${key}' is not defined in module`);
-      this.#exports.set(key, value);
-    }
-    setModuleSourceObject(source: unknown): void { this.#source = source; }
-    getModuleSourceObject(): unknown { return this.#source; }
-    getNamespace(): object {
-      if (this.#status < MODULE_STATUS.kInstantiated) throw new Error('cannot get namespace, module has not been instantiated');
-      if (this.#namespace) return this.#namespace;
-      const namespace = Object.create(null) as object;
-      for (const name of [...this.#names].sort()) {
-        Object.defineProperty(namespace, name, { enumerable: true, configurable: false, get: () => this.#exports.get(name) });
-      }
-      Object.defineProperty(namespace, Symbol.toStringTag, { value: 'Module' });
-      Object.preventExtensions(namespace);
-      return this.#namespace = namespace;
-    }
-    getStatus(): number { return this.#status; }
-    getError(): unknown { return this.#error; }
-    get hasAsyncGraph(): boolean { return false; }
-  }
-  return {
-    ModuleWrap,
-    ...MODULE_STATUS,
-    kEvaluationPhase: 2,
-    kSourcePhase: 1,
-    setImportModuleDynamicallyCallback(callback: unknown): void { importModuleDynamically = callback; },
-    setInitializeImportMetaObjectCallback(callback: unknown): void { initializeImportMeta = callback; },
-    get importModuleDynamicallyCallback(): unknown { return importModuleDynamically; },
-    get initializeImportMetaObjectCallback(): unknown { return initializeImportMeta; },
-  };
-}
-
-/** A source's magic comment (`//# sourceURL=` or `//# sourceMappingURL=`), as V8 reads one off a script's end. */
-function magicComment(source: string, name: 'sourceURL' | 'sourceMappingURL'): string | undefined {
-  const pattern = new RegExp(`(?:^|\\n)\\s*//[#@]\\s*${name}=\\s*(\\S+)\\s*$`, 'u');
-  const tail = source.slice(-4096);
-  const match = pattern.exec(tail.replace(/\s+$/u, ''));
-  return match?.[1];
-}
-
-/** `source` compiled in the realm's one context with its offsets kept: `lineOffset` lines and `columnOffset` columns before it. */
-function compiledIn(source: string, filename: string, lineOffset: number, columnOffset: number, head: string, tail: string): unknown {
-  const padding = '\n'.repeat(Math.max(0, lineOffset | 0)) + ' '.repeat(Math.max(0, columnOffset | 0));
-  return indirectEval(`${head}${padding}${source}${tail}\n//# sourceURL=${filename}`);
-}
-
-/** Whether a source parses as an ES module where it does not as a script: Node's ShouldRetryAsESM, read by the parser. */
-function parsesOnlyAsModule(source: string): boolean {
-  try { acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'script', allowReturnOutsideFunction: true, allowHashBang: true }); return false; }
-  catch { /* not a script */ }
-  try { acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true }); return true; }
+function shouldRetryAsESM(message: string, code: string): boolean {
+  if (ESM_SYNTAX_ERRORS.some((text) => message.includes(text))) return true;
+  if (!THROWS_ONLY_IN_CJS.some((text) => message.includes(text)) && !MAYBE_TOP_LEVEL_AWAIT.some((text) => message.includes(text))) return false;
+  try { acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true }); return true; }
   catch { return false; }
 }
 
-export function createContextifyBinding(): Record<string, unknown> {
+/**
+ * `internalBinding('contextify')` (src/node_contextify.cc): ContextifyScript, the functions `vm.compileFunction` and
+ * the CommonJS loader compile, and ContainsModuleSyntax, each compiled by the engine for V8 (v8-host.ts), its dynamic
+ * `import()` the host-defined option it was given. Where this differs from Node: a page's engine makes no V8 context,
+ * so a context of `vm`'s is the context object as the engine's sandbox (shims/vm.ts: its names resolved on the object
+ * through `with`); a script's timeout and SIGINT watchdog are not kept, a page's engine giving no way to stop a running
+ * script; V8's code cache is not made, so cached data given is rejected and none is produced.
+ */
+export function createContextifyBinding(symbols: Record<string, symbol>, privateSymbols: Record<string, symbol>,
+  emitWarningSync: () => ((message: string) => void) | undefined): Record<string, unknown> {
+  const hdoSymbol = privateSymbols.host_defined_option_symbol!;
+
+  let warnedAboutRequireEsm = false;
   class ContextifyScript {
-    readonly cachedDataRejected = false;
-    readonly sourceMapURL: string | undefined;
+    #run: () => unknown;
     #code: string;
-    #filename: string;
-    #lineOffset: number;
-    #columnOffset: number;
-    constructor(code: unknown, filename: unknown, lineOffset: unknown, columnOffset: unknown) {
-      this.#code = String(code);
-      this.#filename = String(filename);
-      this.#lineOffset = Number(lineOffset) | 0;
-      this.#columnOffset = Number(columnOffset) | 0;
-      this.sourceMapURL = magicComment(this.#code, 'sourceMappingURL');
-      // V8 compiles the script now, so a syntax error is the constructor's.
-      // eslint-disable-next-line no-new-func
-      new Function(this.#code);
+    constructor(code: unknown, filename: unknown, lineOffset?: unknown, columnOffset?: unknown, cachedData?: unknown,
+      produceCachedData?: unknown, parsingContext?: unknown, id?: unknown) {
+      const source = String(code);
+      this.#code = source;
+      const record = this as Record<string | symbol, unknown>;
+      const symbol = typeof id === 'symbol' ? id : symbols.vm_dynamic_import_missing_flag;
+      this.#run = compileScript(source, String(filename), symbol, Number(lineOffset ?? 0) | 0, Number(columnOffset ?? 0) | 0);
+      Object.defineProperty(this, hdoSymbol, { value: symbol });
+      record.sourceURL = magicComment(source, 'sourceURL') ?? String(filename);
+      record.sourceMapURL = magicComment(source, 'sourceMappingURL');
+      if (cachedData !== undefined) record.cachedDataRejected = true;
+      if (produceCachedData === true) record.cachedDataProduced = false;
     }
-    runInContext(contextifiedObject: unknown, _timeout?: unknown, _displayErrors?: unknown): unknown {
+    runInContext(contextifiedObject: unknown, _timeout?: unknown, _displayErrors?: unknown, _breakOnSigint?: unknown): unknown {
       if (contextifiedObject !== null && contextifiedObject !== undefined) {
-        throw new Error('contextify: a context of vm\'s is the engine\'s vm module\'s');
+        // A context of vm's: the engine's sandbox, its names the context object's (shims/vm.ts).
+        return new VmSandboxScript(this.#code).runInNewContext(contextifiedObject as object);
       }
-      return compiledIn(this.#code, this.#filename, this.#lineOffset, this.#columnOffset, '', '');
+      return this.#run();
     }
+    createCachedData(): Uint8Array { return new Uint8Array(0); }
   }
+  /** CompileFunctionForCJSLoader (the static helper): the module's function, its import() the default loader's. */
+  const compileCjs = (code: string, filename: string, cjsScope: boolean): Function =>
+    compileFunction(code, filename, cjsScope ? CJS_PARAMETERS : [], symbols.vm_dynamic_import_default_internal, { cjs: cjsScope });
   return {
     ContextifyScript,
-    compileFunction(code: unknown, filename: unknown, lineOffset: unknown, columnOffset: unknown, _cachedData: unknown,
-      _produceCachedData: unknown, parsingContext: unknown, contextExtensions: unknown, params: unknown): Record<string, unknown> {
-      if (parsingContext !== undefined && parsingContext !== null) throw new Error('contextify: a context of vm\'s is the engine\'s vm module\'s');
+    compileFunction(code: unknown, filename: unknown, lineOffset: unknown, columnOffset: unknown, cachedData: unknown,
+      _produceCachedData: unknown, parsingContext: unknown, contextExtensions: unknown, params: unknown, id: unknown): Record<string, unknown> {
       const source = String(code);
-      const names = Array.isArray(params) ? params.map(String) : [];
-      const extensions = Array.isArray(contextExtensions) ? contextExtensions : [];
-      // Context extensions are scopes around the function, as V8's CompileFunction makes them.
-      const head = extensions.map((_, index) => `with (__substrateExtensions[${index}]) {`).join('');
-      const close = extensions.map(() => '}').join('');
-      const made = extensions.length > 0
-        ? (compiledIn(source, String(filename), Number(lineOffset) | 0, Number(columnOffset) | 0,
-          `(function (__substrateExtensions) { ${head} return function (${names.join(', ')}) {`, `\n}; ${close} })`) as (ext: unknown[]) => unknown)(extensions)
-        : compiledIn(source, String(filename), Number(lineOffset) | 0, Number(columnOffset) | 0, `(function (${names.join(', ')}) {`, '\n})');
-      return { function: made, sourceMapURL: magicComment(source, 'sourceMappingURL'), sourceURL: magicComment(source, 'sourceURL') };
+      // A function of a vm context's resolves its names on the context object, as the context extension it is here.
+      const extensions = [...(parsingContext !== undefined && parsingContext !== null ? [parsingContext as object] : []),
+        ...(Array.isArray(contextExtensions) ? contextExtensions as object[] : [])];
+      const made = compileFunction(source, String(filename), Array.isArray(params) ? params.map(String) : [], id, {
+        lineOffset: Number(lineOffset) | 0, columnOffset: Number(columnOffset) | 0, extensions,
+      });
+      Object.defineProperty(made, hdoSymbol, { value: id });
+      return { function: made, sourceURL: String(filename), sourceMapURL: magicComment(source, 'sourceMappingURL'),
+        cachedDataRejected: cachedData === undefined ? undefined : true, cachedDataProduced: undefined, cachedData: undefined };
     },
     compileFunctionForCJSLoader(content: unknown, filename: unknown, _isSeaMain: unknown, shouldDetectModule: unknown): Record<string, unknown> {
-      const source = String(content);
-      try {
-        const made = compiledIn(source, String(filename), 0, 0, '(function (exports, require, module, __filename, __dirname) {', '\n})');
-        return { cachedDataRejected: false, sourceMapURL: magicComment(source, 'sourceMappingURL'), sourceURL: magicComment(source, 'sourceURL'), function: made, canParseAsESM: false };
-      } catch (error) {
-        if (shouldDetectModule === true && error instanceof SyntaxError && parsesOnlyAsModule(source)) {
-          return { cachedDataRejected: false, sourceMapURL: undefined, sourceURL: undefined, function: undefined, canParseAsESM: true };
+      const code = String(content);
+      const name = String(filename);
+      let made: Function | undefined;
+      let failure: unknown;
+      try { made = compileCjs(code, name, true); } catch (error) { failure = error; }
+      let canParseAsESM = false;
+      if (made === undefined) {
+        canParseAsESM = shouldRetryAsESM(messageOf(failure), code);
+        if (!canParseAsESM) throw failure;
+        if (shouldDetectModule !== true) {
+          if (!warnedAboutRequireEsm) {
+            warnedAboutRequireEsm = true;
+            emitWarningSync()?.(`Failed to load the ES module: ${name}. Make sure to set "type": "module" in the nearest package.json file or use the .mjs extension.`);
+          }
+          throw failure;
         }
-        throw error;
       }
+      return { cachedDataRejected: false, sourceMapURL: made ? magicComment(code, 'sourceMappingURL') : undefined,
+        sourceURL: made ? name : undefined, function: made, canParseAsESM };
     },
-    containsModuleSyntax(code: unknown, _filename: unknown, _resourceName?: unknown, _cjsVar?: unknown): boolean {
-      return parsesOnlyAsModule(String(code));
+    containsModuleSyntax(code: unknown, filename: unknown, _resourceName?: unknown, cjsVar?: unknown): boolean {
+      const source = String(code);
+      try { compileCjs(source, String(filename), typeof cjsVar !== 'string'); return false; }
+      catch (error) { return shouldRetryAsESM(messageOf(error), source); }
     },
     constants: { measureMemory: { mode: { SUMMARY: 0, DETAILED: 1 }, execution: { DEFAULT: 0, EAGER: 1 } } },
+    /**
+     * ContextifyContext::MakeContext: the context object (a new one for `vm_context_no_contextify`) marked as a
+     * context under `contextify_context_private_symbol`; its scripts run in the engine's sandbox over it.
+     */
+    makeContext(contextObject: unknown, name: unknown, origin: unknown): object {
+      const sandbox = (contextObject === symbols.vm_context_no_contextify ? {} : contextObject) as object;
+      Object.defineProperty(sandbox, privateSymbols.contextify_context_private_symbol!, { value: { name, origin }, configurable: true });
+      return sandbox;
+    },
+    /** MicrotaskQueue: a context's own queue, which a page's engine runs with the realm's. */
+    MicrotaskQueue: class MicrotaskQueue {},
+    /** MeasureMemory: V8's estimate, the realm's `performance.memory` where it reports one. */
+    measureMemory(): Promise<unknown> {
+      const memory = ((globalThis as { performance?: { memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number } } }).performance?.memory) ?? {};
+      const used = memory.usedJSHeapSize ?? 0;
+      return Promise.resolve({ total: { jsMemoryEstimate: used, jsMemoryRange: [used, memory.totalJSHeapSize ?? used] } });
+    },
   };
 }
 

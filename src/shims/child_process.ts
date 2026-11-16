@@ -601,6 +601,14 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
     }
   }
 
+  // Where the realm's process is `node` on libuv's loop, the process is Node's own from its command line on
+  // (node-program.ts, ADR-0018 §7): its options, its bootstrap on the realm's global, its main script and its module
+  // loaders. It runs on from there, and its end is the program's exit.
+  if (libnodeAttached()) {
+    startNodeProgram({ tree, argv: launch.argv, cwd: launch.cwd, env: launch.env, token: runToken });
+    return null;
+  }
+
   // Node reads its own options before the script: `node --turbo-fast-api-calls
   // file.js a b` runs file.js with `a b`, and the options it were given are
   // its `execArgv`. Node's own suite spawns children that way, and the
@@ -696,19 +704,6 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   if (evaluated === null && !args[script]) return refused('Usage: node <script.js> [args...]\n');
   if (evaluated === null && resolvedPath === null) {
     return refused(`Error: Cannot find module '${__resolvePath(launch.cwd, args[script]!)}'\n`);
-  }
-  // Where the realm's process is `node` on libuv's loop, its start is Node's own bootstrap on the realm's global, its
-  // streams, signals, exit and uncaught exceptions Node's (node-program.ts, ADR-0018 §7): the process runs on from its
-  // entry, and its end is the program's exit.
-  if (libnodeAttached()) {
-    await startNodeProgram({
-      tree, argv: launch.argv, cwd: launch.cwd, env: launch.env, credentials, token: runToken,
-      ...(launch.moduleEvaluationObserver ? { moduleEvaluationObserver: launch.moduleEvaluationObserver } : {}),
-      execArgv, ...(evaluated === null ? { script: args[script]! } : {}),
-      scriptArgs: evaluated !== null ? args.slice(first) : args.slice(script + 1),
-      evaluated, resolvedPath, preloads, imports,
-    });
-    return null;
   }
 
   let stdout = '';

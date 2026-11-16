@@ -22,7 +22,12 @@ import { applySourceEdits } from './source-edits';
  * keeps its names. A default import of a module the lowering marked as an ES
  * module takes its `default`, as Node does.
  */
-let __nodeLowering = false;
+/**
+ * The lowering's form: false for the dev server's lowering of a browser module, true for the engine's loader's, and
+ * `module` for a source text module of `internalBinding('module_wrap')` (ADR-0018 §7), whose every import is a module
+ * record's namespace, so a default import is that namespace's `default`, as V8 binds it.
+ */
+let __nodeLowering: boolean | 'module' = false;
 const __cjsExports = () => __nodeLowering ? "$exports" : "exports";
 const __cjsModule = () => __nodeLowering ? "$module" : "module";
 const __cjsRequire = () => __nodeLowering ? "$require" : "require";
@@ -34,7 +39,8 @@ const __cjsRequire = () => __nodeLowering ? "$require" : "require";
 // module keeps the plain names, which exist where that module runs.
 const __cjsObject = () => __nodeLowering ? "__browserRuntimeObject" : "Object";
 const __cjsSymbol = () => __nodeLowering ? "__browserRuntimeSymbol" : "Symbol";
-const __cjsDefault = (expression: string) => __nodeLowering ? "__browserRuntimeInteropDefault(" + expression + ")" : expression;
+const __cjsDefault = (expression: string) => __nodeLowering === 'module' ? expression + ".default"
+  : __nodeLowering ? "__browserRuntimeInteropDefault(" + expression + ")" : expression;
 // The helper lowered code calls by bare name. It is a name on the realm, so
 // it goes up when a guest first exists, not when this module is loaded.
 forGuestRealm(() => {
@@ -45,7 +51,7 @@ forGuestRealm(() => {
   if (!(globalThis as Record<string, unknown>).__browserRuntimeObject) takeFromHost(globalThis, '__browserRuntimeObject', Object);
   if (!(globalThis as Record<string, unknown>).__browserRuntimeSymbol) takeFromHost(globalThis, '__browserRuntimeSymbol', Symbol);
 });
-export const setNodeLowering = (value: boolean): void => { __nodeLowering = value; };
+export const setNodeLowering = (value: boolean | 'module'): void => { __nodeLowering = value; };
 export { __cjsExports, __cjsObject };
 
 /**

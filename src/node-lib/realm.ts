@@ -10,14 +10,14 @@
  *   internal/bootstrap/switches/is_main_thread, does_own_process_state
  *   process.env, the Environment's env proxy
  *
- * then, as an embedder's start does before its own entry (src/node.cc StartExecution with a callback),
- * `internal/process/pre_execution`'s prepareMainThreadExecution, with the modules left to the embedder, and
- * markBootstrapComplete. The embedder is the engine: its loader (runtime.ts) runs the preloads and the entry.
+ * then the main script StartExecution selects (`runNodeMain`), which runs `prepareMainThreadExecution` and the entry
+ * through Node's own CommonJS and ES module loaders, over the bindings here (`module_wrap`, `contextify`, `cjs_lexer`,
+ * `modules`), where the engine speaks for V8 (v8-host.ts).
  *
  * Every builtin is compiled as Node's BuiltinLoader compiles it, its own text as the body of a function of the
  * parameters its kind takes, in the realm's scope, with no rewrite of a free name, no Proxy and no `with`. Node's
  * `BuiltinModule` (internal/bootstrap/realm) is the process's builtin loader. A builtin id whose file is not vendored
- * is answered by the engine's own module for it (`engineModule`), as before the bootstrap ran: the engine's `vm`,
+ * is answered by the engine's own module for it (`engineModule`): the engine's
  * `worker_threads`, `dns`, `perf_hooks` and the rest, the realm's web streams, `Blob`, `File`, `URL`, `TextEncoder` and
  * `TextDecoder`, and the realm's one Environment's `internal/timers`, `internal/async_context_frame` and
  * `internal/crypto/keys` (load.ts REALM_ENVIRONMENT).
@@ -27,6 +27,7 @@ import { primordialsOf, loadNodeLib, REALM_ENVIRONMENT, moduleSurface, markNodeR
 import { nodeLibInternal, nodeLibInternalNames } from './internals';
 import { nodeLibPublic, nodeLibPublicNames } from './public-modules';
 import { internalBlobOf } from './internals/buffer-and-streams';
+import { createSqliteModule } from './sqlite';
 import { internalUrlOf } from './internals/url';
 import { objectUrlMethodsOf } from './object-urls';
 import type { BlobBinding } from './binding/blob';
@@ -40,8 +41,12 @@ import { createCredentialsBinding } from './binding/credentials';
 import { createOptionsBinding } from './binding/options';
 import {
   createConfigBinding, createErrorsBinding, createTraceEventsBinding, createPerformanceBinding, createPermissionBinding,
-  createMksnapshotBinding, createWorkerBinding, createModuleWrapBinding, createContextifyBinding, createReportBinding, processConfig,
+  createMksnapshotBinding, createWorkerBinding, createContextifyBinding, createReportBinding, processConfig,
 } from './binding/realm-bindings';
+import { createModuleWrapBinding } from './binding/module_wrap';
+import { createCjsLexerBinding } from './binding/cjs_lexer';
+import { createNodeModulesBinding } from './binding/node_modules';
+import { promiseHandlerAddedAfterReject } from './binding/task_queue';
 import { routeErrorStacks } from '../runtime';
 
 const indirectEval = eval;
@@ -68,6 +73,8 @@ export interface NodeRealm {
   readonly process: Record<string, unknown>;
   require(id: string): unknown;
   internalBinding(name: string): unknown;
+  /** Environment::CheckUnsettledTopLevelAwait, inverted: the entry's promise pending on its module's top-level await. */
+  entryUnsettled(): boolean;
 }
 
 /**
@@ -196,6 +203,21 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
         URLPattern: web.URLPattern,
       });
     }
+    // `node:sqlite` is the engine's binding of SQLite's own C API (BUILTINS.md Kind 2), its paths the process's.
+    if (id === 'sqlite') {
+      return () => createSqliteModule({
+        resolvePath: (path: string) => (require('path') as { resolve(...parts: string[]): string }).resolve((process.cwd as () => string)(), path),
+        own: () => () => {},
+      });
+    }
+    // `stream/web` is the realm's web streams, as the globals Node's web exposure gives are (REALM_WEB_MODULES).
+    if (id === 'stream/web') {
+      return () => Object.fromEntries(['ReadableStream', 'ReadableStreamDefaultReader', 'ReadableStreamBYOBReader',
+        'ReadableStreamBYOBRequest', 'ReadableByteStreamController', 'ReadableStreamDefaultController', 'TransformStream',
+        'TransformStreamDefaultController', 'WritableStream', 'WritableStreamDefaultWriter', 'WritableStreamDefaultController',
+        'ByteLengthQueuingStrategy', 'CountQueuingStrategy', 'TextEncoderStream', 'TextDecoderStream', 'CompressionStream',
+        'DecompressionStream'].map((name) => [name, web[name]]));
+    }
     if (id === 'perf_hooks') {
       const shim = nodeLibPublic(id, require, process);
       return () => {
@@ -208,7 +230,7 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
     return nodeLibInternal(id, require, process) ?? nodeLibPublic(id, require, process);
   };
   const vendored = new Set(nodeLibNames());
-  const engineIds = [...REALM_ENVIRONMENT, 'process', ...Object.keys(ALIASES), ...Object.keys(REALM_WEB_MODULES),
+  const engineIds = [...REALM_ENVIRONMENT, 'process', 'stream/web', 'sqlite', ...Object.keys(ALIASES), ...Object.keys(REALM_WEB_MODULES),
     ...nodeLibInternalNames(), ...nodeLibPublicNames()];
   const builtinIds = [...new Set([...vendored, ...engineIds])].sort();
 
@@ -249,8 +271,10 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
       // Environment::exit_code: the code the process has, else the default.
       exitCode: (fallback) => (exitInfo[2] ? exitInfo[1]! : fallback),
     }),
-    module_wrap: createModuleWrapBinding,
-    contextify: createContextifyBinding,
+    module_wrap: () => createModuleWrapBinding(symbols, privateSymbols, promiseHandlerAddedAfterReject),
+    contextify: () => createContextifyBinding(symbols, privateSymbols,
+      () => (internalBinding('process_methods') as { emitWarningSync?: (message: string) => void }).emitWarningSync),
+    modules: () => createNodeModulesBinding(require, () => run.engineBinding('fs') as { readFileUtf8(path: string, flags: number): string }),
     options: () => createOptionsBinding({ execArgv: run.execArgv, nodeOptions: run.nodeOptions }),
     process_methods: () => createProcessMethodsBinding({ ...run, process }),
     async_wrap: createAsyncWrapBinding,
@@ -263,9 +287,7 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
     worker: () => createWorkerBinding(run.engineBinding('worker') as Record<string, unknown>),
     util: () => createUtilBinding(require),
     symbols: () => symbols,
-    // src/node_cjs_lexer.cc: its `parse` is Node's CommonJS export lexer, which only Node's ESM translators call; the
-    // program's modules are the engine's loader's, so it is not bound.
-    cjs_lexer: () => ({}),
+    cjs_lexer: createCjsLexerBinding,
     report: () => createReportBinding(process, require),
     messaging: () => {
       let createObject: unknown;
@@ -306,6 +328,7 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
     argv: run.argv, execArgv: run.execArgv, pid: run.pid, ppid: () => run.ppid(), execPath: run.execPath,
   });
 
+  trackEntryPromise(globalThis, privateSymbols.entry_point_promise_private_symbol!);
   // RunBootstrapping: the realm's loaders, then BootstrapRealm.
   compiledBuiltin('internal/bootstrap/realm')(process, getLinkedBinding, internalBinding, primordials);
   if (!requireBuiltin || !internalBindingLoader) throw new Error('node: internal/bootstrap/realm made no loaders');
@@ -321,19 +344,66 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
   run4('internal/bootstrap/switches/is_main_thread');
   run4('internal/bootstrap/switches/does_own_process_state');
   Object.defineProperty(process, 'env', { value: envProxy(run.env, require), writable: true, enumerable: true, configurable: true });
-  return { process, require, internalBinding: loaderBinding };
+  return { process, require, internalBinding: loaderBinding, entryUnsettled: () => entryUnsettled(process, require, privateSymbols) };
 }
 
 /**
- * prepareMainThreadExecution (lib/internal/process/pre_execution.js), its argv[1] left as given and the module loaders
- * left to the embedder, then markBootstrapComplete: what an embedder's start runs before its entry.
+ * StartExecution's SelectLoadMode (src/node.cc): the main script for the process's options and arguments, compiled as
+ * a kMainScript builtin and run with the realm's process, loaders and primordials. `inspect`, `--prof-process`,
+ * `--test`, `--watch` and the REPL's main are not among the vendored files: the inspector, V8's tick processor, the
+ * test runner, the watcher and `lib/repl.js` are not the engine's.
  */
-export function prepareNodeMainThread(realm: NodeRealm): void {
-  const preExecution = realm.require('internal/process/pre_execution') as {
-    prepareMainThreadExecution(expandArgv1: boolean, initializeModules: boolean): unknown; markBootstrapComplete(): void;
+export function runNodeMain(realm: NodeRealm, argv: readonly string[]): void {
+  const { getOptionValue } = realm.require('internal/options') as { getOptionValue(name: string): unknown };
+  const first = argv[1] ?? '';
+  const stdinIsTTY = (): boolean => {
+    const { guessHandleType } = realm.internalBinding('util') as { guessHandleType(fd: number): number };
+    return guessHandleType(0) === 1;
   };
-  preExecution.prepareMainThreadExecution(false, false);
-  preExecution.markBootstrapComplete();
+  const main = first === 'inspect' ? 'internal/main/inspect'
+    : getOptionValue('--help') ? 'internal/main/print_help'
+      : getOptionValue('--prof-process') ? 'internal/main/prof_process'
+        : getOptionValue('[has_eval_string]') && !getOptionValue('--interactive') ? 'internal/main/eval_string'
+          : getOptionValue('--check') ? 'internal/main/check_syntax'
+            : getOptionValue('--test') ? 'internal/main/test_runner'
+              : getOptionValue('--watch') ? 'internal/main/watch_mode'
+                : first !== '' && first !== '-' ? 'internal/main/run_main_module'
+                  : getOptionValue('--interactive') || stdinIsTTY() ? 'internal/main/repl'
+                    : 'internal/main/eval_stdin';
+  compiledBuiltin(main)(realm.process, realm.require, realm.internalBinding, primordialsOf());
+}
+
+/** The entry's promise and its state, as run_main.js sets `entry_point_promise_private_symbol` on the global. */
+const entryPromises = new WeakMap<object, { promise?: Promise<unknown>; pending: boolean }>();
+function trackEntryPromise(global: object, symbol: symbol): void {
+  const state: { promise?: Promise<unknown>; pending: boolean } = { pending: false };
+  entryPromises.set(global, state);
+  Object.defineProperty(global, symbol, {
+    configurable: true,
+    get: () => state.promise,
+    set(value: unknown) {
+      state.promise = value as Promise<unknown>;
+      state.pending = value instanceof Promise;
+      if (value instanceof Promise) value.then(() => { state.pending = false; }, () => { state.pending = false; });
+    },
+  });
+}
+
+/**
+ * Environment::CheckUnsettledTopLevelAwait (src/env.cc) and ModuleWrap's (src/module_wrap.cc): the entry's promise
+ * pending, its module a source text module whose graph awaits and has not finished evaluating; with warnings on, the
+ * warning Node prints. A page's engine gives no stalled await's message, so the warning names the module, not the line.
+ */
+function entryUnsettled(process: Record<string, unknown>, require: (id: string) => any, privateSymbols: Record<string, symbol>): boolean {
+  const state = entryPromises.get(globalThis);
+  if (!state?.pending) return false;
+  const wrap = (globalThis as unknown as Record<symbol, unknown>)[privateSymbols.entry_point_module_private_symbol!] as
+    { url?: string; synthetic?: boolean; hasAsyncGraph?: boolean; getStatus(): number } | undefined;
+  if (!wrap || typeof wrap !== 'object' || wrap.synthetic || !wrap.hasAsyncGraph || wrap.getStatus() === 4) return false;
+  if ((require('internal/options') as { getOptionValue(name: string): unknown }).getOptionValue('--warnings')) {
+    (process._rawDebug as (message: string) => void)(`Warning: Detected unsettled top-level await at ${wrap.url}`);
+  }
+  return true;
 }
 
 /**

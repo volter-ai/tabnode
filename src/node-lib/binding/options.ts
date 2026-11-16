@@ -180,3 +180,37 @@ export function nodeOptionsWords(text: string | undefined): string[] {
   if (any || current !== '') words.push(current);
   return words;
 }
+
+/**
+ * ProcessGlobalArgs' split of the command line (src/node.cc, OptionsParser::Parse): the options before the script,
+ * each with its value where its type takes one (`--name=value` or the next word), are `execArgv`; the program's name,
+ * the script and its arguments are `argv`; `--` ends the options. An option the table does not hold, or one missing
+ * its value, is Node's `bad option` / `requires an argument`.
+ */
+export function splitCommandLine(argv: readonly string[]): { argv: string[]; execArgv: string[] } | { error: string } {
+  const execArgv: string[] = [];
+  let index = 1;
+  while (index < argv.length) {
+    const word = argv[index]!;
+    if (word === '--') { index += 1; break; }
+    if (!word.startsWith('-') || word === '-') break;
+    const equals = word.startsWith('--') ? word.indexOf('=') : -1;
+    let name = normalized(equals > 0 ? word.slice(0, equals) : word);
+    const hasInline = equals > 0;
+    const expansion = ALIASES[name] ?? (!hasInline ? ALIASES[`${name} <arg>`] : undefined);
+    if (expansion) name = expansion[expansion.length - 1]!;
+    if (!OPTIONS[name] && name.startsWith('--no-') && OPTIONS[`--${name.slice(5)}`]?.[0] === types.kBoolean) name = `--${name.slice(5)}`;
+    const option = OPTIONS[name];
+    if (!option) return { error: `bad option: ${word}` };
+    execArgv.push(word);
+    index += 1;
+    const takesValue = option[0] === types.kInteger || option[0] === types.kUInteger || option[0] === types.kString
+      || option[0] === types.kHostPort || option[0] === types.kStringList;
+    if (takesValue && !hasInline) {
+      if (index >= argv.length) return { error: `${word} requires an argument` };
+      execArgv.push(argv[index]!);
+      index += 1;
+    }
+  }
+  return { argv: [argv[0] ?? 'node', ...argv.slice(index)], execArgv };
+}

@@ -86,11 +86,13 @@ finish
 
 # zlib, brotli, zstd and llhttp's sources (item 10, below), unpacked first: OpenSSL is configured over the first three.
 tar xzf "$node_archive" -C "$work" "$node/deps/zlib" "$node/deps/brotli" "$node/deps/zstd" "$node/deps/llhttp" \
-  "$node/src/node_zlib.cc"
+  "$node/deps/merve" "$node/deps/v8/third_party/simdutf" "$node/src/node_zlib.cc"
 zlibsrc="$work/$node/deps/zlib"
 brotlisrc="$work/$node/deps/brotli"
 zstdsrc="$work/$node/deps/zstd"
 llhttpsrc="$work/$node/deps/llhttp"
+mervesrc="$work/$node/deps/merve"
+simdutfsrc="$work/$node/deps/v8/third_party/simdutf"
 
 # OpenSSL 3.5.8 with Node's Configure options (no-tests no-shared no-afalgeng enable-ssl-trace enable-fips, and zlib,
 # enable-brotli and enable-zstd over Node's own deps/zlib, deps/brotli and deps/zstd for RFC 8879 certificate
@@ -178,6 +180,14 @@ for source in llhttp api http; do
   pids+=($!)
   deps+=("$work/llhttp-$source.o")
 done
+# merve (deps/merve/merve.gyp: merve.cpp, C++20, over V8's simdutf as include) and simdutf (tools/v8_gypfiles/v8.gyp's
+# simdutf target: simdutf.cpp), the CommonJS export lexer internalBinding('cjs_lexer') is (ADR-0018 §7).
+"$cxx" "${depflags[@]}" "${cxxflags[@]}" -I"$simdutfsrc" -c "$simdutfsrc/simdutf.cpp" -o "$work/simdutf.o" &
+pids+=($!)
+deps+=("$work/simdutf.o")
+"$cxx" "${depflags[@]}" "${cxxflags[@]}" -I"$mervesrc" -I"$simdutfsrc" -c "$mervesrc/merve.cpp" -o "$work/merve.o" &
+pids+=($!)
+deps+=("$work/merve.o")
 finish
 mkdir -p "$work/generated"
 { sed -n '74,88p' "$work/$node/src/node_zlib.cc"; sed -n '146,159p' "$work/$node/src/node_zlib.cc"
@@ -230,12 +240,13 @@ for source in crypto_util crypto_context crypto_cipher crypto_tls crypto_x509 cr
   pids+=($!)
   program+=("$work/$source.o")
 done
-# The zlib and http_parser bindings' C (node_zlib, node_http_parser: Node's src/node_zlib.cc and
-# src/node_http_parser.cc below V8), over the headers of the zlib, brotli, zstd and llhttp in libnode.so, with the
+# The zlib, http_parser and cjs_lexer bindings' C (node_zlib, node_http_parser, node_cjs_lexer: Node's src/node_zlib.cc,
+# src/node_http_parser.cc and src/node_cjs_lexer.cc below V8), over the headers of the zlib, brotli, zstd, llhttp and
+# merve in libnode.so, with the
 # defines zstd gives its dependents (zstd.gyp all_dependent_settings).
-for source in node_zlib node_http_parser; do
+for source in node_zlib node_http_parser node_cjs_lexer; do
   "$cc" "${flags[@]}" -D_GNU_SOURCE "${zstddefines[@]}" -I"$uv/include" -I"$zlibsrc" -I"$brotlisrc/c/include" \
-    -I"$zstdsrc/lib" -I"$llhttpsrc/include" -c "$repo/native/node/$source.c" -o "$work/$source.o" &
+    -I"$zstdsrc/lib" -I"$llhttpsrc/include" -I"$mervesrc" -c "$repo/native/node/$source.c" -o "$work/$source.o" &
   pids+=($!)
   program+=("$work/$source.o")
 done

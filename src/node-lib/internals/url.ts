@@ -191,6 +191,10 @@ export function internalUrlOf(require: Require, process?: object) {
   const realmURL = (): typeof URL => (process ? processUrl(process) : (globalThis as unknown as { URL: typeof URL }).URL);
   return {
     get URL() { return realmURL(); },
+    // `URLParse` (lib/internal/url.js `URL.parse`): the URL, or null where the input does not parse.
+    URLParse(input: unknown, base?: unknown): URL | null {
+      try { return new (realmURL())(`${input}`, base === undefined ? undefined : `${base}`); } catch { return null; }
+    },
     get URLSearchParams() { return (globalThis as unknown as { URLSearchParams: unknown }).URLSearchParams; },
     unsafeProtocol,
     hostlessProtocol,
