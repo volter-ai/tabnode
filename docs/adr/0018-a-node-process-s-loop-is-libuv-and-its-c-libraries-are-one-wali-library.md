@@ -50,7 +50,9 @@ zstd and nghttp2, each with Node's configuration and each difference named as AD
 the WALI SDK from Node's own source tarball (pinned by digest) and linked against `libc.so`. The Node process's worker
 loads it into the process's memory through the same loader a program's libraries use, so a `.node` addon `dlopen`s
 into the same image: one libc, one `malloc` (browser-substrate ADR-0231 §3). `node-deps.wasm`, its own memory and its
-WASI imports go.
+WASI imports go. So the engine without its host is a Node built without them: a realm with no `node` program of the
+machine's has no `crypto`, `zlib` or `http`, and no second build of the same libraries stands in for them (manager's
+ruling, 2026-11-15).
 
 ### 2. `node` is a WALI program, and its `main` runs `uv_run`
 

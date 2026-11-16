@@ -20,6 +20,8 @@ tabnode runs Node programs in the browser. Its builtins are Node's own files, ve
 
 It is the Node engine of [`volter-ai/browser-substrate`](https://github.com/volter-ai/browser-substrate), the host it is built for, which installs it from npm by version.
 
+On that host's machine a Node process is the WALI program `node`: Node's start, libuv's loop and Node's C libraries (OpenSSL, zlib, brotli, zstd, llhttp) in the process's own memory, with this engine as its JavaScript ([ADR-0018](docs/adr/0018-a-node-process-s-loop-is-libuv-and-its-c-libraries-are-one-wali-library.md)). Without the machine's `node` program, a realm has no `crypto`, `zlib` or `http`, as a Node built without them.
+
 [![npm](https://img.shields.io/npm/v/%40volter%2Ftabnode?label=%40volter%2Ftabnode)](https://www.npmjs.com/package/@volter/tabnode)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
