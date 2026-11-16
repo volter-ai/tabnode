@@ -32,14 +32,6 @@ Host-configured numeric identity; absent preserves uid/gid 1000 and groups [1000
 
 ***
 
-### httpParserModule?
-
-> `optional` **httpParserModule?**: `Module`
-
-llhttp compiled by the creating worker; structured-cloned into the guest realm.
-
-***
-
 ### onConsole?
 
 > `optional` **onConsole?**: (`method`, `args`) => `void`

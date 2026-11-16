@@ -92,6 +92,43 @@ TABNODE_IMPORT(fs_event) void tabnode_fs_event(uv_fs_event_t *handle, const char
                                               int status);
 // A uv_fs_poll_t's change (StatWatcher::Callback), its current and previous stats in the binding's stat arrays.
 TABNODE_IMPORT(stat_watcher_change) void tabnode_stat_watcher_change(uv_fs_poll_t *handle, int status);
+// The zlib binding's (native/node node_zlib.c; ADR-0018 item 10). A stream is named by its address.
+struct tabnode_zlib_s;
+// CompressionStream::EmitError (src/node_zlib.cc:634-651): MakeCallback of the stream's `onerror` with the error's
+// message, its number and its code, inside whatever call raised it (a writeSync, an init, a reset, a params) or, for
+// a threadpool write, on the loop, where the C closes its scope.
+TABNODE_IMPORT(zlib_error) void tabnode_zlib_error(struct tabnode_zlib_s *stream, const char *message,
+                                                  const char *code, int32_t err);
+// The end of a threadpool write (AfterThreadPoolWork, node_zlib.cc:601-631): the output it produced is the engine's
+// to copy; `written` 1 where UpdateWriteResult has run and the write callback is to be made (MakeCallback, whose scope
+// the C closes), 0 where the work was cancelled or its error emitted. The stream holds itself no longer (Unref).
+TABNODE_IMPORT(zlib_done) void tabnode_zlib_done(struct tabnode_zlib_s *stream, int32_t written);
+// The http_parser binding's (native/node node_http_parser.c; ADR-0018 item 10), made inside the engine's own
+// `execute` or `finish`, as Node's Parser makes them inside Parser::Execute: no scope closes after them. A parser is
+// named by its address; a callback's strings are in its table (`tabnode_http_parser_table`).
+struct tabnode_http_parser_s;
+// `object()->Get(index)->IsFunction()`: whether the parser holds a callback at kOnMessageBegin to kOnTimeout.
+TABNODE_IMPORT(http_parser_has_callback) int32_t tabnode_http_parser_has_callback(struct tabnode_http_parser_s *parser,
+                                                                                 int32_t index);
+// The callback at `index` called with no arguments, in the parser's async context (on_message_begin's and
+// on_message_complete's): nonzero where it threw.
+TABNODE_IMPORT(http_parser_call) int32_t tabnode_http_parser_call(struct tabnode_http_parser_s *parser, int32_t index);
+// Flush's MakeCallback of kOnHeaders with CreateHeaders and the URL (node_http_parser.cc:960-983): nonzero where it
+// threw.
+TABNODE_IMPORT(http_parser_flush) int32_t tabnode_http_parser_flush(struct tabnode_http_parser_s *parser);
+// on_headers_complete's call of kOnHeadersComplete (node_http_parser.cc:423-514): its answer's IntegerValue, NaN
+// where it threw. Where `flushed` is 0 the headers and (for a request) the URL are the table's.
+TABNODE_IMPORT(http_parser_headers_complete) double tabnode_http_parser_headers_complete(
+    struct tabnode_http_parser_s *parser, int32_t flushed, int32_t type, int32_t major, int32_t minor,
+    int32_t method, int32_t status_code, int32_t upgrade, int32_t should_keep_alive);
+// on_body's MakeCallback of kOnBody with Buffer::Copy of `length` bytes at `at` (node_http_parser.cc:517-540):
+// nonzero where it threw.
+TABNODE_IMPORT(http_parser_body) int32_t tabnode_http_parser_body(struct tabnode_http_parser_s *parser,
+                                                                 const char *at, uint32_t length);
+// TrackHeaderPair's `object()->Get("maxHeaderPairs")` (node_http_parser.cc:1050-1079): the number (0 for one that is
+// not a number), NaN where the get threw.
+TABNODE_IMPORT(http_parser_max_header_pairs) double tabnode_http_parser_max_header_pairs(
+    struct tabnode_http_parser_s *parser);
 // The close of a callback's scope (Node's InternalCallbackScope::Close, src/api/callback.cc): its microtasks, after
 // the tick queue the callback's own return ran (or `close_scope`), which a browser runs only between tasks, so the engine answers it by a suspension that resumes from the
 // next task (a `Suspending` import).

@@ -23,45 +23,16 @@ import { hostnameToUnicode } from '../internals/url';
  */
 // eslint-disable-next-line no-var, vars-on-top
 var __constants: Record<string, unknown> | undefined;
-// eslint-disable-next-line no-var, vars-on-top
-var __zlibModesApplied = false;
-
-/**
- * Node's `zlib` constant group carries the FLUSH and error values a program
- * reads AND the mode enum its own `zlib.js` switches on -- `DEFLATE` through
- * `ZSTD_DECOMPRESS`, which is how `new Gzip()` tells the binding what it is.
- * The engine's table had the first half only, so `zlib.js` asserted on its
- * own mode before it made a handle. The modes are added here, beside the
- * group they belong to, in the order Node's own enum has them.
- */
-const __zlibModes = {
-  DEFLATE: 1, INFLATE: 2, GZIP: 3, GUNZIP: 4, DEFLATERAW: 5, INFLATERAW: 6, UNZIP: 7,
-  BROTLI_DECODE: 8, BROTLI_ENCODE: 9, ZSTD_COMPRESS: 10, ZSTD_DECOMPRESS: 11,
-};
-
 function constantsOf(): Record<string, unknown> {
   return __constants ??= buildConstantsBinding() as unknown as Record<string, unknown>;
 }
 
-function applyZlibModes(): void {
-  if (__zlibModesApplied) return;
-  __zlibModesApplied = true;
-  const table = constantsOf();
-  const zlib = table.zlib as Record<string, unknown> | undefined;
-  if (zlib) Object.assign(zlib, __zlibModes);
-  else table.zlib = { ...__zlibModes };
-}
-
 export const constantsBinding = new Proxy({} as Record<string, unknown>, {
-  get: (_t, key, receiver) => {
-    if (key === 'zlib') applyZlibModes();
-    return Reflect.get(constantsOf(), key, receiver);
-  },
+  get: (_t, key, receiver) => Reflect.get(constantsOf(), key, receiver),
   set: (_t, key, value, receiver) => Reflect.set(constantsOf(), key, value, receiver),
   has: (_t, key) => Reflect.has(constantsOf(), key),
   ownKeys: () => Reflect.ownKeys(constantsOf()),
   getOwnPropertyDescriptor: (_t, key) => {
-    if (key === 'zlib') applyZlibModes();
     const descriptor = Reflect.getOwnPropertyDescriptor(constantsOf(), key);
     return descriptor === undefined ? undefined : { ...descriptor, configurable: true };
   },

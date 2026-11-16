@@ -24,6 +24,10 @@ export function nodeVersions(node: string = NODE_LTS_VERSION): {
   v8: string;
   uv: string;
   readonly openssl: string | undefined;
+  readonly zlib: string | undefined;
+  readonly brotli: string | undefined;
+  readonly zstd: string | undefined;
+  readonly llhttp: string | undefined;
   amaro: string;
 } {
   // `https.js` calls `assertCrypto()`, which is `!process.versions.openssl`.
@@ -43,7 +47,38 @@ export function nodeVersions(node: string = NODE_LTS_VERSION): {
       if (value !== undefined) Object.defineProperty(this, "openssl", { value, enumerable: true, configurable: true, writable: true });
       return value;
     },
+    // zlib, brotli, zstd and llhttp are libnode.so's (ADR-0018 item 10), read as Node's Metadata::Versions reads them
+    // (node_metadata.cc:104-133), and kept as `openssl` is.
+    get zlib() { return kept(this, "zlib", libraryVersions()?.zlib); },
+    get brotli() { return kept(this, "brotli", libraryVersions()?.brotli); },
+    get zstd() { return kept(this, "zstd", libraryVersions()?.zstd); },
+    get llhttp() { return kept(this, "llhttp", libraryVersions()?.llhttp); },
     amaro: "1.1.11",
+  };
+}
+
+/** `value` kept on `target` once there is one, as `openssl` keeps its. */
+function kept(target: object, name: string, value: string | undefined): string | undefined {
+  if (value !== undefined) Object.defineProperty(target, name, { value, enumerable: true, configurable: true, writable: true });
+  return value;
+}
+
+/**
+ * The program's zlib, brotli, zstd and llhttp versions (native/node node_zlib.c and node_http_parser.c): ZLIB_VERSION,
+ * BrotliEncoderVersion() as MAJOR.MINOR.PATCH, ZSTD_VERSION_STRING and LLHTTP_VERSION_*; none in a realm with no program.
+ */
+function libraryVersions(): { zlib: string; brotli: string; zstd: string; llhttp: string } | undefined {
+  if (!libnodeAttached()) return undefined;
+  const program = libnode();
+  const exports = program.exports as unknown as {
+    tabnode_zlib_version(): number; tabnode_brotli_version(): number; tabnode_zstd_version(): number; tabnode_llhttp_version(): number;
+  };
+  const brotli = exports.tabnode_brotli_version() >>> 0;
+  return {
+    zlib: program.cString(exports.tabnode_zlib_version()) ?? "",
+    brotli: `${brotli >>> 24}.${(brotli & 0xfff000) >>> 12}.${brotli & 0xfff}`,
+    zstd: program.cString(exports.tabnode_zstd_version()) ?? "",
+    llhttp: program.cString(exports.tabnode_llhttp_version()) ?? "",
   };
 }
 
@@ -72,8 +107,7 @@ export function nodeRelease(node: string = NODE_LTS_VERSION): { name: string; lt
 
 /*
  * Keys of Node's `process.versions` this engine does not answer, because it carries no such thing or another
- * thing in its place, and a version of what is not there would be a lie: ada, ares, brotli, cldr, icu, llhttp (a
- * wasm build whose version this file cannot read), merve, modules and napi (no native addon loads), nbytes,
- * ncrypto, nghttp2, nghttp3, ngtcp2, simdjson, simdutf, sqlite, tz, undici, unicode, uvwasi, zlib (pako answers
- * it), zstd. `acorn` is answered where the process object is made, from the parser's own version.
+ * thing in its place, and a version of what is not there would be a lie: ada, ares, cldr, icu, merve, modules and
+ * napi (no native addon loads), nbytes, ncrypto, nghttp2, nghttp3, ngtcp2, simdjson, simdutf, sqlite, tz, undici,
+ * unicode, uvwasi. `acorn` is answered where the process object is made, from the parser's own version.
  */

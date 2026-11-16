@@ -7,7 +7,7 @@ third-party bodies also retain their notices here.
 | What | Where | Origin | Licence |
 |---|---|---|---|
 | Node.js's own library files, unmodified | `src/node-lib/**/*.js` | `nodejs/node` v24.21.0, `lib/`, and `deps/undici/undici.js` (undici's bundle, llhttp's WebAssembly inside it) | MIT, `src/node-lib/LICENSE` |
-| llhttp 9.3.0 compiled to WebAssembly, the build Node's `deps/undici` ships | `src/node-lib/binding/llhttp-wasm.ts` | Node.js v24.21.0, `deps/undici/src/lib/llhttp/llhttp-wasm.js` (undici 7.29.1; `nodejs/llhttp`, `nodejs/undici`) | MIT, `src/node-lib/LICENSE` (its llhttp and undici sections) |
+| zlib (Chromium's, 1.3.2.1-motley), brotli 1.2.0, zstd 1.5.7 and llhttp 9.4.3, built into `libnode.so` by `scripts/build-libnode.sh`, and the zlib and http_parser bindings' glue over them | `native/node/node_zlib.c`, `native/node/node_http_parser.c` (the build's output is not carried here) | Node.js v24.21.0, `deps/zlib`, `deps/brotli`, `deps/zstd` and `deps/llhttp`; the glue carries `src/node_zlib.cc`'s and `src/node_http_parser.cc`'s C half | zlib's licence, brotli MIT, zstd BSD-3-Clause, llhttp MIT; notices below; the glue MIT, `src/node-lib/LICENSE` |
 | Ada's `ada::idna`, compiled to WebAssembly by `scripts/build-ada-idna-wasm.sh` | `src/node-lib/binding/ada-idna-wasm.ts` | Node.js v24.21.0, `deps/ada` (Ada 4.0.0; `ada.h` 32-240, `ada.cpp` 140-6720) | MIT, Ada's notice below |
 | The Ada module's runtime, as `scripts/build-ada-idna-wasm.sh` links it: wasi-libc (`libc.a`, `crt1-reactor.o`), libc++ and libc++abi (the `noeh` builds), and compiler-rt's builtins | `src/node-lib/binding/ada-idna-wasm.ts` | wasi-sdk 34.0: wasi-libc at `2e6fb9d8ee0cdf9e431fbcabe8af3115de000a13`, llvm-project at `895aa2c896ada719451be2e3673c83da8ddf1141` | wasi-libc MIT, with its musl, cloudlibc and dlmalloc notices; libc++, libc++abi and compiler-rt Apache-2.0 WITH LLVM-exception; notices below |
 | OpenSSL 3.5.8 and ncrypto, built into `libnode.so` by `scripts/build-libnode.sh`, and the crypto bindings' glue over them | `native/node/crypto_*.cc`, `native/node/node_constants.cc` (the build's output is not carried here) | Node.js v24.21.0, `deps/openssl/openssl` (OpenSSL 3.5.8), `deps/ncrypto`, `src/node_root_certs.h` and `src/node_constants.cc`; the glue carries `src/crypto/crypto_*.cc`'s OpenSSL half | OpenSSL Apache-2.0, its notice below; ncrypto, Node's root list and constants MIT, `src/node-lib/LICENSE` |
@@ -1390,16 +1390,16 @@ inputs. Licence copies retain the original text with LF line endings. This
 source inventory does not establish what a particular packed archive contains.
 
 `@noble/hashes` (the engine's own prepared-module keys, `src/runtime.ts`), Acorn and Buffer enter through the
-engine's direct imports. Buffer and the Brotli decoder use `base64-js`; `ieee754` is covered above. Comlink and
+engine's direct imports. Buffer uses `base64-js`; `ieee754` is covered above. Comlink and
 `resolve.exports` are external in the main library and bundled by the runtime-worker build. `node:crypto` is
 Node's own library over OpenSSL in the `node` program's `libnode.so`, whose notices are that program's (ADR-0018
 item 7).
-pako's deep `lib/zlib/*` imports and `brotli/decompress` are bundled even where
-their package-root specifiers are external.
+pako enters through the engine's npm installer (`src/npm/tarball.ts`), whose
+package-root specifier is external in the main library.
 
 Amaro is loaded through the host's `createRequire` and contributes no bundled
 body here. `vite-plugin-wasm` is build tooling. A package declaration alone is
-not evidence of a bundled Amaro or Brotli Wasm binary.
+not evidence of a bundled Amaro binary.
 
 | Bundled production input | Licence | Original licence-file SHA-256 |
 |---|---|---|
@@ -1858,57 +1858,6 @@ freely, subject to the following restrictions:
   Jean-loup Gailly        Mark Adler
   jloup@gzip.org          madler@alumni.caltech.edu
 ```
-
-### brotli 1.3.3: decoder notices
-
-The published package's README declares MIT. It ships no root licence file;
-the decoder source also carries Google's Apache-2.0 notice. Both original
-notices follow. The full Apache-2.0 terms are reproduced above.
-These are the JavaScript decoder inputs, separate from `brotli-wasm`.
-
-Source: <https://cdn.jsdelivr.net/npm/brotli@1.3.3/dec/decode.js>
-Original file SHA-256: `f66d1fd1ea9e54c843b7f5f4bc02cf028f28fed69404f279f86869b097dace5e`.
-
-```text
-/* Copyright 2013 Google Inc. All Rights Reserved.
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-   http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
-```
-
-Source: <https://cdn.jsdelivr.net/npm/brotli@1.3.3/readme.md>
-Original file SHA-256: `8a8bac543fccf52a64708ff3315ca2be90e3e4c270634df1e4e4b51f0ee9c5d7`.
-
-```text
-## License
-
-MIT
-```
-
-## Vendored llhttp notices
-
-The embedded llhttp WebAssembly is byte-identical to the non-SIMD payload in
-Node.js v24.21.0's `deps/undici/src/lib/llhttp/llhttp-wasm.js` (file SHA-256
-`344f7ae80c983694372d9234584a1261ef5492ab219d6e573e933f5d1c715b00`), the same
-bytes as `llhttp.wasm` beside it: 54,013 bytes, SHA-256
-`57184a16144b5bc880e29105fa35d75c93dd318563e1b743e110de845e2ab661`. It is
-undici 7.29.1's build (`deps/undici/src/package.json`); the header it was built
-from, `deps/undici/src/deps/llhttp/include/llhttp.h`, identifies llhttp 9.3.0.
-The tarball is Node's release archive, SHA-256
-`622424efb5dc0c26c93fbb619ff10737ee289c605b837c88778e186925d82777`. The
-licences of llhttp and undici are in Node's `LICENSE`, carried unchanged at
-`src/node-lib/LICENSE`. This receipt identifies the original artifact; it does
-not claim a rebuild of it.
 
 ## Ada notice
 
@@ -3184,6 +3133,124 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+```
+
+## zlib, brotli, zstd and llhttp notices
+
+The licences of the libraries `scripts/build-libnode.sh` compiles into `libnode.so` from Node.js v24.21.0's release
+archive (SHA-256 `622424efb5dc0c26c93fbb619ff10737ee289c605b837c88778e186925d82777`), as Node carries them, unchanged.
+
+`deps/zlib/LICENSE`:
+
+```text
+Copyright notice:
+
+ (C) 1995-2026 Jean-loup Gailly and Mark Adler
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the authors be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+  Jean-loup Gailly        Mark Adler
+  jloup@gzip.org          madler@alumni.caltech.edu
+```
+
+`deps/brotli/LICENSE`:
+
+```text
+Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+`deps/zstd/LICENSE`:
+
+```text
+BSD License
+
+For Zstandard software
+
+Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook, nor Meta, nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+`deps/llhttp/LICENSE`:
+
+```text
+MIT License
+
+Copyright © 2018 Fedor Indutny
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to permit
+persons to whom the Software is furnished to do so, subject to the
+following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ## OpenSSL notice

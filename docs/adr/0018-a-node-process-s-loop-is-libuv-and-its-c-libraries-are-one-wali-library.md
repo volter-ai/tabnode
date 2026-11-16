@@ -83,8 +83,9 @@ Node's own text against the WALI SDK's musl headers and libuv's uv.h, as Node's 
 CreatePerContextProperties calls (errno, the Windows errors, which Linux has none of, signals, priority, fs with its
 `O_*`, `S_*`, `UV_FS_*`, `COPYFILE_*` and access modes, crypto, dlopen, trace, internal) and os's `UV_UDP_REUSEADDR`,
 extracted from Node's tarball by the build and compiled in `native/node/node_constants.cc`, whose target is the text
-the engine builds the binding's groups from (`src/shims/constants.ts`); the zlib group is the engine's zlib's own,
-since zlib is not yet in `libnode.so`. The wraps' constants (`tcp_wrap`, `pipe_wrap`, `udp_wrap`, `tty_wrap`: their
+the engine builds the binding's groups from (`src/shims/constants.ts`), and `src/node_zlib.cc`'s DefineZlibConstants,
+which CreatePerContextProperties calls for the zlib group (`node_constants.cc:1357-1372`), against the zlib, brotli and
+zstd headers of `libnode.so`'s own (item 10). The wraps' constants (`tcp_wrap`, `pipe_wrap`, `udp_wrap`, `tty_wrap`: their
 Initialize's NODE_DEFINE_CONSTANTs from uv.h and their own headers) are in the same text. `internalBinding('uv')` is
 Node's `src/uv.cc` (`native/node/uv.c`: UV_ERRNO_MAP expanded once, `uv_err_name_r`, `uv_strerror_r`), and every
 `UV_E*` a binding answers or compares is read from it (`src/node-lib/binding/uv.ts` `uvConstant`). A number Node's C++
@@ -541,10 +542,53 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
        binding's NativeKeyObject and NativeCryptoKey constructors, made once, so `internal/crypto/keys` is the realm's
        one file, as `internal/timers` is (item 2). With no OpenSSL there is no `crypto` binding: `require('crypto')`
        and `globalThis.crypto` throw ERR_NO_CRYPTO, as in a Node built without it.
+  10. **zlib, brotli, zstd and llhttp are `libnode.so`'s, and the `zlib` and `http_parser` bindings are Node's C over
+     them**: the part of item 7's "rest of §1" a server's request path uses, numbered after item 9 so the numbers
+     cited stand. `libnode.so` holds Node v24.21.0's `deps/zlib` (Chromium's zlib, 1.3.2.1-motley), `deps/brotli`
+     (1.2.0), `deps/zstd` (1.5.7) and `deps/llhttp` (9.4.3), each compiled from Node's release archive with its gyp
+     file's sources and defines and Node's Release flags (`scripts/build-libnode.sh`), zlib as zlib.gyp builds it for
+     an architecture with neither x86's nor NEON's optimizations (`CPU_NO_SIMD`, `inflate.c`).
+     `internalBinding('zlib')` is Node's `src/node_zlib.cc` split where V8 stands. The C (`native/node/node_zlib.c`)
+     holds every context (ZlibContext, BrotliEncoderContext, BrotliDecoderContext, ZstdCompressContext,
+     ZstdDecompressContext) and CompressionStream's state, checks and errors: `writeSync` runs DoThreadPoolWork in the
+     call; `write` is `uv_queue_work` on libuv's threadpool (ThreadPoolWork::ScheduleWork), and its AfterThreadPoolWork
+     on the loop calls the engine (`zlib_done`) and closes the callback's scope (§4, §5); EmitError's MakeCallback is
+     the engine's `zlib_error`. The V8 half (`src/node-lib/binding/zlib.ts`) reads each call's arguments as
+     FunctionCallbackInfo reads them and throws what Node throws from V8, copies a write's input into the stream's room
+     in the process's memory and its output back, copies the write result into the stream's Uint32Array, and makes
+     `onerror` and the write callback as MakeCallback makes them. `internalBinding('http_parser')` is Node's
+     `src/node_http_parser.cc` the same way: the Parser (its `llhttp_t` and settings, its StringPtrs and their slab,
+     its header counts and limits, Execute) and ConnectionsList's two ordered sets are C
+     (`native/node/node_http_parser.c`); each callback llhttp makes runs Node's member function there, which reaches
+     the parser's JavaScript through the engine's `http_parser_*` imports inside the engine's own `execute`, in the
+     parser's async context (AsyncReset at `initialize`), with no scope closed after them; Execute's parse error and a
+     callback's exception are V8's, so the engine's (`src/node-lib/binding/http_parser.ts`). `process.versions`
+     answers zlib, brotli, zstd and llhttp from the program, as Metadata::Versions reads them. Node's `lib/zlib.js`,
+     `lib/_http_common.js`, `lib/_http_server.js` and `lib/_http_client.js` run over them unchanged. What they
+     replace goes whole: pako's port of zlib, `brotli`'s JavaScript decoder and `brotli-wasm`, the
+     `DecompressionStream("brotli")` path, the refusals of Brotli compression and Zstandard, the engine's zlib
+     module, and llhttp's own WebAssembly module (its memory and instance) with its vendored build and its loader
+     (`prepareHttpParserModule`, `RuntimeOptions.httpParserModule`). A realm the host gives no `node` program has no
+     zlib and no llhttp, as it has no OpenSSL. Where this differs from Node:
+     - A write's bytes, a dictionary's and a parser's input are copied into and out of the process's memory, as every
+       binding's are (§3).
+     - CompressionStreamMemoryOwner's allocators and their count are Node's, but the count is reported to nothing:
+       AdjustAmountOfExternalAllocatedMemory tells V8's external memory accounting, which a page's engine has none of.
+     - A close pending on a threadpool write is made before its callback's scope closes, where Node makes it after:
+       the stream's object is the engine's to collect once `zlib_done` returns, and a finalizer may run while the
+       drain is suspended. A close pending then is the only one there can be, since `write_in_progress` is false from
+       AfterThreadPoolWork's start, and no write can follow it (`CHECK(!pending_close)`), so the drain's work sees the
+       same stream.
+     - A callback that throws inside `execute` leaves every later callback of that call unmade (each answers as
+       failed), and its exception propagates when `execute` returns, as V8's pending exception does.
+     - `consume` makes the parser no listener of its stream: a StreamBase's listener chain (PushStreamListener) is not
+       built, so a consumed socket's bytes reach the parser through `_http_server.js`'s own `data` listener and
+       `execute`, the path Node takes for a socket that is no StreamBase, and `kOnExecute` is not called.
+     - An argument CHECK of a V8 half throws, where Node's aborts; the C's CHECKs abort, as Node's do.
 
 **For the host** (browser-substrate `linux-node-engine.ts`, `linux-uv-waits.ts`, `linux-system.ts`, the process's
 tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-process.ts`, and the recipe
-`programs/node/24.21.0`), items 1 to 9 together:
+`programs/node/24.21.0`), items 1 to 10 together:
 - *The one hookup.* In its `bootstrap` import, before Node's library runs, the host calls Tabnode's
   `attachLibnode({ exports, read, write })` once: the program's exports, `read(at, length)`, a copy of the process's
   memory, and `write(at, bytes)`, bytes into it (a browser's APIs refuse a view of shared memory). A second call with
@@ -571,8 +615,16 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   `native/node/engine_device.c`'s `uv_poll_t`); and OpenSSL's callbacks, made inside an export call of the engine's and
   followed by no drain: `tls_handshake(tls, done)`, `tls_keylog(tls, line, length)`, `tls_new_session(tls, id,
   id_length, der, der_length)`, `tls_cert(tls, servername, length, ocsp) -> i32` and `tls_alpn(tls, protocols, length)
-  -> i32`. A handle is its address, a stream's or a socket's request its number, an fs request its address, a TLS
-  connection its TnSsl's address.
+  -> i32`; the zlib binding's `zlib_error(stream, message, code, err)` (EmitError's MakeCallback of `onerror`, inside
+  the call that raised it, or on the loop for a threadpool write, followed there by a drain) and `zlib_done(stream,
+  written)` (AfterThreadPoolWork: the output, and with `written` the write result and the write callback, followed by
+  a drain); and llhttp's callbacks into a parser, made inside an export call of the engine's and followed by no drain:
+  `http_parser_has_callback(parser, index) -> i32`, `http_parser_call(parser, index) -> i32`,
+  `http_parser_flush(parser) -> i32`, `http_parser_headers_complete(parser, flushed, type, major, minor, method,
+  status_code, upgrade, should_keep_alive) -> f64` (the answer's IntegerValue, NaN where it threw),
+  `http_parser_body(parser, at, length) -> i32` and `http_parser_max_header_pairs(parser) -> f64`. A handle is its
+  address, a stream's or a socket's request its number, an fs request its address, a TLS connection its TnSsl's
+  address, a zlib stream and a parser their addresses.
 - *The process's end* (item 9). The host answers none of `before_exit`, `emit_exit` and `exit_code`, and `loop_idle`
   and the system's `idle` are gone; it calls no `tabnode_exit`. Its `bootstrap` starts the run and does not wait for
   its end: where the realm's process is the program, `runNode`'s promise never settles. The process ends at the
@@ -629,8 +681,9 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
 - *The build* (`scripts/build-libnode.sh`): `<native SDK> <side-module toolchain> <libuv a267f5688b archive>
   <node-v24.21.0.tar.gz> <out>`. The side-module toolchain is browser-substrate's (its ADR-0231: `include/c++/v1`,
   `lib/libc++.a`, `lib/libc++abi.a`), so the recipe depends on it beside the native SDK, and Node's release archive
-  is an input (OpenSSL, ncrypto, `node_root_certs.h`, `node_constants.cc` and `.h`, `tracing/trace_event_common.h`).
-  `libnode.so` exports the whole of libuv, OpenSSL and ncrypto.
+  is an input (OpenSSL, ncrypto, zlib, brotli, zstd and llhttp, `node_root_certs.h`, `node_constants.cc` and `.h`,
+  `node_zlib.cc`'s constants, `tracing/trace_event_common.h`). `libnode.so` exports the whole of libuv, OpenSSL,
+  ncrypto, zlib, brotli, zstd and llhttp.
 - *Addons through `dlopen`* (item 7): the program's `dlopen` of a `.node` reaches the loader, which refuses a
   library's import outside `env`, `GOT` and `wali` and binds `env` by name in the program and the libraries. An addon
   the side-module toolchain builds imports emnapi's `napi` and `emnapi` modules and Node-API's `env` functions, which

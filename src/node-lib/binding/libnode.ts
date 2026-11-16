@@ -571,6 +571,38 @@ function cryptoCallbacks(): CryptoCallbacks {
 }
 
 /**
+ * The zlib and http_parser bindings' sides of their imports (engine.h `zlib_*`, `http_parser_*`; ADR-0018 item 10),
+ * each given once when its binding loads: the C calls back only a stream or a parser its binding made.
+ */
+export interface ZlibCallbacks {
+  zlib_error(stream: number, message: number, code: number, err: number): void;
+  zlib_done(stream: number, written: number): void;
+}
+export interface HttpParserCallbacks {
+  http_parser_has_callback(parser: number, index: number): number;
+  http_parser_call(parser: number, index: number): number;
+  http_parser_flush(parser: number): number;
+  http_parser_headers_complete(parser: number, flushed: number, type: number, major: number, minor: number,
+    method: number, statusCode: number, upgrade: number, shouldKeepAlive: number): number;
+  http_parser_body(parser: number, at: number, length: number): number;
+  http_parser_max_header_pairs(parser: number): number;
+}
+
+let zlibCallbacks: ZlibCallbacks | undefined;
+let httpParserCallbacks: HttpParserCallbacks | undefined;
+export function setZlibCallbacks(callbacks: ZlibCallbacks): void { zlibCallbacks = callbacks; }
+export function setHttpParserCallbacks(callbacks: HttpParserCallbacks): void { httpParserCallbacks = callbacks; }
+
+function zlibs(): ZlibCallbacks {
+  if (!zlibCallbacks) throw new Error('node: zlib called back a stream no zlib binding holds');
+  return zlibCallbacks;
+}
+function httpParsers(): HttpParserCallbacks {
+  if (!httpParserCallbacks) throw new Error('node: llhttp called back a parser no http_parser binding holds');
+  return httpParserCallbacks;
+}
+
+/**
  * The engine's imports the bindings answer (native/node engine.h), which the host puts among the program's
  * `host:tabnode` imports beside its own: each finds the handle by its address or the request by its number and calls
  * its JavaScript, as Node's C++ makes the callback with MakeCallback; the drain that closes the callback's scope is
@@ -642,4 +674,20 @@ export const libnodeImports = {
   /** SelectALPNCallback's JavaScript branch: the chosen protocol's offset, or -1. */
   tls_alpn: (connection: number, protocols: number, length: number): number =>
     tlsCallbacks().alpn(address(connection), libnode().read(address(protocols), address(length))),
+  /** CompressionStream::EmitError's MakeCallback of `onerror`; on the loop, the C closes its scope. */
+  zlib_error: (stream: number, message: number, code: number, err: number): void => {
+    zlibs().zlib_error(stream, message, code, err);
+  },
+  /** AfterThreadPoolWork: the output, and with `written` the write result and the write callback, whose scope the C closes. */
+  zlib_done: (stream: number, written: number): void => { zlibs().zlib_done(stream, written); },
+  /** llhttp's callbacks into the parser's JavaScript, made inside the engine's own `execute`: no scope closes after them. */
+  http_parser_has_callback: (parser: number, index: number): number => httpParsers().http_parser_has_callback(parser, index),
+  http_parser_call: (parser: number, index: number): number => httpParsers().http_parser_call(parser, index),
+  http_parser_flush: (parser: number): number => httpParsers().http_parser_flush(parser),
+  http_parser_headers_complete: (parser: number, flushed: number, type: number, major: number, minor: number,
+    method: number, statusCode: number, upgrade: number, shouldKeepAlive: number): number =>
+    httpParsers().http_parser_headers_complete(parser, flushed, type, major, minor, method, statusCode, upgrade,
+      shouldKeepAlive),
+  http_parser_body: (parser: number, at: number, length: number): number => httpParsers().http_parser_body(parser, at, length),
+  http_parser_max_header_pairs: (parser: number): number => httpParsers().http_parser_max_header_pairs(parser),
 };

@@ -8,7 +8,8 @@
  * the loopback as the process whose tree it is given (its container's), with
  * that process's kernel socket calls (ADR-0009), writes the request, and
  * reads the answer back through the RESPONSE side of
- * `./binding/http_parser.ts`. A port nothing listens on is refused by the
+ * `./binding/http_parser.ts`, Node's own parser over llhttp in the process's
+ * libnode.so. A port nothing listens on is refused by the
  * kernel, and answered 503.
  *
  * What this buys beyond correctness: the guest's server sees a real
@@ -21,7 +22,7 @@
 import { netModule } from './net-module';
 import type { Socket } from './net-module';
 import { Buffer } from './buffer-module';
-import { HTTPParser } from './binding/http_parser';
+import { httpParserBinding, type HTTPParser } from './binding/http_parser';
 import { withFilesystem } from './binding/named-tree';
 import { callingSockets } from '../host-sockets';
 import { listensWithTls } from './binding/tls_wrap';
@@ -100,11 +101,14 @@ interface Collected {
 /**
  * A response parser wired to collect. Node's own `_http_client.js` does this
  * with the same binding; the bridge needs the parts rather than an
- * `IncomingMessage`, so it reads them off the parser directly.
+ * `IncomingMessage`, so it reads them off the parser directly. The parser is
+ * the bridge's alone, so its end is `close`, which deletes it, as Node's
+ * `closeParserInstance` does for a parser its free list does not keep.
  */
 function responseParser(collected: Collected, onHead?: () => void, onChunk?: (chunk: Uint8Array) => void): HTTPParser {
+  const { HTTPParser } = httpParserBinding();
   const parser = new HTTPParser();
-  parser.initialize(HTTPParser.RESPONSE, null, 0, 0);
+  parser.initialize(HTTPParser.RESPONSE, {}, 0, 0);
   parser[HTTPParser.kOnHeadersComplete] = ((
     _major: number, _minor: number, headers: string[], _method: unknown, _url: unknown,
     statusCode: number, statusMessage: string, upgrade: boolean,
@@ -130,18 +134,11 @@ function responseParser(collected: Collected, onHead?: () => void, onChunk?: (ch
     if (onChunk) onChunk(chunk);
     else collected.chunks.push(chunk);
   }) as never;
+  // A later message on this socket (bytes after Content-Length or the chunked
+  // terminator) joins nothing: the head, body and end above take only the
+  // first, and the caller ends the connection once it is complete.
   parser[HTTPParser.kOnMessageComplete] = (() => {
-    if (collected.complete) return collected.upgrade ? 0 : -1;
     collected.complete = true;
-    // Stop at Content-Length or the chunked terminator: later bytes on this
-    // socket are another message, and must not join this body. pause()
-    // alone does not stop the rest of this execute(); a non-zero return
-    // does (measured: a 200 followed by a 400 in one write became status 400).
-    // An upgrade must not stop that way: execute() has to answer the pause
-    // so the leftover bytes can be pushed back onto the socket.
-    if (collected.upgrade) return 0;
-    parser.pause();
-    return -1;
   }) as never;
   return parser;
 }
@@ -191,7 +188,7 @@ export function __requestOverLoopback(
     const answer = (): void => {
       if (settled) return;
       settled = true;
-      parser.free();
+      parser.close();
       resolve({
         statusCode: collected.statusCode || 502,
         statusMessage: collected.statusMessage,
@@ -211,7 +208,7 @@ export function __requestOverLoopback(
     socket.on('error', () => {
       if (settled) return;
       settled = true;
-      parser.free();
+      parser.close();
       resolve(serviceUnavailable(port));
     });
     socket.write(requestHead(method, url, headers, body));
@@ -246,7 +243,7 @@ export function __streamOverLoopback(
     const collected = emptyCollected();
     let started = false;
     let ended = false;
-    const finish = (): void => { if (ended) return; ended = true; parser.free(); onEnd(); resolve(); };
+    const finish = (): void => { if (ended) return; ended = true; parser.close(); onEnd(); resolve(); };
     const parser = responseParser(
       collected,
       () => { started = true; onStart(collected.statusCode, collected.statusMessage, collected.headers); },
@@ -310,7 +307,7 @@ export function __upgradeOverLoopback(
     function fail(error?: unknown): void {
       if (settled) return;
       settled = true;
-      parser.free();
+      parser.close();
       if (collected.statusCode === 0 && refused(error)) {
         resolve({ statusCode: 503, statusMessage: 'Service Unavailable', headers: {}, rawHeaders: [], socket: null });
         return;
@@ -323,7 +320,7 @@ export function __upgradeOverLoopback(
       if (read instanceof Error) { socket.destroy(); fail(); return; }
       if (collected.upgrade || collected.statusCode === 101) {
         settled = true;
-        parser.free();
+        parser.close();
         // Anything after the head is the protocol's first bytes; the reader
         // that takes this socket next must see them.
         const consumed = typeof read === 'number' ? read : chunk.length;

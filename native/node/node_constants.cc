@@ -1,23 +1,32 @@
 // NODE'S CONSTANTS (Tabnode ADR-0018 §3): Node v24.21.0's src/node_constants.cc, every Define* function its
 // CreatePerContextProperties calls (126-1333), compiled from Node's own text against the WALI SDK's musl headers,
 // libuv's uv.h and the OpenSSL libnode.so holds, as Node compiles them into its binary against its system's: the
-// errno, signal, priority, fs, crypto, dlopen, trace and internal groups, and os's UV_UDP_REUSEADDR (1388). The build
+// errno, signal, priority, fs, crypto, zlib, dlopen, trace and internal groups, and os's UV_UDP_REUSEADDR (1388). The build
 // extracts the functions, the system headers and fallbacks the file includes (30-113) and node_constants.h's own
 // definitions (30-78) from Node's tarball (scripts/build-libnode.sh); tracing/trace_event_common.h is Node's, which its
 // env-inl.h includes. Only V8 is not here: a Define* function's target is the text its definitions are written into,
 // from which the engine builds `internalBinding('constants')` (src/shims/constants.ts).
 //
-// DefineZlibConstants (src/node_zlib.cc) is not among them: zlib is not in libnode.so (ADR-0018 §1), and the zlib
-// group is the engine's zlib's own.
+// DefineZlibConstants is src/node_zlib.cc's (1922-2106), with the chunk and level bounds (74-88) and the mode enum
+// (146-159) it reads, compiled against the zlib, brotli and zstd headers of libnode.so's own copies (ADR-0018 item 10),
+// as node_zlib.cc includes them.
 //
 // Beside them, the constants the wraps' Initialize functions define from uv.h and their own headers, written the same
 // way: tcp_wrap.cc:133-137, pipe_wrap.cc:98-103, udp_wrap.cc:230-233 and tty_wrap.cc:71-73.
 #include <cstdio>
+#include <limits>
 #include <string>
 
 #include <uv.h>
 
 #include "crypto_util.h"
+
+#define ZSTD_STATIC_LINKING_ONLY
+#include "brotli/decode.h"
+#include "brotli/encode.h"
+#include "zlib.h"
+#include "zstd.h"
+#include "zstd_errors.h"
 
 // node.gypi:85 defines __POSIX__ where the OS is not Windows; node_constants.cc includes <dlfcn.h> under it.
 #define __POSIX__ 1
@@ -55,6 +64,8 @@ namespace constants {
 #include "node_constants_body.inc"
 }  // namespace constants
 
+#include "node_zlib_constants.inc"
+
 // TCPWrap's and PipeWrap's SocketType (tcp_wrap.h:38-41, pipe_wrap.h:37-41).
 namespace tcp_wrap {
 enum SocketType { SOCKET, SERVER };
@@ -77,6 +88,7 @@ CRYPTO_EXPORT(tabnode_constants) char* tabnode_constants(size_t* length) {
   DefinePriorityConstants({&text, "priority"});
   DefineFsConstants({&text, "fs"});
   DefineCryptoConstants({&text, "crypto"});
+  DefineZlibConstants({&text, "zlib"});
   DefineDLOpenConstants({&text, "dlopen"});
   DefineTraceConstants({&text, "trace"});
   DefineInternalConstants({&text, "internal"});

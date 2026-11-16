@@ -18,7 +18,6 @@ import type { VmScriptObserver, VmScriptPhase } from './vm-script-state';
 import { dlopenNative } from './native-addon';
 import { startGuestLoop, withGuestExecution, guestExecutionActiveMs, enableGuestEntryAccount, guestEntryAccount, guestEntryKinds } from './guest-loop';
 import { guestPromise, intrinsicPromise } from './promise-ownership';
-import { installHttpParserModule } from './http-parser-module';
 import { forGuestRealm, installGuestRealm, takeFromHost, defineOnHost, heldWork } from './host-globals';
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
@@ -2033,8 +2032,6 @@ export interface RuntimeOptions {
   onConsole?: (method: string, args: unknown[]) => void;
   /** Observe only original completed synchronous bodies at these exact paths, when the host explicitly requests it. */
   moduleEvaluationObserver?: ModuleEvaluationObserver;
-  /** llhttp compiled by the creating worker; structured-cloned into the guest realm. */
-  httpParserModule?: WebAssembly.Module;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
   /** fd 1 and fd 2 as the bytes the program wrote; where given, the text sink of that fd is not called. */
@@ -4120,7 +4117,6 @@ export class Runtime {
   private processedCodeCache: Map<string, string> = new Map();
 
   constructor(vfs: VirtualFS, options: RuntimeOptions = {}) {
-    if (options.httpParserModule !== undefined) installHttpParserModule(options.httpParserModule);
     this.vfs = vfs;
     // Create process first so we can get cwd for fs shim
     this.process = createProcess({
