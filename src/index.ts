@@ -69,7 +69,9 @@ export { installNodeProcessHost, nodeProcessHostInstalled } from './node-process
 /**
  * The realm's process is the WALI program `node` on libuv's loop (ADR-0018 §2, §3): the host gives the program's
  * exports and its memory's door once (`attachLibnode`, in its `bootstrap` import, before Node's library runs), and
- * answers the program's binding callbacks with `libnodeImports`, among its `host:tabnode` imports.
+ * answers the program's binding callbacks and the run's end (`before_exit`, `emit_exit`, `exit_code`; ADR-0018 item 7)
+ * with `libnodeImports`, among its `host:tabnode` imports. The process ends at the program's exit: `main` returning
+ * its code, or `process.exit`'s exit(3).
  */
 export { attachLibnode, libnodeImports } from './node-lib/binding/libnode';
 export type { LibnodeProgram, LibnodeExports } from './node-lib/binding/libnode';
@@ -78,8 +80,6 @@ export type { StdioKind } from './shims/child_process';
 export { STDIN_RING, createStdinRing, stdinRingProblem, StdinRingWriter, type StdinReader } from './stdin-ring';
 /** Present from the release whose runs read `RunOptions.stdinReader`: a host gives one only to an engine that has it. */
 export const RUN_STDIN_READER = 1;
-/** Present from the release that tells a run's registry its signal listeners (ProcessRegistry.disposition). */
-export const RUN_SIGNAL_DISPOSITIONS = 1;
 /** Present from the release whose `run` (a shell line) reads `RunOptions.filesystem`, as `runNode` does. */
 export const RUN_LINE_FILESYSTEM = 1;
 import { stdinRingProblem, stdinRingWaitsAsync, type StdinReader } from './stdin-ring';
@@ -90,7 +90,7 @@ export { TREE_SOCKETS } from './host-sockets';
 export type { TreeSockets, InterfaceAddressEntry, SocketMessage, PollDescriptor } from './host-sockets';
 export { TREE_NATIVE, NATIVE_THREAD_MODULE } from './host-native';
 export type { TreeNative, NativeLoadRequest, NativeLoaded } from './host-native';
-export type { ProcessIdentity, ProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
+export type { ProcessIdentity, ProcessRegistry, ChildProcessRegistry, ProcessRegistryScope, InitialProcessRegistration } from './process-registry';
 import type { ProcessRegistry } from './process-registry';
 export { NativeStreamScope } from './native-stream-owner';
 export { installNativeStreamTransport, nativeStreamDescriptor } from './native-stream-binding';
@@ -153,8 +153,10 @@ export interface RunOptions {
    */
   process?: { pid: number; ppid: number };
   /**
-   * The run's process registry, where its process has a kernel connection of its own: its numbers, its children,
-   * kill and lookup go through it (`installRunRegistry`).
+   * The run's process registry, where its process has a kernel connection of its own: its numbers, kill and lookup go
+   * through it (`installRunRegistry`). A `node` program's run is given a `ProcessRegistry`, its children being libuv's;
+   * a run whose children the engine makes in this realm (a shell line's `node`) is given a `ChildProcessRegistry`, which
+   * makes them.
    */
   registry?: ProcessRegistry;
   /**
@@ -247,7 +249,8 @@ export function createContainer(options?: ContainerOptions): {
    * `argv[0]` is the program's name (`process.argv0`), then Node's options,
    * the script or `-e` source, and its arguments. No command line is built and
    * no shell runs; `env` is the whole environment. The options and the answer
-   * are `run`'s.
+   * are `run`'s. Where the realm's process is the program `node` (`attachLibnode`), the process ends at the
+   * program's exit, which ends its realm, and this never settles (ADR-0018 item 7).
    */
   runNode: (argv: readonly string[], options?: RunOptions) => Promise<RunResult>;
   pendingTimers: (token: string) => number;

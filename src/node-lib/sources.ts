@@ -127,6 +127,7 @@ import INTERNAL_PRIORITY_QUEUE from './internal/priority_queue.js?raw';
 import INTERNAL_ASYNC_CONTEXT_FRAME from './internal/async_context_frame.js?raw';
 import INTERNAL_ALS_ASYNC_CONTEXT_FRAME from './internal/async_local_storage/async_context_frame.js?raw';
 import INTERNAL_ALS_RUN_SCOPE from './internal/async_local_storage/run_scope.js?raw';
+import INTERNAL_PROCESS_SIGNAL from './internal/process/signal.js?raw';
 
 import INTERNAL_STREAMS_ITER_TYPES from './internal/streams/iter/types.js?raw';
 
@@ -290,4 +291,5 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/async_context_frame': INTERNAL_ASYNC_CONTEXT_FRAME,
   'internal/async_local_storage/async_context_frame': INTERNAL_ALS_ASYNC_CONTEXT_FRAME,
   'internal/async_local_storage/run_scope': INTERNAL_ALS_RUN_SCOPE,
+  'internal/process/signal': INTERNAL_PROCESS_SIGNAL,
 };

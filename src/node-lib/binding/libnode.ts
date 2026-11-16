@@ -9,14 +9,17 @@
  *
  * The host that runs the program attaches it once, in its `bootstrap` import, before Node's library runs
  * (`attachLibnode`): the program's exports, and the process's memory through its one door, a copy read and bytes
- * written, since a browser's APIs refuse a view of shared memory. A realm the host gives no program (a tab's engine
+ * written, since a browser's APIs refuse a view of shared memory. The run's end is libuv's (ADR-0018 item 7): `main`
+ * spins the loop as Node's SpinEventLoopInternal does and asks the process's run, which gives its end once
+ * (`attachLibnodeRun`), for `beforeExit`, `exit` and the code it returns; `process.exit` is the program's exit
+ * (`reallyExit`). A realm the host gives no program (a tab's engine
  * with no machine) has no libuv: its streams are the engine's pairing and its fs the engine's own tree (`fs.ts`), and
- * a binding that is only libuv's (`process_wrap`, `spawn_sync`) answers that it has none. A binding over libuv is its
- * V8 half: it writes a call's arguments into the process's memory, calls the C, and reads the answer, as Node's C++
- * reads a uv_fs_t. The crypto and tls_wrap bindings are the same over OpenSSL in libnode.so (`openssl.ts`), and
- * what OpenSSL raises inside one of their calls comes back as the `tls_*` imports, inside that call.
+ * a binding that is only libuv's (`process_wrap`, `spawn_sync`, `signal_wrap`) answers that it has none. A binding
+ * over libuv is its V8 half: it writes a call's arguments into the process's memory, calls the C, and reads the answer,
+ * as Node's C++ reads a uv_fs_t. The crypto and tls_wrap bindings are the same over OpenSSL in libnode.so
+ * (`openssl.ts`), and what OpenSSL raises inside one of their calls comes back as the `tls_*` imports, inside that call.
  */
-import { errname, getErrorMap } from './uv';
+import { errname, getErrorMessage } from './uv';
 
 /** A pointer, a size or an i32 as the program answers it. */
 type I32 = number;
@@ -92,6 +95,18 @@ export interface LibnodeExports {
   tabnode_process_spawn(process: I32, options: I32): I32;
   tabnode_process_pid(process: I32): I32;
   tabnode_process_kill(process: I32, signal: I32): I32;
+  /** signal_wrap.c: SignalWrap's. */
+  tabnode_signal_new(): I32;
+  tabnode_signal_start(handle: I32, signum: I32): I32;
+  tabnode_signal_stop(handle: I32): I32;
+  /** process_methods.c: process._kill's uv_kill. */
+  tabnode_kill(pid: I32, signal: I32): I32;
+  /** uv.c: uv.cc's error table (12 bytes an entry, its count at `countAt`), ErrName and GetErrMessage into 50 bytes. */
+  tabnode_uv_errors(countAt: I32): I32;
+  tabnode_uv_err_name_r(err: I32, name: I32): void;
+  tabnode_uv_strerror_r(err: I32, message: I32): void;
+  /** node_constants.cc: Node's constants as the program compiled them, its text malloc'd, its length at `lengthAt`. */
+  tabnode_constants(lengthAt: I32): I32;
   /** spawn_sync.c: SyncProcessRunner's run, and its result's release. */
   tabnode_spawn_sync(options: I32): I32;
   tabnode_spawn_sync_free(result: I32): void;
@@ -128,6 +143,7 @@ export interface LibnodeExports {
   tabnode_fs_read(request: I32, fd: I32, nbufs: I32, position: bigint, async: I32): I32;
   tabnode_fs_write(request: I32, fd: I32, nbufs: I32, position: bigint, async: I32): I32;
   tabnode_fs_stat(request: I32, path: I32, async: I32): I32;
+  tabnode_fs_internal_module_stat(request: I32, path: I32): I32;
   tabnode_fs_lstat(request: I32, path: I32, async: I32): I32;
   tabnode_fs_fstat(request: I32, fd: I32, async: I32): I32;
   tabnode_fs_statfs(request: I32, path: I32, async: I32): I32;
@@ -172,9 +188,11 @@ export interface LibnodeExports {
   tabnode_fs_closedir(request: I32, dir: I32, async: I32): I32;
   tabnode_fs_event_new(): I32;
   tabnode_fs_event_init(handle: I32): I32;
-  tabnode_fs_event_start(handle: I32, path: I32, flags: I32): I32;
+  tabnode_fs_event_start(handle: I32, path: I32, recursive: I32): I32;
   tabnode_stat_watcher_new(): I32;
   tabnode_stat_watcher_start(handle: I32, path: I32, interval: I32): I32;
+  /** stdio.c: exit(3), which runs Node's ResetStdio and ends the process: `process.reallyExit`'s. */
+  tabnode_exit(status: I32): void;
 }
 
 /** The program as its host gives it: its exports once instantiated, and the process's memory's one door. */
@@ -212,6 +230,41 @@ export function attachLibnode(program: LibnodeProgram): void {
     exports, read, write, cBytes,
     cString: (pointer) => { const bytes = cBytes(pointer); return bytes === null ? null : decoder.decode(bytes); },
   };
+}
+
+/**
+ * The run's end as `main` asks it (ADR-0018 item 7; native/node engine.h), what Node's C++ does once `uv_run` returns
+ * (src/api/embed_helpers.cc:40-76): `beforeExit` (EmitProcessBeforeExit, src/api/hooks.cc:33-51), 0 or nonzero where
+ * its emission failed; `emitExit` (EmitProcessExitInternal, hooks.cc:61-93); and `exitCode`, the code `main` returns.
+ */
+export interface LibnodeRunEnd {
+  beforeExit(): number;
+  emitExit(): void;
+  exitCode(): number;
+}
+
+let runEnd: LibnodeRunEnd | undefined;
+
+/** The realm's process gives its end once, before its first callback (`launchNode`). */
+export function attachLibnodeRun(end: LibnodeRunEnd): void {
+  if (runEnd) throw new Error('the realm\'s node program already has its process');
+  runEnd = end;
+}
+
+/** The process `main` ends: none where libuv's loop emptied before the run made it. */
+function theRunEnd(): LibnodeRunEnd {
+  if (!runEnd) throw new Error('node: libuv\'s loop ended before the run made its process');
+  return runEnd;
+}
+
+/**
+ * Node's `process.reallyExit` (src/node_process_methods.cc:502-511): its argument's Int32Value, kNoFailure where that
+ * throws, then exit(3), from inside whatever callback calls it.
+ */
+export function reallyExit(code: unknown): void {
+  let status = 0;
+  try { status = (code as number) | 0; } catch { /* Int32Value's Nothing: kNoFailure */ }
+  libnode().exports.tabnode_exit(status);
 }
 
 /** Whether the realm's process is the program `node`, whose bindings are libuv's. */
@@ -389,16 +442,19 @@ export function addressAt(at: number): AddressFields {
   return readAddress(readRecord(at, ADDRESS_BYTES));
 }
 
-/** Node's UVException: an Error with the error's errno, code and syscall, as `env->ThrowUVException` makes it. */
+/**
+ * Node's UVException: an Error with the error's errno, code and syscall, as `env->ThrowUVException` makes it, its code
+ * uv_err_name's and its message uv_strerror's.
+ */
 export function uvException(err: number, syscall: string): Error {
-  const [code, message] = getErrorMap().get(err) ?? [errname(err), 'unknown error'];
+  const code = errname(err), message = getErrorMessage(err);
   return Object.assign(new Error(`${syscall}: ${message}`), { errno: err, code, syscall });
 }
 
 /** Environment::CollectUVExceptionInfo: the error's fields on the binding's context object. */
 export function collectUVExceptionInfo(ctx: unknown, err: number, syscall: string): void {
   if (ctx === null || typeof ctx !== 'object') return;
-  const [code, message] = getErrorMap().get(err) ?? [errname(err), 'unknown error'];
+  const code = errname(err), message = getErrorMessage(err);
   Object.assign(ctx, { errno: err, code, message, syscall });
 }
 
@@ -414,8 +470,10 @@ export interface HandleCallbacks {
   onUvRecv?(nread: number, base: number, name: number, flags: number): void;
   /** ProcessWrap::OnExit: the exit status, and the signal's name at `signal` (`length` bytes). */
   onUvExit?(exitStatus: number, signal: number, length: number): void;
-  /** FSEventWrap::OnEvent: libuv's filename (a C string, 0 for none), its events and its status. */
-  onUvFsEvent?(filename: number, events: number, status: number): void;
+  /** SignalWrap's uv_signal_cb: the signal's number. */
+  onUvSignal?(signum: number): void;
+  /** FSEventWrap::OnEvent: libuv's filename (a C string, 0 for none), the event's name the C chose, and the status. */
+  onUvFsEvent?(filename: number, event: string, status: number): void;
   /** StatWatcher::Callback: the status, both stats in the binding's arrays. */
   onUvStatChange?(status: number): void;
 }
@@ -512,6 +570,10 @@ function cryptoCallbacks(): CryptoCallbacks {
  * are made inside SSL_read: no scope closes after them.
  */
 export const libnodeImports = {
+  /** The run's end, after `uv_run` returns (`LibnodeRunEnd`); each followed in C by a drain. */
+  before_exit: (): number => theRunEnd().beforeExit(),
+  emit_exit: (): void => { theRunEnd().emitExit(); },
+  exit_code: (): number => theRunEnd().exitCode(),
   /** HandleWrap::OnClose: 1 where it made the close callback, whose scope the C closes; the C frees the handle. */
   handle_closed: (handle: number): number => (handleAt(handle).closed() ? 1 : 0),
   stream_read: (handle: number, nread: number, base: number): void => { handleAt(handle).target.onUvRead?.(nread, base); },
@@ -529,6 +591,8 @@ export const libnodeImports = {
   process_exit: (handle: number, exitStatus: number, signal: number, length: number): void => {
     handleAt(handle).target.onUvExit?.(exitStatus, signal, length);
   },
+  /** SignalWrap's uv_signal_cb: the handle's `onsignal`. */
+  signal_received: (handle: number, signum: number): void => { handleAt(handle).target.onUvSignal?.(signum); },
   /** An asynchronous uv_fs_* completed: the request's After and its MakeCallback, or its promise's settling. */
   fs_done: (request: number): void => {
     const at = address(request);
@@ -538,8 +602,8 @@ export const libnodeImports = {
     done();
   },
   /** FSEventWrap::OnEvent. */
-  fs_event: (handle: number, filename: number, events: number, status: number): void => {
-    handleAt(handle).target.onUvFsEvent?.(filename, events, status);
+  fs_event: (handle: number, filename: number, event: number, status: number): void => {
+    handleAt(handle).target.onUvFsEvent?.(filename, libnode().cString(event) ?? '', status);
   },
   /** StatWatcher::Callback. */
   stat_watcher_change: (handle: number, status: number): void => { handleAt(handle).target.onUvStatChange?.(status); },

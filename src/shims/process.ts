@@ -14,14 +14,14 @@ import { loadNodeLibFor, nodeLibBindingFor } from '../node-lib/load';
 import { kRunFilesystem } from '../node-lib/binding/fs';
 import { withFilesystem } from '../node-lib/binding/named-tree';
 import { createNodeError, type VirtualFS } from '../virtual-fs';
-import { constantsBinding } from './constants';
+import { constantsBinding, engineSignals } from './constants';
 import { nodeLibBinding } from '../node-lib/binding/index';
 import { nodeActiveHandles, nodeActiveRequests } from '../node-lib/binding/handles';
 
 /** The names Node 24's `process.binding` answers with `internalBinding(name)` (lib/internal/bootstrap/realm.js). */
 const PROCESS_BINDING_ALLOWED = new Set(['buffer', 'cares_wrap', 'config', 'constants', 'contextify', 'fs', 'fs_event_wrap', 'icu', 'inspector',
   'js_stream', 'os', 'pipe_wrap', 'process_wrap', 'spawn_sync', 'stream_wrap', 'tcp_wrap', 'tls_wrap', 'tty_wrap', 'udp_wrap', 'uv', 'zlib']);
-import { ownProcessPid, parentPidOf, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, publishSignalDisposition, type ProcessToken } from '../process-tokens';
+import { ownProcessPid, parentPidOf, pidIsLive, signalPid, groupIsLive, signalGroup, __recordTermination, __tokenForProcess, type ProcessToken } from '../process-tokens';
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from '../node-lib/node-versions';
 import { featuresTypescriptPresent, nodeLineOf } from '../node-line';
 import { freemem as osFreemem } from './os';
@@ -448,9 +448,8 @@ export function ttyOfFd(tty: boolean | readonly [boolean, boolean, boolean] | un
   return Array.isArray(tty) ? tty[fd] === true : tty === true;
 }
 
-/** The signal numbers a guest sees, and the signals a tab must ignore. */
-export const __substrateSignals: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGWINCH: 28 };
-export const __substrateSignalNames: Record<number, string> = Object.fromEntries(Object.entries(__substrateSignals).map(([name, number]) => [number, name]));
+/** The signal numbers a realm with no program names (`engineSignals`), by number, and the signals a tab must ignore. */
+export const __substrateSignalNames: Record<number, string> = Object.fromEntries(Object.entries(engineSignals).map(([name, number]) => [number, name]));
 // Node prints the `process.binding` deprecation once per process; the engine
 // runs many guests in one realm, so the record is per guest, not per load.
 const __substrateBindingWarned = new WeakSet<object>();
@@ -637,14 +636,6 @@ export function createProcess(options?: {
 
   // Create an EventEmitter for process events
   const emitter = new EventEmitter();
-  // A signal's disposition is the process's listeners for it: told to its registry as they come and go, so a kernel
-  // that delivers its signals knows them (browser-substrate ADR-0129).
-  const publishDisposition = (name: string | symbol, adding: boolean): void => {
-    if (typeof name !== 'string' || !Object.hasOwn(__substrateSignals, name) || name === 'SIGKILL' || name === 'SIGSTOP') return;
-    try { publishSignalDisposition(proc, __substrateSignals[name]!, adding || emitter.listenerCount(name) > 0); } catch { /* a registry that refuses keeps its own view */ }
-  };
-  emitter.on('newListener', (name: string | symbol) => publishDisposition(name, true));
-  emitter.on('removeListener', (name: string | symbol) => publishDisposition(name, false));
   // Once the process is exiting (Node's `process._exiting`), `nextTick` queues nothing: Node's own test-next-tick
   // queues one from `exit` and requires that it never be called. Once it has ended, a tick queued before does not run
   // either: Node exits when the listeners return, and here the realm goes on. Between the two (a listener's throw left
@@ -841,7 +832,7 @@ export function createProcess(options?: {
 
     kill(pid: number, signal: string | number = "SIGTERM") {
       const name = (typeof signal === "number" && signal !== 0 ? __substrateSignalNames[signal] : signal) as string;
-      if (signal !== 0 && (typeof name !== "string" || __substrateSignals[name] === void 0)) {
+      if (signal !== 0 && (typeof name !== "string" || engineSignals[name] === void 0)) {
         throw Object.assign(new TypeError("Unknown signal: " + signal), { code: "ERR_UNKNOWN_SIGNAL" });
       }
       // Node's kill(pid, 0) asks the caller's process authority before self/child handles. A saved handle is
@@ -899,7 +890,7 @@ export function createProcess(options?: {
       if (__substrateIgnoredSignals.has(name)) return true;
       __recordTermination(proc as never, name);
       terminating.add(proc);
-      proc.exit(128 + __substrateSignals[name]);
+      proc.exit(128 + engineSignals[name]);
       return true;
     },
 

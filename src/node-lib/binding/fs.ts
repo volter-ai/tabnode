@@ -41,7 +41,7 @@ const kEngineStdinRead = Symbol.for('tabnode.stdin.engineRead');
 import { allocateFd, handleForFd } from './fds';
 import { LibuvStreamWrap, WriteWrap } from './stream_wrap';
 import { traceOutput, traceReadingRequested } from '../../trace-output';
-import { errname, UV_ENOENT } from './uv';
+import { errname, uvConstant } from './uv';
 
 /**
  * An errno error, as the filesystem makes one. The tree's own maker knows the
@@ -707,7 +707,7 @@ class StatWatcher {
     let status = 0;
     const read = (): Float64Array | BigInt64Array => {
       try { const values = statArray(tree.statSync(name), this.bigint); status = 0; return values; }
-      catch { status = UV_ENOENT; return this.bigint ? new BigInt64Array(FS_STATS_FIELDS) : new Float64Array(FS_STATS_FIELDS); }
+      catch { status = uvConstant('UV_ENOENT'); return this.bigint ? new BigInt64Array(FS_STATS_FIELDS) : new Float64Array(FS_STATS_FIELDS); }
     };
     this.#previous = read();
     this.#timer = setInterval(() => {

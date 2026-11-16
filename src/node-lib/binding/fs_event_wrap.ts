@@ -6,14 +6,11 @@
 import { libnode, type HandleCallbacks } from './libnode';
 import { HandleWrap } from './handle_wrap';
 import { Room, codeError, parseEncoding, pathBytes, type FsContext } from './fs_req';
+import { uvConstant } from './uv';
 import { AsyncResource } from '../internals/runtime';
 import { currentOwner, ownedRun, type OwnedHandle } from './handles';
 import type { ProcessToken } from '../../process-tokens';
 
-const UV_FS_EVENT_RECURSIVE = 4;
-const UV_RENAME = 1;
-const UV_CHANGE = 2;
-const UV_EINVAL = -22;
 
 export function createFsEventWrapBinding(context: FsContext) {
   /** FSEventWrap: its uv_fs_event_t made with it, uninitialized (MarkAsUninitialized) until `start`. */
@@ -36,14 +33,13 @@ export function createFsEventWrapBinding(context: FsContext) {
       if (this.initialized) throw codeError('ERR_INVALID_STATE', 'FSEvent: already started');
       const lib = libnode();
       const handle = this.#handle.wrap;
-      const flags = recursive === true ? UV_FS_EVENT_RECURSIVE : 0;
       this.#encoding = parseEncoding(encoding);
       let err = lib.exports.tabnode_fs_event_init(handle);
       if (err !== 0) return err;
       const room = new Room();
       const at = room.cstr(pathBytes(path));
       const { request, base } = room.open(lib);
-      try { err = lib.exports.tabnode_fs_event_start(handle, base + at, flags); }
+      try { err = lib.exports.tabnode_fs_event_start(handle, base + at, recursive === true ? 1 : 0); }
       finally { lib.exports.tabnode_fs_free(request); }
       this.#handle.markAsInitialized();
       if (err !== 0) {
@@ -62,14 +58,13 @@ export function createFsEventWrapBinding(context: FsContext) {
     hasRef(): boolean { return this.#handle.hasRef(); }
     getAsyncId(): number { return this.#resource.asyncId(); }
 
-    /** FSEventWrap::OnEvent: an error's event is empty, else rename where libuv says it, else change. */
-    onUvFsEvent(filename: number, events: number, status: number): void {
-      const event = status ? '' : events & UV_RENAME ? 'rename' : events & UV_CHANGE ? 'change' : '';
+    /** FSEventWrap::OnEvent: the status, the event's name the C chose (fs_event.c), and the filename encoded. */
+    onUvFsEvent(filename: number, event: string, status: number): void {
       const argv: unknown[] = [status, event, null];
       const name = libnode().cBytes(filename);
       if (name !== null) {
         try { argv[2] = context.encode(name, this.#encoding); }
-        catch { argv[0] = UV_EINVAL; argv[2] = context.encode(name, 'buffer'); }
+        catch { argv[0] = uvConstant('UV_EINVAL'); argv[2] = context.encode(name, 'buffer'); }
       }
       const fn = this.onchange;
       if (typeof fn !== 'function') return;

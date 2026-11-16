@@ -16,7 +16,7 @@
  * `net.js` is vendored.
  */
 import { bytesOfString } from './buffer';
-import { UV_EOF, UV_EBADF, UV_EPIPE } from './uv';
+import { uvConstant } from './uv';
 import { attachNativeStream, nativeStreamFor } from '../../native-stream-binding';
 import type { Pipe } from './pipe_wrap';
 
@@ -191,7 +191,7 @@ export class LibuvStreamWrap implements OwnedHandle {
   }
 
   readStart(): number {
-    if (this.closed) return UV_EBADF;
+    if (this.closed) return uvConstant('UV_EBADF');
     const status = nativeStreamFor(this)?.beginRead() ?? 0;
     if (status !== 0) return status;
     this.reading = true;
@@ -218,7 +218,7 @@ export class LibuvStreamWrap implements OwnedHandle {
    * reads EOF. The request completes on its own turn, as libuv's does.
    */
   shutdown(req: ShutdownWrap): number {
-    if (this.closed) return UV_EBADF;
+    if (this.closed) return uvConstant('UV_EBADF');
     const native = nativeStreamFor(this);
     observeNodeRequest(req, this);
     if (native) {
@@ -441,8 +441,8 @@ export class LibuvStreamWrap implements OwnedHandle {
     const length = buffer.byteLength;
     streamBaseState[kBytesWritten] = length;
     streamBaseState[kLastWriteWasAsync] = 0;
-    if (this.closed) return UV_EBADF;
-    if (this.streamEndpoint.writeEnded) return UV_EPIPE;
+    if (this.closed) return uvConstant('UV_EBADF');
+    if (this.streamEndpoint.writeEnded) return uvConstant('UV_EPIPE');
     this.bytesWritten += length;
     const peer = this[kPeer];
     if (!peer || peer.closed) return 0;
@@ -542,7 +542,7 @@ export class LibuvStreamWrap implements OwnedHandle {
         // hold the loop: a socket whose peer has gone is not work, however much
         // unread data is still in its buffer.
         stopHandle(this);
-        streamBaseState[kReadBytesOrError] = this[kInboundError] ?? UV_EOF;
+        streamBaseState[kReadBytesOrError] = this[kInboundError] ?? uvConstant('UV_EOF');
         streamBaseState[kArrayBufferOffset] = 0;
         invokeOwned(this, 'onread', null);
       }

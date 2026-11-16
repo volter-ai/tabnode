@@ -20,7 +20,7 @@ import {
   kReadBytesOrError,
 } from './stream_wrap';
 import { forgetNodeHandle, invokeOwned, unrefHandle } from './handles';
-import { UV_ECANCELED, UV_EOF, UV_EPROTO } from './uv';
+import { uvConstant } from './uv';
 import { queueBindingTask } from '../../guest-loop';
 import {
   copyOut, cString, errorDetail, int32, mallocAnswer, openssl, opensslError, outAnswer, withBytes, withScratch, word,
@@ -110,8 +110,8 @@ export class TLSWrap extends LibuvStreamWrap {
     if (this.eof) return;
     if (nread < 0) {
       this.#clearOut();
-      if (nread === UV_EOF) this.eof = true;
-      if (nread === UV_EOF) LibuvStreamWrap.prototype.receiveEof.call(this);
+      if (nread === uvConstant('UV_EOF')) this.eof = true;
+      if (nread === uvConstant('UV_EOF')) LibuvStreamWrap.prototype.receiveEof.call(this);
       else this.receiveError(nread);
       return;
     }
@@ -192,7 +192,7 @@ export class TLSWrap extends LibuvStreamWrap {
       this.#done(finishing, status);
       return;
     }
-    if (!this.ssl) status = UV_ECANCELED;
+    if (!this.ssl) status = uvConstant('UV_ECANCELED');
     if (status) {
       if (this.#shutdown) return;
       this.#invokeQueued(status);
@@ -270,7 +270,7 @@ export class TLSWrap extends LibuvStreamWrap {
       const err = deps.tabnode_ssl_get_error(this.ssl, written);
       if (err === SSL_ERROR_SSL || err === SSL_ERROR_SYSCALL) {
         this.#writeCallbackScheduled = true;
-        this.#invokeQueued(UV_EPROTO, this.#bioError());
+        this.#invokeQueued(uvConstant('UV_EPROTO'), this.#bioError());
         return;
       }
       this.#pendingCleartext = pending;
@@ -315,7 +315,7 @@ export class TLSWrap extends LibuvStreamWrap {
     if (!this.ssl) {
       // StreamBase::Write hands the stream's Error() to the request (stream_base.cc), which `onWriteComplete` reads.
       req.error = 'Write after DestroySSL';
-      return UV_EPROTO;
+      return uvConstant('UV_EPROTO');
     }
     const length = buffer.byteLength;
     if (length === 0) {
@@ -348,7 +348,7 @@ export class TLSWrap extends LibuvStreamWrap {
         const err = deps.tabnode_ssl_get_error(this.ssl, written);
         if (err === SSL_ERROR_SSL || err === SSL_ERROR_SYSCALL) {
           this.#currentWrite = null;
-          return UV_EPROTO;
+          return uvConstant('UV_EPROTO');
         }
         this.#pendingCleartext = buffer.slice();
       }
@@ -408,7 +408,7 @@ export class TLSWrap extends LibuvStreamWrap {
   destroySSL(): void {
     if (!this.ssl) return;
     this.#writeCallbackScheduled = true;
-    this.#invokeQueued(UV_ECANCELED, 'Canceled because of SSL destruction');
+    this.#invokeQueued(uvConstant('UV_ECANCELED'), 'Canceled because of SSL destruction');
     wraps.delete(this.ssl);
     openssl().tabnode_ssl_free(this.ssl);
     this.ssl = 0;

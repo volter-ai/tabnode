@@ -1,13 +1,13 @@
 #!/bin/bash
-# Builds `node` and `libnode.so` (ADR-0018 §1, §2, §3, item 7). `libnode.so` is the one shared library of Node's C:
-# libuv, OpenSSL 3.5.8 and ncrypto. `node` is a WALI program linked position-independent against it and `libc.so`:
-# Node's start and its standard streams' start and end, the loop's own handles, the engine's descriptor waits and the
-# bindings' glue over libuv, OpenSSL and ncrypto (native/node: one HandleWrap, the stream, TCP, pipe, TTY and UDP
-# wraps, process_wrap, spawn_sync, fs over uv_fs_*, and the crypto and tls_wrap bindings' OpenSSL half, as Node's
-# src/*_wrap.cc, spawn_sync.cc, node_file.cc, node_dir.cc, fs_event_wrap.cc, node_constants.cc and src/crypto/*.cc).
-# Every compile is browser-substrate's prepared native SDK with its Linux headers, whose compile wrapper adds
-# WebAssembly exception handling and whose link wrapper makes a program PIE with the run path /opt/programs/lib, where
-# the machine places `libc.so` and this library beside it.
+# Builds `node` and `libnode.so` (ADR-0018 §1, §2, §3, items 7 and 8). `libnode.so` is the one shared library of Node's
+# C: libuv, OpenSSL 3.5.8 and ncrypto. `node` is a WALI program linked position-independent against it and `libc.so`:
+# Node's start and its standard streams' and signals' start and end, the loop's own handles, the engine's descriptor
+# waits and the bindings' glue over libuv, OpenSSL and ncrypto (native/node: one HandleWrap, the stream, TCP, pipe, TTY
+# and UDP wraps, process_wrap, spawn_sync, signal_wrap, fs over uv_fs_*, and the crypto and tls_wrap bindings' OpenSSL
+# half, as Node's src/*_wrap.cc, spawn_sync.cc, node_file.cc, node_dir.cc, fs_event_wrap.cc, node_constants.cc and
+# src/crypto/*.cc). Every compile is browser-substrate's prepared native SDK with its Linux headers, whose compile
+# wrapper adds WebAssembly exception handling and whose link wrapper makes a program PIE with the run path
+# /opt/programs/lib, where the machine places `libc.so` and this library beside it.
 #
 # libuv is libuv's own source at a267f5688b (2026-10-16, "unix,process: don't raise SIGCHLD from posix_spawn probe",
 # #5317; its version.h says 1.53.1-dev), not Node v24.21.0's deps/uv (libuv 1.52.1), as ADR-0018's evidence says:
@@ -56,7 +56,7 @@ tar xzf "$uv_archive" -C "$work" "$libuv/include" "$libuv/src"
 uv="$work/$libuv"
 node=node-v24.21.0
 tar xzf "$node_archive" -C "$work" "$node/deps/openssl/openssl" "$node/deps/ncrypto" "$node/src/node_root_certs.h" \
-  "$node/src/node_constants.cc" "$node/src/node_constants.h"
+  "$node/src/node_constants.cc" "$node/src/node_constants.h" "$node/src/tracing/trace_event_common.h"
 openssl="$work/$node/deps/openssl/openssl"
 ncrypto="$work/$node/deps/ncrypto"
 cc="$sdk/bin/cc"
@@ -135,24 +135,26 @@ mkdir -p "$out"
   -Wl,--whole-archive "$openssl/libssl.a" "$openssl/libcrypto.a" -Wl,--no-whole-archive \
   "$openssl/providers/liblegacy.a" "${cxxlibs[@]}"
 
-# Node's crypto constants, compiled as Node writes them: the headers and fallbacks node_constants.cc includes under
-# HAVE_OPENSSL (39-95), the body of DefineCryptoConstants (866-1091) and DEFAULT_CIPHER_LIST_CORE (node_constants.h
-# 52-76).
+# Node's constants, compiled as Node writes them (native/node/node_constants.cc): the system headers and fallbacks
+# node_constants.cc includes (30-113), every Define* function CreatePerContextProperties calls (126-1333), and
+# node_constants.h's own definitions (30-78: EXTENSIONLESS_FORMAT_*, the RSA_PSS_SALTLEN_* fallbacks and
+# DEFAULT_CIPHER_LIST_CORE); tracing/trace_event_common.h is read in Node's tree.
 mkdir -p "$work/generated"
-sed -n '39,95p' "$work/$node/src/node_constants.cc" > "$work/generated/crypto_constants_prelude.inc"
-sed -n '866,1091p' "$work/$node/src/node_constants.cc" > "$work/generated/crypto_constants_body.inc"
-sed -n '52,76p' "$work/$node/src/node_constants.h" > "$work/generated/default_cipher_list.inc"
+sed -n '30,113p' "$work/$node/src/node_constants.cc" > "$work/generated/node_constants_prelude.inc"
+sed -n '126,1333p' "$work/$node/src/node_constants.cc" > "$work/generated/node_constants_body.inc"
+sed -n '30,78p' "$work/$node/src/node_constants.h" > "$work/generated/node_constants_header.inc"
 
-# native/node: Node's start (node_main) and its standard streams' (stdio), its Environment's handles (env), the
-# engine's descriptor waits (poll), and the bindings' C, each over the Node source it names (memory, signo,
-# handle_wrap, stream_wrap, tcp_wrap, pipe_wrap, tty_wrap, udp_wrap, process_wrap, spawn_sync, fs, fs_cp, fs_event),
-# the engine device's descriptor (engine_device); and the crypto and tls_wrap bindings' C++ over ncrypto and OpenSSL
-# (crypto_util, crypto_context, crypto_cipher, crypto_tls, crypto_x509, crypto_keys, crypto_rsa, crypto_dsa,
-# crypto_dh, crypto_ec, crypto_pqc, crypto_hash, crypto_hmac, crypto_random, crypto_sig, crypto_pbkdf2, crypto_scrypt,
-# crypto_hkdf, node_constants), with the defines ncrypto gives its dependents (ncrypto.gyp).
+# native/node: Node's start (node_main) and its standard streams' and signals' (stdio), its Environment's handles
+# (env), the engine's descriptor waits (poll), and the bindings' C, each over the Node source it names (memory, signo,
+# handle_wrap, stream_wrap, tcp_wrap, pipe_wrap, tty_wrap, udp_wrap, process_wrap, spawn_sync, signal_wrap,
+# process_methods, uv, fs, fs_cp, fs_event), the engine device's descriptor (engine_device); and the crypto and
+# tls_wrap bindings' C++ over ncrypto and OpenSSL, and Node's constants (crypto_util, crypto_context, crypto_cipher,
+# crypto_tls, crypto_x509, crypto_keys, crypto_rsa, crypto_dsa, crypto_dh, crypto_ec, crypto_pqc, crypto_hash,
+# crypto_hmac, crypto_random, crypto_sig, crypto_pbkdf2, crypto_scrypt, crypto_hkdf, node_constants), with the
+# defines ncrypto gives its dependents (ncrypto.gyp).
 program=()
 for source in node_main stdio env poll memory signo handle_wrap stream_wrap tcp_wrap pipe_wrap tty_wrap udp_wrap \
-  process_wrap spawn_sync fs fs_cp fs_event engine_device; do
+  process_wrap spawn_sync signal_wrap process_methods uv fs fs_cp fs_event engine_device; do
   "$cc" "${flags[@]}" -D_GNU_SOURCE -I"$uv/include" -c "$repo/native/node/$source.c" -o "$work/$source.o" &
   pids+=($!)
   program+=("$work/$source.o")

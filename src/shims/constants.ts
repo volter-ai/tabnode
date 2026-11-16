@@ -1,80 +1,131 @@
 /**
- * The engine's constant tables, in the two shapes Node serves them in.
+ * `internalBinding('constants')` (Node v24.21.0's src/node_constants.cc), in the two shapes Node serves it in: the
+ * binding's groups (`os` with its `errno`, `signals`, `priority` and `dlopen`, `fs`, `crypto`, `zlib`,
+ * `trace`, `internal`), which `process.binding('constants')` hands out too, and `lib/constants.js`'s flat spread
+ * of them, which `require('constants')` answers (graceful-fs requires it on its way into every React Router build).
  *
- * Node keeps one table, `internalBinding('constants')`, grouped by subsystem
- * (`os`, `fs`, `crypto`, `zlib`, `trace`); `lib/constants.js` is that table
- * spread flat, and `process.binding('constants')` hands out the groups. The
- * engine had only the flat form, written out here, and no `process.binding`
- * at all, so a bundle that feature-detects through it -- the Prisma CLI asks
- * for `constants`, `buffer` and `tty_wrap` -- called `undefined` and died
- * with a TypeError where Node answers. The groups below are that same flat
- * table read back apart by name, so there is one set of numbers in the
- * engine and the binding cannot drift from `require("constants")`.
+ * Where the realm's process is the `node` program, every number is the program's: Node's Define* functions compiled
+ * against the WALI SDK's musl headers, libuv's uv.h and libnode.so's OpenSSL (native/node node_constants.cc), as
+ * Node's binary holds its system's, read once from the program's text (`tabnode_constants`). So `fs.openSync`'s
+ * `O_CREAT` is the one musl's open(2) and the process's kernel read, `os.constants.errno` and `os.constants.signals`
+ * are the numbers the kernel and libuv deliver, and `signal_wrap` starts a uv_signal_t on the number musl gives the
+ * name. The zlib group is the engine's zlib's own: zlib is not in libnode.so (ADR-0018 §1).
  *
- * `crypto` and `zlib` groups are object literals built inside
- * `constantsBinding`, not imported tables. A getter over an imported
- * `const` is a live binding: a consumer's bundler inlined it to
- * `zlib: constants$N` and called this function while that const was still
- * in its temporal dead zone. Literals have no binding to access.
+ * A realm with no program (a tab's engine with no machine) has no libc, and its numbers are the engine's own tables
+ * below: the fs flags and modes its own tree's binding reads back (`fs.ts` flagBits), its errno numbers, priorities
+ * and dlopen modes, its signals the ones its own `process.kill` raises (`engineSignals`), and the empty crypto group
+ * of a Node built without OpenSSL.
  */
+import { libnode, libnodeAttached } from '../node-lib/binding/libnode';
+import { mallocAnswer } from '../node-lib/binding/openssl';
 
-import { nodeCryptoConstants } from '../node-lib/binding/openssl';
-import { libnodeAttached } from '../node-lib/binding/libnode';
+/** The signals a realm with no program names, by the numbers its own `process.kill` raises (`src/shims/process.ts`). */
+export const engineSignals: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGWINCH: 28 };
 
-// Node's old `constants` module, the flat table of fs, os, and signal constants,
-// which graceful-fs still requires on its way into every React Router build; the
-// engine's table had no entry, and the require was read as a file named
-// `constants`. The table is Node's own for this flavour, measured against it:
-// every errno, signal, libuv dirent and copy flag, scheduling priority and
-// dlopen mode Node names. OpenSSL's cipher, padding, curve and engine numbers
-// stay out of this flat table, which `require('constants')` answers beside the
-// engine's own `crypto` (BUILTINS.md, Kind 2): a number that names an option that
-// module cannot act on answers and then cannot act. The binding's `crypto` group
-// below, which `tls` reads, is OpenSSL's own, from the process's libnode.so (ADR-0018 item 7).
-export const nodeConstants = { O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 512, O_EXCL: 2048, O_NOCTTY: 131072, O_TRUNC: 1024, O_APPEND: 8, O_DIRECTORY: 1048576, O_NOFOLLOW: 256, O_SYNC: 128, O_SYMLINK: 2097152, O_NONBLOCK: 4, S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFCHR: 8192, S_IFBLK: 24576, S_IFIFO: 4096, S_IFLNK: 40960, S_IFSOCK: 49152, S_IRWXU: 448, S_IRUSR: 256, S_IWUSR: 128, S_IXUSR: 64, S_IRWXG: 56, S_IRGRP: 32, S_IWGRP: 16, S_IXGRP: 8, S_IRWXO: 7, S_IROTH: 4, S_IWOTH: 2, S_IXOTH: 1, F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, UV_FS_COPYFILE_EXCL: 1, COPYFILE_EXCL: 1, SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 10, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 30, SIGSEGV: 11, SIGUSR2: 31, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 20, SIGCONT: 19, SIGSTOP: 17, SIGTSTP: 18, SIGWINCH: 28, E2BIG: 7, EACCES: 13, EADDRINUSE: 48, EAGAIN: 35, EBADF: 9, EBUSY: 16, ECONNREFUSED: 61, ECONNRESET: 54, EEXIST: 17, EINVAL: 22, EIO: 5, EISDIR: 21, EMFILE: 24, ENOENT: 2, ENOSPC: 28, ENOTDIR: 20, ENOTEMPTY: 66, EPERM: 1, EPIPE: 32, ETIMEDOUT: 60, EADDRNOTAVAIL: 49, EAFNOSUPPORT: 47, EALREADY: 37, EBADMSG: 94, ECANCELED: 89, ECHILD: 10, ECONNABORTED: 53, EDEADLK: 11, EDESTADDRREQ: 39, EDOM: 33, EDQUOT: 69, EFAULT: 14, EFBIG: 27, EHOSTUNREACH: 65, EIDRM: 90, EILSEQ: 92, EINPROGRESS: 36, EINTR: 4, EISCONN: 56, ELOOP: 62, EMLINK: 31, EMSGSIZE: 40, EMULTIHOP: 95, ENAMETOOLONG: 63, ENETDOWN: 50, ENETRESET: 52, ENETUNREACH: 51, ENFILE: 23, ENOBUFS: 55, ENODATA: 96, ENODEV: 19, ENOEXEC: 8, ENOLCK: 77, ENOLINK: 97, ENOMEM: 12, ENOMSG: 91, ENOPROTOOPT: 42, ENOSR: 98, ENOSTR: 99, ENOSYS: 78, ENOTCONN: 57, ENOTSOCK: 38, ENOTSUP: 45, ENOTTY: 25, ENXIO: 6, EOPNOTSUPP: 102, EOVERFLOW: 84, EPROTO: 100, EPROTONOSUPPORT: 43, EPROTOTYPE: 41, ERANGE: 34, EROFS: 30, ESPIPE: 29, ESRCH: 3, ESTALE: 70, ETIME: 101, ETXTBSY: 26, EWOULDBLOCK: 35, EXDEV: 18, SIGINFO: 29, SIGIO: 23, SIGIOT: 6, SIGPROF: 27, SIGSYS: 12, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 16, SIGVTALRM: 26, SIGXCPU: 24, SIGXFSZ: 25, PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20, RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_LOCAL: 4, RTLD_GLOBAL: 8, O_DSYNC: 4194304, COPYFILE_FICLONE: 2, COPYFILE_FICLONE_FORCE: 4, UV_FS_COPYFILE_FICLONE: 2, UV_FS_COPYFILE_FICLONE_FORCE: 4, UV_DIRENT_UNKNOWN: 0, UV_DIRENT_FILE: 1, UV_DIRENT_DIR: 2, UV_DIRENT_LINK: 3, UV_DIRENT_FIFO: 4, UV_DIRENT_SOCKET: 5, UV_DIRENT_CHAR: 6, UV_DIRENT_BLOCK: 7, UV_FS_SYMLINK_DIR: 1, UV_FS_SYMLINK_JUNCTION: 2, UV_FS_O_FILEMAP: 0, UV_FS_O_RANDOM: 0, UV_FS_O_SEQUENTIAL: 0, UV_FS_O_SHORT_LIVED: 0, UV_FS_O_TEMPORARY: 0, EXTENSIONLESS_FORMAT_JAVASCRIPT: 0, EXTENSIONLESS_FORMAT_WASM: 1 };
+/** The engine's own flat table, for a realm with no program: its fs, errno, priority, dlopen and module numbers. */
+const engineConstants: Record<string, number> = { O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 512, O_EXCL: 2048, O_NOCTTY: 131072, O_TRUNC: 1024, O_APPEND: 8, O_DIRECTORY: 1048576, O_NOFOLLOW: 256, O_SYNC: 128, O_SYMLINK: 2097152, O_NONBLOCK: 4, S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFCHR: 8192, S_IFBLK: 24576, S_IFIFO: 4096, S_IFLNK: 40960, S_IFSOCK: 49152, S_IRWXU: 448, S_IRUSR: 256, S_IWUSR: 128, S_IXUSR: 64, S_IRWXG: 56, S_IRGRP: 32, S_IWGRP: 16, S_IXGRP: 8, S_IRWXO: 7, S_IROTH: 4, S_IWOTH: 2, S_IXOTH: 1, F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, UV_FS_COPYFILE_EXCL: 1, COPYFILE_EXCL: 1, E2BIG: 7, EACCES: 13, EADDRINUSE: 48, EAGAIN: 35, EBADF: 9, EBUSY: 16, ECONNREFUSED: 61, ECONNRESET: 54, EEXIST: 17, EINVAL: 22, EIO: 5, EISDIR: 21, EMFILE: 24, ENOENT: 2, ENOSPC: 28, ENOTDIR: 20, ENOTEMPTY: 66, EPERM: 1, EPIPE: 32, ETIMEDOUT: 60, EADDRNOTAVAIL: 49, EAFNOSUPPORT: 47, EALREADY: 37, EBADMSG: 94, ECANCELED: 89, ECHILD: 10, ECONNABORTED: 53, EDEADLK: 11, EDESTADDRREQ: 39, EDOM: 33, EDQUOT: 69, EFAULT: 14, EFBIG: 27, EHOSTUNREACH: 65, EIDRM: 90, EILSEQ: 92, EINPROGRESS: 36, EINTR: 4, EISCONN: 56, ELOOP: 62, EMLINK: 31, EMSGSIZE: 40, EMULTIHOP: 95, ENAMETOOLONG: 63, ENETDOWN: 50, ENETRESET: 52, ENETUNREACH: 51, ENFILE: 23, ENOBUFS: 55, ENODATA: 96, ENODEV: 19, ENOEXEC: 8, ENOLCK: 77, ENOLINK: 97, ENOMEM: 12, ENOMSG: 91, ENOPROTOOPT: 42, ENOSR: 98, ENOSTR: 99, ENOSYS: 78, ENOTCONN: 57, ENOTSOCK: 38, ENOTSUP: 45, ENOTTY: 25, ENXIO: 6, EOPNOTSUPP: 102, EOVERFLOW: 84, EPROTO: 100, EPROTONOSUPPORT: 43, EPROTOTYPE: 41, ERANGE: 34, EROFS: 30, ESPIPE: 29, ESRCH: 3, ESTALE: 70, ETIME: 101, ETXTBSY: 26, EWOULDBLOCK: 35, EXDEV: 18, PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20, RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_LOCAL: 4, RTLD_GLOBAL: 8, O_DSYNC: 4194304, COPYFILE_FICLONE: 2, COPYFILE_FICLONE_FORCE: 4, UV_FS_COPYFILE_FICLONE: 2, UV_FS_COPYFILE_FICLONE_FORCE: 4, UV_DIRENT_UNKNOWN: 0, UV_DIRENT_FILE: 1, UV_DIRENT_DIR: 2, UV_DIRENT_LINK: 3, UV_DIRENT_FIFO: 4, UV_DIRENT_SOCKET: 5, UV_DIRENT_CHAR: 6, UV_DIRENT_BLOCK: 7, UV_FS_SYMLINK_DIR: 1, UV_FS_SYMLINK_JUNCTION: 2, UV_FS_O_FILEMAP: 0, UV_FS_O_RANDOM: 0, UV_FS_O_SEQUENTIAL: 0, UV_FS_O_SHORT_LIVED: 0, UV_FS_O_TEMPORARY: 0, EXTENSIONLESS_FORMAT_JAVASCRIPT: 0, EXTENSIONLESS_FORMAT_WASM: 1 };
 
-/** Which group of Node's binding a flat name belongs to. */
-function groupOf(name: string): 'errno' | 'signals' | 'priority' | 'dlopen' | 'fs' {
+/** Which group of Node's binding a flat name of the engine's table belongs to. */
+function groupOf(name: string): 'errno' | 'priority' | 'dlopen' | 'fs' {
   if (/^E[A-Z0-9]+$/.test(name)) return 'errno';
-  if (name.startsWith('SIG')) return 'signals';
   if (name.startsWith('PRIORITY_')) return 'priority';
   if (name.startsWith('RTLD_')) return 'dlopen';
   return 'fs';
 }
 
+const engineZlib = { Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3, Z_FINISH: 4, Z_BLOCK: 5, Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1, Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4, Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6, Z_NO_COMPRESSION: 0, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9, Z_DEFAULT_COMPRESSION: -1, Z_FILTERED: 1, Z_HUFFMAN_ONLY: 2, Z_RLE: 3, Z_FIXED: 4, Z_DEFAULT_STRATEGY: 0, ZLIB_VERNUM: 4784, Z_MIN_WINDOWBITS: 8, Z_MAX_WINDOWBITS: 15, Z_DEFAULT_WINDOWBITS: 15, Z_MIN_CHUNK: 64, Z_MAX_CHUNK: Infinity, Z_DEFAULT_CHUNK: 16384, Z_MIN_MEMLEVEL: 1, Z_MAX_MEMLEVEL: 9, Z_DEFAULT_MEMLEVEL: 8, Z_MIN_LEVEL: -1, Z_MAX_LEVEL: 9, Z_DEFAULT_LEVEL: -1, BROTLI_DECODE: 0, BROTLI_ENCODE: 1, BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_FINISH: 2, BROTLI_OPERATION_EMIT_METADATA: 3, BROTLI_PARAM_MODE: 0, BROTLI_MODE_GENERIC: 0, BROTLI_MODE_TEXT: 1, BROTLI_MODE_FONT: 2, BROTLI_PARAM_QUALITY: 1, BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11, BROTLI_DEFAULT_QUALITY: 11, BROTLI_PARAM_LGWIN: 2, BROTLI_MIN_WINDOW_BITS: 10, BROTLI_MAX_WINDOW_BITS: 24, BROTLI_DEFAULT_WINDOW: 22, BROTLI_PARAM_LGBLOCK: 3, BROTLI_MIN_INPUT_BLOCK_BITS: 16, BROTLI_MAX_INPUT_BLOCK_BITS: 24 };
+
+const engineTrace = { TRACE_EVENT_PHASE_BEGIN: 66, TRACE_EVENT_PHASE_END: 69, TRACE_EVENT_PHASE_COMPLETE: 88, TRACE_EVENT_PHASE_INSTANT: 73, TRACE_EVENT_PHASE_ASYNC_BEGIN: 83, TRACE_EVENT_PHASE_ASYNC_STEP_INTO: 84, TRACE_EVENT_PHASE_ASYNC_STEP_PAST: 112, TRACE_EVENT_PHASE_ASYNC_END: 70, TRACE_EVENT_PHASE_NESTABLE_ASYNC_BEGIN: 98, TRACE_EVENT_PHASE_NESTABLE_ASYNC_END: 101, TRACE_EVENT_PHASE_NESTABLE_ASYNC_INSTANT: 110, TRACE_EVENT_PHASE_FLOW_BEGIN: 115, TRACE_EVENT_PHASE_FLOW_STEP: 116, TRACE_EVENT_PHASE_FLOW_END: 102, TRACE_EVENT_PHASE_METADATA: 77, TRACE_EVENT_PHASE_COUNTER: 67, TRACE_EVENT_PHASE_SAMPLE: 80, TRACE_EVENT_PHASE_CREATE_OBJECT: 78, TRACE_EVENT_PHASE_SNAPSHOT_OBJECT: 79, TRACE_EVENT_PHASE_DELETE_OBJECT: 68, TRACE_EVENT_PHASE_MEMORY_DUMP: 118, TRACE_EVENT_PHASE_MARK: 82, TRACE_EVENT_PHASE_CLOCK_SYNC: 99 };
+
+type Group = Record<string, number | string>;
 type ConstantsBinding = {
-  os: { UV_UDP_REUSEADDR: number; dlopen: Record<string, number>; errno: Record<string, number>; signals: Record<string, number>; priority: Record<string, number> };
-  fs: Record<string, number>;
-  crypto: Record<string, unknown>;
+  os: { UV_UDP_REUSEADDR: number; dlopen: Group; errno: Group; signals: Group; priority: Group };
+  fs: Group;
+  crypto: Group;
   zlib: Record<string, unknown>;
-  trace: Record<string, number>;
+  trace: Group;
+  internal?: Group;
 };
+
+/** A group object as CreatePerContextProperties makes one: no prototype. */
+function group(): Group { return Object.create(null) as Group; }
+
+/** NODE_DEFINE_CONSTANT and NODE_DEFINE_STRING_CONSTANT: read-only and undeletable. */
+function define(target: object, name: string, value: number | string): void {
+  Object.defineProperty(target, name, { value, enumerable: true, writable: false, configurable: false });
+}
+
+let programGroups: Map<string, Group> | undefined;
+/**
+ * The program's compiled constants, every group by its name (node_constants.cc `tabnode_constants`: Node's groups and
+ * the wraps' `tcp_wrap`, `pipe_wrap`, `udp_wrap` and `tty_wrap`), read once: "GROUP n NAME VALUE" or
+ * "GROUP s NAME VALUE", each a read-only property of its group.
+ */
+export function programConstants(): Map<string, Group> {
+  if (programGroups) return programGroups;
+  const exports = libnode().exports;
+  const text = new TextDecoder().decode(mallocAnswer((lengthAt) => exports.tabnode_constants(lengthAt)) ?? new Uint8Array());
+  const groups = new Map<string, Group>();
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    const groupEnd = line.indexOf(' '), nameAt = groupEnd + 3, nameEnd = line.indexOf(' ', nameAt);
+    const name = line.slice(0, groupEnd);
+    let target = groups.get(name);
+    if (!target) groups.set(name, target = group());
+    const value = line.slice(nameEnd + 1);
+    define(target, line.slice(nameAt, nameEnd), line[groupEnd + 1] === 'n' ? Number(value) : value);
+  }
+  return programGroups = groups;
+}
+
+/** One group of the program's compiled constants (an empty one where the program defines none of it). */
+export function programGroup(name: string): Group {
+  return programConstants().get(name) ?? group();
+}
+
+/**
+ * A wrap's constants (`tcp_wrap`, `pipe_wrap`, `udp_wrap`, `tty_wrap`: their Initialize's NODE_DEFINE_CONSTANTs from
+ * uv.h and their own headers), the program's compiled ones where the realm has the program, else `engine`, whose
+ * handles reach no libuv.
+ */
+export function wrapConstants<T extends Record<string, number>>(binding: string, engine: T): T {
+  return libnodeAttached() ? programGroup(binding) as T : engine;
+}
+
+/** CreatePerContextProperties (node_constants.cc:1335-1422) over the program's groups. */
+function programBinding(): ConstantsBinding {
+  const os = group() as unknown as ConstantsBinding['os'];
+  define(os, 'UV_UDP_REUSEADDR', programGroup('os').UV_UDP_REUSEADDR as number);
+  Object.assign(os, { dlopen: programGroup('dlopen'), errno: programGroup('errno'), signals: programGroup('signals'), priority: programGroup('priority') });
+  const target = Object.create(null) as ConstantsBinding;
+  return Object.assign(target, {
+    os, fs: programGroup('fs'), crypto: programGroup('crypto'), zlib: { ...engineZlib },
+    trace: programGroup('trace'), internal: programGroup('internal'),
+  });
+}
+
+/** The engine's tables in the binding's shape, for a realm with no program. */
+function engineBinding(): ConstantsBinding {
+  const groups: Record<string, Group> = { errno: {}, priority: {}, dlopen: {}, fs: {} };
+  for (const [name, value] of Object.entries(engineConstants)) groups[groupOf(name)][name] = value;
+  return {
+    // libuv's own flag, which Node's binding carries beside the os groups and the flat table has never held.
+    os: { UV_UDP_REUSEADDR: 4, dlopen: groups.dlopen, errno: groups.errno, signals: { ...engineSignals }, priority: groups.priority },
+    fs: groups.fs,
+    // DefineCryptoConstants with no HAVE_OPENSSL: a realm with no program has no OpenSSL.
+    crypto: {},
+    zlib: { ...engineZlib },
+    trace: { ...engineTrace },
+  };
+}
 
 let binding: ConstantsBinding | null = null;
 
 /**
- * `process.binding('constants')`, built on the first ask and kept, as Node
- * hands out the same object every time.
+ * `process.binding('constants')` and `internalBinding('constants')`, built on the first ask and kept, as Node hands
+ * out the same object every time: the program's where the realm has it (attached before Node's library runs), the
+ * engine's otherwise.
  */
 export function constantsBinding(): ConstantsBinding {
-  if (binding) return binding;
-  const groups: Record<string, Record<string, number>> = { errno: {}, signals: {}, priority: {}, dlopen: {}, fs: {} };
-  for (const [name, value] of Object.entries(nodeConstants)) groups[groupOf(name)][name] = value as number;
-  binding = {
-    // libuv's own flag, which Node's binding carries beside the os groups and
-    // the flat table has never held.
-    os: { UV_UDP_REUSEADDR: 4, dlopen: groups.dlopen, errno: groups.errno, signals: groups.signals, priority: groups.priority },
-    fs: groups.fs,
-    // Node's DefineCryptoConstants as libnode.so's OpenSSL defines them, compiled into the `node` program as Node
-    // compiles them into its binary (binding/openssl.ts): reading the group starts no OpenSSL. A realm with no
-    // program yet has the empty group of a Node without OpenSSL, kept only once the program is attached.
-    get crypto() {
-      const value = nodeCryptoConstants();
-      if (libnodeAttached()) Object.defineProperty(this, 'crypto', { value, enumerable: true, configurable: true, writable: true });
-      return value;
-    },
-    zlib: { Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3, Z_FINISH: 4, Z_BLOCK: 5, Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1, Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4, Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6, Z_NO_COMPRESSION: 0, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9, Z_DEFAULT_COMPRESSION: -1, Z_FILTERED: 1, Z_HUFFMAN_ONLY: 2, Z_RLE: 3, Z_FIXED: 4, Z_DEFAULT_STRATEGY: 0, ZLIB_VERNUM: 4784, Z_MIN_WINDOWBITS: 8, Z_MAX_WINDOWBITS: 15, Z_DEFAULT_WINDOWBITS: 15, Z_MIN_CHUNK: 64, Z_MAX_CHUNK: Infinity, Z_DEFAULT_CHUNK: 16384, Z_MIN_MEMLEVEL: 1, Z_MAX_MEMLEVEL: 9, Z_DEFAULT_MEMLEVEL: 8, Z_MIN_LEVEL: -1, Z_MAX_LEVEL: 9, Z_DEFAULT_LEVEL: -1, BROTLI_DECODE: 0, BROTLI_ENCODE: 1, BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_FINISH: 2, BROTLI_OPERATION_EMIT_METADATA: 3, BROTLI_PARAM_MODE: 0, BROTLI_MODE_GENERIC: 0, BROTLI_MODE_TEXT: 1, BROTLI_MODE_FONT: 2, BROTLI_PARAM_QUALITY: 1, BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11, BROTLI_DEFAULT_QUALITY: 11, BROTLI_PARAM_LGWIN: 2, BROTLI_MIN_WINDOW_BITS: 10, BROTLI_MAX_WINDOW_BITS: 24, BROTLI_DEFAULT_WINDOW: 22, BROTLI_PARAM_LGBLOCK: 3, BROTLI_MIN_INPUT_BLOCK_BITS: 16, BROTLI_MAX_INPUT_BLOCK_BITS: 24 },
-    trace: { TRACE_EVENT_PHASE_BEGIN: 66, TRACE_EVENT_PHASE_END: 69, TRACE_EVENT_PHASE_COMPLETE: 88, TRACE_EVENT_PHASE_INSTANT: 73, TRACE_EVENT_PHASE_ASYNC_BEGIN: 83, TRACE_EVENT_PHASE_ASYNC_STEP_INTO: 84, TRACE_EVENT_PHASE_ASYNC_STEP_PAST: 112, TRACE_EVENT_PHASE_ASYNC_END: 70, TRACE_EVENT_PHASE_NESTABLE_ASYNC_BEGIN: 98, TRACE_EVENT_PHASE_NESTABLE_ASYNC_END: 101, TRACE_EVENT_PHASE_NESTABLE_ASYNC_INSTANT: 110, TRACE_EVENT_PHASE_FLOW_BEGIN: 115, TRACE_EVENT_PHASE_FLOW_STEP: 116, TRACE_EVENT_PHASE_FLOW_END: 102, TRACE_EVENT_PHASE_METADATA: 77, TRACE_EVENT_PHASE_COUNTER: 67, TRACE_EVENT_PHASE_SAMPLE: 80, TRACE_EVENT_PHASE_CREATE_OBJECT: 78, TRACE_EVENT_PHASE_SNAPSHOT_OBJECT: 79, TRACE_EVENT_PHASE_DELETE_OBJECT: 68, TRACE_EVENT_PHASE_MEMORY_DUMP: 118, TRACE_EVENT_PHASE_MARK: 82, TRACE_EVENT_PHASE_CLOCK_SYNC: 99 },
-  };
-  return binding;
+  return binding ??= libnodeAttached() ? programBinding() : engineBinding();
 }

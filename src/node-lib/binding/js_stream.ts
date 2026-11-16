@@ -8,11 +8,11 @@
 import { Buffer } from '../buffer-module';
 import { LibuvStreamWrap, ShutdownWrap, WriteWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './stream_wrap';
 import { invokeOwned } from './handles';
-import { UV_EPROTO } from './uv';
+import { uvConstant } from './uv';
 
-/** A callback's answer as Node reads it (`Int32Value`), UV_EPROTO where it gave none. */
+/** A callback's answer as Node reads it (`Int32Value`), uvConstant('UV_EPROTO') where it gave none. */
 function status(value: unknown): number {
-  return typeof value === 'number' ? value | 0 : UV_EPROTO;
+  return typeof value === 'number' ? value | 0 : uvConstant('UV_EPROTO');
 }
 
 export class JSStream extends LibuvStreamWrap {

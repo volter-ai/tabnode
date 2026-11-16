@@ -19,11 +19,16 @@ TABNODE_IMPORT(bootstrap) int tabnode_bootstrap(int argc, char **argv);
 TABNODE_IMPORT(process_timers) double tabnode_process_timers(double now);
 // `immediate_callback_function` (lib/internal/timers.js `processImmediate`).
 TABNODE_IMPORT(process_immediate) void tabnode_process_immediate(void);
-// `process.emit('beforeExit')` (Node's EmitProcessBeforeExit): answers 0, or nonzero where the process is stopping.
+// The run's end (Tabnode ADR-0018 item 7), as SpinEventLoopInternal makes it once uv_run returns (src/api/
+// embed_helpers.cc:40-76): `process.emit('beforeExit', code)` (EmitProcessBeforeExit, src/api/hooks.cc:33-51, through
+// ProcessEmit's MakeCallback, src/node_process_events.cc:47-61), answering 0, or nonzero where the emission failed (a
+// throw the process handled), where Node stops its loop (embed_helpers.cc:51-52).
 TABNODE_IMPORT(before_exit) int tabnode_before_exit(void);
-// `process.emit('exit')` (Node's EmitProcessExitInternal, src/api/hooks.cc:61-89).
+// `process.emit('exit', code)` (EmitProcessExitInternal, hooks.cc:61-93): the process exiting, its code 13 where it
+// had none and its entry's top-level await is unsettled.
 TABNODE_IMPORT(emit_exit) void tabnode_emit_exit(void);
-// The exit code once 'exit's listeners and their microtasks have run (hooks.cc:91-92).
+// The code `main` returns once 'exit's listeners and their microtasks have run: the one they left (hooks.cc:91-92),
+// or 1 where the emission failed (node_main_instance.cc:109-110).
 TABNODE_IMPORT(exit_code) int tabnode_exit_code(void);
 // A descriptor the engine waits on is ready (poll.c): libuv's status and its events (UV_READABLE, UV_WRITABLE,
 // UV_DISCONNECT).
@@ -61,6 +66,9 @@ TABNODE_IMPORT(udp_sent) void tabnode_udp_sent(int32_t id, int32_t status);
 // signal that ended the child (signo_string: its `signal_length` bytes, none for none).
 TABNODE_IMPORT(process_exit) void tabnode_process_exit(uv_process_t *handle, double exit_status, const char *signal,
                                                       uint32_t signal_length);
+// SignalWrap's uv_signal_cb (src/signal_wrap.cc:121-130, signal_wrap.c; ADR-0018 item 8): the handle's `onsignal`,
+// with the signal's number.
+TABNODE_IMPORT(signal_received) void tabnode_signal_received(uv_signal_t *handle, int signum);
 // The fs binding's completions (native/node fs.c, fs_event.c; ADR-0018 item 6). Each is what Node's C++ does in V8
 // at that point, and each is followed by the callback scope's close, a drain.
 struct tabnode_fs_s;
@@ -68,14 +76,12 @@ struct tabnode_fs_s;
 // (node_file.cc AfterNoArgs, AfterStat, AfterInteger, ..., node_dir.cc AfterOpenDir, AfterDirRead) and its
 // MakeCallback, or its promise's settling. The engine frees the request.
 TABNODE_IMPORT(fs_done) void tabnode_fs_done(struct tabnode_fs_s *request);
-// A uv_fs_event_t's change (FSEventWrap::OnEvent): libuv's filename (NULL for none), events and status.
-TABNODE_IMPORT(fs_event) void tabnode_fs_event(uv_fs_event_t *handle, const char *filename, int events, int status);
+// A uv_fs_event_t's change (FSEventWrap::OnEvent): libuv's filename (NULL for none), the event's name as the wrap
+// chooses it ("rename", "change", or empty with an error) and the status.
+TABNODE_IMPORT(fs_event) void tabnode_fs_event(uv_fs_event_t *handle, const char *filename, const char *event,
+                                              int status);
 // A uv_fs_poll_t's change (StatWatcher::Callback), its current and previous stats in the binding's stat arrays.
 TABNODE_IMPORT(stat_watcher_change) void tabnode_stat_watcher_change(uv_fs_poll_t *handle, int status);
-// The loop is about to wait (env.c's idle prepare handle, as Node's idle_prepare_handle_ marks its isolate idle,
-// src/env.cc:1303-1312): it has nothing to do now, its poll would block. The engine decides there what it decides
-// when its loop would park (a run's end), as libuv asks `uv__loop_alive` before it blocks.
-TABNODE_IMPORT(loop_idle) void tabnode_loop_idle(void);
 // The close of a callback's scope (Node's InternalCallbackScope::Close, src/api/callback.cc): the tick queue, then the
 // microtasks, which a browser runs only between tasks, so the engine answers it by a suspension that resumes from the
 // next task (a `Suspending` import).

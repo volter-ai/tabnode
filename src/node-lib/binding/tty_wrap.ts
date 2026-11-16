@@ -15,7 +15,8 @@ import { queueBindingTask } from '../../guest-loop';
 import { type WriteWrap } from './stream_wrap';
 import { KernelStreamWrap, kKernelBacked, realmHasLibuv } from './kernel_stream';
 import { guessHandleTypeOfFd, handleForFd, registerFd, releaseFd } from './fds';
-import { UV_EBADF, UV_EIO, UV_ENOTSUP } from './uv';
+import { uvConstant } from './uv';
+import { wrapConstants } from '../../shims/constants';
 import { currentOwner, forgetNodeHandle } from './handles';
 import { __runFor } from '../../process-tokens';
 import { collectUVExceptionInfo, libnode, withRoom } from './libnode';
@@ -59,7 +60,8 @@ function runTerminalOf(): RunTerminal | undefined {
  */
 function setRunTerminalMode(terminal: RunTerminal, mode: number): number {
   try {
-    terminal.setRawMode!(mode === UV_TTY_MODE_NORMAL ? false : mode === UV_TTY_MODE_IO ? 'io' : 'raw');
+    const modes = ttyModes();
+    terminal.setRawMode!(mode === modes.UV_TTY_MODE_NORMAL ? false : mode === modes.UV_TTY_MODE_IO ? 'io' : 'raw');
     return 0;
   } catch (cause) {
     const errno = (cause as { errno?: unknown } | null)?.errno;
@@ -150,7 +152,7 @@ export class TTY extends KernelStreamWrap {
   getWindowSize(out: number[]): number {
     if (this[kKernelBacked]) {
       const handle = this.liveUv();
-      if (!handle) return UV_EBADF;
+      if (!handle) return uvConstant('UV_EBADF');
       return withRoom(8, (at) => libnode().exports.tabnode_tty_get_winsize(handle.wrap, at), (view, err) => {
         if (err === 0) { out[0] = view.getInt32(0, true); out[1] = view.getInt32(4, true); }
       });
@@ -168,10 +170,10 @@ export class TTY extends KernelStreamWrap {
   setRawMode(mode: number): number {
     if (this[kKernelBacked]) {
       const handle = this.liveUv();
-      if (!handle) return UV_EBADF;
+      if (!handle) return uvConstant('UV_EBADF');
       return libnode().exports.tabnode_tty_set_mode(handle.wrap, Number(mode) | 0);
     }
-    if (this.endpoint) return UV_ENOTSUP;
+    if (this.endpoint) return uvConstant('UV_ENOTSUP');
     const terminal = this.fd === 0 ? runTerminalOf() : undefined;
     if (!terminal?.setRawMode) return 0;
     return setRunTerminalMode(terminal, mode);
@@ -194,7 +196,7 @@ export class TTY extends KernelStreamWrap {
 
   readStart(): number {
     if (this[kKernelBacked]) return super.readStart();
-    if (this.descriptor.closed) return UV_EBADF;
+    if (this.descriptor.closed) return uvConstant('UV_EBADF');
     const result = super.readStart();
     this.endpoint?.pump();
     return result;
@@ -205,8 +207,8 @@ export class TTY extends KernelStreamWrap {
 
   protected dispatchWrite(req: WriteWrap, bytes: Uint8Array, handle?: unknown): number {
     if (this[kKernelBacked] || !this.endpoint) return super.dispatchWrite(req, bytes, handle);
-    if (this.closed || this.descriptor.closed) return UV_EBADF;
-    if (!this.endpoint.peer?.descriptors.size) return UV_EIO;
+    if (this.closed || this.descriptor.closed) return uvConstant('UV_EBADF');
+    if (!this.endpoint.peer?.descriptors.size) return uvConstant('UV_EIO');
     // Let the base binding set Node's synchronous-write accounting, while
     // the shared endpoint, rather than a replaceable handle, owns the bytes.
     const status = super.dispatchWrite(req, bytes);
@@ -285,8 +287,15 @@ export function stdioKindOf(fd: 0 | 1 | 2): 'tty' | 'pipe' | 'file' | 'char' {
   return kinds?.[fd] ?? (isTTY(fd) ? 'tty' : 'pipe');
 }
 
-// Node24.21/libuv uv_tty_mode_t; endpoint mode refusals remain ADR-0023.
-export const UV_TTY_MODE_NORMAL = 0;
-export const UV_TTY_MODE_IO = 2;
-export const UV_TTY_MODE_RAW_VT = 3;
-export default { TTY, isTTY, openPty, resizePty, UV_TTY_MODE_NORMAL, UV_TTY_MODE_IO, UV_TTY_MODE_RAW_VT };
+/** uv.h's uv_tty_mode_t as tty_wrap names it, for a realm with no program; endpoint mode refusals remain ADR-0023. */
+const engineModes = { UV_TTY_MODE_NORMAL: 0, UV_TTY_MODE_IO: 2, UV_TTY_MODE_RAW_VT: 3 };
+
+/** TTYWrap::Initialize's constants (tty_wrap.cc:71-73), the program's compiled ones where the realm has it. */
+function ttyModes(): typeof engineModes { return wrapConstants('tty_wrap', engineModes); }
+
+export default {
+  TTY, isTTY, openPty, resizePty,
+  get UV_TTY_MODE_NORMAL() { return ttyModes().UV_TTY_MODE_NORMAL; },
+  get UV_TTY_MODE_IO() { return ttyModes().UV_TTY_MODE_IO; },
+  get UV_TTY_MODE_RAW_VT() { return ttyModes().UV_TTY_MODE_RAW_VT; },
+};

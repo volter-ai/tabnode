@@ -6,10 +6,9 @@ import type { NativeStreamDescriptor, NativeStreamEvent, NativeStreamOperation, 
 import type { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, type WriteWrap, streamBaseState, kBytesWritten, kLastWriteWasAsync } from './node-lib/binding/stream_wrap';
 import { __adoptHandle, holdRequest, ownerOf, releaseHandle, observeNodeRequest, forgetNodeRequest } from './node-lib/binding/handles';
-import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_EPIPE, UV_ENOSYS, errname } from './node-lib/binding/uv';
+import { errname, uvConstant } from './node-lib/binding/uv';
 import { performance } from './system';
 
-const UV_EAGAIN = uv.UV_EAGAIN as number;
 
 type Stream = Pipe;
 const drivers = new WeakMap<LibuvStreamWrap, NativeStreamDriver>();
@@ -180,7 +179,7 @@ export function detachNativeStream(handle: LibuvStreamWrap): void {
 export function nativeInheritedFdType(fd: number): 'PIPE' | undefined {
   if (!transport || stopped || !Number.isInteger(fd) || fd < 0) return undefined;
   const result = transport.call({ operation: 'fdType', fd });
-  if (result.status === UV_EBADF) return undefined;
+  if (result.status === uvConstant('UV_EBADF')) return undefined;
   if (result.status !== 0 || result.handleType !== 'PIPE') {
     throw new Error(`Native descriptor lookup failed: ${errname(result.status)}`);
   }
@@ -285,7 +284,7 @@ export class NativeStreamDriver {
   }
 
   call(operation: NativeStreamOperation): NativeStreamReply {
-    return this.closing || stopped ? { status: UV_EBADF } : this.channel.call(operation);
+    return this.closing || stopped ? { status: uvConstant('UV_EBADF') } : this.channel.call(operation);
   }
 
   /**
@@ -324,7 +323,7 @@ export class NativeStreamDriver {
   private refState: 'ref' | 'unref' | undefined;
 
   beginRead(): number {
-    if (this.closing || stopped) return UV_EBADF;
+    if (this.closing || stopped) return uvConstant('UV_EBADF');
     if (this.readingCredit || this.buffered || this.readEnded) return 0;
     this.readingCredit = true;
     // Posted where it can be, so a process does not stop for its owner's thread once per chunk it reads: a refusal
@@ -368,8 +367,8 @@ export class NativeStreamDriver {
   }
 
   shutdown(callback: (status: number) => void): number {
-    if (this.closing || stopped) return UV_EBADF;
-    if (this.writeEnded) return UV_EPIPE;
+    if (this.closing || stopped) return uvConstant('UV_EBADF');
+    if (this.writeEnded) return uvConstant('UV_EPIPE');
     this.writeEnded = true;
     const operation = { operation: 'shutdown' as const, id: this.descriptor.id, request: requestId() };
     if (!this.writes.length) return this.complete(operation, callback);
@@ -383,11 +382,11 @@ export class NativeStreamDriver {
       try { withGuestCallback(() => callback(status), 'wrap', callback); } finally { release(); }
     };
     this.pendingShutdown = () => {
-      if (this.closing || stopped) { queueBindingTask(() => complete(UV_ECANCELED)); return; }
+      if (this.closing || stopped) { queueBindingTask(() => complete(uvConstant('UV_ECANCELED'))); return; }
       try {
         const status = this.complete(operation, complete);
         if (status !== 0) queueBindingTask(() => complete(status));
-      } catch { queueBindingTask(() => complete(UV_ECANCELED)); }
+      } catch { queueBindingTask(() => complete(uvConstant('UV_ECANCELED'))); }
     };
     return 0;
   }
@@ -408,16 +407,16 @@ export class NativeStreamDriver {
     request.async = false;
     const bytes = parts.reduce((total, part) => total + part.byteLength, 0);
     streamBaseState[kBytesWritten] = bytes;
-    if (this.closing || stopped) return UV_EBADF;
-    if (this.writeEnded) return UV_EPIPE;
-    if (!Number.isSafeInteger(bytes)) return UV_EINVAL;
-    if (bytes === 0) return sent == null ? 0 : UV_EINVAL;
+    if (this.closing || stopped) return uvConstant('UV_EBADF');
+    if (this.writeEnded) return uvConstant('UV_EPIPE');
+    if (!Number.isSafeInteger(bytes)) return uvConstant('UV_EINVAL');
+    if (bytes === 0) return sent == null ? 0 : uvConstant('UV_EINVAL');
     let retained: number | undefined;
     if (sent != null) {
       const driver = sent instanceof LibuvStreamWrap ? drivers.get(sent) : undefined;
-      if (!driver || this.descriptor.kind !== 'pipe') return UV_EINVAL;
+      if (!driver || this.descriptor.kind !== 'pipe') return uvConstant('UV_EINVAL');
       const result = driver.call({ operation: 'duplicate', id: driver.descriptor.id });
-      if (result.status !== 0 || !result.handle) return result.status || UV_EBADF;
+      if (result.status !== 0 || !result.handle) return result.status || uvConstant('UV_EBADF');
       retained = result.handle.id;
     }
     const write: PendingWrite = { request, parts, bytes, sent: retained, ended: false, release: holdRequest(this.handle) };
@@ -435,12 +434,12 @@ export class NativeStreamDriver {
         // A transport failure may follow acceptance. Never replay the bytes,
         // and return a native write error to Node's own JS, as the async path
         // does, rather than throwing from socket.write/res.end.
-        const status = stopped ? UV_ECANCELED : UV_EPIPE;
+        const status = stopped ? uvConstant('UV_ECANCELED') : uvConstant('UV_EPIPE');
         this.finishWrite(write, status, true);
         return status;
       }
       if (result !== undefined && typeof result !== 'number') write.submitted = result;
-      else if (result !== undefined && result !== UV_EAGAIN && result !== UV_ENOSYS) {
+      else if (result !== undefined && result !== uvConstant('UV_EAGAIN') && result !== uvConstant('UV_ENOSYS')) {
         if (result === 0) this.handle.bytesWritten += bytes;
         this.finishWrite(write, result, true);
         return result;
@@ -491,14 +490,14 @@ export class NativeStreamDriver {
       // together within the transport's byte credit, one bounded gather at a time;
       // larger writes still retain their buffers and wait for owner credit.
       for (const chunk of writeChunks(write.parts, this.channel.limits.maxReadChunkBytes)) {
-        if (this.closing || stopped) { status = UV_ECANCELED; break; }
+        if (this.closing || stopped) { status = uvConstant('UV_ECANCELED'); break; }
         status = await this.channel.write(this.descriptor.id, chunk, write.sent);
         if (write.ended) return;
         if (write.sent !== undefined) { closeDescriptor(write.sent); write.sent = undefined; }
         if (status !== 0) break;
         this.handle.bytesWritten += chunk.byteLength;
       }
-    } catch { status = stopped ? UV_ECANCELED : UV_EPIPE; }
+    } catch { status = stopped ? uvConstant('UV_ECANCELED') : uvConstant('UV_EPIPE'); }
     this.finishWrite(write, status);
   }
 
@@ -513,7 +512,7 @@ export class NativeStreamDriver {
     write.parts = [];
     try { if (write.sent !== undefined) closeDescriptor(write.sent); }
     catch (cause) {
-      status = UV_ECANCELED;
+      status = uvConstant('UV_ECANCELED');
       write.request.error = cause instanceof Error ? cause.message : String(cause);
     } finally { write.sent = undefined; }
     // A fully accepted synchronous native write has no uv request completion;
@@ -594,13 +593,13 @@ export class NativeStreamDriver {
     const failures: unknown[] = [];
     const attempt = (action: () => void): void => { try { action(); } catch (cause) { failures.push(cause); } };
     this.closing = true;
-    for (const write of [...this.writes]) attempt(() => this.finishWrite(write, UV_ECANCELED));
+    for (const write of [...this.writes]) attempt(() => this.finishWrite(write, uvConstant('UV_ECANCELED')));
     attempt(() => this.flushShutdown());
     const completions = [...this.completions.values()];
     this.completions.clear();
-    for (const complete of completions) attempt(() => complete(UV_ECANCELED));
+    for (const complete of completions) attempt(() => complete(uvConstant('UV_ECANCELED')));
     if (handles.has(this.descriptor.id)) {
-      attempt(() => { this.handle.receiveError(UV_ECANCELED); this.flushLocal(); });
+      attempt(() => { this.handle.receiveError(uvConstant('UV_ECANCELED')); this.flushLocal(); });
       attempt(() => this.finishClose());
     }
     if (failures.length) throw new AggregateError(failures, 'Native stream shutdown callbacks failed.');

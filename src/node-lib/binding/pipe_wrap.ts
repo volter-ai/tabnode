@@ -13,20 +13,18 @@
  */
 import { LibuvStreamWrap, kPeer, type WriteWrap } from './stream_wrap';
 import { KernelStreamWrap, kKernelBacked, realmHasLibuv, registerKernelHandle } from './kernel_stream';
-import { UV_EAFNOSUPPORT, UV_EBADF, UV_EINVAL } from './uv';
+import { uvConstant } from './uv';
 import { handleForFd, registerFd, releaseFd } from './fds';
 import { __adoptHandle, ownerOf, observeNodeRequest } from './handles';
 import { nativeStreamFor, registerNativeStreamConstructor } from '../../native-stream-binding';
 import { libnode, withCString } from './libnode';
+import { wrapConstants } from '../../shims/constants';
 
-/** libuv's `uv_pipe_t` flavours, and the two chmod bits `listen` reads. */
-export const constants = {
-  SOCKET: 0,
-  SERVER: 1,
-  IPC: 1 << 1,
-  UV_READABLE: 1,
-  UV_WRITABLE: 2,
-};
+/** PipeWrap's SocketType (pipe_wrap.h:37-41) and uv.h's two chmod bits, for a realm with no program. */
+const engineConstants = { SOCKET: 0, SERVER: 1, IPC: 2, UV_READABLE: 1, UV_WRITABLE: 2 };
+
+/** PipeWrap::Initialize's constants (pipe_wrap.cc:98-103), the program's compiled ones where the realm has it. */
+export function pipeConstants(): typeof engineConstants { return wrapConstants('pipe_wrap', engineConstants); }
 
 /** Node's `PipeConnectWrap`: the request a pipe connect is answered through. */
 export class PipeConnectWrap {
@@ -42,24 +40,24 @@ export class Pipe extends KernelStreamWrap {
   /** The engine's pairing: the descriptor number it handed out for this end. */
   private ownFd: number | null = null;
 
-  /** PipeWrap::New: a uv_pipe_init'd handle, IPC for `constants.IPC`. */
-  constructor(type: number = constants.SOCKET) {
+  /** PipeWrap::New: a uv_pipe_init'd handle, IPC for `IPC`. */
+  constructor(type: number = pipeConstants().SOCKET) {
     super(realmHasLibuv());
     this.type = type;
-    if (this[kKernelBacked]) this.attachUv(libnode().exports.tabnode_pipe_init(type === constants.IPC ? 1 : 0), true);
+    if (this[kKernelBacked]) this.attachUv(libnode().exports.tabnode_pipe_init(type === pipeConstants().IPC ? 1 : 0), true);
     else this.attachNative('pipe', type);
   }
 
   /** A pipe for a descriptor it is handed (a child's end of a socketpair), opened on it by its caller. */
   static forDescriptor(): Pipe {
-    return new Pipe(constants.SOCKET);
+    return new Pipe(pipeConstants().SOCKET);
   }
 
-  protected override get isIpc(): boolean { return this[kKernelBacked] && this.type === constants.IPC; }
+  protected override get isIpc(): boolean { return this[kKernelBacked] && this.type === pipeConstants().IPC; }
 
   /** ConnectionWrap::OnConnection's client: PipeWrap::Instantiate with SOCKET. */
   protected override makeClient(): Pipe {
-    return new (this.constructor as typeof Pipe)(constants.SOCKET);
+    return new (this.constructor as typeof Pipe)(pipeConstants().SOCKET);
   }
 
   /** The name as PipeWrap takes it, Utf8Value of the argument, with its length (an abstract name begins with NUL). */
@@ -70,16 +68,16 @@ export class Pipe extends KernelStreamWrap {
   /** PipeWrap::Bind: uv_pipe_bind2 with UV_PIPE_NO_TRUNCATE. */
   bind(name: string): number {
     const handle = this.liveUv();
-    if (!this[kKernelBacked]) return UV_EAFNOSUPPORT;
-    if (!handle) return UV_EBADF;
+    if (!this[kKernelBacked]) return uvConstant('UV_EAFNOSUPPORT');
+    if (!handle) return uvConstant('UV_EBADF');
     return this.#named(name, (at, length) => libnode().exports.tabnode_pipe_bind(handle.wrap, at, length));
   }
 
   /** PipeWrap::Listen: uv_listen, whose connections are ConnectionWrap::OnConnection's. */
   listen(backlog: number): number {
     const handle = this.liveUv();
-    if (!this[kKernelBacked]) return UV_EINVAL;
-    if (!handle) return UV_EBADF;
+    if (!this[kKernelBacked]) return uvConstant('UV_EINVAL');
+    if (!handle) return uvConstant('UV_EBADF');
     const err = libnode().exports.tabnode_stream_listen(handle.wrap, Number(backlog) | 0);
     if (err === 0) this.listening = true;
     return err;
@@ -88,8 +86,8 @@ export class Pipe extends KernelStreamWrap {
   /** PipeWrap::Connect: uv_pipe_connect2 under the request, completed by AfterConnect. */
   connect(req: PipeConnectWrap, name: string): number {
     const handle = this.liveUv();
-    if (!this[kKernelBacked]) return UV_EAFNOSUPPORT;
-    if (!handle) return UV_EBADF;
+    if (!this[kKernelBacked]) return uvConstant('UV_EAFNOSUPPORT');
+    if (!handle) return uvConstant('UV_EBADF');
     const id = handle.dispatch(this.connectDone(req));
     const err = this.#named(name, (at, length) => libnode().exports.tabnode_pipe_connect(handle.wrap, id, at, length));
     if (err) handle.undispatch(id);
@@ -105,7 +103,7 @@ export class Pipe extends KernelStreamWrap {
   open(fd: number): number {
     if (this[kKernelBacked]) {
       const handle = this.liveUv();
-      if (!handle) return UV_EBADF;
+      if (!handle) return uvConstant('UV_EBADF');
       return libnode().exports.tabnode_pipe_open(handle.wrap, Number(fd) | 0);
     }
     const native = nativeStreamFor(this);
@@ -115,7 +113,7 @@ export class Pipe extends KernelStreamWrap {
       return status;
     }
     const held = handleForFd(fd);
-    if (!held) return UV_EBADF;
+    if (!held) return uvConstant('UV_EBADF');
     this.takeOverFrom(held as LibuvStreamWrap);
     this.ownFd = fd;
     this.fd = fd;
@@ -139,7 +137,7 @@ export class Pipe extends KernelStreamWrap {
   /** PipeWrap::Fchmod: uv_pipe_chmod. */
   fchmod(mode: number): number {
     const handle = this.liveUv();
-    if (!handle) return UV_EBADF;
+    if (!handle) return uvConstant('UV_EBADF');
     return libnode().exports.tabnode_pipe_chmod(handle.wrap, Number(mode) | 0);
   }
 
@@ -159,7 +157,7 @@ export class Pipe extends KernelStreamWrap {
     const native = nativeStreamFor(this);
     if (native) return native.write(req, [bytes], handle);
     if (handle === undefined || handle === null) return super.dispatchWrite(req, bytes);
-    if (!(handle instanceof Pipe) || handle[kKernelBacked]) return UV_EBADF;
+    if (!(handle instanceof Pipe) || handle[kKernelBacked]) return uvConstant('UV_EBADF');
     const given = handle.duplicate();
     __adoptHandle(given, ownerOf(this[kPeer] ?? this), this[kPeer] ?? this);
     const status = super.dispatchWrite(req, bytes, given);
@@ -176,5 +174,5 @@ export class Pipe extends KernelStreamWrap {
 }
 
 registerNativeStreamConstructor('pipe', Pipe);
-registerKernelHandle('PIPE', () => new Pipe(constants.SOCKET));
-export default { Pipe, PipeConnectWrap, constants };
+registerKernelHandle('PIPE', () => new Pipe(pipeConstants().SOCKET));
+export default { Pipe, PipeConnectWrap, get constants() { return pipeConstants(); } };

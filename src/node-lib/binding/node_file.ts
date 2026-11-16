@@ -11,16 +11,14 @@ import {
   Room, dispatch, syncCallWithContext, getReqWrap, resolve, reject, uvException, recordedError, codeError,
   validatedFd, validFileMode, offsetOf, parseEncoding, pathBytes, pathText, statArrays, readStatFields, statResult,
   statFsResult, afterNoArgs, afterInteger, afterStringPtr, afterStringPath, ownErrors, FSReqCallback, kFsStatsFieldsNumber,
-  UV_ENOENT, UV_ENOTDIR, type After, type FsContext, type FSReq, type OwnErrorsAfter, type StatArrays,
+  type After, type FsContext, type FSReq, type OwnErrorsAfter, type StatArrays,
 } from './fs_req';
 import { kUsePromises } from './fs';
+import { uvConstant } from './uv';
 import { AsyncResource } from '../internals/runtime';
 import { currentOwner, ownedRun, registerHandle, releaseHandle, refHandle, unrefHandle, observeNodeHandle, forgetNodeHandle,
   type OwnedHandle } from './handles';
 import type { ProcessToken } from '../../process-tokens';
-
-const S_IFMT = 0o170000;
-const S_IFDIR = 0o040000;
 
 /** A call's buffers: Buffer::Data of each, as the bytes the C reads or writes. */
 function viewOf(value: unknown): Uint8Array {
@@ -39,7 +37,7 @@ export function createNodeFileBinding(context: FsContext, arrays: StatArrays = s
   };
   /** AfterStatNoThrowIfNoEntry: ENOENT and ENOTDIR answer undefined; any other error rejects. */
   const afterStatNoThrowIfNoEntry: OwnErrorsAfter = (lib, req, done) => {
-    if (done.result === UV_ENOENT || done.result === UV_ENOTDIR) return () => resolve(req, undefined);
+    if (done.result === uvConstant('UV_ENOENT') || done.result === uvConstant('UV_ENOTDIR')) return () => resolve(req, undefined);
     if (done.result < 0) {
       const error = uvException(lib, done.result, req.syscall, null, done.path, req.dest);
       return () => reject(req, error);
@@ -430,11 +428,7 @@ export function createNodeFileBinding(context: FsContext, arrays: StatArrays = s
       const at = room.cstr(pathBytes(arguments.length > 1 ? path : receiver));
       const { request, base } = room.open(lib);
       try {
-        const rc = lib.exports.tabnode_fs_stat(request, base + at, 0);
-        if (rc !== 0) return rc;
-        lib.exports.tabnode_fs_fill_request_stats(request);
-        const mode = Number(readStatFields(lib, false, 2)[1]);
-        return (mode & S_IFMT) === S_IFDIR ? 1 : 0;
+        return lib.exports.tabnode_fs_internal_module_stat(request, base + at);
       } finally {
         lib.exports.tabnode_fs_free(request);
       }
@@ -451,7 +445,7 @@ export function createNodeFileBinding(context: FsContext, arrays: StatArrays = s
       return dispatch(lib, room, wrap, {
         syscall: 'stat', path: pathText(bytes), after: noThrow ? afterStatNoThrowIfNoEntry : afterStat,
         call: (r, b, a) => lib.exports.tabnode_fs_stat(r, b + at, a),
-        throwIf: noThrow ? (result) => result < 0 && !(result === UV_ENOENT || result === UV_ENOTDIR) : undefined,
+        throwIf: noThrow ? (result) => result < 0 && !(result === uvConstant('UV_ENOENT') || result === uvConstant('UV_ENOTDIR')) : undefined,
         sync: (r) => syncStat(lib, r, bigint),
       });
     },
@@ -466,7 +460,7 @@ export function createNodeFileBinding(context: FsContext, arrays: StatArrays = s
       return dispatch(lib, room, wrap, {
         syscall: 'lstat', path: pathText(bytes), after: afterStat,
         call: (r, b, a) => lib.exports.tabnode_fs_lstat(r, b + at, a),
-        throwIf: throwIfNoEntry === false ? (result) => result < 0 && result !== UV_ENOENT : undefined,
+        throwIf: throwIfNoEntry === false ? (result) => result < 0 && result !== uvConstant('UV_ENOENT') : undefined,
         sync: (r) => syncStat(lib, r, bigint),
       });
     },

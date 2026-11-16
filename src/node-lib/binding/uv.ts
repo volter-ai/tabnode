@@ -1,13 +1,16 @@
 /**
- * `internalBinding('uv')`: libuv's error numbers and names.
+ * `internalBinding('uv')`: libuv's error numbers, names and messages, Node v24.21.0's src/uv.cc.
  *
- * The engine has no libuv, and the numbers are still libuv's, because Node's
- * own files compare against them and a program reads `err.errno` and
- * `err.code` and expects the pair a Linux Node reports. The engine's platform
- * is `linux`, so these are Linux's.
+ * Where the realm's process is the `node` program, they are the program's: uv.cc's error table compiled against
+ * libuv's uv.h (native/node uv.c, UV_ERRNO_MAP over the musl errno numbers libuv's UV__E* are made of), `errname`
+ * uv_err_name_r and `getErrorMessage` uv_strerror_r, so every number a binding compares libuv's answers with, or
+ * answers itself, is the one libuv returns. A realm with no program has no libuv, and its numbers are the engine's own
+ * table below, Linux's, since a program reads `err.errno` and `err.code` and expects the pair a Linux Node reports.
  */
+import { address, libnode, libnodeAttached, readRecord, withRoom } from './libnode';
 
-/** The codes Node's `net`, `child_process` and their internals name. */
+/** The engine's own table, for a realm with no `node` program: the codes Node's `net`, `child_process` and their
+ * internals name, with Linux's numbers. */
 const codes: Record<string, [number, string]> = {
   UV_E2BIG: [-7, 'argument list too long'],
   UV_EACCES: [-13, 'permission denied'],
@@ -63,60 +66,111 @@ const codes: Record<string, [number, string]> = {
   UV_UNKNOWN: [-4094, 'unknown error'],
 };
 
-const names = new Map<number, string>();
-for (const [name, [value]] of Object.entries(codes)) if (!names.has(value)) names.set(value, name.slice(3));
-// The constants table (and a Darwin host's `require('constants')`) names
-// EADDRNOTAVAIL 49 and EAGAIN 35; `util.getSystemErrorName` reads this map,
-// so those numbers must name the same errors Linux's -99 and -11 do.
-if (!names.has(-49)) names.set(-49, 'EADDRNOTAVAIL');
-if (!names.has(-35)) names.set(-35, 'EAGAIN');
-
-/** libuv's `uv_err_name`: the code a number stands for, `UNKNOWN` for a number none does. */
-export function errname(code: number): string {
-  return names.get(code) ?? `Unknown system error ${code}`;
+/** The realm's errors: the program's compiled ones, read once, or the engine's table. */
+interface UvErrors {
+  /** Each `UV_*` name's number. */
+  readonly values: ReadonlyMap<string, number>;
+  /** uv.cc's table in its order: the number, the name, the message. */
+  readonly entries: readonly (readonly [number, string, string])[];
+  /** GetErrMap's pairs. */
+  map(): Map<number, [string, string]>;
+  errname(code: number): string;
+  message(code: number): string;
 }
 
-/** Node's `getErrorMap()`: every number to its `[name, message]` pair. */
-export function getErrorMap(): Map<number, [string, string]> {
-  const map = new Map<number, [string, string]>();
-  for (const [name, [value, message]] of Object.entries(codes)) {
-    if (!map.has(value)) map.set(value, [name.slice(3), message]);
+let programErrors: UvErrors | undefined;
+let engineErrors: UvErrors | undefined;
+
+/** uv.cc's per_process::uv_errors_map as the program compiled it (uv.c `tabnode_uv_errors`): 12 bytes an entry. */
+function readProgramErrors(): UvErrors {
+  const lib = libnode();
+  let at = 0, count = 0;
+  withRoom(4, (countAt) => { at = address(lib.exports.tabnode_uv_errors(countAt)); }, (view) => { count = view.getUint32(0, true); });
+  const table = readRecord(at, count * 12);
+  const entries: [number, string, string][] = [];
+  const values = new Map<string, number>();
+  for (let i = 0; i < count; i++) {
+    const value = table.getInt32(i * 12, true);
+    const name = lib.cString(table.getUint32(i * 12 + 4, true)) ?? '';
+    const message = lib.cString(table.getUint32(i * 12 + 8, true)) ?? '';
+    entries.push([value, name, message]);
+    values.set(`UV_${name}`, value);
   }
-  if (!map.has(-49)) map.set(-49, ['EADDRNOTAVAIL', 'address not available']);
-  if (!map.has(-35)) map.set(-35, ['EAGAIN', 'resource temporarily unavailable']);
-  return map;
+  // uv_err_name_r and uv_strerror_r into Node's 50 bytes (uv.cc:60-91).
+  const into50 = (call: (at: number) => void): string => {
+    let text = '';
+    withRoom(50, call, (view) => {
+      const bytes = new Uint8Array(view.buffer, view.byteOffset, 50);
+      const end = bytes.indexOf(0);
+      text = new TextDecoder().decode(bytes.subarray(0, end < 0 ? 50 : end));
+    });
+    return text;
+  };
+  return {
+    values, entries,
+    map: () => new Map(entries.map(([value, name, message]) => [value, [name, message]])),
+    errname: (code) => into50((room) => lib.exports.tabnode_uv_err_name_r(code, room)),
+    message: (code) => into50((room) => lib.exports.tabnode_uv_strerror_r(code, room)),
+  };
 }
 
-const uvBinding: Record<string, unknown> = { errname, getErrorMap };
-for (const [name, [value]] of Object.entries(codes)) uvBinding[name] = value;
+/** The engine's table, for a realm with no program. */
+function readEngineErrors(): UvErrors {
+  const entries: [number, string, string][] = Object.entries(codes).map(([name, [value, message]]) => [value, name.slice(3), message]);
+  const values = new Map(Object.entries(codes).map(([name, [value]]) => [name, value]));
+  const names = new Map<number, [string, string]>();
+  for (const [value, name, message] of entries) if (!names.has(value)) names.set(value, [name, message]);
+  // The engine's constants table (and a Darwin host's `require('constants')`) names EADDRNOTAVAIL 49 and EAGAIN 35;
+  // `util.getSystemErrorName` reads this map, so those numbers must name the same errors Linux's -99 and -11 do.
+  if (!names.has(-49)) names.set(-49, ['EADDRNOTAVAIL', 'address not available']);
+  if (!names.has(-35)) names.set(-35, ['EAGAIN', 'resource temporarily unavailable']);
+  return {
+    values, entries,
+    map: () => new Map([...names].map(([value, pair]) => [value, [...pair] as [string, string]])),
+    errname: (code) => names.get(code)?.[0] ?? `Unknown system error ${code}`,
+    message: (code) => names.get(code)?.[1] ?? `Unknown system error ${code}`,
+  };
+}
 
-export const UV_EPERM = codes.UV_EPERM[0];
-export const UV_EOF = codes.UV_EOF[0];
-export const UV_ECONNREFUSED = codes.UV_ECONNREFUSED[0];
-export const UV_ECONNRESET = codes.UV_ECONNRESET[0];
-export const UV_EADDRINUSE = codes.UV_EADDRINUSE[0];
-export const UV_ENOENT = codes.UV_ENOENT[0];
-export const UV_ENOTDIR = codes.UV_ENOTDIR[0];
-export const UV_ENOTSOCK = codes.UV_ENOTSOCK[0];
-export const UV_EPIPE = codes.UV_EPIPE[0];
-export const UV_EPROTO = codes.UV_EPROTO[0];
-export const UV_EINVAL = codes.UV_EINVAL[0];
-export const UV_ENOTCONN = codes.UV_ENOTCONN[0];
-export const UV_ECANCELED = codes.UV_ECANCELED[0];
-export const UV_ENOTSUP = codes.UV_ENOTSUP[0];
-export const UV_EBADF = codes.UV_EBADF[0];
-export const UV_EIO = codes.UV_EIO[0];
-export const UV_ENOSYS = codes.UV_ENOSYS[0];
-export const UV_EADDRNOTAVAIL = codes.UV_EADDRNOTAVAIL[0];
-export const UV_EACCES = codes.UV_EACCES[0];
-export const UV_ENOBUFS = codes.UV_ENOBUFS[0];
-export const UV_ETIMEDOUT = codes.UV_ETIMEDOUT[0];
-export const UV_EMFILE = codes.UV_EMFILE[0];
-export const UV_EBUSY = codes.UV_EBUSY[0];
-export const UV_EALREADY = codes.UV_EALREADY[0];
-export const UV_ESRCH = codes.UV_ESRCH[0];
-export const UV_EHOSTUNREACH = codes.UV_EHOSTUNREACH[0];
-export const UV_ENETUNREACH = codes.UV_ENETUNREACH[0];
-export const UV_EAFNOSUPPORT = codes.UV_EAFNOSUPPORT[0];
+function errors(): UvErrors {
+  if (libnodeAttached()) return programErrors ??= readProgramErrors();
+  return engineErrors ??= readEngineErrors();
+}
 
-export default uvBinding;
+/** A libuv error's number by its uv.h name (`UV_EBADF`), the realm's. */
+export function uvConstant(name: `UV_${string}`): number {
+  const value = errors().values.get(name);
+  if (value === undefined) throw new Error(`libuv defines no ${name}`);
+  return value;
+}
+
+/** ErrName (uv.cc:68-86), libuv's `uv_err_name_r`: the code a number stands for. */
+export function errname(code: number): string {
+  return errors().errname(code);
+}
+
+/** GetErrMessage (uv.cc:60-66), libuv's `uv_strerror_r`. */
+export function getErrorMessage(code: number): string {
+  return errors().message(code);
+}
+
+/** GetErrMap (uv.cc:93-117): every number to its `[name, message]` pair, a new Map each call. */
+export function getErrorMap(): Map<number, [string, string]> {
+  return errors().map();
+}
+
+let binding: Record<string, unknown> | undefined;
+/**
+ * uv.cc's Initialize (119-143): `errname`, every `UV_*` read-only and undeletable, `getErrorMap` and
+ * `getErrorMessage`; built on the first ask, after the realm's program, where it has one, is attached.
+ */
+export function uvBinding(): Record<string, unknown> {
+  if (binding) return binding;
+  const target: Record<string, unknown> = { errname };
+  for (const [value, name] of errors().entries) {
+    Object.defineProperty(target, `UV_${name}`, { value, enumerable: true, writable: false, configurable: false });
+  }
+  target.getErrorMap = getErrorMap;
+  target.getErrorMessage = getErrorMessage;
+  return binding = target;
+}

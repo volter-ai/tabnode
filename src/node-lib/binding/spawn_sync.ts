@@ -7,7 +7,7 @@
  */
 import { libRequire } from '../require-hook';
 import { CRecord, address, libnode, readRecord } from './libnode';
-import { UV_EINVAL } from './uv';
+import { uvConstant } from './uv';
 
 /** spawn_sync.c's `struct spawn_sync` (80 bytes) and `struct spawn_sync_stdio` (28), field by field. */
 const OPTIONS = {
@@ -41,15 +41,15 @@ function parseOptions(options: unknown): CRecord {
   const record = new CRecord(OPTIONS.bytes);
   record.int32(OPTIONS.stdioCount, -1);
   const answer = (error: number): CRecord => { record.int32(OPTIONS.error, error); return record; };
-  if (!isObject(options)) return answer(UV_EINVAL);
+  if (!isObject(options)) return answer(uvConstant('UV_EINVAL'));
   record.pointer(OPTIONS.file, record.string(text(options.file)));
   const args = options.args;
-  if (!Array.isArray(args)) return answer(UV_EINVAL);
+  if (!Array.isArray(args)) return answer(uvConstant('UV_EINVAL'));
   record.pointer(OPTIONS.args, record.strings(Array.from(args, text)));
   if (!isNullish(options.cwd)) record.pointer(OPTIONS.cwd, record.string(text(options.cwd)));
   const envPairs = options.envPairs;
   if (!isNullish(envPairs)) {
-    if (!Array.isArray(envPairs)) return answer(UV_EINVAL);
+    if (!Array.isArray(envPairs)) return answer(uvConstant('UV_EINVAL'));
     record.pointer(OPTIONS.env, record.strings(Array.from(envPairs, text)));
   }
   const uid = options.uid;
@@ -86,7 +86,7 @@ function parseOptions(options: unknown): CRecord {
     record.int32(OPTIONS.killSignal, killSignal | 0);
   }
   const stdio = options.stdio;
-  if (!Array.isArray(stdio)) return answer(UV_EINVAL);
+  if (!Array.isArray(stdio)) return answer(uvConstant('UV_EINVAL'));
   record.int32(OPTIONS.stdioCount, stdio.length);
   const entries = record.room(stdio.length * STDIO.bytes);
   record.pointer(OPTIONS.stdio, entries);
@@ -95,7 +95,7 @@ function parseOptions(options: unknown): CRecord {
     const at = entries + index * STDIO.bytes;
     // An entry ParseStdioOptions refuses ends its reading there: the entries before it are the C's to add.
     record.uint32(OPTIONS.stdioParsed, index);
-    if (!isObject(entry)) return answer(UV_EINVAL);
+    if (!isObject(entry)) return answer(uvConstant('UV_EINVAL'));
     const type = entry.type;
     if (type === 'ignore') {
       record.int32(at + STDIO.type, STDIO_TYPE.ignore);
@@ -112,7 +112,7 @@ function parseOptions(options: unknown): CRecord {
           record.uint32(at + STDIO.inputLength, input.byteLength);
         } else if (!isNullish(input)) {
           // Strings, numbers etc. are currently unsupported (spawn_sync.cc:1049-1053).
-          return answer(UV_EINVAL);
+          return answer(uvConstant('UV_EINVAL'));
         }
       }
     } else if (type === 'inherit' || type === 'fd') {

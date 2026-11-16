@@ -1,9 +1,9 @@
 // HANDLE_WRAP (Tabnode ADR-0018 §3): Node v24.21.0's src/handle_wrap.cc without V8, the one HandleWrap every binding's
-// handle is (a TCP, a pipe, a TTY, a UDP socket, a process, an fs watcher), and what the bindings' glue shares: a
-// wrap's close, its ref and its descriptor, and AddressToJS (src/tcp_wrap.cc:619-690). A handle is a block of the
-// process's memory that begins with its uv_handle_t, so the handle's address is the wrap's, as Node's handle->data
-// names its wrap; every callback into the engine names its handle by that address. The JavaScript keeps a wrap's
-// state (kInitialized, kClosing, kClosed) and its close callback, as Node's HandleWrap object does
+// handle is (a TCP, a pipe, a TTY, a UDP socket, a process, a signal, an fs watcher), and what the bindings' glue
+// shares: a wrap's close, its ref and its descriptor, and AddressToJS (src/tcp_wrap.cc:619-690). A handle is a block
+// of the process's memory that begins with its uv_handle_t, so the handle's address is the wrap's, as Node's
+// handle->data names its wrap; every callback into the engine names its handle by that address. The JavaScript keeps a
+// wrap's state (kInitialized, kClosing, kClosed) and its close callback, as Node's HandleWrap object does
 // (src/node-lib/binding/handle_wrap.ts). The block is the binding's until the handle is initialized, and libuv's from
 // then until OnClose, which frees it, as Node's OnClose detaches its wrap and drops the last reference to it.
 #include <stdlib.h>

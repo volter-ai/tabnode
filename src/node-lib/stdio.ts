@@ -1,18 +1,33 @@
 /**
- * A PROCESS'S STANDARD STREAMS ARE NODE'S (ADR-0018 item 3), where the realm's process is `node` on libuv's loop:
- * `process.stdout`, `process.stderr` and `process.stdin` made as Node v24.21.0's
- * `lib/internal/bootstrap/switches/is_main_thread.js` makes them (`defineStream`, `createWritableStdioStream`,
- * `getStdout`, `getStderr`, `getStdin`), each on first read, over the bindings' libuv handles: a terminal is
- * `tty.WriteStream` or `tty.ReadStream` (a uv_tty_t), a pipe or a socket `net.Socket` on the descriptor (a uv_pipe_t
- * or uv_tcp_t), a file `SyncWriteStream` or `fs.ReadStream`. What reaches fd 1 and 2 is then what libuv writes, in the
- * order the program wrote it.
+ * A PROCESS'S STANDARD STREAMS AND SIGNALS ARE NODE'S (ADR-0018 items 3 and 8), where the realm's process is `node` on
+ * libuv's loop. Its signals: a listener for a signal is Node's own `internal/process/signal` (startListeningIfSignal
+ * and stopListeningIfSignal on the process's `newListener` and `removeListener`), a `Signal` of `signal_wrap` over a
+ * uv_signal_t, as Node v24.21.0's `lib/internal/bootstrap/switches/is_main_thread.js` attaches them before anything
+ * else listens. Its streams: `process.stdout`, `process.stderr` and `process.stdin` made as that file makes them
+ * (`defineStream`, `createWritableStdioStream`, `getStdout`, `getStderr`, `getStdin`), each on first read, over the
+ * bindings' libuv handles: a terminal is `tty.WriteStream` or `tty.ReadStream` (a uv_tty_t), a pipe or a socket
+ * `net.Socket` on the descriptor (a uv_pipe_t or uv_tcp_t), a file `SyncWriteStream` or `fs.ReadStream`. What reaches
+ * fd 1 and 2 is then what libuv writes, in the order the program wrote it.
  *
  * Node's file is its bootstrap's, and runs only where the bootstrap runs on the realm's own global (ADR-0018 §7); until
- * then its stream part is carried here line for line, against the engine's process and the library graph it loads.
+ * then its signal and stream parts are carried here line for line, against the engine's process and the library graph
+ * it loads.
  */
 import { loadNodeLibFor } from './load';
 
 type Stream = Record<string, any>;
+
+/**
+ * `proc`'s signal listeners become libuv's (is_main_thread.js:37-43): "Worker threads don't receive signals", and a
+ * realm's process is its main thread.
+ */
+export function installNodeSignals(proc: object): void {
+  const process = proc as Stream;
+  const { startListeningIfSignal, stopListeningIfSignal } = loadNodeLibFor(proc, 'internal/process/signal') as {
+    startListeningIfSignal(type: unknown): void; stopListeningIfSignal(type: unknown): void };
+  process.on('newListener', startListeningIfSignal);
+  process.on('removeListener', stopListeningIfSignal);
+}
 
 /** `process.stdout`, `process.stderr` and `process.stdin` of `proc` become Node's, made on first read. */
 export function installNodeStdio(proc: object): void {

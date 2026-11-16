@@ -1,13 +1,13 @@
 /**
  * OPENSSL AS THE crypto AND tls_wrap BINDINGS REACH IT (ADR-0018 §1, item 7; ADR-0016 §3). OpenSSL 3.5.8 and ncrypto
  * are in the process's `libnode.so`, and the OpenSSL half of Node's `src/crypto/crypto_*.cc` is the `node` program's
- * glue (`native/node/crypto_*.cc`, `node_constants.cc`), whose exports these bindings call through the program
+ * glue (`native/node/crypto_*.cc`), whose exports these bindings call through the program
  * (`libnode.ts`): bytes are copied into the process's memory for a call and its answer copied out, as a browser's
  * APIs refuse a view of shared memory. What OpenSSL raises inside a call (a handshake, a key log line, a session, the
  * certificate and ALPN callbacks) reaches the engine as its `tls_*` imports (`libnodeImports`).
  *
  * A realm the host gives no `node` program has no OpenSSL, as a Node built without it: its TLS and its bindings over
- * OpenSSL answer that it has none, and its `crypto` constants are the empty group such a Node defines.
+ * OpenSSL answer that it has none.
  *
  * The process's OpenSSL is started once, at the first call (`tabnode_crypto_init`): its configuration file, as Node
  * reads it at its start (`src/node.cc:1215-1251`), and InitCryptoOnce. Where Node starts it before the environment,
@@ -17,7 +17,7 @@
  */
 import { address, libnode, libnodeAttached, type LibnodeExports } from './libnode';
 
-/** The program's exports of `native/node/crypto_*.cc` and `node_constants.cc`, by their C names. */
+/** The program's exports of `native/node/crypto_*.cc`, by their C names. */
 export type OpensslExports = LibnodeExports & { [name: `tabnode_${string}`]: (...args: any[]) => any };
 
 let started: OpensslExports | undefined;
@@ -177,27 +177,4 @@ export function opensslError(message: string, code = openssl().tabnode_err_get()
   }
   exports.tabnode_err_clear();
   return error;
-}
-
-let cryptoConstants: Record<string, number | string> | undefined;
-/**
- * Node's crypto constants (node_constants.cc `DefineCryptoConstants`) as the OpenSSL in `libnode.so` defines them,
- * compiled into the program as Node compiles them into its binary (`native/node/node_constants.cc`), read once; the
- * same object every time, as Node's binding is. A realm with no `node` program has no OpenSSL, and its group is the
- * empty one a Node built without OpenSSL defines (`DefineCryptoConstants` under no HAVE_OPENSSL). Reading a constant
- * starts no OpenSSL: the table is the program's compiled text.
- */
-export function nodeCryptoConstants(): Record<string, number | string> {
-  if (cryptoConstants) return cryptoConstants;
-  if (!libnodeAttached()) return {};
-  const exports = libnode().exports as OpensslExports;
-  const text = new TextDecoder().decode(mallocAnswer((lengthAt) => exports.tabnode_crypto_constants(lengthAt))!);
-  // The program's own line form (node_constants.cc `tabnode_crypto_constants`): `n NAME value` or `s NAME value`.
-  const table: Record<string, number | string> = {};
-  for (const line of text.split('\n')) {
-    if (!line) continue;
-    const space = line.indexOf(' ', 2), name = line.slice(2, space), value = line.slice(space + 1);
-    table[name] = line[0] === 'n' ? Number(value) : value;
-  }
-  return cryptoConstants = table;
 }

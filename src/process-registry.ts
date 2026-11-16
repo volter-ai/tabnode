@@ -32,43 +32,20 @@ export interface InitialProcessRegistration {
   readonly identity: ProcessIdentity;
 }
 
-/** Installed by the trusted embedding host before this realm starts runs. */
+/**
+ * A PROCESS TABLE, AS EVERY HOST'S REGISTRY ANSWERS IT: what a run publishes of itself, the exec that makes a run a
+ * process its host already has, and the lookups and kill(2)s a run makes. A host that runs the `node` program (ADR-0018
+ * §2) gives each run one of these and nothing more (`RunOptions.registry`, `installRunRegistry`): its process's
+ * children are libuv's `uv_spawn`, the kernel's processes, and the engine makes none (ADR-0018 item 5).
+ */
 export interface ProcessRegistry {
-  /**
-   * A registry over a kernel (browser-substrate ADR-0129): its `signal` is the kernel's kill(2), and the kernel
-   * delivers it to whichever image runs the pid, an engine run of this realm or a program the host runs. Absent for
-   * tabnode's own, whose `signal` reaches only this realm's runs.
-   */
-  readonly kernel?: boolean;
-  /**
-   * `signal` of process `pid` is now handled (a listener for it) or not: a kernel's registry records it as the
-   * process's disposition, from which the kernel protects a namespace's init (browser-substrate ADR-0129).
-   */
-  disposition?(pid: number, signal: number, handled: boolean): void;
-  /**
-   * A new process's number. `parentPid` is the process that starts it, where the caller knows it, and `newSession`
-   * says it leads a session of its own (a detached spawn): a registry over a kernel makes the process there and then,
-   * as fork (and setsid) do (browser-substrate ADR-0129); tabnode's own ignores both.
-   */
-  allocate(parentPid?: number, newSession?: boolean, runAs?: Readonly<ProcessCredentials>): number;
   publish(token: string, identity: ProcessIdentity): void;
   /**
    * execve(2) into a process forked elsewhere: an image starts in this realm in a process whose fork already made it
    * (a kernel shell's child exec'ing `node`), keeping its pid and parent. No process is made here; a pid the registry
-   * does not hold answers loudly. Every other pid this realm publishes is one its `allocate` made.
+   * does not hold answers loudly.
    */
   exec(token: string, identity: ProcessIdentity): void;
-  /**
-   * exit_group for `pid`, a child forked under `parentPid` whose image this realm ran itself (an engine run): ended
-   * with `code`, or by `signal`. A child another realm or the host runs reports its own exit.
-   */
-  exit(pid: number, parentPid: number, code: number, signal: string | null): void;
-  /**
-   * wait4 for `pid`, a child forked under `parentPid`, once its run has ended: the end its parent reports (Node's
-   * 'exit' code and signal). A registry over a kernel answers with the zombie's status and reaps it; tabnode's own,
-   * which is its own kernel, answers with the end its run gave.
-   */
-  reap(pid: number, parentPid: number, code: number, signal: string | null): { code: number; signal: string | null };
   forget(token: string): void;
   lookup(pid: number): ProcessIdentity | undefined;
   /**
@@ -84,8 +61,41 @@ export interface ProcessRegistry {
   signalGroup?(pgid: number, signal: string): boolean;
 }
 
+/**
+ * A PROCESS TABLE THAT ALSO MAKES THE ENGINE'S OWN CHILDREN: a realm with no `node` program (Tabnode on its own in a
+ * tab) runs a `node` child in itself, a run whose process this registry makes (fork), ends (exit_group) and reaps
+ * (wait4). The engine's own registry is one (`createProcessRegistryOwner`), and so is a realm's installed registry
+ * (`installProcessRegistry`), which numbers the realm's own processes; a run's registry is one only where its host
+ * makes that run's children here.
+ */
+export interface ChildProcessRegistry extends ProcessRegistry {
+  /**
+   * A new process's number. `parentPid` is the process that starts it, where the caller knows it, and `newSession`
+   * says it leads a session of its own (a detached spawn): a registry over a kernel makes the process there and then,
+   * as fork (and setsid) do (browser-substrate ADR-0129); tabnode's own ignores both.
+   */
+  allocate(parentPid?: number, newSession?: boolean, runAs?: Readonly<ProcessCredentials>): number;
+  /**
+   * exit_group for `pid`, a child forked under `parentPid` whose image this realm ran itself (an engine run): ended
+   * with `code`, or by `signal`. A child another realm or the host runs reports its own exit.
+   */
+  exit(pid: number, parentPid: number, code: number, signal: string | null): void;
+  /**
+   * wait4 for `pid`, a child forked under `parentPid`, once its run has ended: the end its parent reports (Node's
+   * 'exit' code and signal). A registry over a kernel answers with the zombie's status and reaps it; tabnode's own,
+   * which is its own kernel, answers with the end its run gave.
+   */
+  reap(pid: number, parentPid: number, code: number, signal: string | null): { code: number; signal: string | null };
+}
+
+/** Whether `registry` makes the engine's own children (a ChildProcessRegistry). */
+export function makesChildren(registry: ProcessRegistry): registry is ChildProcessRegistry {
+  const forks = registry as Partial<ChildProcessRegistry>;
+  return typeof forks.allocate === 'function' && typeof forks.exit === 'function' && typeof forks.reap === 'function';
+}
+
 /** The engine's own local registry (createProcessRegistryOwner's scope); a host's registry is a ProcessRegistry. */
-export interface ProcessRegistryScope extends ProcessRegistry {
+export interface ProcessRegistryScope extends ChildProcessRegistry {
   /** Trusted owner only: how this realm answers a signal sent to one of its processes. */
   receiveSignals(handler: (pid: number, signal: string) => boolean): void;
   /**

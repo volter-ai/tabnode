@@ -18,7 +18,7 @@ import type { ProcessCredentials } from './process-credentials';
 
 import type { Process } from './shims/process';
 import { nodeAsyncLocalStorage, routeUncaughtExceptions } from './shims/async_hooks';
-import { createProcessRegistryOwner, type ProcessRegistry, type InitialProcessRegistration } from './process-registry';
+import { createProcessRegistryOwner, makesChildren, type ChildProcessRegistry, type ProcessRegistry, type InitialProcessRegistration } from './process-registry';
 
 /** Whatever the embedding runtime uses to name one guest process. */
 export type ProcessToken = string;
@@ -180,7 +180,7 @@ localProcessRegistry.receiveSignals((pid, signal) => {
   const token = tokenOfPid(pid);
   return token !== null && __signalOwnedProcess(token, signal);
 });
-let processRegistry: ProcessRegistry = localProcessRegistry;
+let processRegistry: ChildProcessRegistry = localProcessRegistry;
 let registryInstalled = false;
 let registryUsed = false;
 /**
@@ -196,7 +196,7 @@ let initialPid: number | undefined;
 const pidsOfRuns = new Map<ProcessToken, { pid: number; waiter: number }>();
 
 /** Startup-only host seam; never swap identity authorities under live runs. */
-export function installProcessRegistry(registry: ProcessRegistry, initial?: InitialProcessRegistration): void {
+export function installProcessRegistry(registry: ChildProcessRegistry, initial?: InitialProcessRegistration): void {
   if (registryInstalled || registryUsed) throw new Error('Process registry must be installed once before creating processes.');
   if (initial) {
     if (typeof initial.token !== 'string' || initial.token.length === 0) throw new Error('Invalid initial process token.');
@@ -240,6 +240,16 @@ export function registryFor(run: ProcessToken | null | undefined): ProcessRegist
 export function installRunRegistry(token: ProcessToken, registry: ProcessRegistry): void {
   runRegistries.set(token, registry);
 }
+/**
+ * The registry that makes `parent`'s children in this realm (fork, exit_group, wait4): its run's, else the realm's.
+ * A run whose registry makes none is a process whose children are its host's own (the `node` program's are libuv's
+ * `uv_spawn`, ADR-0018 item 5), and the engine starts none of them.
+ */
+function childRegistryFor(parent: ProcessToken | null): ChildProcessRegistry {
+  const registry = registryFor(parent);
+  if (!makesChildren(registry)) throw new Error(`fork: run ${parent}'s children are its host's processes, not the engine's (ADR-0018 item 5)`);
+  return registry;
+}
 
 /**
  * A named run that is the image a process forked elsewhere exec's (execve keeps the pid): a kernel process's own pid,
@@ -270,7 +280,7 @@ export function parentPidOf(pid: number, caller: ProcessToken | null): number {
 /** fork: a new process numbered by `parent`'s registry (the run that forks it; null for the realm process). */
 export function mintPid(parentPid?: number, newSession = false, parent: ProcessToken | null = null, runAs?: Readonly<ProcessCredentials>): number {
   registryUsed = true;
-  return registryFor(parent).allocate(parentPid !== undefined && parentPid > 0 ? parentPid : undefined, newSession, runAs);
+  return childRegistryFor(parent).allocate(parentPid !== undefined && parentPid > 0 ? parentPid : undefined, newSession, runAs);
 }
 
 /**
@@ -312,12 +322,12 @@ export function runPid(token: ProcessToken | null | undefined): { pid: number; p
 
 /** exit_group for a child `parent` ran itself: its end goes to the process table through `parent`'s registry. */
 export function exitRunProcess(pid: number, parentPid: number, code: number, signal: string | null, parent: ProcessToken | null = null): void {
-  registryFor(parent).exit(pid, parentPid, code, signal);
+  childRegistryFor(parent).exit(pid, parentPid, code, signal);
 }
 
 /** wait4 by `parent` for a child whose run has ended: the end the process table holds, which the parent reports. */
 export function reapRunProcess(pid: number, parentPid: number, code: number, signal: string | null, parent: ProcessToken | null = null): { code: number; signal: string | null } {
-  return registryFor(parent).reap(pid, parentPid, code, signal);
+  return childRegistryFor(parent).reap(pid, parentPid, code, signal);
 }
 
 /** A run that has ended is no longer a process; its number is nobody's. */
@@ -345,13 +355,6 @@ export function tokenOfPid(pid: number, caller?: ProcessToken | null): ProcessTo
 export function pidIsLive(pid: number, caller: ProcessToken | null, callerPid?: number): boolean {
   // Metadata lookup may fail for reasons other than absence. Only the authority's kill(2) answer proves ESRCH.
   return registryFor(caller).signal(pid, '0', callerPid ?? runPidOf(caller) ?? initialPid);
-}
-
-/** A process's listener for `signal` came or went: its registry hears it where it keeps dispositions. */
-export function publishSignalDisposition(processObject: object, signal: number, handled: boolean): void {
-  const token = __tokenForProcess(processObject as never);
-  const pid = (processObject as { pid?: number }).pid;
-  if (typeof pid === 'number') registryFor(token).disposition?.(pid, signal, handled);
 }
 
 /** `kill(pid, signal)` by `caller` to another live process; whether one took it. */
