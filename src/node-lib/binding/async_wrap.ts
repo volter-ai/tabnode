@@ -36,6 +36,18 @@ const readOnly = (target: object, name: string, value: unknown): void => {
 
 interface HookFunctions { init: Function; before: Function; after: Function; destroy: Function; promise_resolve: Function }
 
+/** Each binding's AsyncHooks push_async_context and pop_async_context, as the Environment's C++ calls them. */
+const nativeContexts = new WeakMap<object, {
+  push(asyncId: number, triggerAsyncId: number, resource: object): void;
+  pop(asyncId: number): boolean;
+}>();
+/** The AsyncHooks under `binding`, for an InternalCallbackScope the engine opens as Node's C++ does. */
+export function asyncHooksOf(binding: object) {
+  const hooks = nativeContexts.get(binding);
+  if (!hooks) throw new Error('async_wrap: not a binding of this realm');
+  return hooks;
+}
+
 export function createAsyncWrapBinding(): Record<string, unknown> {
   // AsyncHooks's constructor: clear_async_id_stack, kCheck 1 (--force-async-hooks-checks), no default trigger, the
   // counter at 1 for the bootstrap's own context.
@@ -107,6 +119,7 @@ export function createAsyncWrapBinding(): Record<string, unknown> {
   });
 
   readOnly(binding, 'async_hook_fields', fields);
+  nativeContexts.set(binding, { push: pushAsyncContext, pop: popAsyncContext });
   readOnly(binding, 'async_id_fields', asyncIdFields);
   readOnly(binding, 'execution_async_resources', executionAsyncResources);
   binding.async_ids_stack = asyncIdsStack;

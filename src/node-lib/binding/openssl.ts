@@ -9,45 +9,23 @@
  * A realm the host gives no `node` program has no OpenSSL, as a Node built without it: its TLS and its bindings over
  * OpenSSL answer that it has none.
  *
- * The process's OpenSSL is started once, at the first call (`tabnode_crypto_init`): its configuration file, as Node
- * reads it at its start (`src/node.cc:1215-1251`), and InitCryptoOnce. Where Node starts it before the environment,
- * the engine starts it at the bindings' first use, once the process's environment is the realm's; no OpenSSL call
- * comes before. The engine's option table carries none of `--openssl-config`, `--openssl-shared-config`,
- * `--openssl-legacy-provider` and `--secure-heap`, so OpenSSL starts as Node's does when none is given.
+ * The process's OpenSSL is started by the program's `main` before the engine starts (native/node/node_start.cc and
+ * crypto_util.cc), as Node's InitializeOncePerProcess and NodeMainInstance start it: its configuration file from
+ * `--openssl-config` or OPENSSL_CONF, `--openssl-shared-config`, FIPS, then InitCryptoOnce with
+ * `--openssl-legacy-provider` and `--secure-heap`; a configuration error ends the process there, as Node's does.
  */
 import { address, libnode, libnodeAttached, type LibnodeExports } from './libnode';
 
 /** The program's exports of `native/node/crypto_*.cc`, by their C names. */
 export type OpensslExports = LibnodeExports & { [name: `tabnode_${string}`]: (...args: any[]) => any };
 
-let started: OpensslExports | undefined;
-
-/** An error the process's OpenSSL start answers (node.cc:1246-1251): "OpenSSL configuration error:" and the queue. */
-class OpensslConfigurationError extends Error {}
-
-/**
- * The program's OpenSSL, started on the first ask: the configuration file is the process's `OPENSSL_CONF`, else
- * OpenSSL's own default under OPENSSLDIR (node.cc:1222-1227), its `nodejs_conf` section.
- */
+/** The program's OpenSSL exports, started by its `main`. */
 export function openssl(): OpensslExports {
-  if (started) return started;
-  const program = libnode();
-  const exports = program.exports as OpensslExports;
-  const env = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env) ?? {};
-  const file = env.OPENSSL_CONF || null;
-  // --secure-heap-min's default is 2 (node_options.h), read only where --secure-heap is given.
-  const status = withCStringOrNull(file, (at) => exports.tabnode_crypto_init(at, 0, 0, 0, 2));
-  if (status !== 0) {
-    const printed = exports.tabnode_err_print() >>> 0;
-    const text = printed ? program.cString(printed) ?? '' : '';
-    if (printed) exports.tabnode_free(printed);
-    throw Object.assign(new OpensslConfigurationError(`OpenSSL configuration error:\n${text}`), { exitCode: status });
-  }
-  return started = exports;
+  return libnode().exports as OpensslExports;
 }
 
 /** `use` with `text` as a NUL-terminated string in the process's memory, or a NULL pointer for null. */
-function withCStringOrNull<T>(text: string | null, use: (at: number) => T): T {
+export function withCStringOrNull<T>(text: string | null, use: (at: number) => T): T {
   return text === null ? use(0) : withBytes(text, (at) => use(at));
 }
 

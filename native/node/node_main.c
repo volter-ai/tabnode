@@ -5,9 +5,10 @@
 // WebAssembly alone, as a JSPI suspension requires. Each call into the engine that Node makes inside a callback scope
 // is followed by that scope's close, a drain: the bootstrap's (StartExecution, src/node.cc:290-294) and each process
 // event's (ProcessEmit's MakeCallback, src/node_process_events.cc:48-61). PlatformInit's standard streams and signal
-// dispositions come first (stdio.c), as InitializeOncePerProcess makes them before anything runs, then its reading of
-// the command line and NODE_OPTIONS by Node's own parser (node_options.cc), where a bad option ends the process before
-// the engine starts, and TearDownOncePerProcess's reset last, as node::Start's scope leaves it (src/node.cc:1592-1599), whatever the run
+// dispositions come first (stdio.c), as InitializeOncePerProcess makes them before anything runs, then the rest of
+// it (node_start.cc): the command line and NODE_OPTIONS by Node's own parser, the env files, the config file, `--run`
+// and OpenSSL's start, where a bad option or a finished `--run` ends the process before the engine starts; and
+// TearDownOncePerProcess's reset last, as node::Start's scope leaves it (src/node.cc:1592-1599), whatever the run
 // answers.
 #include <uv.h>
 #include "engine.h"
@@ -44,7 +45,7 @@ int main(int argc, char **argv) {
   argv = uv_setup_args(argc, argv);
   tabnode_platform_init();
   // InitializeOncePerProcessInternal (src/node.cc:1113-1175): the command line read, its errors reported, and the
-  // process's end where it ends there (node_options.cc) before the engine starts.
+  // process's end where it ends there (node_start.cc) before the engine starts.
   int early_return = 0;
   int status = tabnode_initialize_node_with_args(argc, argv, &early_return);
   if (!early_return) status = run(argc, argv);

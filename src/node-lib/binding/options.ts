@@ -1,6 +1,6 @@
 /**
  * `internalBinding('options')` where the realm's process is `node` (ADR-0018 §7): Node v24.21.0's src/node_options.cc,
- * its option table, its parser and its answers compiled into the program (native/node/node_options.cc), which reads
+ * its option table, its parser and its answers compiled into the program (native/node/node_start.cc), which reads
  * the command line and NODE_OPTIONS in `main`, as InitializeOncePerProcess does, before the engine starts. Each
  * function here makes of the program's answer what Node's makes of its values: getCLIOptionsValues a null-prototype
  * object, getCLIOptionsInfo `{ options, aliases }` with both Maps SafeMaps, getOptionsAsFlags an array,

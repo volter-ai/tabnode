@@ -55,7 +55,7 @@ const indirectEval = eval;
 
 /** What the run gives its realm: its facts and the engine's doors the bindings answer from. */
 export interface NodeRealmRun extends Omit<ProcessMethodsHost, 'process'> {
-  /** The program's name, the script and its arguments, and the options, as Node's parser left them (node_options.cc). */
+  /** The program's name, the script and its arguments, and the options, as Node's parser left them (native/node/node_start.cc). */
   readonly argv: readonly string[];
   readonly execArgv: readonly string[];
   readonly execPath: string;

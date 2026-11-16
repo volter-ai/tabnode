@@ -1,7 +1,7 @@
 // THE crypto BINDING'S UTILITIES (Tabnode ADR-0018 item 7, ADR-0016 §3): the OpenSSL half of Node v24.21.0's
 // src/crypto/crypto_util.cc, crypto_timing.cc and of the process's OpenSSL start in src/node.cc, over ncrypto and
 // OpenSSL in libnode.so. The error queue as the binding reads it into Node's error shape (ThrowCryptoError), the
-// process's OpenSSL configuration and InitCryptoOnce, the version string process.versions reads, the thrown error,
+// process's OpenSSL start and InitCryptoOnce (which `main` runs), the version string process.versions reads, the thrown error,
 // ByteSource, a CryptoJob's threadpool work, and the binding's FIPS, engine, secure heap and timing calls.
 #include <openssl/conf.h>
 #include <openssl/crypto.h>
@@ -85,38 +85,80 @@ CRYPTO_EXPORT(tabnode_err_bio_error) char* tabnode_err_bio_error(size_t* length)
 
 // ---- The process's OpenSSL ---------------------------------------------------------------------------------------
 
-// The process's OpenSSL start (src/node.cc:1183-1266, InitializeOncePerProcess) and InitCryptoOnce
-// (crypto_util.cc:149-205), once. `conf_file` is --openssl-config's file, else OPENSSL_CONF's, else null (the default
-// openssl.cnf in OPENSSLDIR, /etc/ssl, read through the process's kernel); `shared_config` is --openssl-shared-config,
-// which reads the file's `openssl_conf` section instead of Node's `nodejs_conf` (NODE_OPENSSL_CONF_NAME, configure.py's
-// default); `legacy_provider` is --openssl-legacy-provider; `secure_heap` and `secure_heap_min` are --secure-heap and
-// --secure-heap-min (0: none). Answers 0, or the exit code Node's start returns for an OpenSSL configuration error
-// (ERR_GET_REASON of the queue's head), with the queue left for the binding's message ("OpenSSL configuration error:"
-// and GetOpenSSLErrorString, tabnode_err_print). Where Node runs this before the environment, the engine runs it at its
-// crypto binding's first use, once the process's options are parsed: no OpenSSL call comes before it. Answers what the
-// first call answered on every later call. A secure heap's failure is written to stderr, as Node writes it.
-CRYPTO_EXPORT(tabnode_crypto_init) int tabnode_crypto_init(const char* conf_file, int shared_config,
-                                                           int legacy_provider, size_t secure_heap,
-                                                           size_t secure_heap_min) {
-  static bool done = false;
-  static int status = 0;
-  if (done) return status;
-  done = true;
+// The process's OpenSSL start, run by `main` once the options are read (native/node/node_start.cc), as
+// InitializeOncePerProcessInternal runs it (src/node.cc:1179-1266): the configuration file (`conf_file`, the
+// --openssl-config option's, else OPENSSL_CONF's, else null for OPENSSLDIR's openssl.cnf), its `nodejs_conf` section
+// (NODE_OPENSSL_CONF_NAME, configure.py's default) or `openssl_conf` with --openssl-shared-config, a missing file no
+// error; then ProcessFipsOptions (crypto_util.cc:102-132) for --enable-fips and --force-fips, and the CSPRNG's seed.
+// Answers 0; where the configuration failed, ERR_GET_REASON of the queue's head with `*error` "OpenSSL configuration
+// error:" and GetOpenSSLErrorString's lines; where FIPS failed, 1 (kGenericUserError) with its message. `*failed` is set
+// where the process ends there.
+namespace tabnode {
+int StartOpenSSL(const char* conf_file, bool shared_config, bool enable_fips, bool force_fips, std::string* error,
+                 bool* failed) {
+  *failed = false;
+  auto GetOpenSSLErrorString = []() -> std::string {
+    std::string ret;
+    ERR_print_errors_cb(
+        [](const char* str, size_t len, void* opaque) {
+          std::string* ret = static_cast<std::string*>(opaque);
+          ret->append(str, len);
+          ret->append("\n");
+          return 0;
+        },
+        static_cast<void*>(&ret));
+    return ret;
+  };
   OPENSSL_INIT_SETTINGS* settings = OPENSSL_INIT_new();
   OPENSSL_INIT_set_config_filename(settings, conf_file);
   OPENSSL_INIT_set_config_appname(settings, shared_config ? "openssl_conf" : "nodejs_conf");
   OPENSSL_INIT_set_config_file_flags(settings, CONF_MFLAGS_IGNORE_MISSING_FILE);
   OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG, settings);
   OPENSSL_INIT_free(settings);
-  if (ERR_peek_error() != 0) return status = ERR_GET_REASON(ERR_peek_error());
+  if (ERR_peek_error() != 0) {
+    int code = ERR_GET_REASON(ERR_peek_error());
+    *error = "OpenSSL configuration error:\n" + GetOpenSSLErrorString();
+    *failed = true;
+    return code;
+  }
+  if (enable_fips || force_fips) {
+    if (!ncrypto::testFipsEnabled()) {
+      const std::string option = force_fips ? "--force-fips" : "--enable-fips";
+      *error = option + " requires an active OpenSSL provider named \"fips\". "
+                        "FIPS mode is configured through OpenSSL; see "
+                        "https://nodejs.org/api/crypto.html#fips-mode";
+      *failed = true;
+      return 1;
+    }
+    ncrypto::CryptoErrorList errors{ncrypto::CryptoErrorList::Option::NONE};
+    if (!ncrypto::setFipsEnabled(true, &errors)) {
+      std::string message = "OpenSSL error when trying to enable FIPS";
+      if (!errors.empty()) message += ':';
+      for (const auto& openssl_error : errors) {
+        message += '\n';
+        message += openssl_error;
+      }
+      *error = message;
+      *failed = true;
+      return 1;
+    }
+  }
   // Ensure CSPRNG is properly seeded (node.cc:1265-1266).
   if (!ncrypto::CSPRNG(nullptr, 0)) abort();
-  // InitCryptoOnce.
+  return 0;
+}
+
+// InitCryptoOnce (crypto_util.cc:149-205), as NodeMainInstance runs it before any JavaScript (node_main_instance.cc:
+// 139): --openssl-legacy-provider's provider, OpenSSL's TLS, --secure-heap and --secure-heap-min's heap, no
+// compression, the engines.
+void InitCryptoOnce(bool legacy_provider, int64_t secure_heap, int64_t secure_heap_min) {
+  OPENSSL_INIT_SETTINGS* settings = OPENSSL_INIT_new();
   if (legacy_provider) {
     OSSL_PROVIDER* legacy = OSSL_PROVIDER_load(nullptr, "legacy");
     if (legacy == nullptr) fprintf(stderr, "Unable to load legacy provider.\n");
   }
-  OPENSSL_init_ssl(0, nullptr);
+  OPENSSL_init_ssl(0, settings);
+  OPENSSL_INIT_free(settings);
   if (secure_heap != 0) {
     switch (ncrypto::DataPointer::TryInitSecureHeap(secure_heap, secure_heap_min)) {
       case ncrypto::DataPointer::InitSecureHeapResult::FAILED:
@@ -134,8 +176,8 @@ CRYPTO_EXPORT(tabnode_crypto_init) int tabnode_crypto_init(const char* conf_file
 #ifndef OPENSSL_NO_ENGINE
   ncrypto::EnginePointer::initEnginesOnce();
 #endif
-  return status;
 }
+}  // namespace tabnode
 
 // OpenSSL_version(OPENSSL_VERSION), from which process.versions.openssl is GetOpenSSLVersion's (node_metadata.cc:57-78).
 CRYPTO_EXPORT(tabnode_openssl_version) const char* tabnode_openssl_version() {

@@ -39,7 +39,8 @@ import { guessHandleTypeOfFd } from './fds';
 /** internal/util's `handleTypes`, in its order: the binding answers an index into it, as Node's does. */
 const HANDLE_TYPES = ['TCP', 'TTY', 'UDP', 'FILE', 'PIPE', 'UNKNOWN'];
 import { stdioKindOf } from './tty_wrap';
-import { libnodeAttached } from './libnode';
+import { intoMemory, libnode, libnodeAttached } from './libnode';
+import { mallocAnswer } from './openssl';
 import { nodeLibInternalRequire } from '../load';
 import { stackOverrides } from '../../stack-overrides';
 
@@ -396,5 +397,20 @@ function lazyProperties(require: (name: string) => unknown) {
 
 /** Lazy builtin exports must resolve inside the requesting process. */
 export function createUtilBinding(require: (name: string) => unknown) {
-  return { ...utilBinding, defineLazyProperties: lazyProperties(require) };
+  return { ...utilBinding, defineLazyProperties: lazyProperties(require), parseEnv: programParseEnv };
+}
+
+/**
+ * ParseEnv (src/node_util.cc:240-253) where the realm's process is `node`: Node's own Dotenv in the program
+ * (native/node/node_start.cc), its ToObject's variables in the store's order.
+ */
+function programParseEnv(content: unknown): Record<string, string> {
+  if (typeof content !== 'string') throw new TypeError('parseEnv: a string');
+  const program = libnode();
+  const bytes = new TextEncoder().encode(content);
+  const at = intoMemory(bytes);
+  try {
+    const answer = mallocAnswer((lengthAt) => program.exports.tabnode_dotenv_parse(at, bytes.byteLength, lengthAt));
+    return JSON.parse(new TextDecoder().decode(answer ?? new Uint8Array())) as Record<string, string>;
+  } finally { program.exports.tabnode_free(at); }
 }

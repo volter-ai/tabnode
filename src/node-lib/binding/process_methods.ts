@@ -26,12 +26,15 @@ export interface ProcessMethodsHost {
   dlopen(...args: unknown[]): void;
   /** A synchronous write of `text` to fd 2, as FPrintF(stderr) then fflush makes one. */
   writeStderr(text: string): void;
-  /** LoadEnvFile's Dotenv over `path` (src/node_dotenv.cc): set each variable the environment does not hold. */
-  loadEnvFile(path: string): void;
   /** Environment::timeout_info()[0] and immediate_info()->ref_count(), for getActiveResourcesInfo. */
   timeoutCount(): number;
   immediateRefCount(): number;
 }
+
+/** Dotenv::ParseResult (src/node_dotenv.h): Valid, FileError, InvalidContent. */
+const kDotenvFileError = 1, kDotenvInvalidContent = 2;
+/** UV_ENOENT. */
+const UV_ENOENT = -2;
 
 /**
  * UVException (src/api/exceptions.cc), as `env->ThrowUVException(err, syscall, msg, path, dest)` throws it:
@@ -169,9 +172,17 @@ export function createProcessMethodsBinding(host: ProcessMethodsHost): Record<st
       if (typeof fn !== 'function') throw new TypeError('setEmitWarningSync: a function');
       emitWarningSync = fn as (...args: unknown[]) => void;
     },
+    // LoadEnvFile (node_process_methods.cc:604-635): Node's Dotenv in the program over the file, its variables set in
+    // the process's environment where it holds none; a file that does not parse is ERR_INVALID_ARG_TYPE, one that
+    // does not open UV_ENOENT's `open`.
     loadEnvFile(...args: unknown[]): void {
       const path = args.length === 1 ? (typeof args[0] === 'string' ? args[0] : new TextDecoder().decode(args[0] as Uint8Array)) : '.env';
-      host.loadEnvFile(path);
+      const parsed = withCString(path, (at) => program().tabnode_load_env_file(at));
+      if (parsed === kDotenvInvalidContent) {
+        // THROW_ERR_INVALID_ARG_TYPE (src/node_errors.h): a TypeError with its code.
+        throw Object.assign(new TypeError(`Contents of '${path}' should be a valid string.`), { code: 'ERR_INVALID_ARG_TYPE' });
+      }
+      if (parsed === kDotenvFileError) throw uvException(UV_ENOENT, 'open', undefined, path);
     },
     /** The Environment's process_emit_warning_sync, for a warning the engine itself emits synchronously. */
     get emitWarningSync(): ((...args: unknown[]) => void) | undefined { return emitWarningSync; },

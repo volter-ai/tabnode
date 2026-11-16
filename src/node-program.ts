@@ -1,7 +1,7 @@
 /**
  * THE START OF A `node` PROGRAM'S PROCESS (ADR-0018 §2, §7, item 9). Where the realm's process is `node` on libuv's
  * loop, the realm is the process's, and this is what `node::Start` does between libuv's start and `uv_run` once the
- * program has read its command line with Node's own parser (native/node/node_options.cc): Node's process object, Node's bootstrap on the realm's own
+ * program has read its command line with Node's own parser (native/node/node_start.cc): Node's process object, Node's bootstrap on the realm's own
  * global, and the main script `StartExecution` selects (src/node.cc), run as Node runs it, which prepares the process
  * (`prepareMainThreadExecution`) and runs its entry through Node's own module loaders. The process runs on from there;
  * its end is libuv's, the run's `beforeExit`, `exit` and code given to `main` (`attachLibnodeRun`).
@@ -13,9 +13,9 @@ import { bootstrapNodeRealm, createNodeProcessObject, runNodeMain, type NodeReal
 import { processArgs } from './node-lib/binding/options';
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from './node-lib/node-versions';
 import { utilBinding } from './node-lib/binding/util';
-import { realEnvStore } from './node-lib/binding/env_var';
 import { setPreparedTree } from './node-lib/v8-host';
 import { startGuestLoop, withGuestCallback } from './guest-loop';
+import { asyncHooksOf } from './node-lib/binding/async_wrap';
 import { installGuestRealm } from './host-globals';
 import { recordProcessHostname, recordProcessHosts } from './process-hostname';
 import { __onUncaughtException } from './shims/process';
@@ -63,7 +63,7 @@ export function startNodeProgram(launch: NodeProgramLaunch): void {
   startGuestLoop();
   installGuestRealm();
 
-  // The command line as Node's parser left it in `main` (native/node/node_options.cc), which a bad option already
+  // The command line as Node's parser left it in `main` (native/node/node_start.cc), which a bad option already
   // ended: the program's name, the script and its arguments, and the options.
   const { args, execArgs } = processArgs();
   const exitInfo = process[utilBinding.privateSymbols.exit_info_private_symbol as unknown as string] as Int32Array;
@@ -81,7 +81,6 @@ export function startNodeProgram(launch: NodeProgramLaunch): void {
     ppid: () => exports.tabnode_getppid(),
     writeStderr,
     dlopen: (...args: unknown[]) => dlopen(process, launch.tree, args),
-    loadEnvFile: (path: string) => loadEnvFile(process, path),
     timeoutCount: () => (engineBindingFor(process, 'timers') as { timeoutInfo?: Int32Array }).timeoutInfo?.[0] ?? 0,
     immediateRefCount: () => (engineBindingFor(process, 'timers') as { immediateInfo?: Uint32Array }).immediateInfo?.[1] ?? 0,
     engineBinding: (name: string) => engineBindingFor(process, name),
@@ -126,10 +125,21 @@ export function startNodeProgram(launch: NodeProgramLaunch): void {
     exitCode: () => (exitEmissionFailed ? 1 : exitCodeOr(0)),
   });
 
-  // StartExecution: the main script SelectLoadMode picks, run in an InternalCallbackScope.
+  // StartExecution (src/node.cc:290-346): an InternalCallbackScope of async context {1, 0} over a new object, then the
+  // env files' variables (unless in watch mode, whose child loads them), then the main script SelectLoadMode picks;
+  // the scope's context is popped before its ticks run.
+  const { getOptionValue } = realm.require('internal/options') as { getOptionValue(name: string): unknown };
+  const asyncHooks = asyncHooksOf(realm.internalBinding('async_wrap') as object);
   inRun(() => {
-    try { withGuestCallback(() => runNodeMain(realm!, args), 'entry', 'main'); }
-    catch (error) { uncaught(error); }
+    try {
+      withGuestCallback(() => {
+        asyncHooks.push(1, 0, {});
+        try {
+          if (getOptionValue('[has_env_file_string]') && !getOptionValue('--watch')) exports.tabnode_dotenv_set_environment();
+          runNodeMain(realm!, args);
+        } finally { asyncHooks.pop(1); }
+      }, 'entry', 'main');
+    } catch (error) { uncaught(error); }
   });
 }
 
@@ -155,17 +165,3 @@ function dlopen(process: object, tree: VirtualFS, args: unknown[]): void {
   dlopenNative(process, target, exports, file, bytes);
 }
 
-/** LoadEnvFile (src/node_process_methods.cc) over Node's Dotenv: each variable the process's environment does not hold. */
-function loadEnvFile(process: Record<string, unknown>, path: string): void {
-  const fs = engineBindingFor(process, 'fs') as { readFileUtf8(path: string, flags: number): string };
-  const util = engineBindingFor(process, 'util') as { parseEnv(content: string): Record<string, string> };
-  let content: string;
-  try { content = fs.readFileUtf8(path, 0); }
-  catch {
-    throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { errno: -2, code: 'ENOENT', syscall: 'open', path });
-  }
-  // Dotenv::SetEnvironment (src/node_dotenv.cc): each the store does not hold, set in it.
-  for (const [key, value] of Object.entries(util.parseEnv(content))) {
-    if (realEnvStore.get(key) === undefined) realEnvStore.set(key, value);
-  }
-}

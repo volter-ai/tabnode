@@ -1,10 +1,10 @@
 #!/bin/bash
 # Builds `node` and `libnode.so` (ADR-0018 §1, §2, §3, items 7, 8 and 10). `libnode.so` is the one shared library of
-# Node's C: libuv, OpenSSL 3.5.8 and ncrypto, and zlib, brotli 1.2.0, zstd 1.5.7 and llhttp 9.4.3. `node` is a WALI program linked position-independent against it and `libc.so`:
+# Node's C: libuv, OpenSSL 3.5.8 and ncrypto, zlib, brotli 1.2.0, zstd 1.5.7, llhttp 9.4.3, merve, simdutf and simdjson. `node` is a WALI program linked position-independent against it and `libc.so`:
 # Node's start and its standard streams' and signals' start and end, the loop's own handles, the engine's descriptor
 # waits and the bindings' glue over libuv, OpenSSL and ncrypto (native/node: one HandleWrap, the stream, TCP, pipe, TTY
 # and UDP wraps, process_wrap, spawn_sync, signal_wrap, MessagePort, fs over uv_fs_*, and the crypto and tls_wrap bindings' OpenSSL
-# half, as Node's src/*_wrap.cc, spawn_sync.cc, node_file.cc, node_dir.cc, fs_event_wrap.cc, node_constants.cc, node_options.cc and
+# half, as Node's src/*_wrap.cc, spawn_sync.cc, node_file.cc, node_dir.cc, fs_event_wrap.cc, node_constants.cc, node.cc's start, node_options.cc and
 # src/crypto/*.cc). Every compile is browser-substrate's prepared native SDK with its Linux headers, whose compile
 # wrapper adds WebAssembly exception handling and whose link wrapper makes a program PIE with the run path
 # /opt/programs/lib, where the machine places `libc.so` and this library beside it.
@@ -59,7 +59,10 @@ node=node-v24.21.0
 tar xzf "$node_archive" -C "$work" "$node/deps/openssl/openssl" "$node/deps/ncrypto" "$node/src/node_root_certs.h" \
   "$node/src/node_constants.cc" "$node/src/node_constants.h" "$node/src/tracing/trace_event_common.h" \
   "$node/src/node_options.cc" "$node/src/node_options.h" "$node/src/node_options-inl.h" "$node/src/node.h" \
-  "$node/src/node_revert.h" "$node/src/node_version.h" "$node/src/quic/guard.h" "$node/src/large_pages/node_large_page.cc"
+  "$node/src/node_revert.h" "$node/src/node_version.h" "$node/src/quic/guard.h" "$node/src/large_pages/node_large_page.cc" \
+  "$node/src/node_exit_code.h" "$node/src/util.h" "$node/src/util-inl.h" "$node/src/util.cc" "$node/src/debug_utils-inl.h" \
+  "$node/src/node_dotenv.h" "$node/src/node_dotenv.cc" "$node/src/node_config_file.h" "$node/src/node_config_file.cc" \
+  "$node/src/node_task_runner.h" "$node/src/node_task_runner.cc"
 openssl="$work/$node/deps/openssl/openssl"
 ncrypto="$work/$node/deps/ncrypto"
 cc="$sdk/bin/cc"
@@ -89,13 +92,14 @@ finish
 
 # zlib, brotli, zstd and llhttp's sources (item 10, below), unpacked first: OpenSSL is configured over the first three.
 tar xzf "$node_archive" -C "$work" "$node/deps/zlib" "$node/deps/brotli" "$node/deps/zstd" "$node/deps/llhttp" \
-  "$node/deps/merve" "$node/deps/v8/third_party/simdutf" "$node/src/node_zlib.cc"
+  "$node/deps/merve" "$node/deps/v8/third_party/simdutf" "$node/deps/simdjson" "$node/src/node_zlib.cc"
 zlibsrc="$work/$node/deps/zlib"
 brotlisrc="$work/$node/deps/brotli"
 zstdsrc="$work/$node/deps/zstd"
 llhttpsrc="$work/$node/deps/llhttp"
 mervesrc="$work/$node/deps/merve"
 simdutfsrc="$work/$node/deps/v8/third_party/simdutf"
+simdjsonsrc="$work/$node/deps/simdjson"
 
 # OpenSSL 3.5.8 with Node's Configure options (no-tests no-shared no-afalgeng enable-ssl-trace enable-fips, and zlib,
 # enable-brotli and enable-zstd over Node's own deps/zlib, deps/brotli and deps/zstd for RFC 8879 certificate
@@ -191,6 +195,11 @@ deps+=("$work/simdutf.o")
 "$cxx" "${depflags[@]}" "${cxxflags[@]}" -I"$mervesrc" -I"$simdutfsrc" -c "$mervesrc/merve.cpp" -o "$work/merve.o" &
 pids+=($!)
 deps+=("$work/merve.o")
+# simdjson (deps/simdjson/simdjson.gyp: simdjson.cpp), the JSON reader of Node's config file and `--run`
+# (node_config_file.cc, node_task_runner.cc).
+"$cxx" "${depflags[@]}" "${cxxflags[@]}" -I"$simdjsonsrc" -c "$simdjsonsrc/simdjson.cpp" -o "$work/simdjson.o" &
+pids+=($!)
+deps+=("$work/simdjson.o")
 finish
 mkdir -p "$work/generated"
 { sed -n '74,88p' "$work/$node/src/node_zlib.cc"; sed -n '146,159p' "$work/$node/src/node_zlib.cc"
@@ -217,11 +226,16 @@ sed -n '30,113p' "$work/$node/src/node_constants.cc" > "$work/generated/node_con
 sed -n '126,1333p' "$work/$node/src/node_constants.cc" > "$work/generated/node_constants_body.inc"
 sed -n '30,78p' "$work/$node/src/node_constants.h" > "$work/generated/node_constants_header.inc"
 
-# Node's options, compiled as Node writes them (native/node/node_options.cc): node.h's OptionEnvvarSettings (364-371),
-# node_options.h's structs and parser (19-699), node_options-inl.h's (12-520), node_options.cc's per-process options and
-# CheckOptions (40-311), its parsers and their tables (389-1662) and its HandleEnvOptions and ParseNodeOptionsEnvVar
-# (2171-2240), node_revert.h's Revert (16-78) and node_large_page.cc's MapStaticCodeToLargePages and LargePagesError
-# (417-462); node_version.h and quic/guard.h are read in Node's tree.
+# Node's start before V8, compiled as Node writes it (native/node/node_start.cc): node.h's OptionEnvvarSettings
+# (364-371), node_exit_code.h's ExitCode (7-46), util.h's ToLower, ToUpper and StringEqualNoCase (369-383) and USE and
+# OnScopeLeave (611-638), util-inl.h's definitions (194-240), util.cc's ReadFileSync (264-301), debug_utils-inl.h's
+# SPrintF and FPrintF (14-65, 84-200), node_options.h's structs and parser (19-699), node_options-inl.h's (12-520),
+# node_options.cc's per-process options and CheckOptions (40-311), its parsers and their tables (389-1662) and its
+# HandleEnvOptions and ParseNodeOptionsEnvVar (2171-2240), node_revert.h's Revert (16-78), node_large_page.cc's
+# MapStaticCodeToLargePages and LargePagesError (417-462), node_dotenv.h's Dotenv (13-39) and node_dotenv.cc's
+# GetDataFromArgs, ParseContent, ParsePath and AssignNodeOptionsIfAvailable (19-65, 105-350), node_config_file.h's
+# ConfigReader (17-64) and node_config_file.cc (6-341), and node_task_runner.h's and node_task_runner.cc's `--run`
+# (16-88, 6-373); node_version.h and quic/guard.h are read in Node's tree, and simdjson.h in deps/simdjson.
 sed -n '364,371p' "$work/$node/src/node.h" > "$work/generated/node_options_envvar.inc"
 sed -n '19,699p' "$work/$node/src/node_options.h" > "$work/generated/node_options_header.inc"
 sed -n '12,520p' "$work/$node/src/node_options-inl.h" > "$work/generated/node_options_inl.inc"
@@ -230,6 +244,20 @@ sed -n '389,1662p' "$work/$node/src/node_options.cc" > "$work/generated/node_opt
 sed -n '2171,2240p' "$work/$node/src/node_options.cc" > "$work/generated/node_options_cc_env.inc"
 sed -n '16,78p' "$work/$node/src/node_revert.h" > "$work/generated/node_revert.inc"
 sed -n '417,462p' "$work/$node/src/large_pages/node_large_page.cc" > "$work/generated/node_large_page.inc"
+sed -n '7,46p' "$work/$node/src/node_exit_code.h" > "$work/generated/node_exit_code.inc"
+sed -n '369,383p' "$work/$node/src/util.h" > "$work/generated/node_util_h.inc"
+sed -n '611,638p' "$work/$node/src/util.h" > "$work/generated/node_util_scope.inc"
+sed -n '194,240p' "$work/$node/src/util-inl.h" > "$work/generated/node_util_inl.inc"
+sed -n '264,301p' "$work/$node/src/util.cc" > "$work/generated/node_util_read.inc"
+sed -n '14,65p' "$work/$node/src/debug_utils-inl.h" > "$work/generated/node_debug_utils_a.inc"
+sed -n '84,200p' "$work/$node/src/debug_utils-inl.h" > "$work/generated/node_debug_utils_b.inc"
+sed -n '13,39p' "$work/$node/src/node_dotenv.h" > "$work/generated/node_dotenv_h.inc"
+sed -n '19,65p' "$work/$node/src/node_dotenv.cc" > "$work/generated/node_dotenv_args.inc"
+sed -n '105,350p' "$work/$node/src/node_dotenv.cc" > "$work/generated/node_dotenv_parse.inc"
+sed -n '17,64p' "$work/$node/src/node_config_file.h" > "$work/generated/node_config_file_h.inc"
+sed -n '6,341p' "$work/$node/src/node_config_file.cc" > "$work/generated/node_config_file_cc.inc"
+sed -n '16,88p' "$work/$node/src/node_task_runner.h" > "$work/generated/node_task_runner_h.inc"
+sed -n '6,373p' "$work/$node/src/node_task_runner.cc" > "$work/generated/node_task_runner_cc.inc"
 
 # native/node: Node's start (node_main) and its standard streams' and signals' (stdio), its Environment's handles
 # (env), the engine's descriptor waits (poll), and the bindings' C, each over the Node source it names (memory, signo,
@@ -239,7 +267,7 @@ sed -n '417,462p' "$work/$node/src/large_pages/node_large_page.cc" > "$work/gene
 # crypto_tls, crypto_x509, crypto_keys, crypto_rsa, crypto_dsa, crypto_dh, crypto_ec, crypto_pqc, crypto_hash,
 # crypto_hmac, crypto_random, crypto_sig, crypto_pbkdf2, crypto_scrypt, crypto_hkdf, crypto_keygen, crypto_aes,
 # crypto_chacha20_poly1305, crypto_kmac, crypto_turboshake, crypto_argon2, crypto_kem, crypto_spkac, node_constants,
-# node_options),
+# node_start),
 # with the defines ncrypto gives its dependents (ncrypto.gyp).
 program=()
 for source in node_main stdio env poll memory signo handle_wrap stream_wrap tcp_wrap pipe_wrap tty_wrap udp_wrap \
@@ -251,10 +279,10 @@ done
 for source in crypto_util crypto_context crypto_cipher crypto_tls crypto_x509 crypto_keys crypto_rsa crypto_dsa crypto_dh \
   crypto_ec crypto_pqc crypto_hash crypto_hmac crypto_random crypto_sig crypto_pbkdf2 crypto_scrypt crypto_hkdf \
   crypto_keygen crypto_aes crypto_chacha20_poly1305 crypto_kmac crypto_turboshake crypto_argon2 crypto_kem crypto_spkac \
-  node_constants node_options; do
+  node_constants node_start; do
   "$cxx" "${flags[@]}" "${cxxflags[@]}" "${ncdefines[@]}" -DOPENSSL_NO_DEPRECATED -D_GNU_SOURCE -I"$uv/include" \
     -I"$openssl/include" -I"$ncrypto" -I"$work/generated" -I"$work/$node/src" -I"$zlibsrc" -I"$brotlisrc/c/include" \
-    -I"$zstdsrc/lib" -c "$repo/native/node/$source.cc" -o "$work/$source.o" &
+    -I"$zstdsrc/lib" -I"$simdjsonsrc" -c "$repo/native/node/$source.cc" -o "$work/$source.o" &
   pids+=($!)
   program+=("$work/$source.o")
 done

@@ -29,6 +29,9 @@ export function nodeVersions(node: string = NODE_LTS_VERSION): {
   readonly zstd: string | undefined;
   readonly llhttp: string | undefined;
   readonly merve: string | undefined;
+  readonly simdjson: string | undefined;
+  readonly modules: string | undefined;
+  readonly napi: string | undefined;
   amaro: string;
 } {
   // `https.js` calls `assertCrypto()`, which is `!process.versions.openssl`.
@@ -55,6 +58,11 @@ export function nodeVersions(node: string = NODE_LTS_VERSION): {
     get zstd() { return kept(this, "zstd", libraryVersions()?.zstd); },
     get llhttp() { return kept(this, "llhttp", libraryVersions()?.llhttp); },
     get merve() { return kept(this, "merve", libraryVersions()?.merve); },
+    get simdjson() { return kept(this, "simdjson", libraryVersions()?.simdjson); },
+    // NODE_MODULE_VERSION and NODE_API_SUPPORTED_VERSION_MAX (node_version.h), as the program compiled them: the
+    // addons ADR-0011 loads through process.dlopen.
+    get modules() { return kept(this, "modules", libraryVersions()?.modules); },
+    get napi() { return kept(this, "napi", libraryVersions()?.napi); },
     amaro: "1.1.11",
   };
 }
@@ -68,14 +76,18 @@ function kept(target: object, name: string, value: string | undefined): string |
 /**
  * The program's zlib, brotli, zstd, llhttp and merve versions (native/node node_zlib.c, node_http_parser.c and
  * node_cjs_lexer.c): ZLIB_VERSION, BrotliEncoderVersion() as MAJOR.MINOR.PATCH, ZSTD_VERSION_STRING, LLHTTP_VERSION_*
- * and merve's MERVE_VERSION; none in a realm with no program.
+ * merve's MERVE_VERSION, and node_start.cc's SIMDJSON_VERSION, NODE_MODULE_VERSION and NODE_API_SUPPORTED_VERSION_MAX;
+ * none in a realm with no program.
  */
-function libraryVersions(): { zlib: string; brotli: string; zstd: string; llhttp: string; merve: string } | undefined {
+function libraryVersions(): {
+  zlib: string; brotli: string; zstd: string; llhttp: string; merve: string; simdjson: string; modules: string; napi: string;
+} | undefined {
   if (!libnodeAttached()) return undefined;
   const program = libnode();
   const exports = program.exports as unknown as {
     tabnode_zlib_version(): number; tabnode_brotli_version(): number; tabnode_zstd_version(): number; tabnode_llhttp_version(): number;
-    tabnode_merve_version(): number;
+    tabnode_merve_version(): number; tabnode_simdjson_version(): number; tabnode_modules_version(): number;
+    tabnode_napi_version(): number;
   };
   const brotli = exports.tabnode_brotli_version() >>> 0;
   return {
@@ -84,6 +96,9 @@ function libraryVersions(): { zlib: string; brotli: string; zstd: string; llhttp
     zstd: program.cString(exports.tabnode_zstd_version()) ?? "",
     llhttp: program.cString(exports.tabnode_llhttp_version()) ?? "",
     merve: program.cString(exports.tabnode_merve_version()) ?? "",
+    simdjson: program.cString(exports.tabnode_simdjson_version()) ?? "",
+    modules: program.cString(exports.tabnode_modules_version()) ?? "",
+    napi: program.cString(exports.tabnode_napi_version()) ?? "",
   };
 }
 
@@ -112,7 +127,7 @@ export function nodeRelease(node: string = NODE_LTS_VERSION): { name: string; lt
 
 /*
  * Keys of Node's `process.versions` this engine does not answer, because it carries no such thing or another
- * thing in its place, and a version of what is not there would be a lie: ada, ares, cldr, icu, modules and
- * napi (no native addon loads), nbytes, ncrypto, nghttp2, nghttp3, ngtcp2, simdjson, sqlite, tz, undici, unicode,
- * uvwasi; and simdutf, which on the machine is libnode.so's under merve but has no C interface to name its version. `acorn` is answered where the process object is made, from the parser's own version.
+ * thing in its place, and a version of what is not there would be a lie: ada, ares, cldr, icu, nbytes, ncrypto,
+ * nghttp2, nghttp3, ngtcp2, sqlite, tz, undici, unicode, uvwasi; and simdutf, which on the machine is libnode.so's
+ * under merve but has no C interface to name its version. `acorn` is answered where the process object is made, from the parser's own version.
  */
