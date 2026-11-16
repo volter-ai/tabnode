@@ -55,11 +55,10 @@ const indirectEval = eval;
 
 /** What the run gives its realm: its facts and the engine's doors the bindings answer from. */
 export interface NodeRealmRun extends Omit<ProcessMethodsHost, 'process'> {
+  /** The program's name, the script and its arguments, and the options, as Node's parser left them (node_options.cc). */
   readonly argv: readonly string[];
   readonly execArgv: readonly string[];
   readonly execPath: string;
-  /** NODE_OPTIONS's words, as Node's parser takes them. */
-  readonly nodeOptions: readonly string[];
   readonly pid: number;
   ppid(): number;
   /** The engine's own binding of a name the realm makes none of (fs, tcp_wrap, ...), the run's (load.ts NodeLibScope). */
@@ -274,7 +273,7 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
     contextify: () => createContextifyBinding(symbols, privateSymbols,
       () => (internalBinding('process_methods') as { emitWarningSync?: (message: string) => void }).emitWarningSync),
     modules: () => createNodeModulesBinding(require, () => run.engineBinding('fs') as { readFileUtf8(path: string, flags: number): string }),
-    options: () => createOptionsBinding({ execArgv: run.execArgv, nodeOptions: run.nodeOptions }),
+    options: () => createOptionsBinding((primordials.SafeMap as { prototype: object }).prototype),
     process_methods: () => createProcessMethodsBinding({ ...run, process }),
     async_wrap: createAsyncWrapBinding,
     task_queue: createTaskQueueBinding,

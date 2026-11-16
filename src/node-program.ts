@@ -1,16 +1,16 @@
 /**
  * THE START OF A `node` PROGRAM'S PROCESS (ADR-0018 §2, §7, item 9). Where the realm's process is `node` on libuv's
- * loop, the realm is the process's, and this is what `node::Start` does between libuv's start and `uv_run`: the
- * command line read as Node's options parser reads it, Node's process object, Node's bootstrap on the realm's own
+ * loop, the realm is the process's, and this is what `node::Start` does between libuv's start and `uv_run` once the
+ * program has read its command line with Node's own parser (native/node/node_options.cc): Node's process object, Node's bootstrap on the realm's own
  * global, and the main script `StartExecution` selects (src/node.cc), run as Node runs it, which prepares the process
  * (`prepareMainThreadExecution`) and runs its entry through Node's own module loaders. The process runs on from there;
  * its end is libuv's, the run's `beforeExit`, `exit` and code given to `main` (`attachLibnodeRun`).
  */
 import type { VirtualFS } from './virtual-fs';
-import { attachLibnodeRun, libnode, reallyExit } from './node-lib/binding/libnode';
+import { attachLibnodeRun, libnode } from './node-lib/binding/libnode';
 import { adoptRealmLoaders, engineBindingFor } from './node-lib/load';
 import { bootstrapNodeRealm, createNodeProcessObject, runNodeMain, type NodeRealm } from './node-lib/realm';
-import { nodeOptionsWords, splitCommandLine } from './node-lib/binding/options';
+import { processArgs } from './node-lib/binding/options';
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from './node-lib/node-versions';
 import { utilBinding } from './node-lib/binding/util';
 import { realEnvStore } from './node-lib/binding/env_var';
@@ -35,8 +35,6 @@ export interface NodeProgramLaunch {
 
 /** Environment's exit_info (src/env.h ExitInfoField). */
 const kExiting = 0, kExitCode = 1, kHasExitCode = 2;
-/** kInvalidCommandLineArgument (src/node_exit_code.h). */
-const kInvalidCommandLineArgument = 9;
 
 /** The process starts: its options, its bootstrap, then its main script. The process runs on; it ends at its exit. */
 export function startNodeProgram(launch: NodeProgramLaunch): void {
@@ -65,15 +63,9 @@ export function startNodeProgram(launch: NodeProgramLaunch): void {
   startGuestLoop();
   installGuestRealm();
 
-  // ProcessGlobalArgs (src/node.cc): the command line's options split from the script and its arguments; a bad option
-  // ends the process with kInvalidCommandLineArgument before anything runs.
-  const nodeOptions = nodeOptionsWords(realEnvStore.get('NODE_OPTIONS'));
-  const split = splitCommandLine(launch.argv);
-  if ('error' in split) {
-    writeStderr(`${launch.argv[0] ?? 'node'}: ${split.error}\n`);
-    reallyExit(kInvalidCommandLineArgument);
-    return;
-  }
+  // The command line as Node's parser left it in `main` (native/node/node_options.cc), which a bad option already
+  // ended: the program's name, the script and its arguments, and the options.
+  const { args, execArgs } = processArgs();
   const exitInfo = process[utilBinding.privateSymbols.exit_info_private_symbol as unknown as string] as Int32Array;
   const pid = exports.tabnode_getpid();
   const runToken = launch.token;
@@ -85,7 +77,7 @@ export function startNodeProgram(launch: NodeProgramLaunch): void {
       .triggerUncaughtException(error, fromPromise);
   };
   realm = inRun(() => bootstrapNodeRealm(process, {
-    argv: split.argv, execArgv: split.execArgv, execPath: __substrateExecPath, nodeOptions, pid,
+    argv: args, execArgv: execArgs, execPath: __substrateExecPath, pid,
     ppid: () => exports.tabnode_getppid(),
     writeStderr,
     dlopen: (...args: unknown[]) => dlopen(process, launch.tree, args),
@@ -136,7 +128,7 @@ export function startNodeProgram(launch: NodeProgramLaunch): void {
 
   // StartExecution: the main script SelectLoadMode picks, run in an InternalCallbackScope.
   inRun(() => {
-    try { withGuestCallback(() => runNodeMain(realm!, split.argv), 'entry', 'main'); }
+    try { withGuestCallback(() => runNodeMain(realm!, args), 'entry', 'main'); }
     catch (error) { uncaught(error); }
   });
 }

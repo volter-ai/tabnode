@@ -154,6 +154,13 @@ export interface LibnodeExports {
   tabnode_uv_strerror_r(err: I32, message: I32): void;
   /** node_constants.cc: Node's constants as the program compiled them, its text malloc'd, its length at `lengthAt`. */
   tabnode_constants(lengthAt: I32): I32;
+  /** node_options.cc: the process's arguments as Node's parser left them, and internalBinding('options')'s answers, each JSON malloc'd, its length at `lengthAt`. */
+  tabnode_process_args(lengthAt: I32): I32;
+  tabnode_cli_options_values(lengthAt: I32): I32;
+  tabnode_cli_options_info(lengthAt: I32): I32;
+  tabnode_options_as_flags(lengthAt: I32): I32;
+  tabnode_env_options_input_type(lengthAt: I32): I32;
+  tabnode_namespace_options_input_type(lengthAt: I32): I32;
   /** spawn_sync.c: SyncProcessRunner's run, and its result's release. */
   tabnode_spawn_sync(options: I32): I32;
   tabnode_spawn_sync_free(result: I32): void;

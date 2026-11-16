@@ -4,7 +4,7 @@
 # Node's start and its standard streams' and signals' start and end, the loop's own handles, the engine's descriptor
 # waits and the bindings' glue over libuv, OpenSSL and ncrypto (native/node: one HandleWrap, the stream, TCP, pipe, TTY
 # and UDP wraps, process_wrap, spawn_sync, signal_wrap, MessagePort, fs over uv_fs_*, and the crypto and tls_wrap bindings' OpenSSL
-# half, as Node's src/*_wrap.cc, spawn_sync.cc, node_file.cc, node_dir.cc, fs_event_wrap.cc, node_constants.cc and
+# half, as Node's src/*_wrap.cc, spawn_sync.cc, node_file.cc, node_dir.cc, fs_event_wrap.cc, node_constants.cc, node_options.cc and
 # src/crypto/*.cc). Every compile is browser-substrate's prepared native SDK with its Linux headers, whose compile
 # wrapper adds WebAssembly exception handling and whose link wrapper makes a program PIE with the run path
 # /opt/programs/lib, where the machine places `libc.so` and this library beside it.
@@ -56,7 +56,9 @@ tar xzf "$uv_archive" -C "$work" "$libuv/include" "$libuv/src"
 uv="$work/$libuv"
 node=node-v24.21.0
 tar xzf "$node_archive" -C "$work" "$node/deps/openssl/openssl" "$node/deps/ncrypto" "$node/src/node_root_certs.h" \
-  "$node/src/node_constants.cc" "$node/src/node_constants.h" "$node/src/tracing/trace_event_common.h"
+  "$node/src/node_constants.cc" "$node/src/node_constants.h" "$node/src/tracing/trace_event_common.h" \
+  "$node/src/node_options.cc" "$node/src/node_options.h" "$node/src/node_options-inl.h" "$node/src/node.h" \
+  "$node/src/node_revert.h" "$node/src/node_version.h" "$node/src/quic/guard.h" "$node/src/large_pages/node_large_page.cc"
 openssl="$work/$node/deps/openssl/openssl"
 ncrypto="$work/$node/deps/ncrypto"
 cc="$sdk/bin/cc"
@@ -214,6 +216,20 @@ sed -n '30,113p' "$work/$node/src/node_constants.cc" > "$work/generated/node_con
 sed -n '126,1333p' "$work/$node/src/node_constants.cc" > "$work/generated/node_constants_body.inc"
 sed -n '30,78p' "$work/$node/src/node_constants.h" > "$work/generated/node_constants_header.inc"
 
+# Node's options, compiled as Node writes them (native/node/node_options.cc): node.h's OptionEnvvarSettings (364-371),
+# node_options.h's structs and parser (19-699), node_options-inl.h's (12-520), node_options.cc's per-process options and
+# CheckOptions (40-311), its parsers and their tables (389-1662) and its HandleEnvOptions and ParseNodeOptionsEnvVar
+# (2171-2240), node_revert.h's Revert (16-78) and node_large_page.cc's MapStaticCodeToLargePages and LargePagesError
+# (417-462); node_version.h and quic/guard.h are read in Node's tree.
+sed -n '364,371p' "$work/$node/src/node.h" > "$work/generated/node_options_envvar.inc"
+sed -n '19,699p' "$work/$node/src/node_options.h" > "$work/generated/node_options_header.inc"
+sed -n '12,520p' "$work/$node/src/node_options-inl.h" > "$work/generated/node_options_inl.inc"
+sed -n '40,311p' "$work/$node/src/node_options.cc" > "$work/generated/node_options_cc_checks.inc"
+sed -n '389,1662p' "$work/$node/src/node_options.cc" > "$work/generated/node_options_cc_parsers.inc"
+sed -n '2171,2240p' "$work/$node/src/node_options.cc" > "$work/generated/node_options_cc_env.inc"
+sed -n '16,78p' "$work/$node/src/node_revert.h" > "$work/generated/node_revert.inc"
+sed -n '417,462p' "$work/$node/src/large_pages/node_large_page.cc" > "$work/generated/node_large_page.inc"
+
 # native/node: Node's start (node_main) and its standard streams' and signals' (stdio), its Environment's handles
 # (env), the engine's descriptor waits (poll), and the bindings' C, each over the Node source it names (memory, signo,
 # handle_wrap, stream_wrap, tcp_wrap, pipe_wrap, tty_wrap, udp_wrap, process_wrap, spawn_sync, signal_wrap,
@@ -221,7 +237,8 @@ sed -n '30,78p' "$work/$node/src/node_constants.h" > "$work/generated/node_const
 # tls_wrap bindings' C++ over ncrypto and OpenSSL, and Node's constants (crypto_util, crypto_context, crypto_cipher,
 # crypto_tls, crypto_x509, crypto_keys, crypto_rsa, crypto_dsa, crypto_dh, crypto_ec, crypto_pqc, crypto_hash,
 # crypto_hmac, crypto_random, crypto_sig, crypto_pbkdf2, crypto_scrypt, crypto_hkdf, crypto_keygen, crypto_aes,
-# crypto_chacha20_poly1305, crypto_kmac, crypto_turboshake, crypto_argon2, crypto_kem, crypto_spkac, node_constants),
+# crypto_chacha20_poly1305, crypto_kmac, crypto_turboshake, crypto_argon2, crypto_kem, crypto_spkac, node_constants,
+# node_options),
 # with the defines ncrypto gives its dependents (ncrypto.gyp).
 program=()
 for source in node_main stdio env poll memory signo handle_wrap stream_wrap tcp_wrap pipe_wrap tty_wrap udp_wrap \
@@ -233,7 +250,7 @@ done
 for source in crypto_util crypto_context crypto_cipher crypto_tls crypto_x509 crypto_keys crypto_rsa crypto_dsa crypto_dh \
   crypto_ec crypto_pqc crypto_hash crypto_hmac crypto_random crypto_sig crypto_pbkdf2 crypto_scrypt crypto_hkdf \
   crypto_keygen crypto_aes crypto_chacha20_poly1305 crypto_kmac crypto_turboshake crypto_argon2 crypto_kem crypto_spkac \
-  node_constants; do
+  node_constants node_options; do
   "$cxx" "${flags[@]}" "${cxxflags[@]}" "${ncdefines[@]}" -DOPENSSL_NO_DEPRECATED -D_GNU_SOURCE -I"$uv/include" \
     -I"$openssl/include" -I"$ncrypto" -I"$work/generated" -I"$work/$node/src" -I"$zlibsrc" -I"$brotlisrc/c/include" \
     -I"$zstdsrc/lib" -c "$repo/native/node/$source.cc" -o "$work/$source.o" &
