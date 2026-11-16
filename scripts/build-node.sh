@@ -36,8 +36,11 @@
 #
 # Usage: scripts/build-node.sh <native SDK> \
 #   <libuv-a267f5688be25e8d4628e296245a041adc2ca072.tar.gz> <node-v24.21.0.tar.gz> <out directory>
+# Its environment gives SOURCE_DATE_EPOCH, the recipe's, which is OpenSSL's build date (ADR-0019 §1).
 # The script owns its scratch: a directory of its own from mktemp -d, removed by its EXIT trap however it ends.
 set -euo pipefail
+[[ ${SOURCE_DATE_EPOCH-} =~ ^[0-9]+$ ]] ||
+  { echo 'build-node.sh: SOURCE_DATE_EPOCH is the recipe'\''s, in seconds' >&2; exit 2; }
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 sdk="$(cd "$1" && pwd)"
 uv_archive="$2"
@@ -67,10 +70,23 @@ openssl="$work/$node/deps/openssl/openssl"
 ncrypto="$work/$node/deps/ncrypto"
 cc="$sdk/bin/cc"
 cxx="$sdk/bin/cxx"
-# libuv and OpenSSL include Linux's own headers (linux/errqueue.h, linux/if_packet.h), the SDK's beside musl's.
-flags=(-fPIC -pthread -matomics -mbulk-memory -O2 -idirafter "$sdk/linux-headers/usr/include")
-# Node's C++ (common.gypi cflags_cc: -fno-rtti -fno-exceptions -std=gnu++20), over the SDK's libc++ headers.
-cxxflags=(-std=gnu++20 -fno-rtti -fno-exceptions)
+# Every compile, OpenSSL's and each dependency's included, is Node's Release build for Linux (common.gypi, for every
+# target: -O3 and -fno-omit-frame-pointer in the Release configuration, _GLIBCXX_USE_CXX11_ABI=1, _FILE_OFFSET_BITS=64
+# and __STDC_FORMAT_MACROS; its warning flags aside). Node's -pthread, with atomics and bulk memory, is what every
+# module of the machine is compiled with, which the SDK's compile driver gives (browser-substrate ADR-0240 §2).
+# Linux's own headers (linux/errqueue.h and linux/if_packet.h, which libuv and OpenSSL include) are the target's and
+# belong in the SDK's sysroot; the SDK lays them beside it, in linux-headers, read after musl's.
+# The program's bytes name no directory of the build (ADR-0019 §1). Node's gyp build names a source relative to its
+# tree (its make generator compiles $(srcdir)/deps/uv/src/unix/core.c, srcdir being the tree from out/); here each
+# directory a compile reads is mapped out, so every name is relative to its root: the checkout's (native/node/fs.c),
+# the scratch's (node-v24.21.0/deps/ncrypto/ncrypto.cc, libuv-a267f5688be25e8d4628e296245a041adc2ca072/src/unix/core.c,
+# generated/node_options_header.inc) and the SDK's (its headers, by their path in the SDK).
+flags=(-fPIC -O3 -fno-omit-frame-pointer -D_FILE_OFFSET_BITS=64 -D_GLIBCXX_USE_CXX11_ABI=1 -D__STDC_FORMAT_MACROS
+  -idirafter "$sdk/linux-headers/usr/include"
+  -ffile-prefix-map="$repo/"= -ffile-prefix-map="$work/"= -ffile-prefix-map="$sdk/"=)
+# Node's C++ (common.gypi cflags_cc: -fno-rtti -fno-exceptions -fno-strict-aliasing -std=gnu++20), over the SDK's libc++
+# headers.
+cxxflags=(-fno-rtti -fno-exceptions -fno-strict-aliasing -std=gnu++20)
 
 # libuv's CMakeLists.txt at a267f5688b: uv_sources (175-187), the unix list and its defines (230-258), proctitle
 # (284-286) and Linux's (328-336).
@@ -119,14 +135,23 @@ simdjsonsrc="$work/$node/deps/simdjson"
 # OPENSSL_API_COMPAT=0x10100001L, STATIC_LEGACY; openssl_common.gypi: TERMIOS; common.gypi: OPENSSL_THREADS, and
 # OPENSSL_NO_PINSHARED, as for an executable that links its own OpenSSL) are Configure's -D arguments, so every
 # compile has them.
+# OpenSSL's build information (crypto/buildinf.h: the platform, the compiler line and the build date that
+# OpenSSL_version and `openssl version -a` report) is Node's: Node configures OpenSSL in its tree with its options,
+# its include directories relative to the tree, and the target's own compiler and flags, and ships the crypto/buildinf.h
+# OpenSSL's Makefile then makes (deps/openssl/config/Makefile, generate_gypi.pl); its build compiles with its own flags
+# around that header, which records none of them. So OpenSSL is configured first as Node's no-asm configuration is,
+# and its Makefile makes crypto/buildinf.h by util/mkbuildinf.pl, whose date is SOURCE_DATE_EPOCH; then it is configured
+# for the build, whose Makefile keeps that header, newer than its one prerequisite, util/mkbuildinf.pl.
+nodeopts=(no-tests no-shared no-afalgeng enable-ssl-trace enable-fips zlib --with-zlib-include=../../zlib
+  enable-brotli --with-brotli-include=../../brotli/c/include enable-zstd --with-zstd-include=../../zstd/lib)
 (
   cd "$openssl"
   mkdir -p doc && : > doc/build.info
-  CC="$cc" AR="$sdk/bin/ar" RANLIB="$sdk/bin/ranlib" CFLAGS="${flags[*]/-O2/-O3}" CONFIGURE_CHECKER_WARN=1 \
-    "$sdk/bin/perl" ./Configure linux-generic64 no-tests no-shared no-afalgeng enable-ssl-trace enable-fips no-asm \
-    zlib --with-zlib-include="$zlibsrc" enable-brotli --with-brotli-include="$brotlisrc/c/include" \
-    enable-zstd --with-zstd-include="$zstdsrc/lib" --prefix=/usr --libdir=lib --openssldir=/etc/ssl \
-    -DOPENSSL_NO_HW -DOPENSSL_API_COMPAT=0x10100001L -DSTATIC_LEGACY -DTERMIOS -DOPENSSL_THREADS \
+  CONFIGURE_CHECKER_WARN=1 "$sdk/bin/perl" ./Configure "${nodeopts[@]}" no-asm linux-generic64 >/dev/null
+  "$sdk/bin/make" crypto/buildinf.h >/dev/null
+  CC="$cc" AR="$sdk/bin/ar" RANLIB="$sdk/bin/ranlib" CFLAGS="${flags[*]}" CONFIGURE_CHECKER_WARN=1 \
+    "$sdk/bin/perl" ./Configure linux-generic64 "${nodeopts[@]}" no-asm --prefix=/usr --libdir=lib \
+    --openssldir=/etc/ssl -DOPENSSL_NO_HW -DOPENSSL_API_COMPAT=0x10100001L -DSTATIC_LEGACY -DTERMIOS -DOPENSSL_THREADS \
     -DOPENSSL_NO_PINSHARED >/dev/null
   # libcrypto and libssl, and the legacy provider as Node's libopenssl builds it in: its implementations
   # (providers/liblegacy.a) and its entry (legacyprov.c), whose STATIC_LEGACY form is ossl_legacy_provider_init, the
@@ -150,20 +175,17 @@ finish
 
 # zlib, brotli, zstd and llhttp (ADR-0018 item 10): Node v24.21.0's deps/zlib (Chromium's zlib, 1.3.2.1-motley, as Node
 # ships it), deps/brotli (1.2.0), deps/zstd (1.5.7) and deps/llhttp (9.4.3), from the same release archive, each
-# compiled with its gyp file's sources and defines and Node's Release flags for every target (common.gypi: -O3,
-# -fno-omit-frame-pointer, -pthread, _FILE_OFFSET_BITS=64, _GLIBCXX_USE_CXX11_ABI=1, __STDC_FORMAT_MACROS; its warning
-# flags aside). Differences from Node's, each named:
+# compiled with its gyp file's sources and defines and Node's Release flags for every target. Differences from Node's,
+# each named:
 # - zlib is zlib.gyp's target for an architecture with neither x86's nor NEON's optimizations, which wasm32 is:
 #   BUILD.gn's "zlib" sources and inflate.c, CPU_NO_SIMD and HAVE_HIDDEN; none of its SIMD targets.
 # - zstd's huf_decompress_amd64.S is not assembled, as Node's ZSTD_DISABLE_ASM leaves it.
 # src/node_zlib.cc's DefineZlibConstants, its chunk and level bounds (74-88) and its mode enum (146-159) are extracted
 # for node_constants.cc to compile, as Node's CreatePerContextProperties calls it (node_constants.cc:1357-1372).
-depflags=("${flags[@]/-O2/-O3}" -fno-omit-frame-pointer -D_FILE_OFFSET_BITS=64 -D_GLIBCXX_USE_CXX11_ABI=1
-  -D__STDC_FORMAT_MACROS)
 deps=()
 for source in adler32 compress cpu_features crc32 deflate gzclose gzlib gzread gzwrite infback inffast inftrees trees \
   uncompr zutil inflate; do
-  "$cc" "${depflags[@]}" -DCPU_NO_SIMD -DHAVE_HIDDEN -I"$zlibsrc" -c "$zlibsrc/$source.c" -o "$work/zlib-$source.o" &
+  "$cc" "${flags[@]}" -DCPU_NO_SIMD -DHAVE_HIDDEN -I"$zlibsrc" -c "$zlibsrc/$source.c" -o "$work/zlib-$source.o" &
   pids+=($!)
   deps+=("$work/zlib-$source.o")
 done
@@ -174,7 +196,7 @@ for source in common/constants common/context common/dictionary common/platform 
   enc/dictionary_hash enc/encode enc/encoder_dict enc/entropy_encode enc/fast_log enc/histogram enc/literal_cost \
   enc/memory enc/metablock enc/static_dict enc/static_dict_lut enc/static_init enc/utf8_util; do
   object="$work/brotli-${source//\//-}.o"
-  "$cc" "${depflags[@]}" -DOS_LINUX -I"$brotlisrc/c/include" -c "$brotlisrc/c/$source.c" -o "$object" &
+  "$cc" "${flags[@]}" -DOS_LINUX -I"$brotlisrc/c/include" -c "$brotlisrc/c/$source.c" -o "$object" &
   pids+=($!)
   deps+=("$object")
 done
@@ -186,28 +208,28 @@ for source in common/debug common/entropy_common common/fse_decompress compress/
   compress/zstd_opt compress/zstd_preSplit compress/zstdmt_compress decompress/zstd_ddict decompress/zstd_decompress \
   decompress/zstd_decompress_block; do
   object="$work/zstd-${source//\//-}.o"
-  "$cc" "${depflags[@]}" "${zstddefines[@]}" -I"$zstdsrc/lib" -c "$zstdsrc/lib/$source.c" -o "$object" &
+  "$cc" "${flags[@]}" "${zstddefines[@]}" -I"$zstdsrc/lib" -c "$zstdsrc/lib/$source.c" -o "$object" &
   pids+=($!)
   deps+=("$object")
 done
 # llhttp is Node's for a Linux program, whose callbacks node_http_parser sets: api.c's JavaScript-host API is compiled
 # off Linux alone, by native/patches' platform test (ADR-0019 §4).
 for source in llhttp api http; do
-  "$cc" "${depflags[@]}" -I"$llhttpsrc" -I"$llhttpsrc/include" -c "$llhttpsrc/src/$source.c" -o "$work/llhttp-$source.o" &
+  "$cc" "${flags[@]}" -I"$llhttpsrc" -I"$llhttpsrc/include" -c "$llhttpsrc/src/$source.c" -o "$work/llhttp-$source.o" &
   pids+=($!)
   deps+=("$work/llhttp-$source.o")
 done
 # merve (deps/merve/merve.gyp: merve.cpp, C++20, over V8's simdutf as include) and simdutf (tools/v8_gypfiles/v8.gyp's
 # simdutf target: simdutf.cpp), the CommonJS export lexer internalBinding('cjs_lexer') is (ADR-0018 §7).
-"$cxx" "${depflags[@]}" "${cxxflags[@]}" -I"$simdutfsrc" -c "$simdutfsrc/simdutf.cpp" -o "$work/simdutf.o" &
+"$cxx" "${flags[@]}" "${cxxflags[@]}" -I"$simdutfsrc" -c "$simdutfsrc/simdutf.cpp" -o "$work/simdutf.o" &
 pids+=($!)
 deps+=("$work/simdutf.o")
-"$cxx" "${depflags[@]}" "${cxxflags[@]}" -I"$mervesrc" -I"$simdutfsrc" -c "$mervesrc/merve.cpp" -o "$work/merve.o" &
+"$cxx" "${flags[@]}" "${cxxflags[@]}" -I"$mervesrc" -I"$simdutfsrc" -c "$mervesrc/merve.cpp" -o "$work/merve.o" &
 pids+=($!)
 deps+=("$work/merve.o")
 # simdjson (deps/simdjson/simdjson.gyp: simdjson.cpp), the JSON reader of Node's config file and `--run`
 # (node_config_file.cc, node_task_runner.cc).
-"$cxx" "${depflags[@]}" "${cxxflags[@]}" -I"$simdjsonsrc" -c "$simdjsonsrc/simdjson.cpp" -o "$work/simdjson.o" &
+"$cxx" "${flags[@]}" "${cxxflags[@]}" -I"$simdjsonsrc" -c "$simdjsonsrc/simdjson.cpp" -o "$work/simdjson.o" &
 pids+=($!)
 deps+=("$work/simdjson.o")
 finish
