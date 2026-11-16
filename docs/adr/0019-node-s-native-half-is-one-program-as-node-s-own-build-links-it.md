@@ -34,12 +34,16 @@ configuration. The
 program needs `libc.so` and the SDK's C++ runtime alone (browser-substrate ADR-0238 §4), and links through the SDK's
 `c++`, which adds that runtime. No build names a runtime library or a tag object.
 
-**The program's bytes are its inputs' alone.** Node's own build compiles from paths relative to its tree and ships
-OpenSSL's build information generated once (`buildinf.h`). So the build maps its own directories out of what it
-compiles (`-ffile-prefix-map`), its working directory included, and OpenSSL's build date is the recipe's
-`SOURCE_DATE_EPOCH`, never the wall clock. Its compile flags are Node's Release flags (`-O3` for every target, as
-`common.gypi` sets them). What every module of the machine is compiled with (threads, atomics, bulk memory, the
-Linux headers) is the SDK's to give (browser-substrate ADR-0240 §2), not the build's to restate.
+**The program's bytes are its inputs' alone.** Node's own build compiles from paths relative to its tree, and it
+never configures OpenSSL while it builds: a maintainer's step runs OpenSSL's own configuration once for each target
+(`deps/openssl/config/Makefile`, `generate_gypi.pl`) and ships the result as source, its generated headers,
+`buildinf.h` among them, and the source list and defines `openssl.gyp` compiles from. Node has no configuration for
+this target (`configure.py`'s `valid_arch` has no wasm32), so Tabnode runs Node's procedure for it once, for
+ADR-0016's `linux-generic64` `no-asm`, and keeps the generated set as source beside Node's; the build compiles OpenSSL
+from that set with Node's flags, with no OpenSSL Configure, Makefile or host compiler at build time. The build maps
+its own directories out of what it compiles (`-ffile-prefix-map`). Its compile flags are Node's Release flags (`-O3`
+for every target, as `common.gypi` sets them). What every module of the machine is compiled with (threads, atomics,
+bulk memory, the Linux headers) is the SDK's to give (browser-substrate ADR-0240 §2), not the build's to restate.
 
 ### 2. It exports what Node's executable exports
 
