@@ -2339,13 +2339,11 @@ Object.defineProperty(builtinModules, 'util/types', {
   const __unanswered = moduleShim.builtinModules.filter((name: string) => !__perGuest.has(name) && !Object.prototype.hasOwnProperty.call(builtinModules, name) && !hasNodeLibModule(name));
   if (__unanswered.length > 0) throw new Error(`tabnode: builtin name${__unanswered.length === 1 ? '' : 's'} listed with no module: ${__unanswered.join(', ')}. Give each a module in runtime.ts's table or take it off shims/module.ts's list.`);
 }
-// Node's builtin module objects are ordinary mutable objects: a program can
-// patch `vm.runInContext` or `crypto.randomUUID`, and Next's environment
-// extensions and its error inspector do. Most shims are frozen module
-// namespaces, so the assignment threw. Every builtin the table holds is handed
-// out as a mutable copy, the way http and https already were.
+// Node's builtin module objects are ordinary mutable objects: a program can patch `vm.runInContext` or
+// `crypto.randomUUID`. An entry the table holds as a frozen module namespace (a shim's `import * as`) is handed out as
+// a mutable copy of it; every other entry is mutable already. An entry read when a guest asks
+// (`assert/strict`, `util/types`) is Node's own `assert.strict` or `util.types`, and is not read here.
 for (const __substrateName of Object.keys(builtinModules)) {
-  // An entry read when a guest asks (`assert/strict`, `util/types`) is not read here.
   const __substrateEntry = Object.getOwnPropertyDescriptor(builtinModules, __substrateName);
   if (!__substrateEntry || !('value' in __substrateEntry)) continue;
   const __substrateModule = __substrateEntry.value;
