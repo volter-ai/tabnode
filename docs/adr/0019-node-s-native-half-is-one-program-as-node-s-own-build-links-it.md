@@ -35,8 +35,9 @@ program needs `libc.so` and the SDK's C++ runtime alone (browser-substrate ADR-0
 ### 2. It exports what Node's executable exports
 
 The program is linked with `-rdynamic`, as `common.gypi` links Node's. An addon `dlopen`ed into the process binds
-its `napi_*`, `uv_*` and OpenSSL imports to the program's definitions, with one libc and one `malloc` (ADR-0018 §1's
-reason, unchanged).
+its `uv_*` and OpenSSL imports to the program's definitions, with one libc and one `malloc` (ADR-0018 §1's reason,
+unchanged). Its Node-API imports are emnapi's, whose runtime answers `napi_*` and `emnapi_*` (ADR-0011 §4), so the
+program defines no Node-API of its own.
 
 ### 3. The engine binds the program's exports
 
