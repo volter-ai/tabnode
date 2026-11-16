@@ -91,13 +91,7 @@ export function createErrorsBinding(host: ErrorsHost): Record<string, unknown> {
       enhanceBefore = before as (error: unknown) => unknown;
       enhanceAfter = after as (error: unknown) => unknown;
     },
-    // NoSideEffectsToString: V8's ToDetailString, which never runs a program's code.
-    noSideEffectsToString(value: unknown): string {
-      if (typeof value === 'string') return value;
-      if (typeof value === 'symbol') return value.toString();
-      if (value === null || typeof value !== 'object' && typeof value !== 'function') return String(value);
-      try { return Object.prototype.toString.call(value); } catch { return '#<Object>'; }
-    },
+    noSideEffectsToString,
     triggerUncaughtException(error: unknown, fromPromise: unknown): void {
       triggerUncaughtException(host, error, fromPromise === true, { enhanceBefore, enhanceAfter });
     },
@@ -112,7 +106,7 @@ export function createErrorsBinding(host: ErrorsHost): Record<string, unknown> {
  * errors::TriggerUncaughtException (src/node_errors.cc): `process._fatalException(error, fromPromise)`, which gives
  * the program its chance; where it answers false the error is fatal: ReportFatalException prints it and the process
  * exits with its code, kGenericUserError where it set none. A `_fatalException` that is not a function is
- * kInvalidFatalExceptionMonkeyPatching; one that throws ends nothing here, as Node's returns to its exit.
+ * kInvalidFatalExceptionMonkeyPatching; one that throws is reported and is kExceptionInFatalExceptionHandler.
  */
 export function triggerUncaughtException(host: ErrorsHost, error: unknown, fromPromise: boolean,
   enhance: { enhanceBefore?: (error: unknown) => unknown; enhanceAfter?: (error: unknown) => unknown }): void {
@@ -123,12 +117,89 @@ export function triggerUncaughtException(host: ErrorsHost, error: unknown, fromP
     reallyExit(EXIT_CODES.kInvalidFatalExceptionMonkeyPatching);
     return;
   }
+  // errors::TryCatchScope in kFatal mode (node_errors.cc:722-744): a throw from `_fatalException` is reported, enhanced,
+  // and the process exits with kExceptionInFatalExceptionHandler; a stack overflow with JavaScript below the call
+  // (kFatalRethrowStackOverflow, 1357-1360: the binding is called from JavaScript) is thrown on to it.
   let handled: unknown;
   try { handled = (fatal as (error: unknown, fromPromise: boolean) => unknown).call(process, error, fromPromise); }
-  catch { return; }
+  catch (thrown) {
+    if (isStackOverflowError(error) && isStackOverflowError(thrown)) throw thrown;
+    reportFatalException(host, thrown, enhance, true);
+    reallyExit(EXIT_CODES.kExceptionInFatalExceptionHandler);
+    return;
+  }
   if (handled !== false) return;
   reportFatalException(host, error, enhance, true);
   reallyExit(host.exitCode(EXIT_CODES.kGenericUserError));
+}
+
+/** JSReceiver::GetDataProperty: a data property up the prototype chain, never a getter's answer. */
+function dataProperty(object: object, key: PropertyKey): unknown {
+  for (let current: object | null = object; current !== null; current = Object.getPrototypeOf(current) as object | null) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, key);
+    if (descriptor) return 'value' in descriptor ? descriptor.value : undefined;
+  }
+  return undefined;
+}
+
+/** `text` past 128 characters as V8 shortens it: its first `head`, "...<omitted>...", its last `tail`. */
+function omitted(text: string, head: number, tail: number): string {
+  return text.length > 128 ? `${text.slice(0, head)}...<omitted>...${text.slice(text.length - tail)}` : text;
+}
+
+/** JSReceiver::class_name, for the objects with no @@toStringTag of their own. */
+function className(value: object): string {
+  if (typeof value === 'function') return 'Function';
+  if (Array.isArray(value)) return 'Array';
+  if (value instanceof Error) return 'Error';
+  if (value instanceof Date) return 'Date';
+  if (value instanceof RegExp) return 'RegExp';
+  if (value instanceof Boolean) return 'Boolean';
+  if (value instanceof Number) return 'Number';
+  if (value instanceof String) return 'String';
+  return 'Object';
+}
+
+/**
+ * Object::NoSideEffectsToString (V8's objects.cc:585-730, its ToDetailString): a primitive's string, a function's
+ * source (past 128 characters its first 111 and last 2 around "...<omitted>..."), a symbol's `Symbol(description)`, an
+ * error's NoSideEffectsErrorToString (`name: message` of its data properties), `#<Constructor>` for an object whose
+ * toString is Object.prototype's, else `[object Tag]`; it runs no getter and no method of the program's.
+ */
+function noSideEffectsToString(value: unknown): string {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) return String(value);
+  if (typeof value === 'bigint') return `${value}`;
+  if (typeof value === 'symbol') {
+    return value.description === undefined ? 'Symbol()' : `Symbol(${omitted(value.description, 56, 56)})`;
+  }
+  const receiver = value as object;
+  if (typeof receiver === 'function') return omitted(Function.prototype.toString.call(receiver), 111, 2);
+  const toString = dataProperty(receiver, 'toString');
+  if (receiver instanceof Error || toString === Error.prototype.toString) {
+    const name = dataProperty(receiver, 'name');
+    const message = dataProperty(receiver, 'message');
+    const nameText = typeof name === 'string' ? name : '';
+    const messageText = typeof message === 'string' ? message : '';
+    if (nameText.length === 0) return messageText;
+    if (messageText.length === 0) return nameText;
+    return `${nameText}: ${messageText}`;
+  }
+  if (toString === Object.prototype.toString) {
+    const constructor = dataProperty(receiver, 'constructor');
+    if (typeof constructor === 'function') {
+      const name = Object.getOwnPropertyDescriptor(constructor, 'name');
+      if (name && typeof name.value === 'string' && name.value.length > 0) return `#<${name.value}>`;
+    }
+  }
+  const tag = dataProperty(receiver, Symbol.toStringTag);
+  return `[object ${typeof tag === 'string' ? tag : className(receiver)}]`;
+}
+
+/** IsStackOverflowError (node_errors.cc:696-718): a native RangeError whose message is V8's for a stack overflow. */
+function isStackOverflowError(error: unknown): boolean {
+  if (!(error instanceof RangeError)) return false;
+  try { return error.constructor?.name === 'RangeError' && error.message === 'Maximum call stack size exceeded'; }
+  catch { return false; }
 }
 
 /** ReportFatalException (src/node_errors.cc:446-588), with no inspector to tell and no report to write. */
