@@ -280,8 +280,8 @@ export class SecureContext {
   }
 
   /**
-   * SecureContext::SetCertificateCompression, 2167-2243: the program's OpenSSL is built without zlib, brotli and zstd
-   * (ADR-0016 §1), so a preference is refused by name. The TLS 1.3 check is Node's, first.
+   * SecureContext::SetCertificateCompression, 2167-2243: the binding does not yet carry RFC 8879 certificate
+   * compression (ADR-0016 §1), so a preference is refused by name. The TLS 1.3 check is Node's, first.
    */
   setCertificateCompression(_packed: number): void {
     const max = this.getMaxProto();
@@ -289,7 +289,7 @@ export class SecureContext {
       throw cppError(TypeError, 'ERR_INVALID_ARG_VALUE',
         'certificateCompression requires a TLS protocol range that includes TLSv1.3');
     }
-    throw refusal('TLS certificate compression (the node program\'s OpenSSL has no zlib, brotli or zstd yet)');
+    throw refusal('TLS certificate compression (not yet carried by the engine\'s OpenSSL binding)');
   }
 
   /** SecureContext::LoadPKCS12, 2265-2376: not yet carried, so refused by name. */
@@ -355,7 +355,7 @@ function resetRootCertStore(certificates: string[]): void {
 /** StartLoadingCertificatesOffThread, 975-1030: Node's optimisation; the store is read on first use here. */
 function startLoadingCertificatesOffThread(): void {}
 
-/** GetCertificateCompressionAlgorithms, 2245-2256: none, the program's OpenSSL having no zlib, brotli or zstd (ADR-0016 §1). */
+/** GetCertificateCompressionAlgorithms, 2245-2256: none, the binding carrying no certificate compression yet (ADR-0016 §1). */
 function getCertificateCompressionAlgorithms(): string[] { return []; }
 
 /** GetFipsCrypto, SetFipsCrypto, TestFipsCrypto (crypto_util.cc:207-242). */
