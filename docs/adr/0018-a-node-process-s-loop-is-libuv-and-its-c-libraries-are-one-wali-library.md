@@ -375,36 +375,12 @@ process is `node` differs from Node, the browser or the page's engine decides:
   continuation. So the program takes libuv at a267f5688b or the first release with it, as browser-substrate
   ADR-0236 step 5 says, a difference from Node v24.21.0's `deps/uv` named here; musl's `posix_spawn` is then a clone
   with an entry, and the probe needs `CLONE_VM` to share the memory.
-- **Read 2026-11-15, on the Node host (Node v26.12.0), Rallly's image (browser-substrate `rallly:3e63239`) booted on
-  a clone of its disk:** `node` and `libnode.so` built by `scripts/build-node.sh` from Node v24.21.0's tarball with
-  the substrate's prepared native SDK, placed in Rallly's app container (`/opt/programs/bin/node-libuv`,
-  `/opt/programs/lib/libnode.so`) and run there beside the image's own `/usr/bin/node`, today's host program, in one
-  machine. The loader loads `libnode.so` on the program's worker; a kernel wait of the program (libuv's `epoll_wait`)
-  blocks that worker as any program's does; `node -e "setTimeout(() => console.log('ok'), 50)"` prints `ok` and ends 0.
-  Each reading is a `docker exec` of `sh -c` timed from the host (an exec of `true` takes 77 to 98 ms), five times:
-  - `node -e "console.log('ok')"`: libuv 215 to 291 ms (median 261), today 267 to 387 ms (median 272);
-  - the 50 ms timer program: libuv 272 to 346 ms (median 334), today 265 to 326 ms (median 287); over three boots,
-    seven each, medians 323 and 300 ms. **Slower than today's** by more than the print's difference, its cause not
-    read;
-  - one 50 ms timer's lateness, read by the program: libuv 0.61 to 3.30 ms (median 1.30), today 1.39 to 2.40 ms
-    (median 1.92);
-  - a chain of 1,000 `setImmediate`s, per turn: libuv 27.5 to 56.8 µs (median 32.7), today 7.4 to 14.8 µs (median
-    8.8). The turn is libuv's iteration (its `epoll_wait` with no timeout, a call into the machine's kernel) and the
-    drain, an immediate of the Node host's worker. In a bare Node worker an immediate's turn is 17 to 43 µs and a port
-    message's 8.5 to 11 µs; today's turn is a port message inside Node's batch of 1,000, which serves nothing else
-    meanwhile. **This reading is slower than today's**: a callback's turn costs about four times as much on the Node
-    host. The tab's drain (a port message, one task) is not read on a Node worker's equivalent there.
-  - `crypto.subtle.deriveBits` (PBKDF2, 4,096 iterations) awaited beside a 1 s interval, once in each of three boots:
-    libuv 52 and 52 ms; today 4,254, 4,718 and 4,941 ms. With the drain resumed by a port's message instead it was not
-    settled in 15 s (Node's batch). 52 ms is the next callback libuv makes, the engine's own 50 ms run check (read in
-    `src/shims/child_process.ts:1356, 1430`; its count of the run's handles, which goes with item 9); with no
-    callback the answer waits for the park to end, which is §5's device.
 - **Read 2026-11-14, browser-substrate `packages/wali/linux/host`:** one realm module (`task.mjs`) runs both kinds of
   image: `runImage` instantiates a WALI program, or runs a host program (`runHost`) where the image's facts name one,
   and only in an exec worker of the `"node"` kind (`task.mjs:435-446`); the machine starts that kind for an exec whose
   image is a host program (`machine.mjs:151, 235`). So `node` as a WALI program takes one fact more on its image:
   that its imports name the engine, so its exec gets a `"node"` worker and the engine registered for it (as host
-  programs are, `hostPrograms`) answers those imports. Its kernel waits on that worker were read 2026-11-15 (below).
+  programs are, `hostPrograms`) answers those imports.
 - **Open: the engine's identity.** A host program is registered under a digest of the Node baseline's host-executable
   key (browser-substrate `imageHostPrograms`), which moves with each baseline release; a C program names its import
   module at compile time. The engine is named `host:tabnode` until an identity that also pins the interface between
