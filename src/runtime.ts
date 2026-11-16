@@ -71,16 +71,14 @@ import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
 import * as perfHooksShim from './shims/perf_hooks';
 import * as workerThreadsShim from './shims/worker_threads';
 import { guestMessageGlobals, guestMessageModule } from './guest-message-ports';
-import { libnodeAttached } from './node-lib/binding/libnode';
+import { programForm } from './node-lib/binding/libnode';
 
 /**
- * A process's MessageChannel, MessagePort and BroadcastChannel. Where the realm's process is the program `node`, they
- * are Node's own `internal/worker/io` over the `messaging` binding, each port a uv_async_t of libuv's loop (ADR-0018
- * item 9), as Node's bootstrap exposes them (`internal/bootstrap/web/exposed-window-or-worker.js:50-53`); in a realm
- * with no program they are the engine's ports (guest-message-ports.ts) and the realm's BroadcastChannel.
+ * A process's MessageChannel, MessagePort and BroadcastChannel in a realm with no `node` program: the engine's ports
+ * (guest-message-ports.ts) and the realm's BroadcastChannel. A node realm's are Node's own `internal/worker/io`, which
+ * Node's bootstrap installs on the realm's global (ADR-0018 §7).
  */
 function processMessaging(process: Process, name: 'MessageChannel' | 'MessagePort' | 'BroadcastChannel', host: object): unknown {
-  if (libnodeAttached()) return (loadNodeLibFor(process, 'internal/worker/io') as Record<string, unknown>)[name];
   return name === 'BroadcastChannel' ? Reflect.get(host, name, host) : guestMessageGlobals(process)[name];
 }
 
@@ -549,18 +547,13 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     ['performance', () => perfHooksShim.performance],
     // The process's own console, the one its modules are given.
     ['console', () => processConsoles.get(process)],
-    // Node's Web Crypto (lib/internal/bootstrap/web/exposed-window-or-worker.js:105-129): the process's
-    // `internal/crypto/webcrypto`'s `crypto` and its interfaces, over the crypto binding; with no OpenSSL (a realm with
-    // no `node` program) the global throws ERR_NO_CRYPTO and the interfaces are none of Node's.
+    // Node's Web Crypto global (lib/internal/bootstrap/web/exposed-window-or-worker.js:105-129) over a process with no
+    // OpenSSL, as a realm with no `node` program's is: the global throws ERR_NO_CRYPTO, and Crypto, CryptoKey and
+    // SubtleCrypto are none of Node's.
     ['crypto', () => {
-      if (!libnodeAttached()) {
-        const { ERR_NO_CRYPTO } = (loadNodeLibFor(process, 'internal/errors') as { codes: Record<string, new () => Error> }).codes;
-        throw new ERR_NO_CRYPTO!();
-      }
-      return (loadNodeLibFor(process, 'internal/crypto/webcrypto') as Record<string, unknown>).crypto;
+      const { ERR_NO_CRYPTO } = (loadNodeLibFor(process, 'internal/errors') as { codes: Record<string, new () => Error> }).codes;
+      throw new ERR_NO_CRYPTO!();
     }],
-    ...(libnodeAttached() ? (['Crypto', 'CryptoKey', 'SubtleCrypto'] as const).map((name): [string, () => unknown] =>
-      [name, () => (loadNodeLibFor(process, 'internal/crypto/webcrypto') as Record<string, unknown>)[name]]) : []),
     // The timers are the process's `require('timers')`'s, Node's own (guest-timers.ts; ADR-0018 item 2), as Node's
     // bootstrap makes them its globals: no realm timer.
     ...(["setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"] as const)
@@ -3897,7 +3890,7 @@ function createRequire(
     if (id === 'worker_threads') {
       const bridge = (globalThis as Record<symbol, unknown>)[engineSymbolFor("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown, credentials?: Readonly<ProcessCredentials>) => unknown } | undefined;
       const module = bridge && typeof bridge.module === "function" ? bridge.module(vfs, process, builtinModules.worker_threads, processCredentialsOf(process)) : undefined;
-      if (libnodeAttached()) return libuvWorkerThreads(process, (module ?? workerThreadsShim) as Record<string, unknown>);
+      if (programForm("require('worker_threads')")) return libuvWorkerThreads(process, (module ?? workerThreadsShim) as Record<string, unknown>);
       return guestMessageModule(process, (module ?? workerThreadsShim) as Record<string, unknown>, !module);
     }
     if (id === 'module') {

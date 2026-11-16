@@ -14,7 +14,7 @@
  * `--openssl-config` or OPENSSL_CONF, `--openssl-shared-config`, FIPS, then InitCryptoOnce with
  * `--openssl-legacy-provider` and `--secure-heap`; a configuration error ends the process there, as Node's does.
  */
-import { address, libnode, libnodeAttached, type LibnodeExports } from './libnode';
+import { address, libnode, type LibnodeExports } from './libnode';
 
 /** The program's exports of `native/node/crypto_*.cc`, by their C names. */
 export type OpensslExports = LibnodeExports & { [name: `tabnode_${string}`]: (...args: any[]) => any };

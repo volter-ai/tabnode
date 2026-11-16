@@ -53,7 +53,7 @@ import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
 import { nodeProcessHostFor, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import { KernelStreamWrap, kKernelBacked } from '../node-lib/binding/kernel_stream';
-import { libnodeAttached, reallyExit } from '../node-lib/binding/libnode';
+import { programForm, reallyExit } from '../node-lib/binding/libnode';
 import { startNodeProgram } from '../node-program';
 import { constantsBinding } from './constants';
 import { Pipe } from '../node-lib/binding/pipe_wrap';
@@ -604,7 +604,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   // Where the realm's process is `node` on libuv's loop, the process is Node's own from its command line on
   // (node-program.ts, ADR-0018 §7): its options, its bootstrap on the realm's global, its main script and its module
   // loaders. It runs on from there, and its end is the program's exit.
-  if (libnodeAttached()) {
+  if (programForm("a node run's command line")) {
     startNodeProgram({ tree, argv: launch.argv, cwd: launch.cwd, env: launch.env, token: runToken });
     return null;
   }
@@ -1560,7 +1560,7 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
   })();
   if (outcome === null) { runsOn = true; return new Promise<never>(() => {}); }
   ended = outcome;
-  if (libnodeAttached() && !hosted) {
+  if (programForm("a node run's outcome") && !hosted) {
     // An outcome a `node` program's run answers before its process starts (a refusal of its command line) is its exit.
     if (ended.stderr) streams?.onStderrBytes?.(new TextEncoder().encode(ended.stderr));
     reallyExit(ended.exitCode);

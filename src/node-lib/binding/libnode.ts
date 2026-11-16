@@ -358,9 +358,6 @@ export function reallyExit(code: unknown): void {
   libnode().exports.tabnode_exit(status);
 }
 
-/** Whether the realm's process is the program `node`, whose bindings are libuv's. */
-export function libnodeAttached(): boolean { return attached !== undefined; }
-
 /** The program a binding calls: refused where the realm has none, since a binding over libuv is its C. */
 export function libnode(): Libnode {
   if (!attached) {

@@ -18,7 +18,7 @@
  */
 import { systemTimers } from '../../system';
 import { withGuestCallback, withGuestExecution } from '../../guest-loop';
-import { libnodeAttached } from './libnode';
+import { programForm } from './libnode';
 import { reportUncaughtInFrame } from '../../shims/async_hooks';
 
 function uncaught(error: unknown): void {
@@ -46,7 +46,7 @@ export function createTimersBinding(): Record<string, unknown> {
             }
           };
           // On the program RunTimers' scope stays open past the call: env.c reschedules the timer, then closes it.
-          return libnodeAttached() ? withGuestExecution(run, 'timer', processTimers) : withGuestCallback(run, 'timer', processTimers);
+          return programForm("RunTimers' callback scope") ? withGuestExecution(run, 'timer', processTimers) : withGuestCallback(run, 'timer', processTimers);
         },
       );
     },
