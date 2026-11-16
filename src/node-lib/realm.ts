@@ -48,13 +48,12 @@ import { createCjsLexerBinding } from './binding/cjs_lexer';
 import { createNodeModulesBinding } from './binding/node_modules';
 import { promiseHandlerAddedAfterReject } from './binding/task_queue';
 import { routeErrorStacks } from '../runtime';
+import { createEnvProxy, realEnvStore } from './binding/env_var';
 
 const indirectEval = eval;
 
-/** What the run gives its realm: its facts, its environment's store, and the engine's doors the bindings answer from. */
+/** What the run gives its realm: its facts and the engine's doors the bindings answer from. */
 export interface NodeRealmRun extends Omit<ProcessMethodsHost, 'process'> {
-  /** The environment the process was exec'd with, which `process.env` reads and writes. */
-  readonly env: Record<string, string | undefined>;
   readonly argv: readonly string[];
   readonly execArgv: readonly string[];
   readonly execPath: string;
@@ -278,7 +277,7 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
     process_methods: () => createProcessMethodsBinding({ ...run, process }),
     async_wrap: createAsyncWrapBinding,
     task_queue: createTaskQueueBinding,
-    credentials: () => createCredentialsBinding(() => run.env),
+    credentials: () => createCredentialsBinding(realEnvStore),
     trace_events: createTraceEventsBinding,
     performance: createPerformanceBinding,
     permission: createPermissionBinding,
@@ -342,7 +341,7 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
   run4('internal/bootstrap/web/exposed-window-or-worker');
   run4('internal/bootstrap/switches/is_main_thread');
   run4('internal/bootstrap/switches/does_own_process_state');
-  Object.defineProperty(process, 'env', { value: envProxy(run.env, require), writable: true, enumerable: true, configurable: true });
+  Object.defineProperty(process, 'env', { value: createEnvProxy(realEnvStore, require), writable: true, enumerable: true, configurable: true });
   return { process, require, internalBinding: loaderBinding, entryUnsettled: () => entryUnsettled(process, require, privateSymbols) };
 }
 
@@ -405,35 +404,3 @@ function entryUnsettled(process: Record<string, unknown>, require: (id: string) 
   return true;
 }
 
-/**
- * The Environment's env proxy (src/node_env_var.cc EnvGetter, EnvSetter, EnvQuery, EnvDeleter, EnvEnumerator,
- * EnvDefiner) over the process's environment: a value is set as its string, a symbol key reads undefined, and a
- * define takes only a configurable, writable, enumerable value. Where this differs from Node: the store is the
- * environment the run was given, which the process's children are spawned with, not libc's environ.
- */
-function envProxy(store: Record<string, string | undefined>, require: (id: string) => any): object {
-  const invalid = (message: string): Error => {
-    const { codes: { ERR_INVALID_OBJECT_DEFINE_PROPERTY } } = require('internal/errors') as { codes: Record<string, new (message: string) => Error> };
-    return new ERR_INVALID_OBJECT_DEFINE_PROPERTY!(message);
-  };
-  const set = (key: string | symbol, value: unknown): boolean => {
-    store[String(key)] = String(value);
-    return true;
-  };
-  return new Proxy(Object.create(null) as Record<string, string>, {
-    get: (_target, key) => (typeof key === 'symbol' ? undefined : Object.prototype.hasOwnProperty.call(store, key) ? store[key] : undefined),
-    set: (_target, key, value) => set(key, value),
-    has: (_target, key) => typeof key === 'string' && Object.prototype.hasOwnProperty.call(store, key) && store[key] !== undefined,
-    deleteProperty: (_target, key) => { if (typeof key === 'string') delete store[key]; return true; },
-    ownKeys: () => Object.keys(store).filter((key) => store[key] !== undefined),
-    getOwnPropertyDescriptor: (_target, key) => (typeof key === 'string' && Object.prototype.hasOwnProperty.call(store, key) && store[key] !== undefined
-      ? { value: store[key], writable: true, enumerable: true, configurable: true } : undefined),
-    defineProperty: (_target, key, descriptor) => {
-      if ('get' in descriptor || 'set' in descriptor) throw invalid("'process.env' does not accept an accessor(getter/setter) descriptor");
-      if (!('value' in descriptor) || descriptor.writable !== true || descriptor.enumerable !== true || descriptor.configurable !== true) {
-        throw invalid("'process.env' only accepts a configurable, writable, and enumerable data descriptor");
-      }
-      return set(key, descriptor.value);
-    },
-  });
-}

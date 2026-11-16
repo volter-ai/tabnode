@@ -1,14 +1,12 @@
 /**
  * `internalBinding('credentials')` where the realm's process is `node` (ADR-0018 §7): Node v24.21.0's
  * src/node_credentials.cc split where V8 stands, its libc calls the program's (native/node/credentials.c). Node's own
- * `internal/bootstrap/node.js` and `switches/does_own_process_state.js` wrap it.
- *
- * Where this differs from Node: `safeGetenv` reads the run's environment, the process's `env`, where Node reads its
- * environ through uv_os_getenv; it answers nothing where the process's real and effective ids differ, as Node's does.
+ * `internal/bootstrap/node.js` and `switches/does_own_process_state.js` wrap it. `safeGetenv` and `getTempDir` read
+ * the Environment's store, RealEnvStore over libc's environ (env_var.ts), and nothing where SafeGetenv refuses.
  */
 import { address, libnode, withCString } from './libnode';
 import { constantsBinding } from '../../shims/constants';
-import { credentialsBinding } from './misc';
+import type { EnvStore } from './env_var';
 
 /** ErrnoException (src/api/exceptions.cc), as `env->ThrowErrnoException(errno, syscall)` throws it. */
 export function errnoException(errno: number, syscall: string): Error {
@@ -25,7 +23,7 @@ function credentialOf(value: unknown): { name: string | null; id: number } {
   return { name: `${value}`, id: 0 };
 }
 
-export function createCredentialsBinding(env: () => Record<string, string | undefined>): Record<string, unknown> {
+export function createCredentialsBinding(env: EnvStore): Record<string, unknown> {
   const program = () => libnode().exports;
   const lastErrno = (): number => program().tabnode_errno();
   const setter = (call: 'tabnode_setuid' | 'tabnode_seteuid' | 'tabnode_setgid' | 'tabnode_setegid', syscall: string) =>
@@ -35,14 +33,23 @@ export function createCredentialsBinding(env: () => Record<string, string | unde
       if (answer === -1) throw errnoException(lastErrno(), syscall);
       return answer;
     };
+  /** SafeGetenv (74-104): the store's value, none where the process may not read its environment. */
+  const safeGetenv = (key: string): string | undefined => (program().tabnode_safe_getenv_refused() ? undefined : env.get(key));
   return {
     safeGetenv(key: unknown): string | undefined {
       if (typeof key !== 'string') throw new TypeError('safeGetenv: a string');
-      const exports = program();
-      if (exports.tabnode_getuid() !== exports.tabnode_geteuid() || exports.tabnode_getgid() !== exports.tabnode_getegid()) return undefined;
-      return env()[key];
+      return safeGetenv(key);
     },
-    getTempDir: (): string => credentialsBinding.getTempDir(),
+    // GetTempDir (119-143): TMPDIR, TMP or TEMP, the first that is not empty, without a trailing slash.
+    getTempDir(): string | undefined {
+      let dir = '';
+      for (const key of ['TMPDIR', 'TMP', 'TEMP']) {
+        dir = safeGetenv(key) ?? dir;
+        if (dir !== '') break;
+      }
+      if (dir === '') return undefined;
+      return dir.length > 1 && dir.endsWith('/') ? dir.slice(0, -1) : dir;
+    },
     implementsPosixCredentials: true,
     getuid: (): number => program().tabnode_getuid() >>> 0,
     geteuid: (): number => program().tabnode_geteuid() >>> 0,

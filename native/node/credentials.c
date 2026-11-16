@@ -4,9 +4,13 @@
 // does (a Uint32 or a string) and throws ThrowErrnoException where an answer is -1.
 #include <errno.h>
 #include <grp.h>
+#include <linux/capability.h>
 #include <pwd.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/auxv.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include "wrap.h"
 
@@ -14,6 +18,29 @@ TABNODE_EXPORT(tabnode_getuid) uint32_t tabnode_getuid(void) { return (uint32_t)
 TABNODE_EXPORT(tabnode_geteuid) uint32_t tabnode_geteuid(void) { return (uint32_t)geteuid(); }
 TABNODE_EXPORT(tabnode_getgid) uint32_t tabnode_getgid(void) { return (uint32_t)getgid(); }
 TABNODE_EXPORT(tabnode_getegid) uint32_t tabnode_getegid(void) { return (uint32_t)getegid(); }
+
+// linux_at_secure (33-44): the kernel's AT_SECURE, read once.
+static bool linux_at_secure(void) {
+  static int value = -1;
+  if (value < 0) value = getauxval(AT_SECURE) ? 1 : 0;
+  return value != 0;
+}
+
+// HasOnly (50-67): whether the process's permitted capabilities are `capability` alone, capget's.
+static bool has_only(int capability) {
+  struct __user_cap_data_struct cap_data[_LINUX_CAPABILITY_U32S_3] = {0};
+  struct __user_cap_header_struct cap_header_data = {_LINUX_CAPABILITY_VERSION_3, getpid()};
+  if (syscall(SYS_capget, &cap_header_data, &cap_data) != 0) return false;
+  _Static_assert(sizeof(cap_data) / sizeof(cap_data[0]) == 2, "two capability words");
+  return cap_data[CAP_TO_INDEX(capability)].permitted == (unsigned int)CAP_TO_MASK(capability) &&
+         cap_data[1 - CAP_TO_INDEX(capability)].permitted == 0;
+}
+
+// SafeGetenv's refusal (74-83): a secure-execution process with more than CAP_NET_BIND_SERVICE, or one whose real
+// and effective ids differ, reads no environment variable; 1 where it is refused.
+TABNODE_EXPORT(tabnode_safe_getenv_refused) int tabnode_safe_getenv_refused(void) {
+  return ((!has_only(CAP_NET_BIND_SERVICE) && linux_at_secure()) || getuid() != geteuid() || getgid() != getegid()) ? 1 : 0;
+}
 
 // errno after a call that answered -1, for ThrowErrnoException.
 TABNODE_EXPORT(tabnode_errno) int tabnode_errno(void) { return errno; }

@@ -13,6 +13,7 @@ import { bootstrapNodeRealm, createNodeProcessObject, runNodeMain, type NodeReal
 import { nodeOptionsWords, splitCommandLine } from './node-lib/binding/options';
 import { NODE_LTS_VERSION, nodeRelease, nodeVersions } from './node-lib/node-versions';
 import { utilBinding } from './node-lib/binding/util';
+import { realEnvStore } from './node-lib/binding/env_var';
 import { setPreparedTree } from './node-lib/v8-host';
 import { startGuestLoop, withGuestCallback } from './guest-loop';
 import { installGuestRealm } from './host-globals';
@@ -22,7 +23,7 @@ import { __recordRun, enterRun, setRunPid, runWaiterOf, type ProcessToken } from
 import { __substrateExecPath } from './shims/command-line';
 import { dlopenNative } from './native-addon';
 
-/** The run as the host asks for it: the program's tree, its whole vector, its directory and environment. */
+/** The run as the host asks for it: the program's tree, its whole vector, and the directory and environment it was exec'd with (the process's own are libc's). */
 export interface NodeProgramLaunch {
   readonly tree: VirtualFS;
   /** The whole vector, as `execve` takes it: `argv[0]` the program's name, then Node's options, the script and its arguments. */
@@ -40,7 +41,6 @@ const kInvalidCommandLineArgument = 9;
 /** The process starts: its options, its bootstrap, then its main script. The process runs on; it ends at its exit. */
 export function startNodeProgram(launch: NodeProgramLaunch): void {
   const exports = libnode().exports;
-  const env: Record<string, string | undefined> = { ...launch.env };
   let realm: NodeRealm | undefined;
   /** A synchronous write to fd 2, as FPrintF(stderr) and fflush make one: the program's write(2) through libuv's fs. */
   const writeStderr = (text: string): void => {
@@ -67,7 +67,7 @@ export function startNodeProgram(launch: NodeProgramLaunch): void {
 
   // ProcessGlobalArgs (src/node.cc): the command line's options split from the script and its arguments; a bad option
   // ends the process with kInvalidCommandLineArgument before anything runs.
-  const nodeOptions = nodeOptionsWords(env.NODE_OPTIONS);
+  const nodeOptions = nodeOptionsWords(realEnvStore.get('NODE_OPTIONS'));
   const split = splitCommandLine(launch.argv);
   if ('error' in split) {
     writeStderr(`${launch.argv[0] ?? 'node'}: ${split.error}\n`);
@@ -85,7 +85,7 @@ export function startNodeProgram(launch: NodeProgramLaunch): void {
       .triggerUncaughtException(error, fromPromise);
   };
   realm = inRun(() => bootstrapNodeRealm(process, {
-    env, argv: split.argv, execArgv: split.execArgv, execPath: __substrateExecPath, nodeOptions, pid,
+    argv: split.argv, execArgv: split.execArgv, execPath: __substrateExecPath, nodeOptions, pid,
     ppid: () => exports.tabnode_getppid(),
     writeStderr,
     dlopen: (...args: unknown[]) => dlopen(process, launch.tree, args),
@@ -163,7 +163,7 @@ function dlopen(process: object, tree: VirtualFS, args: unknown[]): void {
   dlopenNative(process, target, exports, file, bytes);
 }
 
-/** LoadEnvFile (src/node_process_methods.cc) over Node's Dotenv: each variable the environment does not hold. */
+/** LoadEnvFile (src/node_process_methods.cc) over Node's Dotenv: each variable the process's environment does not hold. */
 function loadEnvFile(process: Record<string, unknown>, path: string): void {
   const fs = engineBindingFor(process, 'fs') as { readFileUtf8(path: string, flags: number): string };
   const util = engineBindingFor(process, 'util') as { parseEnv(content: string): Record<string, string> };
@@ -172,8 +172,8 @@ function loadEnvFile(process: Record<string, unknown>, path: string): void {
   catch {
     throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { errno: -2, code: 'ENOENT', syscall: 'open', path });
   }
-  const env = process.env as Record<string, string | undefined>;
+  // Dotenv::SetEnvironment (src/node_dotenv.cc): each the store does not hold, set in it.
   for (const [key, value] of Object.entries(util.parseEnv(content))) {
-    if (env[key] === undefined) env[key] = value;
+    if (realEnvStore.get(key) === undefined) realEnvStore.set(key, value);
   }
 }

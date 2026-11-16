@@ -125,11 +125,19 @@ export interface LibnodeExports {
   tabnode_cjs_reexports(analysis: I32): I32;
   tabnode_cjs_name(analysis: I32, reexport: I32, index: I32, out: I32): void;
   tabnode_getppid(): I32;
+  /** node_env_var.c: node_env_var.cc's RealEnvStore (uv_os_getenv, uv_os_setenv, uv_os_unsetenv, uv_os_environ). */
+  tabnode_getenv(key: I32, buffer: I32, size: I32): I32;
+  tabnode_setenv(key: I32, value: I32): I32;
+  tabnode_unsetenv(key: I32): I32;
+  tabnode_environ(count: I32): I32;
+  tabnode_environ_name(items: I32, index: I32): I32;
+  tabnode_environ_free(items: I32, count: I32): void;
   /** credentials.c: node_credentials.cc's POSIX half (getuid and the rest, the setters by name or id, getgroups, initgroups). */
   tabnode_getuid(): I32;
   tabnode_geteuid(): I32;
   tabnode_getgid(): I32;
   tabnode_getegid(): I32;
+  tabnode_safe_getenv_refused(): I32;
   tabnode_errno(): I32;
   tabnode_getgroups(size: I32, groups: I32): I32;
   tabnode_setuid(name: I32, id: I32): I32;
