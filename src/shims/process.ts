@@ -14,7 +14,7 @@ import { loadNodeLibFor, nodeLibBindingFor } from '../node-lib/load';
 import { kRunFilesystem } from '../node-lib/binding/fs';
 import { withFilesystem } from '../node-lib/binding/named-tree';
 import { createNodeError, type VirtualFS } from '../virtual-fs';
-import { constantsBinding } from './constants';
+import { constantsBinding, engineSignals } from './constants';
 import { nodeLibBinding } from '../node-lib/binding/index';
 import { nodeActiveHandles, nodeActiveRequests } from '../node-lib/binding/handles';
 
@@ -448,9 +448,8 @@ export function ttyOfFd(tty: boolean | readonly [boolean, boolean, boolean] | un
   return Array.isArray(tty) ? tty[fd] === true : tty === true;
 }
 
-/** The signal numbers a guest sees, and the signals a tab must ignore. */
-export const __substrateSignals: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGWINCH: 28 };
-export const __substrateSignalNames: Record<number, string> = Object.fromEntries(Object.entries(__substrateSignals).map(([name, number]) => [number, name]));
+/** The signal numbers a realm with no program names (`engineSignals`), by number, and the signals a tab must ignore. */
+export const __substrateSignalNames: Record<number, string> = Object.fromEntries(Object.entries(engineSignals).map(([name, number]) => [number, name]));
 // Node prints the `process.binding` deprecation once per process; the engine
 // runs many guests in one realm, so the record is per guest, not per load.
 const __substrateBindingWarned = new WeakSet<object>();
@@ -833,7 +832,7 @@ export function createProcess(options?: {
 
     kill(pid: number, signal: string | number = "SIGTERM") {
       const name = (typeof signal === "number" && signal !== 0 ? __substrateSignalNames[signal] : signal) as string;
-      if (signal !== 0 && (typeof name !== "string" || __substrateSignals[name] === void 0)) {
+      if (signal !== 0 && (typeof name !== "string" || engineSignals[name] === void 0)) {
         throw Object.assign(new TypeError("Unknown signal: " + signal), { code: "ERR_UNKNOWN_SIGNAL" });
       }
       // Node's kill(pid, 0) asks the caller's process authority before self/child handles. A saved handle is
@@ -891,7 +890,7 @@ export function createProcess(options?: {
       if (__substrateIgnoredSignals.has(name)) return true;
       __recordTermination(proc as never, name);
       terminating.add(proc);
-      proc.exit(128 + __substrateSignals[name]);
+      proc.exit(128 + engineSignals[name]);
       return true;
     },
 

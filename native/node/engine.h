@@ -76,8 +76,10 @@ struct tabnode_fs_s;
 // (node_file.cc AfterNoArgs, AfterStat, AfterInteger, ..., node_dir.cc AfterOpenDir, AfterDirRead) and its
 // MakeCallback, or its promise's settling. The engine frees the request.
 TABNODE_IMPORT(fs_done) void tabnode_fs_done(struct tabnode_fs_s *request);
-// A uv_fs_event_t's change (FSEventWrap::OnEvent): libuv's filename (NULL for none), events and status.
-TABNODE_IMPORT(fs_event) void tabnode_fs_event(uv_fs_event_t *handle, const char *filename, int events, int status);
+// A uv_fs_event_t's change (FSEventWrap::OnEvent): libuv's filename (NULL for none), the event's name as the wrap
+// chooses it ("rename", "change", or empty with an error) and the status.
+TABNODE_IMPORT(fs_event) void tabnode_fs_event(uv_fs_event_t *handle, const char *filename, const char *event,
+                                              int status);
 // A uv_fs_poll_t's change (StatWatcher::Callback), its current and previous stats in the binding's stat arrays.
 TABNODE_IMPORT(stat_watcher_change) void tabnode_stat_watcher_change(uv_fs_poll_t *handle, int status);
 // The close of a callback's scope (Node's InternalCallbackScope::Close, src/api/callback.cc): the tick queue, then the

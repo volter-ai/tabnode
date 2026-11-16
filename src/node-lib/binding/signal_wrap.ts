@@ -9,10 +9,10 @@
  * and the kernel's.
  *
  * Where it is not Node's: SignalWrap keeps a count of the started wraps of each signal (`handled_signals`), whose one
- * reader is `process._kill` (node_process_methods.cc:199-205, `HasSignalJSHandler`, deciding whether a kill of the
- * process itself runs its at-exit hooks); `process.kill` is still the engine's (src/shims/process.ts), so nothing
- * reads one, and it is not kept. SIGPROF's refusal while the inspector listens is the inspector's, which a tab does
- * not have.
+ * reader is `process._kill` (node_process_methods.cc:198-205, `HasSignalJSHandler`, deciding whether a kill of the
+ * process itself first runs the Environment's at-exit callbacks); Node's only at-exit callbacks are its inspector's
+ * and its profiler's, which a tab does not have, so the count decides nothing and is not kept (process_methods.c).
+ * SIGPROF's refusal while the inspector listens is the inspector's too.
  */
 import { libnode, type HandleCallbacks } from './libnode';
 import { HandleWrap } from './handle_wrap';

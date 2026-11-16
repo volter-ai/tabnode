@@ -8,9 +8,16 @@
 
 #define EXPORT(name) __attribute__((export_name(#name)))
 
-// FSEventWrap::OnEvent: the engine encodes the filename and chooses the event's name, as the wrap does.
+// FSEventWrap::OnEvent (fs_event_wrap.cc:183-235): the event's name as the wrap chooses it, empty with an error,
+// "rename" where libuv says UV_RENAME (a rename with a change is a rename), else "change"; any other flag is Node's
+// UNREACHABLE. The engine encodes the filename and makes the callback.
 static void on_event(uv_fs_event_t *handle, const char *filename, int events, int status) {
-  tabnode_fs_event(handle, filename, events, status);
+  const char *event;
+  if (status) event = "";
+  else if (events & UV_RENAME) event = "rename";
+  else if (events & UV_CHANGE) event = "change";
+  else abort();
+  tabnode_fs_event(handle, filename, event, status);
   tabnode_drain();
 }
 
@@ -19,7 +26,11 @@ EXPORT(tabnode_fs_event_new) uv_fs_event_t *tabnode_fs_event_new(void) { return 
 EXPORT(tabnode_fs_event_init) int tabnode_fs_event_init(uv_fs_event_t *handle) {
   return uv_fs_event_init(uv_default_loop(), handle);
 }
-EXPORT(tabnode_fs_event_start) int tabnode_fs_event_start(uv_fs_event_t *handle, const char *path, unsigned int flags) {
+// FSEventWrap::Start (fs_event_wrap.cc:139-181): UV_FS_EVENT_RECURSIVE where `recursive` is true, then
+// uv_fs_event_start.
+EXPORT(tabnode_fs_event_start) int tabnode_fs_event_start(uv_fs_event_t *handle, const char *path, int recursive) {
+  unsigned int flags = 0;
+  if (recursive) flags |= UV_FS_EVENT_RECURSIVE;
   return uv_fs_event_start(handle, on_event, path, flags);
 }
 

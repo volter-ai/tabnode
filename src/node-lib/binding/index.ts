@@ -11,7 +11,7 @@
  * `ChildProcess`, `fork`'s IPC protocol or `exec`'s buffering: all of those
  * are `net.js`'s and `child_process.js`'s, and both are vendored.
  */
-import uvBinding from './uv';
+import { uvBinding } from './uv';
 import ipcSerdesBinding from './ipc_serdes';
 import { createDiagnosticsChannelBinding } from './diagnostics_channel';
 import streamWrapBinding from './stream_wrap';
@@ -51,7 +51,7 @@ import { createTimersBinding, taskQueueBinding } from './timers';
 var __table: Record<string, () => unknown> | undefined;
 export function nodeLibBinding(name: string): (() => unknown) | undefined {
   __table ??= {
-  uv: () => uvBinding,
+  uv: () => uvBinding(),
   ipc_serdes: () => ipcSerdesBinding,
   diagnostics_channel: () => createDiagnosticsChannelBinding(),
   stream_wrap: () => streamWrapBinding,

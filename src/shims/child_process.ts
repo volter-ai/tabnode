@@ -53,9 +53,10 @@ import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
 import { nodeProcessHostFor, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import { KernelStreamWrap, kKernelBacked } from '../node-lib/binding/kernel_stream';
-import { attachLibnodeRun, libnodeAttached, reallyExit as libnodeExit } from '../node-lib/binding/libnode';
+import { attachLibnodeRun, libnode, libnodeAttached, reallyExit as libnodeExit } from '../node-lib/binding/libnode';
+import { constantsBinding } from './constants';
 import { installNodeSignals, installNodeStdio } from '../node-lib/stdio';
-import { Pipe, constants as pipeConstants } from '../node-lib/binding/pipe_wrap';
+import { Pipe } from '../node-lib/binding/pipe_wrap';
 import {
   WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset,
   type LibuvStreamWrap,
@@ -936,6 +937,34 @@ async function launchNode(tree: VirtualFS, launch: NodeLaunch): Promise<CommandO
       nodeEnd.reallyExit(nodeEnd.exitCode || 0);
       return undefined as never;
     } as (code?: number) => never;
+    // `process.kill` is Node's too (per_thread.js:254-280) over `process._kill`, Node's Kill (node_process_methods.cc:
+    // 185-209): uv_kill in the program (process_methods.c), its signal's number the program's compiled one, so the
+    // signal is the kernel's to deliver. A listener's uv_signal_t runs it on the loop (item 8); with none, the signal's
+    // default action ends the process, which emits no 'exit', as Node's dies of the signal.
+    const signalProcess = proc as unknown as { _kill(...args: unknown[]): number; kill(pid: unknown, sig?: unknown): true };
+    signalProcess._kill = function _kill(...args: unknown[]): number {
+      if (args.length < 2) throw Object.assign(new TypeError('Bad argument.'), { code: 'ERR_MISSING_ARGS' });
+      return libnode().exports.tabnode_kill(Number(args[0]) | 0, Number(args[1]) | 0);
+    };
+    signalProcess.kill = function kill(pid: unknown, sig?: unknown): true {
+      const { codes: { ERR_INVALID_ARG_TYPE, ERR_UNKNOWN_SIGNAL }, ErrnoException } = loadNodeLibFor(proc, 'internal/errors') as {
+        codes: Record<string, new (...args: unknown[]) => Error>; ErrnoException: new (err: number, syscall: string) => Error;
+      };
+      let err: number;
+      // eslint-disable-next-line eqeqeq
+      if (pid != ((pid as number) | 0)) throw new ERR_INVALID_ARG_TYPE('pid', 'number', pid);
+      // Preserve null signal
+      if (sig === ((sig as number) | 0)) {
+        err = signalProcess._kill(pid, sig);
+      } else {
+        sig ||= 'SIGTERM';
+        const signals = constantsBinding().os.signals as Record<string, number>;
+        if (signals[sig as string]) err = signalProcess._kill(pid, signals[sig as string]);
+        else throw new ERR_UNKNOWN_SIGNAL(sig);
+      }
+      if (err) throw new ErrnoException(err, 'kill');
+      return true;
+    };
   } else proc.exit = ((...given: [code?: number | string | null]) => {
     // Node's exit (per_thread.js): `if (arguments.length !== 0) process.exitCode = code`, through the setter that clears
     // it for undefined and null, takes an integer string as its number and throws for anything else; the status is

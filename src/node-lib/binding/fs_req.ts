@@ -16,9 +16,6 @@ import { kUsePromises } from './fs';
 
 export const kFsStatsFieldsNumber = 18;
 export const kFsStatFsFieldsNumber = 8;
-export const UV_ENOENT = -2;
-export const UV_ENOTDIR = -20;
-export const UV_EOF = -4095;
 
 /** Node's `enum encoding`, by the names Buffer takes. */
 export type Encoding = 'utf8' | 'utf16le' | 'latin1' | 'ascii' | 'base64' | 'base64url' | 'hex' | 'buffer';

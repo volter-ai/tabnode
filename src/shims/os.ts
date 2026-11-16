@@ -156,50 +156,6 @@ export function setPriority(pid: number | number, priority?: number): void {
 
 export const EOL = '\n';
 
-export const constants = {
-  signals: {
-    SIGHUP: 1,
-    SIGINT: 2,
-    SIGQUIT: 3,
-    SIGILL: 4,
-    SIGTRAP: 5,
-    SIGABRT: 6,
-    SIGBUS: 7,
-    SIGFPE: 8,
-    SIGKILL: 9,
-    SIGUSR1: 10,
-    SIGSEGV: 11,
-    SIGUSR2: 12,
-    SIGPIPE: 13,
-    SIGALRM: 14,
-    SIGTERM: 15,
-    SIGCHLD: 17,
-    SIGCONT: 18,
-    SIGSTOP: 19,
-    SIGTSTP: 20,
-    SIGTTIN: 21,
-    SIGTTOU: 22,
-    SIGURG: 23,
-    SIGXCPU: 24,
-    SIGXFSZ: 25,
-    SIGVTALRM: 26,
-    SIGPROF: 27,
-    SIGWINCH: 28,
-    SIGIO: 29,
-    SIGPWR: 30,
-    SIGSYS: 31,
-  },
-  errno: {},
-  priority: {
-    PRIORITY_LOW: 19,
-    PRIORITY_BELOW_NORMAL: 10,
-    PRIORITY_NORMAL: 0,
-    PRIORITY_ABOVE_NORMAL: -7,
-    PRIORITY_HIGH: -14,
-    PRIORITY_HIGHEST: -20,
-  },
-};
-
 export const devNull = '/dev/null';
 
 export default {
@@ -224,6 +180,5 @@ export default {
   getPriority,
   setPriority,
   EOL,
-  constants,
   devNull,
 };

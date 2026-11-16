@@ -14,17 +14,16 @@ import { __runFor } from '../../process-tokens';
 import { internalAsyncHooks } from '../internals/runtime';
 import { nodeLibInternalRequire } from '../load';
 import { rememberSocketConnect, traceSocketConnect } from '../../socket-connect-trace';
-import { UV_EAFNOSUPPORT, UV_EBADF } from './uv';
+import { uvConstant } from './uv';
 import { libnode, sockOrPeerName, withCString } from './libnode';
+import { wrapConstants } from '../../shims/constants';
 import { callingSockets, type TreeSockets } from '../../host-sockets';
 
-/** libuv's `uv_tcp_t` flavours, and the two flags `getFlags` builds. */
-export const constants = {
-  SOCKET: 0,
-  SERVER: 1,
-  UV_TCP_IPV6ONLY: 1,
-  UV_TCP_REUSEPORT: 4,
-};
+/** TCPWrap's SocketType (tcp_wrap.h:38-41) and uv.h's two flags `getFlags` builds, for a realm with no program. */
+const engineConstants = { SOCKET: 0, SERVER: 1, UV_TCP_IPV6ONLY: 1, UV_TCP_REUSEPORT: 2 };
+
+/** TCPWrap::Initialize's constants (tcp_wrap.cc:133-137), the program's compiled ones where the realm has it. */
+export function tcpConstants(): typeof engineConstants { return wrapConstants('tcp_wrap', engineConstants); }
 
 /** What `getsockname`/`getpeername` fill in. */
 export interface SockName {
@@ -86,7 +85,7 @@ function isUint32(value: unknown): value is number {
 }
 
 export class TCP extends KernelStreamWrap {
-  /** `constants.SOCKET` or `constants.SERVER`. */
+  /** `SOCKET` or `SERVER`. */
   readonly type: number;
   listening = false;
   /** Set by `net.js` on a server handle; how an accepted connection is announced. */
@@ -98,7 +97,7 @@ export class TCP extends KernelStreamWrap {
   #announcedPort: number | null = null;
 
   /** TCPWrap::New: a uv_tcp_init'd handle. */
-  constructor(type: number = constants.SOCKET) {
+  constructor(type: number = tcpConstants().SOCKET) {
     super(realmHasLibuv(), false);
     this.type = type;
     if (this[kKernelBacked]) this.attachUv(libnode().exports.tabnode_tcp_init(), true);
@@ -106,7 +105,7 @@ export class TCP extends KernelStreamWrap {
 
   /** ConnectionWrap::OnConnection's client: TCPWrap::Instantiate with SOCKET. */
   protected override makeClient(): TCP {
-    return new (this.constructor as typeof TCP)(constants.SOCKET);
+    return new (this.constructor as typeof TCP)(tcpConstants().SOCKET);
   }
 
   bind(address: string, port: number, flags?: number): number {
@@ -120,8 +119,8 @@ export class TCP extends KernelStreamWrap {
   /** TCPWrap::Bind: the address parsed by uv_ip4_addr or uv_ip6_addr, then uv_tcp_bind. */
   #bind(family: 4 | 6, address: string, port: number, flags: unknown): number {
     const handle = this.liveUv();
-    if (!this[kKernelBacked]) return UV_EAFNOSUPPORT;
-    if (!handle) return UV_EBADF;
+    if (!this[kKernelBacked]) return uvConstant('UV_EAFNOSUPPORT');
+    if (!handle) return uvConstant('UV_EBADF');
     const given = isUint32(flags) ? flags : 0;
     return withCString(String(address), (ip) => libnode().exports.tabnode_tcp_bind(handle.wrap, family, ip, Number(port) | 0, given));
   }
@@ -129,8 +128,8 @@ export class TCP extends KernelStreamWrap {
   /** TCPWrap::Listen: uv_listen, whose connections are ConnectionWrap::OnConnection's. */
   listen(backlog: number): number {
     const handle = this.liveUv();
-    if (!this[kKernelBacked]) return UV_EAFNOSUPPORT;
-    if (!handle) return UV_EBADF;
+    if (!this[kKernelBacked]) return uvConstant('UV_EAFNOSUPPORT');
+    if (!handle) return uvConstant('UV_EBADF');
     const err = libnode().exports.tabnode_stream_listen(handle.wrap, Number(backlog) | 0);
     if (err !== 0) return err;
     const port = this.#localPort();
@@ -177,8 +176,8 @@ export class TCP extends KernelStreamWrap {
   /** TCPWrap::Connect: the address parsed, then uv_tcp_connect under the request, completed by AfterConnect. */
   #connectTo(req: TCPConnectWrap, address: string, port: number, family: 4 | 6): number {
     const handle = this.liveUv();
-    if (!this[kKernelBacked]) return UV_EAFNOSUPPORT;
-    if (!handle) return UV_EBADF;
+    if (!this[kKernelBacked]) return uvConstant('UV_EAFNOSUPPORT');
+    if (!handle) return uvConstant('UV_EBADF');
     const socket = (this as unknown as Record<symbol, unknown>)[internalAsyncHooks.symbols.owner_symbol];
     const owner = ownerOfInstance(req);
     if (socket && typeof socket === 'object') rememberSocketConnect(socket, {
@@ -209,7 +208,7 @@ export class TCP extends KernelStreamWrap {
   /** GetSockOrPeerName<TCPWrap, uv_tcp_getsockname / uv_tcp_getpeername>, AddressToJS on success. */
   #name(peer: 0 | 1, out: Partial<SockName>): number {
     const handle = this.liveUv();
-    if (!handle) return UV_EBADF;
+    if (!handle) return uvConstant('UV_EBADF');
     return sockOrPeerName((at) => libnode().exports.tabnode_tcp_name(handle.wrap, peer, at), out as Record<string, unknown>);
   }
 
@@ -217,7 +216,7 @@ export class TCP extends KernelStreamWrap {
   setNoDelay(enable: unknown): number {
     const handle = this.liveUv();
     if (!this[kKernelBacked]) return 0;
-    if (!handle) return UV_EBADF;
+    if (!handle) return uvConstant('UV_EBADF');
     return libnode().exports.tabnode_tcp_nodelay(handle.wrap, enable === true ? 1 : 0);
   }
 
@@ -225,7 +224,7 @@ export class TCP extends KernelStreamWrap {
   setKeepAlive(enable: unknown, delay: number, interval?: unknown, count?: unknown): number {
     const handle = this.liveUv();
     if (!this[kKernelBacked]) return 0;
-    if (!handle) return UV_EBADF;
+    if (!handle) return uvConstant('UV_EBADF');
     return libnode().exports.tabnode_tcp_keepalive(handle.wrap, Number(enable) | 0, Number(delay) >>> 0,
       isUint32(interval) ? interval : 1, isUint32(count) ? count : 10);
   }
@@ -233,13 +232,13 @@ export class TCP extends KernelStreamWrap {
   /** TCPWrap::SetTypeOfService: IP_TOS or IPV6_TCLASS by the socket's family. */
   setTypeOfService(tos: number): number {
     const handle = this.liveUv();
-    if (!handle) return UV_EBADF;
+    if (!handle) return uvConstant('UV_EBADF');
     return libnode().exports.tabnode_tcp_set_tos(handle.wrap, Number(tos) | 0);
   }
 
   getTypeOfService(): number {
     const handle = this.liveUv();
-    if (!handle) return UV_EBADF;
+    if (!handle) return uvConstant('UV_EBADF');
     return libnode().exports.tabnode_tcp_get_tos(handle.wrap);
   }
 
@@ -250,7 +249,7 @@ export class TCP extends KernelStreamWrap {
   /** TCPWrap::Open: uv_tcp_open of a descriptor of this process's. */
   open(fd: number): number {
     const handle = this.liveUv();
-    if (!handle) return UV_EBADF;
+    if (!handle) return uvConstant('UV_EBADF');
     return libnode().exports.tabnode_tcp_open(handle.wrap, Math.trunc(Number(fd)));
   }
 
@@ -282,6 +281,6 @@ export class TCP extends KernelStreamWrap {
   }
 }
 
-registerKernelHandle('TCP', () => new TCP(constants.SOCKET));
+registerKernelHandle('TCP', () => new TCP(tcpConstants().SOCKET));
 
-export default { TCP, TCPConnectWrap, constants };
+export default { TCP, TCPConnectWrap, get constants() { return tcpConstants(); } };

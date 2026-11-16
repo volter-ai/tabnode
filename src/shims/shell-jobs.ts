@@ -10,7 +10,8 @@
  */
 import type { Bash, CommandContext } from 'just-bash';
 import { PROCESS_TOKEN_ENV, pidIsLive, signalPid, tokenOfPid, __signalOwnedProcess, type ProcessToken } from '../process-tokens';
-import { __substrateChildrenOf, __substrateSignals, __substrateSignalNames } from './process';
+import { __substrateChildrenOf, __substrateSignalNames } from './process';
+import { engineSignals } from './constants';
 
 /** What the engine's process model gives this module. */
 export interface ShellJobsHost {
@@ -27,7 +28,7 @@ function signalName(spec: string): string | null {
   }
   const upper = bare.toUpperCase();
   const name = upper.startsWith('SIG') ? upper : `SIG${upper}`;
-  return __substrateSignals[name] !== undefined ? name : null;
+  return engineSignals[name] !== undefined ? name : null;
 }
 
 /** The engine's shell, given `sh`, `bash`, `exec` and `kill`. */
@@ -109,12 +110,12 @@ export function installShellJobs(bash: Bash, host: ShellJobsHost & { defineComma
     let signal = 'SIGTERM';
     let index = 0;
     if (args[0] === '-l' || args[0] === '-L') {
-      const names = Object.entries(__substrateSignals).sort((a, b) => a[1] - b[1]).map(([name]) => name.slice(3));
+      const names = Object.entries(engineSignals).sort((a, b) => a[1] - b[1]).map(([name]) => name.slice(3));
       if (args[1] !== undefined) {
         const number = Number(args[1]);
         const name = Number.isInteger(number) ? __substrateSignalNames[number > 128 ? number - 128 : number] : signalName(args[1]);
         if (!name) return { stdout: '', stderr: `bash: kill: ${args[1]}: invalid signal specification\n`, exitCode: 1 };
-        return { stdout: `${Number.isInteger(number) ? name.slice(3) : __substrateSignals[name]}\n`, stderr: '', exitCode: 0 };
+        return { stdout: `${Number.isInteger(number) ? name.slice(3) : engineSignals[name]}\n`, stderr: '', exitCode: 0 };
       }
       return { stdout: `${names.join(' ')}\n`, stderr: '', exitCode: 0 };
     }

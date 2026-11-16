@@ -19,7 +19,7 @@
  * as Node's C++ reads a uv_fs_t. The crypto and tls_wrap bindings are the same over OpenSSL in libnode.so
  * (`openssl.ts`), and what OpenSSL raises inside one of their calls comes back as the `tls_*` imports, inside that call.
  */
-import { errname, getErrorMap } from './uv';
+import { errname, getErrorMessage } from './uv';
 
 /** A pointer, a size or an i32 as the program answers it. */
 type I32 = number;
@@ -99,6 +99,14 @@ export interface LibnodeExports {
   tabnode_signal_new(): I32;
   tabnode_signal_start(handle: I32, signum: I32): I32;
   tabnode_signal_stop(handle: I32): I32;
+  /** process_methods.c: process._kill's uv_kill. */
+  tabnode_kill(pid: I32, signal: I32): I32;
+  /** uv.c: uv.cc's error table (12 bytes an entry, its count at `countAt`), ErrName and GetErrMessage into 50 bytes. */
+  tabnode_uv_errors(countAt: I32): I32;
+  tabnode_uv_err_name_r(err: I32, name: I32): void;
+  tabnode_uv_strerror_r(err: I32, message: I32): void;
+  /** node_constants.cc: Node's constants as the program compiled them, its text malloc'd, its length at `lengthAt`. */
+  tabnode_constants(lengthAt: I32): I32;
   /** spawn_sync.c: SyncProcessRunner's run, and its result's release. */
   tabnode_spawn_sync(options: I32): I32;
   tabnode_spawn_sync_free(result: I32): void;
@@ -135,6 +143,7 @@ export interface LibnodeExports {
   tabnode_fs_read(request: I32, fd: I32, nbufs: I32, position: bigint, async: I32): I32;
   tabnode_fs_write(request: I32, fd: I32, nbufs: I32, position: bigint, async: I32): I32;
   tabnode_fs_stat(request: I32, path: I32, async: I32): I32;
+  tabnode_fs_internal_module_stat(request: I32, path: I32): I32;
   tabnode_fs_lstat(request: I32, path: I32, async: I32): I32;
   tabnode_fs_fstat(request: I32, fd: I32, async: I32): I32;
   tabnode_fs_statfs(request: I32, path: I32, async: I32): I32;
@@ -179,7 +188,7 @@ export interface LibnodeExports {
   tabnode_fs_closedir(request: I32, dir: I32, async: I32): I32;
   tabnode_fs_event_new(): I32;
   tabnode_fs_event_init(handle: I32): I32;
-  tabnode_fs_event_start(handle: I32, path: I32, flags: I32): I32;
+  tabnode_fs_event_start(handle: I32, path: I32, recursive: I32): I32;
   tabnode_stat_watcher_new(): I32;
   tabnode_stat_watcher_start(handle: I32, path: I32, interval: I32): I32;
   /** stdio.c: exit(3), which runs Node's ResetStdio and ends the process: `process.reallyExit`'s. */
@@ -433,16 +442,19 @@ export function addressAt(at: number): AddressFields {
   return readAddress(readRecord(at, ADDRESS_BYTES));
 }
 
-/** Node's UVException: an Error with the error's errno, code and syscall, as `env->ThrowUVException` makes it. */
+/**
+ * Node's UVException: an Error with the error's errno, code and syscall, as `env->ThrowUVException` makes it, its code
+ * uv_err_name's and its message uv_strerror's.
+ */
 export function uvException(err: number, syscall: string): Error {
-  const [code, message] = getErrorMap().get(err) ?? [errname(err), 'unknown error'];
+  const code = errname(err), message = getErrorMessage(err);
   return Object.assign(new Error(`${syscall}: ${message}`), { errno: err, code, syscall });
 }
 
 /** Environment::CollectUVExceptionInfo: the error's fields on the binding's context object. */
 export function collectUVExceptionInfo(ctx: unknown, err: number, syscall: string): void {
   if (ctx === null || typeof ctx !== 'object') return;
-  const [code, message] = getErrorMap().get(err) ?? [errname(err), 'unknown error'];
+  const code = errname(err), message = getErrorMessage(err);
   Object.assign(ctx, { errno: err, code, message, syscall });
 }
 
@@ -460,8 +472,8 @@ export interface HandleCallbacks {
   onUvExit?(exitStatus: number, signal: number, length: number): void;
   /** SignalWrap's uv_signal_cb: the signal's number. */
   onUvSignal?(signum: number): void;
-  /** FSEventWrap::OnEvent: libuv's filename (a C string, 0 for none), its events and its status. */
-  onUvFsEvent?(filename: number, events: number, status: number): void;
+  /** FSEventWrap::OnEvent: libuv's filename (a C string, 0 for none), the event's name the C chose, and the status. */
+  onUvFsEvent?(filename: number, event: string, status: number): void;
   /** StatWatcher::Callback: the status, both stats in the binding's arrays. */
   onUvStatChange?(status: number): void;
 }
@@ -573,8 +585,8 @@ export const libnodeImports = {
     done();
   },
   /** FSEventWrap::OnEvent. */
-  fs_event: (handle: number, filename: number, events: number, status: number): void => {
-    handleAt(handle).target.onUvFsEvent?.(filename, events, status);
+  fs_event: (handle: number, filename: number, event: number, status: number): void => {
+    handleAt(handle).target.onUvFsEvent?.(filename, libnode().cString(event) ?? '', status);
   },
   /** StatWatcher::Callback. */
   stat_watcher_change: (handle: number, status: number): void => { handleAt(handle).target.onUvStatChange?.(status); },

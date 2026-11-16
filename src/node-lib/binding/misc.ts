@@ -7,7 +7,7 @@ import { processCredentialsOf } from '../../process-credentials';
  * Each is the whole of what those files read from it and nothing more.
  */
 import { constantsBinding as buildConstantsBinding } from '../../shims/constants';
-import { UV_ENOSYS } from './uv';
+import { uvConstant } from './uv';
 import * as osShim from '../../shims/os';
 import { treeSocketsOf, type TreeSockets } from '../../host-sockets';
 import { nodeLibInternalRequire } from '../load';
@@ -16,17 +16,9 @@ import { adaToAscii } from './ada_idna';
 import { hostnameToUnicode } from '../internals/url';
 
 /**
- * `internalBinding('constants')`: the engine's own constants module, which
- * already answers Node's `os.signals`, `os.errno` and the rest.
- * `internal/validators.js` reads `constants.os.signals` to validate a signal
- * name.
- *
- * Built on the first property read, not when this file is evaluated. The
- * function that builds the table reads `crypto.constants` through a getter;
- * calling it at module scope is a use of that binding while `crypto.ts` is
- * still in its body (the constants file and the crypto shim import each
- * other through this table), which is `Cannot access 'constants$N' before
- * initialization` in a consumer's Node.
+ * `internalBinding('constants')` (`src/shims/constants.ts`): the program's compiled constants where the realm has the
+ * `node` program, the engine's tables where it has none. Built on the first property read, not when this file is
+ * evaluated: the realm's program is attached by then, and the table is the program's.
  */
 // eslint-disable-next-line no-var, vars-on-top
 var __constants: Record<string, unknown> | undefined;
@@ -250,7 +242,7 @@ export const configBinding = {
 export const fsBinding = {
   writeBuffer: (_fd: number, _buffer: Uint8Array, _offset: number, _length: number,
     _position: unknown, _req: unknown, ctx: { errno?: number; syscall?: string }): number => {
-    ctx.errno = UV_ENOSYS;
+    ctx.errno = uvConstant('UV_ENOSYS');
     ctx.syscall = 'write';
     return 0;
   },

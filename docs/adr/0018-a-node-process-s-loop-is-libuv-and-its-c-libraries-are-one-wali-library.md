@@ -77,6 +77,21 @@ that call the handle's JavaScript, as `MakeCallback` does. What a binding decide
 decides (ordering, half-close, end of stream, ref and unref, close) is libuv's, and the TypeScript that re-encoded it
 goes.
 
+Every number a binding hands libuv or the kernel, or compares their answers with, is the program's, compiled from
+Node's own text against the WALI SDK's musl headers and libuv's uv.h, as Node's binary holds its system's.
+`internalBinding('constants')` is Node's `src/node_constants.cc`: every Define* function its
+CreatePerContextProperties calls (errno, the Windows errors, which Linux has none of, signals, priority, fs with its
+`O_*`, `S_*`, `UV_FS_*`, `COPYFILE_*` and access modes, crypto, dlopen, trace, internal) and os's `UV_UDP_REUSEADDR`,
+extracted from Node's tarball by the build and compiled in `native/node/node_constants.cc`, whose target is the text
+the engine builds the binding's groups from (`src/shims/constants.ts`); the zlib group is the engine's zlib's own,
+since zlib is not yet in `libnode.so`. The wraps' constants (`tcp_wrap`, `pipe_wrap`, `udp_wrap`, `tty_wrap`: their
+Initialize's NODE_DEFINE_CONSTANTs from uv.h and their own headers) are in the same text. `internalBinding('uv')` is
+Node's `src/uv.cc` (`native/node/uv.c`: UV_ERRNO_MAP expanded once, `uv_err_name_r`, `uv_strerror_r`), and every
+`UV_E*` a binding answers or compares is read from it (`src/node-lib/binding/uv.ts` `uvConstant`). A number Node's C++
+decides from a header in the middle of a call (FSEventWrap's `UV_FS_EVENT_RECURSIVE` and its event's name,
+InternalModuleStat's `S_ISDIR`) is decided in the program's C. A realm with no `node` program has no libc: its numbers
+are the engine's own tables, the ones its own tree, signals and errors read back.
+
 ### 4. Microtasks drain after each callback
 
 libuv calls C: each handle's callbacks are `libnode`'s glue, as Node's `src/*_wrap.cc` callbacks are (`OnRead`,
@@ -334,15 +349,22 @@ ResetSignalHandlers (SIGPIPE and SIGXFSZ ignored, a signal inherited ignored the
 SIGINT and SIGTERM (`SA_RESETHAND`, every signal blocked while it runs), which runs ResetStdio and raises the signal
 again with its default action, so a death by either signal puts the standard streams back as an exit does; a
 listener's `uv_signal_start` takes the signal from it, and its last `uv_signal_stop` leaves the default, as in Node.
-The program's end is TearDownOncePerProcess's: ResetStdio, then ResetSignalHandlers. A realm with no `node` program
-keeps the engine's signals: a kill of one of its processes runs its listeners in the call (`src/shims/process.ts`
-`kill`, the engine registry's `receiveSignals`). Where this differs from Node:
+The program's end is TearDownOncePerProcess's: ResetStdio, then ResetSignalHandlers. `process.kill` is Node's
+(`lib/internal/process/per_thread.js:254-280`, carried line for line where the run starts, `src/shims/child_process.ts`)
+over `process._kill`, Node's Kill (`src/node_process_methods.cc:185-209`): `uv_kill` in the program
+(`process_methods.c`), a signal's name read from the program's compiled `os.signals` (§3). So the kernel delivers the
+signal: to the process itself, a listener's `uv_signal_t` runs it on the loop, and with none the signal's default
+action ends the process, which emits no `'exit'`, as Node's dies of the signal; to a child or a group, the kernel's.
+A realm with no `node` program keeps the engine's signals: a kill of one of its processes runs its listeners in the
+call (`src/shims/process.ts` `kill`, the engine registry's `receiveSignals`), and a death by a default action emits
+no `'exit'` (`__substrateTerminating`). Where this differs from Node:
 - SignalExit is an `sa_handler`: Node gives it as an `sa_sigaction` with no `SA_SIGINFO`, which Linux calls with the
   signal alone, and a WebAssembly table call is checked against the function's type.
-- SignalWrap's count of the started wraps of each signal (`handled_signals`) is not kept. Its one reader is
-  `process._kill`'s `HasSignalJSHandler` (`src/node_process_methods.cc:199-205`), and `process.kill` is the engine's
-  (`src/shims/process.ts`), not Node's `_kill` over `uv_kill`: a kill of the process itself runs its listeners in the
-  call, and with none takes the signal's default action in the engine.
+- SignalWrap's count of the started wraps of each signal (`handled_signals`) is not kept, nor Kill's question of it.
+  Its one reader is `process._kill`'s `HasSignalJSHandler` (`src/node_process_methods.cc:198-205`), which decides
+  whether a kill likely to end the process first runs the Environment's at-exit callbacks (RunAtExit); Node's only
+  callers of AtExit are its inspector agent and its profiler (`src/inspector_agent.cc:879`,
+  `src/inspector_profiler.cc:491`), which the engine has neither of, so the process has none to run.
 
   6. `fs` over `uv_fs_*` and its threadpool. `internalBinding('fs')`, `fs_dir` and `fs_event_wrap` are Node's
      `src/node_file.cc`, `node_dir.cc`, `fs_event_wrap.cc` and `node_stat_watcher.cc`, split where V8 stands: the
@@ -456,7 +478,8 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   `stream_connection(server, status)`, `stream_connected(id, status, readable, writable)`, `udp_received(handle, nread,
   base, name, flags)` (`name` a `tabnode_address_t`, 0 with an error), `udp_sent(id, status)`, `process_exit(handle,
   f64 exit status, signal name's address, its length)`, `signal_received(handle, signum)` (SignalWrap's callback, the
-  handle's `onsignal`), `fs_done(request)`, `fs_event(handle, filename, events, status)` and
+  handle's `onsignal`), `fs_done(request)`, `fs_event(handle, filename, event, status)` (`event` the event's name as a
+  C string, which the C chose as FSEventWrap::OnEvent does) and
   `stat_watcher_change(handle, status)`; and OpenSSL's callbacks, made inside an export call of the engine's and
   followed by no drain: `tls_handshake(tls, done)`, `tls_keylog(tls, line, length)`, `tls_new_session(tls, id,
   id_length, der, der_length)`, `tls_cert(tls, servername, length, ocsp) -> i32` and `tls_alpn(tls, protocols, length)
@@ -515,8 +538,8 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
 - *The build* (`scripts/build-libnode.sh`): `<native SDK> <side-module toolchain> <libuv a267f5688b archive>
   <node-v24.21.0.tar.gz> <out>`. The side-module toolchain is browser-substrate's (its ADR-0231: `include/c++/v1`,
   `lib/libc++.a`, `lib/libc++abi.a`), so the recipe depends on it beside the native SDK, and Node's release archive
-  is an input (OpenSSL, ncrypto, `node_root_certs.h`, `node_constants.cc`). `libnode.so` exports the whole of
-  libuv, OpenSSL and ncrypto.
+  is an input (OpenSSL, ncrypto, `node_root_certs.h`, `node_constants.cc` and `.h`, `tracing/trace_event_common.h`).
+  `libnode.so` exports the whole of libuv, OpenSSL and ncrypto.
 - *Addons through `dlopen`* (item 7): the program's `dlopen` of a `.node` reaches the loader, which refuses a
   library's import outside `env`, `GOT` and `wali` and binds `env` by name in the program and the libraries. An addon
   the side-module toolchain builds imports emnapi's `napi` and `emnapi` modules and Node-API's `env` functions, which

@@ -29,7 +29,6 @@ import os, {
   getPriority,
   setPriority,
   EOL,
-  constants,
   devNull,
 } from '../../src/shims/os';
 import { assert } from './common';
@@ -353,39 +352,6 @@ describe('os module (Node.js compat)', () => {
     });
   });
 
-  describe('os.constants', () => {
-    it('should be an object', () => {
-      expect(typeof constants).toBe('object');
-      expect(constants).not.toBeNull();
-    });
-
-    it('should have signals', () => {
-      expect(constants).toHaveProperty('signals');
-      expect(typeof constants.signals).toBe('object');
-    });
-
-    it('should have common signals', () => {
-      const { signals } = constants;
-      expect(signals).toHaveProperty('SIGINT');
-      expect(signals).toHaveProperty('SIGTERM');
-      expect(signals).toHaveProperty('SIGKILL');
-      expect(typeof signals.SIGINT).toBe('number');
-      expect(typeof signals.SIGTERM).toBe('number');
-      expect(typeof signals.SIGKILL).toBe('number');
-    });
-
-    it('should have priority constants', () => {
-      expect(constants).toHaveProperty('priority');
-      expect(constants.priority).toHaveProperty('PRIORITY_LOW');
-      expect(constants.priority).toHaveProperty('PRIORITY_NORMAL');
-      expect(constants.priority).toHaveProperty('PRIORITY_HIGH');
-    });
-
-    it('should be accessible from default export', () => {
-      expect(os.constants).toBe(constants);
-    });
-  });
-
   describe('os.devNull', () => {
     it('should be a string', () => {
       expect(typeof devNull).toBe('string');
@@ -425,7 +391,6 @@ describe('os module (Node.js compat)', () => {
 
     it('should have all constants', () => {
       expect(os.EOL).toBe(EOL);
-      expect(os.constants).toBe(constants);
       expect(os.devNull).toBe(devNull);
     });
   });

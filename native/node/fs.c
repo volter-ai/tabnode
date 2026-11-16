@@ -215,6 +215,16 @@ EXPORT(tabnode_fs_write) int tabnode_fs_write(tabnode_fs_t *r, int fd, unsigned 
 EXPORT(tabnode_fs_stat) int tabnode_fs_stat(tabnode_fs_t *r, const char *path, int async) {
   return uv_fs_stat(loop(), &r->req, path, CB(async));
 }
+// InternalModuleStat (node_file.cc:1100-1117): a synchronous uv_fs_stat, then S_ISDIR of its mode: 0 for a file, 1 for
+// a directory, libuv's error otherwise.
+EXPORT(tabnode_fs_internal_module_stat) int tabnode_fs_internal_module_stat(tabnode_fs_t *r, const char *path) {
+  int rc = uv_fs_stat(loop(), &r->req, path, NULL);
+  if (rc == 0) {
+    const uv_stat_t *const s = (const uv_stat_t *)r->req.ptr;
+    rc = S_ISDIR(s->st_mode);
+  }
+  return rc;
+}
 EXPORT(tabnode_fs_lstat) int tabnode_fs_lstat(tabnode_fs_t *r, const char *path, int async) {
   return uv_fs_lstat(loop(), &r->req, path, CB(async));
 }

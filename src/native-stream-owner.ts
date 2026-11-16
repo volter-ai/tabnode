@@ -6,9 +6,8 @@
 import { Pipe } from './node-lib/binding/pipe_wrap';
 import { LibuvStreamWrap, kConnectionEnd, kPeer, kPeerQueuedBytes, kPeerQueuedHandles, WriteWrap, ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset } from './node-lib/binding/stream_wrap';
 import { __adoptHandle } from './node-lib/binding/handles';
-import uv, { UV_EBADF, UV_ECANCELED, UV_EINVAL, UV_ENOBUFS, UV_ENOTSUP, UV_EPIPE, UV_EMFILE, UV_EBUSY, UV_ENOSYS } from './node-lib/binding/uv';
+import { uvConstant } from './node-lib/binding/uv';
 
-const UV_EAGAIN = uv.UV_EAGAIN as number;
 
 export interface NativeStreamDescriptor { id: number; kind: 'pipe'; type: number }
 export interface NativeStreamLimits {
@@ -136,7 +135,7 @@ export class NativeStreamScope {
         if (sent instanceof Pipe) incoming = this.claim(sent);
         if (!incoming) {
           if (sent instanceof LibuvStreamWrap && !scopes.has(sent)) sent.close();
-          this.publish({ type: 'read', id: descriptor.id, status: UV_ENOTSUP });
+          this.publish({ type: 'read', id: descriptor.id, status: uvConstant('UV_ENOTSUP') });
           this.close(descriptor.id);
           return;
         }
@@ -152,43 +151,43 @@ export class NativeStreamScope {
 
   /** Synchronous operations return libuv status; completions use the event door. */
   call(operation: NativeStreamOperation): NativeStreamReply {
-    if (this.disposed) return { status: UV_EBADF };
+    if (this.disposed) return { status: uvConstant('UV_EBADF') };
     if (operation.operation === 'fdType') {
-      if (!Number.isInteger(operation.fd) || operation.fd < 0) return { status: UV_EINVAL };
+      if (!Number.isInteger(operation.fd) || operation.fd < 0) return { status: uvConstant('UV_EINVAL') };
       const id = this.descriptors.get(operation.fd);
       const entry = id === undefined ? undefined : this.entry(id);
-      return entry ? { status: 0, handleType: 'PIPE' } : { status: UV_EBADF };
+      return entry ? { status: 0, handleType: 'PIPE' } : { status: uvConstant('UV_EBADF') };
     }
     if (operation.operation === 'create') {
-      if (this.entries.size >= this.limits.maxHandles) return { status: UV_EMFILE };
-      if (operation.kind !== 'pipe' || !Number.isInteger(operation.type) || operation.type < 0 || operation.type > 2) return { status: UV_EINVAL };
+      if (this.entries.size >= this.limits.maxHandles) return { status: uvConstant('UV_EMFILE') };
+      if (operation.kind !== 'pipe' || !Number.isInteger(operation.type) || operation.type < 0 || operation.type > 2) return { status: uvConstant('UV_EINVAL') };
       const handle = new Pipe(operation.type);
       const descriptor = this.claim(handle);
-      if (!descriptor) { handle.close(); return { status: UV_EMFILE }; }
+      if (!descriptor) { handle.close(); return { status: uvConstant('UV_EMFILE') }; }
       return { status: 0, handle: descriptor };
     }
     const entry = this.entry(operation.id);
-    if (!entry) return { status: UV_EBADF };
+    if (!entry) return { status: uvConstant('UV_EBADF') };
     const handle = entry.handle;
     switch (operation.operation) {
       case 'duplicate': {
         // A connection is duplicated whether or not its other end is still there (the copy reads its EOF).
-        if (this.entries.size >= this.limits.maxHandles) return { status: UV_EMFILE };
+        if (this.entries.size >= this.limits.maxHandles) return { status: uvConstant('UV_EMFILE') };
         const copy = handle.duplicate();
         const descriptor = this.claim(copy);
-        if (!descriptor) { copy.close(); return { status: UV_EMFILE }; }
+        if (!descriptor) { copy.close(); return { status: uvConstant('UV_EMFILE') }; }
         return { status: 0, handle: descriptor };
       }
       case 'pair': {
         const other = this.entry(operation.peer)?.handle;
-        if (!other || handle[kPeer] || other[kPeer] || other === handle) return { status: UV_EINVAL };
+        if (!other || handle[kPeer] || other[kPeer] || other === handle) return { status: uvConstant('UV_EINVAL') };
         LibuvStreamWrap.pair(handle, other);
         return { status: 0 };
       }
       case 'open': {
         const inherited = this.descriptors.get(operation.fd);
         const held = inherited === undefined ? undefined : this.entry(inherited);
-        if (!held || held.descriptor.kind !== entry.descriptor.kind || handle[kPeer] || handle.listening) return { status: UV_EBADF };
+        if (!held || held.descriptor.kind !== entry.descriptor.kind || handle[kPeer] || handle.listening) return { status: uvConstant('UV_EBADF') };
         if (held !== entry) {
           handle.takeOverFrom(held.handle);
           this.uncredit(inherited!);
@@ -207,14 +206,14 @@ export class NativeStreamScope {
       case 'ref': handle.ref(); return { status: 0 };
       case 'unref': handle.unref(); return { status: 0 };
       case 'shutdown': {
-        if (!Number.isSafeInteger(operation.request) || operation.request < 1) return { status: UV_EINVAL };
-        if (this.writes.has(operation.id)) return { status: UV_EBUSY };
+        if (!Number.isSafeInteger(operation.request) || operation.request < 1) return { status: uvConstant('UV_EINVAL') };
+        if (this.writes.has(operation.id)) return { status: uvConstant('UV_EBUSY') };
         const request = new ShutdownWrap();
         request.oncomplete = status => this.publish({ type: 'shutdown', id: operation.id, request: operation.request, status });
         return { status: handle.shutdown(request) };
       }
       case 'close':
-        if (!Number.isSafeInteger(operation.request) || operation.request < 1) return { status: UV_EINVAL };
+        if (!Number.isSafeInteger(operation.request) || operation.request < 1) return { status: uvConstant('UV_EINVAL') };
         return this.close(operation.id, operation.request);
     }
   }
@@ -224,13 +223,13 @@ export class NativeStreamScope {
    * 0, and schedules the reader separately. EAGAIN leaves that queue untouched. */
   tryWrite(id: number, bytes: Uint8Array): number {
     const handle = this.entry(id)?.handle;
-    if (!handle || handle.closed) return UV_EBADF;
-    if (!(bytes instanceof Uint8Array)) return UV_EINVAL;
+    if (!handle || handle.closed) return uvConstant('UV_EBADF');
+    if (!(bytes instanceof Uint8Array)) return uvConstant('UV_EINVAL');
     if (bytes.byteLength > this.limits.maxReadChunkBytes
       || this.writes.has(id)
-      || this.pendingWriteBytes + bytes.byteLength > this.limits.maxPendingWriteBytes) return UV_EAGAIN;
-    if (!handle[kPeer]) return UV_EPIPE;
-    if (handle[kPeerQueuedBytes] + bytes.byteLength > this.limits.maxQueuedBytes) return UV_EAGAIN;
+      || this.pendingWriteBytes + bytes.byteLength > this.limits.maxPendingWriteBytes) return uvConstant('UV_EAGAIN');
+    if (!handle[kPeer]) return uvConstant('UV_EPIPE');
+    if (handle[kPeerQueuedBytes] + bytes.byteLength > this.limits.maxQueuedBytes) return uvConstant('UV_EAGAIN');
     const status = handle.writeBuffer(new WriteWrap(), bytes);
     this.publishCredit(id);
     return status;
@@ -244,9 +243,9 @@ export class NativeStreamScope {
    */
   creditWrites(id: number, word: Int32Array): { status: number; word?: Int32Array } {
     const handle = this.entry(id)?.handle;
-    if (!handle || handle.closed) return { status: UV_EBADF };
+    if (!handle || handle.closed) return { status: uvConstant('UV_EBADF') };
     if (this.credits.has(id) || !(word.buffer instanceof SharedArrayBuffer) || word.length < SEND_CREDIT_WORDS
-      || this.limits.maxQueuedBytes + this.limits.maxReadChunkBytes >= 2 ** 31) return { status: UV_EINVAL };
+      || this.limits.maxQueuedBytes + this.limits.maxReadChunkBytes >= 2 ** 31) return { status: uvConstant('UV_EINVAL') };
     // One send buffer per socket: a duplicate of a connection end already credited (here or in another scope of this
     // worker) is given that end's word, and its writes reserve from the same window.
     const end = handle[kConnectionEnd];
@@ -271,8 +270,8 @@ export class NativeStreamScope {
     const credit = this.credits.get(id)?.credit;
     if (credit) credit.written = (credit.written + bytes.byteLength) | 0;
     const handle = this.entry(id)?.handle;
-    const status = !handle || handle.closed ? UV_EBADF : !(bytes instanceof Uint8Array) ? UV_EINVAL
-      : !handle[kPeer] ? UV_EPIPE : handle.writeBuffer(new WriteWrap(), bytes);
+    const status = !handle || handle.closed ? uvConstant('UV_EBADF') : !(bytes instanceof Uint8Array) ? uvConstant('UV_EINVAL')
+      : !handle[kPeer] ? uvConstant('UV_EPIPE') : handle.writeBuffer(new WriteWrap(), bytes);
     this.publishCredit(id);
     return status;
   }
@@ -302,7 +301,7 @@ export class NativeStreamScope {
    * native statuses that accepted NO bytes may enter the ordinary write queue.
    * Otherwise that same submission completes with its actual native status. */
   finishTryWrite(id: number, bytes: Uint8Array, status: number): Promise<number> {
-    return status === UV_EAGAIN || status === UV_ENOSYS
+    return status === uvConstant('UV_EAGAIN') || status === uvConstant('UV_ENOSYS')
       ? this.write(id, bytes) : Promise.resolve(status);
   }
 
@@ -313,17 +312,17 @@ export class NativeStreamScope {
    */
   write(id: number, bytes: Uint8Array, sentId?: number): Promise<number> {
     const handle = this.entry(id)?.handle;
-    if (!handle) return Promise.resolve(UV_EBADF);
-    if (this.writes.has(id)) return Promise.resolve(UV_EBUSY);
+    if (!handle) return Promise.resolve(uvConstant('UV_EBADF'));
+    if (this.writes.has(id)) return Promise.resolve(uvConstant('UV_EBUSY'));
     if (bytes.byteLength > this.limits.maxReadChunkBytes
-      || this.pendingWriteBytes + bytes.byteLength > this.limits.maxPendingWriteBytes) return Promise.resolve(UV_ENOBUFS);
+      || this.pendingWriteBytes + bytes.byteLength > this.limits.maxPendingWriteBytes) return Promise.resolve(uvConstant('UV_ENOBUFS'));
     const sent = sentId === undefined ? undefined : this.entry(sentId)?.handle;
-    if (sentId !== undefined && !sent) return Promise.resolve(UV_EBADF);
+    if (sentId !== undefined && !sent) return Promise.resolve(uvConstant('UV_EBADF'));
     // A connection crosses whether or not its other end is still there: Node
     // passes a socket whose peer has closed, and the receiver reads its EOF.
     // Refusing it failed the whole channel write (`write ENOTSUP`), which ended
     // VS Code's extension host when a reconnecting client had already gone.
-    if (sent && (!(handle instanceof Pipe) || sent.listening || bytes.byteLength === 0)) return Promise.resolve(UV_ENOTSUP);
+    if (sent && (!(handle instanceof Pipe) || sent.listening || bytes.byteLength === 0)) return Promise.resolve(uvConstant('UV_ENOTSUP'));
     // Retain the descriptor while capacity is unavailable; the sender can close
     // its original after submitting the write without invalidating this copy.
     const owned = new Uint8Array(bytes.byteLength);
@@ -347,14 +346,14 @@ export class NativeStreamScope {
       };
       const attempt = (): void => {
         if (ended) return;
-        if (handle.closed || this.disposed) { finish(UV_ECANCELED); return; }
-        if (!handle[kPeer]) { finish(UV_EPIPE); return; }
+        if (handle.closed || this.disposed) { finish(uvConstant('UV_ECANCELED')); return; }
+        if (!handle[kPeer]) { finish(uvConstant('UV_EPIPE')); return; }
         if (handle[kPeerQueuedBytes] + owned.byteLength > this.limits.maxQueuedBytes) return;
         // A one-byte IPC message can carry an entire descriptor. Byte credit
         // alone does not meaningfully bound unread SCM_RIGHTS copies.
         if (retained && handle[kPeerQueuedHandles] >= this.limits.maxQueuedHandles) return;
         try { finish(handle.writeBuffer(new WriteWrap(), owned, retained)); }
-        catch (cause) { finish(UV_ECANCELED, cause); }
+        catch (cause) { finish(uvConstant('UV_ECANCELED'), cause); }
         this.publishCredit(id);
       };
       this.writes.set(id, finish);
@@ -365,22 +364,22 @@ export class NativeStreamScope {
 
   /** Trusted parent-to-child inheritance; this is deliberately absent from call(). */
   inherit(fd: number, source: NativeStreamScope, id: number): NativeStreamReply {
-    if (this.disposed || !Number.isInteger(fd) || fd < 0 || this.descriptors.has(fd)) return { status: UV_EINVAL };
-    if (this.entries.size >= this.limits.maxHandles) return { status: UV_EMFILE };
+    if (this.disposed || !Number.isInteger(fd) || fd < 0 || this.descriptors.has(fd)) return { status: uvConstant('UV_EINVAL') };
+    if (this.entries.size >= this.limits.maxHandles) return { status: uvConstant('UV_EMFILE') };
     const handle = source.entry(id)?.handle;
-    if (!handle) return { status: UV_EBADF };
-    if (handle.listening) return { status: UV_ENOTSUP };
+    if (!handle) return { status: uvConstant('UV_EBADF') };
+    if (handle.listening) return { status: uvConstant('UV_ENOTSUP') };
     const copy = handle.duplicate();
     const descriptor = this.claim(copy);
-    if (!descriptor) { copy.close(); return { status: UV_EMFILE }; }
+    if (!descriptor) { copy.close(); return { status: uvConstant('UV_EMFILE') }; }
     this.descriptors.set(fd, descriptor.id);
     return { status: 0, handle: descriptor };
   }
 
   private close(id: number, request?: number): NativeStreamReply {
     const entry = this.entries.get(id);
-    if (!entry) return { status: UV_EBADF };
-    this.writes.get(id)?.(UV_ECANCELED);
+    if (!entry) return { status: uvConstant('UV_EBADF') };
+    this.writes.get(id)?.(uvConstant('UV_ECANCELED'));
     // Credit-accepted writes are already in the peer's queue (port order): nothing of them is cancelled. The word is
     // closed to its processed count, so no further write is accepted against it.
     this.uncredit(id);

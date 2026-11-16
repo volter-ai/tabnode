@@ -56,7 +56,7 @@ tar xzf "$uv_archive" -C "$work" "$libuv/include" "$libuv/src"
 uv="$work/$libuv"
 node=node-v24.21.0
 tar xzf "$node_archive" -C "$work" "$node/deps/openssl/openssl" "$node/deps/ncrypto" "$node/src/node_root_certs.h" \
-  "$node/src/node_constants.cc" "$node/src/node_constants.h"
+  "$node/src/node_constants.cc" "$node/src/node_constants.h" "$node/src/tracing/trace_event_common.h"
 openssl="$work/$node/deps/openssl/openssl"
 ncrypto="$work/$node/deps/ncrypto"
 cc="$sdk/bin/cc"
@@ -135,22 +135,24 @@ mkdir -p "$out"
   -Wl,--whole-archive "$openssl/libssl.a" "$openssl/libcrypto.a" -Wl,--no-whole-archive \
   "$openssl/providers/liblegacy.a" "${cxxlibs[@]}"
 
-# Node's crypto constants, compiled as Node writes them: the headers and fallbacks node_constants.cc includes under
-# HAVE_OPENSSL (39-95), the body of DefineCryptoConstants (866-1091) and DEFAULT_CIPHER_LIST_CORE (node_constants.h
-# 52-76).
+# Node's constants, compiled as Node writes them (native/node/node_constants.cc): the system headers and fallbacks
+# node_constants.cc includes (30-113), every Define* function CreatePerContextProperties calls (126-1333), and
+# node_constants.h's own definitions (30-78: EXTENSIONLESS_FORMAT_*, the RSA_PSS_SALTLEN_* fallbacks and
+# DEFAULT_CIPHER_LIST_CORE); tracing/trace_event_common.h is read in Node's tree.
 mkdir -p "$work/generated"
-sed -n '39,95p' "$work/$node/src/node_constants.cc" > "$work/generated/crypto_constants_prelude.inc"
-sed -n '866,1091p' "$work/$node/src/node_constants.cc" > "$work/generated/crypto_constants_body.inc"
-sed -n '52,76p' "$work/$node/src/node_constants.h" > "$work/generated/default_cipher_list.inc"
+sed -n '30,113p' "$work/$node/src/node_constants.cc" > "$work/generated/node_constants_prelude.inc"
+sed -n '126,1333p' "$work/$node/src/node_constants.cc" > "$work/generated/node_constants_body.inc"
+sed -n '30,78p' "$work/$node/src/node_constants.h" > "$work/generated/node_constants_header.inc"
 
 # native/node: Node's start (node_main) and its standard streams' and signals' (stdio), its Environment's handles
 # (env), the engine's descriptor waits (poll), and the bindings' C, each over the Node source it names (memory, signo,
-# handle_wrap, stream_wrap, tcp_wrap, pipe_wrap, tty_wrap, udp_wrap, process_wrap, spawn_sync, signal_wrap, fs, fs_cp,
-# fs_event); and the crypto and tls_wrap bindings' C++ over ncrypto and OpenSSL (crypto_util, crypto_context,
-# crypto_cipher, crypto_tls, crypto_x509, node_constants), with the defines ncrypto gives its dependents (ncrypto.gyp).
+# handle_wrap, stream_wrap, tcp_wrap, pipe_wrap, tty_wrap, udp_wrap, process_wrap, spawn_sync, signal_wrap,
+# process_methods, uv, fs, fs_cp, fs_event); and the crypto and tls_wrap bindings' C++ over ncrypto and OpenSSL, and
+# Node's constants (crypto_util, crypto_context, crypto_cipher, crypto_tls, crypto_x509, node_constants), with the
+# defines ncrypto gives its dependents (ncrypto.gyp).
 program=()
 for source in node_main stdio env poll memory signo handle_wrap stream_wrap tcp_wrap pipe_wrap tty_wrap udp_wrap \
-  process_wrap spawn_sync signal_wrap fs fs_cp fs_event; do
+  process_wrap spawn_sync signal_wrap process_methods uv fs fs_cp fs_event; do
   "$cc" "${flags[@]}" -D_GNU_SOURCE -I"$uv/include" -c "$repo/native/node/$source.c" -o "$work/$source.o" &
   pids+=($!)
   program+=("$work/$source.o")

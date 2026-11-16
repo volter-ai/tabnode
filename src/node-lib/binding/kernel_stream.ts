@@ -15,7 +15,7 @@
  */
 import { LibuvStreamWrap, type WriteWrap, type ShutdownWrap, streamBaseState, kReadBytesOrError, kArrayBufferOffset, kBytesWritten, kLastWriteWasAsync } from './stream_wrap';
 import { invokeOwned, observeNodeRequest, ownedRun, ownerOfInstance, type OwnedHandle } from './handles';
-import { UV_EINVAL } from './uv';
+import { uvConstant } from './uv';
 import { fromMemory, intoMemory, libnode, libnodeAttached, type HandleCallbacks } from './libnode';
 import { HandleWrap, completeRequest } from './handle_wrap';
 
@@ -59,7 +59,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
     // StreamBase's `fd` and LibuvStreamWrap's `writeQueueSize` accessors (stream_base.cc:607-622, stream_wrap.cc:272).
     Object.defineProperty(this, 'fd', { configurable: true, enumerable: true, get: () => {
       const handle = this.#uv;
-      if (!handle?.alive) return UV_EINVAL;
+      if (!handle?.alive) return uvConstant('UV_EINVAL');
       const fd = handle.fileno();
       return fd >= 0 ? fd : -1;
     } });
@@ -104,13 +104,13 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
   override readStart(): number {
     if (!this.#kernel) return super.readStart();
     const handle = this.liveUv();
-    return handle ? libnode().exports.tabnode_stream_read_start(handle.wrap) : UV_EINVAL;
+    return handle ? libnode().exports.tabnode_stream_read_start(handle.wrap) : uvConstant('UV_EINVAL');
   }
 
   override readStop(): number {
     if (!this.#kernel) return super.readStop();
     const handle = this.liveUv();
-    return handle ? libnode().exports.tabnode_stream_read_stop(handle.wrap) : UV_EINVAL;
+    return handle ? libnode().exports.tabnode_stream_read_stop(handle.wrap) : uvConstant('UV_EINVAL');
   }
 
   /** StreamBase::UseUserBuffer: reads land in `buffer`, at most its length at a time. */
@@ -125,7 +125,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
   /** LibuvStreamWrap::SetBlocking. */
   setBlocking(enable: unknown): number {
     const handle = this.liveUv();
-    if (!this.#kernel || !handle) return UV_EINVAL;
+    if (!this.#kernel || !handle) return uvConstant('UV_EINVAL');
     return libnode().exports.tabnode_stream_set_blocking(handle.wrap, enable === true ? 1 : 0);
   }
 
@@ -133,7 +133,7 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
   override shutdown(req: ShutdownWrap): number {
     if (!this.#kernel) return super.shutdown(req);
     const handle = this.liveUv();
-    if (!handle) return UV_EINVAL;
+    if (!handle) return uvConstant('UV_EINVAL');
     const id = handle.dispatch((status) => completeRequest(req, status, this, undefined));
     const err = libnode().exports.tabnode_stream_shutdown(handle.wrap, id);
     if (err) handle.undispatch(id);
@@ -149,11 +149,11 @@ export class KernelStreamWrap extends LibuvStreamWrap implements HandleCallbacks
   protected override dispatchWrite(req: WriteWrap, buffer: Uint8Array, handle?: unknown): number {
     if (!this.#kernel) return super.dispatchWrite(req, buffer, handle);
     const own = this.liveUv();
-    if (!own) return UV_EINVAL;
+    if (!own) return uvConstant('UV_EINVAL');
     let send = 0;
     if (handle !== null && typeof handle === 'object' && this.isIpc) {
       send = (handle as { [kUvWrap]?: number })[kUvWrap] ?? 0;
-      if (!send) return UV_EINVAL;
+      if (!send) return uvConstant('UV_EINVAL');
       (req as unknown as { handle: unknown }).handle = handle;
     }
     const length = buffer.byteLength;

@@ -1,5 +1,5 @@
 import { drainGuestNextTicks } from '../../guest-loop';
-import { nodeCryptoConstants } from '../binding/openssl';
+import { constantsBinding } from '../../shims/constants';
 import { AsyncResource } from '../../shims/async_hooks';
 import { handleOwnerSymbol } from '../binding/owner-symbol';
 /**
@@ -149,7 +149,7 @@ const optionValues: Record<string, unknown> = {
   '--use-bundled-ca': false,
   '--use-system-ca': false,
   // DEFAULT_CIPHER_LIST_CORE (node_constants.h:52-76), as the `node` program compiled it.
-  get '--tls-cipher-list'() { return nodeCryptoConstants().defaultCoreCipherList; },
+  get '--tls-cipher-list'() { return constantsBinding().crypto.defaultCoreCipherList; },
 };
 
 /**
