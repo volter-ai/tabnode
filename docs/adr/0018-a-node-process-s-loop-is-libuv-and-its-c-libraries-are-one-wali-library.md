@@ -314,8 +314,8 @@ process is `node` differs from Node, the browser or the page's engine decides:
 - A page's engine makes no second context to compile in: a `vm` context is the engine's sandbox over its object
   (`contextify`'s `makeContext`, a script run in it through `with`), a source text module of one is refused, and a
   script's `timeout` and `breakOnSigint` are not kept, nothing being able to stop a running script.
-- A page's engine takes no flags: of what Node hands V8, a flag Node's table names is taken and has no effect, and any
-  other is Node's `bad option`; `--v8-options` lists none. It makes no code cache: `cachedData` is rejected,
+- A page's engine takes no flags: of what Node hands V8, a flag Node's table names as V8's (a V8 option,
+  `--stack-trace-limit`) is taken and has no effect, and any other is Node's `bad option`; `--v8-options` lists none. It makes no code cache: `cachedData` is rejected,
   `createCachedData` is empty and the compile cache answers DISABLED.
 - A promise's state is not a page's to read: `throwIfPromiseRejected` knows the promises `module_wrap` made, and an
   unsettled top-level await (exit code 13) is the entry's promise, tracked where `run_main` sets it, its warning naming

@@ -442,19 +442,24 @@ void GetOptionsAsFlags(const v8::FunctionCallbackInfo<v8::Value>& args) {
 }
 
 // V8::SetFlagsFromCommandLine with remove_flags, as the page's engine takes flags: none of its own, so a word is
-// taken where Node's table names it (Node hands V8 its V8 options, --stack-trace-limit and its implications' targets),
-// its name read as V8 reads a flag's (dashes for underscores, a `no` prefix, a value after `=`), and left for the
-// `bad option` where not.
+// taken where Node's table names it as V8's (an option of kV8Option's type, which is also what an implication hands
+// V8, or --stack-trace-limit, which Node passes down), its name read as V8 reads a flag's (dashes for underscores, a
+// `no` or `no-` prefix, a value after `=`), and left for the `bad option` where not. Every such option is in no
+// namespace (MapOptionsByNamespace's "").
 static bool IsV8FlagOfNodes(const std::string& arg) {
+  static const auto options = MapOptionsByNamespace("");
+  auto is_v8 = [](const std::string& name) {
+    auto it = options.find(name);
+    return it != options.end() && (it->second.type == kV8Option || name == "--stack-trace-limit");
+  };
   std::string name = arg.substr(0, arg.find('='));
   for (std::string::size_type i = 2; i < name.size(); ++i) {
     if (name[i] == '_') name[i] = '-';
   }
-  if (name.starts_with("--no-")) name.erase(2, 3);
-  else if (name.starts_with("--no") && _ppop_instance.options_.find("--" + name.substr(4)) != _ppop_instance.options_.end()) {
-    name.erase(2, 2);
-  }
-  return _ppop_instance.options_.find(name) != _ppop_instance.options_.end();
+  if (is_v8(name)) return true;
+  if (name.starts_with("--no-")) return is_v8("--" + name.substr(5));
+  if (name.starts_with("--no")) return is_v8("--" + name.substr(4));
+  return false;
 }
 
 // node_options.cc's own close of options_parser (2171), then HandleEnvOptions, ParseNodeOptionsEnvVar and the close
