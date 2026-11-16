@@ -1,10 +1,11 @@
 /**
- * `internalBinding('crypto')`, as far as Node's own `tls` reaches it (ADR-0016 §4): `SecureContext`, an `SSL_CTX` of
- * the OpenSSL in the process's `libnode.so`, and the root-certificate and cipher calls of `lib/tls.js`. Each method is
- * the V8 half of Node's `src/crypto/crypto_context.cc` over its OpenSSL half in the program
- * (native/node/crypto_context.cc, crypto_cipher.cc), and names the lines it carries; the keys', hashes', HMACs' and
- * randomness's parts are their files' (crypto_keys.ts, crypto_hash.ts, crypto_hmac.ts, crypto_random.ts), each call
- * answered by the engine device or by OpenSSL as ADR-0018 §5 routes it.
+ * `internalBinding('crypto')` (ADR-0018 item 7, ADR-0016 §4), the binding Node's own `lib/crypto.js`,
+ * `lib/internal/crypto/*` and `tls` run over: `SecureContext`, an `SSL_CTX` of the OpenSSL in the process's
+ * `libnode.so`, and the root-certificate calls of `lib/tls.js` here, the V8 half of Node's
+ * `src/crypto/crypto_context.cc` over its OpenSSL half in the program (native/node/crypto_context.cc), each method naming
+ * the lines it carries; every other part is its file's (crypto_keys.ts, crypto_hash.ts, crypto_hmac.ts,
+ * crypto_random.ts, crypto_sig.ts, x509_object.ts, crypto_kdf.ts, crypto_cipher.ts, crypto_keygen.ts, crypto_dh.ts,
+ * crypto_webcrypto.ts), each call answered by the engine device or by OpenSSL as ADR-0018 §5 routes it.
  *
  * The root store is the image's bundle (`/etc/ssl/certs/ca-certificates.crt`, where an image lays its World's CA)
  * and the file `NODE_EXTRA_CA_CERTS` names, as Node's `--use-openssl-ca` makes it (ADR-0016 §4), read once for the
@@ -25,6 +26,10 @@ import { randomBinding } from './crypto_random';
 import { sigBinding } from './crypto_sig';
 import { x509Binding } from './x509_object';
 import { kdfBinding } from './crypto_kdf';
+import { cipherBinding } from './crypto_cipher';
+import { keygenBinding } from './crypto_keygen';
+import { dhBinding } from './crypto_dh';
+import { ARGON2_TYPE_NAMES, argon2Type, webcryptoBinding } from './crypto_webcrypto';
 
 type Bytes = Uint8Array | string;
 
@@ -353,15 +358,6 @@ function startLoadingCertificatesOffThread(): void {}
 /** GetCertificateCompressionAlgorithms, 2245-2256: none, libnode.so's OpenSSL having no zlib, brotli or zstd (ADR-0016 §1). */
 function getCertificateCompressionAlgorithms(): string[] { return []; }
 
-/** CipherBase::GetSSLCiphers (crypto_cipher.cc:166-188): the default context's cipher names. */
-function getSSLCiphers(): string[] {
-  const deps = openssl();
-  const count = deps.tabnode_ssl_cipher_count();
-  const out: string[] = [];
-  for (let index = 0; index < count; index++) out.push(cString(deps.tabnode_ssl_cipher_at(index)) ?? '');
-  return out;
-}
-
 /** GetFipsCrypto, SetFipsCrypto, TestFipsCrypto (crypto_util.cc:207-242). */
 function getFipsCrypto(): number { return glue().tabnode_get_fips_crypto(); }
 function testFipsCrypto(): number { return glue().tabnode_test_fips_crypto(); }
@@ -404,7 +400,6 @@ const binding: Record<string, unknown> = {
   resetRootCertStore,
   startLoadingCertificatesOffThread,
   getCertificateCompressionAlgorithms,
-  getSSLCiphers,
   getFipsCrypto,
   setFipsCrypto,
   testFipsCrypto,
@@ -421,6 +416,10 @@ const binding: Record<string, unknown> = {
   ...sigBinding,
   ...x509Binding,
   ...kdfBinding,
+  ...cipherBinding,
+  ...keygenBinding,
+  ...dhBinding,
+  ...webcryptoBinding,
 };
 
 /** The OpenSSL-valued names its initializers define (EVP_PKEY_*, RSA_PKCS1_PSS_PADDING, OPENSSL_EC_*, X509_CHECK_FLAG_*). */
@@ -440,6 +439,9 @@ const OPENSSL_VALUE_NAMES = [
 // Each read from the program when first asked (an OpenSSL without one, as Node's #if, answers undefined).
 for (const name of OPENSSL_VALUE_NAMES) {
   Object.defineProperty(binding, name, { get: () => opensslBindingValues()[name], enumerable: true, configurable: true });
+}
+for (const name of ARGON2_TYPE_NAMES) {
+  Object.defineProperty(binding, name, { get: () => argon2Type(name), enumerable: true, configurable: true });
 }
 
 export default binding;

@@ -400,4 +400,124 @@ constexpr const char* kDerivingBitsFailed = "Deriving bits failed";
 constexpr const char* kInvalidKeyType = "Invalid key type";
 constexpr const char* kKeyGenerationJobFailed = "Key generation job failed";
 
+// ---- One-shot ciphers (crypto_cipher.h:116-265) ----------------------------------------------------------------
+
+enum WebCryptoCipherMode { kWebCryptoCipherEncrypt, kWebCryptoCipherDecrypt };
+enum class WebCryptoCipherStatus { OK, INVALID_KEY_TYPE, FAILED };
+
+// TryGetIntCipherOutputLength (crypto_cipher.h:128-138).
+inline bool TryGetIntCipherOutputLength(size_t input_len, size_t output_overhead, int* output_len) {
+  static constexpr size_t kMaxLength = INT_MAX;
+  if (output_overhead > kMaxLength || input_len > kMaxLength - output_overhead) return false;
+  *output_len = static_cast<int>(input_len + output_overhead);
+  return true;
+}
+
+// CipherJob<CipherTraits> (crypto_cipher.h:146-262) without V8: the key, the mode, the input (copied, as an
+// asynchronous job's ToCopy), the traits' parameters and their DoCipher. Its ToResult is Node's: the bytes where there
+// are some or no error was captured, else the errors.
+template <typename Params>
+class CipherJob final : public CryptoJob {
+ public:
+  using DoCipher = WebCryptoCipherStatus (*)(const KeyObjectData& key, WebCryptoCipherMode cipher_mode,
+                                             const Params& params, const ByteSource& in, ByteSource* out);
+  CipherJob(CryptoJobMode mode, const KeyObjectData& key, WebCryptoCipherMode cipher_mode, ByteSource in,
+            Params&& params, DoCipher cipher)
+      : CryptoJob(mode),
+        params(std::move(params)),
+        key_(key.addRef()),
+        cipher_mode_(cipher_mode),
+        in_(std::move(in)),
+        cipher_(cipher) {}
+  void DoThreadPoolWork() override {
+    const WebCryptoCipherStatus status = cipher_(key_, cipher_mode_, params, in_, &out);
+    if (status == WebCryptoCipherStatus::OK) {
+      // ToResult (crypto_cipher.h:229-247): an empty answer is a success only where the queue holds no error.
+      if (out.size() == 0) errors()->Capture();
+      success = out.size() > 0 || errors()->Empty();
+      return;
+    }
+    errors()->Capture();
+    if (errors()->Empty()) {
+      errors()->Insert(status == WebCryptoCipherStatus::INVALID_KEY_TYPE ? kInvalidKeyType : kCipherJobFailed);
+    }
+  }
+  Params params;
+
+ private:
+  KeyObjectData key_;
+  WebCryptoCipherMode cipher_mode_;
+  ByteSource in_;
+  DoCipher cipher_;
+};
+
+// ---- Key generation (crypto_keygen.h) --------------------------------------------------------------------------
+
+// KeyGenJob<KeyPairGenTraits<…>> and KeyGenJob<SecretKeyGenTraits> without V8: the work makes `key` (a key pair's
+// private key, whose public half is its addRefWithType(kKeyTypePublic), or a secret), and a pair's encodings are what
+// EncodeKey writes each half with (crypto_keygen.ts reads them through tabnode_keygen_encode).
+class KeyGenJob : public CryptoJob {
+ public:
+  explicit KeyGenJob(CryptoJobMode mode) : CryptoJob(mode) {}
+  ncrypto::EVPKeyPointer::PublicKeyEncodingConfig public_key_encoding;
+  ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig private_key_encoding;
+
+ protected:
+  // KeyGenJob::DoThreadPoolWork's failure (crypto_keygen.h:97-110).
+  void Failed() {
+    errors()->Capture();
+    if (errors()->Empty()) errors()->Insert(kKeyGenerationJobFailed);
+  }
+};
+
+// KeyPairGenTraits<Traits>::DoKeyGen (crypto_keygen.h:238-256): the algorithm's Setup, then EVP_PKEY_keygen.
+template <typename Params>
+class KeyPairGenJob final : public KeyGenJob {
+ public:
+  using Setup = ncrypto::EVPKeyCtxPointer (*)(Params* params);
+  KeyPairGenJob(CryptoJobMode mode, Params&& params, Setup setup)
+      : KeyGenJob(mode), params(std::move(params)), setup_(setup) {}
+  void DoThreadPoolWork() override {
+    ncrypto::EVPKeyCtxPointer ctx = setup_(&params);
+    EVP_PKEY* pkey = nullptr;
+    if (!ctx || !EVP_PKEY_keygen(ctx.get(), &pkey)) return Failed();
+    key = KeyObjectData::CreateAsymmetric(kKeyTypePrivate, ncrypto::EVPKeyPointer(pkey));
+    if (!key) return Failed();
+    success = true;
+  }
+  Params params;
+
+ private:
+  Setup setup_;
+};
+
+// What crypto_keygen.cc's jobs take of each algorithm's file (its KeyGenTraits' AdditionalConfig and Setup), over the
+// arguments from the job's mode on, `*offset` past what it read: null where it threw.
+KeyGenJob* NewRsaKeyGenJob(CryptoJobMode mode, const TnValue* args, unsigned int* offset);
+KeyGenJob* NewDsaKeyGenJob(CryptoJobMode mode, const TnValue* args, unsigned int* offset);
+KeyGenJob* NewEcKeyGenJob(CryptoJobMode mode, const TnValue* args, unsigned int* offset);
+KeyGenJob* NewDhKeyGenJob(CryptoJobMode mode, const TnValue* args, unsigned int* offset);
+
+// ---- cSHAKE (crypto_hash.h:84-110), which KMAC takes too -------------------------------------------------------
+
+enum class CShakeVariant { CSHAKE128, CSHAKE256 };
+struct CShakeBytepadInput final {
+  const void* data;
+  size_t byte_length;
+  size_t bit_length;
+};
+struct CShakeParams final {
+  CShakeVariant variant;
+  const void* function_name_data;
+  size_t function_name_size;
+  const void* customization_data;
+  size_t customization_size;
+  const CShakeBytepadInput* bytepad_input;
+  const void* input_data;
+  size_t input_size;
+  bool append_output_length;
+  uint32_t length;  // Output length in bits
+};
+bool DeriveCShakeBits(const CShakeParams& params, ByteSource* out);
+
 #endif

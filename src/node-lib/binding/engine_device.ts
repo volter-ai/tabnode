@@ -20,8 +20,13 @@
  * import, followed by a drain, so the call settles in the poll phase as a threadpool completion does. Answers come
  * in any order, so whichever call reads one gives it to the call its tag names.
  *
- * The device takes a request and writes an answer of at most 1 MiB (`WASM_ENGINE_BYTES`): a call larger is refused
- * here, by name, before it is written (browser-substrate ADR-0236 hole 12's open item); it is never split.
+ * A request and an answer hold at most 1 MiB each (engine.c `WASM_ENGINE_BYTES`), and a call's bytes may be more: a
+ * call whose request would be larger sends its arguments' bytes first in `part` calls (an assembly's id and its next
+ * bytes, in order), and names each argument by its assembly (`{ $a: id }`); an answer whose bytes exceed the room the
+ * call asked comes back with each bytes member held by the device (`{ $h: [handle, length], as }`, `as` `$b` for an
+ * ArrayBuffer, `$u8` for a view), which `take` calls read ([handle, offset, length], each within an answer's room),
+ * the device letting the held bytes go when their last piece is taken (browser-substrate `host/machine.mjs`
+ * `engineCall`, as `packages/node/src/linux-web-crypto.ts` uses it). So a call of any size is the device's.
  */
 import { address, libnode } from './libnode';
 
@@ -29,6 +34,12 @@ import { address, libnode } from './libnode';
 export const ENGINE_BYTES = 1 << 20;
 /** A request's header (its tag, its answer's room) and its JSON's length. */
 const ASKED = 12;
+/** The room an answer's JSON is given beside its bytes before the device holds them (machine.mjs `ENGINE_JSON`). */
+const ENGINE_JSON = 4096;
+/** The bytes one `part` carries: a request's bound less its JSON's length and the part call's JSON. */
+const PART_BYTES = ENGINE_BYTES - 4 - 256;
+/** The bytes one `take` answers: within the room every request asks, beside the answer's JSON, so none is held. */
+const TAKE_BYTES = ENGINE_BYTES - ENGINE_JSON;
 /** A read's header (engine.c `struct wasm_engine_header`): the tag, the status, the length. */
 const HEADER = 12;
 const POLLIN = 0x1, POLLOUT = 0x4;
@@ -47,9 +58,14 @@ interface DeviceExports {
   tabnode_free(at: number): void;
 }
 
-/** SubtleCrypto's calls the device runs (host/machine.mjs `ENGINE_CALLS`), and its own `forget`. */
+/** SubtleCrypto's calls the device runs (host/machine.mjs `ENGINE_CALLS`), and its own `forget`, `part` and `take`. */
 export type EngineCall = 'encrypt' | 'decrypt' | 'sign' | 'verify' | 'digest' | 'generateKey' | 'deriveKey'
-  | 'deriveBits' | 'importKey' | 'exportKey' | 'wrapKey' | 'unwrapKey' | 'forget';
+  | 'deriveBits' | 'importKey' | 'exportKey' | 'wrapKey' | 'unwrapKey' | 'forget' | 'part' | 'take';
+
+/** An argument's bytes sent in parts, named by the call that takes them (the device's `$a`). */
+class Assembly { constructor(readonly id: number) {} }
+/** Bytes the device holds for an answer (`$h`), read back by `take`. */
+interface Held { handle: number; length: number; as: '$b' | '$u8' }
 
 /** A key the device holds: its handle in the session, and its description as the device gave it. */
 export interface EngineKey {
@@ -78,6 +94,7 @@ function deviceError(answer: Answer, value: unknown): Error {
 class EngineSession {
   private fd = -1;
   private nextTag = 1;
+  private nextAssembly = 1;
   private readonly due = new Map<number, (answer: Answer) => void>();
   /** Answers read by a call they were not for, kept for theirs. */
   private readonly read = new Map<number, Answer>();
@@ -98,26 +115,84 @@ class EngineSession {
 
   /** `call` answered before this returns: the process blocks in Linux on the device's descriptor. */
   callSync(call: EngineCall, args: readonly unknown[]): unknown {
-    const tag = this.write(call, args, true);
+    const assembled = this.assemble(call, args, (parts) => { for (const part of parts) this.callSync('part', part); });
+    const value = this.value(this.answerSync(this.write(call, assembled)));
+    const held = heldIn(value);
+    if (held.length === 0) return this.decode(value, new Map());
+    const taken = new Map<number, Uint8Array>();
+    for (const bytes of held) {
+      const whole = new Uint8Array(bytes.length);
+      for (let at = 0; at < bytes.length; at += TAKE_BYTES) {
+        const piece = this.callSync('take', [bytes.handle, at, Math.min(TAKE_BYTES, bytes.length - at)]) as ArrayBuffer;
+        whole.set(new Uint8Array(piece), at);
+      }
+      taken.set(bytes.handle, whole);
+    }
+    return this.decode(value, taken);
+  }
+
+  /** `call`, answered in the loop's poll phase once the device has answered it. */
+  async callAsync(call: EngineCall, args: readonly unknown[]): Promise<unknown> {
+    let sent: Promise<void> = Promise.resolve();
+    const assembled = this.assemble(call, args, (parts) => {
+      for (const part of parts) sent = sent.then(() => this.callAsync('part', part)).then(() => undefined);
+    });
+    await sent;
+    const tag = this.write(call, assembled);
+    const answered = new Promise<Answer>((resolve) => { this.due.set(tag, resolve); });
+    this.watch();
+    const value = this.value(await answered);
+    const taken = new Map<number, Uint8Array>();
+    for (const bytes of heldIn(value)) {
+      const whole = new Uint8Array(bytes.length);
+      for (let at = 0; at < bytes.length; at += TAKE_BYTES) {
+        const piece = await this.callAsync('take', [bytes.handle, at, Math.min(TAKE_BYTES, bytes.length - at)]) as ArrayBuffer;
+        whole.set(new Uint8Array(piece), at);
+      }
+      taken.set(bytes.handle, whole);
+    }
+    return this.decode(value, taken);
+  }
+
+  /** The answer of a request written by this process, waited for in Linux on the descriptor. */
+  private answerSync(tag: number): Answer {
     for (;;) {
       const mine = this.read.get(tag);
-      if (mine) { this.read.delete(tag); return this.value(mine); }
+      if (mine) { this.read.delete(tag); return mine; }
       this.exports().tabnode_engine_wait(this.fd, POLLIN);
       this.drainAnswers();
     }
   }
 
-  /** `call`, answered in the loop's poll phase once the device has answered it. */
-  callAsync(call: EngineCall, args: readonly unknown[]): Promise<unknown> {
-    let tag: number;
-    try { tag = this.write(call, args, false); } catch (error) { return Promise.reject(error); }
-    const answered = new Promise<Answer>((resolve) => { this.due.set(tag, resolve); });
-    this.watch();
-    return answered.then((answer) => this.value(answer));
+  /**
+   * `args` as the call names them: where the request would exceed the device's bound, each bytes value goes first in
+   * parts (`send` sends them, in order) and the call names it by its assembly.
+   */
+  private assemble(call: EngineCall, args: readonly unknown[], send: (parts: unknown[][]) => void): readonly unknown[] {
+    if (requestSize(call, args) <= ENGINE_BYTES) return args;
+    const parts: unknown[][] = [];
+    const walk = (value: unknown): unknown => {
+      const bytes = bytesOf(value);
+      if (bytes) {
+        const assembly = new Assembly(this.nextAssembly++);
+        // WebCrypto copies a BufferSource's bytes when it is called, so the parts are copied when they are made.
+        if (bytes.byteLength === 0) parts.push([assembly.id, new Uint8Array(0)]);
+        for (let at = 0; at < bytes.byteLength; at += PART_BYTES) parts.push([assembly.id, bytes.slice(at, at + PART_BYTES)]);
+        return assembly;
+      }
+      if (Array.isArray(value)) return value.map(walk);
+      if (value !== null && typeof value === 'object' && !deviceKeys.has(value)) {
+        return Object.fromEntries(Object.entries(value).map(([name, member]) => [name, walk(member)]));
+      }
+      return value;
+    };
+    const assembled = args.map(walk);
+    send(parts);
+    return assembled;
   }
 
-  /** The request written; a synchronous call waits for room as a blocking writer waits, an asynchronous one too. */
-  private write(call: EngineCall, args: readonly unknown[], _sync: boolean): number {
+  /** The request written; a call waits for a tag of the device's as a blocking writer waits for room. */
+  private write(call: EngineCall, args: readonly unknown[]): number {
     const fd = this.descriptor();
     const tag = this.nextTag++ >>> 0;
     const request = encodeRequest(tag, call, args);
@@ -178,19 +253,27 @@ class EngineSession {
     this.drainAnswers();
   }
 
-  /** An answer's value, or the browser's error. */
-  private value(answer: Answer): unknown {
+  /** An answer's JSON and its bytes, or the browser's error. */
+  private value(answer: Answer): Answered {
     if (answer.status < 0) throw deviceError(answer, null);
     const { bytes } = answer;
     const length = new DataView(bytes.buffer, bytes.byteOffset).getUint32(0, true);
     const value: unknown = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length)));
     if (answer.status === REFUSED) throw deviceError(answer, value);
     if (answer.status !== FULFILLED) throw deviceError({ status: -5, bytes }, null);
-    const blob = bytes.subarray(4 + length);
+    return { value, blob: bytes.subarray(4 + length) };
+  }
+
+  /** An answer's value: its bytes (in the answer, or held and taken), its keys as the session's. */
+  private decode({ value, blob }: Answered, taken: ReadonlyMap<number, Uint8Array>): unknown {
     const decode = (member: unknown): unknown => {
       if (Array.isArray(member)) return member.map(decode);
       if (member === null || typeof member !== 'object') return member;
       const record = member as Record<string, unknown>;
+      if (Array.isArray(record.$h)) {
+        const bytes = taken.get((record.$h as [number, number])[0])!;
+        return record.as === '$b' ? bytes.buffer : bytes;
+      }
       const range = (Array.isArray(record.$b) ? record.$b : record.$u8) as [number, number] | undefined;
       if (range) {
         const copy = blob.slice(range[0], range[0] + range[1]);
@@ -210,8 +293,52 @@ class EngineSession {
   }
 }
 
+/** An answer's JSON, and the bytes after it its `$b` and `$u8` members name. */
+interface Answered { value: unknown; blob: Uint8Array }
+
+/** The bytes an answer's JSON names as held by the device (`$h`). */
+function heldIn({ value }: Answered): Held[] {
+  const held: Held[] = [];
+  const find = (member: unknown): void => {
+    if (member === null || typeof member !== 'object') return;
+    const record = member as Record<string, unknown>;
+    if (Array.isArray(record.$h)) {
+      const [handle, length] = record.$h as [number, number];
+      held.push({ handle, length, as: record.as as Held['as'] });
+      return;
+    }
+    for (const inner of Array.isArray(member) ? member : Object.values(record)) find(inner);
+  };
+  find(value);
+  return held;
+}
+
 /** The keys this process's session holds, as the request's `$k` names them. */
 const deviceKeys = new WeakSet<object>();
+
+/** A buffer source's bytes, or null for any other value. */
+function bytesOf(value: unknown): Uint8Array | null {
+  return value instanceof ArrayBuffer || value instanceof SharedArrayBuffer ? new Uint8Array(value)
+    : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : null;
+}
+
+/** The bytes a request of `call` holds past its header, which the kernel bounds: its JSON's length, its JSON, its bytes. */
+function requestSize(call: EngineCall, args: readonly unknown[]): number {
+  let size = 0;
+  const encode = (value: unknown): unknown => {
+    if (value === undefined) return { $u: 1 };
+    if (typeof value === 'object' && value !== null && deviceKeys.has(value)) return { $k: (value as EngineKey).handle };
+    const bytes = bytesOf(value);
+    if (bytes) { size += bytes.byteLength; return { $b: [size, bytes.byteLength] }; }
+    if (Array.isArray(value)) return value.map(encode);
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([name, member]) => [name, encode(member)]));
+    }
+    return value;
+  };
+  const json = new TextEncoder().encode(JSON.stringify({ call, args: args.map(encode) }));
+  return 4 + json.byteLength + size;
+}
 
 /** A request as the device reads it (host/machine.mjs `engineCall`). */
 function encodeRequest(tag: number, call: EngineCall, args: readonly unknown[]): Uint8Array {
@@ -219,9 +346,9 @@ function encodeRequest(tag: number, call: EngineCall, args: readonly unknown[]):
   let size = 0;
   const encode = (value: unknown): unknown => {
     if (value === undefined) return { $u: 1 };
+    if (value instanceof Assembly) return { $a: value.id };
     if (typeof value === 'object' && value !== null && deviceKeys.has(value)) return { $k: (value as EngineKey).handle };
-    const bytes = value instanceof ArrayBuffer || value instanceof SharedArrayBuffer ? new Uint8Array(value)
-      : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : null;
+    const bytes = bytesOf(value);
     if (bytes) { blobs.push(bytes.slice()); size += bytes.byteLength; return { $b: [size - bytes.byteLength, bytes.byteLength] }; }
     if (Array.isArray(value)) return value.map(encode);
     if (value !== null && typeof value === 'object') {
@@ -231,10 +358,6 @@ function encodeRequest(tag: number, call: EngineCall, args: readonly unknown[]):
   };
   const json = new TextEncoder().encode(JSON.stringify({ call, args: args.map(encode) }));
   const request = new Uint8Array(ASKED + json.byteLength + size);
-  if (request.byteLength - 8 > ENGINE_BYTES) {
-    throw Object.assign(new RangeError(`the engine device takes a call of at most ${ENGINE_BYTES} bytes`),
-      { code: 'ERR_OUT_OF_RANGE' });
-  }
   const view = new DataView(request.buffer);
   view.setUint32(0, tag, true);
   view.setUint32(4, ENGINE_BYTES, true);

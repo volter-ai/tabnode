@@ -1,9 +1,19 @@
-// RSA KEYS OF THE crypto BINDING (Tabnode ADR-0018 item 7): the OpenSSL half of Node v24.21.0's
-// src/crypto/crypto_rsa.cc, over ncrypto and OpenSSL in libnode.so: a key's JWK and its details.
+// RSA OF THE crypto BINDING (Tabnode ADR-0018 §5, item 7): the OpenSSL half of Node v24.21.0's src/crypto/crypto_rsa.cc,
+// over ncrypto and OpenSSL in libnode.so: a key's JWK and its details, RsaKeyPairGenJob's configuration and Setup, and
+// RSACipherJob (RSA-OAEP). Which of them the engine device answers is the binding's routing
+// (src/node-lib/binding/crypto_keygen.ts, crypto_webcrypto.ts).
+#include <openssl/rsa.h>
+
 #include "crypto_util.h"
 
 using ncrypto::BignumPointer;
+using ncrypto::DataPointer;
+using ncrypto::Digest;
+using ncrypto::EVPKeyCtxPointer;
 using ncrypto::EVPKeyPointer;
+
+#define CHECK(condition) \
+  if (!(condition)) abort()
 
 // ExportJWKRsaKey (319-369).
 bool ExportJWKRsaKey(const KeyObjectData& key, TnFields* target) {
@@ -116,4 +126,170 @@ bool GetRsaKeyDetail(const KeyObjectData& key, TnFields* target) {
     }
   }
   return true;
+}
+
+// ---- RsaKeyPairGenJob (crypto_rsa.cc:41-187) ---------------------------------------------------------------------
+
+namespace {
+// RSAKeyVariant (crypto_rsa.h:16-20).
+enum RSAKeyVariant { kKeyVariantRSA_SSA_PKCS1_v1_5, kKeyVariantRSA_PSS, kKeyVariantRSA_OAEP };
+
+// RsaKeyPairParams (crypto_rsa.h:54-71); Node's keeps Digests, which cannot move: their EVP_MDs are the same.
+struct RsaKeyPairParams {
+  RSAKeyVariant variant = kKeyVariantRSA_SSA_PKCS1_v1_5;
+  unsigned int modulus_bits = 0;
+  unsigned int exponent = 0;
+  const EVP_MD* md = nullptr;
+  const EVP_MD* mgf1_md = nullptr;
+  int saltlen = -1;
+};
+
+// RsaKeyGenTraits::Setup (41-87).
+EVPKeyCtxPointer RsaSetup(RsaKeyPairParams* params) {
+  auto ctx = EVPKeyCtxPointer::NewFromID(params->variant == kKeyVariantRSA_PSS ? EVP_PKEY_RSA_PSS : EVP_PKEY_RSA);
+  if (!ctx.initForKeygen() || !ctx.setRsaKeygenBits(params->modulus_bits)) return {};
+  if (params->exponent != EVPKeyCtxPointer::kDefaultRsaExponent) {
+    auto bn = BignumPointer::New();
+    if (!bn.setWord(params->exponent) || !ctx.setRsaKeygenPubExp(std::move(bn))) return {};
+  }
+  if (params->variant == kKeyVariantRSA_PSS) {
+    Digest md(params->md);
+    if (md && !ctx.setRsaPssKeygenMd(md)) return {};
+    if (params->mgf1_md == nullptr && params->md != nullptr) params->mgf1_md = params->md;
+    Digest mgf1_md(params->mgf1_md);
+    if (mgf1_md && !ctx.setRsaPssKeygenMgf1Md(mgf1_md)) return {};
+    int saltlen = params->saltlen;
+    if (saltlen < 0 && md) saltlen = md.size();
+    if (saltlen >= 0 && !ctx.setRsaPssSaltlen(saltlen)) return {};
+  }
+  return ctx;
+}
+}  // namespace
+
+// RsaKeyGenTraits::AdditionalConfig (115-187).
+KeyGenJob* NewRsaKeyGenJob(CryptoJobMode mode, const TnValue* args, unsigned int* offset) {
+  CHECK(args[*offset].IsUint32());
+  CHECK(args[*offset + 1].IsUint32());
+  CHECK(args[*offset + 2].IsUint32());
+  RsaKeyPairParams params;
+  params.variant = static_cast<RSAKeyVariant>(args[*offset].Uint32());
+  params.modulus_bits = args[*offset + 1].Uint32();
+  params.exponent = args[*offset + 2].Uint32();
+  *offset += 3;
+  if (params.variant == kKeyVariantRSA_PSS) {
+    if (!args[*offset].IsUndefined()) {
+      CHECK(args[*offset].IsString());
+      std::string digest = args[*offset].String();
+      params.md = Digest::FromName(digest.c_str()).get();
+      if (params.md == nullptr) {
+        Throw("ERR_CRYPTO_INVALID_DIGEST", "Invalid digest: %s", digest.c_str());
+        return nullptr;
+      }
+    }
+    if (!args[*offset + 1].IsUndefined()) {
+      CHECK(args[*offset + 1].IsString());
+      std::string digest = args[*offset + 1].String();
+      params.mgf1_md = Digest::FromName(digest.c_str()).get();
+      if (params.mgf1_md == nullptr) {
+        Throw("ERR_CRYPTO_INVALID_DIGEST", "Invalid MGF1 digest: %s", digest.c_str());
+        return nullptr;
+      }
+    }
+    if (!args[*offset + 2].IsUndefined()) {
+      CHECK(args[*offset + 2].IsInt32());
+      params.saltlen = args[*offset + 2].Int32();
+      if (params.saltlen < 0) {
+        Throw("ERR_OUT_OF_RANGE", "salt length is out of range");
+        return nullptr;
+      }
+    }
+    *offset += 3;
+  }
+  return new KeyPairGenJob<RsaKeyPairParams>(mode, std::move(params), RsaSetup);
+}
+
+// ---- RSACipherJob (crypto_rsa.cc:193-300) ------------------------------------------------------------------------
+
+namespace {
+// RSACipherConfig (crypto_rsa.h:96-110).
+struct RSACipherConfig {
+  ByteSource label;
+  int padding = 0;
+  const EVP_MD* digest = nullptr;
+};
+
+using RsaCipher_t = DataPointer (*)(const EVPKeyPointer& key, const ncrypto::Rsa::CipherParams& params,
+                                    const ncrypto::Buffer<const void> in);
+
+// RSA_Cipher (199-219).
+template <RsaCipher_t cipher>
+WebCryptoCipherStatus RSA_Cipher(const KeyObjectData& key_data, const RSACipherConfig& params, const ByteSource& in,
+                                 ByteSource* out) {
+  CHECK(key_data.GetKeyType() != kKeyTypeSecret);
+  std::lock_guard<std::mutex> lock(key_data.mutex());
+  const auto& m_pkey = key_data.GetAsymmetricKey();
+  const ncrypto::Rsa::CipherParams nparams{
+      .padding = params.padding,
+      .digest = Digest(params.digest),
+      .label = params.label,
+  };
+  auto data = cipher(m_pkey, nparams, in);
+  if (!data) return WebCryptoCipherStatus::FAILED;
+  *out = ByteSource::Allocated(data.release());
+  return WebCryptoCipherStatus::OK;
+}
+
+// RSACipherTraits::DoCipher (284-300).
+WebCryptoCipherStatus DoRsaCipher(const KeyObjectData& key_data, WebCryptoCipherMode cipher_mode,
+                                  const RSACipherConfig& params, const ByteSource& in, ByteSource* out) {
+  switch (cipher_mode) {
+    case kWebCryptoCipherEncrypt:
+      CHECK(key_data.GetKeyType() == kKeyTypePublic);
+      return RSA_Cipher<ncrypto::Rsa::encrypt>(key_data, params, in, out);
+    case kWebCryptoCipherDecrypt:
+      CHECK(key_data.GetKeyType() == kKeyTypePrivate);
+      return RSA_Cipher<ncrypto::Rsa::decrypt>(key_data, params, in, out);
+  }
+  return WebCryptoCipherStatus::FAILED;
+}
+}  // namespace
+
+// CipherJob<RSACipherTraits>::New (crypto_cipher.h:150-181) and RSACipherTraits::AdditionalConfig (245-282): `args`
+// Node's from its fifth (the variant, the digest, the label). Null where it threw.
+CRYPTO_EXPORT(tabnode_rsa_cipher_job_new) CryptoJob* tabnode_rsa_cipher_job_new(int32_t mode, uint32_t cipher_mode,
+                                                                               const KeyObjectData* key,
+                                                                               const void* data, size_t size,
+                                                                               const TnValue* args, uint32_t count) {
+  if (size > INT_MAX) {
+    Throw("ERR_OUT_OF_RANGE", "data is too large");
+    return nullptr;
+  }
+  RSACipherConfig params;
+  params.padding = RSA_PKCS1_OAEP_PADDING;
+  CHECK(args[0].IsUint32());
+  RSAKeyVariant variant = static_cast<RSAKeyVariant>(args[0].Uint32());
+  switch (variant) {
+    case kKeyVariantRSA_OAEP: {
+      CHECK(args[1].IsString());
+      std::string digest = args[1].String();
+      params.digest = Digest::FromName(digest.c_str()).get();
+      if (params.digest == nullptr) {
+        Throw("ERR_CRYPTO_INVALID_DIGEST", "Invalid digest: %s", digest.c_str());
+        return nullptr;
+      }
+      if (args[2].IsAnyBufferSource()) {
+        if (args[2].length > INT_MAX) {
+          Throw("ERR_OUT_OF_RANGE", "label is too big");
+          return nullptr;
+        }
+        params.label = args[2].Bytes();
+      }
+      break;
+    }
+    default:
+      Throw("ERR_CRYPTO_INVALID_KEYTYPE");
+      return nullptr;
+  }
+  return new CipherJob<RSACipherConfig>(JobMode(mode), *key, static_cast<WebCryptoCipherMode>(cipher_mode),
+                                        ByteSource::CopyOf(data, size), std::move(params), DoRsaCipher);
 }

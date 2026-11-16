@@ -24,26 +24,7 @@ using ncrypto::MarkPopErrorOnReturn;
 #define DCHECK(condition)
 #define DCHECK_GE(a, b)
 
-// CShakeParams (crypto_hash.h:84-110).
-enum class CShakeVariant { CSHAKE128, CSHAKE256 };
-struct CShakeBytepadInput final {
-  const void* data;
-  size_t byte_length;
-  size_t bit_length;
-};
-struct CShakeParams final {
-  CShakeVariant variant;
-  const void* function_name_data;
-  size_t function_name_size;
-  const void* customization_data;
-  size_t customization_size;
-  const CShakeBytepadInput* bytepad_input;
-  const void* input_data;
-  size_t input_size;
-  bool append_output_length;
-  uint32_t length;  // Output length in bits
-};
-bool DeriveCShakeBits(const CShakeParams& params, ByteSource* out);
+// CShakeParams and DeriveCShakeBits (crypto_hash.h:84-110) are crypto_util.h's, which KMAC (crypto_kmac.cc) takes too.
 
 namespace {
 // The process's digests, as Node's Environment caches them (env->evp_md_cache, alias_to_md_id_map,
