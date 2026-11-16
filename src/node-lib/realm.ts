@@ -49,6 +49,7 @@ import { createNodeModulesBinding } from './binding/node_modules';
 import { promiseHandlerAddedAfterReject } from './binding/task_queue';
 import { routeErrorStacks } from '../runtime';
 import { createEnvProxy, realEnvStore } from './binding/env_var';
+import { libnode, withCString } from './binding/libnode';
 
 const indirectEval = eval;
 
@@ -317,12 +318,16 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
   };
   const getLinkedBinding = (name: unknown): never => { throw new Error(`No such binding was linked: ${String(name)}`); };
 
-  // ProcessTitleGetter and ProcessTitleSetter (src/node_process_object.cc): uv_get_process_title's, set by
-  // uv_set_process_title; libuv on Linux keeps the title it was set, its argv[0] until then.
-  let title = String(run.argv[0] ?? 'node');
+  // ProcessTitleGetter and ProcessTitleSetter (src/node_process_object.cc:31-48): libuv's process title, the
+  // program's (process_methods.c), "node" where libuv has none.
   setPatchedFacts(process, {
-    title: () => title,
-    setTitle: (value: string) => { title = value; },
+    title: () => {
+      const program = libnode();
+      const at = program.exports.tabnode_get_process_title();
+      if (at === 0) return 'node';
+      try { return program.cString(at) ?? 'node'; } finally { program.exports.tabnode_free(at); }
+    },
+    setTitle: (value: string) => { withCString(value, (at) => libnode().exports.tabnode_set_process_title(at)); },
     argv: run.argv, execArgv: run.execArgv, pid: run.pid, ppid: () => run.ppid(), execPath: run.execPath,
   });
 

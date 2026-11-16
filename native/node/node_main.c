@@ -38,6 +38,8 @@ static int run(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+  // StartInternal (src/node.cc:1573-1577): libuv takes the vector, which its process title is then written over.
+  argv = uv_setup_args(argc, argv);
   tabnode_platform_init();
   int status = run(argc, argv);
   tabnode_platform_teardown();

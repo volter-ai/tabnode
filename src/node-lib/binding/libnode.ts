@@ -103,7 +103,7 @@ export interface LibnodeExports {
   /** node_messaging.c: MessagePort's uv_async_t and its TriggerAsync. */
   tabnode_message_port_new(): I32;
   tabnode_message_port_trigger(handle: I32): void;
-  /** process_methods.c: node_process_methods.cc's libuv and libc half (uv_kill, uv_hrtime, uv_cwd, uv_chdir, umask, uv_getrusage, uv_resident_set_memory, abort). */
+  /** process_methods.c: node_process_methods.cc's libuv and libc half (uv_kill, uv_hrtime, uv_cwd, uv_chdir, umask, uv_getrusage, uv_resident_set_memory, abort), and node_process_object.cc's pid, ppid and title. */
   tabnode_kill(pid: I32, signal: I32): I32;
   tabnode_hrtime(): bigint;
   tabnode_uptime(): number;
@@ -117,6 +117,8 @@ export interface LibnodeExports {
   tabnode_available_memory(): number;
   tabnode_abort(): void;
   tabnode_getpid(): I32;
+  tabnode_get_process_title(): I32;
+  tabnode_set_process_title(title: I32): I32;
   /** node_cjs_lexer.c: node_cjs_lexer.cc's Parse over merve (merve_c.h). */
   tabnode_cjs_parse(input: I32, length: I32): I32;
   tabnode_cjs_valid(analysis: I32): I32;

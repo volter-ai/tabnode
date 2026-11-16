@@ -103,3 +103,23 @@ TABNODE_EXPORT(tabnode_abort) void tabnode_abort(void) { abort(); }
 // PatchProcessObject's `pid` (uv_os_getpid) and GetParentProcessId's `ppid` (uv_os_getppid), src/node_process_object.cc.
 TABNODE_EXPORT(tabnode_getpid) int tabnode_getpid(void) { return (int)uv_os_getpid(); }
 TABNODE_EXPORT(tabnode_getppid) int tabnode_getppid(void) { return (int)uv_os_getppid(); }
+
+// ProcessTitleGetter (src/node_process_object.cc:31-39) over GetProcessTitle (src/util.cc:188-210): uv_get_process_title
+// into 16 bytes, doubling while libuv answers UV_ENOBUFS, up to 1 MiB; the title, in memory the caller frees, or NULL
+// for Node's default ("node") where libuv answered anything else or the title outgrew the bound.
+TABNODE_EXPORT(tabnode_get_process_title) char *tabnode_get_process_title(void) {
+  size_t size = 16;
+  char *buffer = calloc(size, 1);
+  for (;;) {
+    if (buffer == NULL) return NULL;
+    int rc = uv_get_process_title(buffer, size);
+    if (rc == 0) return buffer;
+    free(buffer);
+    if (rc != UV_ENOBUFS || size >= 1024 * 1024) return NULL;
+    size *= 2;
+    buffer = calloc(size, 1);
+  }
+}
+
+// ProcessTitleSetter (src/node_process_object.cc:41-48): uv_set_process_title of the value's Utf8Value.
+TABNODE_EXPORT(tabnode_set_process_title) int tabnode_set_process_title(const char *title) { return uv_set_process_title(title); }
