@@ -1,6 +1,9 @@
-# ADR-0018: A Node process's loop is libuv, and Node's C libraries are one WALI library in its memory
+# ADR-0018: A Node process's loop is libuv, and Node's C libraries are the node program's
 
 Status: Accepted (manager's rulings, 2026-11-15: the order of building, item 7's crypto).
+
+Amended by [ADR-0019](0019-node-s-native-half-is-one-program-as-node-s-own-build-links-it.md): Node's C
+libraries are the `node` program's, as Node's own build links them, and `libnode.so` goes (§1, §2).
 
 Date: 2026-11-14. Served: browser-substrate ADR-0234 §7 ("A Node process's loop is libuv itself"), ADR-0236 hole 12
 ("A host program parked in Linux receives none of the engine's work") and ADR-0236 step 5 ("Tabnode's loop becomes
@@ -43,13 +46,13 @@ completion reaches the loop through `uv_async_send`, a write the loop's poll see
 
 ## Decision
 
-### 1. Node's C libraries are one WALI shared library in the Node process's memory
+### 1. Node's C libraries are the `node` program's, in the Node process's memory
 
-`libnode.so` holds what Node links from `deps/`: libuv first, then OpenSSL and ncrypto, llhttp, Ada, zlib, brotli,
-zstd and nghttp2, each with Node's configuration and each difference named as ADR-0016 names OpenSSL's. It is built by
-the WALI SDK from Node's own source tarball (pinned by digest) and linked against `libc.so`. The Node process's worker
-loads it into the process's memory through the same loader a program's libraries use, so a `.node` addon `dlopen`s
-into the same image: one libc, one `malloc` (browser-substrate ADR-0231 §3). `node-deps.wasm`, its own memory and its
+The program holds what Node links from `deps/`, as Node's own build links its executable (ADR-0019): libuv first,
+then OpenSSL and ncrypto, llhttp, Ada, zlib, brotli, zstd and nghttp2, each with Node's configuration and each
+difference named as ADR-0016 names OpenSSL's. It is built by the WALI SDK from Node's own source tarball (pinned by
+digest) and linked against `libc.so`, exporting its symbols as Node's `-rdynamic` does, so a `.node` addon `dlopen`s
+into the same image: one libc, one `malloc`. `node-deps.wasm`, its own memory and its
 WASI imports go. So the engine without its host is a Node built without them: a realm with no `node` program of the
 machine's has no `crypto`, `zlib` or `http`, and no second build of the same libraries stands in for them (manager's
 ruling, 2026-11-15).
@@ -87,7 +90,7 @@ CreatePerContextProperties calls (errno, the Windows errors, which Linux has non
 extracted from Node's tarball by the build and compiled in `native/node/node_constants.cc`, whose target is the text
 the engine builds the binding's groups from (`src/shims/constants.ts`), and `src/node_zlib.cc`'s DefineZlibConstants,
 which CreatePerContextProperties calls for the zlib group (`node_constants.cc:1357-1372`), against the zlib, brotli and
-zstd headers of `libnode.so`'s own (item 10). The wraps' constants (`tcp_wrap`, `pipe_wrap`, `udp_wrap`, `tty_wrap`: their
+zstd headers of the program's own (item 10). The wraps' constants (`tcp_wrap`, `pipe_wrap`, `udp_wrap`, `tty_wrap`: their
 Initialize's NODE_DEFINE_CONSTANTs from uv.h and their own headers) are in the same text. `internalBinding('uv')` is
 Node's `src/uv.cc` (`native/node/uv.c`: UV_ERRNO_MAP expanded once, `uv_err_name_r`, `uv_strerror_r`), and every
 `UV_E*` a binding answers or compares is read from it (`src/node-lib/binding/uv.ts` `uvConstant`). A number Node's C++
@@ -146,7 +149,7 @@ without a callback, `generateKeyPairSync`, `createCipheriv`'s `update` and `fina
 device's round trip (a digest of a few hundred bytes) is answered in the process, by OpenSSL, where a reading shows
 the round trip costs more than the work; the bound is measured, not assumed.
 
-OpenSSL stays in `libnode.so` for what Node's crypto needs and WebCrypto does not have:
+OpenSSL stays in the program for what Node's crypto needs and WebCrypto does not have:
 - the calls below the measured bound above;
 - algorithms WebCrypto does not define: MD5, SHA-224, SHA-512/256, SHA-3, SHAKE, BLAKE2, RIPEMD-160, scrypt, argon2,
   ChaCha20-Poly1305 and the AES modes beside CBC, CTR, GCM and KW, DSA, Diffie-Hellman groups, `ECDH` on any other
@@ -285,7 +288,7 @@ builtin tables load Node's files on first use. So where the realm's process is `
   `internal/modules/cjs/loader`'s, compiled by `contextify`'s `compileFunctionForCJSLoader` (its retry as an ES module
   ShouldRetryAsESM's); an ES module is Node's `internal/modules/esm`'s, a `module_wrap` ModuleWrap source text
   module linked, instantiated and evaluated in V8's order (`src/node-lib/binding/module_wrap.ts`); `cjs_lexer`'s
-  `parse` is Node's merve (`deps/merve`, with V8's simdutf, in `libnode.so`; `native/node/node_cjs_lexer.c`); the
+  `parse` is Node's merve (`deps/merve`, with V8's simdutf, in the program; `native/node/node_cjs_lexer.c`); the
   `modules` binding is `node_modules.cc`'s package.json reader; a `.node` file is `process.dlopen` (ADR-0011).
   The engine's own loader, resolver and module stand-ins are not this realm's.
 - **The engine speaks for V8** (`src/node-lib/v8-host.ts`). A function, a script and a source text module compile
@@ -369,7 +372,7 @@ process is `node` differs from Node, the browser or the page's engine decides:
   copied. libuv uses `posix_spawn` on Linux from 40d45efebf ("unix: use posix_spawn instead of fork", in v1.53.0),
   after a probe; at a267f5688b (2026-10-16, after v1.53.0, in no release yet) the probe is `clone(fn, stack, CLONE_VM |
   CLONE_VFORK)` with no termination signal, where v1.53.0's is `vfork()`, which on this machine takes the
-  continuation. So `libnode.so` takes libuv at a267f5688b or the first release with it, as browser-substrate
+  continuation. So the program takes libuv at a267f5688b or the first release with it, as browser-substrate
   ADR-0236 step 5 says, a difference from Node v24.21.0's `deps/uv` named here; musl's `posix_spawn` is then a clone
   with an entry, and the probe needs `CLONE_VM` to share the memory.
 - **Read 2026-11-15, on the Node host (Node v26.12.0), Rallly's image (browser-substrate `rallly:3e63239`) booted on
@@ -630,14 +633,14 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
        never settles, letting the thread go (`hooks.js:615-617`, `660-663`). So a chain that waits on nothing lets the
        process end, with 13 where its entry's top-level `await` is unsettled, as Node's does.
 
-  7. OpenSSL and the rest of §1 into `libnode.so`; addons through `dlopen`; the process's raw calls and
+  7. OpenSSL and the rest of §1 into the program; addons through `dlopen`; the process's raw calls and
      `linux-calls.ts` go. **Crypto is Node's own, landed as one piece:** Node's `lib/internal/crypto/*`, `keys.js`'s
      `KeyObject` and `x509.js`'s `X509Certificate` among them, over the `crypto` binding, whose glue is `libnode`'s C
      as Node's `src/crypto/crypto_*.cc` is, over ncrypto and OpenSSL, each call answered by the device or by OpenSSL
      as §5 says: `require('crypto')`, `node:crypto` and `globalThis.crypto` (with `Crypto`, `CryptoKey` and
      `SubtleCrypto`) are Node's own (browser-substrate VO-3806, manager's ruling 2026-11-15). TLS's
      `getPeerX509Certificate()` and `getX509Certificate()` are Node's `X509Certificate` over the binding's.
-     - **OpenSSL and ncrypto are `libnode.so`'s** (ADR-0016 §1: Node's configuration and each difference, the legacy
+     - **OpenSSL and ncrypto are the program's** (ADR-0016 §1: Node's configuration and each difference, the legacy
        provider built in, every library linked whole), and the OpenSSL half of Node's `src/crypto/crypto_*.cc` and
        `node_constants.cc` is the `node` program's glue, one C++ file per file of Node's (`native/node/crypto_util.cc`,
        `crypto_context.cc`, `crypto_cipher.cc`, `crypto_tls.cc`, `crypto_x509.cc`, `crypto_keys.cc`, `crypto_keygen.cc`,
@@ -645,8 +648,8 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
        put each binding's libuv half in the program: a library of the image imports nothing outside `env`, `GOT` and
        `wali` (browser-substrate `dynamic-loader.mjs`), so what calls the engine is the program's. The V8 half is the
        engine's TypeScript over `src/node-lib/binding/openssl.ts` (ADR-0016 §3). The glue, ncrypto and every other C++
-       here take the WALI SDK's one C++ runtime, libc++ and libc++abi from browser-substrate's side-module toolchain
-       (its ADR-0231 §1); each module links what it uses of it, as a side module does.
+       here take the process's one C++ runtime, the WALI SDK's shared `libc++.so`, `libc++abi.so` and `libunwind.so`,
+       which the SDK's `c++` links (browser-substrate ADR-0238 §4).
      - **The process's OpenSSL** is started once, at the bindings' first use, as Node's start and InitCryptoOnce start
        it (ADR-0016 §2); its randomness, clock, configuration file and modules are the kernel's calls. Its constants
        (`DefineCryptoConstants`) and `process.versions.openssl` (GetOpenSSLVersion) are read from the program. A realm
@@ -669,9 +672,9 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
        binding's NativeKeyObject and NativeCryptoKey constructors, made once, so `internal/crypto/keys` is the realm's
        one file, as `internal/timers` is (item 2). With no OpenSSL there is no `crypto` binding: `require('crypto')`
        and `globalThis.crypto` throw ERR_NO_CRYPTO, as in a Node built without it.
-  10. **zlib, brotli, zstd and llhttp are `libnode.so`'s, and the `zlib` and `http_parser` bindings are Node's C over
+  10. **zlib, brotli, zstd and llhttp are the program's, and the `zlib` and `http_parser` bindings are Node's C over
      them**: the part of item 7's "rest of §1" a server's request path uses, numbered after item 9 so the numbers
-     cited stand. `libnode.so` holds Node v24.21.0's `deps/zlib` (Chromium's zlib, 1.3.2.1-motley), `deps/brotli`
+     cited stand. The program holds Node v24.21.0's `deps/zlib` (Chromium's zlib, 1.3.2.1-motley), `deps/brotli`
      (1.2.0), `deps/zstd` (1.5.7) and `deps/llhttp` (9.4.3), each compiled from Node's release archive with its gyp
      file's sources and defines and Node's Release flags (`scripts/build-libnode.sh`), zlib as zlib.gyp builds it for
      an architecture with neither x86's nor NEON's optimizations (`CPU_NO_SIMD`, `inflate.c`).
@@ -811,15 +814,14 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   OpenSSL's seeding is `getrandom` (else `/dev/urandom`) and its clock `clock_gettime`; it reads `OPENSSL_CONF`'s
   file or `/etc/ssl/openssl.cnf` where the image has one (a missing file is no error, as in Node), and a provider
   module from `/usr/lib/ossl-modules` only where the configuration or `crypto.setFips` asks for one.
-- *The build* (`scripts/build-libnode.sh`): `<native SDK> <side-module toolchain> <libuv a267f5688b archive>
-  <node-v24.21.0.tar.gz> <out>`. The side-module toolchain is browser-substrate's (its ADR-0231: `include/c++/v1`,
-  `lib/libc++.a`, `lib/libc++abi.a`), so the recipe depends on it beside the native SDK, and Node's release archive
-  is an input (OpenSSL, ncrypto, zlib, brotli, zstd, llhttp, merve, V8's simdutf and simdjson, `node_root_certs.h`,
+- *The build* (`scripts/build-libnode.sh`): `<native SDK> <libuv a267f5688b archive> <node-v24.21.0.tar.gz> <out>`.
+  Its C++ runtime is the native SDK's, which the SDK's `c++` links (browser-substrate ADR-0238 §4), and Node's
+  release archive is an input (OpenSSL, ncrypto, zlib, brotli, zstd, llhttp, merve, V8's simdutf and simdjson, `node_root_certs.h`,
   `node_constants.cc` and `.h`, `node_zlib.cc`'s constants, `tracing/trace_event_common.h`, `node_options.cc`, `.h`
   and `-inl.h`, `node.h`, `node_revert.h`, `node_version.h`, `node_exit_code.h`, `util.h`, `util-inl.h`, `util.cc`,
   `debug_utils-inl.h`, `node_dotenv.h` and `.cc`, `node_config_file.h` and `.cc`, `node_task_runner.h` and `.cc`,
-  `quic/guard.h` and `large_pages/node_large_page.cc`). `libnode.so` exports the whole of libuv, OpenSSL, ncrypto,
-  zlib, brotli, zstd, llhttp, merve and simdjson.
+  `quic/guard.h` and `large_pages/node_large_page.cc`). The program exports the whole of libuv, OpenSSL, ncrypto,
+  zlib, brotli, zstd, llhttp, merve and simdjson (ADR-0019 §2).
 - *Addons through `dlopen`* (item 7): the program's `dlopen` of a `.node` reaches the loader, which refuses a
   library's import outside `env`, `GOT` and `wali` and binds `env` by name in the program and the libraries. An addon
   the side-module toolchain builds imports emnapi's `napi` and `emnapi` modules and Node-API's `env` functions, which
