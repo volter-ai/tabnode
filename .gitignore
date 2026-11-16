@@ -3,6 +3,8 @@ node_modules/
 
 # Build output; tracked on `release` only, the way FORK.md says
 dist/
+# A vendored Node dependency's own dist directory is Node's file, not build output.
+!src/node-lib/internal/deps/**/dist/
 
 # IDE/Editor
 .vscode/

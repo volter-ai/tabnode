@@ -391,10 +391,11 @@ function bindingSurface(value: unknown, owner: () => ProcessToken | null, proces
  * Node's Environment keeps their constructors (crypto_keys.cc CreateNativeKeyObjectClass, CreateCryptoKeyClass), so
  * the file that makes them, and its KeyObject and CryptoKey, are the realm's (ADR-0018 item 7).
  */
-export const REALM_ENVIRONMENT: ReadonlySet<string> = new Set(['internal/timers', 'internal/async_context_frame', 'internal/crypto/keys']);
+export const REALM_ENVIRONMENT: ReadonlySet<string> = new Set<string>(REALM_ENVIRONMENT_IDS);
 const REALM_BINDINGS = new Set(['timers', 'async_context_frame', 'task_queue']);
 
 export { NODE_PROGRAM_REALM, isNodeProgramRealm } from './binding/libnode';
+import { REALM_ENVIRONMENT_IDS } from './engine-builtin-ids';
 
 /** A realm's own loaders, where its process is `node` and Node's bootstrap made them (realm.ts). */
 export interface RealmLoaders {

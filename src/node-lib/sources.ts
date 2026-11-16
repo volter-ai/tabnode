@@ -104,6 +104,19 @@ import INTERNAL_FS_RECURSIVE_WATCH from './internal/fs/recursive_watch.js?raw';
 import INTERNAL_FS_GLOB from './internal/fs/glob.js?raw';
 import INTERNAL_DEPS_MINIMATCH from './internal/deps/minimatch/index.js?raw';
 import INTERNAL_DEPS_UNDICI from './internal/deps/undici/undici.js?raw';
+import INTERNAL_UTIL_DIFF from './internal/util/diff.js?raw';
+import INTERNAL_UTIL_INSPECTOR from './internal/util/inspector.js?raw';
+import INTERNAL_INSPECTOR_ASYNC_HOOK from './internal/inspector_async_hook.js?raw';
+import INTERNAL_INSPECTOR_NETWORK_TRACKING from './internal/inspector_network_tracking.js?raw';
+import INTERNAL_INSPECTOR_NETWORK from './internal/inspector/network.js?raw';
+import INTERNAL_INSPECTOR_NETWORK_HTTP from './internal/inspector/network_http.js?raw';
+import INTERNAL_INSPECTOR_NETWORK_HTTP2 from './internal/inspector/network_http2.js?raw';
+import INTERNAL_INSPECTOR_NETWORK_UNDICI from './internal/inspector/network_undici.js?raw';
+import INTERNAL_INSPECTOR_WEBSTORAGE from './internal/inspector/webstorage.js?raw';
+import INTERNAL_WEBSTORAGE from './internal/webstorage.js?raw';
+import INTERNAL_ERROR_SERDES from './internal/error_serdes.js?raw';
+import INTERNAL_WATCHDOG from './internal/watchdog.js?raw';
+import INTERNAL_DEPS_ACORN_WALK from './internal/deps/acorn/acorn-walk/dist/walk.js?raw';
 import INTERNAL_WASM_WEB_API from './internal/wasm_web_api.js?raw';
 import INTERNAL_FS_READ_CONTEXT from './internal/fs/read/context.js?raw';
 import INTERNAL_FS_CP_CP_SYNC from './internal/fs/cp/cp-sync.js?raw';
@@ -504,4 +517,17 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/crypto/webcrypto_util': INTERNAL_CRYPTO_WEBCRYPTO_UTIL,
   'internal/crypto/webidl': INTERNAL_CRYPTO_WEBIDL,
   'internal/crypto/x509': INTERNAL_CRYPTO_X509,
+  'internal/util/diff': INTERNAL_UTIL_DIFF,
+  'internal/util/inspector': INTERNAL_UTIL_INSPECTOR,
+  'internal/inspector_async_hook': INTERNAL_INSPECTOR_ASYNC_HOOK,
+  'internal/inspector_network_tracking': INTERNAL_INSPECTOR_NETWORK_TRACKING,
+  'internal/inspector/network': INTERNAL_INSPECTOR_NETWORK,
+  'internal/inspector/network_http': INTERNAL_INSPECTOR_NETWORK_HTTP,
+  'internal/inspector/network_http2': INTERNAL_INSPECTOR_NETWORK_HTTP2,
+  'internal/inspector/network_undici': INTERNAL_INSPECTOR_NETWORK_UNDICI,
+  'internal/inspector/webstorage': INTERNAL_INSPECTOR_WEBSTORAGE,
+  'internal/webstorage': INTERNAL_WEBSTORAGE,
+  'internal/error_serdes': INTERNAL_ERROR_SERDES,
+  'internal/watchdog': INTERNAL_WATCHDOG,
+  'internal/deps/acorn/acorn-walk/dist/walk': INTERNAL_DEPS_ACORN_WALK,
 };

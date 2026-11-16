@@ -275,7 +275,10 @@ builtin tables load Node's files on first use. So where the realm's process is `
   primordials, `--disable-proto` applied after them, and V8's streaming callback set, so `WebAssembly.compileStreaming`
   and `instantiateStreaming` take a Response of the process's undici through `wasm_web_api`. Every builtin is compiled as BuiltinLoader compiles it, its own text the body of a
   function of its kind's parameters at the realm's scope, and so is every file of the engine's own library graph and
-  every dependency the engine compiles in that realm (`load.ts` `realmCompiled`).
+  every dependency the engine compiles in that realm (`load.ts` `realmCompiled`). The vendored set is closed as Node's builtin set is: every id
+  its files can require, lazily included, is a vendored file or one the engine answers
+  (`src/node-lib/engine-builtin-ids.ts`), and the build refuses a set with an id that is neither
+  (`src/node-lib/builtin-closure.ts`).
 - **Its main is Node's.** StartExecution's SelectLoadMode (`src/node.cc`) picks the main script, and it runs as Node
   runs it, inside a callback scope of async context {1, 0}: `internal/main/run_main_module`, `eval_string`, `eval_stdin`, `check_syntax`, `print_help` and the rest,
   each calling `prepareMainThreadExecution` as Node's mains do. A CommonJS file is Node's

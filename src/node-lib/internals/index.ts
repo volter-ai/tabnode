@@ -31,14 +31,7 @@ import { internalBootstrapRealm, internalEncoding } from './modules';
 import { internalUrl, internalUrlOf } from './url';
 import { internalAmaro } from './amaro';
 import { locksOf } from './locks';
-
-/** Every name this table answers, its conditional names with the rest: what a realm's builtin ids hold of it. */
-export function nodeLibInternalNames(): string[] {
-  nodeLibInternal('internal/util/types');
-  return [...new Set(['internal/deps/acorn/acorn/dist/acorn', 'internal/modules/helpers', 'internal/webstreams/adapters',
-    'internal/url', 'internal/locks', 'internal/options', 'internal/blob', 'internal/process/per_thread',
-    'internal/process/execution', 'internal/process/warning', ...Object.keys(__table!)])];
-}
+import { type EngineInternalId } from '../engine-builtin-ids';
 
 /** Built on the first ask, for the reason `./binding/index.ts` gives. */
 // eslint-disable-next-line no-var, vars-on-top
@@ -79,7 +72,7 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   if (process && name === 'internal/process/warning') return () => ({
     emitWarningSync: (...args: unknown[]) => process.emitWarning(...args),
   });
-  __table ??= {
+  __table ??= ({
   'internal/util/types': () => internalUtilTypes,
   'internal/async_hooks': () => internalAsyncHooks,
   'internal/process/task_queues': () => internalTaskQueues,
@@ -106,6 +99,6 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   // `internal/worker`'s `ownsProcessState` (lib/internal/worker.js: `isMainThread`), which crypto.js's setFips reads:
   // every process here is a main thread (`worker_threads`' isMainThread).
   'internal/worker': () => ({ isMainThread: true, ownsProcessState: true }),
-};;
+} satisfies Partial<Record<EngineInternalId, () => unknown>>);
   return __table[name];
 }

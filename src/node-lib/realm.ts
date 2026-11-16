@@ -24,8 +24,9 @@
  */
 import { nodeLibNames, nodeLibSource } from './bodies';
 import { primordialsOf, loadNodeLib, REALM_ENVIRONMENT, moduleSurface } from './load';
-import { nodeLibInternal, nodeLibInternalNames } from './internals';
-import { nodeLibPublic, nodeLibPublicNames } from './public-modules';
+import { ENGINE_BUILTIN_IDS, type RealmAliasId, type RealmWebModuleId } from './engine-builtin-ids';
+import { nodeLibInternal } from './internals';
+import { nodeLibPublic } from './public-modules';
 import { internalBlobOf } from './internals/buffer-and-streams';
 import { createSqliteModule } from './sqlite';
 import { internalUrlOf } from './internals/url';
@@ -147,7 +148,7 @@ const REALM_WEB_MODULES: Readonly<Record<string, readonly string[]>> = {
   'internal/webstreams/compression': ['CompressionStream', 'DecompressionStream'],
   'internal/encoding': ['TextEncoder', 'TextDecoder'],
   'internal/file': ['File'],
-};
+} satisfies Record<RealmWebModuleId, readonly string[]>;
 
 /** Node's own aliases among its public ids (lib/fs/promises.js, lib/path/posix.js and the rest), over the files they name. */
 const ALIASES: Readonly<Record<string, (require: (id: string) => any) => unknown>> = {
@@ -156,7 +157,7 @@ const ALIASES: Readonly<Record<string, (require: (id: string) => any) => unknown
   'path/posix': (require) => require('path').posix,
   'path/win32': (require) => require('path').win32,
   'util/types': (require) => require('internal/util/types'),
-};
+} satisfies Record<RealmAliasId, (require: (id: string) => any) => unknown>;
 
 /**
  * Node's bootstrap of the realm whose process is `node`: the per-context scripts, `internal/bootstrap/realm`, `node`,
@@ -236,8 +237,7 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
     return nodeLibInternal(id, require, process) ?? nodeLibPublic(id, require, process);
   };
   const vendored = new Set(nodeLibNames());
-  const engineIds = [...REALM_ENVIRONMENT, 'process', 'stream/web', 'sqlite', ...Object.keys(ALIASES), ...Object.keys(REALM_WEB_MODULES),
-    ...nodeLibInternalNames(), ...nodeLibPublicNames()];
+  const engineIds = ENGINE_BUILTIN_IDS;
   const builtinIds = [...new Set([...vendored, ...engineIds])].sort();
 
   // internalBinding('builtins') (src/node_builtins.cc): the ids, a builtin's function, the loaders Node's JavaScript
