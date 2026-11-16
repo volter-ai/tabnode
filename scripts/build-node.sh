@@ -20,8 +20,9 @@
 # OpenSSL and ncrypto are Node v24.21.0's deps/openssl/openssl (OpenSSL 3.5.8) and deps/ncrypto, from Node's release
 # archive, pinned by the SHA-256 Node's SHASUMS256.txt gives it:
 #   https://nodejs.org/dist/v24.21.0/node-v24.21.0.tar.gz
-# OpenSSL is configured with Node's options (deps/openssl/config/Makefile:33-36) and no-asm, as Node's no-asm
-# configurations have it, and compiled with Node's defines (deps/openssl/openssl.gyp, openssl_common.gypi, and
+# OpenSSL's configuration is native/openssl's generated set, made by Node's own procedure with Node's options and no-asm
+# and kept as source (native/openssl/README.md). OpenSSL is compiled from that set as Node's deps/openssl/openssl.gyp
+# compiles one of its own, with Node's defines (openssl.gyp, openssl_no_asm.gypi, openssl_common.gypi, and
 # common.gypi's), its legacy provider built in as Node's libopenssl holds it. Each difference is named where it is
 # made below (ADR-0016 §1).
 #
@@ -36,11 +37,8 @@
 #
 # Usage: scripts/build-node.sh <native SDK> \
 #   <libuv-a267f5688be25e8d4628e296245a041adc2ca072.tar.gz> <node-v24.21.0.tar.gz> <out directory>
-# Its environment gives SOURCE_DATE_EPOCH, the recipe's, which is OpenSSL's build date (ADR-0019 §1).
 # The script owns its scratch: a directory of its own from mktemp -d, removed by its EXIT trap however it ends.
 set -euo pipefail
-[[ ${SOURCE_DATE_EPOCH-} =~ ^[0-9]+$ ]] ||
-  { echo 'build-node.sh: SOURCE_DATE_EPOCH is the recipe'\''s, in seconds' >&2; exit 2; }
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 sdk="$(cd "$1" && pwd)"
 uv_archive="$2"
@@ -51,8 +49,17 @@ echo "622424efb5dc0c26c93fbb619ff10737ee289c605b837c88778e186925d82777  $node_ar
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 jobs=$(getconf _NPROCESSORS_ONLN)
-# Compiles run in parallel; `finish` waits for each and fails where any did.
+# Compiles run in parallel, at most one for each processor: `compile` starts one, first waiting for the oldest when
+# that many run, and `finish` waits for the rest; each fails where a compile did.
 pids=()
+compile() {
+  "$@" &
+  pids+=($!)
+  if (( ${#pids[@]} >= jobs )); then
+    wait "${pids[0]}"
+    pids=("${pids[@]:1}")
+  fi
+}
 finish() { local pid; for pid in "${pids[@]}"; do wait "$pid"; done; pids=(); }
 
 libuv=libuv-a267f5688be25e8d4628e296245a041adc2ca072
@@ -66,22 +73,25 @@ tar xzf "$node_archive" -C "$work" "$node/deps/openssl/openssl" "$node/deps/ncry
   "$node/src/node_exit_code.h" "$node/src/util.h" "$node/src/util-inl.h" "$node/src/util.cc" "$node/src/debug_utils-inl.h" \
   "$node/src/node_dotenv.h" "$node/src/node_dotenv.cc" "$node/src/node_config_file.h" "$node/src/node_config_file.cc" \
   "$node/src/node_task_runner.h" "$node/src/node_task_runner.cc"
-openssl="$work/$node/deps/openssl/openssl"
 ncrypto="$work/$node/deps/ncrypto"
 cc="$sdk/bin/cc"
 cxx="$sdk/bin/cxx"
 # Every compile, OpenSSL's and each dependency's included, is Node's Release build for Linux (common.gypi, for every
 # target: -O3 and -fno-omit-frame-pointer in the Release configuration, _GLIBCXX_USE_CXX11_ABI=1, _FILE_OFFSET_BITS=64
-# and __STDC_FORMAT_MACROS; its warning flags aside). Node's -pthread, with atomics and bulk memory, is what every
-# module of the machine is compiled with, which the SDK's compile driver gives (browser-substrate ADR-0240 §2).
+# and __STDC_FORMAT_MACROS, and OPENSSL_NO_PINSHARED, OPENSSL_THREADS and OPENSSL_NO_ASM where Node's OpenSSL is its
+# own, no-asm, in an executable (770-789); its warning flags aside). Node's -pthread, with atomics and bulk memory, is
+# what every module of the machine is compiled with, which the SDK's compile driver gives (browser-substrate
+# ADR-0240 §2).
 # Linux's own headers (linux/errqueue.h and linux/if_packet.h, which libuv and OpenSSL include) are the target's and
 # belong in the SDK's sysroot; the SDK lays them beside it, in linux-headers, read after musl's.
 # The program's bytes name no directory of the build (ADR-0019 §1). Node's gyp build names a source relative to its
 # tree (its make generator compiles $(srcdir)/deps/uv/src/unix/core.c, srcdir being the tree from out/); here each
-# directory a compile reads is mapped out, so every name is relative to its root: the checkout's (native/node/fs.c),
+# directory a compile reads is mapped out, so every name is relative to its root: the checkout's (native/node/fs.c,
+# native/openssl/config/archs/linux-generic64/no-asm/crypto/params_idx.c),
 # the scratch's (node-v24.21.0/deps/ncrypto/ncrypto.cc, libuv-a267f5688be25e8d4628e296245a041adc2ca072/src/unix/core.c,
 # generated/node_options_header.inc) and the SDK's (its headers, by their path in the SDK).
 flags=(-fPIC -O3 -fno-omit-frame-pointer -D_FILE_OFFSET_BITS=64 -D_GLIBCXX_USE_CXX11_ABI=1 -D__STDC_FORMAT_MACROS
+  -DOPENSSL_NO_PINSHARED -DOPENSSL_THREADS -DOPENSSL_NO_ASM
   -idirafter "$sdk/linux-headers/usr/include"
   -ffile-prefix-map="$repo/"= -ffile-prefix-map="$work/"= -ffile-prefix-map="$sdk/"=)
 # Node's C++ (common.gypi cflags_cc: -fno-rtti -fno-exceptions -fno-strict-aliasing -std=gnu++20), over the SDK's libc++
@@ -98,13 +108,12 @@ sources=(fs-poll idna inet random strscpy strtok thread-common threadpool timer 
 objects=()
 for source in "${sources[@]}"; do
   object="$work/uv-${source//\//-}.o"
-  "$cc" "${flags[@]}" "${defines[@]}" -I"$uv/include" -I"$uv/src" -c "$uv/src/$source.c" -o "$object" &
-  pids+=($!)
+  compile "$cc" "${flags[@]}" "${defines[@]}" -I"$uv/include" -I"$uv/src" -c "$uv/src/$source.c" -o "$object"
   objects+=("$object")
 done
 finish
 
-# zlib, brotli, zstd and llhttp's sources (item 10, below), unpacked first: OpenSSL is configured over the first three.
+# zlib, brotli, zstd and llhttp's sources (item 10, below), unpacked first: OpenSSL depends on the first three.
 tar xzf "$node_archive" -C "$work" "$node/deps/zlib" "$node/deps/brotli" "$node/deps/zstd" "$node/deps/llhttp" \
   "$node/deps/merve" "$node/deps/v8/third_party/simdutf" "$node/deps/simdjson" "$node/src/node_zlib.cc"
 # Node's sources with native/patches' changes, in its series' order, once every source a patch names is unpacked.
@@ -118,59 +127,82 @@ llhttpsrc="$work/$node/deps/llhttp"
 mervesrc="$work/$node/deps/merve"
 simdutfsrc="$work/$node/deps/v8/third_party/simdutf"
 simdjsonsrc="$work/$node/deps/simdjson"
+# What zstd.gyp gives every target that depends on it, OpenSSL among them (all_dependent_settings).
+zstddefines=(-DXXH_NAMESPACE=ZSTD_ -DZSTD_MULTITHREAD -DZSTD_DISABLE_ASM)
 
-# OpenSSL 3.5.8 with Node's Configure options (no-tests no-shared no-afalgeng enable-ssl-trace enable-fips, and zlib,
-# enable-brotli and enable-zstd over Node's own deps/zlib, deps/brotli and deps/zstd for RFC 8879 certificate
-# compression, their headers the ones the program's copies are built from) and no-asm.
+# OpenSSL 3.5.8, compiled as Node's deps/openssl/openssl.gyp compiles its `openssl` target from one of its generated
+# sets (ADR-0019 §1). The set is native/openssl/config/archs/linux-generic64/no-asm: OpenSSL's configuration with
+# Node's options (deps/openssl/config/Makefile:33-36: no-tests no-shared no-afalgeng enable-ssl-trace enable-fips, and
+# zlib, enable-brotli and enable-zstd over Node's deps/zlib, deps/brotli and deps/zstd for RFC 8879 certificate
+# compression) and no-asm, made once by Node's own procedure (the Makefile's no-asm form and generate_gypi.pl) and kept
+# as source, with its generated headers, crypto/buildinf.h among them (native/openssl/README.md). Nothing here
+# configures OpenSSL: no OpenSSL Configure, Makefile or host compiler runs.
+# The set's openssl.gypi is read as gyp reads it: its lists are the library's sources and defines, and a path in it is
+# relative to Node's deps/openssl, where native/openssl stands for the set's own (./config/archs/...).
+# Node's defines for the library besides the set's: openssl.gyp's OPENSSL_NO_HW, OPENSSL_API_COMPAT=0x10100001L,
+# STATIC_LEGACY and MODULESDIR; openssl_no_asm.gypi's OPENSSL_NO_ASM and common.gypi's, which every compile has
+# (above); openssl_common.gypi's for Linux, OPENSSLDIR "/etc/ssl", ENGINESDIR "/dev/null" and TERMIOS; and zstd.gyp's.
+# Its include directories are the set's and openssl_common.gypi's, then zlib's, brotli's and zstd's, as each gyp file
+# gives them to its dependents. The set's flags (openssl_cflags_linux-generic64: -Wall -O3 -pthread) are every
+# compile's here: -O3 every target's, -pthread the SDK driver's, the warning flags aside.
 # Differences from Node's, each named:
-# - linux-generic64, where Node configures its host's target: wasm32-linux-muslwali has a 64-bit `long` and 32-bit
+# - linux-generic64, where Node's sets are its hosts' targets: wasm32-linux-muslwali has a 64-bit `long` and 32-bit
 #   pointers, OpenSSL's SIXTY_FOUR_BIT_LONG, the target browser-substrate's own OpenSSL recipe takes
 #   (programs/native-providers/openssl).
-# - --prefix=/usr --libdir=lib --openssldir=/etc/ssl: OPENSSLDIR is Node's Linux "/etc/ssl" (openssl_common.gypi);
-#   MODULESDIR is /usr/lib/ossl-modules, the image's, where Node's names its own build tree; ENGINESDIR is
-#   /usr/lib/engines-3 where Node's gyp says /dev/null, and no code reads it, since no-shared configures no dynamic
-#   engine, as Node's does.
-# Node's tree is stripped of doc/; Configure reads doc/build.info, so an empty one is written in this scratch copy,
-# which compiles nothing differently. Node's defines for the library (openssl.gyp: OPENSSL_NO_HW,
-# OPENSSL_API_COMPAT=0x10100001L, STATIC_LEGACY; openssl_common.gypi: TERMIOS; common.gypi: OPENSSL_THREADS, and
-# OPENSSL_NO_PINSHARED, as for an executable that links its own OpenSSL) are Configure's -D arguments, so every
-# compile has them.
-# OpenSSL's build information (crypto/buildinf.h: the platform, the compiler line and the build date that
-# OpenSSL_version and `openssl version -a` report) is Node's: Node configures OpenSSL in its tree with its options,
-# its include directories relative to the tree, and the target's own compiler and flags, and ships the crypto/buildinf.h
-# OpenSSL's Makefile then makes (deps/openssl/config/Makefile, generate_gypi.pl); its build compiles with its own flags
-# around that header, which records none of them. So OpenSSL is configured first as Node's no-asm configuration is,
-# and its Makefile makes crypto/buildinf.h by util/mkbuildinf.pl, whose date is SOURCE_DATE_EPOCH; then it is configured
-# for the build, whose Makefile keeps that header, newer than its one prerequisite, util/mkbuildinf.pl.
-nodeopts=(no-tests no-shared no-afalgeng enable-ssl-trace enable-fips zlib --with-zlib-include=../../zlib
-  enable-brotli --with-brotli-include=../../brotli/c/include enable-zstd --with-zstd-include=../../zstd/lib)
-(
-  cd "$openssl"
-  mkdir -p doc && : > doc/build.info
-  CONFIGURE_CHECKER_WARN=1 "$sdk/bin/perl" ./Configure "${nodeopts[@]}" no-asm linux-generic64 >/dev/null
-  "$sdk/bin/make" crypto/buildinf.h >/dev/null
-  CC="$cc" AR="$sdk/bin/ar" RANLIB="$sdk/bin/ranlib" CFLAGS="${flags[*]}" CONFIGURE_CHECKER_WARN=1 \
-    "$sdk/bin/perl" ./Configure linux-generic64 "${nodeopts[@]}" no-asm --prefix=/usr --libdir=lib \
-    --openssldir=/etc/ssl -DOPENSSL_NO_HW -DOPENSSL_API_COMPAT=0x10100001L -DSTATIC_LEGACY -DTERMIOS -DOPENSSL_THREADS \
-    -DOPENSSL_NO_PINSHARED >/dev/null
-  # libcrypto and libssl, and the legacy provider as Node's libopenssl builds it in: its implementations
-  # (providers/liblegacy.a) and its entry (legacyprov.c), whose STATIC_LEGACY form is ossl_legacy_provider_init, the
-  # built-in provider crypto/provider_predefined.c names.
-  # A file target of OpenSSL's Makefile depends on no generated header: its build_* targets run build_generated first
-  # (safestack.h, opensslv.h and the rest, made from their .in), so the legacy provider's files are made after
-  # build_libs has made them, never beside it in one parallel make.
-  "$sdk/bin/make" -j"$jobs" build_libs >/dev/null
-  "$sdk/bin/make" -j"$jobs" providers/liblegacy.a providers/legacy-dso-legacyprov.o >/dev/null
-)
+# - MODULESDIR is /usr/lib/ossl-modules, the image's, where Node's names its own build tree (openssl.gyp's modules_dir).
+# - The set's include directories come before OpenSSL's own, and Node's deps/openssl/config is not one of them. Node
+#   reaches a set's generated headers through the headers it puts in their place in openssl/include, which choose
+#   among its sets by the compiler's architecture macros (config/*_no-asm.h) and name no wasm32 target; with one set,
+#   its own directories come first, so <openssl/opensslv.h> and every other generated header are the set's.
+osslsrc="$work/$node/deps/openssl"
+osslset="$repo/native/openssl/config/archs/linux-generic64/no-asm"
+# gypi_list NAME prints the entries of the list NAME in the set's openssl.gypi, one to a line.
+gypi_list() {
+  awk -v open="'$1': [" -v q="'" '{ line = $0; gsub(/^ +| +$/, "", line) }
+    on && line == "],"  { exit }
+    on                  { gsub("^" q "|" q ",$", "", line); print line }
+    line == open        { on = 1 }' "$osslset/openssl.gypi"
+}
+ossldefines=(-DOPENSSL_NO_HW -DOPENSSL_API_COMPAT=0x10100001L -DSTATIC_LEGACY -DMODULESDIR='"/usr/lib/ossl-modules"'
+  -DOPENSSLDIR='"/etc/ssl"' -DENGINESDIR='"/dev/null"' -DTERMIOS "${zstddefines[@]}")
+while read -r define; do ossldefines+=("-D$define"); done < <(gypi_list openssl_defines_linux-generic64)
+osslincludes=(-I"$osslset" -I"$osslset/include" -I"$osslset/crypto" -I"$osslset/crypto/include/internal"
+  -I"$osslset/providers/common/include" -I"$osslsrc/openssl" -I"$osslsrc/openssl/include" -I"$osslsrc/openssl/crypto"
+  -I"$osslsrc/openssl/crypto/include" -I"$osslsrc/openssl/crypto/modes" -I"$osslsrc/openssl/crypto/ec/curve448"
+  -I"$osslsrc/openssl/crypto/ec/curve448/arch_32" -I"$osslsrc/openssl/providers/common/include"
+  -I"$osslsrc/openssl/providers/fips/include" -I"$osslsrc/openssl/providers/implementations/include"
+  -I"$zlibsrc" -I"$brotlisrc/c/include" -I"$zstdsrc/lib")
+# The library's sources are openssl_sources, libssl's, libcrypto's and the default, common and legacy providers', with
+# the legacy provider's entry (providers/legacyprov.c, whose STATIC_LEGACY form is ossl_legacy_provider_init, the
+# built-in provider crypto/provider_predefined.c names), and the set's generated sources; gyp compiles the C among
+# them, not the set's linker scripts. The list names the three sources the default and legacy providers share twice
+# (cipher_tdes_common.c, ripemd_prov.c, prov_running.c), and each is one object, as in Node's library.
+osslobjects=()
+while read -r source; do
+  case $source in
+    openssl/*.c) file="$osslsrc/$source" ;;
+    ./config/*.c) file="$repo/native/openssl/${source#./}" ;;
+    *) continue ;;
+  esac
+  object="$work/openssl-objects/${source#./}"
+  object="${object%.c}.o"
+  mkdir -p "${object%/*}"
+  compile "$cc" "${flags[@]}" "${ossldefines[@]}" "${osslincludes[@]}" -c "$file" -o "$object"
+  osslobjects+=("$object")
+done < <({ gypi_list openssl_sources; gypi_list openssl_sources_linux-generic64; } | awk '!seen[$0]++')
+finish
+# What openssl.gyp gives a target that depends on it (direct_dependent_settings): OpenSSL's include and crypto/include
+# directories and the set's, the set's first, as above, and the set's exported defines.
+osslexport=(-I"$osslset/include" -I"$osslset" -I"$osslsrc/openssl/include" -I"$osslsrc/openssl/crypto/include")
+while read -r define; do osslexport+=("-D$define"); done < <(gypi_list openssl_defines_exported_linux-generic64)
 
-# ncrypto (deps/ncrypto/ncrypto.gyp): ncrypto.cc with its strict defines, and engine.cc as its ncrypto_engine target.
+# ncrypto (deps/ncrypto/ncrypto.gyp): ncrypto.cc with its strict defines, and engine.cc as its ncrypto_engine target,
+# each over OpenSSL as openssl.gyp gives it.
 ncdefines=(-DNCRYPTO_BSSL_LIBDECREPIT_MISSING=1 -DOPENSSL_API_COMPAT=30000)
-"$cxx" "${flags[@]}" "${cxxflags[@]}" "${ncdefines[@]}" -DOPENSSL_NO_DEPRECATED -I"$openssl/include" -I"$ncrypto" \
-  -c "$ncrypto/ncrypto.cc" -o "$work/ncrypto.o" &
-pids+=($!)
-"$cxx" "${flags[@]}" "${cxxflags[@]}" "${ncdefines[@]}" -DOPENSSL_SUPPRESS_DEPRECATED -DNCRYPTO_ENGINE_COMPAT=1 \
-  -I"$openssl/include" -I"$ncrypto" -c "$ncrypto/engine.cc" -o "$work/ncrypto-engine.o" &
-pids+=($!)
+compile "$cxx" "${flags[@]}" "${cxxflags[@]}" "${ncdefines[@]}" -DOPENSSL_NO_DEPRECATED "${osslexport[@]}" \
+  -I"$ncrypto" -c "$ncrypto/ncrypto.cc" -o "$work/ncrypto.o"
+compile "$cxx" "${flags[@]}" "${cxxflags[@]}" "${ncdefines[@]}" -DOPENSSL_SUPPRESS_DEPRECATED \
+  -DNCRYPTO_ENGINE_COMPAT=1 "${osslexport[@]}" -I"$ncrypto" -c "$ncrypto/engine.cc" -o "$work/ncrypto-engine.o"
 finish
 
 # zlib, brotli, zstd and llhttp (ADR-0018 item 10): Node v24.21.0's deps/zlib (Chromium's zlib, 1.3.2.1-motley, as Node
@@ -185,8 +217,7 @@ finish
 deps=()
 for source in adler32 compress cpu_features crc32 deflate gzclose gzlib gzread gzwrite infback inffast inftrees trees \
   uncompr zutil inflate; do
-  "$cc" "${flags[@]}" -DCPU_NO_SIMD -DHAVE_HIDDEN -I"$zlibsrc" -c "$zlibsrc/$source.c" -o "$work/zlib-$source.o" &
-  pids+=($!)
+  compile "$cc" "${flags[@]}" -DCPU_NO_SIMD -DHAVE_HIDDEN -I"$zlibsrc" -c "$zlibsrc/$source.c" -o "$work/zlib-$source.o"
   deps+=("$work/zlib-$source.o")
 done
 for source in common/constants common/context common/dictionary common/platform common/shared_dictionary \
@@ -196,11 +227,9 @@ for source in common/constants common/context common/dictionary common/platform 
   enc/dictionary_hash enc/encode enc/encoder_dict enc/entropy_encode enc/fast_log enc/histogram enc/literal_cost \
   enc/memory enc/metablock enc/static_dict enc/static_dict_lut enc/static_init enc/utf8_util; do
   object="$work/brotli-${source//\//-}.o"
-  "$cc" "${flags[@]}" -DOS_LINUX -I"$brotlisrc/c/include" -c "$brotlisrc/c/$source.c" -o "$object" &
-  pids+=($!)
+  compile "$cc" "${flags[@]}" -DOS_LINUX -I"$brotlisrc/c/include" -c "$brotlisrc/c/$source.c" -o "$object"
   deps+=("$object")
 done
-zstddefines=(-DXXH_NAMESPACE=ZSTD_ -DZSTD_MULTITHREAD -DZSTD_DISABLE_ASM)
 for source in common/debug common/entropy_common common/fse_decompress compress/fse_compress compress/huf_compress \
   decompress/huf_decompress common/pool common/threading common/xxhash common/zstd_common common/error_private \
   compress/hist compress/zstd_compress compress/zstd_compress_literals compress/zstd_compress_sequences \
@@ -208,29 +237,24 @@ for source in common/debug common/entropy_common common/fse_decompress compress/
   compress/zstd_opt compress/zstd_preSplit compress/zstdmt_compress decompress/zstd_ddict decompress/zstd_decompress \
   decompress/zstd_decompress_block; do
   object="$work/zstd-${source//\//-}.o"
-  "$cc" "${flags[@]}" "${zstddefines[@]}" -I"$zstdsrc/lib" -c "$zstdsrc/lib/$source.c" -o "$object" &
-  pids+=($!)
+  compile "$cc" "${flags[@]}" "${zstddefines[@]}" -I"$zstdsrc/lib" -c "$zstdsrc/lib/$source.c" -o "$object"
   deps+=("$object")
 done
 # llhttp is Node's for a Linux program, whose callbacks node_http_parser sets: api.c's JavaScript-host API is compiled
 # off Linux alone, by native/patches' platform test (ADR-0019 §4).
 for source in llhttp api http; do
-  "$cc" "${flags[@]}" -I"$llhttpsrc" -I"$llhttpsrc/include" -c "$llhttpsrc/src/$source.c" -o "$work/llhttp-$source.o" &
-  pids+=($!)
+  compile "$cc" "${flags[@]}" -I"$llhttpsrc" -I"$llhttpsrc/include" -c "$llhttpsrc/src/$source.c" -o "$work/llhttp-$source.o"
   deps+=("$work/llhttp-$source.o")
 done
 # merve (deps/merve/merve.gyp: merve.cpp, C++20, over V8's simdutf as include) and simdutf (tools/v8_gypfiles/v8.gyp's
 # simdutf target: simdutf.cpp), the CommonJS export lexer internalBinding('cjs_lexer') is (ADR-0018 §7).
-"$cxx" "${flags[@]}" "${cxxflags[@]}" -I"$simdutfsrc" -c "$simdutfsrc/simdutf.cpp" -o "$work/simdutf.o" &
-pids+=($!)
+compile "$cxx" "${flags[@]}" "${cxxflags[@]}" -I"$simdutfsrc" -c "$simdutfsrc/simdutf.cpp" -o "$work/simdutf.o"
 deps+=("$work/simdutf.o")
-"$cxx" "${flags[@]}" "${cxxflags[@]}" -I"$mervesrc" -I"$simdutfsrc" -c "$mervesrc/merve.cpp" -o "$work/merve.o" &
-pids+=($!)
+compile "$cxx" "${flags[@]}" "${cxxflags[@]}" -I"$mervesrc" -I"$simdutfsrc" -c "$mervesrc/merve.cpp" -o "$work/merve.o"
 deps+=("$work/merve.o")
 # simdjson (deps/simdjson/simdjson.gyp: simdjson.cpp), the JSON reader of Node's config file and `--run`
 # (node_config_file.cc, node_task_runner.cc).
-"$cxx" "${flags[@]}" "${cxxflags[@]}" -I"$simdjsonsrc" -c "$simdjsonsrc/simdjson.cpp" -o "$work/simdjson.o" &
-pids+=($!)
+compile "$cxx" "${flags[@]}" "${cxxflags[@]}" -I"$simdjsonsrc" -c "$simdjsonsrc/simdjson.cpp" -o "$work/simdjson.o"
 deps+=("$work/simdjson.o")
 finish
 mkdir -p "$work/generated"
@@ -292,40 +316,33 @@ sed -n '6,373p' "$work/$node/src/node_task_runner.cc" > "$work/generated/node_ta
 program=()
 for source in node_main stdio env poll memory signo handle_wrap stream_wrap tcp_wrap pipe_wrap tty_wrap udp_wrap \
   process_wrap spawn_sync signal_wrap process_methods credentials node_env_var uv fs fs_cp fs_event node_messaging engine_device; do
-  "$cc" "${flags[@]}" -D_GNU_SOURCE -I"$uv/include" -c "$repo/native/node/$source.c" -o "$work/$source.o" &
-  pids+=($!)
+  compile "$cc" "${flags[@]}" -D_GNU_SOURCE -I"$uv/include" -c "$repo/native/node/$source.c" -o "$work/$source.o"
   program+=("$work/$source.o")
 done
 for source in crypto_util crypto_context crypto_cipher crypto_tls crypto_x509 crypto_keys crypto_rsa crypto_dsa crypto_dh \
   crypto_ec crypto_pqc crypto_hash crypto_hmac crypto_random crypto_sig crypto_pbkdf2 crypto_scrypt crypto_hkdf \
   crypto_keygen crypto_aes crypto_chacha20_poly1305 crypto_kmac crypto_turboshake crypto_argon2 crypto_kem crypto_spkac \
   node_constants node_start; do
-  "$cxx" "${flags[@]}" "${cxxflags[@]}" "${ncdefines[@]}" -DOPENSSL_NO_DEPRECATED -D_GNU_SOURCE -I"$uv/include" \
-    -I"$openssl/include" -I"$ncrypto" -I"$work/generated" -I"$work/$node/src" -I"$zlibsrc" -I"$brotlisrc/c/include" \
-    -I"$zstdsrc/lib" -I"$simdjsonsrc" -c "$repo/native/node/$source.cc" -o "$work/$source.o" &
-  pids+=($!)
+  compile "$cxx" "${flags[@]}" "${cxxflags[@]}" "${ncdefines[@]}" -DOPENSSL_NO_DEPRECATED -D_GNU_SOURCE -I"$uv/include" \
+    "${osslexport[@]}" -I"$ncrypto" -I"$work/generated" -I"$work/$node/src" -I"$zlibsrc" -I"$brotlisrc/c/include" \
+    -I"$zstdsrc/lib" -I"$simdjsonsrc" -c "$repo/native/node/$source.cc" -o "$work/$source.o"
   program+=("$work/$source.o")
 done
 # The zlib, http_parser and cjs_lexer bindings' C (node_zlib, node_http_parser, node_cjs_lexer: Node's src/node_zlib.cc,
 # src/node_http_parser.cc and src/node_cjs_lexer.cc below V8), over the headers of the zlib, brotli, zstd, llhttp and
 # merve the program links, with the defines zstd gives its dependents (zstd.gyp all_dependent_settings).
 for source in node_zlib node_http_parser node_cjs_lexer; do
-  "$cc" "${flags[@]}" -D_GNU_SOURCE "${zstddefines[@]}" -I"$uv/include" -I"$zlibsrc" -I"$brotlisrc/c/include" \
-    -I"$zstdsrc/lib" -I"$llhttpsrc/include" -I"$mervesrc" -c "$repo/native/node/$source.c" -o "$work/$source.o" &
-  pids+=($!)
+  compile "$cc" "${flags[@]}" -D_GNU_SOURCE "${zstddefines[@]}" -I"$uv/include" -I"$zlibsrc" -I"$brotlisrc/c/include" \
+    -I"$zstdsrc/lib" -I"$llhttpsrc/include" -I"$mervesrc" -c "$repo/native/node/$source.c" -o "$work/$source.o"
   program+=("$work/$source.o")
 done
 finish
 
 # The program, linked as Node's own build links its executable (ADR-0019 §1, §2). Every object is linked whole, as
-# node.gyp links node_base (654-657) and node.gypi links libuv, zlib and OpenSSL's libssl and libcrypto (168-170,
-# 207-209, 416-418) into a node that is not shared, so an addon dlopen'd into the process finds all of each. It is
-# linked with -rdynamic, as common.gypi links it (586), so the addon binds its imports to the program's definitions.
-# The legacy provider's entry is linked with them, and its implementations come from providers/liblegacy.a as the
-# entry needs them: Node's source list holds each file once where the default and the legacy provider share it
-# (cipher_tdes_common.c, ripemd_prov.c, prov_running.c), and liblegacy.a has its own copy of those, which libcrypto
-# already defines. The SDK's C++ driver links it, which adds the C++ runtime.
+# node.gyp links node_base (654-657) and node.gypi links libuv, zlib and OpenSSL's library, the legacy provider in it
+# (168-170, 207-209, 416-418), into a node that is not shared, so an addon dlopen'd into the process finds all of each.
+# It is linked with -rdynamic, as common.gypi links it (586), so the addon binds its imports to the program's
+# definitions. The SDK's C++ driver links it, which adds the C++ runtime.
 mkdir -p "$out"
 "$cxx" -pthread -rdynamic -o "$out/node" "${program[@]}" "${objects[@]}" "$work/ncrypto.o" "$work/ncrypto-engine.o" \
-  "$openssl/providers/legacy-dso-legacyprov.o" "${deps[@]}" \
-  -Wl,--whole-archive "$openssl/libssl.a" "$openssl/libcrypto.a" -Wl,--no-whole-archive "$openssl/providers/liblegacy.a"
+  "${osslobjects[@]}" "${deps[@]}"

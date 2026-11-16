@@ -68,21 +68,24 @@ The rest of ADR-0018 §1's libraries (llhttp, Ada, zlib, brotli, zstd, nghttp2) 
   ADR-0238 §4).
 - **OpenSSL's configuration is Node's, with each difference named.** Node's options (`deps/openssl/config/
   Makefile:33-36`: `no-tests no-shared no-afalgeng enable-ssl-trace enable-fips`) with `no-asm`, as Node's own no-asm
-  configurations have it, and Node's defines (`openssl.gyp`: `OPENSSL_NO_HW`, `OPENSSL_API_COMPAT=0x10100001L`,
-  `STATIC_LEGACY`; `openssl_common.gypi`: `TERMIOS`, OPENSSLDIR `/etc/ssl`; `common.gypi`: `OPENSSL_THREADS`, and
-  `OPENSSL_NO_PINSHARED`, as for an executable that links its own OpenSSL). The legacy provider is built in, as Node's libopenssl holds it.
+  configurations have it, generated once by Node's procedure and kept as source in `native/openssl` (ADR-0019 §1), and
+  compiled as `openssl.gyp` compiles Node's sets, with Node's defines (`openssl.gyp`: `OPENSSL_NO_HW`,
+  `OPENSSL_API_COMPAT=0x10100001L`, `STATIC_LEGACY`; `openssl_no_asm.gypi`: `OPENSSL_NO_ASM`; `openssl_common.gypi`:
+  `TERMIOS`, OPENSSLDIR `/etc/ssl` and ENGINESDIR `/dev/null`; `common.gypi`: `OPENSSL_THREADS`, and
+  `OPENSSL_NO_PINSHARED`, as for an executable that links its own OpenSSL). The legacy provider is built in, as Node's
+  libopenssl holds it, from the set's own source list.
   The differences:
-  - `linux-generic64`, where Node configures its host's target: `wasm32-linux-muslwali` has a 64-bit `long` and
-    32-bit pointers, OpenSSL's `SIXTY_FOUR_BIT_LONG`, the target browser-substrate's own OpenSSL recipe takes.
+  - `linux-generic64`, where Node's sets are its hosts' targets: `wasm32-linux-muslwali` has a 64-bit `long` and
+    32-bit pointers, OpenSSL's `SIXTY_FOUR_BIT_LONG`, the target browser-substrate's own OpenSSL recipe takes. Node's
+    Makefile names no such target, and its no-asm rule is run for it (`native/openssl/README.md`).
   - RFC 8879 certificate compression: OpenSSL is configured with Node's `zlib`, `enable-brotli` and `enable-zstd`
     over Node's own deps in the program (ADR-0018 item 10), and the binding does not yet carry the compression, so
     `getCertificateCompressionAlgorithms()` answers the empty list, and a `certificateCompression` option naming an
     algorithm is refused by name.
-  - MODULESDIR is the image's `/usr/lib/ossl-modules`, where Node's names its build tree, and ENGINESDIR
-    `/usr/lib/engines-3` where Node's gyp says `/dev/null`, which no code reads, since `no-shared` configures no
-    dynamic engine, as Node's does.
-  - Node's tree is stripped of `doc/`; `Configure` reads `doc/build.info`, so the build writes an empty one in its
-    scratch copy, which compiles nothing differently.
+  - MODULESDIR is the image's `/usr/lib/ossl-modules`, where Node's names its build tree.
+  - The set's include directories come before OpenSSL's own: Node reaches a set's generated headers through headers in
+    `openssl/include` that choose among its sets by the compiler's architecture macros and name no wasm32 target, and
+    with one set its own headers are read directly.
 
 ### 2. In the process's memory; bytes cross by copy
 
