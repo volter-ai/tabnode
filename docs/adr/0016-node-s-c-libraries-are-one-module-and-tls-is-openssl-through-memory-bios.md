@@ -1,7 +1,7 @@
 # ADR-0016: Node's C libraries are one module built from Node's deps, and TLS is OpenSSL through memory BIOs
 
-Status: Accepted; §1, §2 and §3 amended by ADR-0018 item 7: Node's C libraries are `libnode.so` in the process's
-memory, and the export layer is the `node` program's.
+Status: Accepted; §1, §2 and §3 amended by ADR-0018 item 7 and ADR-0019: Node's C libraries are linked into the
+`node` program in the process's memory, and the export layer is that program's.
 
 Date: 2026-11-10. Served: browser-substrate ADR-0218 §1 and §3 (browser-substrate PR #276, "Tabnode is Node's facade,
 and it has no real fallback in a tab"; "Tabnode's V8 glue is a declared subset with named refusals") and ROADMAP 109,
@@ -55,29 +55,29 @@ Basis: the Node-fidelity study and its independent review (card VO-3806's commen
 
 ## Decision
 
-### 1. Node's C libraries are `libnode.so`, built from Node's own `deps/`
+### 1. Node's C libraries are the `node` program's, built from Node's own `deps/`
 
-OpenSSL 3.5.8 (`deps/openssl/openssl`) and ncrypto (`deps/ncrypto`) are in `libnode.so`, the one WALI shared library
-of Node's C in the Node process's memory (ADR-0018 §1), built from Node v24.21.0's own source tarball (pinned by
-digest) by `scripts/build-libnode.sh` with the WALI SDK, and linked whole into it, as gyp links every static
-dependency of Node's shared library (`node.gyp:1141`), so the program and an addon find all of OpenSSL in the image.
+OpenSSL 3.5.8 (`deps/openssl/openssl`) and ncrypto (`deps/ncrypto`) are in the WALI program `node`, Node's native
+half in the Node process's memory (ADR-0019 §1), built from Node v24.21.0's own source tarball (pinned by digest) by
+`scripts/build-libnode.sh` with the WALI SDK, and linked whole into it, as `node.gypi` links OpenSSL into Node's
+executable (`node.gypi:416-418`), so an addon finds all of OpenSSL in the program.
 The rest of ADR-0018 §1's libraries (llhttp, Ada, zlib, brotli, zstd, nghttp2) join it in that record's order.
 
 - **C++ runtime.** ncrypto and the glue (§3) are C++ (Node's `-std=gnu++20 -fno-rtti -fno-exceptions`), over the WALI
-  SDK's one C++ runtime, libc++ and libc++abi from browser-substrate's side-module toolchain (its ADR-0231 §1), which
-  the build takes as an input; each module links what it uses of it, as a side module does (ADR-0231 §3).
+  SDK's C++ runtime, libc++ and libc++abi as shared libraries, which the SDK's `c++` links (browser-substrate
+  ADR-0238 §4).
 - **OpenSSL's configuration is Node's, with each difference named.** Node's options (`deps/openssl/config/
   Makefile:33-36`: `no-tests no-shared no-afalgeng enable-ssl-trace enable-fips`) with `no-asm`, as Node's own no-asm
   configurations have it, and Node's defines (`openssl.gyp`: `OPENSSL_NO_HW`, `OPENSSL_API_COMPAT=0x10100001L`,
-  `STATIC_LEGACY`; `openssl_common.gypi`: `TERMIOS`, OPENSSLDIR `/etc/ssl`; `common.gypi`: `OPENSSL_THREADS`, and no
-  `OPENSSL_NO_PINSHARED`, as for a shared libnode). The legacy provider is built in, as Node's libopenssl holds it.
+  `STATIC_LEGACY`; `openssl_common.gypi`: `TERMIOS`, OPENSSLDIR `/etc/ssl`; `common.gypi`: `OPENSSL_THREADS`, and
+  `OPENSSL_NO_PINSHARED`, as for an executable that links its own OpenSSL). The legacy provider is built in, as Node's libopenssl holds it.
   The differences:
   - `linux-generic64`, where Node configures its host's target: `wasm32-linux-muslwali` has a 64-bit `long` and
     32-bit pointers, OpenSSL's `SIXTY_FOUR_BIT_LONG`, the target browser-substrate's own OpenSSL recipe takes.
-  - `no-zlib no-brotli no-zstd`, where Node's has `zlib`, `enable-brotli` and `enable-zstd` over its own deps for
-    RFC 8879 certificate compression: those libraries are not yet in `libnode.so`, so
-    `getCertificateCompressionAlgorithms()` answers the empty list the built OpenSSL has, and a
-    `certificateCompression` option naming an algorithm is refused by name.
+  - RFC 8879 certificate compression: OpenSSL is configured with Node's `zlib`, `enable-brotli` and `enable-zstd`
+    over Node's own deps in the program (ADR-0018 item 10), and the binding does not yet carry the compression, so
+    `getCertificateCompressionAlgorithms()` answers the empty list, and a `certificateCompression` option naming an
+    algorithm is refused by name.
   - MODULESDIR is the image's `/usr/lib/ossl-modules`, where Node's names its build tree, and ENGINESDIR
     `/usr/lib/engines-3` where Node's gyp says `/dev/null`, which no code reads, since `no-shared` configures no
     dynamic engine, as Node's does.
@@ -165,17 +165,17 @@ binary; `--tls-cipher-list` is Node's `DEFAULT_CIPHER_LIST_CORE` from the same s
   `net.Server` holding `_sharedCreds`, the SecureContext Node's `tls.Server` keeps, answers TLS (`listensWithTls`).
 - **Refused by name, each an open defect, not a platform limit:** a server's session resumption events
   (`resumeSession`, `newSession`: Node's ClientHello parser is not carried), PSK, OCSP stapling (`requestOCSP`,
-  `OCSPRequest`), `enableTrace`/`--trace-tls`, `pfx`, certificate compression (until zlib, brotli and zstd enter
-  `libnode.so`), `getSharedSigalgs()`. Engines are refused by Node's own `ERR_CRYPTO_CUSTOM_ENGINE_NOT_SUPPORTED`,
+  `OCSPRequest`), `enableTrace`/`--trace-tls`, `pfx`, certificate compression (the binding's half not yet
+  carried), `getSharedSigalgs()`. Engines are refused by Node's own `ERR_CRYPTO_CUSTOM_ENGINE_NOT_SUPPORTED`,
   the build having none.
 - **What stays the engine's:** the loop's dispatch. The wrap's callbacks run on the realm's loop as every other
   binding's do (ADR-0003); the microtask drain is the V8 glue's (browser-substrate ADR-0218 §3).
 
-### 5. `crypto` is Node's own, with `libnode.so`
+### 5. `crypto` is Node's own, with the program's OpenSSL
 
 Node's `lib/crypto.js` and `lib/internal/crypto/*`, its `KeyObject` and `X509Certificate` among them, run unchanged
 over the `crypto` binding (ADR-0018, item 7 of its order), each of whose calls is answered by the engine device (the
-browser's WebCrypto, `/dev/engine`) or by the OpenSSL in `libnode.so` through the program's glue of §3, as ADR-0018 §5
+browser's WebCrypto, `/dev/engine`) or by the OpenSSL in the program through its glue of §3, as ADR-0018 §5
 routes it. `require('crypto')`, `node:crypto` and `globalThis.crypto` are Node's; a realm with no `node` program has
 no OpenSSL and no `crypto` binding, as a Node built without it.
 
@@ -183,7 +183,7 @@ no OpenSSL and no `crypto` binding, as a Node built without it.
 
 Each step is a move from the engine's own module to Node's file, measured before and after by Node's own
 `test/parallel/test-tls-*`, `test-https-*` and `test-crypto-*` through `scripts/node-tests.mjs`, when a measurement
-is asked for. `process.versions.openssl` names the OpenSSL that runs, read from `libnode.so` as Node's
+is asked for. `process.versions.openssl` names the OpenSSL that runs, read from the program as Node's
 GetOpenSSLVersion reads it (`3.5.8`), and the other `process.versions` entries name what runs (browser-substrate
 ADR-0218 §3).
 

@@ -100,7 +100,7 @@ are the engine's own tables, the ones its own tree, signals and errors read back
 
 ### 4. Microtasks drain after each callback
 
-libuv calls C: each handle's callbacks are `libnode`'s glue, as Node's `src/*_wrap.cc` callbacks are (`OnRead`,
+libuv calls C: each handle's callbacks are the program's glue, as Node's `src/*_wrap.cc` callbacks are (`OnRead`,
 `OnConnection`, `AfterWrite`). The glue calls the handle's JavaScript (an import, as `MakeCallback` calls into V8),
 and when it returns calls `drain`, a `Suspending` import, before it returns to libuv, as Node's
 `InternalCallbackScope` closes: the stack suspends, the worker runs its microtasks and then its event loop's other
@@ -227,8 +227,8 @@ ADR-0015 resolves every free name of a process's code on its global by rewriting
 many processes in one realm. On the machine it does not: each Node process has a worker and a realm of its own, and
 `node` is its own WALI program (§2). The host names such a realm the program's when it makes the worker, before the
 engine loads (`globalThis[Symbol.for('tabnode.realm')] = 'node'`, `src/node-lib/load.ts` `isNodeProgramRealm`), and
-`attachLibnode` refuses a realm it did not name. The realm's name, not the moment of a first read, decides which form a
-program-dependent answer takes (`programForm`, `src/node-lib/binding/libnode.ts`): the constants, the wraps'
+`attachNodeProgram` refuses a realm it did not name. The realm's name, not the moment of a first read, decides which form a
+program-dependent answer takes (`programForm`, `src/node-lib/binding/program.ts`): the constants, the wraps'
 constants, libuv's errors, the handle types, the fs binding, `crypto` and `process.versions` are the program's on a
 node realm, where a read before the host's `bootstrap` attaches the program is an error naming the reader, and the
 engine's on any other. Nothing of the engine evaluates Node's library when it is imported: its `path`, `url` and
@@ -408,7 +408,7 @@ process is `node` differs from Node, the browser or the page's engine decides:
 - **Open: the engine's identity.** A host program is registered under a digest of the Node baseline's host-executable
   key (browser-substrate `imageHostPrograms`), which moves with each baseline release; a C program names its import
   module at compile time. The engine is named `host:tabnode` until an identity that also pins the interface between
-  `libnode`'s C and the engine's JavaScript (both from one Tabnode commit) is decided.
+  the program's C and the engine's JavaScript (both from one Tabnode commit) is decided.
 - **Order of building: the items are built in this order and run together at the end run.** Today's engine is asynchronous end to end:
   `createContainer().runNode()` answers a promise of the run's end, its waits timer and descriptor registrations made
   from JavaScript through the process's raw calls (browser-substrate `linux-node-run.ts`). Under
@@ -555,15 +555,15 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
      into the loop, where its callback calls the engine (`fs_done`), which runs the request's After and its
      `MakeCallback` or settles its promise, then drains. What Node's C++ decides in C (`MKDirpSync`, `MKDirpAsync`,
      `ReadFileUtf8`, `WriteFileUtf8`) is decided in C the same way; `RmSync` and the `cpSync` calls are C++ over
-     `std::filesystem`, and libnode has no C++ library, so their `std::filesystem` calls are written over the POSIX
-     calls libc++ makes for them. `fs.watch` is an FSEvent, a HandleWrap over a `uv_fs_event_t` (inotify in the
+     `std::filesystem`, and their `std::filesystem` calls are written over the POSIX calls libc++ makes for
+     them. `fs.watch` is an FSEvent, a HandleWrap over a `uv_fs_event_t` (inotify in the
      process's kernel), made uninitialized and initialized by `start`; `fs.watchFile` a StatWatcher, a HandleWrap over
      a `uv_fs_poll_t`, initialized when it is made. A realm the host gives no `node` program keeps the engine's own
      tree's binding (`fs.ts`), which no longer reaches a kernel's descriptors.
   9. The run's end is libuv's (numbered after item 8, so the numbers cited elsewhere stand). `bootstrap` starts the
      process and returns, and the process lives while libuv's loop holds an active, referenced handle or request: `main` spins it as Node's SpinEventLoopInternal does
      (`src/api/embed_helpers.cc:40-76`) and asks the process's run what Node's C++ does there, through three imports
-     Tabnode answers (`libnodeImports`, over the end the run gives once before its first callback, `attachLibnodeRun`):
+     Tabnode answers (`nodeProgramImports`, over the end the run gives once before its first callback, `attachNodeProgramRun`):
      `before_exit` is EmitProcessBeforeExit (`src/api/hooks.cc:33-51`), `process.emit('beforeExit', code)` through
      ProcessEmit's MakeCallback (`src/node_process_events.cc:47-61`), nonzero where the emission failed (a throw the
      process handled), where Node's loop stops; `emit_exit` is EmitProcessExitInternal (`hooks.cc:61-93`): the process
@@ -635,7 +635,7 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
 
   7. OpenSSL and the rest of §1 into the program; addons through `dlopen`; the process's raw calls and
      `linux-calls.ts` go. **Crypto is Node's own, landed as one piece:** Node's `lib/internal/crypto/*`, `keys.js`'s
-     `KeyObject` and `x509.js`'s `X509Certificate` among them, over the `crypto` binding, whose glue is `libnode`'s C
+     `KeyObject` and `x509.js`'s `X509Certificate` among them, over the `crypto` binding, whose glue is the program's C
      as Node's `src/crypto/crypto_*.cc` is, over ncrypto and OpenSSL, each call answered by the device or by OpenSSL
      as §5 says: `require('crypto')`, `node:crypto` and `globalThis.crypto` (with `Crypto`, `CryptoKey` and
      `SubtleCrypto`) are Node's own (browser-substrate VO-3806, manager's ruling 2026-11-15). TLS's
@@ -648,8 +648,9 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
        put each binding's libuv half in the program: a library of the image imports nothing outside `env`, `GOT` and
        `wali` (browser-substrate `dynamic-loader.mjs`), so what calls the engine is the program's. The V8 half is the
        engine's TypeScript over `src/node-lib/binding/openssl.ts` (ADR-0016 §3). The glue, ncrypto and every other C++
-       here take the process's one C++ runtime, the WALI SDK's shared `libc++.so`, `libc++abi.so` and `libunwind.so`,
-       which the SDK's `c++` links (browser-substrate ADR-0238 §4).
+       here take the process's one C++ runtime, the WALI SDK's shared `libc++.so` and `libc++abi.so`, which the SDK's
+       `c++` links, with the one hidden unwinder the SDK's link wrapper adds to a C++ link (browser-substrate ADR-0238
+       §4).
      - **The process's OpenSSL** is started once, at the bindings' first use, as Node's start and InitCryptoOnce start
        it (ADR-0016 §2); its randomness, clock, configuration file and modules are the kernel's calls. Its constants
        (`DefineCryptoConstants`) and `process.versions.openssl` (GetOpenSSLVersion) are read from the program. A realm
@@ -720,7 +721,7 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
 tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-process.ts`, and the recipe
 `programs/node/24.21.0`), items 1 to 10 together:
 - *The one hookup.* In its `bootstrap` import, before Node's library runs, the host calls Tabnode's
-  `attachLibnode({ exports, read, write })` once: the program's exports, `read(at, length)`, a copy of the process's
+  `attachNodeProgram({ exports, read, write })` once: the program's exports, `read(at, length)`, a copy of the process's
   memory, and `write(at, bytes)`, bytes into it (a browser's APIs refuse a view of shared memory). A second call with
   another program throws, and so does a call in a realm the host did not name.
 - *The realm's name* (§7). When it makes a `node` program's worker, before it imports the engine, the host sets
@@ -734,7 +735,7 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   its other work and the stack resumes from its next task), `process_timers(now)` (`processTimers(now)`: the next
   expiry, positive where a referenced timer holds the loop, negative where none does, 0 for none),
   `process_immediate()` (`processImmediate()`) and `poll_ready(fd, status, events)` (a `uv_poll_t` of `poll.c` is
-  ready). It puts Tabnode's `libnodeImports` beside them, one table answering the run's end (item 9) and every binding
+  ready). It puts Tabnode's `nodeProgramImports` beside them, one table answering the run's end (item 9) and every binding
   callback, each followed in C by `drain` where it made a callback: `before_exit() -> i32`, `emit_exit()` and
   `exit_code() -> i32`, `close_scope()` (RunTimers' ticks, before its drain), `handle_closed(handle) -> i32`
   (HandleWrap::OnClose; nonzero where it made the close callback; the C frees the handle after), `stream_read(stream, nread, base)` (`base`
@@ -828,7 +829,7 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   are the engine's (emnapi's JavaScript, one module per load, `createNapiModule`). So the host provides: the loader
   answers those imports, at that `dlopen`, from the engine (which registers, for the process's worker, what a load
   of a path imports); the loader hands the engine the addon's instance once its constructors have run, so emnapi's
-  `init` calls `napi_register_wasm_v1` over it; and `attachLibnode` gives the engine the process's
+  `init` calls `napi_register_wasm_v1` over it; and `attachNodeProgram` gives the engine the process's
   `WebAssembly.Memory` and function table, which emnapi's views and dynamic calls read in place. `TREE_NATIVE` and
   `linux-tree-native.ts` then go.
 
