@@ -244,10 +244,16 @@ export function createModuleWrapBinding(symbols: Record<string, symbol>, private
           this.#status = kEvaluated;
           return undefined;
         }
+        // Evaluating asynchronously (V8's kEvaluatingAsync, which Module::GetStatus reports as kEvaluated): a module
+        // that awaits with nothing to wait for runs its body now, up to its first await (ExecuteAsyncModule); one
+        // that waits on a dependency runs once that has settled.
         this.#async = true;
-        this.#promise = Promise.all(waits).then(body).then(() => { this.#status = kEvaluated; }, (error) => {
-          this.#status = kErrored; this.#error = error; throw error;
-        });
+        this.#status = kEvaluated;
+        const failed = (error: unknown): never => { this.#status = kErrored; this.#error = error; throw error; };
+        const done = (): void => {};
+        this.#promise = waits.length === 0
+          ? Promise.resolve(body()).then(done, failed)
+          : Promise.all(waits).then(body).then(done, failed);
         return this.#promise;
       } catch (error) {
         this.#status = kErrored;
