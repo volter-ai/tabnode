@@ -20,7 +20,7 @@ import {
 } from './events-util';
 import {
   internalAsyncHooks, internalTaskQueues,
-  internalEventTarget, internalOptions, allowUnauthorizedOf, internalPerfObserve, internalAssert,
+  internalOptions, allowUnauthorizedOf, internalPerfObserve, internalAssert,
   internalStartupSnapshot, internalPermission,
 } from './runtime';
 import { internalSocketAddress, internalBlockList } from './addresses';
@@ -81,7 +81,6 @@ export function nodeLibInternal(name: string, require?: (name: string) => any, p
   'internal/async_hooks': () => internalAsyncHooks,
   'internal/process/task_queues': () => internalTaskQueues,
   'internal/process/permission': () => internalPermission,
-  'internal/event_target': () => internalEventTarget,
   'internal/options': () => internalOptions,
   'internal/perf/observe': () => internalPerfObserve,
   'internal/assert': () => internalAssert,

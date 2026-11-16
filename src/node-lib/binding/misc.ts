@@ -8,6 +8,7 @@ import { processCredentialsOf } from '../../process-credentials';
  */
 import { constantsBinding as buildConstantsBinding } from '../../shims/constants';
 import { uvConstant } from './uv';
+import { performance as systemPerformance } from '../../system';
 import * as osShim from '../../shims/os';
 import { treeSocketsOf, type TreeSockets } from '../../host-sockets';
 import { nodeLibInternalRequire } from '../load';
@@ -268,11 +269,15 @@ export const traceEventsBinding = {
 };
 
 /**
- * `internalBinding('messaging')`: `internal/util.js` reaches for
- * `DOMException` through it, which the realm already has.
+ * `internalBinding('performance')` as `internal/perf/utils.js` reads it (src/node_perf.cc, node_perf_common.h): `now`,
+ * the process's monotonic clock in milliseconds from its origin (system.ts `performance`, perf_hooks' own clock), and
+ * the time origin's milestones, `TIME_ORIGIN_TIMESTAMP` in microseconds since the epoch and `TIME_ORIGIN` the clock's
+ * origin in its own nanoseconds, 0.
  */
-export const messagingBinding = {
-  get DOMException() { return (globalThis as { DOMException?: unknown }).DOMException; },
+export const performanceBinding = {
+  constants: { NODE_PERFORMANCE_MILESTONE_TIME_ORIGIN_TIMESTAMP: 0, NODE_PERFORMANCE_MILESTONE_TIME_ORIGIN: 1 },
+  get milestones(): Float64Array { return Float64Array.of(systemPerformance.timeOrigin * 1e3, 0); },
+  now: (): number => systemPerformance.now(),
 };
 
 

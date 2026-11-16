@@ -89,7 +89,10 @@ function isEngineScript(name: string): boolean {
   return name === '' || (!name.startsWith('/') && !name.startsWith('node:'));
 }
 
-/** Node's `propertyFilter` and promise-state constants, by their own values. */
+/**
+ * Node's `propertyFilter`, promise-state and transfer-mode constants (node_util.cc:526-569, base_object.h:165-168), by
+ * their own values.
+ */
 const constants = {
   ALL_PROPERTIES: 0,
   ONLY_WRITABLE: 1,
@@ -100,6 +103,9 @@ const constants = {
   kPending: 0,
   kFulfilled: 1,
   kRejected: 2,
+  kDisallowCloneAndTransfer: 0,
+  kTransferable: 1,
+  kCloneable: 2,
 };
 
 // A real rejection handler marks the host promise handled; no invented state.

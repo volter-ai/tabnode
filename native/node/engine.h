@@ -69,6 +69,13 @@ TABNODE_IMPORT(process_exit) void tabnode_process_exit(uv_process_t *handle, dou
 // SignalWrap's uv_signal_cb (src/signal_wrap.cc:121-130, signal_wrap.c; ADR-0018 item 8): the handle's `onsignal`,
 // with the signal's number.
 TABNODE_IMPORT(signal_received) void tabnode_signal_received(uv_signal_t *handle, int signum);
+// MessagePort::OnMessage (src/node_messaging.cc:812-891, node_messaging.c; ADR-0018 item 9). `message_port_pending`:
+// -1 where the port is detached, else the processing limit, its queue's length and at least 1,000.
+// `message_port_message`: one turn of its loop, ReceiveMessage and the MakeCallback of emitMessage: 0 where no message
+// was emitted (none due, the port not receiving, a close message, which closes it, or no queue left), 1 where one was,
+// 2 where emitting failed (its messageerror emitted, the next turn asked for); the C closes the scope of 1 and 2.
+TABNODE_IMPORT(message_port_pending) int32_t tabnode_message_port_pending(uv_async_t *handle);
+TABNODE_IMPORT(message_port_message) int32_t tabnode_message_port_message(uv_async_t *handle);
 // The fs binding's completions (native/node fs.c, fs_event.c; ADR-0018 item 6). Each is what Node's C++ does in V8
 // at that point, and each is followed by the callback scope's close, a drain.
 struct tabnode_fs_s;

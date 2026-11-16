@@ -404,8 +404,7 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
      Every wait a run holds is libuv's handle or request:
      - a timer: `env.c`'s `uv_timer_t`, referenced while a referenced timer is pending (`process_timers`' sign,
        `toggleTimerRef`);
-     - an immediate: `env.c`'s `uv_idle_t`, started while a referenced immediate is queued (`toggleImmediateRef`); a
-       message due to a port the process listens to holds a referenced immediate (`portMessagesDue`);
+     - an immediate: `env.c`'s `uv_idle_t`, started while a referenced immediate is queued (`toggleImmediateRef`);
      - a stream: its `uv_tty_t`, `uv_pipe_t` or `uv_tcp_t`, active while it reads or listens; a write, a shutdown and a
        connect their `uv_write_t`, `uv_shutdown_t` and `uv_connect_t`;
      - a UDP socket: its `uv_udp_t` while it receives; a send its `uv_udp_send_t`;
@@ -415,14 +414,44 @@ no `'exit'` (`__substrateTerminating`). Where this differs from Node:
      - the engine device (Web Crypto, WebAssembly's compile) and DNS: a `uv_poll_t` of `poll.c` on the descriptor while
        a waiter asks it (browser-substrate `linux-uv-waits.ts` `wait`).
 
-     Waits with no handle behind them, defects of the bindings that make them: a `MessagePort` that listens with no
-     message due holds nothing (`src/guest-message-ports.ts`), where Node's is a HandleWrap over a `uv_async_t`
-     (`src/node_messaging.cc:680`) referenced while it has a `message` listener (`lib/internal/worker/io.js:213-244`);
-     an addon's threads wake its process through `Atomics.waitAsync` (`src/native-queue.ts`), where Node's
-     threadsafe function is a `uv_async_t`, referenced until it is unreferenced (`src/node_api.cc:344-378`); a module
-     hook's asynchronous chain (`src/runtime.ts`, `heldWork`) holds only what its own awaits hold, where Node refs its
-     hooks thread while a request is in flight (`lib/internal/modules/esm/hooks.js:595-618`). Where the loop empties
-     under one, the process ends as Node's does when its loop empties.
+     - a MessagePort (MessageChannel's, BroadcastChannel's and `worker_threads`'): its `uv_async_t`. The `messaging`
+       binding is Node's `src/node_messaging.cc` split where V8 stands (`native/node/node_messaging.c`,
+       `src/node-lib/binding/messaging.ts`): a port is the one HandleWrap over a `uv_async_t`, active from its making
+       (MessagePort's constructor's `uv_async_init`) to its close, and referenced as Node's own
+       `lib/internal/worker/io.js` has it (vendored unchanged, with `internal/event_target`, `internal/webidl`,
+       `internal/perf/utils` and `internal/per_context/messageport`): unreferenced when made, referenced and started
+       with its first `message` listener, stopped and unreferenced with its last (setupPortReferencing, `io.js:211-247`).
+       A message's arrival is MessagePortData's AddToIncomingQueue, `uv_async_send` (TriggerAsync), made by the process's
+       one thread: its realm is its only one and it has no worker threads. libuv's callback is OnMessage
+       (`node_messaging.cc:812-891`), through the program's `message_port_pending` and `message_port_message` imports:
+       each message ReceiveMessage and a MakeCallback of `emitMessage`, closed by a drain, at most the messages it found
+       and at least 1,000 a turn, the rest the next. A message's value is serialized by the realm's structured clone, its
+       transferred ports found by a walk of its objects, arrays, maps and sets as V8's serializer reaches its host
+       objects, each written as its index among the transfers. The process's `MessageChannel`, `MessagePort` and
+       `BroadcastChannel` and `worker_threads`' ports are that file's, as Node's bootstrap exposes them
+       (`internal/bootstrap/web/exposed-window-or-worker.js:50-53`, `lib/worker_threads.js:15-22`); Node's
+       `internal/event_target` answers whether the realm's own targets are EventTargets by the
+       `Symbol.for('nodejs.event_target')` the realm's `EventTarget` carries while a guest exists.
+     - an addon's work: Node holds a threadsafe function's `uv_async_t` referenced until it is unreferenced
+       (`src/node_api.cc:344-378`) and an async work's request on the threadpool (`ThreadPoolWork::ScheduleWork`).
+       Node-API is emnapi's (1.11.3), which keeps both holds as one port of the process's `MessageChannel`, referenced
+       while a threadsafe function is referenced or an async work is queued (`@emnapi/runtime`
+       NodejsWaitingRequestCounter; `@emnapi/core` `napi_create_threadsafe_function`, `napi_unref_threadsafe_function`,
+       `napi_ref_threadsafe_function`, `scheduleWork`, `callComplete`): that port's `uv_async_t`. An addon in a `node`
+       program's process is item 7's, `dlopen`ed into the program, and its threads are the process's pthreads, whose
+       wake is a `uv_async_t` of the program and their `uv_async_send`, as a threadsafe function's call
+       (`node_api.cc:508`). The queue ADR-0011's threads wake their process by, `Atomics.waitAsync` on a shared buffer
+       (`src/native-queue.ts`), is a realm's with no `node` program: the machine's `TREE_NATIVE` loads no `.node`
+       (browser-substrate `linux-tree-native.ts`), so no wait of the realm stands outside libuv's loop.
+     - a module hook's asynchronous chain: nothing of its own. `module.register`'s hooks run in the process's thread
+       (`src/node-lib/module-hooks.ts`), promises inside the callback that asked (a dynamic `import()`'s), so the chain
+       holds what its hooks wait on, each libuv's: a port, a timer, a request. That is what Node's chain holds. Node's
+       main thread refs its hooks thread while a request is in flight (`lib/internal/modules/esm/hooks.js:595-617`), and
+       that thread lives while its loop does: a hooks thread whose loop empties under a pending request answers it
+       `never-settle` (`lib/internal/modules/esm/worker.js:198-216`), which the main thread takes as a promise that
+       never settles, letting the thread go (`hooks.js:615-617`, `660-663`). So a chain that waits on nothing lets the
+       process end, with 13 where its entry's top-level `await` is unsettled, as Node's does.
+
   7. OpenSSL and the rest of §1 into `libnode.so`; addons through `dlopen`; the process's raw calls and
      `linux-calls.ts` go. **Crypto is Node's own, landed as one piece:** Node's `lib/internal/crypto/*`, `keys.js`'s
      `KeyObject` and `x509.js`'s `X509Certificate` among them, over the `crypto` binding, whose glue is `libnode`'s C
@@ -478,7 +507,9 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   `stream_connection(server, status)`, `stream_connected(id, status, readable, writable)`, `udp_received(handle, nread,
   base, name, flags)` (`name` a `tabnode_address_t`, 0 with an error), `udp_sent(id, status)`, `process_exit(handle,
   f64 exit status, signal name's address, its length)`, `signal_received(handle, signum)` (SignalWrap's callback, the
-  handle's `onsignal`), `fs_done(request)`, `fs_event(handle, filename, event, status)` (`event` the event's name as a
+  handle's `onsignal`), `message_port_pending(handle) -> i32` and `message_port_message(handle) -> i32` (a MessagePort's
+  OnMessage: -1 for a detached port or its processing limit, then each turn's 0 none emitted, 1 one emitted, 2 failed,
+  item 9), `fs_done(request)`, `fs_event(handle, filename, event, status)` (`event` the event's name as a
   C string, which the C chose as FSEventWrap::OnEvent does) and
   `stat_watcher_change(handle, status)`; and OpenSSL's callbacks, made inside an export call of the engine's and
   followed by no drain: `tls_handshake(tls, done)`, `tls_keylog(tls, line, length)`, `tls_new_session(tls, id,

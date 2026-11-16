@@ -25,7 +25,8 @@ import ttyWrapBinding from './tty_wrap';
 import udpWrapBinding from './udp_wrap';
 import httpParserBinding from './http_parser';
 import bufferBinding from './buffer';
-import { constantsBinding, osBinding, configBinding, errorsBinding, credentialsBinding, encodingBinding, typesBinding, traceEventsBinding, messagingBinding, urlBinding, urlPatternBinding } from './misc';
+import { constantsBinding, osBinding, configBinding, errorsBinding, credentialsBinding, encodingBinding, typesBinding, traceEventsBinding, performanceBinding, urlBinding, urlPatternBinding } from './misc';
+import { createMessagingBinding, messagingSymbols, workerBinding } from './messaging';
 import utilBinding from './util';
 import { stringDecoderBinding } from './string_decoder';
 import fsBinding, { fsDirBinding, fsEventWrapBinding } from './fs';
@@ -72,7 +73,11 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   types: () => typesBinding,
   string_decoder: () => stringDecoderBinding,
   trace_events: () => traceEventsBinding,
-  messaging: () => messagingBinding,
+  // MessagePort over the program's uv_async_t (ADR-0018 item 9), made for each graph (load.ts NodeLibScope), whose
+  // io.js reshapes its prototype; the realm's library graph reads only its DOMException.
+  messaging: () => createMessagingBinding(),
+  worker: () => workerBinding,
+  performance: () => performanceBinding,
   os: () => osBinding,
   credentials: () => credentialsBinding,
   encoding_binding: () => encodingBinding,
@@ -94,8 +99,9 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   tls_wrap: () => tlsWrapBinding,
   js_stream: () => jsStreamBinding,
   // `internalBinding('symbols')` (env_properties.h PER_ISOLATE_SYMBOL_PROPERTIES), the names a vendored file
-  // reads: `internal/tls/wrap.js` keys a PSK exchange by `onpskexchange`; `owner_symbol` is the engine's one.
-  symbols: () => ({ onpskexchange: Symbol('onpskexchange'), owner_symbol: handleOwnerSymbol }),
+  // reads: `internal/tls/wrap.js` keys a PSK exchange by `onpskexchange`; `owner_symbol` is the engine's one;
+  // `internal/worker/io.js` reads a port's `handle_onclose`, `oninit` and `no_message_symbol` (messaging.ts).
+  symbols: () => ({ onpskexchange: Symbol('onpskexchange'), owner_symbol: handleOwnerSymbol, ...messagingSymbols }),
   fs_dir: () => fsDirBinding,
   fs_event_wrap: () => fsEventWrapBinding,
 };;

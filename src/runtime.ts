@@ -73,6 +73,35 @@ import { Buffer as BufferPolyfill } from './node-lib/buffer-module';
 import * as perfHooksShim from './shims/perf_hooks';
 import * as workerThreadsShim from './shims/worker_threads';
 import { guestMessageGlobals, guestMessageModule } from './guest-message-ports';
+import { libnodeAttached } from './node-lib/binding/libnode';
+
+/**
+ * A process's MessageChannel, MessagePort and BroadcastChannel. Where the realm's process is the program `node`, they
+ * are Node's own `internal/worker/io` over the `messaging` binding, each port a uv_async_t of libuv's loop (ADR-0018
+ * item 9), as Node's bootstrap exposes them (`internal/bootstrap/web/exposed-window-or-worker.js:50-53`); in a realm
+ * with no program they are the engine's ports (guest-message-ports.ts) and the realm's BroadcastChannel.
+ */
+function processMessaging(process: Process, name: 'MessageChannel' | 'MessagePort' | 'BroadcastChannel', host: object): unknown {
+  if (libnodeAttached()) return (loadNodeLibFor(process, 'internal/worker/io') as Record<string, unknown>)[name];
+  return name === 'BroadcastChannel' ? Reflect.get(host, name, host) : guestMessageGlobals(process)[name];
+}
+
+/**
+ * `worker_threads` where the realm's process is `node`: its ports are Node's `internal/worker/io`'s, as
+ * `lib/worker_threads.js` takes them (MessageChannel, MessagePort, BroadcastChannel, receiveMessageOnPort,
+ * moveMessagePortToContext, markAsUncloneable), and its untransferable mark `internal/buffer`'s, the one Node's
+ * serializer reads; a Worker is the thread host's where one is installed, else refused (shims/worker_threads.ts).
+ */
+function libuvWorkerThreads(process: Process, threads: Record<string, unknown>): Record<string, unknown> {
+  const io = loadNodeLibFor(process, 'internal/worker/io') as Record<string, unknown>;
+  const buffer = loadNodeLibFor(process, 'internal/buffer') as Record<string, unknown>;
+  const module: Record<string, unknown> = { ...threads };
+  for (const name of ['MessageChannel', 'MessagePort', 'BroadcastChannel', 'receiveMessageOnPort', 'moveMessagePortToContext', 'markAsUncloneable']) module[name] = io[name];
+  module.markAsUntransferable = buffer.markAsUntransferable;
+  module.isMarkedAsUntransferable = buffer.isMarkedAsUntransferable;
+  module.default = module;
+  return module;
+}
 import { validateTransferList } from './transfer-ownership';
 import * as esbuildShim from './shims/esbuild';
 import { createSqliteModule } from './node-lib/sqlite';
@@ -511,8 +540,9 @@ function __substrateGuestGlobal(process: Process): Record<string, unknown> {
     // The guest's `Buffer` is the one `require('buffer')` answers with, read when the guest asks, so the two are one
     // object.
     ['Buffer', () => loadNodeLibFor(process, 'buffer').Buffer],
-    ['MessageChannel', () => guestMessageGlobals(process).MessageChannel],
-    ['MessagePort', () => guestMessageGlobals(process).MessagePort],
+    ['MessageChannel', () => processMessaging(process, 'MessageChannel', host)],
+    ['MessagePort', () => processMessaging(process, 'MessagePort', host)],
+    ['BroadcastChannel', () => processMessaging(process, 'BroadcastChannel', host)],
     // `perf_hooks`'s own object.
     ['performance', () => perfHooksShim.performance],
     // The process's own console, the one its modules are given.
@@ -1856,13 +1886,14 @@ async function __substrateImportThroughHooks(
   parentURL: string | undefined,
   moduleRequire: RequireFunction,
 ): Promise<unknown> {
-  // A run with a module resolution outstanding is not idle. The chain can
-  // wait on anything -- VS Code's hook asks the main thread over a
-  // `MessagePort` and waits for the answer -- and the engine ends a run that
-  // holds no timer and no handle. It ended this one between the hook's
-  // question and its answer, so `import('vscode')` never settled and nothing
-  // said why. Node keeps its loop alive for a pending import; the engine
-  // holds the run for the same reason, and lets go however the chain ends.
+  // Where the realm's process is `node`, the chain holds nothing of its own:
+  // its hooks are promises inside this import's callback, and what they wait
+  // on (a port, a timer, a request) is a libuv handle, which is what Node's
+  // chain holds, its hooks thread living while that thread's loop does
+  // (ADR-0018 item 9). The count below is the engine's own end of a run in a
+  // realm with no program (`launchNode`), whose ports and waits are not
+  // libuv's: there a resolution outstanding holds the run, however the chain
+  // ends.
   const held = heldWork();
   held.count += 1;
   try {
@@ -3813,6 +3844,7 @@ function createRequire(
     if (id === 'worker_threads') {
       const bridge = (globalThis as Record<symbol, unknown>)[engineSymbolFor("@volter/browser-node/threads")] as { module?: (vfs: VirtualFS, process: unknown, shim: unknown, credentials?: Readonly<ProcessCredentials>) => unknown } | undefined;
       const module = bridge && typeof bridge.module === "function" ? bridge.module(vfs, process, builtinModules.worker_threads, processCredentialsOf(process)) : undefined;
+      if (libnodeAttached()) return libuvWorkerThreads(process, (module ?? workerThreadsShim) as Record<string, unknown>);
       return guestMessageModule(process, (module ?? workerThreadsShim) as Record<string, unknown>, !module);
     }
     if (id === 'module') {

@@ -128,6 +128,11 @@ import INTERNAL_ASYNC_CONTEXT_FRAME from './internal/async_context_frame.js?raw'
 import INTERNAL_ALS_ASYNC_CONTEXT_FRAME from './internal/async_local_storage/async_context_frame.js?raw';
 import INTERNAL_ALS_RUN_SCOPE from './internal/async_local_storage/run_scope.js?raw';
 import INTERNAL_PROCESS_SIGNAL from './internal/process/signal.js?raw';
+import INTERNAL_WORKER_IO from './internal/worker/io.js?raw';
+import INTERNAL_PER_CONTEXT_MESSAGEPORT from './internal/per_context/messageport.js?raw';
+import INTERNAL_EVENT_TARGET from './internal/event_target.js?raw';
+import INTERNAL_WEBIDL from './internal/webidl.js?raw';
+import INTERNAL_PERF_UTILS from './internal/perf/utils.js?raw';
 
 import INTERNAL_STREAMS_ITER_TYPES from './internal/streams/iter/types.js?raw';
 
@@ -292,4 +297,9 @@ export const NODE_LIB_SOURCES: Record<string, string> = {
   'internal/async_local_storage/async_context_frame': INTERNAL_ALS_ASYNC_CONTEXT_FRAME,
   'internal/async_local_storage/run_scope': INTERNAL_ALS_RUN_SCOPE,
   'internal/process/signal': INTERNAL_PROCESS_SIGNAL,
+  'internal/worker/io': INTERNAL_WORKER_IO,
+  'internal/per_context/messageport': INTERNAL_PER_CONTEXT_MESSAGEPORT,
+  'internal/event_target': INTERNAL_EVENT_TARGET,
+  'internal/webidl': INTERNAL_WEBIDL,
+  'internal/perf/utils': INTERNAL_PERF_UTILS,
 };
