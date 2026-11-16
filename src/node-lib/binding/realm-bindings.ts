@@ -343,7 +343,6 @@ export function createContextifyBinding(symbols: Record<string, symbol>, private
   emitWarningSync: () => ((message: string) => void) | undefined): Record<string, unknown> {
   const hdoSymbol = privateSymbols.host_defined_option_symbol!;
 
-  let warnedAboutRequireEsm = false;
   class ContextifyScript {
     #run: () => unknown;
     #code: string;
@@ -397,16 +396,16 @@ export function createContextifyBinding(symbols: Record<string, symbol>, private
       if (made === undefined) {
         canParseAsESM = shouldRetryAsESM(messageOf(failure), code);
         if (!canParseAsESM) throw failure;
+        // node_contextify.cc:1823-1833: GetRequireEsmWarning through ProcessEmitWarningSync, each time (Node's
+        // warned_about_require_esm is never set), and the syntax error thrown unless the warning's listener threw.
         if (shouldDetectModule !== true) {
-          if (!warnedAboutRequireEsm) {
-            warnedAboutRequireEsm = true;
-            emitWarningSync()?.(`Failed to load the ES module: ${name}. Make sure to set "type": "module" in the nearest package.json file or use the .mjs extension.`);
-          }
+          emitWarningSync()?.(`Failed to load the ES module: ${name}. Make sure to set "type": "module" in the nearest package.json file or use the .mjs extension.`);
           throw failure;
         }
       }
+      // ScriptOrigin's SourceMapUrl and ResourceName, a file's own `//# sourceURL=` where it has one.
       return { cachedDataRejected: false, sourceMapURL: made ? magicComment(code, 'sourceMappingURL') : undefined,
-        sourceURL: made ? name : undefined, function: made, canParseAsESM };
+        sourceURL: made ? magicComment(code, 'sourceURL') ?? name : undefined, function: made, canParseAsESM };
     },
     containsModuleSyntax(code: unknown, filename: unknown, _resourceName?: unknown, cjsVar?: unknown): boolean {
       const source = String(code);

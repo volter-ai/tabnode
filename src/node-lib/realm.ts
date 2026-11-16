@@ -38,7 +38,7 @@ import { createAsyncWrapBinding } from './binding/async_wrap';
 import { createTaskQueueBinding } from './binding/task_queue';
 import { createProcessMethodsBinding, setPatchedFacts, type ProcessMethodsHost } from './binding/process_methods';
 import { createCredentialsBinding } from './binding/credentials';
-import { createOptionsBinding } from './binding/options';
+import { cliOptionValue, createOptionsBinding } from './binding/options';
 import {
   createConfigBinding, createErrorsBinding, createTraceEventsBinding, createPerformanceBinding, createPermissionBinding,
   createMksnapshotBinding, createWorkerBinding, createContextifyBinding, createReportBinding, processConfig,
@@ -163,7 +163,11 @@ const ALIASES: Readonly<Record<string, (require: (id: string) => any) => unknown
  * the web exposure, the two switches, and `process.env`.
  */
 export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRealmRun): NodeRealm {
+  // InitializeBaseContextForSnapshot (src/api/environment.cc:912-935): `Intl.v8BreakIterator` deleted.
+  const intl = (globalThis as { Intl?: unknown }).Intl;
+  if (intl !== null && typeof intl === 'object') delete (intl as Record<string, unknown>).v8BreakIterator;
   const primordials = primordialsOf();
+  initializeContextRuntime();
   const privateSymbols = utilBinding.privateSymbols;
   const symbols = perIsolateSymbols();
   let internalBindingLoader: ((name: string) => unknown) | undefined;
@@ -373,6 +377,24 @@ export function runNodeMain(realm: NodeRealm, argv: readonly string[]): void {
                   : getOptionValue('--interactive') || stdinIsTTY() ? 'internal/main/repl'
                     : 'internal/main/eval_stdin';
   compiledBuiltin(main)(realm.process, realm.require, realm.internalBinding, primordialsOf());
+}
+
+/**
+ * InitializeContextRuntime's --disable-proto (src/api/environment.cc:850-909): `Object.prototype.__proto__` deleted,
+ * or an accessor whose getter and setter throw ERR_PROTO_ACCESS (ProtoThrower), after the primordials are made.
+ */
+function initializeContextRuntime(): void {
+  const mode = cliOptionValue('--disable-proto');
+  if (mode === '') return;
+  if (mode === 'delete') {
+    delete (Object.prototype as Record<string, unknown>).__proto__;
+  } else if (mode === 'throw') {
+    // Function::New(context, ProtoThrower): a function with no name.
+    const thrower = [function (): never {
+      throw Object.assign(new Error('Accessing Object.prototype.__proto__ has been disallowed with --disable-proto=throw'), { code: 'ERR_PROTO_ACCESS' });
+    }][0]!;
+    Object.defineProperty(Object.prototype, '__proto__', { get: thrower, set: thrower, enumerable: false, configurable: true });
+  }
 }
 
 /** The entry's promise and its state, as run_main.js sets `entry_point_promise_private_symbol` on the global. */

@@ -12,6 +12,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { hashbangAsComment, lowerModuleForV8, prepareScriptForV8, PREPARED_MODULES_DIR, TOP_LEVEL_AWAIT_MARKER } from '../runtime';
 import { PREPARED_MODULES_KEPT, preparedModuleKeyOf } from '../prepared-key';
+import { wrapperLines } from '../stack-overrides';
 
 const indirectEval = eval;
 
@@ -109,7 +110,9 @@ export function compileFunction(text: string, resourceName: string, params: read
   const extensions = options.extensions ?? [];
   const open = extensions.map((_, index) => `with (__substrateExtensions[${index}]) {`).join('');
   const close = extensions.map(() => '}').join('');
-  const made = indirectEval(`(function (__dynamicImport, __substrateExtensions) { ${open} return function (${params.join(', ')}) {`
+  // The wrapper on a line of its own: the text's first line keeps its columns, its lines read back without it.
+  wrapperLines.set(resourceName, 1);
+  const made = indirectEval(`(function (__dynamicImport, __substrateExtensions) { ${open} return function (${params.join(', ')}) {\n`
     + `${offset(options.lineOffset ?? 0, options.columnOffset ?? 0)}${body}\n}; ${close} })\n//# sourceURL=${resourceName}`) as
     (dynamicImport: (specifier: unknown, options?: unknown) => Promise<unknown>, extensions: readonly object[]) => Function;
   return made((specifier, given) => hostImport(id, resourceName, specifier, given), extensions);
@@ -123,6 +126,7 @@ Object.defineProperty(globalThis, '__substrateHostImport', { value: scriptImport
 export function compileScript(text: string, resourceName: string, id: unknown, lineOffset = 0, columnOffset = 0): () => unknown {
   const slot = scriptImports.push((specifier, given) => hostImport(id, resourceName, specifier, given)) - 1;
   const source = `${offset(lineOffset, columnOffset)}${prepareScriptForV8(hashbangAsComment(text), `__substrateHostImport[${slot}]`)}\n//# sourceURL=${resourceName}`;
+  wrapperLines.set(resourceName, 0);
   // V8 compiles the script when it is made: its syntax error is the constructor's.
   // eslint-disable-next-line no-new-func
   new Function(source);
@@ -137,7 +141,8 @@ export interface CompiledModule {
 export function compileModule(text: string, url: string, lineOffset = 0, columnOffset = 0): CompiledModule {
   const body = prepared('node-esm', text, (source) => lowerModuleForV8(hashbangAsComment(source)));
   const topLevelAwait = body.endsWith(TOP_LEVEL_AWAIT_MARKER);
-  const fn = indirectEval(`(${topLevelAwait ? 'async ' : ''}function ($exports, $require, $module, import_meta, __dynamicImport) {"use strict";`
+  wrapperLines.set(url, 1);
+  const fn = indirectEval(`(${topLevelAwait ? 'async ' : ''}function ($exports, $require, $module, import_meta, __dynamicImport) {"use strict";\n`
     + `${offset(lineOffset, columnOffset)}${body}\n})\n//# sourceURL=${url}`) as Function;
   return {
     topLevelAwait,

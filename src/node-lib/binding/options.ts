@@ -32,6 +32,12 @@ export function processArgs(): { args: string[]; execArgs: string[] } {
   return answer('tabnode_process_args');
 }
 
+/** An option's value as the program's parser left it, for the C++ Node reads it from before its bootstrap. */
+export function cliOptionValue(name: string): unknown {
+  for (const [option, value] of answer<Array<[string, unknown?]>>('tabnode_cli_options_values')) if (option === name) return value;
+  return undefined;
+}
+
 /** AddOptionTypeToObject's object (node_options.cc:314-387): each option's null-prototype `{ type, description }`. */
 function optionTypes(entries: Array<[name: string, type: string, description: string]>): Record<string, unknown> {
   const object: Record<string, unknown> = {};

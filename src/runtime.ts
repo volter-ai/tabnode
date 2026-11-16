@@ -35,7 +35,7 @@ import {
 } from './node-lib/http-module';
 import { netModule as netShim } from './node-lib/net-module';
 import { errname as __uvErrname } from './node-lib/binding/uv';
-import { noteStackFormed, stackOverrides } from './stack-overrides';
+import { noteStackFormed, stackOverrides, wrapperLines } from './stack-overrides';
 export { pendingGuestTimers, pendingGuestTimerKinds, stopGuestTimers } from './guest-timers';
 import eventsShim from './node-lib/events-module';
 import { streamModule as streamShim, streamPromisesModule as streamPromises, streamConsumersModule } from './node-lib/stream-module';
@@ -4916,9 +4916,20 @@ export function routeErrorStacks(callback: (global: object, error: unknown, trac
   interface CallSite { getFileName(): string | null; getScriptNameOrSourceURL?(): string | null }
   const held = Object.getOwnPropertyDescriptor(Error, 'prepareStackTrace');
   let current: unknown = held && 'value' in held ? held.value : held?.get?.call(Error);
+  // A line of a text the realm compiled in a wrapper, read without the wrapper's lines (stack-overrides.ts).
+  const unwrapped = (target: CallSite, line: unknown): unknown => {
+    if (typeof line !== 'number') return line;
+    const name = target.getScriptNameOrSourceURL?.() || target.getFileName();
+    const lines = name === null || name === undefined ? undefined : wrapperLines.get(name);
+    return lines ? line - lines : line;
+  };
   const named = (site: CallSite): CallSite => new Proxy(site, {
     get(target, key) {
       if (key === 'getFileName') return () => target.getFileName() ?? (target.getScriptNameOrSourceURL?.() || null);
+      if (key === 'getLineNumber' || key === 'getEnclosingLineNumber') {
+        const read = Reflect.get(target, key) as (() => unknown) | undefined;
+        return read === undefined ? undefined : () => unwrapped(target, read.call(target));
+      }
       const value = Reflect.get(target, key) as unknown;
       return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
     },
