@@ -894,7 +894,7 @@ extern "C" __attribute__((export_name("tabnode_extra_ca_certs"))) const char* ta
 
 // StartExecution's env files (node.cc:343-346): the per-process Dotenv's variables set in the environment.
 extern "C" __attribute__((export_name("tabnode_dotenv_set_environment"))) void tabnode_dotenv_set_environment(void) {
-  USE(node::per_process::dotenv_file.SetEnvironment(nullptr));
+  node::USE(node::per_process::dotenv_file.SetEnvironment(nullptr));
 }
 
 // LoadEnvFile's Dotenv (node_process_methods.cc:616-634): the file at `path` parsed and, where it is valid, its
@@ -902,7 +902,7 @@ extern "C" __attribute__((export_name("tabnode_dotenv_set_environment"))) void t
 extern "C" __attribute__((export_name("tabnode_load_env_file"))) int tabnode_load_env_file(const char* path) {
   node::Dotenv dotenv{};
   node::Dotenv::ParseResult parsed = dotenv.ParsePath(path);
-  if (parsed == node::Dotenv::ParseResult::Valid) USE(dotenv.SetEnvironment(nullptr));
+  if (parsed == node::Dotenv::ParseResult::Valid) node::USE(dotenv.SetEnvironment(nullptr));
   return static_cast<int>(parsed);
 }
 
