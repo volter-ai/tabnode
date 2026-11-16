@@ -51,7 +51,7 @@ import { RunModuleHooks, CJS_CONDITIONS } from './node-lib/module-hooks';
 import { kRunFilesystem } from './node-lib/binding/fs';
 import { byteLengthUtf8 } from './node-lib/binding/buffer';
 import { processUrl } from './node-lib/object-urls';
-import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor, setNodeLibGlobal, nodeLibBindingFor, isNodeRealmProcess } from './node-lib/load';
+import { esmNamespaceOf, syncBuiltinESMExports, loadNodeLibFor, hasNodeLibModule, nativeModuleFor, setNodeLibGlobal, nodeLibBindingFor, isNodeProgramRealm } from './node-lib/load';
 import { fsModule, fsModuleFor } from './node-lib/fs-module';
 import {
   assertModule, querystringModule, punycodeModule, stringDecoderModule, urlModule, constantsModule,
@@ -450,7 +450,7 @@ const NODE_GLOBALS = new Set([...NODE_ENUMERABLE_GLOBALS, 'Buffer', 'globalThis'
 function __substrateGuestGlobal(process: Process): Record<string, unknown> {
   // The realm whose process is `node` is that process's (ADR-0018 §7): its global is the realm's own, on which Node's
   // bootstrap installed Node's globals.
-  if (isNodeRealmProcess(process)) return globalThis as unknown as Record<string, unknown>;
+  if (isNodeProgramRealm()) return globalThis as unknown as Record<string, unknown>;
   let guest = __substrateGuestGlobals.get(process);
   if (guest) return guest;
   const host = globalThis as unknown as Record<string, unknown>;

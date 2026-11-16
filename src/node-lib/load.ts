@@ -1,7 +1,7 @@
 // First, so a file compiled while the bundle is still evaluating finds them evaluated (ADR-0015).
 import { guestScopesOf, NODE_LIB_PARAMETERS } from '../guest-scope';
 import { scopedBody, type ScopedBody } from './scoped-body';
-import { isNodeLibFile, nodeLibBody } from './bodies';
+import { isNodeLibFile, nodeLibBody, nodeLibSource } from './bodies';
 import { createOsBinding } from './binding/misc';
 import { withGuestExecution } from '../guest-loop';
 import { traceSocketConnect } from '../socket-connect-trace';
@@ -395,13 +395,14 @@ export const REALM_ENVIRONMENT: ReadonlySet<string> = new Set(['internal/timers'
 const REALM_BINDINGS = new Set(['timers', 'async_context_frame', 'task_queue']);
 
 /**
- * The process a realm whose program is `node` is (ADR-0018 §7): its global is the realm's own `globalThis`, its code
- * compiled as Node compiles it, with no free name rewritten, no Proxy and no `with` (realm.ts).
+ * Whether this realm is the process of a `node` program (ADR-0018 §7): its global is the realm's own `globalThis`, and
+ * every file the engine compiles in it, the engine's own library's among them, is compiled as Node compiles one, with
+ * no free name rewritten, no Proxy and no `with`. The host says so when it makes the realm's worker, before the engine
+ * loads, as `globalThis[Symbol.for('tabnode.realm')] = 'node'`, so the answer holds from the engine's first compile.
  */
-const nodeRealmProcesses = new WeakSet<object>();
-export function markNodeRealmProcess(process: object): void { nodeRealmProcesses.add(process); }
-export function isNodeRealmProcess(process: unknown): boolean {
-  return process !== null && typeof process === 'object' && nodeRealmProcesses.has(process);
+export const NODE_PROGRAM_REALM = Symbol.for('tabnode.realm');
+export function isNodeProgramRealm(): boolean {
+  return (globalThis as unknown as Record<symbol, unknown>)[NODE_PROGRAM_REALM] === 'node';
 }
 
 /** A realm's own loaders, where its process is `node` and Node's bootstrap made them (realm.ts). */
@@ -548,7 +549,12 @@ export function nodeLibGlobalFor(owner: object): object {
  * names resolve through (ADR-0015 §2), and whether its names were rewritten onto the read scope (`scoped`) or it runs
  * inside `with` of the global scope object because they are dynamic.
  */
-interface ScopedFunction { compiled: Function; scoped: boolean }
+interface ScopedFunction { compiled: Function; scoped: boolean; realm?: true }
+/** A file's own text compiled at the realm's scope as the body of a function of `parameters` (a `node` program's realm). */
+const realmEval = eval;
+function realmCompiled(parameters: readonly string[], source: string, url: string): ScopedFunction {
+  return { compiled: realmEval(`(function (${parameters.join(', ')}) {${source}\n})\n//# sourceURL=${url}`) as Function, scoped: true, realm: true };
+}
 /** A scoped body (scoped-body.ts) compiled, its outer parameters `globalThis` and the scope objects. */
 function compileBody({ body, scoped }: ScopedBody): ScopedFunction {
   // eslint-disable-next-line no-new-func
@@ -556,6 +562,7 @@ function compileBody({ body, scoped }: ScopedBody): ScopedFunction {
 }
 /** Calls a compiled file's outer function with a global and the scope objects over it. */
 function withGlobal(file: ScopedFunction, global: object): Function {
+  if (file.realm) return file.compiled;
   const scopes = guestScopesOf(global);
   return file.compiled(global, file.scoped ? scopes.read : scopes.withGlobal, scopes.typeOf) as Function;
 }
@@ -571,18 +578,10 @@ const dependencyEval = eval;
 export function loadDependencyFor(owner: object, name: string, source: string, globals: readonly string[],
   given: Readonly<Record<string, unknown>> = {}): unknown {
   return scopeFor(owner).surface(name, () => {
-    // Where the realm is the process's (ADR-0018 §7), the file is compiled as Node compiles one, at the realm's scope.
-    if (isNodeRealmProcess(owner)) {
-      const parameters = ['exports', 'require', 'module', 'process', ...globals];
-      const made = dependencyEval(`(function (${parameters.join(', ')}) {${source}\n})\n//# sourceURL=${name}`) as Function;
-      const realm = globalThis as unknown as Record<string, unknown>;
-      const module = { exports: {} as unknown };
-      made(module.exports, scopeFor(owner).require, module, owner, ...globals.map((key) => key in given ? given[key] : realm[key]));
-      return module.exports;
-    }
     let compiled = compiledDependencies.get(name);
     if (!compiled) {
-      compiled = compileBody(scopedBody(['exports', 'require', 'module', 'process', ...globals], source, name));
+      const parameters = ['exports', 'require', 'module', 'process', ...globals];
+      compiled = isNodeProgramRealm() ? realmCompiled(parameters, source, name) : compileBody(scopedBody(parameters, source, name));
       compiledDependencies.set(name, compiled);
     }
     const global = nodeLibGlobalFor(owner) as Record<string, unknown>;
@@ -620,7 +619,7 @@ function compiledNodeLibFor(name: string): ScopedFunction {
   compiledNodeLib ??= new Map<string, ScopedFunction>();
   let compiled = compiledNodeLib.get(name);
   if (!compiled) {
-    compiled = compileBody(nodeLibBody(name)!);
+    compiled = isNodeProgramRealm() ? realmCompiled(NODE_LIB_PARAMETERS, nodeLibSource(name)!, `node:${name}`) : compileBody(nodeLibBody(name)!);
     compiledNodeLib.set(name, compiled);
   }
   return compiled;

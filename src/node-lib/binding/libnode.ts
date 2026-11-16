@@ -255,6 +255,10 @@ let attached: Libnode | undefined;
 /** The realm's process is `node` on libuv's loop: its program, given once by the host's `bootstrap`. */
 export function attachLibnode(program: LibnodeProgram): void {
   if (given && given !== program) throw new Error('the realm already has its process\'s node program');
+  // The realm is the program's from before the engine loaded (load.ts isNodeProgramRealm, ADR-0018 §7).
+  if ((globalThis as unknown as Record<symbol, unknown>)[Symbol.for('tabnode.realm')] !== 'node') {
+    throw new Error("node: the host did not name this realm a node program's before the engine loaded (globalThis[Symbol.for('tabnode.realm')] = 'node')");
+  }
   if (given) return;
   given = program;
   const { exports, read, write } = program;

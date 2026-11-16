@@ -23,7 +23,7 @@
  * `internal/crypto/keys` (load.ts REALM_ENVIRONMENT).
  */
 import { nodeLibNames, nodeLibSource } from './bodies';
-import { primordialsOf, loadNodeLib, REALM_ENVIRONMENT, moduleSurface, markNodeRealmProcess } from './load';
+import { primordialsOf, loadNodeLib, REALM_ENVIRONMENT, moduleSurface } from './load';
 import { nodeLibInternal, nodeLibInternalNames } from './internals';
 import { nodeLibPublic, nodeLibPublicNames } from './public-modules';
 import { internalBlobOf } from './internals/buffer-and-streams';
@@ -88,7 +88,6 @@ export function createNodeProcessObject(facts: {
   // eslint-disable-next-line @typescript-eslint/no-extraneous-class
   const ProcessTemplate = { process: function process() {} }.process as unknown as new () => Record<string, unknown>;
   const process = new ProcessTemplate();
-  markNodeRealmProcess(process);
   // Environment's exit_info (src/env.h ExitInfoField): kExiting, kExitCode, kHasExitCode.
   Object.defineProperty(process, utilBinding.privateSymbols.exit_info_private_symbol, { value: new Int32Array(3) });
   const readOnly = (name: string, value: unknown): void => {
