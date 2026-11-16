@@ -269,7 +269,9 @@ is built.
      after a throw (`src/env.cc:1552-1611`) and CheckImmediate makes each `processImmediate` a callback
      (`src/env.cc:1613-1636`), each throw reported as the process's uncaught exception, to the run whose context frame
      is current, which Node's timers leave the throwing callback's; each call is a callback scope whose ticks run when
-     it returns. `env.c` calls each once and its loops are libuv's. The bootstrap of `internal/timers` calls
+     it returns, except RunTimers', which Node closes at the function's end (`src/env.cc:1563`, `:1610`), after the
+     timer is rescheduled and referenced: `env.c` closes it there, its ticks (`close_scope`) then its drain, so a timer
+     its ticks and microtasks make is the one the handle runs and holds the loop. `env.c` calls each once and its loops are libuv's. The bootstrap of `internal/timers` calls
      `setupTimers` with `getTimerCallbacks(runNextTicks)`'s two, as `lib/internal/bootstrap/node.js` does. There is one
      Environment a realm, as there is one loop: `internal/timers` and `internal/async_context_frame` are the realm's
      one file in every process's graph (`src/node-lib/load.ts` `REALM_ENVIRONMENT`), and each process's `timers` and
@@ -472,7 +474,7 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   `process_immediate()` (`processImmediate()`) and `poll_ready(fd, status, events)` (a `uv_poll_t` of `poll.c` is
   ready). It puts Tabnode's `libnodeImports` beside them, one table answering the run's end (item 9) and every binding
   callback, each followed in C by `drain` where it made a callback: `before_exit() -> i32`, `emit_exit()` and
-  `exit_code() -> i32`, `handle_closed(handle) -> i32` (HandleWrap::OnClose;
+  `exit_code() -> i32`, `close_scope()` (RunTimers' ticks, before its drain), `handle_closed(handle) -> i32` (HandleWrap::OnClose;
   nonzero where it made the close callback; the C frees the handle after), `stream_read(stream, nread, base)` (`base`
   libuv's buffer, freed when the import returns), `stream_written(id, status)`, `stream_shut(id, status)`,
   `stream_connection(server, status)`, `stream_connected(id, status, readable, writable)`, `udp_received(handle, nread,

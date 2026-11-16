@@ -7,7 +7,8 @@
  *   uncaught exception (its TryCatchScope is verbose), until the call returns the next expiry;
  * - CheckImmediate (env.cc:1613-1636) makes each `processImmediate` call a callback (MakeCallback), whose throw is
  *   reported the same way; the handle's loop calls again while one is outstanding.
- * Each call is a callback scope of the loop's (withGuestCallback): its ticks run when it returns. An exception goes to
+ * Each call is a callback scope of the loop's (withGuestCallback): its ticks run when it returns; on the program
+ * RunTimers' scope closes in env.c after the timer is rescheduled (`close_scope`, then its drain), as Node's does. An exception goes to
  * the run whose context frame the throwing callback ran in, which Node's timers leave current where a callback throws
  * (lib/internal/timers.js sets the prior frame back only after a callback returns); where no run takes it, it is the
  * realm's, as it would end a Node process that has no handler.
@@ -16,7 +17,8 @@
  * `REALM_ENVIRONMENT`).
  */
 import { systemTimers } from '../../system';
-import { withGuestCallback } from '../../guest-loop';
+import { withGuestCallback, withGuestExecution } from '../../guest-loop';
+import { libnodeAttached } from './libnode';
 import { reportUncaughtInFrame } from '../../shims/async_hooks';
 
 function uncaught(error: unknown): void {
@@ -37,11 +39,15 @@ export function createTimersBinding(): Record<string, unknown> {
         () => withGuestCallback(() => {
           try { processImmediate(); } catch (error) { uncaught(error); }
         }, 'setImmediate', processImmediate),
-        (now: number) => withGuestCallback(() => {
-          for (;;) {
-            try { return processTimers(now); } catch (error) { uncaught(error); }
-          }
-        }, 'timer', processTimers),
+        (now: number) => {
+          const run = (): number => {
+            for (;;) {
+              try { return processTimers(now); } catch (error) { uncaught(error); }
+            }
+          };
+          // On the program RunTimers' scope stays open past the call: env.c reschedules the timer, then closes it.
+          return libnodeAttached() ? withGuestExecution(run, 'timer', processTimers) : withGuestCallback(run, 'timer', processTimers);
+        },
       );
     },
   };

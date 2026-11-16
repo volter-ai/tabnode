@@ -58,10 +58,11 @@ __attribute__((export_name("tabnode_timeout_info"))) int32_t *tabnode_timeout_in
 
 // Environment::RunTimers (env.cc:1552-1611): the JavaScript runs every due timer and answers the next expiry. Node
 // calls again while the callback throws; here a throw is the realm's uncaught exception, which ends the process
-// (browser-substrate host/task.mjs), so the call is made once.
+// (browser-substrate host/task.mjs), so the call is made once. Its callback scope (env.cc:1563) closes at the
+// function's end, after the timer is rescheduled and referenced (:1601-1608): the ticks (`close_scope`), then the
+// microtasks (a drain), so a timer they make is the one the handle runs and holds the loop.
 static void run_timers(uv_timer_t *handle) {
   double expiry_ms = tabnode_process_timers((double)now_since_base());
-  tabnode_drain();
   if (expiry_ms != 0) {
     int64_t duration_ms = llabs((long long)expiry_ms) - (int64_t)(uv_now(handle->loop) - timer_base);
     tabnode_schedule_timer(duration_ms > 0 ? duration_ms : 1);
@@ -70,6 +71,8 @@ static void run_timers(uv_timer_t *handle) {
   } else {
     uv_unref((uv_handle_t *)handle);
   }
+  tabnode_close_scope();
+  tabnode_drain();
 }
 
 // Environment::CheckImmediate (env.cc:1613-1636): the immediates, one callback scope each, while any is outstanding.

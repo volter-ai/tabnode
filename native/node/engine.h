@@ -15,8 +15,11 @@ extern "C" {
 // Runs Node's library over the bindings (Node's `node::LoadEnvironment`): answers 0, or the status to exit with.
 TABNODE_IMPORT(bootstrap) int tabnode_bootstrap(int argc, char **argv);
 // `timers_callback_function` (lib/internal/timers.js `processTimers`), called with the loop's now: the next expiry, 0
-// for none, negative where no timer left holds the loop.
+// for none, negative where no timer left holds the loop. Its callback scope stays open until RunTimers closes it.
 TABNODE_IMPORT(process_timers) double tabnode_process_timers(double now);
+// The tick queue of a callback scope the C closes itself (RunTimers'), before its drain: Node's
+// InternalCallbackScope::Close runs the ticks, then the microtasks.
+TABNODE_IMPORT(close_scope) void tabnode_close_scope(void);
 // `immediate_callback_function` (lib/internal/timers.js `processImmediate`).
 TABNODE_IMPORT(process_immediate) void tabnode_process_immediate(void);
 // The run's end (Tabnode ADR-0018 item 7), as SpinEventLoopInternal makes it once uv_run returns (src/api/
@@ -82,8 +85,8 @@ TABNODE_IMPORT(fs_event) void tabnode_fs_event(uv_fs_event_t *handle, const char
                                               int status);
 // A uv_fs_poll_t's change (StatWatcher::Callback), its current and previous stats in the binding's stat arrays.
 TABNODE_IMPORT(stat_watcher_change) void tabnode_stat_watcher_change(uv_fs_poll_t *handle, int status);
-// The close of a callback's scope (Node's InternalCallbackScope::Close, src/api/callback.cc): the tick queue, then the
-// microtasks, which a browser runs only between tasks, so the engine answers it by a suspension that resumes from the
+// The close of a callback's scope (Node's InternalCallbackScope::Close, src/api/callback.cc): its microtasks, after
+// the tick queue the callback's own return ran (or `close_scope`), which a browser runs only between tasks, so the engine answers it by a suspension that resumes from the
 // next task (a `Suspending` import).
 TABNODE_IMPORT(drain) void tabnode_drain(void);
 // The TLS callbacks (Tabnode ADR-0016 §4, ADR-0018 item 7): what OpenSSL raises inside an SSL_* call the engine made

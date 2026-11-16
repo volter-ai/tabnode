@@ -20,6 +20,7 @@
  * (`openssl.ts`), and what OpenSSL raises inside one of their calls comes back as the `tls_*` imports, inside that call.
  */
 import { errname, getErrorMessage } from './uv';
+import { drainGuestNextTicks, withGuestExecution } from '../../guest-loop';
 
 /** A pointer, a size or an i32 as the program answers it. */
 type I32 = number;
@@ -557,6 +558,8 @@ export const libnodeImports = {
   before_exit: (): number => theRunEnd().beforeExit(),
   emit_exit: (): void => { theRunEnd().emitExit(); },
   exit_code: (): number => theRunEnd().exitCode(),
+  /** RunTimers' scope's ticks (env.cc:1563, closed at :1610), after the C has rescheduled the timer; then its drain. */
+  close_scope: (): void => { withGuestExecution(drainGuestNextTicks, 'ticks'); },
   /** HandleWrap::OnClose: 1 where it made the close callback, whose scope the C closes; the C frees the handle. */
   handle_closed: (handle: number): number => (handleAt(handle).closed() ? 1 : 0),
   stream_read: (handle: number, nread: number, base: number): void => { handleAt(handle).target.onUvRead?.(nread, base); },
