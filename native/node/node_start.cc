@@ -42,6 +42,7 @@
 #include <cerrno>
 #include <csignal>
 #include <charconv>
+#include <concepts>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
