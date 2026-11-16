@@ -474,8 +474,8 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   `process_immediate()` (`processImmediate()`) and `poll_ready(fd, status, events)` (a `uv_poll_t` of `poll.c` is
   ready). It puts Tabnode's `libnodeImports` beside them, one table answering the run's end (item 9) and every binding
   callback, each followed in C by `drain` where it made a callback: `before_exit() -> i32`, `emit_exit()` and
-  `exit_code() -> i32`, `close_scope()` (RunTimers' ticks, before its drain), `handle_closed(handle) -> i32` (HandleWrap::OnClose;
-  nonzero where it made the close callback; the C frees the handle after), `stream_read(stream, nread, base)` (`base`
+  `exit_code() -> i32`, `close_scope()` (RunTimers' ticks, before its drain), `handle_closed(handle) -> i32`
+  (HandleWrap::OnClose; nonzero where it made the close callback; the C frees the handle after), `stream_read(stream, nread, base)` (`base`
   libuv's buffer, freed when the import returns), `stream_written(id, status)`, `stream_shut(id, status)`,
   `stream_connection(server, status)`, `stream_connected(id, status, readable, writable)`, `udp_received(handle, nread,
   base, name, flags)` (`name` a `tabnode_address_t`, 0 with an error), `udp_sent(id, status)`, `process_exit(handle,
