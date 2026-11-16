@@ -1,6 +1,6 @@
 #!/bin/bash
-# Builds `node` and `libnode.so` (ADR-0018 §1, §2, §3, items 7 and 8). `libnode.so` is the one shared library of Node's
-# C: libuv, OpenSSL 3.5.8 and ncrypto. `node` is a WALI program linked position-independent against it and `libc.so`:
+# Builds `node` and `libnode.so` (ADR-0018 §1, §2, §3, items 7, 8 and 10). `libnode.so` is the one shared library of
+# Node's C: libuv, OpenSSL 3.5.8 and ncrypto, and zlib, brotli 1.2.0, zstd 1.5.7 and llhttp 9.4.3. `node` is a WALI program linked position-independent against it and `libc.so`:
 # Node's start and its standard streams' and signals' start and end, the loop's own handles, the engine's descriptor
 # waits and the bindings' glue over libuv, OpenSSL and ncrypto (native/node: one HandleWrap, the stream, TCP, pipe, TTY
 # and UDP wraps, process_wrap, spawn_sync, signal_wrap, fs over uv_fs_*, and the crypto and tls_wrap bindings' OpenSSL
@@ -123,6 +123,64 @@ pids+=($!)
 pids+=($!)
 finish
 
+# zlib, brotli, zstd and llhttp (ADR-0018 item 10): Node v24.21.0's deps/zlib (Chromium's zlib, 1.3.2.1-motley, as Node
+# ships it), deps/brotli (1.2.0), deps/zstd (1.5.7) and deps/llhttp (9.4.3), from the same release archive, each
+# compiled with its gyp file's sources and defines and Node's Release flags for every target (common.gypi: -O3,
+# -fno-omit-frame-pointer, -pthread, _FILE_OFFSET_BITS=64, _GLIBCXX_USE_CXX11_ABI=1, __STDC_FORMAT_MACROS; its warning
+# flags aside). Differences from Node's, each named:
+# - zlib is zlib.gyp's target for an architecture with neither x86's nor NEON's optimizations, which wasm32 is:
+#   BUILD.gn's "zlib" sources and inflate.c, CPU_NO_SIMD and HAVE_HIDDEN; none of its SIMD targets.
+# - zstd's huf_decompress_amd64.S is not assembled, as Node's ZSTD_DISABLE_ASM leaves it.
+# src/node_zlib.cc's DefineZlibConstants, its chunk and level bounds (74-88) and its mode enum (146-159) are extracted
+# for node_constants.cc to compile, as Node's CreatePerContextProperties calls it (node_constants.cc:1357-1372).
+tar xzf "$node_archive" -C "$work" "$node/deps/zlib" "$node/deps/brotli" "$node/deps/zstd" "$node/deps/llhttp" \
+  "$node/src/node_zlib.cc"
+zlibsrc="$work/$node/deps/zlib"
+brotlisrc="$work/$node/deps/brotli"
+zstdsrc="$work/$node/deps/zstd"
+llhttpsrc="$work/$node/deps/llhttp"
+depflags=("${flags[@]/-O2/-O3}" -fno-omit-frame-pointer -D_FILE_OFFSET_BITS=64 -D_GLIBCXX_USE_CXX11_ABI=1
+  -D__STDC_FORMAT_MACROS)
+deps=()
+for source in adler32 compress cpu_features crc32 deflate gzclose gzlib gzread gzwrite infback inffast inftrees trees \
+  uncompr zutil inflate; do
+  "$cc" "${depflags[@]}" -DCPU_NO_SIMD -DHAVE_HIDDEN -I"$zlibsrc" -c "$zlibsrc/$source.c" -o "$work/zlib-$source.o" &
+  pids+=($!)
+  deps+=("$work/zlib-$source.o")
+done
+for source in common/constants common/context common/dictionary common/platform common/shared_dictionary \
+  common/transform dec/bit_reader dec/decode dec/huffman dec/prefix dec/state dec/static_init \
+  enc/backward_references enc/backward_references_hq enc/bit_cost enc/block_splitter enc/brotli_bit_stream \
+  enc/cluster enc/command enc/compound_dictionary enc/compress_fragment enc/compress_fragment_two_pass \
+  enc/dictionary_hash enc/encode enc/encoder_dict enc/entropy_encode enc/fast_log enc/histogram enc/literal_cost \
+  enc/memory enc/metablock enc/static_dict enc/static_dict_lut enc/static_init enc/utf8_util; do
+  object="$work/brotli-${source//\//-}.o"
+  "$cc" "${depflags[@]}" -DOS_LINUX -I"$brotlisrc/c/include" -c "$brotlisrc/c/$source.c" -o "$object" &
+  pids+=($!)
+  deps+=("$object")
+done
+zstddefines=(-DXXH_NAMESPACE=ZSTD_ -DZSTD_MULTITHREAD -DZSTD_DISABLE_ASM)
+for source in common/debug common/entropy_common common/fse_decompress compress/fse_compress compress/huf_compress \
+  decompress/huf_decompress common/pool common/threading common/xxhash common/zstd_common common/error_private \
+  compress/hist compress/zstd_compress compress/zstd_compress_literals compress/zstd_compress_sequences \
+  compress/zstd_compress_superblock compress/zstd_double_fast compress/zstd_fast compress/zstd_lazy compress/zstd_ldm \
+  compress/zstd_opt compress/zstd_preSplit compress/zstdmt_compress decompress/zstd_ddict decompress/zstd_decompress \
+  decompress/zstd_decompress_block; do
+  object="$work/zstd-${source//\//-}.o"
+  "$cc" "${depflags[@]}" "${zstddefines[@]}" -I"$zstdsrc/lib" -c "$zstdsrc/lib/$source.c" -o "$object" &
+  pids+=($!)
+  deps+=("$object")
+done
+for source in llhttp api http; do
+  "$cc" "${depflags[@]}" -I"$llhttpsrc" -I"$llhttpsrc/include" -c "$llhttpsrc/src/$source.c" -o "$work/llhttp-$source.o" &
+  pids+=($!)
+  deps+=("$work/llhttp-$source.o")
+done
+finish
+mkdir -p "$work/generated"
+{ sed -n '74,88p' "$work/$node/src/node_zlib.cc"; sed -n '146,159p' "$work/$node/src/node_zlib.cc"
+  sed -n '1922,2106p' "$work/$node/src/node_zlib.cc"; } > "$work/generated/node_zlib_constants.inc"
+
 mkdir -p "$out"
 # libnode.so holds the whole of libuv, OpenSSL (libssl and libcrypto) and ncrypto, as gyp links every static dependency
 # of Node's shared library whole (node.gyp:1141), so the program and an addon find all of each in the image. The legacy
@@ -131,7 +189,7 @@ mkdir -p "$out"
 # (cipher_tdes_common.c, ripemd_prov.c, prov_running.c), and liblegacy.a has its own copy of those, which libcrypto
 # already defines.
 "$cc" -shared -pthread -Wl,--soname=libnode.so -o "$out/libnode.so" "${objects[@]}" \
-  "$work/ncrypto.o" "$work/ncrypto-engine.o" "$openssl/providers/legacy-dso-legacyprov.o" \
+  "$work/ncrypto.o" "$work/ncrypto-engine.o" "$openssl/providers/legacy-dso-legacyprov.o" "${deps[@]}" \
   -Wl,--whole-archive "$openssl/libssl.a" "$openssl/libcrypto.a" -Wl,--no-whole-archive \
   "$openssl/providers/liblegacy.a" "${cxxlibs[@]}"
 
@@ -161,6 +219,15 @@ for source in crypto_util crypto_context crypto_cipher crypto_tls crypto_x509 no
   "$cxx" "${flags[@]}" "${cxxflags[@]}" "${ncdefines[@]}" -DOPENSSL_NO_DEPRECATED -D_GNU_SOURCE -I"$uv/include" \
     -I"$openssl/include" -I"$ncrypto" -I"$work/generated" -I"$work/$node/src" \
     -c "$repo/native/node/$source.cc" -o "$work/$source.o" &
+  pids+=($!)
+  program+=("$work/$source.o")
+done
+# The zlib and http_parser bindings' C (node_zlib, node_http_parser: Node's src/node_zlib.cc and
+# src/node_http_parser.cc below V8), over the headers of the zlib, brotli, zstd and llhttp in libnode.so, with the
+# defines zstd gives its dependents (zstd.gyp all_dependent_settings).
+for source in node_zlib node_http_parser; do
+  "$cc" "${flags[@]}" -D_GNU_SOURCE "${zstddefines[@]}" -I"$uv/include" -I"$zlibsrc" -I"$brotlisrc/c/include" \
+    -I"$zstdsrc/lib" -I"$llhttpsrc/include" -c "$repo/native/node/$source.c" -o "$work/$source.o" &
   pids+=($!)
   program+=("$work/$source.o")
 done

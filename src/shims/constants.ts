@@ -9,12 +9,14 @@
  * Node's binary holds its system's, read once from the program's text (`tabnode_constants`). So `fs.openSync`'s
  * `O_CREAT` is the one musl's open(2) and the process's kernel read, `os.constants.errno` and `os.constants.signals`
  * are the numbers the kernel and libuv deliver, and `signal_wrap` starts a uv_signal_t on the number musl gives the
- * name. The zlib group is the engine's zlib's own: zlib is not in libnode.so (ADR-0018 §1).
+ * name. The zlib group is DefineZlibConstants (src/node_zlib.cc:1922-2106) compiled against the zlib, brotli and
+ * zstd headers of libnode.so's own (ADR-0018 item 10), so `zlib.js`'s modes and flushes are the ones the program's
+ * binding switches on.
  *
  * A realm with no program (a tab's engine with no machine) has no libc, and its numbers are the engine's own tables
  * below: the fs flags and modes its own tree's binding reads back (`fs.ts` flagBits), its errno numbers, priorities
- * and dlopen modes, its signals the ones its own `process.kill` raises (`engineSignals`), and the empty crypto group
- * of a Node built without OpenSSL.
+ * and dlopen modes, its signals the ones its own `process.kill` raises (`engineSignals`), and the empty crypto and
+ * zlib groups of a realm with no OpenSSL and no zlib.
  */
 import { libnode, libnodeAttached } from '../node-lib/binding/libnode';
 import { mallocAnswer } from '../node-lib/binding/openssl';
@@ -32,8 +34,6 @@ function groupOf(name: string): 'errno' | 'priority' | 'dlopen' | 'fs' {
   if (name.startsWith('RTLD_')) return 'dlopen';
   return 'fs';
 }
-
-const engineZlib = { Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3, Z_FINISH: 4, Z_BLOCK: 5, Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1, Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4, Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6, Z_NO_COMPRESSION: 0, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9, Z_DEFAULT_COMPRESSION: -1, Z_FILTERED: 1, Z_HUFFMAN_ONLY: 2, Z_RLE: 3, Z_FIXED: 4, Z_DEFAULT_STRATEGY: 0, ZLIB_VERNUM: 4784, Z_MIN_WINDOWBITS: 8, Z_MAX_WINDOWBITS: 15, Z_DEFAULT_WINDOWBITS: 15, Z_MIN_CHUNK: 64, Z_MAX_CHUNK: Infinity, Z_DEFAULT_CHUNK: 16384, Z_MIN_MEMLEVEL: 1, Z_MAX_MEMLEVEL: 9, Z_DEFAULT_MEMLEVEL: 8, Z_MIN_LEVEL: -1, Z_MAX_LEVEL: 9, Z_DEFAULT_LEVEL: -1, BROTLI_DECODE: 0, BROTLI_ENCODE: 1, BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_FINISH: 2, BROTLI_OPERATION_EMIT_METADATA: 3, BROTLI_PARAM_MODE: 0, BROTLI_MODE_GENERIC: 0, BROTLI_MODE_TEXT: 1, BROTLI_MODE_FONT: 2, BROTLI_PARAM_QUALITY: 1, BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11, BROTLI_DEFAULT_QUALITY: 11, BROTLI_PARAM_LGWIN: 2, BROTLI_MIN_WINDOW_BITS: 10, BROTLI_MAX_WINDOW_BITS: 24, BROTLI_DEFAULT_WINDOW: 22, BROTLI_PARAM_LGBLOCK: 3, BROTLI_MIN_INPUT_BLOCK_BITS: 16, BROTLI_MAX_INPUT_BLOCK_BITS: 24 };
 
 const engineTrace = { TRACE_EVENT_PHASE_BEGIN: 66, TRACE_EVENT_PHASE_END: 69, TRACE_EVENT_PHASE_COMPLETE: 88, TRACE_EVENT_PHASE_INSTANT: 73, TRACE_EVENT_PHASE_ASYNC_BEGIN: 83, TRACE_EVENT_PHASE_ASYNC_STEP_INTO: 84, TRACE_EVENT_PHASE_ASYNC_STEP_PAST: 112, TRACE_EVENT_PHASE_ASYNC_END: 70, TRACE_EVENT_PHASE_NESTABLE_ASYNC_BEGIN: 98, TRACE_EVENT_PHASE_NESTABLE_ASYNC_END: 101, TRACE_EVENT_PHASE_NESTABLE_ASYNC_INSTANT: 110, TRACE_EVENT_PHASE_FLOW_BEGIN: 115, TRACE_EVENT_PHASE_FLOW_STEP: 116, TRACE_EVENT_PHASE_FLOW_END: 102, TRACE_EVENT_PHASE_METADATA: 77, TRACE_EVENT_PHASE_COUNTER: 67, TRACE_EVENT_PHASE_SAMPLE: 80, TRACE_EVENT_PHASE_CREATE_OBJECT: 78, TRACE_EVENT_PHASE_SNAPSHOT_OBJECT: 79, TRACE_EVENT_PHASE_DELETE_OBJECT: 68, TRACE_EVENT_PHASE_MEMORY_DUMP: 118, TRACE_EVENT_PHASE_MARK: 82, TRACE_EVENT_PHASE_CLOCK_SYNC: 99 };
 
@@ -55,6 +55,13 @@ function define(target: object, name: string, value: number | string): void {
   Object.defineProperty(target, name, { value, enumerable: true, writable: false, configurable: false });
 }
 
+/** A number of the program's text as `%.17g` writes it: "inf" for zlib's Z_MAX_CHUNK (node_zlib.cc:78). */
+function numberOf(text: string): number {
+  if (text === 'inf') return Infinity;
+  if (text === '-inf') return -Infinity;
+  return Number(text);
+}
+
 let programGroups: Map<string, Group> | undefined;
 /**
  * The program's compiled constants, every group by its name (node_constants.cc `tabnode_constants`: Node's groups and
@@ -73,7 +80,7 @@ export function programConstants(): Map<string, Group> {
     let target = groups.get(name);
     if (!target) groups.set(name, target = group());
     const value = line.slice(nameEnd + 1);
-    define(target, line.slice(nameAt, nameEnd), line[groupEnd + 1] === 'n' ? Number(value) : value);
+    define(target, line.slice(nameAt, nameEnd), line[groupEnd + 1] === 'n' ? numberOf(value) : value);
   }
   return programGroups = groups;
 }
@@ -99,7 +106,7 @@ function programBinding(): ConstantsBinding {
   Object.assign(os, { dlopen: programGroup('dlopen'), errno: programGroup('errno'), signals: programGroup('signals'), priority: programGroup('priority') });
   const target = Object.create(null) as ConstantsBinding;
   return Object.assign(target, {
-    os, fs: programGroup('fs'), crypto: programGroup('crypto'), zlib: { ...engineZlib },
+    os, fs: programGroup('fs'), crypto: programGroup('crypto'), zlib: programGroup('zlib'),
     trace: programGroup('trace'), internal: programGroup('internal'),
   });
 }
@@ -112,9 +119,9 @@ function engineBinding(): ConstantsBinding {
     // libuv's own flag, which Node's binding carries beside the os groups and the flat table has never held.
     os: { UV_UDP_REUSEADDR: 4, dlopen: groups.dlopen, errno: groups.errno, signals: { ...engineSignals }, priority: groups.priority },
     fs: groups.fs,
-    // DefineCryptoConstants with no HAVE_OPENSSL: a realm with no program has no OpenSSL.
+    // DefineCryptoConstants with no HAVE_OPENSSL: a realm with no program has no OpenSSL, and no zlib.
     crypto: {},
-    zlib: { ...engineZlib },
+    zlib: {},
     trace: { ...engineTrace },
   };
 }

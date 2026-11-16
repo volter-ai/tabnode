@@ -50,25 +50,6 @@ export default defineConfig({
   plugins: [
     wasm(),
     nodeLibBodies(),
-    {
-      name: 'browser-shims',
-      enforce: 'pre',
-      resolveId(source) {
-        if (source === 'node:zlib' || source === 'zlib') {
-          return resolve(__dirname, 'src/shims/zlib.ts');
-        }
-        if (source === 'brotli-wasm/pkg.web/brotli_wasm.js') {
-          return resolve(__dirname, 'node_modules/brotli-wasm/pkg.web/brotli_wasm.js');
-        }
-        if (source === 'brotli-wasm/pkg.web/brotli_wasm_bg.wasm?url') {
-          return {
-            id: resolve(__dirname, 'node_modules/brotli-wasm/pkg.web/brotli_wasm_bg.wasm') + '?url',
-            external: false,
-          };
-        }
-        return null;
-      },
-    },
   ],
   define: {
     'process.env': {},
@@ -76,8 +57,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      'node:zlib': resolve(__dirname, 'src/shims/zlib.ts'),
-      'zlib': resolve(__dirname, 'src/shims/zlib.ts'),
+      // A bundled dependency's `node:zlib` (just-bash's) is Node's own zlib of the realm's library graph.
+      'node:zlib': resolve(__dirname, 'src/node-lib/zlib-module.ts'),
+      'zlib': resolve(__dirname, 'src/node-lib/zlib-module.ts'),
       'buffer': 'buffer',
       'process': 'process/browser',
     },
@@ -115,12 +97,10 @@ export default defineConfig({
     },
     rollupOptions: {
       external: [
-        'brotli-wasm',
         'pako',
         'comlink',
         'just-bash',
         'resolve.exports',
-        'brotli',
         // Node.js built-ins for vite-plugin
         'fs',
         'path',
@@ -129,7 +109,6 @@ export default defineConfig({
       ],
       output: {
         globals: {
-          'brotli-wasm': 'brotliWasm',
           'pako': 'pako',
           'comlink': 'Comlink',
           'just-bash': 'justBash',

@@ -1,553 +1,397 @@
 /**
- * `internalBinding('http_parser')`: Node's `HTTPParser`, on llhttp's own
- * WebAssembly build.
+ * `internalBinding('http_parser')` (ADR-0018 §1, item 10): Node v24.21.0's src/node_http_parser.cc over the llhttp
+ * 9.4.3 (Node's deps/llhttp) in the process's libnode.so. Its C is the `node` program's
+ * (native/node/node_http_parser.c): the Parser's llhttp_t and settings, its StringPtrs and their slab, its header
+ * counts and limits, Execute and its answer, and the ConnectionsList's two ordered sets. This file is its V8 half:
+ * each method reads its arguments as V8 reads them, a buffer is copied into the process's memory for the length of
+ * an `execute`, and the callbacks llhttp makes reach the parser's JavaScript through the program's `http_parser_*`
+ * imports, inside that `execute`, each in the parser's async context as InternalCallbackScope enters it
+ * (`initialize`'s AsyncReset). Execute's parse error is the Error V8 makes ("Parse Error", its bytesParsed, code and
+ * reason); an exception a callback throws propagates out of `execute`, as V8's does once the native call returns,
+ * and no JavaScript runs in the call after it, as none does with an exception pending. Node's own `_http_common.js`,
+ * `_http_server.js` and `_http_client.js` run over it unchanged.
  *
- * Node parses HTTP with llhttp, a C parser it links. The engine's `http` was
- * a hand-written parser in TypeScript, and a hand-written HTTP parser is the
- * shape of bug that does not announce itself: a chunked body whose extension
- * it ignores, a header it folds where Node rejects, a request it accepts that
- * a proxy in front of it reads differently. So the parser here is llhttp
- * itself -- the same parser, the same state machine, the same rejections --
- * compiled to wasm (see `./llhttp-wasm.ts` for the build and its provenance),
- * and this file is only the shape Node's own `_http_common.js` expects around
- * it.
+ * Where it is not Node's: `consume` makes the parser no listener of its stream (Node's PushStreamListener, through
+ * which a socket's reads go to Execute in C and to `kOnExecute`): a StreamBase's listeners are not built, so a
+ * consumed socket's bytes reach the parser through `_http_server.js`'s own `data` listener and `execute`, Node's path
+ * for a socket that is no StreamBase. `free`'s EmitTraceEventDestroy has no trace to emit to.
  *
- * WHAT THIS FILE DOES, and nothing else: it hands llhttp the bytes, turns
- * llhttp's eight callbacks into the seven Node hangs off a parser by index,
- * and reports an error the way `execute` reports one. Every rule about
- * HTTP -- what a valid method is, when a message needs EOF, whether a
- * connection may be kept alive -- is llhttp's answer, read back through its
- * own exports.
- *
- * The creating worker compiles the module once asynchronously and hands its
- * code to each guest realm; only the instance and callbacks are realm-local.
- * With no module handed in, the first parser keeps the synchronous compile.
- * A browser refuses that compile above 4 KB on the MAIN thread, so `http`
- * works where the engine runs a guest -- its execution worker, a Node
- * process -- and the fallback's refusal remains ERR_HTTP_PARSER_UNAVAILABLE.
+ * A realm the host gives no `node` program has no llhttp, as it has no OpenSSL: the binding answers that the realm
+ * has no program (`libnode`).
  */
-import { LLHTTP_WASM_BASE64 } from './llhttp-wasm';
-import { suppliedHttpParserModule, httpParserUnavailable } from '../../http-parser-module';
-import { moduleBytes } from '../../module-bytes';
+import { address, fromMemory, intoMemory, libnode, readRecord, setHttpParserCallbacks, withRoom, type LibnodeExports } from './libnode';
+import { ownedRun, ownerOfInstance } from './handles';
+import { AsyncResource } from '../../shims/async_hooks';
+import { Buffer } from '../buffer-module';
+import { internalOptions } from '../internals/runtime';
 
-/** llhttp's `llhttp_type`. */
-const TYPE_REQUEST = 1;
-const TYPE_RESPONSE = 2;
+type I32 = number;
 
-/** llhttp's `llhttp_errno`, the ones this file acts on. */
-const ERROR_OK = 0;
-const ERROR_PAUSED = 21;
-const ERROR_PAUSED_UPGRADE = 22;
-
-/** The callback slots Node hangs off a parser, by the index its C++ uses. */
-const kOnMessageBegin = 0;
-const kOnHeaders = 1;
-const kOnHeadersComplete = 2;
-const kOnBody = 3;
-const kOnMessageComplete = 4;
-const kOnExecute = 5;
-const kOnTimeout = 6;
-
-interface LlhttpExports {
-  memory: WebAssembly.Memory;
-  _initialize(): void;
-  llhttp_alloc(type: number): number;
-  llhttp_free(ptr: number): void;
-  llhttp_reset(ptr: number): void;
-  llhttp_execute(ptr: number, data: number, len: number): number;
-  llhttp_finish(ptr: number): number;
-  llhttp_resume(ptr: number): void;
-  llhttp_resume_after_upgrade(ptr: number): void;
-  llhttp_pause(ptr: number): void;
-  llhttp_get_error_pos(ptr: number): number;
-  llhttp_get_error_reason(ptr: number): number;
-  llhttp_get_errno(ptr: number): number;
-  llhttp_errno_name(errno: number): number;
-  llhttp_method_name(method: number): number;
-  llhttp_get_http_major(ptr: number): number;
-  llhttp_get_http_minor(ptr: number): number;
-  llhttp_get_method(ptr: number): number;
-  llhttp_get_status_code(ptr: number): number;
-  llhttp_get_upgrade(ptr: number): number;
-  llhttp_should_keep_alive(ptr: number): number;
-  llhttp_message_needs_eof(ptr: number): number;
-  llhttp_set_lenient_headers(ptr: number, on: number): void;
-  llhttp_set_lenient_chunked_length(ptr: number, on: number): void;
-  llhttp_set_lenient_keep_alive(ptr: number, on: number): void;
-  llhttp_set_lenient_transfer_encoding(ptr: number, on: number): void;
-  llhttp_set_lenient_version(ptr: number, on: number): void;
-  llhttp_set_lenient_data_after_close(ptr: number, on: number): void;
-  llhttp_set_lenient_optional_lf_after_cr(ptr: number, on: number): void;
-  llhttp_set_lenient_optional_crlf_after_chunk(ptr: number, on: number): void;
-  llhttp_set_lenient_optional_cr_before_lf(ptr: number, on: number): void;
-  llhttp_set_lenient_spaces_after_chunk_size(ptr: number, on: number): void;
-  malloc(size: number): number;
-  free(ptr: number): void;
+/** native/node/node_http_parser.c's exports, by their C names. */
+interface HttpParserExports extends LibnodeExports {
+  tabnode_http_parser_new(): I32;
+  tabnode_http_parser_close(parser: I32): void;
+  tabnode_http_parser_remove(parser: I32): void;
+  tabnode_http_parser_initialize(parser: I32, type: I32, maxHttpHeaderSize: number, lenient: I32, list: I32): void;
+  tabnode_http_parser_pause(parser: I32, shouldPause: I32): void;
+  tabnode_http_parser_execute(parser: I32, data: I32, length: I32): I32;
+  tabnode_http_parser_table(parser: I32): I32;
+  tabnode_http_parser_current_buffer(parser: I32, lengthAt: I32): I32;
+  tabnode_connections_new(): I32;
+  tabnode_connections_free(list: I32): void;
+  tabnode_connections_list(list: I32, which: I32, headersTimeout: I32, requestTimeout: I32, countAt: I32): I32;
+  tabnode_http_parser_binding(lengthAt: I32): I32;
 }
 
-/** The parser whose `execute` is on the stack; llhttp's callbacks carry no state of ours. */
-// eslint-disable-next-line no-var, vars-on-top
-var current: HTTPParser | null = null;
-// eslint-disable-next-line no-var, vars-on-top
-var wasm: LlhttpExports | undefined;
-// eslint-disable-next-line no-var, vars-on-top
-var memoryBytes: Uint8Array | undefined;
-
-/** The realm's own decoder, over a latin1 view: HTTP's header bytes are latin1. */
-// eslint-disable-next-line no-var, vars-on-top
-var latin1: TextDecoder | undefined;
-
-function decode(at: number, length: number): string {
-  latin1 ??= new TextDecoder('latin1');
-  return latin1.decode(bytes().subarray(at, at + length));
+function program(): HttpParserExports {
+  return libnode().exports as HttpParserExports;
 }
 
-function bytes(): Uint8Array {
-  // A wasm memory can grow, and a view over the old buffer is detached when
-  // it does; the view is taken again whenever the buffer is not the one it
-  // was made from.
-  const memory = llhttp().memory;
-  if (memoryBytes === undefined || memoryBytes.buffer !== memory.buffer) {
-    memoryBytes = new Uint8Array(memory.buffer);
+/** OneByteString: each byte one UTF-16 unit, as V8 makes a Latin-1 string (TextDecoder's "latin1" is windows-1252). */
+function oneByteString(bytes: Uint8Array): string {
+  let text = '';
+  for (let at = 0; at < bytes.length; at += 8192) {
+    text += String.fromCharCode.apply(null, bytes.subarray(at, at + 8192) as unknown as number[]);
   }
-  return memoryBytes;
+  return text;
 }
 
-function llhttp(): LlhttpExports {
-  if (wasm !== undefined) return wasm;
-  let module = suppliedHttpParserModule();
-  if (module === undefined) {
-    try {
-      const binary = moduleBytes(LLHTTP_WASM_BASE64);
-      module = new WebAssembly.Module(binary);
-    } catch (error) {
-      throw httpParserUnavailable(error);
-    }
-  }
-  const instance = new WebAssembly.Instance(module, {
-    env: {
-      wasm_on_message_begin: (): number => current!.onMessageBegin(),
-      wasm_on_url: (_p: number, at: number, length: number): number => current!.onUrl(at, length),
-      wasm_on_status: (_p: number, at: number, length: number): number => current!.onStatus(at, length),
-      wasm_on_header_field: (_p: number, at: number, length: number): number => current!.onHeaderField(at, length),
-      wasm_on_header_value: (_p: number, at: number, length: number): number => current!.onHeaderValue(at, length),
-      wasm_on_headers_complete: (_p: number, statusCode: number, upgrade: number, shouldKeepAlive: number): number =>
-        current!.onHeadersComplete(statusCode, Boolean(upgrade), Boolean(shouldKeepAlive)),
-      wasm_on_body: (_p: number, at: number, length: number): number => current!.onBody(at, length),
-      wasm_on_message_complete: (): number => current!.onMessageComplete(),
-    },
+/** A string of `length` bytes at `at` in the process's memory, read as OneByteString reads it ("" for none). */
+function oneByteAt(at: number, length: number): string {
+  return length === 0 ? '' : oneByteString(libnode().read(address(at), length));
+}
+
+/** The table node_http_parser.c lays a callback's strings out in: count, URL, status message, the headers. */
+const TABLE_BYTES = 4 + 8 + 8 + 64 * 8;
+
+/** Execute's answer kinds (node_http_parser.c `result`). */
+const kResultNothing = 0, kResultRead = 1, kResultParseError = 2;
+
+/** Every open parser by its address, held as Node's Parser holds its object (a BaseObject never made weak). */
+const parsers = new Map<number, HTTPParser>();
+
+function parserAt(at: number): HTTPParser {
+  const parser = parsers.get(address(at));
+  if (!parser) throw new Error(`node: llhttp called back a parser no binding holds (${address(at)})`);
+  return parser;
+}
+
+/** CreatePerIsolateProperties' constants and CreatePerContextProperties' method lists, as the program compiled them. */
+interface ParserTables { constants: Map<string, number>; methods: string[]; allMethods: string[] }
+let tables: ParserTables | undefined;
+function parserTables(): ParserTables {
+  if (tables) return tables;
+  const x = program();
+  let text = '';
+  withRoom(4, (lengthAt) => address(x.tabnode_http_parser_binding(lengthAt)), (view, at) => {
+    text = new TextDecoder().decode(libnode().read(at, view.getUint32(0, true)));
+    x.tabnode_free(at);
   });
-  wasm = instance.exports as unknown as LlhttpExports;
-  wasm._initialize();
-  return wasm;
-}
-
-/** A C string out of the module's memory, for llhttp's own error text. */
-function cstring(ptr: number): string {
-  if (ptr === 0) return '';
-  const view = bytes();
-  let end = ptr;
-  while (view[end] !== 0) end += 1;
-  return decode(ptr, end - ptr);
-}
-
-/**
- * Every method llhttp knows, by its own number, asked of llhttp rather than
- * written down here: `allMethods[method]` is what `_http_common.js` reads to
- * name a request's method, and a table written twice is a table that drifts.
- */
-// eslint-disable-next-line no-var, vars-on-top
-var allMethodsCache: string[] | undefined;
-function allMethodsOf(): string[] {
-  if (allMethodsCache) return allMethodsCache;
-  const exports = llhttp();
-  const names: string[] = [];
-  for (let method = 0; ; method += 1) {
-    let name: string;
-    // llhttp traps on a method it does not have rather than answering an
-    // empty name, so the end of its table is the first call that traps.
-    try { name = cstring(exports.llhttp_method_name(method)); } catch { break; }
-    if (name === '') break;
-    names.push(name);
+  const parsed: ParserTables = { constants: new Map(), methods: [], allMethods: [] };
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    const [kind, name, value] = line.split(' ');
+    if (kind === 'c') parsed.constants.set(name!, Number(value));
+    else if (kind === 'm') parsed.methods.push(name!);
+    else parsed.allMethods.push(name!);
   }
-  allMethodsCache = names;
-  return names;
+  return tables = parsed;
 }
 
-type ParserCallback = ((...args: never[]) => unknown) | null;
+/** The engine's caller of a parser's callback: in its owner's run and its async context; a throw is kept. */
+type Callback = (...args: unknown[]) => unknown;
 
+/** Parser (node_http_parser.cc:295-1147): an AsyncWrap over its C parser. */
 export class HTTPParser {
-  static readonly REQUEST = TYPE_REQUEST;
-  static readonly RESPONSE = TYPE_RESPONSE;
-  static readonly kOnMessageBegin = kOnMessageBegin;
-  static readonly kOnHeaders = kOnHeaders;
-  static readonly kOnHeadersComplete = kOnHeadersComplete;
-  static readonly kOnBody = kOnBody;
-  static readonly kOnMessageComplete = kOnMessageComplete;
-  static readonly kOnExecute = kOnExecute;
-  static readonly kOnTimeout = kOnTimeout;
-  /** Node's lenient flags. Each one llhttp itself can be told about is passed on. */
-  static readonly kLenientNone = 0;
-  static readonly kLenientHeaders = 1;
-  static readonly kLenientChunkedLength = 2;
-  static readonly kLenientKeepAlive = 4;
-  static readonly kLenientTransferEncoding = 8;
-  static readonly kLenientVersion = 16;
-  static readonly kLenientDataAfterClose = 32;
-  static readonly kLenientOptionalLFAfterCR = 64;
-  static readonly kLenientOptionalCRLFAfterChunk = 128;
-  static readonly kLenientOptionalCRBeforeLF = 256;
-  static readonly kLenientSpacesAfterChunkSize = 512;
-  /**
-   * 0, as Node exports it when its llhttp is older than 9.4, which has no `llhttp_set_lenient_header_value_relaxed`
-   * (node_http_parser.cc:1385-1394): this build is 9.3.0 (`./llhttp-wasm.ts`).
-   */
-  static readonly kLenientHeaderValueRelaxed = 0;
-  static readonly kLenientAll = 1023;
+  #parser: number;
+  #resource: AsyncResource | null = null;
+  /** The exception a callback threw in this `execute`, which propagates once it returns (V8's pending exception). */
+  #thrown: { error: unknown } | null = null;
+  [index: number]: unknown;
+  /** CreatePerIsolateProperties' constants on the constructor (`httpParserBinding` defines each from the program). */
+  declare static REQUEST: number;
+  declare static RESPONSE: number;
+  declare static kOnMessageBegin: number;
+  declare static kOnHeaders: number;
+  declare static kOnHeadersComplete: number;
+  declare static kOnBody: number;
+  declare static kOnMessageComplete: number;
+  declare static kOnExecute: number;
+  declare static kOnTimeout: number;
 
-  [kOnMessageBegin]: ParserCallback = null;
-  [kOnHeaders]: ParserCallback = null;
-  [kOnHeadersComplete]: ParserCallback = null;
-  [kOnBody]: ParserCallback = null;
-  [kOnMessageComplete]: ParserCallback = null;
-  [kOnExecute]: ParserCallback = null;
-  [kOnTimeout]: ParserCallback = null;
-
-  #ptr = 0;
-  #type = TYPE_REQUEST;
-  #maxHeaderSize = 16 * 1024;
-  #headerBytes = 0;
-  #headers: string[] = [];
-  #field = '';
-  #value = '';
-  #readingValue = false;
-  #url = '';
-  #statusMessage = '';
-  #headersSent = false;
-  #paused = false;
-  /** The buffer `execute` is walking, which `getCurrentBuffer` answers with. */
-  #buffer: Uint8Array | null = null;
-  #bufferPtr = 0;
-  #bufferSize = 0;
-  #connections: ConnectionsList | undefined;
-  /** The socket `_http_server.js` hangs on a parser, and reads off one here. */
-  socket?: { destroy(): void } | null;
-  /** When this connection's current head and current message began, in ms. */
-  headersStart = 0;
-  messageStart = 0;
-  /** Whether a message is in flight, which is what `idle()` is the absence of. */
-  active = false;
-
-  /**
-   * `parser.initialize(type, resource, maxHeaderSize, lenient, headersTimeout)`,
-   * which Node calls for every parser it takes off its free list.
-   */
-  initialize(type: number, _resource?: unknown, maxHeaderSize?: number, lenient?: number, connections?: ConnectionsList): void {
-    const exports = llhttp();
-    if (this.#ptr !== 0) exports.llhttp_free(this.#ptr);
-    this.#type = type;
-    this.#ptr = exports.llhttp_alloc(type);
-    this.#maxHeaderSize = maxHeaderSize && maxHeaderSize > 0 ? maxHeaderSize : 16 * 1024;
-    const flags = lenient ?? 0;
-    exports.llhttp_set_lenient_headers(this.#ptr, flags & HTTPParser.kLenientHeaders ? 1 : 0);
-    exports.llhttp_set_lenient_chunked_length(this.#ptr, flags & HTTPParser.kLenientChunkedLength ? 1 : 0);
-    exports.llhttp_set_lenient_keep_alive(this.#ptr, flags & HTTPParser.kLenientKeepAlive ? 1 : 0);
-    exports.llhttp_set_lenient_transfer_encoding(this.#ptr, flags & HTTPParser.kLenientTransferEncoding ? 1 : 0);
-    exports.llhttp_set_lenient_version(this.#ptr, flags & HTTPParser.kLenientVersion ? 1 : 0);
-    exports.llhttp_set_lenient_data_after_close(this.#ptr, flags & HTTPParser.kLenientDataAfterClose ? 1 : 0);
-    exports.llhttp_set_lenient_optional_lf_after_cr(this.#ptr, flags & HTTPParser.kLenientOptionalLFAfterCR ? 1 : 0);
-    exports.llhttp_set_lenient_optional_crlf_after_chunk(this.#ptr, flags & HTTPParser.kLenientOptionalCRLFAfterChunk ? 1 : 0);
-    exports.llhttp_set_lenient_optional_cr_before_lf(this.#ptr, flags & HTTPParser.kLenientOptionalCRBeforeLF ? 1 : 0);
-    exports.llhttp_set_lenient_spaces_after_chunk_size(this.#ptr, flags & HTTPParser.kLenientSpacesAfterChunkSize ? 1 : 0);
-    this.#reset();
-    this.#connections?.remove(this);
-    this.#connections = connections;
-    connections?.add(this);
-    this.headersStart = 0;
-    this.messageStart = 0;
+  /** Parser::New (node_http_parser.cc:613-616). */
+  constructor() {
+    this.#parser = address(program().tabnode_http_parser_new());
+    parsers.set(this.#parser, this);
   }
 
-  #reset(): void {
-    this.#headers = [];
-    this.#headerBytes = 0;
-    this.#field = '';
-    this.#value = '';
-    this.#readingValue = false;
-    this.#url = '';
-    this.#statusMessage = '';
-    this.#headersSent = false;
-    this.#paused = false;
+  /** Parser::Close (node_http_parser.cc:619-624): the parser is deleted, and every later call finds no wrap. */
+  close(): void {
+    const at = this.#parser;
+    if (at === 0) return;
+    parsers.delete(at);
+    this.#parser = 0;
+    program().tabnode_http_parser_close(at);
   }
 
-  /** Node's `parser.free()`: back on the free list, holding no llhttp state. */
+  /** Parser::Free (node_http_parser.cc:627-635): the destroy hooks the destructor will not run. */
   free(): void {
-    if (this.#ptr !== 0) { llhttp().llhttp_free(this.#ptr); this.#ptr = 0; }
-    this.#connections?.remove(this);
-    this.#connections = undefined;
-    this.active = false;
-    this.#reset();
+    if (this.#parser === 0) return;
+    this.#resource?.emitDestroy();
   }
 
-  /** Node's `parser.remove()`, which only matters for a consumed stream. */
-  remove(): void {}
-
-  close(): void { this.free(); }
-
-  pause(): void { if (this.#ptr !== 0) llhttp().llhttp_pause(this.#ptr); }
-  resume(): void { if (this.#ptr !== 0) llhttp().llhttp_resume(this.#ptr); }
-
-  /** The engine's handles are not stream bases, so Node never consumes one. */
-  consume(): void {}
-  unconsume(): void {}
-
-  getCurrentBuffer(): Uint8Array {
-    return this.#buffer ?? new Uint8Array(0);
+  /** Parser::Remove (node_http_parser.cc:638-648). */
+  remove(): void {
+    if (this.#parser !== 0) program().tabnode_http_parser_remove(this.#parser);
   }
 
-  /**
-   * `parser.execute(buffer)`: the bytes through llhttp, answering how many it
-   * took, or an `Error` carrying `bytesParsed`, the llhttp code and llhttp's
-   * own reason -- which is the shape `_http_server.js` reads to decide
-   * between a 400 and a destroyed socket.
-   */
-  execute(buffer: Uint8Array): number | Error {
-    const exports = llhttp();
-    if (this.#ptr === 0) this.initialize(this.#type);
-    const length = buffer.length;
-    const data = this.#copyIn(buffer);
-    const previous = current;
-    current = this;
-    this.#buffer = buffer;
-    let ret: number;
-    try {
-      ret = exports.llhttp_execute(this.#ptr, data, length);
-    } finally {
-      current = previous;
-    }
-    if (ret === ERROR_PAUSED_UPGRADE) {
-      // The bytes after the header of an upgraded message are the caller's,
-      // not llhttp's: it stops where they begin and says where that was.
-      const consumed = exports.llhttp_get_error_pos(this.#ptr) - data;
-      exports.llhttp_resume_after_upgrade(this.#ptr);
-      this.#buffer = null;
-      return consumed;
-    }
-    if (ret === ERROR_PAUSED) {
-      this.#paused = true;
-      const consumed = exports.llhttp_get_error_pos(this.#ptr) - data;
-      this.#buffer = null;
-      return consumed;
-    }
-    if (ret !== ERROR_OK) {
-      const consumed = exports.llhttp_get_error_pos(this.#ptr) - data;
-      const error = new Error(cstring(exports.llhttp_get_error_reason(this.#ptr))) as Error & {
-        bytesParsed?: number; code?: string; reason?: string;
-      };
-      error.bytesParsed = consumed < 0 ? 0 : consumed;
-      // llhttp's own name already carries the prefix: `HPE_INVALID_METHOD`.
-      error.code = cstring(exports.llhttp_errno_name(ret));
-      error.reason = error.message;
-      this.#buffer = null;
-      return error;
-    }
-    this.#buffer = null;
-    return length;
+  /** Parser::Execute (node_http_parser.cc:664-674): `var bytesParsed = parser->execute(buffer)`. */
+  execute(buffer: unknown): unknown {
+    if (this.#parser === 0) return undefined;
+    if (!ArrayBuffer.isView(buffer)) throw new Error('node: Assertion `args[0]->IsArrayBufferView()\' failed');
+    const bytes = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const x = program();
+    // ArrayBufferViewContents: the bytes, here a copy in the process's memory for the length of the call.
+    const at = intoMemory(bytes);
+    try { return this.#answer(x.tabnode_http_parser_execute(this.#parser, at, bytes.byteLength)); }
+    finally { x.tabnode_free(at); }
   }
 
-  /** `parser.finish()`: the stream ended; llhttp says whether that was legal. */
-  finish(): number | Error | undefined {
-    const exports = llhttp();
-    if (this.#ptr === 0) return undefined;
-    const previous = current;
-    current = this;
-    let ret: number;
-    try { ret = exports.llhttp_finish(this.#ptr); } finally { current = previous; }
-    if (ret === ERROR_OK || ret === ERROR_PAUSED || ret === ERROR_PAUSED_UPGRADE) return undefined;
-    const error = new Error(cstring(exports.llhttp_get_error_reason(this.#ptr))) as Error & {
-      bytesParsed?: number; code?: string;
-    };
-    error.bytesParsed = 0;
-    // llhttp's own name already carries the prefix: `HPE_INVALID_METHOD`.
-      error.code = cstring(exports.llhttp_errno_name(ret));
+  /** Parser::Finish (node_http_parser.cc:677-685). */
+  finish(): unknown {
+    if (this.#parser === 0) return undefined;
+    return this.#answer(program().tabnode_http_parser_execute(this.#parser, 0, 0));
+  }
+
+  /** Execute's answer (node_http_parser.cc:903-943) as V8 makes it, the callbacks' exception first. */
+  #answer(resultAt: number): unknown {
+    const thrown = this.#thrown;
+    this.#thrown = null;
+    if (thrown) throw thrown.error;
+    const result = readRecord(resultAt, 24);
+    const kind = result.getInt32(0, true);
+    if (kind === kResultNothing) return undefined;
+    const nread = result.getInt32(4, true);
+    if (kind === kResultRead) return nread;
+    if (kind !== kResultParseError) return undefined;
+    const error = new Error('Parse Error') as Error & Record<string, unknown>;
+    error.bytesParsed = nread;
+    error.code = oneByteAt(result.getUint32(8, true), result.getUint32(12, true));
+    error.reason = oneByteAt(result.getUint32(16, true), result.getUint32(20, true));
     return error;
   }
 
-  /** Bytes into the module's own memory, in one scratch buffer that grows. */
-  #copyIn(buffer: Uint8Array): number {
-    const exports = llhttp();
-    if (buffer.length > this.#bufferSize) {
-      if (this.#bufferPtr !== 0) exports.free(this.#bufferPtr);
-      this.#bufferPtr = exports.malloc(buffer.length);
-      this.#bufferSize = buffer.length;
-      memoryBytes = undefined;
+  /**
+   * Parser::Initialize (node_http_parser.cc:688-750): initialize(type, resource[, maxHeaderSize[, lenientFlags[,
+   * connectionsList]]]).
+   */
+  initialize(...args: unknown[]): void {
+    const type = args[0];
+    if (typeof type !== 'number' || (type | 0) !== type) throw new Error('node: Assertion `args[0]->IsInt32()\' failed');
+    if (args[1] === null || (typeof args[1] !== 'object' && typeof args[1] !== 'function')) {
+      throw new Error('node: Assertion `args[1]->IsObject()\' failed');
     }
-    bytes().set(buffer, this.#bufferPtr);
-    return this.#bufferPtr;
+    let maxHttpHeaderSize = 0;
+    if (args.length > 2) {
+      if (typeof args[2] !== 'number') throw new Error('node: Assertion `args[2]->IsNumber()\' failed');
+      // static_cast<uint64_t> of the number.
+      maxHttpHeaderSize = args[2] > 0 ? Math.trunc(args[2]) : 0;
+    }
+    if (maxHttpHeaderSize === 0) {
+      maxHttpHeaderSize = internalOptions.getOptionValue('--max-http-header-size') as number;
+    }
+    let lenientFlags = 0;
+    if (args.length > 3) {
+      if (typeof args[3] !== 'number' || (args[3] | 0) !== args[3]) {
+        throw new Error('node: Assertion `args[3]->IsInt32()\' failed');
+      }
+      lenientFlags = args[3];
+    }
+    let list = 0;
+    if (args.length > 4 && args[4] !== null && args[4] !== undefined) {
+      if (typeof args[4] !== 'object') throw new Error('node: Assertion `args[4]->IsObject()\' failed');
+      const unwrapped = listAddresses.get(args[4]);
+      // ASSIGN_OR_RETURN_UNWRAP of an object that wraps no list.
+      if (unwrapped === undefined) return;
+      list = unwrapped;
+    }
+    if (this.#parser === 0) return;
+    // set_provider_type and AsyncReset: the parser's callbacks run in the context it is initialized in.
+    this.#resource = new AsyncResource(type === parserTables().constants.get('REQUEST') ? 'HTTPINCOMINGMESSAGE' : 'HTTPCLIENTREQUEST');
+    program().tabnode_http_parser_initialize(this.#parser, type, maxHttpHeaderSize, lenientFlags >>> 0, list);
   }
 
-  // ---- llhttp's callbacks, each answering 0 for "carry on" -----------------
+  /** Parser::Pause<true> and Pause<false> (node_http_parser.cc:753-766). */
+  pause(): void { if (this.#parser !== 0) program().tabnode_http_parser_pause(this.#parser, 1); }
+  resume(): void { if (this.#parser !== 0) program().tabnode_http_parser_pause(this.#parser, 0); }
 
-  onMessageBegin(): number {
-    this.#reset();
-    this.headersStart = Date.now();
-    this.messageStart = this.headersStart;
-    this.active = true;
-    const callback = this[kOnMessageBegin];
-    if (callback) callback.call(this as never);
-    return 0;
+  /** Parser::Consume (node_http_parser.cc:769-776): the parser is no stream's listener here (see above). */
+  consume(stream: unknown): void {
+    if (stream === null || typeof stream !== 'object') throw new Error('node: Assertion `args[0]->IsObject()\' failed');
+  }
+  /** Parser::Unconsume (node_http_parser.cc:779-788): already unconsumed. */
+  unconsume(): void {}
+
+  /** GetCurrentBuffer (node_http_parser.cc:791-802): Buffer::Copy of the bytes Execute is reading. */
+  getCurrentBuffer(): unknown {
+    if (this.#parser === 0) return undefined;
+    const x = program();
+    let bytes = new ArrayBuffer(0);
+    withRoom(4, (lengthAt) => address(x.tabnode_http_parser_current_buffer(this.#parser, lengthAt)), (view, at) => {
+      const length = view.getUint32(0, true);
+      if (at !== 0 && length !== 0) bytes = fromMemory(at, length);
+    });
+    return Buffer.from(bytes);
   }
 
-  onUrl(at: number, length: number): number {
-    this.#url += decode(at, length);
-    return this.#countHeaderBytes(length);
-  }
-
-  onStatus(at: number, length: number): number {
-    this.#statusMessage += decode(at, length);
-    return this.#countHeaderBytes(length);
-  }
-
-  onHeaderField(at: number, length: number): number {
-    if (this.#readingValue) { this.#pushHeader(); }
-    this.#field += decode(at, length);
-    return this.#countHeaderBytes(length);
-  }
-
-  onHeaderValue(at: number, length: number): number {
-    this.#readingValue = true;
-    this.#value += decode(at, length);
-    return this.#countHeaderBytes(length);
-  }
-
-  #pushHeader(): void {
-    this.#headers.push(this.#field, this.#value);
-    this.#field = '';
-    this.#value = '';
-    this.#readingValue = false;
+  /** The callback at `index`, called as V8 calls it with no exception pending; a throw is kept, and none follows it. */
+  invoke(index: number, args: unknown[]): { ok: true; value: unknown } | { ok: false } {
+    if (this.#thrown) return { ok: false };
+    const callback = this[index];
+    if (typeof callback !== 'function') return { ok: true, value: undefined };
+    const resource = this.#resource;
+    try {
+      const value = ownedRun(ownerOfInstance(this), () => (resource
+        ? resource.runInAsyncScope(callback as Callback, this, ...args)
+        : (callback as Callback).apply(this, args)));
+      return { ok: true, value };
+    } catch (error) {
+      this.#thrown = { error };
+      return { ok: false };
+    }
   }
 
   /**
-   * Node refuses a message whose head is longer than `maxHeaderSize`. A
-   * callback that answers anything but 0 stops llhttp with `HPE_USER`, which
-   * is the code `_http_server.js` reads to answer 431.
+   * V8's IntegerValue of a callback's answer: ToNumber (whose throw is kept as the call's exception, NaN), then the
+   * integer toward zero, NaN as 0, within int64's range.
    */
-  #countHeaderBytes(length: number): number {
-    if (this.#headersSent) return 0;
-    this.#headerBytes += length;
-    if (this.#headerBytes > this.#maxHeaderSize) {
-      return -1;
+  integerValue(value: unknown): number {
+    try {
+      const number = +(value as number);
+      if (Number.isNaN(number)) return 0;
+      return Math.max(-(2 ** 63), Math.min(2 ** 63 - 1024, Math.trunc(number)));
+    } catch (error) {
+      this.#thrown = { error };
+      return NaN;
     }
-    return 0;
   }
 
-  onHeadersComplete(statusCode: number, upgrade: boolean, shouldKeepAlive: boolean): number {
-    if (this.#readingValue || this.#field !== '') this.#pushHeader();
-    const exports = llhttp();
-    const headers = this.#headers;
-    this.#headers = [];
-    this.#headersSent = true;
-    this.headersStart = 0;
-    const callback = this[kOnHeadersComplete];
-    if (!callback) return 0;
-    const major = exports.llhttp_get_http_major(this.#ptr);
-    const minor = exports.llhttp_get_http_minor(this.#ptr);
-    const method = this.#type === TYPE_REQUEST ? exports.llhttp_get_method(this.#ptr) : undefined;
-    const url = this.#type === TYPE_REQUEST ? this.#url : undefined;
-    const answer = (callback as (...args: unknown[]) => unknown).call(
-      this, major, minor, headers, method, url, statusCode, this.#statusMessage, upgrade, shouldKeepAlive,
-    );
-    this.#url = '';
-    this.#statusMessage = '';
-    // Node's own answer: a number means "this message has no body to read" --
-    // a HEAD's response, a 204, a 304 -- which is llhttp's 1.
-    if (typeof answer === 'number' && answer > 0) return 1;
-    return 0;
-  }
-
-  onBody(at: number, length: number): number {
-    const callback = this[kOnBody];
-    if (callback) {
-      const chunk = bytes().slice(at, at + length);
-      (callback as (...args: unknown[]) => unknown).call(this, chunk);
+  /** `object()->Get("maxHeaderPairs")`, kept as an exception where the get throws. */
+  maxHeaderPairs(): number {
+    if (this.#thrown) return NaN;
+    try {
+      const value = (this as unknown as { maxHeaderPairs?: unknown }).maxHeaderPairs;
+      return typeof value === 'number' && !Number.isNaN(value) ? value : 0;
+    } catch (error) {
+      this.#thrown = { error };
+      return NaN;
     }
-    return 0;
   }
 
-  onMessageComplete(): number {
-    // A trailer arrives after the head is done; Node takes those through
-    // `kOnHeaders`, which is also how it takes a head too large to batch.
-    if (this.#readingValue || this.#field !== '') this.#pushHeader();
-    if (this.#headers.length > 0) {
-      const trailers = this.#headers;
-      this.#headers = [];
-      const onHeaders = this[kOnHeaders];
-      if (onHeaders) (onHeaders as (...args: unknown[]) => unknown).call(this, trailers, '');
-    }
-    const callback = this[kOnMessageComplete];
-    const returned = callback ? (callback as () => unknown).call(this as never) : 0;
-    this.active = false;
-    this.messageStart = 0;
-    // A client that has its message may return non-zero to stop llhttp
-    // before the next message on this connection; Node's own callbacks
-    // return nothing, which is 0 as before.
-    return typeof returned === 'number' ? returned : 0;
+  /** The strings of the callback being made (node_http_parser.c `table`). */
+  table(): { headers: string[]; url: string; statusMessage: string } {
+    const view = readRecord(program().tabnode_http_parser_table(this.#parser), TABLE_BYTES);
+    const slice = (offset: number): string => oneByteAt(view.getUint32(offset, true), view.getUint32(offset + 4, true));
+    const count = view.getUint32(0, true);
+    const headers: string[] = [];
+    for (let index = 0; index < count * 2; index++) headers.push(slice(20 + index * 8));
+    return { headers, url: slice(4), statusMessage: slice(12) };
+  }
+}
+
+/** Each ConnectionsList's C list, by its object (ASSIGN_OR_RETURN_UNWRAP). */
+const listAddresses = new WeakMap<object, number>();
+/** A list's memory once its object is collected (ConnectionsList is MakeWeak). */
+const collectedLists = new FinalizationRegistry<number>((at) => program().tabnode_connections_free(at));
+
+/** ConnectionsList (node_http_parser.cc:253-293, 1163-1284). */
+export class ConnectionsList {
+  readonly #list: number;
+
+  constructor() {
+    this.#list = address(program().tabnode_connections_new());
+    listAddresses.set(this, this.#list);
+    collectedLists.register(this, this.#list);
   }
 
-  /** Off the list it was initialized onto; `free` is where Node lets one go. */
-  detach(): void { this.#connections?.remove(this); this.#connections = undefined; }
+  all(): HTTPParser[] { return this.#select(0, 0, 0); }
+  idle(): HTTPParser[] { return this.#select(1, 0, 0); }
+  active(): HTTPParser[] { return this.#select(2, 0, 0); }
+  /** Expired (node_http_parser.cc:1223-1284): its two timeouts, in seconds, as their Uint32 values. */
+  expired(headersTimeout: unknown, requestTimeout: unknown): HTTPParser[] {
+    if (typeof headersTimeout !== 'number') throw new Error('node: Assertion `args[0]->IsNumber()\' failed');
+    if (typeof requestTimeout !== 'number') throw new Error('node: Assertion `args[1]->IsNumber()\' failed');
+    return this.#select(3, headersTimeout >>> 0, requestTimeout >>> 0);
+  }
+
+  #select(which: number, headersTimeout: number, requestTimeout: number): HTTPParser[] {
+    const x = program();
+    const found: HTTPParser[] = [];
+    withRoom(4, (countAt) => address(x.tabnode_connections_list(this.#list, which, headersTimeout, requestTimeout, countAt)),
+      (view, at) => {
+        const count = view.getUint32(0, true);
+        try {
+          if (count === 0) return;
+          const addresses = readRecord(at, count * 4);
+          for (let index = 0; index < count; index++) found.push(parserAt(addresses.getUint32(index * 4, true)));
+        } finally { x.tabnode_free(at); }
+      });
+    return found;
+  }
 }
 
 /**
- * `internalBinding('http_parser')`'s `ConnectionsList`: the parsers a server
- * has open, which is how `_http_server.js` closes its connections and
- * enforces `headersTimeout` and `requestTimeout`. Node keeps the list in C++
- * beside the parsers themselves; here it is a set of the same parsers, and
- * each answers from the timestamps llhttp's own callbacks set on it.
+ * The program's llhttp callbacks (engine.h `http_parser_*`), which `libnodeImports` answers, each inside the engine's
+ * own `execute` or `finish`: no scope closes after them.
  */
-export class ConnectionsList {
-  #parsers = new Set<HTTPParser>();
-
-  add(parser: HTTPParser): void { this.#parsers.add(parser); }
-  remove(parser: HTTPParser): void { this.#parsers.delete(parser); }
-
-  all(): HTTPParser[] { return [...this.#parsers]; }
-
-  /** A connection with no message in flight. */
-  idle(): HTTPParser[] { return [...this.#parsers].filter((parser) => !parser.active); }
-
-  /** A connection with one. */
-  active(): HTTPParser[] { return [...this.#parsers].filter((parser) => parser.active); }
-
-  /**
-   * The connections that have taken too long: one whose head is still
-   * arriving after `headersTimeout`, or whose message has been in flight past
-   * `requestTimeout`. A timeout of 0 is off, as it is in Node.
-   */
-  expired(headersTimeout: number, requestTimeout: number): HTTPParser[] {
-    const now = Date.now();
-    return [...this.#parsers].filter((parser) => {
-      if (headersTimeout > 0 && parser.headersStart > 0 && now - parser.headersStart > headersTimeout) return true;
-      if (requestTimeout > 0 && parser.messageStart > 0 && now - parser.messageStart > requestTimeout) return true;
-      return false;
-    });
-  }
-}
-
-/** The binding object, built on the first ask. */
-export const httpParserBinding = {
-  HTTPParser,
-  ConnectionsList,
-  /**
-   * `http.METHODS`: the HTTP methods, which are the ones llhttp lists before
-   * `PRI` -- that is where its RTSP block begins, and RTSP's verbs are not
-   * HTTP's. Read off the same table as `allMethods`, so the two cannot drift.
-   */
-  get methods(): string[] {
-    const all = allMethodsOf();
-    const rtsp = all.indexOf('PRI');
-    return [...new Set(rtsp === -1 ? all : all.slice(0, rtsp))].sort();
+setHttpParserCallbacks({
+  http_parser_has_callback: (parser: number, index: number): number =>
+    (typeof parserAt(parser)[index] === 'function' ? 1 : 0),
+  /** on_message_begin's and on_message_complete's call. */
+  http_parser_call: (parser: number, index: number): number => (parserAt(parser).invoke(index, []).ok ? 0 : 1),
+  /** Flush: kOnHeaders(CreateHeaders(), url). */
+  http_parser_flush: (parser: number): number => {
+    const target = parserAt(parser);
+    const { headers, url } = target.table();
+    return target.invoke(parserTables().constants.get('kOnHeaders')!, [headers, url]).ok ? 0 : 1;
   },
-  get allMethods(): string[] { return allMethodsOf(); },
-};
+  /**
+   * on_headers_complete: kOnHeadersComplete(versionMajor, versionMinor, headers, method, url, statusCode,
+   * statusMessage, upgrade, shouldKeepAlive), each argument as node_http_parser.cc:443-493 sets it; the answer's
+   * IntegerValue, NaN where it threw.
+   */
+  http_parser_headers_complete: (parser: number, flushed: number, type: number, major: number, minor: number,
+    method: number, statusCode: number, upgrade: number, shouldKeepAlive: number): number => {
+    const target = parserAt(parser);
+    const { constants } = parserTables();
+    const request = type === constants.get('REQUEST'), response = type === constants.get('RESPONSE');
+    const { headers, url, statusMessage } = target.table();
+    const argv: unknown[] = [major, minor, flushed ? undefined : headers, request ? method >>> 0 : undefined,
+      !flushed && request ? url : undefined, response ? statusCode : undefined, response ? statusMessage : undefined,
+      upgrade !== 0, shouldKeepAlive !== 0];
+    const answer = target.invoke(constants.get('kOnHeadersComplete')!, argv);
+    return answer.ok ? target.integerValue(answer.value) : NaN;
+  },
+  /** on_body: kOnBody(Buffer::Copy(at, length)). */
+  http_parser_body: (parser: number, at: number, length: number): number => {
+    const chunk = Buffer.from(fromMemory(at, address(length)));
+    return parserAt(parser).invoke(parserTables().constants.get('kOnBody')!, [chunk]).ok ? 0 : 1;
+  },
+  /** TrackHeaderPair's `maxHeaderPairs`. */
+  http_parser_max_header_pairs: (parser: number): number => parserAt(parser).maxHeaderPairs(),
+});
 
-export default httpParserBinding;
+let binding: { HTTPParser: typeof HTTPParser; ConnectionsList: typeof ConnectionsList; methods: string[]; allMethods: string[] } | undefined;
+
+/**
+ * CreatePerIsolateProperties and CreatePerContextProperties (node_http_parser.cc:1337-1465): HTTPParser with its
+ * constants, ConnectionsList, and `methods` and `allMethods`, the program's, made on the first ask.
+ */
+export function httpParserBinding(): NonNullable<typeof binding> {
+  if (binding) return binding;
+  const { constants, methods, allMethods } = parserTables();
+  for (const [name, value] of constants) {
+    Object.defineProperty(HTTPParser, name, { value, enumerable: true, writable: true, configurable: true });
+  }
+  return binding = { HTTPParser, ConnectionsList, methods: [...methods], allMethods: [...allMethods] };
+}

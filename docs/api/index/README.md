@@ -139,7 +139,6 @@
 - [preparedModuleKey](functions/preparedModuleKey.md)
 - [preparedModuleKeyOf](functions/preparedModuleKeyOf.md)
 - [preparedModuleKind](functions/preparedModuleKind.md)
-- [prepareHttpParserModule](functions/prepareHttpParserModule.md)
 - [prepareModuleForImage](functions/prepareModuleForImage.md)
 - [processByPid](functions/processByPid.md)
 - [processCredentialsOf](functions/processCredentialsOf.md)

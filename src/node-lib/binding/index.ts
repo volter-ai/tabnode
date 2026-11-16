@@ -23,7 +23,7 @@ import spawnSyncBinding from './spawn_sync';
 import signalWrapBinding from './signal_wrap';
 import ttyWrapBinding from './tty_wrap';
 import udpWrapBinding from './udp_wrap';
-import httpParserBinding from './http_parser';
+import { httpParserBinding } from './http_parser';
 import bufferBinding from './buffer';
 import { constantsBinding, osBinding, configBinding, errorsBinding, credentialsBinding, encodingBinding, typesBinding, traceEventsBinding, messagingBinding, urlBinding, urlPatternBinding } from './misc';
 import utilBinding from './util';
@@ -63,7 +63,7 @@ export function nodeLibBinding(name: string): (() => unknown) | undefined {
   signal_wrap: () => signalWrapBinding,
   tty_wrap: () => ttyWrapBinding,
   udp_wrap: () => udpWrapBinding,
-  http_parser: () => httpParserBinding,
+  http_parser: () => httpParserBinding(),
   buffer: () => bufferBinding,
   config: () => configBinding,
   constants: () => constantsBinding,

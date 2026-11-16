@@ -1,13 +1,10 @@
 /**
  * `http` and `https`, as Node's own `http.js` on llhttp.
  *
- * What died: the engine's `http` was a hand-written parser and server, 1,374
- * lines. Node's own `test-http-*`: 28 of 377 passed.
- *
- * What this is: Node's `http.js`, `https.js` and the five `_http_*.js` files
- * v22.18.0, vendored unmodified, on `./binding/http_parser.ts` -- llhttp's own
- * WebAssembly build, which is the parser Node itself links. `Agent`,
- * `ClientRequest`, `IncomingMessage`, `OutgoingMessage`, `Server` and
+ * Node's `http.js`, `https.js` and the five `_http_*.js` files, vendored
+ * unmodified, on `./binding/http_parser.ts`: Node's own binding over llhttp,
+ * the parser Node links, in the process's libnode.so (ADR-0018 item 10).
+ * `Agent`, `ClientRequest`, `IncomingMessage`, `OutgoingMessage`, `Server` and
  * `ServerResponse` are Node's own code, over the engine's `net`.
  *
  * The rule for this file: it binds, it does not implement.

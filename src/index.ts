@@ -21,7 +21,6 @@ export { Runtime, execute, seedKeptResolutions, keptResolutions, prepareModuleFo
 export type { Module, RuntimeOptions, RequireFunction, ModuleEvaluationObserver, ModuleEvaluationEvidence } from './runtime';
 export { createRuntime, WorkerRuntime } from './create-runtime';
 export { precompileNodeLib } from './node-lib/load';
-export { prepareHttpParserModule } from './http-parser-module';
 export type { IRuntime, IExecuteResult, CreateRuntimeOptions, IRuntimeOptions, VFSSnapshot } from './runtime-interface';
 export { createFsShim } from './shims/fs';
 export type { FsShim } from './shims/fs';
