@@ -222,12 +222,31 @@ browser-substrate ADR-0236 step 5 records. `SYS_posix_spawn_v1` goes.
 ADR-0015 resolves every free name of a process's code on its global by rewriting each one onto
 `__substrateGuestScope`, a Proxy (`src/guest-scope.ts`), or by running the file under `with`, because the engine runs
 many processes in one realm. On the machine it does not: each Node process has a worker and a realm of its own, and
-`node` is its own WALI program (§2). So where the realm's process is `node`, the realm is that process's
-(`src/node-lib/realm.ts`, `src/node-program.ts`):
+`node` is its own WALI program (§2). The host names such a realm the program's when it makes the worker, before the
+engine loads (`globalThis[Symbol.for('tabnode.realm')] = 'node'`, `src/node-lib/load.ts` `isNodeProgramRealm`), and
+`attachLibnode` refuses a realm it did not name. So where the realm's process is `node`, the realm is that process's
+(`src/node-lib/realm.ts`, `src/node-program.ts`), and no guest scope over its `globalThis` is made:
 
+- **Its command line is Node's.** The program's `main` reads it as InitializeOncePerProcess does, before the engine
+  starts (`native/node/node_options.cc`): v24.21.0's `node_options.h`, `node_options-inl.h` and `node_options.cc`
+  compiled into the program by line range, split where V8 stands, as `node_constants.cc` is (§3). HandleEnvOptions,
+  NODE_OPTIONS through ParseNodeOptionsEnvVar (only what it allows), ProcessGlobalArgs over the command line, the
+  `--title` it sets, `--version` and `--completion-bash`; a bad option, a missing argument or an option NODE_OPTIONS
+  does not allow is Node's message on standard error and Node's exit code, and the engine never starts. The option
+  table is that of Node built for Linux with OpenSSL 3, SQLite and Amaro but with neither an inspector nor ICU, as the
+  realm's `config` says, and with OpenSSL's store the default root store (`NODE_OPENSSL_CERT_STORE`). The process's
+  `argv` and `execArgv` are what the parser left, and `internalBinding('options')`'s `getCLIOptionsValues`,
+  `getCLIOptionsInfo`, `getOptionsAsFlags`, `getEnvOptionsInputType` and `getNamespaceOptionsInputType` are the
+  program's answers, made into the objects and Maps Node makes (`src/node-lib/binding/options.ts`).
 - **Its process is Node's.** The process object is CreateProcessObject's (`src/node_process_object.cc`): an instance of
   a function named `process`, its exit info under `exit_info_private_symbol`, `version`, `versions`, `arch`,
-  `platform`, `release` and `_rawDebug`. Node's bootstrap makes the rest of it.
+  `platform`, `release` and `_rawDebug`; `title` is libuv's process title (uv_get_process_title and
+  uv_set_process_title over the vector `main` gives uv_setup_args). Node's bootstrap makes the rest of it.
+  `process.env` is the Environment's env proxy (`node_env_var.cc` EnvGetter, EnvSetter, EnvQuery, EnvDeleter,
+  EnvEnumerator, EnvDefiner) over RealEnvStore, the process's own environment through uv_os_getenv, uv_os_setenv,
+  uv_os_unsetenv and uv_os_environ (`native/node/node_env_var.c`, `src/node-lib/binding/env_var.ts`), so libuv,
+  OpenSSL, libc and the children Node's `child_process` spawns read what JavaScript sets; `credentials`' `safeGetenv`
+  and `getTempDir` read the same store under SafeGetenv's refusal.
 - **Node's bootstrap runs on the realm's `globalThis`, in Node's order** (`src/api/environment.cc`
   InitializePrimordials, `src/node_realm.cc` RunBootstrapping and BootstrapRealm): `internal/per_context/primordials`,
   `domexception` and `messageport`; `internal/bootstrap/realm`, whose `BuiltinModule` is the process's builtin loader
@@ -237,61 +256,75 @@ many processes in one realm. On the machine it does not: each Node process has a
   (`console`, `URL`, `AbortController`, `EventTarget`, `structuredClone`, `fetch`, `crypto` and the rest);
   `internal/bootstrap/switches/is_main_thread` (`process.stdout`, `process.stderr` and `process.stdin`, and signal
   listeners as `uv_signal_t`s, item 8) and `does_own_process_state` (`cwd`, `chdir`, `umask` and the credential
-  setters); then `process.env`, the Environment's env proxy over the run's environment. Every builtin is compiled as
-  BuiltinLoader compiles it: its own text the body of a function of its kind's parameters, at the realm's scope.
-- **The engine is Node's embedder.** As `node::StartExecution` does with an embedder's callback, the run's start runs
-  `internal/process/pre_execution`'s `prepareMainThreadExecution` with the module loaders left to the embedder
-  (`initializeModules` false), and `markBootstrapComplete`; the embedder's entry is the engine's loader
-  (`src/runtime.ts`), which runs the run's preloads and then its file or its `-e` source. A body compiles as a
-  CommonJS body in the engine's one-line wrapper, or as an ES module the engine lowers, with no free name rewritten,
-  no Proxy and no `with`; a body prepared for this realm is named by the `node-js` and `node-cjs` kinds
-  (`src/prepared-key.ts`, `prepareModuleForImage(…, 'node')`). `vm.runInThisContext`, `vm.compileFunction`, a function
-  a program makes and the REPL compile at the realm's scope.
+  setters); then `process.env`. Every builtin is compiled as BuiltinLoader compiles it, its own text the body of a
+  function of its kind's parameters at the realm's scope, and so is every file of the engine's own library graph and
+  every dependency the engine compiles in that realm (`load.ts` `realmCompiled`).
+- **Its main is Node's.** StartExecution's SelectLoadMode (`src/node.cc`) picks the main script, and it runs as Node
+  runs it: `internal/main/run_main_module`, `eval_string`, `eval_stdin`, `check_syntax`, `print_help` and the rest,
+  each calling `prepareMainThreadExecution` as Node's mains do. A CommonJS file is Node's
+  `internal/modules/cjs/loader`'s, compiled by `contextify`'s `compileFunctionForCJSLoader` (its retry as an ES module
+  ShouldRetryAsESM's); an ES module is Node's `internal/modules/esm`'s, a `module_wrap` ModuleWrap source text
+  module linked, instantiated and evaluated in V8's order (`src/node-lib/binding/module_wrap.ts`); `cjs_lexer`'s
+  `parse` is Node's merve (`deps/merve`, with V8's simdutf, in `libnode.so`; `native/node/node_cjs_lexer.c`); the
+  `modules` binding is `node_modules.cc`'s package.json reader; a `.node` file is `process.dlopen` (ADR-0011).
+  The engine's own loader, resolver and module stand-ins are not this realm's.
+- **The engine speaks for V8** (`src/node-lib/v8-host.ts`). A function, a script and a source text module compile
+  through the realm's own `eval`: a script's or a function's text with its `import()` made a call of V8's
+  HostImportModuleDynamically (the realm's callback with the referrer's host-defined option, the specifier, its
+  phase and its attributes) and its async functions hole 13's rewrite; a source text module the engine's ES lowering
+  of it, its `import.meta` HostInitializeImportMetaObject's. Each such body is prepared once a text, the `node-cjs`
+  (a CommonJS body) and `node-esm` (a module's lowering) kinds (`src/prepared-key.ts`,
+  `prepareModuleForImage(…, 'node')`), kept where the image keeps its prepared bodies.
 - **What follows is Node's.** `console` is Node's `internal/console/global` (`util.format` over `util.inspect`, written
   to `process.stdout` and `process.stderr`); the standard streams and signal listeners are `is_main_thread.js`'s;
   `process.exit`, `process.kill`, `process.nextTick`, `process.emitWarning`, `process.hrtime` and the rest are
   `internal/process/per_thread`'s, `task_queues`' and `warning`'s; an uncaught exception is
   `internalBinding('errors').triggerUncaughtException`, TriggerUncaughtException over Node's `process._fatalException`
   (`internal/process/execution`); a rejection is `internal/process/promises`'; a child's IPC channel is
-  `pre_execution`'s `setupChildProcessIpcChannel`. A builtin id whose file is not vendored is the engine's module of
-  that id: `vm`, `worker_threads`, `v8`, `perf_hooks`, `dns`, `async_hooks`, `cluster`, `inspector`, `http2`, the
-  hand-bound internals (`src/node-lib/internals`), and the realm's own web streams, `TextEncoder`, `TextDecoder`,
-  `Blob`, `File` and `URL` (`internal/url` over the realm's WHATWG parser, `installObjectURLMethods` putting Node's
-  `createObjectURL` and `revokeObjectURL` on it); `internal/timers`, `internal/async_context_frame` and
-  `internal/crypto/keys` are the realm's one Environment's (item 2, item 7).
-- **The bindings the bootstrap asks for are Node's C++, split where V8 stands.** `builtins` (`src/node_builtins.cc`),
-  `process_methods` (`node_process_methods.cc`: uv_hrtime, uv_cwd, uv_chdir, umask, uv_getrusage,
-  uv_resident_set_memory, uv_kill, uv_os_getpid and abort in `native/node/process_methods.c`), `credentials`
-  (`node_credentials.cc`: getuid and the rest, the setters by name or id, getgroups and initgroups in
-  `native/node/credentials.c`), `async_wrap` (`async_wrap.cc` and AsyncHooks' stack), `task_queue`
-  (`node_task_queue.cc`), `options` (`node_options.cc` over its option table, `src/node-lib/binding/options-table.ts`,
-  and the run's NODE_OPTIONS and command line), `errors` (`node_errors.cc`), `config` (`node_config.cc`), `symbols`
-  and `util`'s private symbols (`env_properties.h`), `trace_events`, `performance`, `permission`, `mksnapshot`,
-  `worker`, `module_wrap`'s synthetic module and `contextify` in the realm's one context. V8's stack hook is Node's
-  PrepareStackTraceCallback: `Error.prepareStackTrace` is an accessor whose function V8 calls hands the call sites,
-  each naming its file, to Node's `prepareStackTraceCallback`, while the property reads back what a program or Node
-  set (`src/runtime.ts` `routeErrorStacks`).
+  `pre_execution`'s `setupChildProcessIpcChannel`; `module`, `vm` and `console` are Node's files. A builtin id whose
+  file is not vendored is the engine's module of that id (`BUILTINS.md`), and the realm's own web streams,
+  `TextEncoder`, `TextDecoder`, `Blob`, `File` and `URL` (`internal/url` over the realm's WHATWG parser);
+  `internal/timers`, `internal/async_context_frame` and `internal/crypto/keys` are the realm's one Environment's
+  (item 2, item 7).
+- **The bindings are Node's C++, split where V8 stands.** `builtins` (`src/node_builtins.cc`), `process_methods`
+  (`node_process_methods.cc`: uv_hrtime, uv_cwd, uv_chdir, umask, uv_getrusage, uv_resident_set_memory, uv_kill,
+  uv_os_getpid, the process title and abort in `native/node/process_methods.c`), `credentials` (`node_credentials.cc`:
+  getuid and the rest, the setters by name or id, getgroups, initgroups and SafeGetenv's refusal in
+  `native/node/credentials.c`), `options` (`node_options.cc` in the program), `module_wrap` (`module_wrap.cc`),
+  `contextify` (`node_contextify.cc`), `modules` (`node_modules.cc`), `cjs_lexer` (`node_cjs_lexer.cc`), `async_wrap`
+  (`async_wrap.cc` and AsyncHooks' stack), `task_queue` (`node_task_queue.cc`), `errors` (`node_errors.cc`), `config`
+  (`node_config.cc`), `symbols` and `util`'s private symbols (`env_properties.h`), `trace_events`, `performance`,
+  `permission`, `mksnapshot`, `worker` and `report`. V8's stack hook is Node's PrepareStackTraceCallback:
+  `Error.prepareStackTrace` is an accessor whose function V8 calls hands the call sites, each naming its file, to
+  Node's `prepareStackTraceCallback`, while the property reads back what a program or Node set (`src/runtime.ts`
+  `routeErrorStacks`).
 - **What stays** is browser-substrate ADR-0236's hole 13: a page's engine carries no context across `await`, so
   `AsyncLocalStorage`'s rewrite of async functions remains, made once per file when the image is built.
 
 A realm with no `node` program keeps ADR-0015's scope as it is, and its graphs keep the engine's hand-bound answers for
 the names the bootstrap's realm takes from Node's files (`src/node-lib/load.ts` BOOTSTRAP_FILES). Where the realm whose
-process is `node` differs from Node:
-- The module loaders are the engine's, not `internal/modules/cjs/loader` and `internal/modules/esm` (which load, as
-  `is_main_thread.js` loads them, and run nothing): `module_wrap` compiles no source text module and binds no
-  `createRequiredModuleFacade` or `throwIfPromiseRejected`, and `cjs_lexer` no `parse`.
-- V8's private symbols are symbols, which reflection on an object that carries one can see.
+process is `node` differs from Node, the browser or the page's engine decides:
 - `runMicrotasks` cannot run the realm's microtask queue from inside a call: the microtasks ticks queue run when the call
   that runs them returns. Code that runs in no callback scope (a continuation the browser settled) has its ticks run
   from a microtask, as `tickInfo`'s fields turn on.
 - A rejection with no handler is the realm's `unhandledrejection` (a Node host's `unhandledRejection`), raised after the
   checkpoint that left it unhandled; a handler added later is `rejectionhandled`.
 - No V8 PromiseHook reaches `async_hooks`; a destroy hook runs from an unreferenced immediate.
-- `process.env`'s store is the run's environment, which its children are spawned with, not libc's environ.
+- V8's private symbols are symbols, which reflection on an object that carries one can see.
+- A page's engine makes no second context to compile in: a `vm` context is the engine's sandbox over its object
+  (`contextify`'s `makeContext`, a script run in it through `with`), a source text module of one is refused, and a
+  script's `timeout` and `breakOnSigint` are not kept, nothing being able to stop a running script.
+- A page's engine takes no flags: of what Node hands V8, a flag Node's table names is taken and has no effect, and any
+  other is Node's `bad option`; `--v8-options` lists none. It makes no code cache: `cachedData` is rejected,
+  `createCachedData` is empty and the compile cache answers DISABLED.
+- A promise's state is not a page's to read: `throwIfPromiseRejected` knows the promises `module_wrap` made, and an
+  unsettled top-level await (exit code 13) is the entry's promise, tracked where `run_main` sets it, its warning naming
+  the module and not the line. Whether a CommonJS file's failure is ES syntax (ShouldRetryAsESM) is read off the
+  page's engine's SyntaxError message.
 - MemoryUsage's heap fields are the realm's `performance.memory` where it reports one, else the resident size.
-- The engine has no inspector, ICU, tracing agent or snapshot builder, and no permission model: `config` says so as a
-  Node built without them does.
-- The CA store is the image's bundle as `--use-openssl-ca` makes it (ADR-0016 §4).
+- There is no inspector, ICU, tracing agent or snapshot builder, and no permission model: `config` and the option
+  table say so as a Node built without them does, and SelectLoadMode's `inspect` has no main.
+- The root store is the image's bundle, OpenSSL's default store (ADR-0016 §4).
 - The realm's structured clone carries no host object of Node's JavaScript (a `JSTransferable`'s clone or transfer).
 - The arrow of a fatal exception's source line is not printed: V8's message for it is not a page's to read.
 
@@ -659,7 +692,13 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
 - *The one hookup.* In its `bootstrap` import, before Node's library runs, the host calls Tabnode's
   `attachLibnode({ exports, read, write })` once: the program's exports, `read(at, length)`, a copy of the process's
   memory, and `write(at, bytes)`, bytes into it (a browser's APIs refuse a view of shared memory). A second call with
-  another program throws.
+  another program throws, and so does a call in a realm the host did not name.
+- *The realm's name* (§7). When it makes a `node` program's worker, before it imports the engine, the host sets
+  `globalThis[Symbol.for('tabnode.realm')] = 'node'`, so the engine's library graph compiles at the realm's scope
+  from its first file.
+- *The prepared bodies* (§7). The image's build prepares a file a `node` program runs as the realm compiles it,
+  `prepareModuleForImage(source, path, 'node')`, kept under `preparedModuleKeyOf(preparedModuleKind(path, 'node'),
+  sha256)`: the `node-esm` kind for an `.mjs`, `node-cjs` for the rest.
 - *The engine's imports* (`host:tabnode`, native/node `engine.h`). The host answers its own: `bootstrap(argc, argv)`
   (starts the run; 0 or a status to exit with), `drain()` (a `Suspending` import: the worker runs its microtasks and
   its other work and the stack resumes from its next task), `process_timers(now)` (`processTimers(now)`: the next
@@ -712,8 +751,8 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
   its pipe is full. `process_wrap` and `spawn_sync` ask no door of the host for a child. The process's tree stops
   serving `fs`: its `watch` (`linux-file-watches.ts`), `holdsLinks`, and of `TREE_DESCRIPTORS` `write`, `fstat`,
   `ftruncate`, `fsync`, `fchmod`, `chown`, `fchown`, `futimes`, `dup`, `advisoryLocks` and `absent` go. It keeps
-  what the engine's loader and the bindings not over libuv read: its path calls (`readFileSync`, `statSync` and the
-  rest the module loader and `process` use), `chdir` and the cwd, `TREE_SOCKETS` (a listener's port, for the
+  what the engine and the bindings not over libuv read: its path calls (`readFileSync`, `writeFileSync` and the rest
+  the prepared bodies and `process.dlopen` use), `chdir` and the cwd, `TREE_SOCKETS` (a listener's port, for the
   machine's forwarding), `TREE_NATIVE`, `TREE_SYSTEM`, and of `TREE_DESCRIPTORS` `open`, `read`, `close`, `reserve`
   and `release` (an executable's header, the engine's descriptor numbers), until item 7.
 - *What the substrate stops serving* (item 8). A run's signal listeners: the registry is told none (it has no
@@ -748,9 +787,10 @@ tree, `linux-virtual-filesystem.ts`, its signals and process table, `linux-proce
 - *The build* (`scripts/build-libnode.sh`): `<native SDK> <side-module toolchain> <libuv a267f5688b archive>
   <node-v24.21.0.tar.gz> <out>`. The side-module toolchain is browser-substrate's (its ADR-0231: `include/c++/v1`,
   `lib/libc++.a`, `lib/libc++abi.a`), so the recipe depends on it beside the native SDK, and Node's release archive
-  is an input (OpenSSL, ncrypto, zlib, brotli, zstd and llhttp, `node_root_certs.h`, `node_constants.cc` and `.h`,
-  `node_zlib.cc`'s constants, `tracing/trace_event_common.h`). `libnode.so` exports the whole of libuv, OpenSSL,
-  ncrypto, zlib, brotli, zstd and llhttp.
+  is an input (OpenSSL, ncrypto, zlib, brotli, zstd, llhttp, merve and V8's simdutf, `node_root_certs.h`,
+  `node_constants.cc` and `.h`, `node_zlib.cc`'s constants, `tracing/trace_event_common.h`, `node_options.cc`, `.h`
+  and `-inl.h`, `node.h`, `node_revert.h`, `node_version.h`, `quic/guard.h` and `large_pages/node_large_page.cc`).
+  `libnode.so` exports the whole of libuv, OpenSSL, ncrypto, zlib, brotli, zstd, llhttp and merve.
 - *Addons through `dlopen`* (item 7): the program's `dlopen` of a `.node` reaches the loader, which refuses a
   library's import outside `env`, `GOT` and `wali` and binds `env` by name in the program and the libraries. An addon
   the side-module toolchain builds imports emnapi's `napi` and `emnapi` modules and Node-API's `env` functions, which

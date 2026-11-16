@@ -11,6 +11,8 @@ third-party bodies also retain their notices here.
 | Ada's `ada::idna`, compiled to WebAssembly by `scripts/build-ada-idna-wasm.sh` | `src/node-lib/binding/ada-idna-wasm.ts` | Node.js v24.21.0, `deps/ada` (Ada 4.0.0; `ada.h` 32-240, `ada.cpp` 140-6720) | MIT, Ada's notice below |
 | The Ada module's runtime, as `scripts/build-ada-idna-wasm.sh` links it: wasi-libc (`libc.a`, `crt1-reactor.o`), libc++ and libc++abi (the `noeh` builds), and compiler-rt's builtins | `src/node-lib/binding/ada-idna-wasm.ts` | wasi-sdk 34.0: wasi-libc at `2e6fb9d8ee0cdf9e431fbcabe8af3115de000a13`, llvm-project at `895aa2c896ada719451be2e3673c83da8ddf1141` | wasi-libc MIT, with its musl, cloudlibc and dlmalloc notices; libc++, libc++abi and compiler-rt Apache-2.0 WITH LLVM-exception; notices below |
 | OpenSSL 3.5.8 and ncrypto, built into `libnode.so` by `scripts/build-libnode.sh`, and the crypto bindings' glue over them | `native/node/crypto_*.cc`, `native/node/node_constants.cc` (the build's output is not carried here) | Node.js v24.21.0, `deps/openssl/openssl` (OpenSSL 3.5.8), `deps/ncrypto`, `src/node_root_certs.h` and `src/node_constants.cc`; the glue carries `src/crypto/crypto_*.cc`'s OpenSSL half | OpenSSL Apache-2.0, its notice below; ncrypto, Node's root list and constants MIT, `src/node-lib/LICENSE` |
+| merve and simdutf, built into `libnode.so` by `scripts/build-libnode.sh`, and the cjs_lexer binding's glue over merve | `native/node/node_cjs_lexer.c` (the build's output is not carried here) | Node.js v24.21.0, `deps/merve` and `deps/v8/third_party/simdutf`; the glue carries `src/node_cjs_lexer.cc`'s C half | merve MIT, simdutf MIT, notices below; the glue MIT, `src/node-lib/LICENSE` |
+| Node's command-line options, compiled into the `node` program from Node's own source by `scripts/build-libnode.sh`, and their glue | `native/node/node_options.cc` (the build's output is not carried here) | Node.js v24.21.0, `src/node_options.cc`, `node_options.h`, `node_options-inl.h`, `node.h`, `node_revert.h`, `node_version.h`, `quic/guard.h` and `large_pages/node_large_page.cc` | MIT, `src/node-lib/LICENSE` |
 | The engine this repository is a fork of | the tree | `macaly/almostnode` 0.2.14 | MIT, `LICENSE` |
 | SQLite 3.53.4 WebAssembly, embedded unchanged by `src/node-lib/sqlite-wasm.ts` | worker build | `@sqlite.org/sqlite-wasm` 3.53.4-build2, source `sqlite/sqlite-wasm` at `b30a8a19cab9a7928ac6b44bbc91f0b65e56324d` | SQLite public-domain dedication; Emscripten runtime notices below |
 | just-bash browser entry and its JavaScript dependency bodies | runtime-worker build from `src/worker/runtime-worker.ts` | `just-bash` 2.14.5, source `vercel-labs/just-bash` at `2bbbfaf8cc769109361ba29b55f5647a43988b14` | Apache-2.0 and the dependency licences below |
@@ -3251,6 +3253,58 @@ NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
 DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+## merve and simdutf notices
+
+The licences of the CommonJS lexer and the UTF library `scripts/build-libnode.sh` compiles into `libnode.so` from
+Node.js v24.21.0's release archive (SHA-256 `622424efb5dc0c26c93fbb619ff10737ee289c605b837c88778e186925d82777`), as
+Node carries them, unchanged.
+
+`deps/merve/LICENSE-MIT`:
+
+```text
+Copyright 2026 Yagiz Nizipli
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+`deps/v8/third_party/simdutf/LICENSE`:
+
+```text
+Copyright 2021 The simdutf authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ## OpenSSL notice

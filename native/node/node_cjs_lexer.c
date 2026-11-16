@@ -26,3 +26,6 @@ TABNODE_EXPORT(tabnode_cjs_name) void tabnode_cjs_name(merve_analysis analysis, 
   out[0] = (uint32_t)(uintptr_t)name.data;
   out[1] = (uint32_t)name.length;
 }
+
+// Metadata::Versions' `merve` (node_metadata.cc:131), MERVE_VERSION, as merve's C interface answers it.
+TABNODE_EXPORT(tabnode_merve_version) const char *tabnode_merve_version(void) { return merve_get_version(); }
