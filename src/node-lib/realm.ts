@@ -168,6 +168,10 @@ export function bootstrapNodeRealm(process: Record<string, unknown>, run: NodeRe
   if (intl !== null && typeof intl === 'object') delete (intl as Record<string, unknown>).v8BreakIterator;
   const primordials = primordialsOf();
   initializeContextRuntime();
+  // SetIsolateMiscHandlers' SetWasmStreamingCallback (src/api/environment.cc): WebAssembly.compileStreaming and
+  // instantiateStreaming hand the source to the process's wasm_web_api implementation (StartStreamingCompilation),
+  // whose bytes the realm's compiler takes as they arrive.
+  installWasmStreaming(() => internalBinding('wasm_web_api') as { compileStreaming(source: unknown): Promise<WebAssembly.Module> });
   const privateSymbols = utilBinding.privateSymbols;
   const symbols = perIsolateSymbols();
   let internalBindingLoader: ((name: string) => unknown) | undefined;
@@ -377,6 +381,22 @@ export function runNodeMain(realm: NodeRealm, argv: readonly string[]): void {
                   : getOptionValue('--interactive') || stdinIsTTY() ? 'internal/main/repl'
                     : 'internal/main/eval_stdin';
   compiledBuiltin(main)(realm.process, realm.require, realm.internalBinding, primordialsOf());
+}
+
+/** V8's WebAssembly.compileStreaming and instantiateStreaming with an embedder's streaming callback set. */
+function installWasmStreaming(binding: () => { compileStreaming(source: unknown): Promise<WebAssembly.Module> }): void {
+  const wasm = (globalThis as { WebAssembly?: typeof WebAssembly }).WebAssembly;
+  if (wasm === undefined) return;
+  const instantiate = wasm.instantiate.bind(wasm);
+  const methods = {
+    compileStreaming(source: unknown): Promise<WebAssembly.Module> { return binding().compileStreaming(source); },
+    instantiateStreaming(source: unknown, imports?: WebAssembly.Imports): Promise<WebAssembly.WebAssemblyInstantiatedSource> {
+      return binding().compileStreaming(source).then((module) => instantiate(module, imports).then((instance) => ({ module, instance })));
+    },
+  };
+  for (const name of ['compileStreaming', 'instantiateStreaming'] as const) {
+    Object.defineProperty(wasm, name, { value: methods[name], writable: true, enumerable: false, configurable: true });
+  }
 }
 
 /**
