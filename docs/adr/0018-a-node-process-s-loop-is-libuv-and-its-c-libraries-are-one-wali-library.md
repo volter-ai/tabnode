@@ -322,23 +322,36 @@ builtin tables load Node's files on first use. So where the realm's process is `
   (`node_config.cc`), `symbols` and `util`'s private symbols (`env_properties.h`), `trace_events`, `performance`,
   `permission`, `mksnapshot`, `worker` and `report`. V8's stack hook is Node's PrepareStackTraceCallback:
   `Error.prepareStackTrace` is an accessor whose function V8 calls hands the call sites, each naming its file, to
-  Node's `prepareStackTraceCallback`, while the property reads back what a program or Node set (`src/runtime.ts`
-  `routeErrorStacks`). *Amended 2026-11-18:* a function the property reads back, called, is the function it stands
-  for. In Node the property is a data property, so a program that saved it before setting its own (Babel's stack
-  rewriter, `@babel/core` `lib/errors/rewrite-stack-trace.js` `setupPrepareStackTrace`, which jiti runs for every
-  TypeScript file it transforms, and so c12 for Prisma's `prisma.config.ts`) and calls the saved one from its own
-  calls Node's `ErrorPrepareStackTrace`, which formats (`lib/internal/errors.js` `prepareStackTraceCallback`,
-  `ErrorPrepareStackTrace`). Here what the program saved was the router for Node's function, and the router went back
-  through Node's callback, which reads the property, which held the program's function again: the two called each
-  other until the stack ran out, and each turn wrapped every call site in one more proxy, which every read then walks
-  (V8's `CheckGetSetTrapResult` reads the target's own descriptor down the whole chain), so a formation's cost grew
-  with the cube of its depth. Read 2026-11-18 with this engine's own `routeErrorStacks` text and Node's callback in a
-  Node worker after a jiti transform: one `new Error().stack` was still running after 9 s at 401 nested turns, the
-  shape of the proxy chain browser-substrate's Rallly boot spun in (`prisma migrate deploy`, 100% CPU for 15
-  minutes). So a router called while a formation runs, which only a program does, answers as its function does: it
-  calls that function with the call sites it is given, and a router of no function formats as Node's callback does
-  where the property holds none. Node's callback is entered through a router only where V8 or the host's own callback
-  enters it, outside any formation. A throw from `process._fatalException` is reported and exits with
+  Node's `prepareStackTraceCallback` (`src/runtime.ts` `routeErrorStacks`). While that callback runs, the property
+  reads back what a program or Node set, so the callback finds the program's own function or Node's, as in Node.
+  Outside it, a program reads back a function that stands for what was set: set back, it restores that value. *Amended
+  2026-11-18:* called, it is the function it stands for. In Node the property is a data property, so a program that
+  saved it before setting its own and calls the saved one calls that function, Node's `ErrorPrepareStackTrace` (which
+  formats, `lib/internal/errors.js`) or a program's. Here the router went back through Node's callback, which reads
+  the property's current function: called from inside a formation by the function the program set (Babel's stack
+  rewriter, `@babel/core` `lib/errors/rewrite-stack-trace.js` `setupPrepareStackTrace`, which saves what it reads and
+  ends in calling it, and which jiti runs at its first uncached TypeScript transform), the two called each other until
+  the stack ran out, each turn wrapping every call site in one more proxy, which every read then walks (V8's
+  `CheckGetSetTrapResult` reads the target's own descriptor down the whole chain), so a formation's cost grew with the
+  cube of its depth; called outside one, after the program had set another, it answered as the other. Read 2026-11-18
+  in a Node worker with this engine's own `routeErrorStacks` text and Node's callback (browser-substrate
+  `packages/wali/linux/probes/realm-stacks/stack-route.mjs`): after a jiti 2.6.1 transform, one `new Error().stack`
+  was still forming after 9 s at 401 nested turns. So V8, or the host's own callback, which reads the property outside
+  any formation and calls what it read at once, is the one caller of the router of the property's current value
+  through Node's callback. Any other call of a router is a program's, of the function it read back: inside a
+  formation, or after the property came to hold another value. It calls that function with the call sites it is given,
+  and a router of no function formats as Node's callback does where the property holds none. The engine's own such
+  caller is `src/error-source.ts:16-25` `errorSourcePositions` (reached as the errors binding's
+  `getErrorSourcePositions`, `src/node-lib/binding/realm-bindings.ts:98` and `src/node-lib/load.ts:487`), which calls
+  the function it saved from inside one of Node's overrides; at `5e00410` that call went through Node's callback too.
+  *Where the evidence stops:* that browser-substrate's Rallly boot spun here (`prisma migrate deploy`, a host thread
+  at 100% CPU 15 minutes on, recursing through a chain of get-only proxies) is inferred from the sample's shape, which
+  no frame names, and from the packages (Prisma 7.8.0, `@prisma/config` 7.8.0, c12 3.3.4, jiti ^2.6.1), not traced in
+  that boot. *What still departs from Node:* the property can hold only what V8 calls, and V8's call must reach Node's
+  callback, so outside a formation a program reads back a function where it set none (`typeof` is `'function'` after
+  `Error.prepareStackTrace = undefined`, so a program that calls the saved value only if it is a function calls it,
+  and is answered with Node's default text), and reads back not the function it set but the one standing for it
+  (`Error.prepareStackTrace === F` is false after setting `F`). A throw from `process._fatalException` is reported and exits with
   kExceptionInFatalExceptionHandler, as TryCatchScope's kFatal mode does.
 - **What stays** is browser-substrate ADR-0236's hole 13: a page's engine carries no context across `await`, so
   `AsyncLocalStorage`'s rewrite of async functions remains, made once per file when the image is built.
