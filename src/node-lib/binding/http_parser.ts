@@ -101,6 +101,14 @@ function parserTables(): ParserTables {
 /** The engine's caller of a parser's callback: in its owner's run and its async context; a throw is kept. */
 type Callback = (...args: unknown[]) => unknown;
 
+/** The engine's side of a parser (HTTPParser's static block): its private members, for llhttp's callbacks. */
+let engineSide: {
+  invoke(parser: HTTPParser, index: number, args: unknown[]): { ok: true; value: unknown } | { ok: false };
+  integerValue(parser: HTTPParser, value: unknown): number;
+  maxHeaderPairs(parser: HTTPParser): number;
+  table(parser: HTTPParser): { headers: string[]; url: string; statusMessage: string };
+};
+
 /** Parser (node_http_parser.cc:295-1147): an AsyncWrap over its C parser. */
 export class HTTPParser {
   #parser: number;
@@ -118,6 +126,21 @@ export class HTTPParser {
   declare static kOnMessageComplete: number;
   declare static kOnExecute: number;
   declare static kOnTimeout: number;
+
+  /**
+   * The engine's side of a parser, which llhttp's callbacks reach (below) and Node's own library never sees: Node's
+   * Parser has no members but its prototype's methods (node_http_parser.cc:1337-1465), and its library keeps its own
+   * properties on the object (`_http_common.js` sets `maxHeaderPairs` on every parser it allocates), so a member of the
+   * engine's under one of those names is shadowed by the library's value. They are this class's private members.
+   */
+  static {
+    engineSide = {
+      invoke: (parser, index, args) => parser.#invoke(index, args),
+      integerValue: (parser, value) => parser.#integerValue(value),
+      maxHeaderPairs: (parser) => parser.#maxHeaderPairs(),
+      table: (parser) => parser.#table(),
+    };
+  }
 
   /** Parser::New (node_http_parser.cc:613-616). */
   constructor() {
@@ -245,7 +268,7 @@ export class HTTPParser {
   }
 
   /** The callback at `index`, called as V8 calls it with no exception pending; a throw is kept, and none follows it. */
-  invoke(index: number, args: unknown[]): { ok: true; value: unknown } | { ok: false } {
+  #invoke(index: number, args: unknown[]): { ok: true; value: unknown } | { ok: false } {
     if (this.#thrown) return { ok: false };
     const callback = this[index];
     if (typeof callback !== 'function') return { ok: true, value: undefined };
@@ -265,7 +288,7 @@ export class HTTPParser {
    * V8's IntegerValue of a callback's answer: ToNumber (whose throw is kept as the call's exception, NaN), then the
    * integer toward zero, NaN as 0, within int64's range.
    */
-  integerValue(value: unknown): number {
+  #integerValue(value: unknown): number {
     try {
       const number = +(value as number);
       if (Number.isNaN(number)) return 0;
@@ -277,7 +300,7 @@ export class HTTPParser {
   }
 
   /** `object()->Get("maxHeaderPairs")`, kept as an exception where the get throws. */
-  maxHeaderPairs(): number {
+  #maxHeaderPairs(): number {
     if (this.#thrown) return NaN;
     try {
       const value = (this as unknown as { maxHeaderPairs?: unknown }).maxHeaderPairs;
@@ -289,7 +312,7 @@ export class HTTPParser {
   }
 
   /** The strings of the callback being made (node_http_parser.c `table`). */
-  table(): { headers: string[]; url: string; statusMessage: string } {
+  #table(): { headers: string[]; url: string; statusMessage: string } {
     const view = readRecord(program().tabnode_http_parser_table(this.#parser), TABLE_BYTES);
     const slice = (offset: number): string => oneByteAt(view.getUint32(offset, true), view.getUint32(offset + 4, true));
     const count = view.getUint32(0, true);
@@ -348,12 +371,12 @@ setHttpParserCallbacks({
   http_parser_has_callback: (parser: number, index: number): number =>
     (typeof parserAt(parser)[index] === 'function' ? 1 : 0),
   /** on_message_begin's and on_message_complete's call. */
-  http_parser_call: (parser: number, index: number): number => (parserAt(parser).invoke(index, []).ok ? 0 : 1),
+  http_parser_call: (parser: number, index: number): number => (engineSide.invoke(parserAt(parser), index, []).ok ? 0 : 1),
   /** Flush: kOnHeaders(CreateHeaders(), url). */
   http_parser_flush: (parser: number): number => {
     const target = parserAt(parser);
-    const { headers, url } = target.table();
-    return target.invoke(parserTables().constants.get('kOnHeaders')!, [headers, url]).ok ? 0 : 1;
+    const { headers, url } = engineSide.table(target);
+    return engineSide.invoke(target, parserTables().constants.get('kOnHeaders')!, [headers, url]).ok ? 0 : 1;
   },
   /**
    * on_headers_complete: kOnHeadersComplete(versionMajor, versionMinor, headers, method, url, statusCode,
@@ -365,20 +388,20 @@ setHttpParserCallbacks({
     const target = parserAt(parser);
     const { constants } = parserTables();
     const request = type === constants.get('REQUEST'), response = type === constants.get('RESPONSE');
-    const { headers, url, statusMessage } = target.table();
+    const { headers, url, statusMessage } = engineSide.table(target);
     const argv: unknown[] = [major, minor, flushed ? undefined : headers, request ? method >>> 0 : undefined,
       !flushed && request ? url : undefined, response ? statusCode : undefined, response ? statusMessage : undefined,
       upgrade !== 0, shouldKeepAlive !== 0];
-    const answer = target.invoke(constants.get('kOnHeadersComplete')!, argv);
-    return answer.ok ? target.integerValue(answer.value) : NaN;
+    const answer = engineSide.invoke(target, constants.get('kOnHeadersComplete')!, argv);
+    return answer.ok ? engineSide.integerValue(target, answer.value) : NaN;
   },
   /** on_body: kOnBody(Buffer::Copy(at, length)). */
   http_parser_body: (parser: number, at: number, length: number): number => {
     const chunk = Buffer.from(fromMemory(at, address(length)));
-    return parserAt(parser).invoke(parserTables().constants.get('kOnBody')!, [chunk]).ok ? 0 : 1;
+    return engineSide.invoke(parserAt(parser), parserTables().constants.get('kOnBody')!, [chunk]).ok ? 0 : 1;
   },
   /** TrackHeaderPair's `maxHeaderPairs`. */
-  http_parser_max_header_pairs: (parser: number): number => parserAt(parser).maxHeaderPairs(),
+  http_parser_max_header_pairs: (parser: number): number => engineSide.maxHeaderPairs(parserAt(parser)),
 });
 
 let binding: { HTTPParser: typeof HTTPParser; ConnectionsList: typeof ConnectionsList; methods: string[]; allMethods: string[] } | undefined;

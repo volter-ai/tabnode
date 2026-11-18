@@ -90,6 +90,12 @@ const collected = new FinalizationRegistry<number>((at) => {
 /** A write's buffers, from its call to its end: the JavaScript output, its offset and length, and the room. */
 interface PendingWrite { out: Uint8Array; outOff: number; outLen: number; inLen: number; room: number }
 
+/** The engine's side of a stream (CompressionStream's static block): its private members, for zlib's callbacks. */
+let zlibEngineSide: {
+  emitError(stream: CompressionStream, message: string, errno: number, code: string): void;
+  writeDone(stream: CompressionStream, written: boolean): void;
+};
+
 /**
  * CompressionStream (node_zlib.cc:442-734): an AsyncWrap over its C stream, whose write result and write callback
  * (kWriteJSCallback) are V8's and so kept here.
@@ -101,6 +107,18 @@ class CompressionStream {
   #pending: PendingWrite | null = null;
   /** `zlib.js` sets it; EmitError's MakeCallback calls it. */
   declare onerror: ((message: string, errno: number, code: string) => void) | undefined;
+
+  /**
+   * The engine's side of a stream, which the program's zlib callbacks reach (setZlibCallbacks, below) and Node's own
+   * library never sees: Node's handle has no members but write, writeSync, close, init, params and reset
+   * (node_zlib.cc:1892-1908), and zlib.js keeps its own properties on it, so these are this class's private members.
+   */
+  static {
+    zlibEngineSide = {
+      emitError: (stream, message, errno, code) => stream.#emitError(message, errno, code),
+      writeDone: (stream, written) => stream.#writeDone(written),
+    };
+  }
 
   constructor(kind: number, mode: number) {
     this.#stream = address(program().tabnode_zlib_new(kind, mode));
@@ -188,12 +206,12 @@ class CompressionStream {
   }
 
   /** EmitError's MakeCallback (node_zlib.cc:634-651): `onerror(message, errno, code)`. */
-  emitError(message: string, errno: number, code: string): void {
+  #emitError(message: string, errno: number, code: string): void {
     invokeOwned(this, 'onerror', message, errno, code);
   }
 
   /** AfterThreadPoolWork's V8 part (node_zlib.cc:601-631): the output, then UpdateWriteResult and the write callback. */
-  writeDone(written: boolean): void {
+  #writeDone(written: boolean): void {
     writing.delete(this.#stream);
     const pending = this.#pending;
     this.#pending = null;
@@ -381,9 +399,9 @@ function crc32(data: unknown, value: unknown): number {
  */
 setZlibCallbacks({
   zlib_error: (stream, message, code, err) => {
-    streamAt(stream).emitError(nodeProgram().cString(message) ?? '', err, nodeProgram().cString(code) ?? '');
+    zlibEngineSide.emitError(streamAt(stream), nodeProgram().cString(message) ?? '', err, nodeProgram().cString(code) ?? '');
   },
-  zlib_done: (stream, written) => { streamAt(stream).writeDone(written !== 0); },
+  zlib_done: (stream, written) => { zlibEngineSide.writeDone(streamAt(stream), written !== 0); },
 });
 
 /** Initialize (node_zlib.cc:1892-1908): the five classes, `crc32` and ZLIB_VERSION, the program's. */

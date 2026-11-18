@@ -44,6 +44,15 @@ type StreamHandle = LibuvStreamWrap & Record<string, any>;
 /** The realm's TLSWraps by their `TnSsl*`, for OpenSSL's callbacks. */
 const wraps = new Map<number, TLSWrap>();
 
+/** The engine's side of a wrap (TLSWrap's static block): its private members, for OpenSSL's callbacks. */
+let tlsEngineSide: {
+  handshake(wrap: TLSWrap, done: boolean): void;
+  keylog(wrap: TLSWrap, line: Uint8Array): void;
+  newSession(wrap: TLSWrap, id: Uint8Array, der: Uint8Array): void;
+  cert(wrap: TLSWrap, servername: string, ocsp: boolean): number;
+  alpn(wrap: TLSWrap, protocols: Uint8Array): number;
+};
+
 export class TLSWrap extends LibuvStreamWrap {
   /** The `TnSsl*`; 0 after `destroySSL` (Node's `ssl_ == nullptr`). */
   ssl = 0;
@@ -67,6 +76,21 @@ export class TLSWrap extends LibuvStreamWrap {
   #hasActiveWriteFromPrevOwner: boolean;
   #waitingCertCb = false;
   #certCbRunning = false;
+
+  /**
+   * The engine's side of a wrap, which OpenSSL's callbacks reach (setTlsCallbacks, below) and Node's own library never
+   * sees: Node's TLSWrap has no members but its prototype's methods (crypto_tls.cc:2155-2195), and its library keeps its
+   * own properties on the handle, so these are this class's private members.
+   */
+  static {
+    tlsEngineSide = {
+      handshake: (wrap, done) => wrap.#handshake(done),
+      keylog: (wrap, line) => wrap.#keylog(line),
+      newSession: (wrap, id, der) => wrap.#newSession(id, der),
+      cert: (wrap, servername, ocsp) => wrap.#cert(servername, ocsp),
+      alpn: (wrap, protocols) => wrap.#alpn(protocols),
+    };
+  }
 
   /** TLSWrap::TLSWrap and TLSWrap::Wrap (crypto_tls.cc:410-559). */
   constructor(parent: StreamHandle, sc: SecureContext, isServer: boolean, hasActiveWriteFromPrevOwner: boolean) {
@@ -642,7 +666,7 @@ export class TLSWrap extends LibuvStreamWrap {
   // ---- OpenSSL's callbacks --------------------------------------------------------------------------------
 
   /** SSLInfoCallback (599-639). */
-  handshake(done: boolean): void {
+  #handshake(done: boolean): void {
     if (!done) {
       // `env->GetNow()`: the loop's time in milliseconds, as onhandshakestart compares it.
       invokeOwned(this, 'onhandshakestart', performance.now());
@@ -653,7 +677,7 @@ export class TLSWrap extends LibuvStreamWrap {
   }
 
   /** KeylogCallback (143-158): the line and a newline. */
-  keylog(line: Uint8Array): void {
+  #keylog(line: Uint8Array): void {
     const buffer = Buffer.alloc(line.byteLength + 1);
     buffer.set(line);
     buffer[line.byteLength] = 0x0a;
@@ -661,12 +685,12 @@ export class TLSWrap extends LibuvStreamWrap {
   }
 
   /** NewSessionCallback (160-208): `onnewsession(sessionId, session)`. */
-  newSession(id: Uint8Array, der: Uint8Array): void {
+  #newSession(id: Uint8Array, der: Uint8Array): void {
     invokeOwned(this, 'onnewsession', Buffer.from(id), Buffer.from(der));
   }
 
   /** SSLCertCallback (210-247). */
-  cert(servername: string, ocsp: boolean): number {
+  #cert(servername: string, ocsp: boolean): number {
     if (!this.isServer || !this.#waitingCertCb) return 1;
     if (this.#certCbRunning) return -1;
     this.#certCbRunning = true;
@@ -675,7 +699,7 @@ export class TLSWrap extends LibuvStreamWrap {
   }
 
   /** SelectALPNCallback's callback half (256-290): the offset the program's ALPNCallback chose, or -1. */
-  alpn(protocols: Uint8Array): number {
+  #alpn(protocols: Uint8Array): number {
     const result = invokeOwned(this, 'ALPNCallback', Buffer.from(protocols));
     return typeof result === 'number' ? result : -1;
   }
@@ -695,11 +719,11 @@ export function listensWithTls(sockets: TreeSockets, port: number): boolean {
 
 // OpenSSL raises these only inside an `SSL_*` call of a live wrap (the program's tls_* imports, program.ts).
 setTlsCallbacks({
-  handshake: (ssl, done) => wraps.get(ssl)!.handshake(done !== 0),
-  keylog: (ssl, line) => wraps.get(ssl)!.keylog(line),
-  newSession: (ssl, id, der) => wraps.get(ssl)!.newSession(id, der),
-  cert: (ssl, servername, ocsp) => wraps.get(ssl)!.cert(servername, ocsp),
-  alpn: (ssl, protocols) => wraps.get(ssl)!.alpn(protocols),
+  handshake: (ssl, done) => tlsEngineSide.handshake(wraps.get(ssl)!, done !== 0),
+  keylog: (ssl, line) => tlsEngineSide.keylog(wraps.get(ssl)!, line),
+  newSession: (ssl, id, der) => tlsEngineSide.newSession(wraps.get(ssl)!, id, der),
+  cert: (ssl, servername, ocsp) => tlsEngineSide.cert(wraps.get(ssl)!, servername, ocsp),
+  alpn: (ssl, protocols) => tlsEngineSide.alpn(wraps.get(ssl)!, protocols),
 });
 
 /**
