@@ -53,7 +53,7 @@ import { StdinRingReader, kStdinRing, type StdinReader } from '../stdin-ring';
 import { nodeProcessHostFor, nodeProcessRealmToken, nodeProcessInput, type NodeProcessHost, type NodeProcessLaunch } from '../node-process-host';
 import { nativeStreamDescriptor } from '../native-stream-binding';
 import { KernelStreamWrap, kKernelBacked } from '../node-lib/binding/kernel_stream';
-import { programForm, reallyExit } from '../node-lib/binding/program';
+import { isNodeProgramRealm, programForm, reallyExit } from '../node-lib/binding/program';
 import { startNodeProgram } from '../node-program';
 import { constantsBinding } from './constants';
 import { Pipe } from '../node-lib/binding/pipe_wrap';
@@ -162,13 +162,19 @@ function shellOf(tree: VirtualFS | null | undefined): { bash: Bash; adapter: Vir
 // In real Node.js, each process has its own globalThis. In our browser environment,
 // all forks share globalThis, so libraries like vitest that define non-configurable
 // properties (e.g. __vitest_index__) need them to be configurable for re-runs.
-const _realDefineProperty = Object.defineProperty;
-Object.defineProperty = function(target: object, key: PropertyKey, descriptor: PropertyDescriptor): object {
-  if (target === globalThis && descriptor && !descriptor.configurable) {
-    descriptor = { ...descriptor, configurable: true };
-  }
-  return _realDefineProperty.call(Object, target, key, descriptor) as object;
-} as typeof Object.defineProperty;
+// The patch is installed only where that premise holds. A `node` program's realm is its process's own (ADR-0018 §7),
+// named so by its host before the engine loads, so there Object.defineProperty stays the language's own, as in Node: a
+// library that defines a global property non-configurable and defines it again with the same attributes (undici's
+// `setGlobalDispatcher`, where its slot is held empty) is answered as Node answers it.
+if (!isNodeProgramRealm()) {
+  const realDefineProperty = Object.defineProperty;
+  Object.defineProperty = function(target: object, key: PropertyKey, descriptor: PropertyDescriptor): object {
+    if (target === globalThis && descriptor && !descriptor.configurable) {
+      descriptor = { ...descriptor, configurable: true };
+    }
+    return realDefineProperty.call(Object, target, key, descriptor) as object;
+  } as typeof Object.defineProperty;
+}
 
 /** The stdin of a held run's guest, as the run's own. */
 type RunStdin = {
