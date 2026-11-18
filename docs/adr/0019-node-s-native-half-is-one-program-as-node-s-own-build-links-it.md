@@ -65,6 +65,17 @@ A dependency compiled into the program is compiled as Node's Linux build compile
 `__wasm__` as "a JavaScript host", that is a platform test, and it is corrected as browser-substrate ADR-0238 §5
 corrects it, never by undefining `__wasm__` for a list of files.
 
+### 5. A dependency's call is at its callee's type (2026-11-18)
+
+The program runs on WebAssembly, whose `call_indirect` checks the callee's type against the call's and traps where
+they differ (`function signature mismatch`), where Linux's CPUs run a call through a function pointer cast to another
+type. A dependency that makes such a call is patched at that call alone, the patch's header naming the departure
+(browser-substrate `docs/guides/adding-a-program.md`; its ADR-0237 catalogues each). libuv's `uv_thread_create_ex`
+hands `pthread_create` a `void (*)(void *)` entry as POSIX's `void *(*)(void *)`, so every thread libuv starts, the
+threadpool's first, trapped at its start in musl's `start` (browser-substrate chain v3b, read in the program's bytes):
+`native/patches/libuv` starts each at a start routine of POSIX's type, as libuv's Windows path does. libuv's patches
+are their own series, applied to libuv's tree as `native/patches/series` is to Node's (`scripts/build-node.sh`).
+
 ## Where the evidence stops
 
 - Read: `node:24-slim`'s `ldd`, the lines of Node v24.21.0's `node.gyp`, `common.gypi` and `configure.py` cited

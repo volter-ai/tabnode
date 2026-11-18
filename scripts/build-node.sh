@@ -16,7 +16,8 @@
 # #5317; its version.h says 1.53.1-dev), not Node v24.21.0's deps/uv (libuv 1.52.1), as ADR-0018's evidence says:
 # 1.52.1 spawns by fork() then exec on Linux and a Node process has no fork; a267f5688b spawns by musl's posix_spawn
 # after a probe of clone(CLONE_VM|CLONE_VFORK) with no termination signal. Its 35 Linux sources, as libuv's
-# CMakeLists.txt compiles them on Linux, unchanged. The archive is GitHub's of that commit, pinned by its SHA-256:
+# CMakeLists.txt compiles them on Linux, with native/patches/libuv's changes (ADR-0019 §5). The archive is GitHub's of
+# that commit, pinned by its SHA-256:
 #   https://github.com/libuv/libuv/archive/a267f5688be25e8d4628e296245a041adc2ca072.tar.gz
 #
 # OpenSSL and ncrypto are Node v24.21.0's deps/openssl/openssl (OpenSSL 3.5.8) and deps/ncrypto, from Node's release
@@ -29,7 +30,8 @@
 # made below (ADR-0016 §1).
 #
 # A change to Node's sources is a patch in native/patches, a recorded series applied in its order to the unpacked
-# release tree before any of Node's sources is compiled.
+# release tree before any of Node's sources is compiled; a change to libuv's is one in native/patches/libuv, its own
+# series applied to libuv's tree before any of its sources is compiled.
 #
 # ncrypto, Node's crypto glue and every other C++ here use the SDK's C++ runtime, libc++ and libc++abi as shared
 # libraries, as Linux's node links libstdc++.so.6 (browser-substrate ADR-0238 §4). The SDK's C++ driver compiles
@@ -67,6 +69,10 @@ finish() { local pid; for pid in "${pids[@]}"; do wait "$pid"; done; pids=(); }
 libuv=libuv-a267f5688be25e8d4628e296245a041adc2ca072
 tar xzf "$uv_archive" -C "$work" "$libuv/include" "$libuv/src"
 uv="$work/$libuv"
+# libuv's sources with native/patches/libuv's changes, in its series' order.
+while read -r patch; do
+  patch -s -p1 -d "$uv" < "$repo/native/patches/libuv/$patch"
+done < "$repo/native/patches/libuv/series"
 node=node-v24.21.0
 tar xzf "$node_archive" -C "$work" "$node/deps/openssl/openssl" "$node/deps/ncrypto" "$node/src/node_root_certs.h" \
   "$node/src/node_constants.cc" "$node/src/node_constants.h" "$node/src/tracing/trace_event_common.h" \

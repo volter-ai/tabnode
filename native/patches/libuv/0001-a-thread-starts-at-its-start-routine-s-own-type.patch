@@ -1,0 +1,74 @@
+Subject: A thread starts at a start routine of POSIX's type
+
+libuv's uv_thread_create_ex hands pthread_create its entry, a `void (*)(void *)`, as the `void *(*)(void *)` POSIX
+names, through a union ("Used to squelch a -Wcast-function-type warning"). x86-64 and aarch64 ignore the start
+routine's unused result, so the cast runs there. WebAssembly's call_indirect is typed: musl's thread start (`start`,
+src/thread/pthread_create.c) calls the routine as `(func (param i32) (result i32))`, and the threadpool's `worker`,
+`(func (param i32))`, traps there with `function signature mismatch` (browser-substrate chain v3b's first boot, read in
+node's bytes and the machine's libc.so). The departure is that call alone, as browser-substrate's guide allows a patch
+for a call through a function pointer cast to another type (docs/guides/adding-a-program.md; ADR-0237 T-UVTHREAD).
+
+Each thread starts at uv__thread_start, of POSIX's type, which calls the entry with its own type and returns NULL,
+the form libuv's own Windows path takes under _beginthreadex's type (src/win/thread.c, `struct thread_ctx` and
+`uv__thread_start`, at the same commit): one allocation a thread, freed by the thread as it starts, and UV_ENOMEM where
+it fails, as Windows' path answers. Upstream's v1.x keeps the union; the form is the one a fix sent upstream takes.
+
+--- a/src/unix/thread.c
++++ b/src/unix/thread.c
+@@ -120,6 +120,24 @@
+ #endif
+ 
+   return uv__default_stack_size();
++}
++
++
++/* A thread starts at a start routine of POSIX's type, `void* (*)(void*)`, which calls the entry with its own type,
++ * `void (*)(void*)`, as src/win/thread.c's uv__thread_start calls it under _beginthreadex's type. */
++struct uv__thread_start_ctx {
++  void (*entry)(void* arg);
++  void* arg;
++};
++
++
++static void* uv__thread_start(void* arg) {
++  struct uv__thread_start_ctx ctx;
++
++  ctx = *(struct uv__thread_start_ctx*) arg;
++  uv__free(arg);
++  ctx.entry(ctx.arg);
++  return NULL;
+ }
+ 
+ 
+@@ -146,11 +164,7 @@
+   size_t stack_size;
+   size_t min_stack_size;
+ 
+-  /* Used to squelch a -Wcast-function-type warning. */
+-  union {
+-    void (*in)(void*);
+-    void* (*out)(void*);
+-  } f;
++  struct uv__thread_start_ctx* ctx;
+ 
+   stack_size =
+       params->flags & UV_THREAD_HAS_STACK_SIZE ? params->stack_size : 0;
+@@ -177,8 +191,16 @@
+       abort();
+   }
+ 
+-  f.in = entry;
+-  err = pthread_create(tid, attr, f.out, arg);
++  ctx = uv__malloc(sizeof(*ctx));
++  if (ctx == NULL) {
++    err = ENOMEM;
++  } else {
++    ctx->entry = entry;
++    ctx->arg = arg;
++    err = pthread_create(tid, attr, uv__thread_start, ctx);
++    if (err)
++      uv__free(ctx);
++  }
+ 
+   if (attr != NULL)
+     pthread_attr_destroy(attr);
