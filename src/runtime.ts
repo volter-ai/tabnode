@@ -4926,8 +4926,10 @@ function __substrateStackTracePolyfill(): void {
  * call site naming its frame's file (a module's body is an evaluated script, whose `getFileName()` V8 leaves null).
  * While the callback runs, the property reads back what was set, so the callback finds the program's own function or
  * Node's, as in Node. A function read back is the function it stands for (ADR-0018 §7, amended 2026-11-18): a program
- * that saved it and calls it from its own (Babel's stack rewriter) calls that function, as in Node, where the property
- * holds it; went through the callback again, it would find the program's own function, and the two would recurse.
+ * that saved it and calls it calls that function, as in Node, where the property holds it, whether from its own while a
+ * stack forms (Babel's stack rewriter, which went through the callback again, found itself, and the two recursed) or
+ * later, after setting another. What a program reads back is a function where it set none, and not the function it set
+ * but one standing for it: V8 calls only what the property holds, and it must reach Node's callback (ADR-0018 §7).
  */
 export function routeErrorStacks(callback: (global: object, error: unknown, trace: unknown[]) => unknown): void {
   interface CallSite {
@@ -4968,29 +4970,35 @@ export function routeErrorStacks(callback: (global: object, error: unknown, trac
     },
   });
   let inside = 0;
-  // While a router of no function formats inside a formation, the property reads back that value, as Node's would.
+  // While a program's call of a router of no function formats, the property reads back that value, as Node's would.
   let holding: { value: unknown } | undefined;
   const routers = new WeakMap<object, (error: unknown, sites: CallSite[]) => unknown>();
   const routed = new WeakMap<object, unknown>();
   let routerOfNone: ((error: unknown, sites: CallSite[]) => unknown) | undefined;
+  const isObject = (value: unknown): value is object => value !== null && (typeof value === 'object' || typeof value === 'function');
+  // Whether two values have one router: an object or function its own, every other value the router of none.
+  const sameRouter = (a: unknown, b: unknown): boolean => (isObject(a) || isObject(b) ? a === b : true);
   const routerFor = (value: unknown): (error: unknown, sites: CallSite[]) => unknown => {
-    const known = value !== null && (typeof value === 'object' || typeof value === 'function') ? routers.get(value as object) : routerOfNone;
+    const known = isObject(value) ? routers.get(value) : routerOfNone;
     if (known) return known;
     const router = function (this: unknown, error: unknown, sites: CallSite[]): unknown {
-      // Entered while a formation runs, a router is a program calling the function it read back: it answers as that
-      // function does, with the call sites it is given, and one of no function as Node's callback does with none.
-      if (inside > 0) {
+      // V8, or the host's own callback, reads the property outside any formation and calls what it read at once: the
+      // router of the property's value. Any other call is a program's, of the function it read back: inside a
+      // formation, or after the property came to hold another value. It answers as that function does, with the call
+      // sites it is given, and one of no function as Node's callback does where the property holds none.
+      if (inside > 0 || !sameRouter(value, current)) {
         if (typeof value === 'function') return Reflect.apply(value, this, [error, sites]);
         const outer = holding;
         holding = { value };
-        try { return callback(globalThis, error, sites); } finally { holding = outer; }
+        inside++;
+        try { return callback(globalThis, error, sites); } finally { inside--; holding = outer; }
       }
       inside++;
       try { noteStackFormed(error, "Node's prepareStackTraceCallback"); return callback(globalThis, error, sites.map(named)); }
       finally { inside--; }
     };
     routed.set(router, value);
-    if (value !== null && (typeof value === 'object' || typeof value === 'function')) routers.set(value as object, router);
+    if (isObject(value)) routers.set(value, router);
     else routerOfNone = router;
     return router;
   };
