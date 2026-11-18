@@ -4925,7 +4925,9 @@ function __substrateStackTracePolyfill(): void {
  * what Node's code reads and sets, and the function V8 is handed calls Node's callback with the realm's global, each
  * call site naming its frame's file (a module's body is an evaluated script, whose `getFileName()` V8 leaves null).
  * While the callback runs, the property reads back what was set, so the callback finds the program's own function or
- * Node's, as in Node.
+ * Node's, as in Node. A function read back is the function it stands for (ADR-0018 §7, amended 2026-11-18): a program
+ * that saved it and calls it from its own (Babel's stack rewriter) calls that function, as in Node, where the property
+ * holds it; went through the callback again, it would find the program's own function, and the two would recurse.
  */
 export function routeErrorStacks(callback: (global: object, error: unknown, trace: unknown[]) => unknown): void {
   interface CallSite {
@@ -4966,13 +4968,23 @@ export function routeErrorStacks(callback: (global: object, error: unknown, trac
     },
   });
   let inside = 0;
+  // While a router of no function formats inside a formation, the property reads back that value, as Node's would.
+  let holding: { value: unknown } | undefined;
   const routers = new WeakMap<object, (error: unknown, sites: CallSite[]) => unknown>();
   const routed = new WeakMap<object, unknown>();
   let routerOfNone: ((error: unknown, sites: CallSite[]) => unknown) | undefined;
   const routerFor = (value: unknown): (error: unknown, sites: CallSite[]) => unknown => {
     const known = value !== null && (typeof value === 'object' || typeof value === 'function') ? routers.get(value as object) : routerOfNone;
     if (known) return known;
-    const router = (error: unknown, sites: CallSite[]): unknown => {
+    const router = function (this: unknown, error: unknown, sites: CallSite[]): unknown {
+      // Entered while a formation runs, a router is a program calling the function it read back: it answers as that
+      // function does, with the call sites it is given, and one of no function as Node's callback does with none.
+      if (inside > 0) {
+        if (typeof value === 'function') return Reflect.apply(value, this, [error, sites]);
+        const outer = holding;
+        holding = { value };
+        try { return callback(globalThis, error, sites); } finally { holding = outer; }
+      }
       inside++;
       try { noteStackFormed(error, "Node's prepareStackTraceCallback"); return callback(globalThis, error, sites.map(named)); }
       finally { inside--; }
@@ -4985,9 +4997,10 @@ export function routeErrorStacks(callback: (global: object, error: unknown, trac
   Object.defineProperty(Error, 'prepareStackTrace', {
     configurable: true,
     enumerable: false,
-    get: () => (inside > 0 ? current : routerFor(current)),
+    get: () => (inside > 0 ? (holding ? holding.value : current) : routerFor(current)),
     set(value: unknown) {
       current = typeof value === 'function' && routed.has(value) ? routed.get(value) : value;
+      holding = undefined;
     },
   });
 }
