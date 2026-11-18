@@ -323,7 +323,22 @@ builtin tables load Node's files on first use. So where the realm's process is `
   `permission`, `mksnapshot`, `worker` and `report`. V8's stack hook is Node's PrepareStackTraceCallback:
   `Error.prepareStackTrace` is an accessor whose function V8 calls hands the call sites, each naming its file, to
   Node's `prepareStackTraceCallback`, while the property reads back what a program or Node set (`src/runtime.ts`
-  `routeErrorStacks`). A throw from `process._fatalException` is reported and exits with
+  `routeErrorStacks`). *Amended 2026-11-18:* a function the property reads back, called, is the function it stands
+  for. In Node the property is a data property, so a program that saved it before setting its own (Babel's stack
+  rewriter, `@babel/core` `lib/errors/rewrite-stack-trace.js` `setupPrepareStackTrace`, which jiti runs for every
+  TypeScript file it transforms, and so c12 for Prisma's `prisma.config.ts`) and calls the saved one from its own
+  calls Node's `ErrorPrepareStackTrace`, which formats (`lib/internal/errors.js` `prepareStackTraceCallback`,
+  `ErrorPrepareStackTrace`). Here what the program saved was the router for Node's function, and the router went back
+  through Node's callback, which reads the property, which held the program's function again: the two called each
+  other until the stack ran out, and each turn wrapped every call site in one more proxy, which every read then walks
+  (V8's `CheckGetSetTrapResult` reads the target's own descriptor down the whole chain), so a formation's cost grew
+  with the cube of its depth. Read 2026-11-18 with this engine's own `routeErrorStacks` text and Node's callback in a
+  Node worker after a jiti transform: one `new Error().stack` was still running after 9 s at 401 nested turns, the
+  shape of the proxy chain browser-substrate's Rallly boot spun in (`prisma migrate deploy`, 100% CPU for 15
+  minutes). So a router called while a formation runs, which only a program does, answers as its function does: it
+  calls that function with the call sites it is given, and a router of no function formats as Node's callback does
+  where the property holds none. Node's callback is entered through a router only where V8 or the host's own callback
+  enters it, outside any formation. A throw from `process._fatalException` is reported and exits with
   kExceptionInFatalExceptionHandler, as TryCatchScope's kFatal mode does.
 - **What stays** is browser-substrate ADR-0236's hole 13: a page's engine carries no context across `await`, so
   `AsyncLocalStorage`'s rewrite of async functions remains, made once per file when the image is built.
